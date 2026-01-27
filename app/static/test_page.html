@@ -1,0 +1,1046 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FinDB 測試控制台</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Space+Grotesk:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+      :root {
+        --bg: #f7f3ed;
+        --surface: #fffaf5;
+        --surface-strong: #fef2e2;
+        --ink: #1f2a30;
+        --muted: #5b6b73;
+        --accent: #1f8a70;
+        --accent-2: #f79f1f;
+        --accent-3: #2d7dd2;
+        --danger: #d64541;
+        --shadow: 0 24px 60px rgba(31, 42, 48, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Noto Sans TC", "Space Grotesk", sans-serif;
+        color: var(--ink);
+        background: radial-gradient(circle at 15% 10%, #fef2e2 0%, #f7f3ed 55%, #ece5db 100%);
+        min-height: 100vh;
+        padding: 48px 20px 80px;
+      }
+
+      body::before,
+      body::after {
+        content: "";
+        position: fixed;
+        border-radius: 999px;
+        z-index: -1;
+      }
+
+      body::before {
+        width: 320px;
+        height: 320px;
+        background: rgba(45, 125, 210, 0.15);
+        top: -90px;
+        right: -60px;
+      }
+
+      body::after {
+        width: 240px;
+        height: 240px;
+        background: rgba(31, 138, 112, 0.18);
+        bottom: -70px;
+        left: -60px;
+      }
+
+      main {
+        width: min(1200px, 100%);
+        margin: 0 auto;
+        display: grid;
+        gap: 28px;
+      }
+
+      header {
+        position: relative;
+        padding: 32px;
+        border-radius: 26px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        animation: fadeIn 0.6s ease-out;
+      }
+
+      header::after {
+        content: "";
+        position: absolute;
+        width: 220px;
+        height: 220px;
+        border-radius: 50%;
+        background: rgba(247, 159, 31, 0.18);
+        top: -120px;
+        right: 40px;
+      }
+
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.32em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 12px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-family: "Space Grotesk", "Noto Sans TC", sans-serif;
+        font-size: clamp(32px, 4vw, 46px);
+      }
+
+      h2 {
+        margin: 0 0 10px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .badge {
+        padding: 6px 14px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        background: rgba(31, 138, 112, 0.12);
+        color: var(--accent);
+      }
+
+      .badge.alt {
+        background: rgba(45, 125, 210, 0.12);
+        color: var(--accent-3);
+      }
+
+      .grid {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      }
+
+      .span-2 {
+        grid-column: span 2;
+      }
+
+      .panel {
+        padding: 24px;
+        border-radius: 20px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        animation: floatIn 0.7s ease-out;
+      }
+
+      .summary-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      }
+
+      .summary {
+        padding: 16px;
+        border-radius: 16px;
+        background: #fff;
+        border: 1px solid rgba(31, 42, 48, 0.08);
+      }
+
+      .summary span {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .summary strong {
+        font-size: 20px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 16px;
+        border-radius: 999px;
+        font-weight: 600;
+        background: rgba(31, 138, 112, 0.14);
+        color: var(--accent);
+        margin-top: 14px;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      .controls {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        margin-top: 14px;
+      }
+
+      label {
+        font-size: 12px;
+        color: var(--muted);
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(31, 42, 48, 0.12);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+      }
+
+      textarea {
+        min-height: 200px;
+        resize: vertical;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .button {
+        border: none;
+        border-radius: 12px;
+        padding: 10px 16px;
+        font-weight: 600;
+        cursor: pointer;
+        background: var(--accent);
+        color: #fff;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .button.secondary {
+        background: var(--accent-3);
+      }
+
+      .button.tertiary {
+        background: var(--accent-2);
+        color: #2c1a05;
+      }
+
+      .button.ghost {
+        background: transparent;
+        color: var(--accent-3);
+        border: 1px solid rgba(45, 125, 210, 0.4);
+      }
+
+      .button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 24px rgba(31, 42, 48, 0.2);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 10px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 10px 6px;
+        border-bottom: 1px solid rgba(31, 42, 48, 0.08);
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .empty {
+        color: var(--muted);
+        font-style: italic;
+      }
+
+      .log,
+      .code {
+        margin-top: 14px;
+        background: #0d1b24;
+        color: #d9e6ef;
+        padding: 16px;
+        border-radius: 16px;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        min-height: 140px;
+        white-space: pre-wrap;
+      }
+
+      .code {
+        max-height: 360px;
+        overflow: auto;
+      }
+
+      .response-meta {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .step {
+        display: grid;
+        gap: 6px;
+        padding: 14px;
+        border-radius: 14px;
+        background: var(--surface-strong);
+        margin-top: 10px;
+      }
+
+      .mono {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      footer {
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes floatIn {
+        from {
+          opacity: 0;
+          transform: translateY(18px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 680px) {
+        header {
+          padding: 24px;
+        }
+        .actions {
+          flex-direction: column;
+        }
+        .button {
+          width: 100%;
+        }
+        .span-2 {
+          grid-column: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="eyebrow">FinDB Test Console</div>
+        <h1>FinDB 完整測試控制台</h1>
+        <p>
+          用於完整驗證 Source → Normalize → Serve 的視覺化測試頁面。
+          支援健康檢查、資料集查詢、Ingest 測試、EOD 與交易日曆查詢，以及回應內容
+          的即時顯示。
+        </p>
+        <div class="badge-row">
+          <div class="badge">Source API</div>
+          <div class="badge alt">Normalize</div>
+          <div class="badge">Serve API</div>
+          <div class="badge alt">Data Quality</div>
+        </div>
+      </header>
+
+      <section class="grid">
+        <div class="panel span-2">
+          <h2>系統概況</h2>
+          <div class="summary-grid">
+            <div class="summary">
+              <span>Health</span>
+              <strong id="health-text">--</strong>
+            </div>
+            <div class="summary">
+              <span>版本</span>
+              <strong id="version-text">--</strong>
+            </div>
+            <div class="summary">
+              <span>Datasets</span>
+              <strong id="dataset-count">0</strong>
+            </div>
+            <div class="summary">
+              <span>Instruments</span>
+              <strong id="instrument-count">0</strong>
+            </div>
+            <div class="summary">
+              <span>EOD 筆數</span>
+              <strong id="eod-count">0</strong>
+            </div>
+            <div class="summary">
+              <span>Run 狀態</span>
+              <strong id="run-status">--</strong>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="button" id="health-check">健康檢查</button>
+            <button class="button secondary" id="datasets-check">查詢 datasets</button>
+            <button class="button tertiary" id="instruments-check">查詢標的</button>
+            <button class="button ghost" id="eod-quick">快速查詢 EOD</button>
+          </div>
+          <div class="status-pill" id="status-pill">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-label">等待檢查</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>連線設定</h2>
+          <p>設定 Base URL 與 API Key，支援本機 / Docker 環境切換。</p>
+          <div class="controls">
+            <div>
+              <label for="base-url">Base URL</label>
+              <input id="base-url" placeholder="http://localhost:8000" />
+            </div>
+            <div>
+              <label for="source-key">Source API Key</label>
+              <input id="source-key" placeholder="dev-source-key" />
+            </div>
+            <div>
+              <label for="serve-key">Serve API Key（可選）</label>
+              <input id="serve-key" placeholder="serve-key" />
+            </div>
+          </div>
+          <div class="step">
+            <strong>提示</strong>
+            <div class="mono">Source API 一定需要 API Key；Serve API 視設定而定。</div>
+          </div>
+        </div>
+
+        <div class="panel span-2">
+          <h2>Source Ingest 測試</h2>
+          <p>可直接送出 JSON payload，並回傳 run_id 供後續查詢。</p>
+          <div class="controls">
+            <div>
+              <label for="ingest-dataset">dataset_key</label>
+              <input id="ingest-dataset" value="crypto_eod" />
+            </div>
+            <div>
+              <label for="ingest-source">source</label>
+              <input id="ingest-source" value="bloomberg" />
+            </div>
+            <div>
+              <label for="ingest-request">request_key</label>
+              <input id="ingest-request" placeholder="manual_request" />
+            </div>
+            <div>
+              <label for="ingest-idempotency">idempotency_key</label>
+              <input id="ingest-idempotency" placeholder="manual_idempotency" />
+            </div>
+          </div>
+          <label for="ingest-payload">Payload JSON</label>
+          <textarea id="ingest-payload"></textarea>
+          <div class="actions">
+            <button class="button tertiary" id="fill-sample">套用範例 payload</button>
+            <button class="button" id="send-ingest">送出 ingest</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Ingestion Run 狀態</h2>
+          <p>輸入 run_id 查詢批次狀態。</p>
+          <label for="run-id">run_id</label>
+          <input id="run-id" placeholder="01934def-..." />
+          <div class="actions">
+            <button class="button secondary" id="run-check">查詢 run</button>
+          </div>
+          <div class="summary-grid">
+            <div class="summary">
+              <span>狀態</span>
+              <strong id="run-status-text">--</strong>
+            </div>
+            <div class="summary">
+              <span>成功筆數</span>
+              <strong id="run-success">0</strong>
+            </div>
+            <div class="summary">
+              <span>失敗筆數</span>
+              <strong id="run-failed">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel span-2">
+          <h2>Serve 查詢</h2>
+          <p>查詢標的、日 K 或交易日曆。</p>
+          <div class="controls">
+            <div>
+              <label for="serve-market">market</label>
+              <input id="serve-market" value="CRYPTO" />
+            </div>
+            <div>
+              <label for="serve-symbols">symbols</label>
+              <input id="serve-symbols" value="BTC,ETH" />
+            </div>
+            <div>
+              <label for="serve-start">start_date</label>
+              <input id="serve-start" value="2026-01-16" />
+            </div>
+            <div>
+              <label for="serve-end">end_date</label>
+              <input id="serve-end" value="2026-01-16" />
+            </div>
+          </div>
+          <div class="actions">
+            <button class="button" id="serve-instruments">查詢標的</button>
+            <button class="button secondary" id="serve-eod">查詢 EOD</button>
+            <button class="button tertiary" id="serve-calendar">查詢日曆</button>
+          </div>
+        </div>
+
+        <div class="panel span-2">
+          <h2>資料顯示</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dataset Key</th>
+                  <th>Asset Class</th>
+                  <th>Market</th>
+                  <th>Frequency</th>
+                  <th>Active</th>
+                </tr>
+              </thead>
+              <tbody id="datasets-body">
+                <tr>
+                  <td class="empty" colspan="5">尚未載入 datasets</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Name</th>
+                  <th>Market</th>
+                  <th>Asset Class</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="instruments-body">
+                <tr>
+                  <td class="empty" colspan="5">尚未載入標的</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Symbol</th>
+                  <th>Open</th>
+                  <th>High</th>
+                  <th>Low</th>
+                  <th>Close</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="eod-body">
+                <tr>
+                  <td class="empty" colspan="7">尚未載入 EOD</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Market</th>
+                  <th>Open</th>
+                  <th>Holiday</th>
+                </tr>
+              </thead>
+              <tbody id="calendar-body">
+                <tr>
+                  <td class="empty" colspan="4">尚未載入日曆</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>回應內容</h2>
+          <p>最近一次 API 回應會顯示在此。</p>
+          <div class="response-meta" id="response-meta">--</div>
+          <pre class="code" id="response-json">等待回應...</pre>
+        </div>
+
+        <div class="panel">
+          <h2>測試紀錄</h2>
+          <p>保留近期操作的訊息。</p>
+          <div class="log" id="log">準備就緒。</div>
+        </div>
+      </section>
+
+      <footer>FinDB Local Test Console · 建議搭配 Docker 或本機 UVicorn 啟動使用</footer>
+    </main>
+
+    <script>
+      const healthText = document.getElementById("health-text");
+      const versionText = document.getElementById("version-text");
+      const datasetCount = document.getElementById("dataset-count");
+      const instrumentCount = document.getElementById("instrument-count");
+      const eodCount = document.getElementById("eod-count");
+      const runStatus = document.getElementById("run-status");
+      const statusLabel = document.getElementById("status-label");
+      const statusDot = document.getElementById("status-dot");
+      const statusPill = document.getElementById("status-pill");
+
+      const baseInput = document.getElementById("base-url");
+      const sourceKeyInput = document.getElementById("source-key");
+      const serveKeyInput = document.getElementById("serve-key");
+
+      const ingestDatasetInput = document.getElementById("ingest-dataset");
+      const ingestSourceInput = document.getElementById("ingest-source");
+      const ingestRequestInput = document.getElementById("ingest-request");
+      const ingestIdempotencyInput = document.getElementById("ingest-idempotency");
+      const ingestPayloadInput = document.getElementById("ingest-payload");
+      const runIdInput = document.getElementById("run-id");
+      const runStatusText = document.getElementById("run-status-text");
+      const runSuccess = document.getElementById("run-success");
+      const runFailed = document.getElementById("run-failed");
+
+      const serveMarketInput = document.getElementById("serve-market");
+      const serveSymbolsInput = document.getElementById("serve-symbols");
+      const serveStartInput = document.getElementById("serve-start");
+      const serveEndInput = document.getElementById("serve-end");
+
+      const datasetsBody = document.getElementById("datasets-body");
+      const instrumentsBody = document.getElementById("instruments-body");
+      const eodBody = document.getElementById("eod-body");
+      const calendarBody = document.getElementById("calendar-body");
+
+      const responseMeta = document.getElementById("response-meta");
+      const responseJson = document.getElementById("response-json");
+      const logArea = document.getElementById("log");
+
+      const log = (message) => {
+        const timestamp = new Date().toLocaleTimeString();
+        logArea.textContent = `[${timestamp}] ${message}\n${logArea.textContent}`.trim();
+      };
+
+      const setStatus = (ok, label) => {
+        statusLabel.textContent = label;
+        statusDot.style.background = ok ? "#1f8a70" : "#d64541";
+        statusPill.style.background = ok
+          ? "rgba(31, 138, 112, 0.14)"
+          : "rgba(214, 69, 65, 0.14)";
+        statusPill.style.color = ok ? "#1f8a70" : "#d64541";
+      };
+
+      const resolveBaseUrl = () => {
+        const input = baseInput.value.trim();
+        if (input) {
+          return input.replace(/\/$/, "");
+        }
+        return window.location.origin;
+      };
+
+      const fetchJson = async (path, options = {}) => {
+        const baseUrl = resolveBaseUrl();
+        const url = `${baseUrl}${path}`;
+        const response = await fetch(url, options);
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (error) {
+          data = { detail: "Invalid JSON response" };
+        }
+        if (!response.ok) {
+          throw new Error(`${response.status} ${JSON.stringify(data)}`);
+        }
+        return { data, url, status: response.status };
+      };
+
+      const buildHeaders = (type) => {
+        const headers = { "Content-Type": "application/json" };
+        if (type === "source") {
+          const key = sourceKeyInput.value.trim();
+          if (!key) {
+            throw new Error("缺少 Source API Key");
+          }
+          headers["X-API-Key"] = key;
+        }
+        if (type === "serve") {
+          const key = serveKeyInput.value.trim();
+          if (key) {
+            headers["X-API-Key"] = key;
+          }
+        }
+        return headers;
+      };
+
+      const updateResponse = (title, payload) => {
+        responseMeta.textContent = title;
+        responseJson.textContent = JSON.stringify(payload, null, 2);
+      };
+
+      const escapeHtml = (value) => {
+        if (value === null || value === undefined) {
+          return "-";
+        }
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      };
+
+      const renderTable = (tbody, rows, columns, emptyLabel) => {
+        if (!rows || rows.length === 0) {
+          tbody.innerHTML = `<tr><td class="empty" colspan="${columns.length}">${emptyLabel}</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = rows
+          .map((row) => {
+            const cells = columns
+              .map((key) => `<td>${escapeHtml(row[key])}</td>`)
+              .join("");
+            return `<tr>${cells}</tr>`;
+          })
+          .join("");
+      };
+
+      const updateCounts = (datasets, instruments, eod, runState) => {
+        datasetCount.textContent = datasets.length;
+        instrumentCount.textContent = instruments.length;
+        eodCount.textContent = eod.length;
+        runStatus.textContent = runState || "--";
+      };
+
+      const buildSamplePayload = () => {
+        const now = new Date();
+        const key = `manual_${now.toISOString().replace(/[-:.TZ]/g, "")}`;
+        return {
+          dataset_key: ingestDatasetInput.value.trim() || "crypto_eod",
+          source: ingestSourceInput.value.trim() || "bloomberg",
+          request_key: ingestRequestInput.value.trim() || key,
+          idempotency_key: ingestIdempotencyInput.value.trim() || key,
+          payload: {
+            metadata: { source: "Bloomberg API" },
+            data: [
+              {
+                symbol: "BTC",
+                ticker: "XBTUSD BGN Curncy",
+                price: {
+                  open: 95550.07,
+                  high: 95825.34,
+                  low: 95119.76,
+                  last: 95709.01,
+                },
+                timestamp: { last_update: "2026-01-16" },
+                metadata: { source: "Bloomberg" },
+              },
+            ],
+          },
+          fetched_at: now.toISOString(),
+        };
+      };
+
+      const getPayloadFromEditor = () => {
+        let payload;
+        try {
+          payload = JSON.parse(ingestPayloadInput.value || "{}");
+        } catch (error) {
+          throw new Error("Payload JSON 格式錯誤");
+        }
+        const now = new Date().toISOString();
+        const key = `manual_${Date.now()}`;
+        payload.dataset_key = ingestDatasetInput.value.trim() || payload.dataset_key || "crypto_eod";
+        payload.source = ingestSourceInput.value.trim() || payload.source || "bloomberg";
+        payload.request_key = ingestRequestInput.value.trim() || payload.request_key || key;
+        payload.idempotency_key =
+          ingestIdempotencyInput.value.trim() || payload.idempotency_key || payload.request_key;
+        payload.fetched_at = payload.fetched_at || now;
+        ingestPayloadInput.value = JSON.stringify(payload, null, 2);
+        return payload;
+      };
+
+      const setRunSummary = (run) => {
+        if (!run) {
+          runStatusText.textContent = "--";
+          runSuccess.textContent = "0";
+          runFailed.textContent = "0";
+          return;
+        }
+        runStatusText.textContent = run.status;
+        runSuccess.textContent = run.success_records ?? 0;
+        runFailed.textContent = run.failed_records ?? 0;
+        runStatus.textContent = run.status;
+      };
+
+      document.getElementById("health-check").addEventListener("click", async () => {
+        try {
+          const result = await fetchJson("/health");
+          healthText.textContent = result.data.status;
+          versionText.textContent = result.data.version ?? "n/a";
+          setStatus(true, "健康檢查通過");
+          updateResponse(`Health (${result.url})`, result.data);
+          log("Health check OK");
+        } catch (error) {
+          setStatus(false, "健康檢查失敗");
+          log(`Health error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("datasets-check").addEventListener("click", async () => {
+        try {
+          const result = await fetchJson("/api/v1/source/datasets", {
+            headers: buildHeaders("source"),
+          });
+          const datasets = result.data.data ?? [];
+          renderTable(
+            datasetsBody,
+            datasets.map((item) => ({
+              dataset_key: item.dataset_key,
+              asset_class: item.asset_class,
+              market: item.market,
+              frequency: item.frequency,
+              is_active: item.is_active ? "active" : "inactive",
+            })),
+            ["dataset_key", "asset_class", "market", "frequency", "is_active"],
+            "沒有 datasets"
+          );
+          updateCounts(datasets, [], [], runStatus.textContent);
+          setStatus(true, `datasets：${datasets.length} 項`);
+          updateResponse(`Datasets (${result.url})`, result.data);
+          log("Datasets loaded");
+        } catch (error) {
+          setStatus(false, "datasets 查詢失敗");
+          log(`datasets error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("instruments-check").addEventListener("click", async () => {
+        try {
+          const market = serveMarketInput.value.trim() || "CRYPTO";
+          const result = await fetchJson(`/api/v1/serve/instruments?market=${market}&page=1&page_size=10`, {
+            headers: buildHeaders("serve"),
+          });
+          const instruments = result.data.data ?? [];
+          renderTable(
+            instrumentsBody,
+            instruments.map((item) => ({
+              symbol: item.symbol,
+              name: item.name ?? "-",
+              market: item.market,
+              asset_class: item.asset_class,
+              status: item.status,
+            })),
+            ["symbol", "name", "market", "asset_class", "status"],
+            "沒有標的資料"
+          );
+          updateCounts([], instruments, [], runStatus.textContent);
+          setStatus(true, `標的：${instruments.length} 筆`);
+          updateResponse(`Instruments (${result.url})`, result.data);
+          log("Instruments loaded");
+        } catch (error) {
+          setStatus(false, "標的查詢失敗");
+          log(`instruments error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("eod-quick").addEventListener("click", async () => {
+        document.getElementById("serve-eod").click();
+      });
+
+      document.getElementById("fill-sample").addEventListener("click", () => {
+        const sample = buildSamplePayload();
+        ingestPayloadInput.value = JSON.stringify(sample, null, 2);
+        ingestDatasetInput.value = sample.dataset_key;
+        ingestSourceInput.value = sample.source;
+        ingestRequestInput.value = sample.request_key;
+        ingestIdempotencyInput.value = sample.idempotency_key;
+        log("已套用範例 payload");
+      });
+
+      document.getElementById("send-ingest").addEventListener("click", async () => {
+        try {
+          const payload = getPayloadFromEditor();
+          const result = await fetchJson("/api/v1/source/ingest", {
+            method: "POST",
+            headers: buildHeaders("source"),
+            body: JSON.stringify(payload),
+          });
+          runIdInput.value = result.data.run_id;
+          setRunSummary({ status: result.data.status, success_records: 0, failed_records: 0 });
+          setStatus(true, "Ingest 已送出");
+          updateResponse(`Ingest (${result.url})`, result.data);
+          log(`Ingest success. run_id=${result.data.run_id}`);
+        } catch (error) {
+          setStatus(false, "Ingest 失敗");
+          log(`ingest error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("run-check").addEventListener("click", async () => {
+        const runId = runIdInput.value.trim();
+        if (!runId) {
+          log("請先輸入 run_id");
+          return;
+        }
+        try {
+          const result = await fetchJson(`/api/v1/source/runs/${runId}`, {
+            headers: buildHeaders("source"),
+          });
+          setRunSummary(result.data);
+          setStatus(true, `run 狀態：${result.data.status}`);
+          updateResponse(`Run status (${result.url})`, result.data);
+          log("Run status updated");
+        } catch (error) {
+          setStatus(false, "run 查詢失敗");
+          log(`run error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("serve-instruments").addEventListener("click", () => {
+        document.getElementById("instruments-check").click();
+      });
+
+      document.getElementById("serve-eod").addEventListener("click", async () => {
+        try {
+          const market = serveMarketInput.value.trim() || "CRYPTO";
+          const symbols = serveSymbolsInput.value.trim() || "BTC";
+          const startDate = serveStartInput.value.trim();
+          const endDate = serveEndInput.value.trim();
+          const query = new URLSearchParams({
+            market,
+            symbols,
+            start_date: startDate,
+            end_date: endDate,
+            page: "1",
+            page_size: "10",
+          });
+          const result = await fetchJson(`/api/v1/serve/eod?${query.toString()}`, {
+            headers: buildHeaders("serve"),
+          });
+          const eod = result.data.data ?? [];
+          renderTable(
+            eodBody,
+            eod.map((item) => ({
+              trade_date: item.trade_date,
+              symbol: item.symbol,
+              open: item.open ?? "-",
+              high: item.high ?? "-",
+              low: item.low ?? "-",
+              close: item.close ?? "-",
+              volume: item.volume ?? "-",
+            })),
+            ["trade_date", "symbol", "open", "high", "low", "close", "volume"],
+            "沒有 EOD 資料"
+          );
+          updateCounts([], [], eod, runStatus.textContent);
+          setStatus(true, `EOD：${eod.length} 筆`);
+          updateResponse(`EOD (${result.url})`, result.data);
+          log("EOD data loaded");
+        } catch (error) {
+          setStatus(false, "EOD 查詢失敗");
+          log(`EOD error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("serve-calendar").addEventListener("click", async () => {
+        try {
+          const market = serveMarketInput.value.trim() || "CRYPTO";
+          const startDate = serveStartInput.value.trim();
+          const endDate = serveEndInput.value.trim();
+          const query = new URLSearchParams({
+            market,
+            start_date: startDate,
+            end_date: endDate,
+            page: "1",
+            page_size: "10",
+          });
+          const result = await fetchJson(`/api/v1/serve/calendar?${query.toString()}`, {
+            headers: buildHeaders("serve"),
+          });
+          const calendar = result.data.data ?? [];
+          renderTable(
+            calendarBody,
+            calendar.map((item) => ({
+              trade_date: item.trade_date,
+              market: item.market,
+              is_open: item.is_open ? "open" : "closed",
+              holiday_name: item.holiday_name ?? "-",
+            })),
+            ["trade_date", "market", "is_open", "holiday_name"],
+            "沒有日曆資料"
+          );
+          setStatus(true, `日曆：${calendar.length} 筆`);
+          updateResponse(`Calendar (${result.url})`, result.data);
+          log("Calendar loaded");
+        } catch (error) {
+          setStatus(false, "日曆查詢失敗");
+          log(`calendar error: ${error.message}`);
+        }
+      });
+
+      const init = () => {
+        const origin = window.location.origin;
+        baseInput.value = origin.includes("localhost") ? origin : "http://localhost:8000";
+        const sample = buildSamplePayload();
+        ingestPayloadInput.value = JSON.stringify(sample, null, 2);
+        ingestRequestInput.value = sample.request_key;
+        ingestIdempotencyInput.value = sample.idempotency_key;
+        setStatus(true, "待檢查");
+        updateCounts([], [], [], "--");
+      };
+
+      init();
+    </script>
+  </body>
+</html>

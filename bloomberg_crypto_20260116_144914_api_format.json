@@ -1,0 +1,160 @@
+{
+  "metadata": {
+    "source": "Bloomberg API",
+    "category": "Cryptocurrency",
+    "query_time": "2026-01-16T14:49:14.910965",
+    "total_records": 5
+  },
+  "data": [
+    {
+      "crypto_id": "bitcoin",
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "ticker": "XBTUSD BGN Curncy",
+      "price": {
+        "last": 95709.01,
+        "open": 95550.07,
+        "high": 95825.34,
+        "low": 95119.76
+      },
+      "change": {
+        "net": 158.81,
+        "percent_1d": 0.1662,
+        "percent_5d": 5.6071,
+        "percent_1m": 9.0714,
+        "percent_3m": -11.2872,
+        "percent_6m": -20.2245,
+        "percent_1yr": -4.4206,
+        "percent_ytd": 9.1976
+      },
+      "timestamp": {
+        "query_time": "2026-01-16T14:49:14.901850",
+        "last_update": "2026-01-16"
+      },
+      "metadata": {
+        "source": "Bloomberg",
+        "data_type": "cryptocurrency"
+      }
+    },
+    {
+      "crypto_id": "ethereum",
+      "symbol": "ETH",
+      "name": "Ethereum",
+      "ticker": "XETUSD BGN Curncy",
+      "price": {
+        "last": 3313.855,
+        "open": 3297.76,
+        "high": 3325.536,
+        "low": 3275.938
+      },
+      "change": {
+        "net": 16.092,
+        "percent_1d": 0.488,
+        "percent_5d": 6.3214,
+        "percent_1m": 12.2994,
+        "percent_3m": -13.9937,
+        "percent_6m": -2.0059,
+        "percent_1yr": -0.1588,
+        "percent_ytd": 11.2893
+      },
+      "timestamp": {
+        "query_time": "2026-01-16T14:49:14.901940",
+        "last_update": "2026-01-16"
+      },
+      "metadata": {
+        "source": "Bloomberg",
+        "data_type": "cryptocurrency"
+      }
+    },
+    {
+      "crypto_id": "ripple",
+      "symbol": "XRP",
+      "name": "Ripple",
+      "ticker": "XRP Curncy",
+      "price": {
+        "last": 2.0741,
+        "open": 2.0739,
+        "high": 2.086,
+        "low": 2.0571
+      },
+      "change": {
+        "net": 0.0004,
+        "percent_1d": 0.0193,
+        "percent_5d": 0.1062,
+        "percent_1m": 7.6616,
+        "percent_3m": -9.6489,
+        "percent_6m": -32.292,
+        "percent_1yr": -36.9938,
+        "percent_ytd": 12.778
+      },
+      "timestamp": {
+        "query_time": "2026-01-16T14:49:14.902009",
+        "last_update": "2026-01-16"
+      },
+      "metadata": {
+        "source": "Bloomberg",
+        "data_type": "cryptocurrency"
+      }
+    },
+    {
+      "crypto_id": "solana",
+      "symbol": "SOL",
+      "name": "Solana",
+      "ticker": "XSO Curncy",
+      "price": {
+        "last": 143.2086,
+        "open": 142.07,
+        "high": 143.4939,
+        "low": 141.417
+      },
+      "change": {
+        "net": 1.1306,
+        "percent_1d": 0.7958,
+        "percent_5d": 3.3561,
+        "percent_1m": 11.4371,
+        "percent_3m": -21.7421,
+        "percent_6m": -18.0487,
+        "percent_1yr": -32.305,
+        "percent_ytd": 15.2227
+      },
+      "timestamp": {
+        "query_time": "2026-01-16T14:49:14.902073",
+        "last_update": "2026-01-16"
+      },
+      "metadata": {
+        "source": "Bloomberg",
+        "data_type": "cryptocurrency"
+      }
+    },
+    {
+      "crypto_id": "cardano",
+      "symbol": "ADA",
+      "name": "Cardano",
+      "ticker": "XAD BGN Curncy",
+      "price": {
+        "last": 0.3941,
+        "open": 0.3927,
+        "high": 0.3944,
+        "low": 0.3885
+      },
+      "change": {
+        "net": 0.0014,
+        "percent_1d": 0.3565,
+        "percent_5d": 0.6898,
+        "percent_1m": 1.8346,
+        "percent_3m": -38.2288,
+        "percent_6m": -49.1287,
+        "percent_1yr": -64.8439,
+        "percent_ytd": 18.1355
+      },
+      "timestamp": {
+        "query_time": "2026-01-16T14:49:14.902137",
+        "last_update": "2026-01-16"
+      },
+      "metadata": {
+        "source": "Bloomberg",
+        "data_type": "cryptocurrency"
+      }
+    }
+  ]
+}
