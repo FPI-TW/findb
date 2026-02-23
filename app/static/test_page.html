@@ -402,6 +402,10 @@
               <strong id="version-text">--</strong>
             </div>
             <div class="summary">
+              <span>Source Allowlist</span>
+              <strong id="allowlist-text">--</strong>
+            </div>
+            <div class="summary">
               <span>Datasets</span>
               <strong id="dataset-count">0</strong>
             </div>
@@ -423,6 +427,7 @@
             <button class="button secondary" id="datasets-check">查詢 datasets</button>
             <button class="button tertiary" id="instruments-check">查詢標的</button>
             <button class="button ghost" id="eod-quick">快速查詢 EOD</button>
+            <button class="button" id="smoke-test">一鍵 smoke test</button>
           </div>
           <div class="status-pill" id="status-pill">
             <span class="status-dot" id="status-dot"></span>
@@ -484,11 +489,12 @@
 
         <div class="panel">
           <h2>Ingestion Run 狀態</h2>
-          <p>輸入 run_id 查詢批次狀態。</p>
+          <p>輸入 run_id 查詢批次狀態，或直接 rerun 進行重跑測試。</p>
           <label for="run-id">run_id</label>
           <input id="run-id" placeholder="01934def-..." />
           <div class="actions">
             <button class="button secondary" id="run-check">查詢 run</button>
+            <button class="button tertiary" id="run-rerun">執行 rerun</button>
           </div>
           <div class="summary-grid">
             <div class="summary">
@@ -508,7 +514,7 @@
 
         <div class="panel span-2">
           <h2>Serve 查詢</h2>
-          <p>查詢標的、日 K 或交易日曆。</p>
+          <p>查詢標的、日 K、交易日曆、公司行為、總經與期貨資料。</p>
           <div class="controls">
             <div>
               <label for="serve-market">market</label>
@@ -526,11 +532,22 @@
               <label for="serve-end">end_date</label>
               <input id="serve-end" value="2026-01-16" />
             </div>
+            <div>
+              <label for="serve-action-type">action_type（公司行為）</label>
+              <input id="serve-action-type" value="split" />
+            </div>
+            <div>
+              <label for="serve-source-code">source_code（總經）</label>
+              <input id="serve-source-code" value="CPI_US" />
+            </div>
           </div>
           <div class="actions">
             <button class="button" id="serve-instruments">查詢標的</button>
             <button class="button secondary" id="serve-eod">查詢 EOD</button>
             <button class="button tertiary" id="serve-calendar">查詢日曆</button>
+            <button class="button" id="serve-corp-actions">查詢公司行為</button>
+            <button class="button secondary" id="serve-macro-observations">查詢總經觀測</button>
+            <button class="button tertiary" id="serve-futures-continuous">查詢期貨連續</button>
           </div>
         </div>
 
@@ -631,6 +648,7 @@
     <script>
       const healthText = document.getElementById("health-text");
       const versionText = document.getElementById("version-text");
+      const allowlistText = document.getElementById("allowlist-text");
       const datasetCount = document.getElementById("dataset-count");
       const instrumentCount = document.getElementById("instrument-count");
       const eodCount = document.getElementById("eod-count");
@@ -657,6 +675,8 @@
       const serveSymbolsInput = document.getElementById("serve-symbols");
       const serveStartInput = document.getElementById("serve-start");
       const serveEndInput = document.getElementById("serve-end");
+      const serveActionTypeInput = document.getElementById("serve-action-type");
+      const serveSourceCodeInput = document.getElementById("serve-source-code");
 
       const datasetsBody = document.getElementById("datasets-body");
       const instrumentsBody = document.getElementById("instruments-body");
@@ -666,6 +686,13 @@
       const responseMeta = document.getElementById("response-meta");
       const responseJson = document.getElementById("response-json");
       const logArea = document.getElementById("log");
+
+      const state = {
+        datasets: [],
+        instruments: [],
+        eod: [],
+        runStatus: "--",
+      };
 
       const log = (message) => {
         const timestamp = new Date().toLocaleTimeString();
@@ -755,11 +782,11 @@
           .join("");
       };
 
-      const updateCounts = (datasets, instruments, eod, runState) => {
-        datasetCount.textContent = datasets.length;
-        instrumentCount.textContent = instruments.length;
-        eodCount.textContent = eod.length;
-        runStatus.textContent = runState || "--";
+      const updateCounts = () => {
+        datasetCount.textContent = state.datasets.length;
+        instrumentCount.textContent = state.instruments.length;
+        eodCount.textContent = state.eod.length;
+        runStatus.textContent = state.runStatus || "--";
       };
 
       const INGEST_MARKET_BY_DATASET = {
@@ -776,6 +803,9 @@
         futures_continuous_eod: "wtx",
         global_stock_eod: "global",
         hkchina_stock_eod: "global",
+        tw_equity_eod: "tw",
+        hk_equity_eod: "hk",
+        cn_equity_eod: "cn",
         tw_index_eod: "tw",
         hk_index_eod: "hk",
         cn_index_eod: "cn",
@@ -809,7 +839,7 @@
                   low: 95119.76,
                   last: 95709.01,
                 },
-                timestamp: { last_update: "2026-01-16" },
+                timestamp: { last_update: now.toISOString().slice(0, 10) },
                 metadata: { source: "Bloomberg" },
               },
             ],
@@ -847,7 +877,8 @@
         runStatusText.textContent = run.status;
         runSuccess.textContent = run.success_records ?? 0;
         runFailed.textContent = run.failed_records ?? 0;
-        runStatus.textContent = run.status;
+        state.runStatus = run.status;
+        updateCounts();
       };
 
       document.getElementById("health-check").addEventListener("click", async () => {
@@ -855,6 +886,7 @@
           const result = await fetchJson("/health");
           healthText.textContent = result.data.status;
           versionText.textContent = result.data.version ?? "n/a";
+          allowlistText.textContent = result.data.source_allowlist_configured ? "configured" : "missing";
           setStatus(true, "健康檢查通過");
           updateResponse(`Health (${result.url})`, result.data);
           log("Health check OK");
@@ -870,6 +902,7 @@
             headers: buildHeaders("source"),
           });
           const datasets = result.data.data ?? [];
+          state.datasets = datasets;
           renderTable(
             datasetsBody,
             datasets.map((item) => ({
@@ -882,7 +915,7 @@
             ["dataset_key", "asset_class", "market", "frequency", "is_active"],
             "沒有 datasets"
           );
-          updateCounts(datasets, [], [], runStatus.textContent);
+          updateCounts();
           setStatus(true, `datasets：${datasets.length} 項`);
           updateResponse(`Datasets (${result.url})`, result.data);
           log("Datasets loaded");
@@ -899,6 +932,7 @@
             headers: buildHeaders("serve"),
           });
           const instruments = result.data.data ?? [];
+          state.instruments = instruments;
           renderTable(
             instrumentsBody,
             instruments.map((item) => ({
@@ -911,7 +945,7 @@
             ["symbol", "name", "market", "asset_class", "status"],
             "沒有標的資料"
           );
-          updateCounts([], instruments, [], runStatus.textContent);
+          updateCounts();
           setStatus(true, `標的：${instruments.length} 筆`);
           updateResponse(`Instruments (${result.url})`, result.data);
           log("Instruments loaded");
@@ -923,6 +957,134 @@
 
       document.getElementById("eod-quick").addEventListener("click", async () => {
         document.getElementById("serve-eod").click();
+      });
+
+      document.getElementById("smoke-test").addEventListener("click", async () => {
+        const summary = {
+          health: null,
+          datasets: 0,
+          ingest_run_id: null,
+          run_status: null,
+          instruments: 0,
+          eod: 0,
+        };
+
+        try {
+          setStatus(true, "Smoke test 執行中...");
+          log("Smoke test started");
+
+          const health = await fetchJson("/health");
+          healthText.textContent = health.data.status;
+          versionText.textContent = health.data.version ?? "n/a";
+          allowlistText.textContent = health.data.source_allowlist_configured ? "configured" : "missing";
+          summary.health = health.data.status;
+          log("Smoke: health OK");
+
+          const datasetsResult = await fetchJson("/api/v1/source/datasets", {
+            headers: buildHeaders("source"),
+          });
+          const datasets = datasetsResult.data.data ?? [];
+          state.datasets = datasets;
+          summary.datasets = datasets.length;
+          renderTable(
+            datasetsBody,
+            datasets.map((item) => ({
+              dataset_key: item.dataset_key,
+              asset_class: item.asset_class,
+              market: item.market,
+              frequency: item.frequency,
+              is_active: item.is_active ? "active" : "inactive",
+            })),
+            ["dataset_key", "asset_class", "market", "frequency", "is_active"],
+            "沒有 datasets"
+          );
+          log(`Smoke: datasets loaded (${datasets.length})`);
+
+          const sample = buildSamplePayload();
+          sample.dataset_key = "crypto_eod";
+          sample.source = "bloomberg";
+          sample.request_key = `smoke_${Date.now()}`;
+          sample.idempotency_key = sample.request_key;
+          ingestDatasetInput.value = sample.dataset_key;
+          ingestSourceInput.value = sample.source;
+          ingestRequestInput.value = sample.request_key;
+          ingestIdempotencyInput.value = sample.idempotency_key;
+          ingestPayloadInput.value = JSON.stringify(sample, null, 2);
+
+          const ingestResult = await fetchJson(resolveIngestUrl(sample.dataset_key), {
+            method: "POST",
+            headers: buildHeaders("source"),
+            body: JSON.stringify(sample),
+          });
+          runIdInput.value = ingestResult.data.run_id;
+          setRunSummary({ status: ingestResult.data.status, success_records: 0, failed_records: 0 });
+          summary.ingest_run_id = ingestResult.data.run_id;
+          summary.run_status = ingestResult.data.status;
+          log(`Smoke: ingest OK (run_id=${ingestResult.data.run_id})`);
+
+          const runResult = await fetchJson(`/api/v1/source/runs/${ingestResult.data.run_id}`, {
+            headers: buildHeaders("source"),
+          });
+          setRunSummary(runResult.data);
+          summary.run_status = runResult.data.status;
+          log(`Smoke: run status=${runResult.data.status}`);
+
+          const instrumentsResult = await fetchJson(
+            "/api/v1/serve/instruments?market=CRYPTO&page=1&page_size=10",
+            {
+              headers: buildHeaders("serve"),
+            }
+          );
+          const instruments = instrumentsResult.data.data ?? [];
+          state.instruments = instruments;
+          summary.instruments = instruments.length;
+          renderTable(
+            instrumentsBody,
+            instruments.map((item) => ({
+              symbol: item.symbol,
+              name: item.name ?? "-",
+              market: item.market,
+              asset_class: item.asset_class,
+              status: item.status,
+            })),
+            ["symbol", "name", "market", "asset_class", "status"],
+            "沒有標的資料"
+          );
+          log(`Smoke: instruments loaded (${instruments.length})`);
+
+          const eodResult = await fetchJson(
+            `/api/v1/serve/eod?market=CRYPTO&symbols=BTC&start_date=${sample.payload.data[0].timestamp.last_update}&end_date=${sample.payload.data[0].timestamp.last_update}&page=1&page_size=10`,
+            {
+              headers: buildHeaders("serve"),
+            }
+          );
+          const eod = eodResult.data.data ?? [];
+          state.eod = eod;
+          summary.eod = eod.length;
+          renderTable(
+            eodBody,
+            eod.map((item) => ({
+              trade_date: item.trade_date,
+              symbol: item.symbol,
+              open: item.open ?? "-",
+              high: item.high ?? "-",
+              low: item.low ?? "-",
+              close: item.close ?? "-",
+              volume: item.volume ?? "-",
+            })),
+            ["trade_date", "symbol", "open", "high", "low", "close", "volume"],
+            "沒有 EOD 資料"
+          );
+          log(`Smoke: eod query OK (${eod.length})`);
+
+          updateCounts();
+          setStatus(true, "Smoke test 完成");
+          updateResponse("Smoke test summary", summary);
+        } catch (error) {
+          setStatus(false, "Smoke test 失敗");
+          updateResponse("Smoke test error", { error: error.message, partial: summary });
+          log(`Smoke test failed: ${error.message}`);
+        }
       });
 
       document.getElementById("fill-sample").addEventListener("click", () => {
@@ -975,6 +1137,28 @@
         }
       });
 
+      document.getElementById("run-rerun").addEventListener("click", async () => {
+        const runId = runIdInput.value.trim();
+        if (!runId) {
+          log("請先輸入 run_id");
+          return;
+        }
+        try {
+          const result = await fetchJson(`/api/v1/source/runs/${runId}/rerun`, {
+            method: "POST",
+            headers: buildHeaders("source"),
+          });
+          runIdInput.value = result.data.run_id;
+          setRunSummary({ status: result.data.status, success_records: 0, failed_records: 0 });
+          setStatus(true, "Rerun 已送出");
+          updateResponse(`Rerun (${result.url})`, result.data);
+          log(`Rerun success. new_run_id=${result.data.run_id}`);
+        } catch (error) {
+          setStatus(false, "Rerun 失敗");
+          log(`rerun error: ${error.message}`);
+        }
+      });
+
       document.getElementById("serve-instruments").addEventListener("click", () => {
         document.getElementById("instruments-check").click();
       });
@@ -997,6 +1181,7 @@
             headers: buildHeaders("serve"),
           });
           const eod = result.data.data ?? [];
+          state.eod = eod;
           renderTable(
             eodBody,
             eod.map((item) => ({
@@ -1011,7 +1196,7 @@
             ["trade_date", "symbol", "open", "high", "low", "close", "volume"],
             "沒有 EOD 資料"
           );
-          updateCounts([], [], eod, runStatus.textContent);
+          updateCounts();
           setStatus(true, `EOD：${eod.length} 筆`);
           updateResponse(`EOD (${result.url})`, result.data);
           log("EOD data loaded");
@@ -1057,6 +1242,90 @@
         }
       });
 
+      document.getElementById("serve-corp-actions").addEventListener("click", async () => {
+        try {
+          const market = serveMarketInput.value.trim() || "US";
+          const symbols = serveSymbolsInput.value.trim();
+          const actionType = serveActionTypeInput.value.trim();
+          const query = new URLSearchParams({
+            market,
+            page: "1",
+            page_size: "10",
+          });
+          if (symbols) query.set("symbols", symbols);
+          if (actionType) query.set("action_type", actionType);
+
+          const result = await fetchJson(`/api/v1/serve/corporate-actions?${query.toString()}`, {
+            headers: buildHeaders("serve"),
+          });
+          setStatus(true, `公司行為：${(result.data.data ?? []).length} 筆`);
+          updateResponse(`Corporate actions (${result.url})`, result.data);
+          log("Corporate actions loaded");
+        } catch (error) {
+          setStatus(false, "公司行為查詢失敗");
+          log(`corporate actions error: ${error.message}`);
+        }
+      });
+
+      document.getElementById("serve-macro-observations").addEventListener("click", async () => {
+        try {
+          const market = serveMarketInput.value.trim() || "US";
+          const sourceCode = serveSourceCodeInput.value.trim();
+          const startDate = serveStartInput.value.trim();
+          const endDate = serveEndInput.value.trim();
+          const query = new URLSearchParams({
+            market,
+            page: "1",
+            page_size: "10",
+          });
+          if (sourceCode) query.set("source_code", sourceCode);
+          if (startDate) query.set("start_date", startDate);
+          if (endDate) query.set("end_date", endDate);
+
+          const result = await fetchJson(`/api/v1/serve/macro/observations?${query.toString()}`, {
+            headers: buildHeaders("serve"),
+          });
+          setStatus(true, `總經觀測：${(result.data.data ?? []).length} 筆`);
+          updateResponse(`Macro observations (${result.url})`, result.data);
+          log("Macro observations loaded");
+        } catch (error) {
+          setStatus(false, "總經觀測查詢失敗");
+          log(`macro observations error: ${error.message}`);
+        }
+      });
+
+      document
+        .getElementById("serve-futures-continuous")
+        .addEventListener("click", async () => {
+          try {
+            const market = serveMarketInput.value.trim() || "WTX";
+            const symbols = serveSymbolsInput.value.trim();
+            const startDate = serveStartInput.value.trim();
+            const endDate = serveEndInput.value.trim();
+            const query = new URLSearchParams({
+              market,
+              page: "1",
+              page_size: "10",
+            });
+            if (symbols) query.set("symbols", symbols);
+            if (startDate) query.set("start_date", startDate);
+            if (endDate) query.set("end_date", endDate);
+
+            const result = await fetchJson(
+              `/api/v1/serve/futures/continuous?${query.toString()}`,
+              {
+                headers: buildHeaders("serve"),
+              }
+            );
+            setStatus(true, `期貨連續：${(result.data.data ?? []).length} 筆`);
+            updateResponse(`Futures continuous (${result.url})`, result.data);
+            log("Futures continuous loaded");
+          } catch (error) {
+            setStatus(false, "期貨連續查詢失敗");
+            log(`futures continuous error: ${error.message}`);
+          }
+        });
+
       const init = () => {
         const origin = window.location.origin;
         baseInput.value = origin.includes("localhost") ? origin : "http://localhost:8000";
@@ -1065,7 +1334,7 @@
         ingestRequestInput.value = sample.request_key;
         ingestIdempotencyInput.value = sample.idempotency_key;
         setStatus(true, "待檢查");
-        updateCounts([], [], [], "--");
+        updateCounts();
       };
 
       init();

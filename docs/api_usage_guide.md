@@ -1,0 +1,1372 @@
+# FinDB API 使用教學
+
+> **版本**: 0.1.0 | **最後更新**: 2026-02-23
+
+本文件說明如何使用 FinDB 的 Source API（資料寫入）與 Serve API（資料查詢）。
+涵蓋認證機制、所有端點規格、請求/回應格式、錯誤處理與完整範例。
+
+---
+
+## 目錄
+
+- [系統架構概述](#系統架構概述)
+- [快速開始](#快速開始)
+- [認證機制](#認證機制)
+- [通用格式](#通用格式)
+- [Source API（資料寫入）](#source-api資料寫入)
+  - [標準攝取端點](#標準攝取端點)
+  - [Direct 格式攝取端點](#direct-格式攝取端點)
+  - [批次管理端點](#批次管理端點)
+- [Serve API（資料查詢）](#serve-api資料查詢)
+  - [標的查詢](#標的查詢)
+  - [日K 資料](#日k-資料)
+  - [公司行為](#公司行為)
+  - [宏觀經濟指標](#宏觀經濟指標)
+  - [期貨](#期貨)
+  - [交易日曆](#交易日曆)
+- [分頁機制](#分頁機制)
+- [錯誤代碼一覽](#錯誤代碼一覽)
+- [Python 範例](#python-範例)
+- [常見問題](#常見問題)
+
+---
+
+## 系統架構概述
+
+FinDB 採用三層解耦架構：
+
+```
+Fetch Layer（外部設備）
+    │
+    │  POST /api/v1/source/ingest/{market}
+    ▼
+Source API ──▶ Normalize ──▶ Canonical DB
+                                  │
+                                  ▼
+                            Serve API ──▶ 消費者（報告/AI/圖表）
+```
+
+| 層級 | 角色 | 說明 |
+|------|------|------|
+| **Source API** | 寫入路徑 | 接收原始 payload、去重、觸發正規化 |
+| **Serve API** | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料 |
+
+---
+
+## 快速開始
+
+### 1. 啟動服務
+
+```bash
+# 複製環境設定
+cp .env.example .env
+
+# 編輯 .env，設定 API Key
+# SOURCE_API_KEYS=your-source-key
+
+# 啟動 Docker 容器
+docker-compose up -d --build
+
+# 初始化資料集
+docker-compose exec app python /app/scripts/seed_data.py
+```
+
+### 2. 驗證服務
+
+```bash
+curl http://localhost:8000/health
+```
+
+回應範例：
+
+```json
+{
+  "status": "healthy",
+  "version": "0.1.0",
+  "source_allowlist_configured": false
+}
+```
+
+### 3. 查看互動式文件
+
+瀏覽器開啟 [http://localhost:8000/docs](http://localhost:8000/docs)（Swagger UI）。
+
+---
+
+## 認證機制
+
+### Source API（必要）
+
+所有 Source API 端點**必須**在 HTTP Header 帶入 API Key：
+
+```
+X-API-Key: your-source-key
+```
+
+未帶入或無效金鑰會收到 `401` 或 `403` 錯誤。
+
+### Serve API（可選）
+
+Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
+
+| 設定值 | 行為 |
+|--------|------|
+| `false`（預設） | 不需要認證，任何人皆可查詢 |
+| `true` | 必須帶入 `X-API-Key`，金鑰設定於 `SERVE_API_KEYS` |
+
+啟用 Serve 認證時，使用方式與 Source API 相同：
+
+```
+X-API-Key: your-serve-key
+```
+
+### 安全機制
+
+| 機制 | 說明 |
+|------|------|
+| **IP 允許名單** | `SOURCE_ALLOWLIST_CIDRS`（CIDR 格式，逗號分隔），生產環境必填 |
+| **限流** | 預設每個 API Key + IP 組合，每 60 秒最多 100 次請求 |
+| **Proxy 支援** | 設定 `SOURCE_TRUST_PROXY_HEADERS=true` 讀取 `X-Forwarded-For` |
+
+---
+
+## 通用格式
+
+### 基礎 URL
+
+```
+http://localhost:8000
+```
+
+### 時間格式
+
+所有時間戳記使用 **UTC ISO 8601** 格式：
+
+```
+2026-01-16T14:49:14Z
+```
+
+### 日期格式
+
+日期欄位使用 `YYYY-MM-DD`：
+
+```
+2026-01-16
+```
+
+### ID 格式
+
+所有 ID 使用 **UUID v7**：
+
+```
+019462f0-7c00-7000-8000-000000000001
+```
+
+---
+
+## Source API（資料寫入）
+
+**前綴**: `/api/v1/source`
+**認證**: 必要（`X-API-Key`）
+
+### 標準攝取端點
+
+標準格式使用 `IngestRequest` 請求體，適用於 Fetch Layer 傳入的完整 payload。
+
+#### 請求體格式（IngestRequest）
+
+```json
+{
+  "dataset_key": "crypto_eod",
+  "source": "bloomberg",
+  "request_key": "bloomberg_crypto_20260116_144914",
+  "idempotency_key": "bloomberg_crypto_20260116_144914",
+  "payload": {
+    "metadata": { ... },
+    "data": [ ... ]
+  },
+  "fetched_at": "2026-01-16T14:49:14Z"
+}
+```
+
+| 欄位 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `dataset_key` | string | 是 | 資料集識別碼（如 `crypto_eod`、`us_stock_eod`） |
+| `source` | string | 是 | 資料來源（如 `bloomberg`） |
+| `request_key` | string | 是 | 上游請求識別碼，用於追蹤 |
+| `idempotency_key` | string | 是 | 去重鍵值，相同值不會重複處理 |
+| `payload` | object | 是 | 原始資料 payload（包含 `metadata` 與 `data`） |
+| `fetched_at` | datetime | 是 | 資料擷取時間（UTC ISO 8601） |
+
+#### 回應格式（IngestResponse）
+
+```json
+{
+  "success": true,
+  "run_id": "019462f0-7c00-7000-8000-000000000001",
+  "status": "pending",
+  "message": "Data received, processing queued"
+}
+```
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `success` | bool | 是否成功 |
+| `run_id` | UUID | 攝取批次 ID，可用於查詢處理狀態 |
+| `status` | string | 批次狀態（`pending`、`running`、`completed`、`failed`） |
+| `message` | string | 說明訊息 |
+
+> **去重機制**：若 `idempotency_key` 已存在，不會重新處理，回應 message 為
+> `"Duplicate idempotency_key, returning existing run"`。
+
+#### 端點一覽
+
+| 方法 | 路徑 | 市場 | 說明 |
+|------|------|------|------|
+| POST | `/ingest/crypto` | CRYPTO | 加密貨幣 |
+| POST | `/ingest/us` | US | 美國股市 |
+| POST | `/ingest/fx` | FX | 全球外匯 |
+| POST | `/ingest/macro` | MACRO | 宏觀經濟 |
+| POST | `/ingest/wtx` | WTX | 台灣加權指數 |
+| POST | `/ingest/global` | GLOBAL | 全球市場 |
+| POST | `/ingest/tw` | TW | 台灣市場 |
+| POST | `/ingest/hk` | HK | 香港市場 |
+| POST | `/ingest/cn` | CN | 中國市場 |
+
+#### curl 範例
+
+```bash
+# 攝取加密貨幣資料
+curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataset_key": "crypto_eod",
+    "source": "bloomberg",
+    "request_key": "bloomberg_crypto_20260116_144914",
+    "idempotency_key": "bloomberg_crypto_20260116_144914",
+    "payload": {
+      "metadata": {
+        "source": "Bloomberg API",
+        "category": "Cryptocurrency",
+        "query_time": "2026-01-16T14:49:14.910965",
+        "total_records": 2
+      },
+      "data": [
+        {
+          "crypto_id": "bitcoin",
+          "symbol": "BTC",
+          "name": "Bitcoin",
+          "ticker": "XBTUSD BGN Curncy",
+          "price": { "last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76 },
+          "change": { "net": 158.81, "percent_1d": 0.1662 },
+          "timestamp": { "query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16" },
+          "metadata": { "source": "Bloomberg", "data_type": "cryptocurrency" }
+        }
+      ]
+    },
+    "fetched_at": "2026-01-16T14:49:14Z"
+  }'
+```
+
+```bash
+# 從檔案攝取
+curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  --data-binary "@scripts/sample_ingest_payload.json"
+```
+
+---
+
+### Direct 格式攝取端點
+
+Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
+系統會自動推斷 `dataset_key`、`source`、`idempotency_key` 等欄位。
+
+#### 請求體格式（DirectIngestPayload）
+
+```json
+{
+  "metadata": {
+    "source": "Bloomberg API",
+    "category": "US Stock",
+    "query_time": "2026-02-04T16:00:51"
+  },
+  "data": [
+    {
+      "symbol": "AAPL",
+      "name": "Apple Inc",
+      "price": { "last": 232.50, "open": 231.00, "high": 233.00, "low": 230.50 },
+      "volume": 45000000
+    }
+  ]
+}
+```
+
+| 欄位 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `metadata` | object | 否 | 中繼資料（來源、查詢時間等） |
+| `data` | array | 否 | 資料陣列 |
+
+#### 端點一覽
+
+| 方法 | 路徑 | 對應市場 | 自動 dataset_key | 說明 |
+|------|------|---------|-----------------|------|
+| POST | `/ingest/usstock/direct` | US | `us_stock_eod` | Bloomberg 美股直接格式 |
+| POST | `/ingest/hkchina/direct` | GLOBAL | `hkchina_stock_eod` | Bloomberg 港中股直接格式 |
+| POST | `/ingest/macro/direct` | MACRO | `macro_observation` | Bloomberg 宏觀直接格式 |
+
+#### curl 範例
+
+```bash
+# 直接匯入美股資料
+curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "source": "Bloomberg API",
+      "category": "US Stock",
+      "query_time": "2026-02-04T16:00:51"
+    },
+    "data": [
+      {
+        "symbol": "AAPL",
+        "name": "Apple Inc",
+        "price": { "last": 232.50, "open": 231.00, "high": 233.00, "low": 230.50 },
+        "volume": 45000000
+      }
+    ]
+  }'
+```
+
+```bash
+# 從 Bloomberg 匯出檔直接匯入
+curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  --data-binary "@bloomberg_usstock_20260204_160051_api_format.json"
+```
+
+---
+
+### 批次管理端點
+
+#### 查詢批次狀態
+
+```
+GET /api/v1/source/runs/{run_id}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `run_id` | path | UUID | 是 | 攝取批次 ID |
+
+回應範例：
+
+```json
+{
+  "run_id": "019462f0-7c00-7000-8000-000000000001",
+  "dataset_key": "crypto_eod",
+  "status": "completed",
+  "started_at": "2026-01-16T14:49:15Z",
+  "completed_at": "2026-01-16T14:49:16Z",
+  "total_records": 5,
+  "success_records": 5,
+  "failed_records": 0,
+  "error_message": null
+}
+```
+
+| 狀態值 | 說明 |
+|--------|------|
+| `pending` | 已排入佇列，等待處理 |
+| `running` | 正規化處理中 |
+| `completed` | 處理完成 |
+| `failed` | 處理失敗（查看 `error_message`） |
+
+#### curl 範例
+
+```bash
+curl "http://localhost:8000/api/v1/source/runs/019462f0-7c00-7000-8000-000000000001" \
+  -H "X-API-Key: dev-source-key"
+```
+
+#### 重新執行正規化
+
+以已儲存的原始 payload 重新觸發正規化流程，適用於修正正規化邏輯後重跑歷史資料。
+
+```
+POST /api/v1/source/runs/{run_id}/rerun
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `run_id` | path | UUID | 是 | 原始攝取批次 ID |
+
+回應格式同 `IngestResponse`，會產生一筆**新的** `run_id`。
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/runs/019462f0-7c00-7000-8000-000000000001/rerun" \
+  -H "X-API-Key: dev-source-key"
+```
+
+#### 查詢可用資料集
+
+```
+GET /api/v1/source/datasets
+```
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "dataset_key": "crypto_eod",
+      "name": "Crypto EOD",
+      "description": "Cryptocurrency end-of-day prices",
+      "asset_class": "crypto",
+      "market": "CRYPTO",
+      "frequency": "daily",
+      "is_active": true
+    },
+    {
+      "dataset_key": "us_stock_eod",
+      "name": "US Stock EOD",
+      "description": "US equity end-of-day prices",
+      "asset_class": "equity",
+      "market": "US",
+      "frequency": "daily",
+      "is_active": true
+    }
+  ]
+}
+```
+
+```bash
+curl "http://localhost:8000/api/v1/source/datasets" \
+  -H "X-API-Key: dev-source-key"
+```
+
+---
+
+## Serve API（資料查詢）
+
+**前綴**: `/api/v1/serve`
+**認證**: 視 `SERVE_REQUIRE_AUTH` 設定
+
+> Serve API 為**唯讀**，僅提供 Canonical 資料表的查詢功能。
+
+### 標的查詢
+
+#### 查詢標的清單
+
+```
+GET /api/v1/serve/instruments
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選（`CRYPTO`、`US`、`FX`、`TW`、`HK`、`CN`、`GLOBAL` 等） |
+| `asset_class` | query | string | 否 | 資產類別篩選（`crypto`、`equity`、`index`、`fx`） |
+| `status` | query | string | 否 | 狀態篩選（`active`、`delisted`） |
+| `symbol` | query | string | 否 | 精確代碼篩選 |
+| `page` | query | int | 否 | 頁碼（預設 1） |
+| `page_size` | query | int | 否 | 每頁筆數（預設 100，最大 1000） |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "instrument_id": "019462f0-7c00-7000-8000-000000000001",
+      "asset_class": "crypto",
+      "market": "CRYPTO",
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "currency": "USD",
+      "timezone": "UTC",
+      "status": "active",
+      "listed_date": null,
+      "delisted_date": null
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 100,
+    "total_records": 15,
+    "total_pages": 1
+  }
+}
+```
+
+#### curl 範例
+
+```bash
+# 查詢所有加密貨幣標的
+curl "http://localhost:8000/api/v1/serve/instruments?market=CRYPTO"
+
+# 查詢美股 equity 類別
+curl "http://localhost:8000/api/v1/serve/instruments?market=US&asset_class=equity"
+
+# 精確查詢 BTC
+curl "http://localhost:8000/api/v1/serve/instruments?symbol=BTC"
+```
+
+#### 查詢單一標的
+
+```
+GET /api/v1/serve/instruments/{instrument_id}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `instrument_id` | path | UUID | 是 | 標的 ID |
+
+```bash
+curl "http://localhost:8000/api/v1/serve/instruments/019462f0-7c00-7000-8000-000000000001"
+```
+
+---
+
+### 日K 資料
+
+#### 查詢日K 清單
+
+```
+GET /api/v1/serve/eod
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選 |
+| `symbols` | query | string | 否 | 代碼篩選（逗號分隔，如 `BTC,ETH`） |
+| `start_date` | query | date | 否 | 起始日期（`YYYY-MM-DD`） |
+| `end_date` | query | date | 否 | 結束日期（`YYYY-MM-DD`） |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "instrument_id": "019462f0-7c00-7000-8000-000000000001",
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "market": "CRYPTO",
+      "trade_date": "2026-01-16",
+      "open": 95550.07,
+      "high": 95825.34,
+      "low": 95119.76,
+      "close": 95709.01,
+      "volume": null,
+      "turnover": null,
+      "source": "bloomberg"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 1, "total_pages": 1 }
+}
+```
+
+#### curl 範例
+
+```bash
+# 查詢 BTC、ETH 近一個月日K
+curl "http://localhost:8000/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
+
+# 查詢美股 AAPL 日K
+curl "http://localhost:8000/api/v1/serve/eod?market=US&symbols=AAPL&start_date=2026-02-01"
+```
+
+#### 查詢單一標的日K
+
+```
+GET /api/v1/serve/eod/{instrument_id}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `instrument_id` | path | UUID | 是 | 標的 ID |
+| `start_date` | query | date | 否 | 起始日期 |
+| `end_date` | query | date | 否 | 結束日期 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+```bash
+curl "http://localhost:8000/api/v1/serve/eod/019462f0-7c00-7000-8000-000000000001?start_date=2026-01-01"
+```
+
+---
+
+### 公司行為
+
+#### 查詢公司行為清單
+
+```
+GET /api/v1/serve/corporate-actions
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選 |
+| `symbols` | query | string | 否 | 代碼篩選（逗號分隔） |
+| `action_type` | query | string | 否 | 行為類型篩選（如 `dividend`、`split`） |
+| `start_date` | query | date | 否 | 起始除權息日 |
+| `end_date` | query | date | 否 | 結束除權息日 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "action_id": "...",
+      "instrument_id": "...",
+      "symbol": "AAPL",
+      "name": "Apple Inc",
+      "market": "US",
+      "action_type": "dividend",
+      "ex_date": "2026-02-07",
+      "record_date": "2026-02-10",
+      "pay_date": "2026-02-14",
+      "ratio": null,
+      "cash_amount": 0.25,
+      "currency": "USD",
+      "source": "bloomberg",
+      "extra": null
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 1, "total_pages": 1 }
+}
+```
+
+```bash
+# 查詢美股除權息
+curl "http://localhost:8000/api/v1/serve/corporate-actions?market=US&action_type=dividend"
+```
+
+#### 查詢單一標的公司行為
+
+```
+GET /api/v1/serve/corporate-actions/{instrument_id}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `instrument_id` | path | UUID | 是 | 標的 ID |
+| `action_type` | query | string | 否 | 行為類型篩選 |
+| `start_date` | query | date | 否 | 起始除權息日 |
+| `end_date` | query | date | 否 | 結束除權息日 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+---
+
+### 宏觀經濟指標
+
+#### 查詢指標序列
+
+```
+GET /api/v1/serve/macro/series
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選 |
+| `source` | query | string | 否 | 資料來源篩選 |
+| `source_code` | query | string | 否 | 來源代碼精確篩選 |
+| `name` | query | string | 否 | 序列名稱模糊搜尋 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "series_id": "...",
+      "name": "US CPI YoY",
+      "unit": "percent",
+      "frequency": "monthly",
+      "market": "MACRO",
+      "source_code": "CPI_YOY",
+      "source": "bloomberg"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 1, "total_pages": 1 }
+}
+```
+
+```bash
+# 列出所有宏觀序列
+curl "http://localhost:8000/api/v1/serve/macro/series"
+
+# 搜尋包含 "CPI" 的序列
+curl "http://localhost:8000/api/v1/serve/macro/series?name=CPI"
+```
+
+#### 查詢觀測值清單
+
+```
+GET /api/v1/serve/macro/observations
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選 |
+| `source_code` | query | string | 否 | 來源代碼篩選 |
+| `start_date` | query | date | 否 | 起始日期 |
+| `end_date` | query | date | 否 | 結束日期 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "...",
+      "series_id": "...",
+      "series_name": "US CPI YoY",
+      "obs_date": "2026-01-15",
+      "value": 3.2,
+      "source": "bloomberg"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 1, "total_pages": 1 }
+}
+```
+
+```bash
+curl "http://localhost:8000/api/v1/serve/macro/observations?source_code=CPI_YOY&start_date=2025-01-01"
+```
+
+#### 查詢特定序列觀測值
+
+```
+GET /api/v1/serve/macro/observations/{series_id}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `series_id` | path | UUID | 是 | 序列 ID |
+| `start_date` | query | date | 否 | 起始日期 |
+| `end_date` | query | date | 否 | 結束日期 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+---
+
+### 期貨
+
+#### 查詢期貨合約
+
+```
+GET /api/v1/serve/futures/contracts
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選 |
+| `symbols` | query | string | 否 | 代碼篩選（逗號分隔） |
+| `contract_code` | query | string | 否 | 合約代碼精確篩選 |
+| `start_expiry` | query | date | 否 | 起始到期日 |
+| `end_expiry` | query | date | 否 | 結束到期日 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "contract_id": "...",
+      "instrument_id": "...",
+      "symbol": "WTX",
+      "name": "台指期",
+      "contract_code": "TXFH6",
+      "contract_month": "2026-03",
+      "expiry_date": "2026-03-18",
+      "currency": "TWD",
+      "source": "bloomberg",
+      "extra": null
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 1, "total_pages": 1 }
+}
+```
+
+```bash
+curl "http://localhost:8000/api/v1/serve/futures/contracts?market=WTX"
+```
+
+#### 查詢連續期貨日K
+
+```
+GET /api/v1/serve/futures/continuous
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | 否 | 市場篩選 |
+| `symbols` | query | string | 否 | 代碼篩選（逗號分隔） |
+| `start_date` | query | date | 否 | 起始日期 |
+| `end_date` | query | date | 否 | 結束日期 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "...",
+      "instrument_id": "...",
+      "symbol": "WTX",
+      "name": "台指期",
+      "trade_date": "2026-01-16",
+      "open": 22500.00,
+      "high": 22650.00,
+      "low": 22400.00,
+      "close": 22600.00,
+      "volume": 120000,
+      "turnover": null,
+      "source": "bloomberg",
+      "roll_rule_id": "...",
+      "roll_rule_name": "volume_based"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 1, "total_pages": 1 }
+}
+```
+
+```bash
+curl "http://localhost:8000/api/v1/serve/futures/continuous?symbols=WTX&start_date=2026-01-01"
+```
+
+#### 查詢特定標的連續期貨日K
+
+```
+GET /api/v1/serve/futures/continuous/{instrument_id}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `instrument_id` | path | UUID | 是 | 標的 ID |
+| `start_date` | query | date | 否 | 起始日期 |
+| `end_date` | query | date | 否 | 結束日期 |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+---
+
+### 交易日曆
+
+```
+GET /api/v1/serve/calendar
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `market` | query | string | **是** | 市場代碼（必填） |
+| `start_date` | query | date | 否 | 起始日期 |
+| `end_date` | query | date | 否 | 結束日期 |
+| `is_open` | query | bool | 否 | 僅顯示開市日（`true`）或休市日（`false`） |
+| `page` | query | int | 否 | 頁碼 |
+| `page_size` | query | int | 否 | 每頁筆數 |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "market": "US",
+      "trade_date": "2026-01-16",
+      "is_open": true,
+      "session_open": "09:30:00",
+      "session_close": "16:00:00",
+      "holiday_name": null
+    },
+    {
+      "market": "US",
+      "trade_date": "2026-01-19",
+      "is_open": false,
+      "session_open": null,
+      "session_close": null,
+      "holiday_name": "Martin Luther King Jr. Day"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 100, "total_records": 2, "total_pages": 1 }
+}
+```
+
+```bash
+# 查詢美股 2026 年 1 月交易日
+curl "http://localhost:8000/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
+
+# 只查詢休市日
+curl "http://localhost:8000/api/v1/serve/calendar?market=US&is_open=false&start_date=2026-01-01&end_date=2026-12-31"
+```
+
+---
+
+## 分頁機制
+
+所有列表端點支援分頁，參數統一為：
+
+| 參數 | 預設值 | 範圍 | 說明 |
+|------|--------|------|------|
+| `page` | 1 | ≥ 1 | 頁碼 |
+| `page_size` | 100 | 1–1000 | 每頁筆數 |
+
+回應中的 `pagination` 物件：
+
+```json
+{
+  "pagination": {
+    "page": 1,
+    "page_size": 100,
+    "total_records": 2500,
+    "total_pages": 25
+  }
+}
+```
+
+### 遍歷所有頁面
+
+```bash
+# 第 1 頁
+curl "http://localhost:8000/api/v1/serve/instruments?page=1&page_size=50"
+
+# 第 2 頁
+curl "http://localhost:8000/api/v1/serve/instruments?page=2&page_size=50"
+```
+
+---
+
+## 錯誤代碼一覽
+
+### HTTP 狀態碼
+
+| 狀態碼 | 說明 | 常見原因 |
+|--------|------|---------|
+| `200` | 成功 | 請求正常處理 |
+| `400` | 請求錯誤 | dataset 不存在、market 不符、payload 驗證失敗、dataset 已停用 |
+| `401` | 未認證 | 未帶入 `X-API-Key` Header |
+| `403` | 禁止存取 | API Key 無效、IP 不在允許名單 |
+| `404` | 找不到資源 | instrument_id / run_id / series_id 不存在 |
+| `422` | 驗證錯誤 | 請求體格式不符 Pydantic schema |
+| `429` | 請求過多 | 超過限流上限 |
+| `500` | 伺服器錯誤 | 內部錯誤、未設定 API Key、未設定允許名單（生產環境） |
+
+### 錯誤回應格式
+
+```json
+{
+  "detail": "Invalid API key"
+}
+```
+
+### Source API 常見錯誤
+
+| 錯誤訊息 | 狀態碼 | 說明 |
+|---------|--------|------|
+| `"Missing API key"` | 401 | 未帶入 X-API-Key |
+| `"Invalid API key"` | 403 | API Key 不正確 |
+| `"Client IP not allowlisted"` | 403 | IP 不在 SOURCE_ALLOWLIST_CIDRS |
+| `"Rate limit exceeded"` | 429 | 請求頻率超過限制 |
+| `"Dataset 'xxx' not found"` | 400 | 指定的 dataset_key 不存在 |
+| `"Dataset 'xxx' is inactive"` | 400 | 資料集已停用 |
+| `"Market mismatch..."` | 400 | payload 市場與端點市場不符 |
+
+---
+
+## Python 範例
+
+### 安裝依賴
+
+```bash
+pip install httpx
+```
+
+### Source API：攝取資料
+
+```python
+import httpx
+
+BASE_URL = "http://localhost:8000"
+API_KEY = "dev-source-key"
+HEADERS = {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json",
+}
+
+
+def ingest_crypto_data(payload: dict) -> dict:
+    """攝取加密貨幣資料"""
+    with httpx.Client() as client:
+        resp = client.post(
+            f"{BASE_URL}/api/v1/source/ingest/crypto",
+            headers=HEADERS,
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# 使用範例
+payload = {
+    "dataset_key": "crypto_eod",
+    "source": "bloomberg",
+    "request_key": "bloomberg_crypto_20260116_144914",
+    "idempotency_key": "bloomberg_crypto_20260116_144914",
+    "payload": {
+        "metadata": {
+            "source": "Bloomberg API",
+            "category": "Cryptocurrency",
+            "query_time": "2026-01-16T14:49:14",
+            "total_records": 1,
+        },
+        "data": [
+            {
+                "crypto_id": "bitcoin",
+                "symbol": "BTC",
+                "name": "Bitcoin",
+                "ticker": "XBTUSD BGN Curncy",
+                "price": {"last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76},
+                "change": {"net": 158.81, "percent_1d": 0.1662},
+                "timestamp": {"query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16"},
+                "metadata": {"source": "Bloomberg", "data_type": "cryptocurrency"},
+            }
+        ],
+    },
+    "fetched_at": "2026-01-16T14:49:14Z",
+}
+
+result = ingest_crypto_data(payload)
+print(f"Run ID: {result['run_id']}")
+print(f"Status: {result['status']}")
+```
+
+### Source API：Direct 格式攝取
+
+```python
+def ingest_usstock_direct(filepath: str) -> dict:
+    """從 Bloomberg 匯出檔直接攝取美股資料"""
+    import json
+
+    with open(filepath, "r") as f:
+        data = json.load(f)
+
+    with httpx.Client() as client:
+        resp = client.post(
+            f"{BASE_URL}/api/v1/source/ingest/usstock/direct",
+            headers=HEADERS,
+            json=data,
+        )
+        resp.raise_for_status()
+        return resp.json()
+```
+
+### Source API：查詢批次狀態
+
+```python
+def check_run_status(run_id: str) -> dict:
+    """查詢攝取批次狀態"""
+    with httpx.Client() as client:
+        resp = client.get(
+            f"{BASE_URL}/api/v1/source/runs/{run_id}",
+            headers=HEADERS,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# 等待處理完成
+import time
+
+result = ingest_crypto_data(payload)
+run_id = result["run_id"]
+
+while True:
+    status = check_run_status(run_id)
+    print(f"Status: {status['status']}")
+    if status["status"] in ("completed", "failed"):
+        break
+    time.sleep(1)
+
+print(f"成功: {status['success_records']}, 失敗: {status['failed_records']}")
+```
+
+### Serve API：查詢標的
+
+```python
+def list_instruments(market: str = None, page: int = 1, page_size: int = 100) -> dict:
+    """查詢標的清單"""
+    params = {"page": page, "page_size": page_size}
+    if market:
+        params["market"] = market
+
+    with httpx.Client() as client:
+        resp = client.get(
+            f"{BASE_URL}/api/v1/serve/instruments",
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# 查詢所有加密貨幣標的
+instruments = list_instruments(market="CRYPTO")
+for inst in instruments["data"]:
+    print(f"{inst['symbol']}: {inst['name']} ({inst['status']})")
+```
+
+### Serve API：查詢日K 資料
+
+```python
+def get_eod_data(
+    market: str = None,
+    symbols: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    page: int = 1,
+    page_size: int = 100,
+) -> dict:
+    """查詢日K 資料"""
+    params = {"page": page, "page_size": page_size}
+    if market:
+        params["market"] = market
+    if symbols:
+        params["symbols"] = symbols
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+
+    with httpx.Client() as client:
+        resp = client.get(
+            f"{BASE_URL}/api/v1/serve/eod",
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# 查詢 BTC 一月份日K
+eod = get_eod_data(market="CRYPTO", symbols="BTC", start_date="2026-01-01", end_date="2026-01-31")
+for row in eod["data"]:
+    print(f"{row['trade_date']}: O={row['open']} H={row['high']} L={row['low']} C={row['close']}")
+```
+
+### Serve API：遍歷所有頁面
+
+```python
+def fetch_all_pages(endpoint: str, params: dict = None) -> list:
+    """自動遍歷所有分頁，回傳完整資料列表"""
+    all_data = []
+    page = 1
+    params = params or {}
+
+    with httpx.Client() as client:
+        while True:
+            params["page"] = page
+            resp = client.get(f"{BASE_URL}{endpoint}", params=params)
+            resp.raise_for_status()
+            result = resp.json()
+
+            all_data.extend(result["data"])
+
+            pagination = result["pagination"]
+            if page >= pagination["total_pages"]:
+                break
+            page += 1
+
+    return all_data
+
+
+# 取得所有美股標的
+all_us_instruments = fetch_all_pages(
+    "/api/v1/serve/instruments",
+    params={"market": "US", "page_size": 1000},
+)
+print(f"共 {len(all_us_instruments)} 筆美股標的")
+```
+
+### 完整工作流程範例
+
+```python
+"""
+完整工作流程：攝取 → 等待處理 → 查詢結果
+"""
+import httpx
+import time
+
+BASE_URL = "http://localhost:8000"
+SOURCE_KEY = "dev-source-key"
+
+# 1. 攝取資料
+print("1. 攝取加密貨幣資料...")
+with httpx.Client() as client:
+    resp = client.post(
+        f"{BASE_URL}/api/v1/source/ingest/crypto",
+        headers={"X-API-Key": SOURCE_KEY, "Content-Type": "application/json"},
+        json={
+            "dataset_key": "crypto_eod",
+            "source": "bloomberg",
+            "request_key": "demo_20260116",
+            "idempotency_key": "demo_20260116",
+            "payload": {
+                "metadata": {"source": "Bloomberg API", "total_records": 1},
+                "data": [{
+                    "crypto_id": "bitcoin", "symbol": "BTC", "name": "Bitcoin",
+                    "ticker": "XBTUSD BGN Curncy",
+                    "price": {"last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76},
+                    "change": {"net": 158.81, "percent_1d": 0.1662},
+                    "timestamp": {"query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16"},
+                    "metadata": {"source": "Bloomberg", "data_type": "cryptocurrency"},
+                }],
+            },
+            "fetched_at": "2026-01-16T14:49:14Z",
+        },
+    )
+    ingest_result = resp.json()
+    run_id = ingest_result["run_id"]
+    print(f"   Run ID: {run_id}")
+
+# 2. 等待處理完成
+print("2. 等待處理完成...")
+with httpx.Client() as client:
+    for _ in range(30):
+        resp = client.get(
+            f"{BASE_URL}/api/v1/source/runs/{run_id}",
+            headers={"X-API-Key": SOURCE_KEY},
+        )
+        status_info = resp.json()
+        print(f"   狀態: {status_info['status']}")
+        if status_info["status"] in ("completed", "failed"):
+            break
+        time.sleep(1)
+
+# 3. 查詢結果
+print("3. 查詢 Canonical 資料...")
+with httpx.Client() as client:
+    resp = client.get(
+        f"{BASE_URL}/api/v1/serve/eod",
+        params={"market": "CRYPTO", "symbols": "BTC"},
+    )
+    eod_data = resp.json()
+    print(f"   共 {eod_data['pagination']['total_records']} 筆日K 資料")
+    for row in eod_data["data"][:5]:
+        print(f"   {row['trade_date']}: close={row['close']}")
+```
+
+---
+
+## 常見問題
+
+### Q: 收到 403 Forbidden，該怎麼辦？
+
+**可能原因：**
+
+1. **API Key 錯誤** — 確認 `X-API-Key` Header 的值與 `SOURCE_API_KEYS` 環境變數一致
+2. **IP 不在允許名單** — 若已設定 `SOURCE_ALLOWLIST_CIDRS`，確認你的 IP 在名單內
+3. **docker-compose.yml 覆蓋了 .env** — `docker-compose.yml` 的 `environment` 區塊會覆蓋 `.env` 的值。預設 compose 內硬編碼 `SOURCE_API_KEYS: dev-source-key`，即使 `.env` 設了其他值也無效
+
+**解法：** 本機測試使用 `dev-source-key`，或修改 `docker-compose.yml` 移除硬編碼值。
+
+### Q: 相同的 idempotency_key 送了兩次會怎樣？
+
+系統會回傳第一次的 `run_id`，不會重新處理。回應訊息為 `"Duplicate idempotency_key, returning existing run"`。
+
+### Q: Serve API 需不需要 API Key？
+
+預設不需要（`SERVE_REQUIRE_AUTH=false`）。若要啟用認證，設定環境變數：
+
+```env
+SERVE_REQUIRE_AUTH=true
+SERVE_API_KEYS=your-serve-key-1,your-serve-key-2
+```
+
+### Q: 如何查看所有可用的 dataset_key？
+
+```bash
+curl "http://localhost:8000/api/v1/source/datasets" \
+  -H "X-API-Key: dev-source-key"
+```
+
+### Q: 日K 資料的 OHLCV 欄位可能是 null 嗎？
+
+是的。`open`、`high`、`low`、`close`、`volume`、`turnover` 都是可選欄位。
+部分資料來源不一定提供完整 OHLCV。
+
+### Q: 原始資料保留多久？
+
+預設 14 天（`RAW_RETENTION_DAYS=14`）。超過保留期限的 raw payload 會被清理服務自動刪除。
+過期後就無法再用 `/runs/{run_id}/rerun` 重跑。
+
+### Q: 支援哪些市場？
+
+可用 `/api/v1/source/datasets` 查詢。目前支援的市場代碼：
+
+| 市場代碼 | 說明 |
+|---------|------|
+| `CRYPTO` | 加密貨幣 |
+| `US` | 美國股市 |
+| `FX` | 全球外匯 |
+| `MACRO` | 宏觀經濟 |
+| `WTX` | 台灣加權指數期貨 |
+| `GLOBAL` | 全球市場 |
+| `TW` | 台灣市場 |
+| `HK` | 香港市場 |
+| `CN` | 中國市場 |
+
+### Q: 生產環境需要注意什麼？
+
+1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`（`DEBUG=false` 時為必要，否則無法啟動）
+2. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
+3. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
+4. **建議**使用反向代理（如 nginx）處理 HTTPS
+
+### Q: 如何查看互動式 API 文件？
+
+瀏覽器開啟 [http://localhost:8000/docs](http://localhost:8000/docs)（Swagger UI）
+或 [http://localhost:8000/redoc](http://localhost:8000/redoc)（ReDoc 格式）。
+
+---
+
+## 環境變數參考
+
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `DATABASE_URL` | `postgresql+asyncpg://findb:findb@localhost:5435/findb` | PostgreSQL 連線字串 |
+| `SOURCE_API_KEYS` | （空） | Source API 金鑰（逗號分隔） |
+| `SOURCE_ALLOWLIST_CIDRS` | （空） | IP 允許名單（CIDR，逗號分隔），生產環境必填 |
+| `SOURCE_TRUST_PROXY_HEADERS` | `false` | 是否信任 X-Forwarded-For |
+| `SERVE_API_KEYS` | （空） | Serve API 金鑰（逗號分隔） |
+| `SERVE_REQUIRE_AUTH` | `false` | Serve API 是否需要認證 |
+| `RATE_LIMIT_REQUESTS` | `100` | 限流上限（每 window 內的請求數） |
+| `RATE_LIMIT_WINDOW` | `60` | 限流時間窗口（秒） |
+| `RAW_RETENTION_DAYS` | `14` | 原始資料保留天數 |
+| `DEBUG` | `false` | 除錯模式（跳過 allowlist 強制檢查） |

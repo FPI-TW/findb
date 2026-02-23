@@ -24,8 +24,8 @@ services:
     container_name: findb-app
     environment:
       DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
-      DEBUG: "true"
-      SOURCE_API_KEYS: dev-source-key
+      DEBUG: ${DEBUG:-true}
+      SOURCE_API_KEYS: ${SOURCE_API_KEYS:-dev-source-key}
     ports:
       - "8000:8000"
     depends_on:
