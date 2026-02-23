@@ -119,10 +119,11 @@ class CryptoNormalizer(BaseNormalizer):
         self,
         symbol: str,
         name: Optional[str] = None,
+        market: Optional[str] = None,
     ):
         """Get existing instrument or create new one with crypto-specific defaults."""
         # Use name from mapping if not provided
         if name is None:
             name = self.NAME_MAP.get(symbol)
 
-        return await super().get_or_create_instrument(symbol, name)
+        return await super().get_or_create_instrument(symbol, name, market=market)

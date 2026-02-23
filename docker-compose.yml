@@ -36,5 +36,36 @@ services:
       - ./scripts:/app/scripts:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  raw-cleanup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: findb-raw-cleanup
+    environment:
+      DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
+      DEBUG: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+      - ./scripts:/app/scripts:ro
+    command: sh -c "while true; do python /app/scripts/cleanup_raw.py; sleep 86400; done"
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: findb-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5056:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+
 volumes:
   postgres_data:
+  pgadmin_data:

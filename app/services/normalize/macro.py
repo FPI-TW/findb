@@ -123,6 +123,12 @@ class MacroNormalizer(BaseNormalizer):
                         "series.code",
                         "series_id",
                         "series.id",
+                        "ticker",
+                        "symbol",
+                        "index_id",
+                        "bond_id",
+                        "rate_id",
+                        "stock_id",
                         "code",
                     ],
                 ),
@@ -163,7 +169,14 @@ class MacroNormalizer(BaseNormalizer):
                 raw_data,
                 _candidate_paths(
                     field_mapping.get("obs_date"),
-                    ["obs_date", "date", "observation_date", "timestamp"],
+                    [
+                        "obs_date",
+                        "date",
+                        "observation_date",
+                        "timestamp.last_update",
+                        "timestamp.query_time",
+                        "timestamp",
+                    ],
                 ),
             )
             value_value = self._resolve_value(
@@ -171,7 +184,7 @@ class MacroNormalizer(BaseNormalizer):
                 raw_data,
                 _candidate_paths(
                     field_mapping.get("value"),
-                    ["value", "obs_value", "observation.value"],
+                    ["value", "obs_value", "observation.value", "price.last", "last", "close"],
                 ),
             )
 

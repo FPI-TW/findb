@@ -1,13 +1,24 @@
 """
 Tests for Serve API endpoints.
 """
+
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
 
-from app.models.canonical import Instrument, MarketDataEOD, TradingCalendar
+from app.models.canonical import (
+    CorporateAction,
+    FuturesContinuousEOD,
+    FuturesContract,
+    Instrument,
+    MacroObservation,
+    MacroSeries,
+    MarketDataEOD,
+    RollRule,
+    TradingCalendar,
+)
 from app.utils import utc_now, uuid7
 
 
@@ -171,3 +182,145 @@ async def test_list_calendar(client: AsyncClient, test_session):
     assert payload["success"] is True
     assert len(payload["data"]) == 1
     assert payload["data"][0]["trade_date"] == "2026-01-16"
+
+
+@pytest.mark.asyncio
+async def test_list_corporate_actions(client: AsyncClient, test_session):
+    instrument_id = uuid7()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="equity",
+        market="US",
+        symbol="AAPL",
+        name="Apple",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    action = CorporateAction(
+        action_id=uuid7(),
+        instrument_id=instrument_id,
+        action_type="split",
+        ex_date=date(2026, 1, 20),
+        ratio=Decimal("2.0"),
+        asof_ts=utc_now(),
+        source="bloomberg",
+    )
+    test_session.add_all([instrument, action])
+    await test_session.commit()
+
+    response = await client.get(
+        "/api/v1/serve/corporate-actions?market=US&symbols=AAPL&action_type=split"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["symbol"] == "AAPL"
+    assert payload["data"][0]["action_type"] == "split"
+
+
+@pytest.mark.asyncio
+async def test_list_macro_series_and_observations(client: AsyncClient, test_session):
+    series_id = uuid7()
+    series = MacroSeries(
+        series_id=series_id,
+        name="US CPI",
+        unit="index",
+        frequency="monthly",
+        market="US",
+        source_code="CPI_US",
+        source="fred",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    observation = MacroObservation(
+        id=uuid7(),
+        series_id=series_id,
+        obs_date=date(2026, 1, 31),
+        value=Decimal("302.1000"),
+        source="fred",
+        asof_ts=utc_now(),
+    )
+    test_session.add_all([series, observation])
+    await test_session.commit()
+
+    series_response = await client.get("/api/v1/serve/macro/series?market=US&source_code=CPI_US")
+    assert series_response.status_code == 200
+    series_payload = series_response.json()
+    assert series_payload["success"] is True
+    assert len(series_payload["data"]) == 1
+    assert series_payload["data"][0]["source_code"] == "CPI_US"
+
+    obs_response = await client.get("/api/v1/serve/macro/observations?market=US&source_code=CPI_US")
+    assert obs_response.status_code == 200
+    obs_payload = obs_response.json()
+    assert obs_payload["success"] is True
+    assert len(obs_payload["data"]) == 1
+    assert obs_payload["data"][0]["series_name"] == "US CPI"
+
+
+@pytest.mark.asyncio
+async def test_list_futures_contracts_and_continuous(client: AsyncClient, test_session):
+    instrument_id = uuid7()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="future",
+        market="WTX",
+        symbol="TX",
+        name="Taiwan Index Future",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    roll_rule_id = uuid7()
+    roll_rule = RollRule(
+        rule_id=roll_rule_id,
+        name="front-month",
+        description="Front month roll",
+        config={"type": "front_month"},
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    contract = FuturesContract(
+        contract_id=uuid7(),
+        instrument_id=instrument_id,
+        contract_code="TXF202602",
+        contract_month="202602",
+        expiry_date=date(2026, 2, 19),
+        currency="TWD",
+        source="taifex",
+        asof_ts=utc_now(),
+    )
+    continuous = FuturesContinuousEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        roll_rule_id=roll_rule_id,
+        trade_date=date(2026, 1, 16),
+        open=Decimal("21000"),
+        high=Decimal("21100"),
+        low=Decimal("20900"),
+        close=Decimal("21050"),
+        volume=12000,
+        turnover=Decimal("987654.1234"),
+        source="taifex",
+        asof_ts=utc_now(),
+    )
+    test_session.add_all([instrument, roll_rule, contract, continuous])
+    await test_session.commit()
+
+    contracts_response = await client.get("/api/v1/serve/futures/contracts?market=WTX&symbols=TX")
+    assert contracts_response.status_code == 200
+    contracts_payload = contracts_response.json()
+    assert contracts_payload["success"] is True
+    assert len(contracts_payload["data"]) == 1
+    assert contracts_payload["data"][0]["contract_code"] == "TXF202602"
+
+    continuous_response = await client.get(
+        "/api/v1/serve/futures/continuous?market=WTX&symbols=TX&start_date=2026-01-16&end_date=2026-01-16"
+    )
+    assert continuous_response.status_code == 200
+    continuous_payload = continuous_response.json()
+    assert continuous_payload["success"] is True
+    assert len(continuous_payload["data"]) == 1
+    assert continuous_payload["data"][0]["roll_rule_name"] == "front-month"

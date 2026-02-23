@@ -119,6 +119,7 @@ class BaseNormalizer(ABC):
         field_mapping = config.get("field_mapping", {})
         data_path = config.get("data_path", "data")
         symbol_path = field_mapping.get("symbol") or config.get("symbol_field", "symbol")
+        market_path = field_mapping.get("market") or config.get("market_field")
         name_path = field_mapping.get("name") or config.get("name_field", "name")
         source_path = field_mapping.get("source") or config.get("source_field")
 
@@ -140,6 +141,7 @@ class BaseNormalizer(ABC):
 
             identifier_value = self._get_nested_value(item, identifier_field)
             symbol_value = self._get_nested_value(item, symbol_path)
+            market_value = self._get_nested_value(item, market_path) if market_path else None
             name_value = self._get_nested_value(item, name_path)
             source_value = self._resolve_source(item, raw_data, source_path)
 
@@ -149,6 +151,7 @@ class BaseNormalizer(ABC):
             record = MappedRecord(
                 symbol=symbol_value or "",
                 trade_date=trade_date,
+                market=str(market_value).upper().strip() if market_value is not None else None,
                 name=name_value,
                 open=self._parse_decimal(self._get_nested_value(item, field_mapping.get("open"))),
                 high=self._parse_decimal(self._get_nested_value(item, field_mapping.get("high"))),
@@ -185,11 +188,13 @@ class BaseNormalizer(ABC):
         self,
         symbol: str,
         name: Optional[str] = None,
+        market: Optional[str] = None,
     ) -> Instrument:
         """Get existing instrument or create new one."""
+        instrument_market = str(market or self.market).upper().strip()
         stmt = select(Instrument).where(
             Instrument.asset_class == self.asset_class,
-            Instrument.market == self.market,
+            Instrument.market == instrument_market,
             Instrument.symbol == symbol,
         )
         result = await self.db.execute(stmt)
@@ -202,7 +207,7 @@ class BaseNormalizer(ABC):
         instrument = Instrument(
             instrument_id=uuid7(),
             asset_class=self.asset_class,
-            market=self.market,
+            market=instrument_market,
             symbol=symbol,
             name=name,
             status="active",
@@ -217,8 +222,10 @@ class BaseNormalizer(ABC):
         self,
         identifier_type: str,
         identifier_value: str,
+        market: Optional[str] = None,
     ) -> Optional[Instrument]:
         """Resolve instrument using identifier mapping."""
+        instrument_market = str(market or self.market).upper().strip()
         stmt = (
             select(Instrument)
             .join(
@@ -229,7 +236,7 @@ class BaseNormalizer(ABC):
                 InstrumentIdentifier.id_type == identifier_type,
                 InstrumentIdentifier.id_value == identifier_value,
                 Instrument.asset_class == self.asset_class,
-                Instrument.market == self.market,
+                Instrument.market == instrument_market,
             )
         )
         result = await self.db.execute(stmt)
@@ -264,10 +271,12 @@ class BaseNormalizer(ABC):
 
     async def resolve_instrument(self, record: MappedRecord) -> Instrument:
         """Resolve instrument by identifier mapping or symbol."""
+        record_market = str(record.market).upper().strip() if record.market else self.market
         if record.identifier_type and record.identifier_value:
             instrument = await self.get_instrument_by_identifier(
                 record.identifier_type,
                 record.identifier_value,
+                market=record_market,
             )
             if instrument:
                 return instrument
@@ -276,6 +285,7 @@ class BaseNormalizer(ABC):
         instrument = await self.get_or_create_instrument(
             symbol=symbol,
             name=record.name,
+            market=record_market,
         )
 
         if record.identifier_type and record.identifier_value:
@@ -287,11 +297,16 @@ class BaseNormalizer(ABC):
 
         return instrument
 
-    async def get_or_create_trading_day(self, trade_date: datetime | date) -> None:
+    async def get_or_create_trading_day(
+        self,
+        trade_date: datetime | date,
+        market: Optional[str] = None,
+    ) -> None:
         """Ensure trading calendar entry exists for market/date."""
         trade_date_value = trade_date.date() if isinstance(trade_date, datetime) else trade_date
+        calendar_market = str(market or self.market).upper().strip()
         stmt = select(TradingCalendar).where(
-            TradingCalendar.market == self.market,
+            TradingCalendar.market == calendar_market,
             TradingCalendar.trade_date == trade_date_value,
         )
         result = await self.db.execute(stmt)
@@ -301,7 +316,7 @@ class BaseNormalizer(ABC):
 
         calendar = TradingCalendar(
             id=uuid7(),
-            market=self.market,
+            market=calendar_market,
             trade_date=trade_date_value,
             is_open=True,
         )
@@ -460,7 +475,7 @@ class BaseNormalizer(ABC):
             run.error_message = error_msg
             if status == "processing" and not run.started_at:
                 run.started_at = utc_now()
-            if status in ("completed", "failed"):
+            if status in ("completed", "completed_with_errors", "failed"):
                 run.completed_at = utc_now()
 
     async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
@@ -484,7 +499,7 @@ class BaseNormalizer(ABC):
             mapped_records = self.map_fields(raw_payload)
             result.total_records = len(mapped_records)
 
-            seen_keys: set[tuple[str, datetime]] = set()
+            seen_keys: set[tuple[str, str, datetime]] = set()
 
             for record in mapped_records:
                 try:
@@ -521,24 +536,7 @@ class BaseNormalizer(ABC):
                         continue
 
                     # Ensure trading calendar entry
-                    await self.get_or_create_trading_day(record.trade_date)
-
-                    # Check duplicates against DB
-                    if await self.check_duplicate_in_db(
-                        instrument.instrument_id,
-                        record.trade_date,
-                    ):
-                        issues.append(
-                            DQIssueRecord(
-                                issue_type="DUPLICATE_KEY",
-                                severity="error",
-                                description="Duplicate instrument/trade_date already exists",
-                                trade_date=record.trade_date
-                                if isinstance(record.trade_date, datetime)
-                                else None,
-                                raw_data=record.raw_data,
-                            )
-                        )
+                    await self.get_or_create_trading_day(record.trade_date, market=record.market)
 
                     blocking_issues = [i for i in issues if i.severity == "error"]
                     if blocking_issues:

@@ -2,6 +2,7 @@
 Pytest configuration and fixtures.
 """
 
+import os
 from typing import AsyncGenerator
 
 import pytest
@@ -15,9 +16,12 @@ from app.main import app
 from app.models.base import Base
 from app.dependencies import get_db
 from app.config import get_settings
+from app.api.deps import reset_source_rate_limit_state
 
-# Test database URL
-TEST_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb_test"
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://findb:findb@localhost:5435/findb_test",
+)
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -96,9 +100,19 @@ def configure_source_api_keys(source_api_key: str):
     """Ensure Source API keys are configured for tests."""
     settings = get_settings()
     original_keys = settings.SOURCE_API_KEYS
+    original_debug = settings.DEBUG
     settings.SOURCE_API_KEYS = source_api_key
+    settings.DEBUG = True
     yield
     settings.SOURCE_API_KEYS = original_keys
+    settings.DEBUG = original_debug
+
+
+@pytest.fixture(autouse=True)
+def reset_source_rate_limiter():
+    reset_source_rate_limit_state()
+    yield
+    reset_source_rate_limit_state()
 
 
 @pytest.fixture

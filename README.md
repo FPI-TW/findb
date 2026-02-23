@@ -49,7 +49,7 @@ FinDB 是一套可長期維護、逐步擴充的金融資料庫系統，採用�
 │   Fetch Layer   │  外部服務（不落地）
 │  (特定設備)      │
 └────────┬────────┘
-         │ POST /api/v1/source/ingest
+         │ POST /api/v1/source/ingest/{market}
          ▼
 ┌─────────────────────────────────────────────────────┐
 │                    主程式                            │
@@ -210,17 +210,37 @@ poetry run uvicorn app.main:app --reload
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| POST | `/api/v1/source/ingest` | 接收 raw payload |
+| POST | `/api/v1/source/ingest/crypto` | 接收 CRYPTO 市場 raw payload |
+| POST | `/api/v1/source/ingest/us` | 接收 US 市場 raw payload |
+| POST | `/api/v1/source/ingest/usstock/direct` | 接收 Bloomberg US Stock 直接格式（`metadata + data`） |
+| POST | `/api/v1/source/ingest/hkchina/direct` | 接收 Bloomberg HK/China 直接格式（`metadata + data`） |
+| POST | `/api/v1/source/ingest/macro/direct` | 接收 Bloomberg Macro 直接格式（`metadata + data`） |
+| POST | `/api/v1/source/ingest/fx` | 接收 FX 市場 raw payload |
+| POST | `/api/v1/source/ingest/macro` | 接收 MACRO 市場 raw payload |
+| POST | `/api/v1/source/ingest/wtx` | 接收 WTX 市場 raw payload |
+| POST | `/api/v1/source/ingest/global` | 接收 GLOBAL 市場 raw payload |
+| POST | `/api/v1/source/ingest/tw` | 接收 TW 市場 raw payload |
+| POST | `/api/v1/source/ingest/hk` | 接收 HK 市場 raw payload |
+| POST | `/api/v1/source/ingest/cn` | 接收 CN 市場 raw payload |
 | GET | `/api/v1/source/runs/{run_id}` | 查詢批次狀態 |
 | GET | `/api/v1/source/datasets` | 查詢可用資料集 |
 
 #### Ingest 請求範例
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest" \
+curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@scripts/sample_ingest_payload.json"
+```
+
+#### Direct 格式請求範例（US Stock）
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  --data-binary "@bloomberg_usstock_20260204_160051_api_format.json"
 ```
 
 #### 請求格式

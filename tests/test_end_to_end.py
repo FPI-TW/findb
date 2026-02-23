@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 import pytest
 from httpx import AsyncClient
 
-from app.models.registry import DatasetRegistry, IngestionRun
 from app.models.canonical import MarketDataEOD
+from app.models.registry import DatasetRegistry, IngestionRun
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session):
     }
 
     response = await client.post(
-        "/api/v1/source/ingest",
+        "/api/v1/source/ingest/crypto",
         headers={"X-API-Key": "test-source-key"},
         json=payload,
     )

@@ -7,6 +7,17 @@ from app.services.normalize.fx import FXNormalizer
 from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.services.normalize.futures import FuturesContractNormalizer, FuturesContinuousNormalizer
 from app.services.normalize.macro import MacroNormalizer
+from app.services.normalize.usstock import (
+    USStockNormalizer,
+    USIndexNormalizer,
+    GlobalStockNormalizer,
+    TWEquityNormalizer,
+    HKEquityNormalizer,
+    CNEquityNormalizer,
+    TWIndexNormalizer,
+    HKIndexNormalizer,
+    CNIndexNormalizer,
+)
 from app.services.normalize.types import (
     MappedRecord,
     CorporateActionRecord,
@@ -28,6 +39,15 @@ __all__ = [
     "MacroNormalizer",
     "FuturesContractNormalizer",
     "FuturesContinuousNormalizer",
+    "USStockNormalizer",
+    "USIndexNormalizer",
+    "GlobalStockNormalizer",
+    "TWEquityNormalizer",
+    "HKEquityNormalizer",
+    "CNEquityNormalizer",
+    "TWIndexNormalizer",
+    "HKIndexNormalizer",
+    "CNIndexNormalizer",
     "CorporateActionRecord",
     "MacroObservationRecord",
     "FuturesContractRecord",

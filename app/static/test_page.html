@@ -762,6 +762,33 @@
         runStatus.textContent = runState || "--";
       };
 
+      const INGEST_MARKET_BY_DATASET = {
+        crypto_eod: "crypto",
+        crypto_index_eod: "crypto",
+        us_equity_eod: "us",
+        us_index_eod: "us",
+        us_equity_corporate_actions: "us",
+        us_stock_eod: "us",
+        us_stock_index_eod: "us",
+        fx_eod: "fx",
+        macro_observation: "macro",
+        futures_contracts: "wtx",
+        futures_continuous_eod: "wtx",
+        global_stock_eod: "global",
+        hkchina_stock_eod: "global",
+        tw_index_eod: "tw",
+        hk_index_eod: "hk",
+        cn_index_eod: "cn",
+      };
+
+      const resolveIngestUrl = (datasetKey) => {
+        const route = INGEST_MARKET_BY_DATASET[(datasetKey || "").trim()];
+        if (!route) {
+          throw new Error(`dataset_key ${datasetKey || "(empty)"} 沒有對應市場 ingest API`);
+        }
+        return `/api/v1/source/ingest/${route}`;
+      };
+
       const buildSamplePayload = () => {
         const now = new Date();
         const key = `manual_${now.toISOString().replace(/[-:.TZ]/g, "")}`;
@@ -911,7 +938,8 @@
       document.getElementById("send-ingest").addEventListener("click", async () => {
         try {
           const payload = getPayloadFromEditor();
-          const result = await fetchJson("/api/v1/source/ingest", {
+          const ingestUrl = resolveIngestUrl(payload.dataset_key);
+          const result = await fetchJson(ingestUrl, {
             method: "POST",
             headers: buildHeaders("source"),
             body: JSON.stringify(payload),

@@ -42,7 +42,7 @@ class DQValidator:
         self,
         record: MappedRecord,
         *,
-        seen_keys: Optional[set[tuple[str, datetime]]] = None,
+        seen_keys: Optional[set[tuple[str, str, datetime]]] = None,
     ) -> list[DQIssueRecord]:
         """
         Validate an EOD record.
@@ -176,7 +176,7 @@ class DQValidator:
     def _check_duplicate_key(
         self,
         record: MappedRecord,
-        seen_keys: Optional[set[tuple[str, datetime]]],
+        seen_keys: Optional[set[tuple[str, str, datetime]]],
     ) -> Optional[DQIssueRecord]:
         """Check for duplicate instrument/trade_date within the batch."""
         if seen_keys is None:
@@ -184,7 +184,9 @@ class DQValidator:
         if not record.symbol or not record.trade_date:
             return None
 
-        key = (record.symbol, record.trade_date)
+        market = getattr(record, "market", None)
+        market_key = str(market).upper().strip() if market else ""
+        key = (market_key, record.symbol, record.trade_date)
         if key in seen_keys:
             return DQIssueRecord(
                 issue_type="DUPLICATE_KEY",

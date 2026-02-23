@@ -24,20 +24,38 @@ docker-compose up -d --build
 docker-compose exec app python /app/scripts/seed_data.py
 ```
 
-確認已寫入三個 dataset 與五個加密貨幣標的。
+確認已寫入多個 dataset 與五個加密貨幣標的。
 
 ## 2. Source API 測試
 
 ### 2.1 Ingest 原始資料
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest" \
+curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@scripts/sample_ingest_payload.json"
 ```
 
 `sample_ingest_payload.json` 內含 `idempotency_key`，用於請求去重。
+
+若使用 Bloomberg 直接格式（`metadata + data`）：
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  --data-binary "@bloomberg_usstock_20260204_160051_api_format.json"
+```
+
+區域市場 index dataset 可使用市場專屬 ingest 路徑（例如 TW/HK/CN）：
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/ingest/tw" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  --data-binary "@scripts/sample_ingest_payload.json"
+```
 
 預期回傳：
 

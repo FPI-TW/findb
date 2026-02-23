@@ -5,7 +5,7 @@ Handles raw data storage and triggers normalization.
 
 import logging
 from datetime import timedelta
-from typing import Optional, Any
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import select
@@ -28,6 +28,15 @@ from app.services.normalize import (
     MacroNormalizer,
     FuturesContractNormalizer,
     FuturesContinuousNormalizer,
+    USStockNormalizer,
+    USIndexNormalizer,
+    GlobalStockNormalizer,
+    TWEquityNormalizer,
+    HKEquityNormalizer,
+    CNEquityNormalizer,
+    TWIndexNormalizer,
+    HKIndexNormalizer,
+    CNIndexNormalizer,
 )
 from app.utils import uuid7, utc_now
 from app.utils.datetime_utils import ensure_utc
@@ -45,6 +54,17 @@ NORMALIZER_MAP = {
     "macro_observation": MacroNormalizer,
     "futures_contracts": FuturesContractNormalizer,
     "futures_continuous_eod": FuturesContinuousNormalizer,
+    # Bloomberg US Stock API format
+    "us_stock_eod": USStockNormalizer,
+    "us_stock_index_eod": USIndexNormalizer,
+    "global_stock_eod": GlobalStockNormalizer,
+    "hkchina_stock_eod": GlobalStockNormalizer,
+    "tw_equity_eod": TWEquityNormalizer,
+    "hk_equity_eod": HKEquityNormalizer,
+    "cn_equity_eod": CNEquityNormalizer,
+    "tw_index_eod": TWIndexNormalizer,
+    "hk_index_eod": HKIndexNormalizer,
+    "cn_index_eod": CNIndexNormalizer,
 }
 
 
@@ -62,6 +82,15 @@ class PayloadValidationError(ValueError):
 
 class RawPayloadNotFoundError(ValueError):
     """Raised when raw payload for a run is not found."""
+
+
+class MarketMismatchError(ValueError):
+    """Raised when dataset market does not match ingest API market."""
+
+
+def _normalize_market(market: str) -> str:
+    """Normalize market code for comparisons."""
+    return market.strip().upper()
 
 
 def _get_nested_value(data: dict, path: str | None) -> Any:
@@ -329,7 +358,11 @@ class IngestionService:
 
         return run.run_id, run.status, raw_payload.dataset_key, raw_payload.payload
 
-    async def ingest(self, request: IngestRequest) -> tuple[UUID, str, bool]:
+    async def ingest(
+        self,
+        request: IngestRequest,
+        expected_market: str | None = None,
+    ) -> tuple[UUID, str, bool]:
         """
         Process an ingestion request.
 
@@ -359,6 +392,26 @@ class IngestionService:
             await self.db.commit()
             logger.warning("Ingestion rejected: dataset inactive %s", request.dataset_key)
             raise DatasetInactiveError(f"Dataset {request.dataset_key} is inactive")
+
+        if expected_market is not None:
+            dataset_market = _normalize_market(dataset.market)
+            requested_market = _normalize_market(expected_market)
+            if dataset_market != requested_market:
+                logger.warning(
+                    (
+                        "Ingestion rejected: dataset market mismatch "
+                        "dataset=%s dataset_market=%s requested_market=%s"
+                    ),
+                    request.dataset_key,
+                    dataset_market,
+                    requested_market,
+                )
+                raise MarketMismatchError(
+                    (
+                        f"Dataset {request.dataset_key} belongs to market "
+                        f"{dataset_market}, not {requested_market}"
+                    )
+                )
 
         # Check for duplicate request
         existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)

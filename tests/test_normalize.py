@@ -6,11 +6,19 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
-from app.models.canonical import Instrument, MarketDataEOD
+from app.models.canonical import (
+    FuturesContinuousEOD,
+    Instrument,
+    MarketDataEOD,
+    TradingCalendar,
+)
+from app.models.registry import DQIssue, DatasetRegistry, IngestionRun
 from app.services.dq.validators import DQValidator
 from app.services.normalize.base import BaseNormalizer
 from app.services.normalize.crypto import CryptoNormalizer
+from app.services.normalize.futures import FuturesContinuousNormalizer
 from app.services.normalize.types import MappedRecord
 from app.utils import utc_now, uuid7
 
@@ -173,7 +181,7 @@ class TestDQValidator:
         """Test duplicate key check detects repeated instrument/date."""
         validator = DQValidator()
         trade_date = datetime.now(timezone.utc)
-        seen_keys: set[tuple[str, datetime]] = set()
+        seen_keys: set[tuple[str, str, datetime]] = set()
 
         record_one = MappedRecord(
             symbol="BTC",
@@ -199,6 +207,37 @@ class TestDQValidator:
         duplicate_issues = [i for i in second_issues if i.issue_type == "DUPLICATE_KEY"]
         assert len(duplicate_issues) == 1
         assert duplicate_issues[0].severity == "error"
+
+    def test_duplicate_key_allows_same_symbol_different_market(self):
+        """Same symbol/date across different markets should not be treated as duplicate."""
+        validator = DQValidator()
+        trade_date = datetime.now(timezone.utc)
+        seen_keys: set[tuple[str, str, datetime]] = set()
+
+        hk_record = MappedRecord(
+            symbol="700",
+            trade_date=trade_date,
+            market="HK",
+            open=Decimal("100"),
+            high=Decimal("110"),
+            low=Decimal("90"),
+            close=Decimal("105"),
+        )
+        tw_record = MappedRecord(
+            symbol="700",
+            trade_date=trade_date,
+            market="TW",
+            open=Decimal("101"),
+            high=Decimal("111"),
+            low=Decimal("91"),
+            close=Decimal("106"),
+        )
+
+        first_issues = validator.validate_eod(hk_record, seen_keys=seen_keys)
+        second_issues = validator.validate_eod(tw_record, seen_keys=seen_keys)
+
+        assert not any(issue.issue_type == "DUPLICATE_KEY" for issue in first_issues)
+        assert not any(issue.issue_type == "DUPLICATE_KEY" for issue in second_issues)
 
 
 @pytest.mark.asyncio
@@ -251,3 +290,295 @@ async def test_db_duplicate_key_check(test_session):
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_dynamic_market_for_instrument_and_calendar(test_session):
+    """Ensure per-record market is used when creating instrument and calendar entries."""
+
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "global_stock_eod"
+        asset_class = "equity"
+        market = "GLOBAL"
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return []
+
+    normalizer = DummyNormalizer(test_session)
+    trade_dt = datetime(2026, 2, 9, tzinfo=timezone.utc)
+    record = MappedRecord(
+        symbol="700",
+        trade_date=trade_dt,
+        market="HK",
+        name="TENCENT HOLDINGS LTD",
+        identifier_type="bloomberg",
+        identifier_value="700 HK Equity",
+    )
+
+    instrument = await normalizer.resolve_instrument(record)
+    await normalizer.get_or_create_trading_day(record.trade_date, market=record.market)
+    await test_session.commit()
+
+    assert instrument.market == "HK"
+
+    cal_stmt = select(TradingCalendar).where(
+        TradingCalendar.market == "HK",
+        TradingCalendar.trade_date == trade_dt.date(),
+    )
+    cal_result = await test_session.execute(cal_stmt)
+    calendar = cal_result.scalar_one_or_none()
+    assert calendar is not None
+
+
+@pytest.mark.asyncio
+async def test_process_upserts_existing_eod_instead_of_failing_duplicate(test_session):
+    """Existing DB rows should be updated by upsert, not rejected as duplicate."""
+
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "crypto_eod"
+        asset_class = "crypto"
+        market = "CRYPTO"
+
+        def __init__(self, db, records: list[MappedRecord]):
+            super().__init__(db)
+            self._records = records
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return self._records
+
+    dataset = DatasetRegistry(
+        dataset_key="crypto_eod",
+        name="Crypto EOD",
+        asset_class="crypto",
+        market="CRYPTO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="crypto_eod",
+        status="pending",
+        raw_records=1,
+        created_at=utc_now(),
+    )
+
+    instrument_id = uuid7()
+    trade_dt = datetime(2026, 2, 9, tzinfo=timezone.utc)
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="crypto",
+        market="CRYPTO",
+        symbol="BTC",
+        name="Bitcoin",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    existing = MarketDataEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=trade_dt.date(),
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("90"),
+        close=Decimal("105"),
+        volume=1000,
+        asof_ts=utc_now(),
+        run_id=uuid7(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([dataset, run, instrument, existing])
+    await test_session.commit()
+
+    record = MappedRecord(
+        symbol="BTC",
+        trade_date=trade_dt,
+        open=Decimal("200"),
+        high=Decimal("220"),
+        low=Decimal("190"),
+        close=Decimal("210"),
+        volume=3000,
+        source="bloomberg",
+    )
+    normalizer = DummyNormalizer(test_session, [record])
+
+    result = await normalizer.process({}, run_id)
+
+    assert result.success_records == 1
+    assert result.failed_records == 0
+
+    stmt = select(MarketDataEOD).where(
+        MarketDataEOD.instrument_id == instrument_id,
+        MarketDataEOD.trade_date == trade_dt.date(),
+    )
+    updated = (await test_session.execute(stmt)).scalar_one()
+    assert updated.open == Decimal("200")
+    assert updated.close == Decimal("210")
+    assert updated.volume == 3000
+    assert updated.run_id == run_id
+
+    dq_stmt = select(DQIssue).where(
+        DQIssue.run_id == run_id,
+        DQIssue.issue_type == "DUPLICATE_KEY",
+    )
+    duplicate_issue = (await test_session.execute(dq_stmt)).scalar_one_or_none()
+    assert duplicate_issue is None
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplicate(test_session):
+    """Continuous futures rows with same key should be updated by upsert."""
+    dataset = DatasetRegistry(
+        dataset_key="futures_continuous_eod",
+        name="Futures Continuous EOD",
+        asset_class="future",
+        market="WTX",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="futures_continuous_eod",
+        status="pending",
+        raw_records=1,
+        created_at=utc_now(),
+    )
+
+    instrument_id = uuid7()
+    trade_date = datetime(2026, 2, 9, tzinfo=timezone.utc).date()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="future",
+        market="WTX",
+        symbol="TX",
+        name="TAIEX FUTURES",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    existing = FuturesContinuousEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=trade_date,
+        open=Decimal("98"),
+        high=Decimal("101"),
+        low=Decimal("95"),
+        close=Decimal("99"),
+        volume=900,
+        asof_ts=utc_now(),
+        run_id=uuid7(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([dataset, run, instrument, existing])
+    await test_session.commit()
+
+    payload = {
+        "metadata": {"source": "Bloomberg"},
+        "data": [
+            {
+                "symbol": "TX",
+                "name": "TAIEX FUTURES",
+                "trade_date": "2026-02-09",
+                "open": 100,
+                "high": 110,
+                "low": 99,
+                "close": 108,
+                "volume": 1200,
+            }
+        ],
+    }
+
+    normalizer = FuturesContinuousNormalizer(test_session)
+    result = await normalizer.process(payload, run_id)
+
+    assert result.success_records == 1
+    assert result.failed_records == 0
+
+    stmt = select(FuturesContinuousEOD).where(
+        FuturesContinuousEOD.instrument_id == instrument_id,
+        FuturesContinuousEOD.trade_date == trade_date,
+    )
+    updated = (await test_session.execute(stmt)).scalar_one()
+    assert updated.open == Decimal("100")
+    assert updated.close == Decimal("108")
+    assert updated.volume == 1200
+    assert updated.run_id == run_id
+
+    dq_stmt = select(DQIssue).where(
+        DQIssue.run_id == run_id,
+        DQIssue.issue_type == "DUPLICATE_KEY",
+    )
+    duplicate_issue = (await test_session.execute(dq_stmt)).scalar_one_or_none()
+    assert duplicate_issue is None
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_completed_with_errors_sets_completed_at(test_session):
+    """Run status should set completed_at for completed_with_errors."""
+
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "crypto_eod"
+        asset_class = "crypto"
+        market = "CRYPTO"
+
+        def __init__(self, db, records: list[MappedRecord]):
+            super().__init__(db)
+            self._records = records
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return self._records
+
+    dataset = DatasetRegistry(
+        dataset_key="crypto_eod",
+        name="Crypto EOD",
+        asset_class="crypto",
+        market="CRYPTO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="crypto_eod",
+        status="pending",
+        raw_records=1,
+        created_at=utc_now(),
+    )
+    test_session.add_all([dataset, run])
+    await test_session.commit()
+
+    invalid_record = MappedRecord(
+        symbol="BTC",
+        trade_date=datetime(2026, 2, 9, tzinfo=timezone.utc),
+        open=Decimal("100"),
+        high=Decimal("95"),
+        low=Decimal("90"),
+        close=Decimal("105"),
+        source="bloomberg",
+    )
+    normalizer = DummyNormalizer(test_session, [invalid_record])
+
+    result = await normalizer.process({}, run_id)
+
+    assert result.success_records == 0
+    assert result.failed_records == 1
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed_with_errors"
+    assert persisted_run.completed_at is not None

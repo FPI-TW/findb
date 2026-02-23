@@ -479,7 +479,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             mapped_records = self.map_fields(raw_payload)
             result.total_records = len(mapped_records)
 
-            seen_keys: set[tuple[str, datetime]] = set()
+            seen_keys: set[tuple[str, str, datetime]] = set()
 
             for record in mapped_records:
                 try:
@@ -512,22 +512,6 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                         result.failed_records += 1
                         continue
                     await self.get_or_create_trading_day(record.trade_date)
-
-                    if await self.check_duplicate_in_db(
-                        instrument.instrument_id,
-                        record.trade_date,
-                    ):
-                        issues.append(
-                            DQIssueRecord(
-                                issue_type="DUPLICATE_KEY",
-                                severity="error",
-                                description="Duplicate instrument/trade_date already exists",
-                                trade_date=record.trade_date
-                                if isinstance(record.trade_date, datetime)
-                                else None,
-                                raw_data=record.raw_data,
-                            )
-                        )
 
                     blocking_issues = [i for i in issues if i.severity == "error"]
                     if blocking_issues:

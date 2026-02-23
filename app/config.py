@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     # Source API Keys (comma-separated)
     SOURCE_API_KEYS: str = ""
+    SOURCE_ALLOWLIST_CIDRS: str = ""
+    SOURCE_TRUST_PROXY_HEADERS: bool = False
 
     # Serve API Keys (comma-separated, optional)
     SERVE_API_KEYS: str = ""

@@ -3,8 +3,9 @@ Source API Pydantic schemas.
 """
 
 from datetime import datetime
-from typing import Optional, Any
+from typing import Any, Optional
 from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -33,6 +34,13 @@ class IngestRequest(BaseModel):
     )
     payload: dict[str, Any] = Field(..., description="Raw data payload")
     fetched_at: datetime = Field(..., description="Timestamp when data was fetched")
+
+
+class DirectIngestPayload(BaseModel):
+    """Direct market payload from fetch layer (metadata + data)."""
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    data: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class IngestResponse(BaseModel):

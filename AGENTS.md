@@ -1,237 +1,100 @@
-# AGENTS.md
+# PROJECT KNOWLEDGE BASE
 
-This file guides coding agents working in this repository.
-Keep it updated when commands or conventions change.
+Generated: 2026-02-23 10:37:13 +08:00
+Commit: a5fa4d3
+Branch: main
 
-## Scope
+## OVERVIEW
 
-- Backend service for Normalize + Serve layers (FastAPI + SQLAlchemy async).
-- PostgreSQL is the canonical datastore.
-- All timestamps are UTC and timezone-aware.
-- UUID v7 is the primary identifier strategy.
+FinDB is a FastAPI backend for ingesting market payloads, normalizing into canonical models, and serving read-only query APIs.
+Core stack: Python 3.11+, FastAPI, SQLAlchemy async, PostgreSQL, Poetry, pytest.
 
-## Repo Layout (high level)
+## STRUCTURE
 
-- `app/` FastAPI app, models, services, schemas, utils.
-- `scripts/` Utilities for seed/cleanup/init.
-- `tests/` Pytest tests.
-- `docker-compose.yml` Local Docker environment.
-- `pyproject.toml` Poetry configuration and tooling.
-- `plans/` Implementation plan and specs.
+```text
+findb/
+|- app/                      # API, services, models, schemas, utils
+|  |- api/v1/                # Source (write ingest) + Serve (read query) routers
+|  |- services/normalize/    # Market-specific normalizers and mapping logic
+|  |- models/                # Canonical, raw, registry ORM models
+|  `- schemas/               # Pydantic request/response models
+|- tests/                    # Async API/service integration and unit tests
+|- scripts/                  # Seed and cleanup scripts
+|- docker-compose.yml        # Local app + postgres + pgadmin stack
+`- pyproject.toml            # Poetry deps + black/ruff/mypy/pytest settings
+```
 
-## Cursor/Copilot Rules
+## WHERE TO LOOK
 
-- No Cursor rules found (`.cursor/rules/` or `.cursorrules`).
-- No Copilot rules found (`.github/copilot-instructions.md`).
+| Task | Location | Notes |
+|------|----------|-------|
+| App startup/lifecycle | `app/main.py` | Registers routers, lifespan DB init, health endpoints |
+| Source ingest flow | `app/api/v1/source.py` | Auth, idempotency, ingestion route dispatch |
+| Serve query flow | `app/api/v1/serve.py` | Read-only query endpoints and filters |
+| Ingestion orchestration | `app/services/ingestion.py` | Dataset validation, run tracking, normalizer map |
+| Market normalization | `app/services/normalize/` | Per-market mapping, DQ checks, canonical writes |
+| DQ rules | `app/services/dq/validators.py` | Error blocks writes; warning does not |
+| ORM/data model | `app/models/` | Raw schema + canonical tables + run registry |
+| API schemas | `app/schemas/` | Request and response contracts |
+| Tests and fixtures | `tests/` + `tests/conftest.py` | AsyncClient + ASGITransport + DB fixtures |
 
-## Build / Run Commands
+## CODE MAP
 
-### Local (Poetry)
+LSP symbol map is unavailable in this environment (basedpyright not installed).
+Use directory-local AGENTS files for deep module guidance:
+- `app/services/normalize/AGENTS.md`
+- `app/api/v1/AGENTS.md`
+- `app/models/AGENTS.md`
 
-1. Install dependencies
+## CONVENTIONS
+
+- Timestamps are UTC-aware; use `app.utils.utc_now()` and `ensure_utc()`.
+- UUID strategy is v7 via `app.utils.uuid7()`.
+- DB access is async only (`AsyncSession`, `await`, explicit `commit()`).
+- Use `select()` for ORM queries; wrap raw SQL in `text()` when required.
+- Keep router handlers thin; business logic belongs in services.
+- Source API is write-path ingest; Serve API is read-only query path.
+- Pydantic v2 models use `from_attributes=True` where ORM hydration is needed.
+- Secrets/config come from env via `app.config.Settings`; do not hardcode keys.
+
+## ANTI-PATTERNS (THIS PROJECT)
+
+- Writing via Serve endpoints (Serve layer must remain read-only).
+- Using naive datetimes or non-UTC timestamps.
+- Generating UUIDv4 for primary identifiers without explicit requirement.
+- Skipping dataset existence checks before ingestion writes.
+- Treating DQ `severity="error"` as non-blocking.
+- Mixing request-layer concerns and normalization/database business logic.
+
+## UNIQUE STYLES
+
+- Raw payload persistence is separated into PostgreSQL schema `raw`.
+- Normalizer routing uses an explicit `NORMALIZER_MAP` in `app/services/ingestion.py`.
+- Direct-format source ingest endpoints exist for selected markets (`.../direct`).
+- Test suite heavily uses async fixtures and dependency overrides (`tests/conftest.py`).
+
+## COMMANDS
 
 ```bash
+# local
 poetry install
-```
-
-2. Run API locally
-
-```bash
 poetry run uvicorn app.main:app --reload
-```
 
-3. Seed data locally
-
-```bash
-poetry run python scripts/seed_data.py
-```
-
-### Docker (recommended for integration)
-
-1. Build and start services
-
-```bash
+# docker
 docker-compose up -d --build
-```
-
-2. Seed data in container
-
-```bash
 docker-compose exec app python /app/scripts/seed_data.py
-```
-
-3. Stop services
-
-```bash
 docker-compose down
-```
 
-### Database Port
-
-- Host port is `5435` mapped to container `5432`.
-- App container uses `db:5432` internally.
-
-## Lint / Format Commands
-
-### Formatting (Black)
-
-```bash
+# quality + tests
 poetry run black app tests
-```
-
-### Linting (Ruff)
-
-```bash
 poetry run ruff check .
-```
-
-### Type Checks (Mypy)
-
-```bash
 poetry run mypy app
-```
-
-## Test Commands
-
-### Run all tests
-
-```bash
 poetry run pytest
 ```
 
-### Run a single file
+## NOTES
 
-```bash
-poetry run pytest tests/test_source_api.py
-```
-
-### Run a single test
-
-```bash
-poetry run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
-```
-
-### Run tests by keyword
-
-```bash
-poetry run pytest -k "crypto"
-```
-
-### Coverage (optional)
-
-```bash
-poetry run pytest --cov=app
-```
-
-### Test Environment Notes
-
-- `SOURCE_API_KEYS` must be set or tests that hit auth will fail.
-- Use `.env` (copied from `.env.example`) for local runs.
-
-## Code Style Guidelines
-
-### Formatting & Imports
-
-- Use Black with line length 100 (see `pyproject.toml`).
-- Use Ruff for linting and import ordering (select includes `I`).
-- Group imports: standard library, third-party, local.
-- Avoid unused imports; Ruff enforces this.
-
-### Typing
-
-- Use Python 3.11+ type syntax (`list[str]`, `str | None`).
-- Prefer explicit types in public function signatures.
-- Use `Optional[T]` only when needed for readability.
-
-### Naming
-
-- Modules/functions/variables: `snake_case`.
-- Classes: `PascalCase`.
-- Constants: `UPPER_SNAKE_CASE`.
-- Database column names use snake_case to match SQL conventions.
-
-### Date/Time Handling
-
-- Always use UTC-aware datetimes.
-- Use `app.utils.utc_now()` for timestamps.
-- Use `ensure_utc()` when parsing external timestamps.
-- DB columns storing datetimes should be `DateTime(timezone=True)`.
-
-### UUIDs
-
-- Use `app.utils.uuid7()` for IDs.
-- Do not use random UUIDv4 unless explicitly required.
-
-### FastAPI Patterns
-
-- Use dependency injection via `app.dependencies.get_db`.
-- Use `HTTPException` for API errors.
-- Prefer `fastapi.status` as `http_status` to avoid name collisions.
-- Keep router functions thin; use services for business logic.
-
-### SQLAlchemy Async Patterns
-
-- Use `AsyncSession` and `await` for all DB interactions.
-- Use `select()` for queries; avoid raw SQL when possible.
-- When raw SQL is needed, wrap in `text()`.
-- Commit explicitly in service methods (do not rely on autocommit).
-
-### Data Quality (DQ)
-
-- DQ rules live in `app/services/dq/validators.py`.
-- Errors (`severity="error"`) block writes; warnings do not.
-- Record DQ issues in `dq_issue` when detected.
-
-### Error Handling
-
-- Catch specific exceptions; avoid bare `except` unless logging + rethrow.
-- For API errors, return informative messages without exposing secrets.
-- For ingestion, validate dataset existence before insert to avoid FK errors.
-
-### Config & Secrets
-
-- Load config via `app.config.Settings`.
-- Do not hardcode secrets; use `.env` or env vars.
-- API keys are comma-separated in `SOURCE_API_KEYS` and `SERVE_API_KEYS`.
-
-### Serialization
-
-- Pydantic v2 models should use `from_attributes = True` when needed.
-- Response wrappers live in `app/schemas/common.py`.
-
-### Testing Conventions
-
-- Tests are in `tests/` and use pytest + pytest-asyncio.
-- Use `httpx.AsyncClient` + `ASGITransport` for API tests.
-- Prefer deterministic data and avoid reliance on external services.
-
-## Common Operations
-
-### Seed Data
-
-```bash
-docker-compose exec app python /app/scripts/seed_data.py
-```
-
-### Raw Cleanup Script
-
-```bash
-docker-compose exec app python /app/scripts/cleanup_raw.py
-```
-
-### Sample Ingest Payload
-
-- `scripts/sample_ingest_payload.json` is the canonical test payload.
-
-## When Adding New Features
-
-- Update `dataset_registry` seed if adding new datasets.
-- Add/extend Normalizers for new markets in `app/services/normalize/`.
-- Extend DQ rules when introducing new fields.
-- Keep Serve API read-only (no writes in Serve layer).
-
-## Known Gaps (as of now)
-
-- Normalize trigger from Source API is stubbed (TODO in ingestion service).
-- Rate limiting and allowlist are not implemented yet.
-- Alembic migrations are not set up; schema changes require rebuild.
+- Host DB port is `5435` -> container `5432`; app container uses `db:5432`.
+- `SOURCE_API_KEYS` must be set for auth-covered tests and ingest endpoints.
+- Known gaps: rate limiting/allowlist not implemented; Alembic migrations not wired.
+- Keep this file high-level; put domain specifics in nearest subdirectory AGENTS.
