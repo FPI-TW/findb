@@ -59,7 +59,7 @@ class IngestionRun(Base):
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     request_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     raw_records: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String(20), default="pending")
+    status: Mapped[str] = mapped_column(String(30), default="pending")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     total_records: Mapped[int] = mapped_column(Integer, default=0)
