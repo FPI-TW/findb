@@ -1,0 +1,16 @@
+services:
+  app:
+    image: ghcr.io/fpi-tw/findb:latest
+    container_name: findb-app
+    env_file: .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+  raw-cleanup:
+    image: ghcr.io/fpi-tw/findb:latest
+    container_name: findb-raw-cleanup
+    env_file: .env
+    restart: unless-stopped
+    command: sh -c "while true; do python /app/scripts/cleanup_raw.py; sleep 86400; done"
