@@ -468,6 +468,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
         )
 
         await self.db.execute(stmt)
+        self.db.expire_all()
 
     async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
         """Process futures continuous payload and upsert into canonical storage."""

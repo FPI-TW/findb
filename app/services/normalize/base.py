@@ -271,7 +271,7 @@ class BaseNormalizer(ABC):
 
     async def resolve_instrument(self, record: MappedRecord) -> Instrument:
         """Resolve instrument by identifier mapping or symbol."""
-        record_market = str(record.market).upper().strip() if record.market else self.market
+        record_market = str(getattr(record, "market", None) or self.market).upper().strip()
         if record.identifier_type and record.identifier_value:
             instrument = await self.get_instrument_by_identifier(
                 record.identifier_type,
@@ -372,6 +372,7 @@ class BaseNormalizer(ABC):
         )
 
         await self.db.execute(stmt)
+        self.db.expire_all()
         return True
 
     async def check_duplicate_in_db(
