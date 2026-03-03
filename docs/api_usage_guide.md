@@ -1,8 +1,8 @@
 # FinDB API 使用教學
 
-> **版本**: 0.1.0 | **最後更新**: 2026-02-23
+> **版本**: 0.1.0 | **最後更新**: 2026-03-03
 
-本文件說明如何使用 FinDB 的 Source API（資料寫入）與 Serve API（資料查詢）。
+本文件說明如何使用 FinDB 的 Source API（資料寫入）、Serve API（資料查詢）與 Admin API（資料修正）。
 涵蓋認證機制、所有端點規格、請求/回應格式、錯誤處理與完整範例。
 
 ---
@@ -24,6 +24,10 @@
   - [宏觀經濟指標](#宏觀經濟指標)
   - [期貨](#期貨)
   - [交易日曆](#交易日曆)
+- [Admin API（資料修正）](#admin-api資料修正)
+  - [修正日K 資料](#修正日k-資料)
+  - [標記 DQ Issue 已解決](#標記-dq-issue-已解決)
+  - [查詢修正紀錄](#查詢修正紀錄)
 - [分頁機制](#分頁機制)
 - [錯誤代碼一覽](#錯誤代碼一覽)
 - [Python 範例](#python-範例)
@@ -42,14 +46,18 @@ Fetch Layer（外部設備）
     ▼
 Source API ──▶ Normalize ──▶ Canonical DB
                                   │
-                                  ▼
-                            Serve API ──▶ 消費者（報告/AI/圖表）
+                      ┌───────────┤
+                      │           │
+                      ▼           ▼
+                 Admin API    Serve API ──▶ 消費者（報告/AI/圖表）
+               （資料修正）
 ```
 
 | 層級 | 角色 | 說明 |
 |------|------|------|
 | **Source API** | 寫入路徑 | 接收原始 payload、去重、觸發正規化 |
 | **Serve API** | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料 |
+| **Admin API** | 修正路徑 | 人工修正 Canonical 資料，寫入不可變 audit log |
 
 ---
 
@@ -119,6 +127,22 @@ Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 ```
 X-API-Key: your-serve-key
 ```
+
+### Admin API（必要）
+
+所有 Admin API 端點**永遠強制**認證，沒有任何 bypass 或 DEBUG 模式例外：
+
+```
+X-API-Key: your-admin-key
+```
+
+| 狀況 | 結果 |
+|------|------|
+| 未帶入 `X-API-Key` | `401` |
+| API Key 無效 | `403` |
+| `ADMIN_API_KEYS` 未配置 | `500` |
+
+> **注意**：Admin API 不設 IP 允許名單，金鑰是唯一保護機制，請妥善保管並與 Source/Serve API Key 分開管理。
 
 ### 安全機制
 
@@ -931,6 +955,235 @@ curl "http://localhost:8000/api/v1/serve/calendar?market=US&is_open=false&start_
 
 ---
 
+## Admin API（資料修正）
+
+**前綴**: `/api/v1/admin`
+**認證**: 必要（`X-API-Key`，無任何 bypass）
+
+Admin API 用於人工修正 Canonical 資料。每次修正都會自動寫入 `canonical_correction` 表作為不可變的 audit log，記錄修改前後快照與操作者資訊。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| PATCH | `/eod/{instrument_id}/{trade_date}` | 修正日K 的 OHLCV 欄位 |
+| PATCH | `/dq-issues/{issue_id}/resolve` | 標記 DQ issue 為已解決 |
+| GET | `/corrections` | 查詢修正 audit log |
+
+---
+
+### 修正日K 資料
+
+```
+PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `instrument_id` | path | UUID | 是 | 標的 ID |
+| `trade_date` | path | date | 是 | 交易日（`YYYY-MM-DD`） |
+
+#### 請求體格式（PatchEODRequest）
+
+```json
+{
+  "correction_reason": "Bloomberg 原始資料錯誤，收盤價多一個零",
+  "close": 153.00
+}
+```
+
+| 欄位 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `correction_reason` | string | **是** | 修正原因（將被記錄到 audit log） |
+| `open` | Decimal | 否 | 開盤價（null 表示清除） |
+| `high` | Decimal | 否 | 最高價（null 表示清除） |
+| `low` | Decimal | 否 | 最低價（null 表示清除） |
+| `close` | Decimal | 否 | 收盤價（null 表示清除） |
+| `volume` | int | 否 | 成交量（null 表示清除） |
+| `turnover` | Decimal | 否 | 成交額（null 表示清除） |
+
+> 至少須提供一個 OHLCV 欄位，且新值必須與現有值不同，否則回傳 `400`。
+
+#### 回應範例（200 OK）
+
+```json
+{
+  "success": true,
+  "correction_id": "019462f0-7c00-7000-8000-000000000099",
+  "record_id": "019462f0-7c00-7000-8000-000000000001",
+  "instrument_id": "019462f0-7c00-7000-8000-000000000002",
+  "trade_date": "2026-01-16",
+  "message": "EOD record updated and correction logged"
+}
+```
+
+#### 錯誤情境
+
+| 狀態碼 | 說明 |
+|--------|------|
+| `404` | instrument_id + trade_date 找不到對應的日K 記錄 |
+| `400` | 未提供任何 OHLCV 欄位，或新值與現有值完全相同 |
+
+#### curl 範例
+
+```bash
+# 修正 BTC 2026-01-16 收盤價
+curl -X PATCH \
+  "http://localhost:8000/api/v1/admin/eod/019462f0-7c00-7000-8000-000000000002/2026-01-16" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correction_reason": "Bloomberg 原始資料錯誤，收盤價多一個零",
+    "close": 95709.01
+  }'
+
+# 同時修正多個欄位
+curl -X PATCH \
+  "http://localhost:8000/api/v1/admin/eod/{instrument_id}/2026-01-16" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correction_reason": "OHLC 資料整體異常，人工校正",
+    "open": 95550.07,
+    "high": 95825.34,
+    "low": 95119.76,
+    "close": 95709.01
+  }'
+
+# 清除欄位（設為 null）
+curl -X PATCH \
+  "http://localhost:8000/api/v1/admin/eod/{instrument_id}/2026-01-16" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correction_reason": "成交額資料來源錯誤，暫時清除",
+    "turnover": null
+  }'
+```
+
+---
+
+### 標記 DQ Issue 已解決
+
+```
+PATCH /api/v1/admin/dq-issues/{issue_id}/resolve
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `issue_id` | path | UUID | 是 | DQ issue ID |
+
+#### 請求體格式（ResolveDQIssueRequest）
+
+```json
+{
+  "correction_reason": "已確認為資料來源暫時性錯誤，資料已重新攝取修正"
+}
+```
+
+| 欄位 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `correction_reason` | string | **是** | 解決原因（將被記錄到 audit log） |
+
+#### 回應範例（200 OK）
+
+```json
+{
+  "success": true,
+  "correction_id": "019462f0-7c00-7000-8000-000000000099",
+  "issue_id": "019462f0-7c00-7000-8000-000000000050",
+  "resolved_at": "2026-03-03T10:00:00Z",
+  "message": "DQ issue marked as resolved and correction logged"
+}
+```
+
+#### 錯誤情境
+
+| 狀態碼 | 說明 |
+|--------|------|
+| `404` | issue_id 找不到對應的 DQ issue |
+| `409` | 該 DQ issue 已經是 resolved 狀態 |
+
+#### curl 範例
+
+```bash
+# 標記 DQ issue 為已解決
+curl -X PATCH \
+  "http://localhost:8000/api/v1/admin/dq-issues/019462f0-7c00-7000-8000-000000000050/resolve" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correction_reason": "已確認為資料來源暫時性錯誤，資料已重新攝取修正"
+  }'
+```
+
+---
+
+### 查詢修正紀錄
+
+```
+GET /api/v1/admin/corrections
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `table_name` | query | string | 否 | 篩選修正的資料表（`market_data_eod`、`dq_issue`） |
+| `instrument_id` | query | UUID | 否 | 篩選特定標的的修正紀錄 |
+| `page` | query | int | 否 | 頁碼（預設 1） |
+| `page_size` | query | int | 否 | 每頁筆數（預設 20，最大 200） |
+
+回應為**最新優先**排序。
+
+#### 回應範例（200 OK）
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "019462f0-7c00-7000-8000-000000000099",
+      "table_name": "market_data_eod",
+      "record_id": "019462f0-7c00-7000-8000-000000000001",
+      "instrument_id": "019462f0-7c00-7000-8000-000000000002",
+      "trade_date": "2026-01-16",
+      "corrected_by": "your****",
+      "correction_reason": "Bloomberg 原始資料錯誤，收盤價多一個零",
+      "before_snapshot": { "close": "1530000" },
+      "after_snapshot": { "close": "153000" },
+      "created_at": "2026-03-03T10:00:00Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total_records": 1,
+    "total_pages": 1
+  }
+}
+```
+
+> **`corrected_by` 遮罩**：回應中的 API Key 僅顯示前 4 碼加 `****`（如 `your****`），不會洩漏完整金鑰。
+
+#### curl 範例
+
+```bash
+# 查詢所有修正紀錄
+curl "http://localhost:8000/api/v1/admin/corrections" \
+  -H "X-API-Key: your-admin-key"
+
+# 篩選 EOD 資料的修正紀錄
+curl "http://localhost:8000/api/v1/admin/corrections?table_name=market_data_eod" \
+  -H "X-API-Key: your-admin-key"
+
+# 篩選特定標的的修正紀錄
+curl "http://localhost:8000/api/v1/admin/corrections?instrument_id=019462f0-7c00-7000-8000-000000000002" \
+  -H "X-API-Key: your-admin-key"
+
+# 篩選 DQ issue 解決記錄
+curl "http://localhost:8000/api/v1/admin/corrections?table_name=dq_issue&page_size=50" \
+  -H "X-API-Key: your-admin-key"
+```
+
+---
+
 ## 分頁機制
 
 所有列表端點支援分頁，參數統一為：
@@ -975,7 +1228,8 @@ curl "http://localhost:8000/api/v1/serve/instruments?page=2&page_size=50"
 | `400` | 請求錯誤 | dataset 不存在、market 不符、payload 驗證失敗、dataset 已停用 |
 | `401` | 未認證 | 未帶入 `X-API-Key` Header |
 | `403` | 禁止存取 | API Key 無效、IP 不在允許名單 |
-| `404` | 找不到資源 | instrument_id / run_id / series_id 不存在 |
+| `404` | 找不到資源 | instrument_id / run_id / series_id / issue_id 不存在 |
+| `409` | 衝突 | 操作與現有狀態衝突（如重複標記已解決的 DQ issue） |
 | `422` | 驗證錯誤 | 請求體格式不符 Pydantic schema |
 | `429` | 請求過多 | 超過限流上限 |
 | `500` | 伺服器錯誤 | 內部錯誤、未設定 API Key、未設定允許名單（生產環境） |
@@ -999,6 +1253,19 @@ curl "http://localhost:8000/api/v1/serve/instruments?page=2&page_size=50"
 | `"Dataset 'xxx' not found"` | 400 | 指定的 dataset_key 不存在 |
 | `"Dataset 'xxx' is inactive"` | 400 | 資料集已停用 |
 | `"Market mismatch..."` | 400 | payload 市場與端點市場不符 |
+
+### Admin API 常見錯誤
+
+| 錯誤訊息 | 狀態碼 | 說明 |
+|---------|--------|------|
+| `"Missing API key"` | 401 | 未帶入 X-API-Key |
+| `"Invalid API key"` | 403 | Admin API Key 不正確 |
+| `"No admin API keys configured"` | 500 | 未設定 `ADMIN_API_KEYS` 環境變數 |
+| `"EOD record not found..."` | 404 | 指定的 instrument_id + trade_date 無日K 記錄 |
+| `"DQ issue ... not found"` | 404 | 指定的 issue_id 不存在 |
+| `"No OHLCV fields provided..."` | 400 | PATCH 請求未包含任何 OHLCV 欄位 |
+| `"No changes detected..."` | 400 | 提交的值與現有值完全相同 |
+| `"DQ issue ... is already resolved"` | 409 | 該 DQ issue 已是 resolved 狀態 |
 
 ---
 
@@ -1214,6 +1481,98 @@ all_us_instruments = fetch_all_pages(
 print(f"共 {len(all_us_instruments)} 筆美股標的")
 ```
 
+### Admin API：修正日K 資料
+
+```python
+import httpx
+
+BASE_URL = "http://localhost:8000"
+ADMIN_KEY = "your-admin-key"
+ADMIN_HEADERS = {
+    "X-API-Key": ADMIN_KEY,
+    "Content-Type": "application/json",
+}
+
+
+def patch_eod(instrument_id: str, trade_date: str, fields: dict, reason: str) -> dict:
+    """修正日K 資料的 OHLCV 欄位"""
+    payload = {"correction_reason": reason, **fields}
+    with httpx.Client() as client:
+        resp = client.patch(
+            f"{BASE_URL}/api/v1/admin/eod/{instrument_id}/{trade_date}",
+            headers=ADMIN_HEADERS,
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# 修正收盤價
+result = patch_eod(
+    instrument_id="019462f0-7c00-7000-8000-000000000002",
+    trade_date="2026-01-16",
+    fields={"close": 95709.01},
+    reason="Bloomberg 原始資料收盤價多一個零，人工校正",
+)
+print(f"Correction ID: {result['correction_id']}")
+```
+
+### Admin API：標記 DQ Issue 已解決
+
+```python
+def resolve_dq_issue(issue_id: str, reason: str) -> dict:
+    """標記 DQ issue 為已解決"""
+    with httpx.Client() as client:
+        resp = client.patch(
+            f"{BASE_URL}/api/v1/admin/dq-issues/{issue_id}/resolve",
+            headers=ADMIN_HEADERS,
+            json={"correction_reason": reason},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+result = resolve_dq_issue(
+    issue_id="019462f0-7c00-7000-8000-000000000050",
+    reason="已確認為資料來源暫時性錯誤，資料已重新攝取修正",
+)
+print(f"Resolved at: {result['resolved_at']}")
+```
+
+### Admin API：查詢修正紀錄
+
+```python
+def list_corrections(
+    table_name: str = None,
+    instrument_id: str = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """查詢修正 audit log"""
+    params = {"page": page, "page_size": page_size}
+    if table_name:
+        params["table_name"] = table_name
+    if instrument_id:
+        params["instrument_id"] = instrument_id
+
+    with httpx.Client() as client:
+        resp = client.get(
+            f"{BASE_URL}/api/v1/admin/corrections",
+            headers=ADMIN_HEADERS,
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+# 查詢某個標的的所有修正紀錄
+corrections = list_corrections(instrument_id="019462f0-7c00-7000-8000-000000000002")
+for c in corrections["data"]:
+    print(f"{c['created_at']} [{c['table_name']}] {c['correction_reason']}")
+    print(f"  Before: {c['before_snapshot']}")
+    print(f"  After:  {c['after_snapshot']}")
+```
+
 ### 完整工作流程範例
 
 ```python
@@ -1342,12 +1701,30 @@ curl "http://localhost:8000/api/v1/source/datasets" \
 | `HK` | 香港市場 |
 | `CN` | 中國市場 |
 
+### Q: Admin API 修正後，原始資料會被刪除嗎？
+
+不會。Admin API 只修改 Canonical 層的資料（`market_data_eod` 等），原始 payload 在 `raw.market_payload` 中保持不變。每次修正都會新增一筆 `canonical_correction` 記錄，包含修改前後的快照，可完整追溯所有變更。
+
+### Q: 修正後可以再次修正同一筆資料嗎？
+
+可以。每次呼叫 PATCH 端點都會新增一筆獨立的 audit log，無論修正幾次都有完整歷史紀錄。
+
+### Q: `corrected_by` 欄位顯示的是什麼？
+
+回應中的 `corrected_by` 欄位會將 API Key 遮罩，只顯示前 4 個字元加 `****`（例如 `your****`）。完整金鑰永遠不會出現在 API 回應中。
+
+### Q: DQ issue 標記為 resolved 之後可以撤銷嗎？
+
+目前不支援撤銷 DQ issue 的 resolved 狀態。如需撤銷，請聯繫系統管理員直接修改資料庫，並手動新增一筆說明性的 audit log。
+
 ### Q: 生產環境需要注意什麼？
 
 1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`（`DEBUG=false` 時為必要，否則無法啟動）
-2. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
-3. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
-4. **建議**使用反向代理（如 nginx）處理 HTTPS
+2. **必須**設定 `ADMIN_API_KEYS`（否則所有 Admin API 端點回傳 500）
+3. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
+4. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
+5. **建議**使用反向代理（如 nginx）處理 HTTPS
+6. **建議** Admin API Key 與 Source/Serve API Key 分開管理，限制知曉範圍
 
 ### Q: 如何查看互動式 API 文件？
 
@@ -1366,6 +1743,7 @@ curl "http://localhost:8000/api/v1/source/datasets" \
 | `SOURCE_TRUST_PROXY_HEADERS` | `false` | 是否信任 X-Forwarded-For |
 | `SERVE_API_KEYS` | （空） | Serve API 金鑰（逗號分隔） |
 | `SERVE_REQUIRE_AUTH` | `false` | Serve API 是否需要認證 |
+| `ADMIN_API_KEYS` | （空） | Admin API 金鑰（逗號分隔），**必須設定**才能使用 Admin API |
 | `RATE_LIMIT_REQUESTS` | `100` | 限流上限（每 window 內的請求數） |
 | `RATE_LIMIT_WINDOW` | `60` | 限流時間窗口（秒） |
 | `RAW_RETENTION_DAYS` | `14` | 原始資料保留天數 |

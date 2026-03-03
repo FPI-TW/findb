@@ -32,6 +32,13 @@ def get_serve_api_keys() -> list[str]:
     return [key.strip() for key in settings.SERVE_API_KEYS.split(",") if key.strip()]
 
 
+def get_admin_api_keys() -> list[str]:
+    """Get list of valid admin API keys."""
+    if not settings.ADMIN_API_KEYS:
+        return []
+    return [key.strip() for key in settings.ADMIN_API_KEYS.split(",") if key.strip()]
+
+
 def get_source_allowlist_networks() -> list[ipaddress._BaseNetwork]:
     if not settings.SOURCE_ALLOWLIST_CIDRS:
         return []
@@ -152,6 +159,31 @@ async def verify_source_api_key(
 
     client_ip = _enforce_source_allowlist(request)
     _enforce_source_rate_limit(api_key, client_ip)
+
+    return api_key
+
+
+async def verify_admin_api_key(api_key: str = Security(api_key_header)) -> str:
+    """Verify API key for Admin API endpoints. Always required — no bypass."""
+    valid_keys = get_admin_api_keys()
+
+    if not valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No admin API keys configured",
+        )
+
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+        )
+
+    if api_key not in valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid API key",
+        )
 
     return api_key
 

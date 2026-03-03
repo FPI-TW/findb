@@ -14,6 +14,7 @@ from app.models.canonical import (
     RollRule,
 )
 from app.models.registry import DatasetRegistry, IngestionRun, DQIssue
+from app.models.correction import CanonicalCorrection
 
 __all__ = [
     "Base",
@@ -31,4 +32,5 @@ __all__ = [
     "DatasetRegistry",
     "IngestionRun",
     "DQIssue",
+    "CanonicalCorrection",
 ]

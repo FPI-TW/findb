@@ -120,3 +120,26 @@ def source_headers(source_api_key: str) -> dict:
     """Get headers for source API requests."""
     settings = get_settings()
     return {settings.API_KEY_HEADER: source_api_key}
+
+
+@pytest.fixture
+def admin_api_key() -> str:
+    """Get test admin API key."""
+    return "test-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def configure_admin_api_keys(admin_api_key: str):
+    """Ensure Admin API keys are configured for tests."""
+    settings = get_settings()
+    original_keys = settings.ADMIN_API_KEYS
+    settings.ADMIN_API_KEYS = admin_api_key
+    yield
+    settings.ADMIN_API_KEYS = original_keys
+
+
+@pytest.fixture
+def admin_headers(admin_api_key: str) -> dict:
+    """Get headers for admin API requests."""
+    settings = get_settings()
+    return {settings.API_KEY_HEADER: admin_api_key}

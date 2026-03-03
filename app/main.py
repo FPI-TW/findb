@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.config import get_settings
-from app.api.v1 import source, serve
+from app.api.v1 import source, serve, admin
 from app.models.base import init_db
 
 
@@ -59,6 +59,12 @@ app.include_router(
     serve.router,
     prefix=f"{settings.API_V1_PREFIX}/serve",
     tags=["Serve API"],
+)
+
+app.include_router(
+    admin.router,
+    prefix=f"{settings.API_V1_PREFIX}/admin",
+    tags=["Admin API"],
 )
 
 

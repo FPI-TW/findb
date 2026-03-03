@@ -1,10 +1,10 @@
 # API 測試流程
 
-> **最後更新**: 2026-02-23
+> **最後更新**: 2026-03-03
 
-完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢，以及端到端煙霧測試。
+完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
 
-自動化測試請見 [§7. 自動化測試](#7-自動化測試)。
+自動化測試請見 [§8. 自動化測試](#8-自動化測試)。
 
 ---
 
@@ -15,10 +15,11 @@
 - [2. 安全機制測試](#2-安全機制測試)
 - [3. Source API 測試](#3-source-api-測試)
 - [4. Serve API 測試](#4-serve-api-測試)
-- [5. 端到端煙霧測試](#5-端到端煙霧測試)
-- [6. 視覺化測試面板](#6-視覺化測試面板)
-- [7. 自動化測試](#7-自動化測試)
-- [8. 故障排查](#8-故障排查)
+- [5. Admin API 測試](#5-admin-api-測試)
+- [6. 端到端煙霧測試](#6-端到端煙霧測試)
+- [7. 視覺化測試面板](#7-視覺化測試面板)
+- [8. 自動化測試](#8-自動化測試)
+- [9. 故障排查](#9-故障排查)
 
 ---
 
@@ -459,7 +460,153 @@ curl "http://localhost:8000/api/v1/serve/instruments?page=2&page_size=5"
 
 ---
 
-## 5. 端到端煙霧測試
+## 5. Admin API 測試
+
+所有 Admin API 請求需在 Header 帶入 `X-API-Key: dev-admin-key`。
+
+> 若使用 Docker 環境，需先在 `docker-compose.yml` 或 `.env` 設定 `ADMIN_API_KEYS=dev-admin-key`，然後重啟服務：
+> ```bash
+> docker-compose restart app
+> ```
+
+### 5.1 認證測試
+
+```bash
+# 未帶 API Key → 401
+curl -s -o /dev/null -w "%{http_code}" \
+  "http://localhost:8000/api/v1/admin/corrections"
+
+# 錯誤 API Key → 403
+curl -s -o /dev/null -w "%{http_code}" \
+  "http://localhost:8000/api/v1/admin/corrections" \
+  -H "X-API-Key: wrong-key"
+
+# 正確 API Key → 200
+curl -s -o /dev/null -w "%{http_code}" \
+  "http://localhost:8000/api/v1/admin/corrections" \
+  -H "X-API-Key: dev-admin-key"
+```
+
+### 5.2 修正日K 資料
+
+先從 Serve API 取得一筆日K 的 `instrument_id`：
+
+```bash
+curl "http://localhost:8000/api/v1/serve/instruments?symbol=BTC"
+```
+
+從回應取得 `instrument_id`，再確認該日期有日K 資料：
+
+```bash
+curl "http://localhost:8000/api/v1/serve/eod?market=CRYPTO&symbols=BTC"
+```
+
+從回應記下 `instrument_id` 與某筆的 `trade_date`，然後修正收盤價：
+
+```bash
+curl -X PATCH \
+  "http://localhost:8000/api/v1/admin/eod/{instrument_id}/{trade_date}" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correction_reason": "測試修正：調整收盤價",
+    "close": 90000.00
+  }'
+```
+
+預期回傳 `200 OK` 與 `correction_id`。
+
+**驗證**：再次查詢 Serve API 確認 close 已更新：
+
+```bash
+curl "http://localhost:8000/api/v1/serve/eod/{instrument_id}?start_date={trade_date}&end_date={trade_date}"
+```
+
+### 5.3 找不到記錄 → 404
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+  -X PATCH \
+  "http://localhost:8000/api/v1/admin/eod/00000000-0000-0000-0000-000000000000/2026-01-16" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"correction_reason": "test"}'
+```
+
+預期：`404`
+
+### 5.4 無變更 → 400
+
+送與現有值完全相同的修正：
+
+```bash
+# 先查詢現有收盤價
+curl "http://localhost:8000/api/v1/serve/eod/{instrument_id}?start_date={trade_date}&end_date={trade_date}"
+
+# 送相同的值（close = 原本的值）
+curl -s -o /dev/null -w "%{http_code}" \
+  -X PATCH \
+  "http://localhost:8000/api/v1/admin/eod/{instrument_id}/{trade_date}" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"correction_reason": "test", "close": <現有值>}'
+```
+
+預期：`400`
+
+### 5.5 標記 DQ Issue 已解決
+
+若系統中有未解決的 DQ issue，先查詢（目前需直接查 DB 或透過 Source API 攝取觸發 DQ）：
+
+```bash
+# 若有已知的 issue_id，標記為已解決
+curl -X PATCH \
+  "http://localhost:8000/api/v1/admin/dq-issues/{issue_id}/resolve" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"correction_reason": "手動驗證確認資料正確，標記 DQ issue 已解決"}'
+```
+
+預期回傳 `200 OK` 與 `resolved_at`。
+
+**重複標記 → 409**：
+
+```bash
+# 再次標記同一個 issue → 409 Conflict
+curl -s -o /dev/null -w "%{http_code}" \
+  -X PATCH \
+  "http://localhost:8000/api/v1/admin/dq-issues/{issue_id}/resolve" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"correction_reason": "重複標記測試"}'
+```
+
+預期：`409`
+
+### 5.6 查詢修正紀錄
+
+```bash
+# 查詢所有修正紀錄
+curl "http://localhost:8000/api/v1/admin/corrections" \
+  -H "X-API-Key: dev-admin-key"
+
+# 篩選 EOD 修正
+curl "http://localhost:8000/api/v1/admin/corrections?table_name=market_data_eod" \
+  -H "X-API-Key: dev-admin-key"
+
+# 篩選特定標的
+curl "http://localhost:8000/api/v1/admin/corrections?instrument_id={instrument_id}" \
+  -H "X-API-Key: dev-admin-key"
+```
+
+確認：
+- `corrected_by` 格式為 `xxxx****`（前 4 碼 + 遮罩）
+- `before_snapshot` 與 `after_snapshot` 包含修改前後的欄位值
+- 結果為**最新優先**排序
+
+---
+
+## 6. 端到端煙霧測試
 
 一次跑完完整流程：健康檢查 → datasets → 攝取 → 等待完成 → 查詢結果。
 
@@ -509,11 +656,11 @@ chmod +x scripts/smoke_test.sh
 ./scripts/smoke_test.sh
 ```
 
-或直接使用**視覺化測試面板**的一鍵煙霧測試按鈕（見 §6）。
+或直接使用**視覺化測試面板**的一鍵煙霧測試按鈕（見 §7）。
 
 ---
 
-## 6. 視覺化測試面板
+## 7. 視覺化測試面板
 
 瀏覽器開啟 [http://localhost:8000/test](http://localhost:8000/test)。
 
@@ -535,7 +682,7 @@ chmod +x scripts/smoke_test.sh
 
 ---
 
-## 7. 自動化測試
+## 8. 自動化測試
 
 ### 本機
 
@@ -559,7 +706,8 @@ docker-compose exec app bash -c \
 | `test_normalize.py` | Crypto/Equity/FX 正規化邏輯 | ~5 |
 | `test_usstock_normalize.py` | US Stock/Global/TW/HK/CN 正規化、區域篩選 | ~12 |
 | `test_end_to_end.py` | 完整 ingest → normalize → query 流程 | ~3 |
-| **合計** | | **~42**（40 passed, 2 skipped） |
+| `test_admin_api.py` | Admin 認證（401/403/500）、PATCH EOD（404/400/200）、Resolve DQ（404/409/200）、audit log、分頁、corrected_by 遮罩 | 24 |
+| **合計** | | **~66**（~64 passed, 2 skipped） |
 
 ### 指定執行
 
@@ -567,11 +715,14 @@ docker-compose exec app bash -c \
 # 只跑 Source API 測試
 poetry run pytest tests/test_source_api.py -v
 
+# 只跑 Admin API 測試
+poetry run pytest tests/test_admin_api.py -v
+
 # 只跑 crypto 相關
 poetry run pytest -k "crypto" -v
 
 # 只跑安全機制測試
-poetry run pytest -k "allowlist or rate_limit" -v
+poetry run pytest -k "allowlist or rate_limit or admin_auth" -v
 
 # 顯示覆蓋率
 poetry run pytest --cov=app --cov-report=term-missing
@@ -579,7 +730,7 @@ poetry run pytest --cov=app --cov-report=term-missing
 
 ---
 
-## 8. 故障排查
+## 9. 故障排查
 
 | 症狀 | 原因 | 解法 |
 |------|------|------|
@@ -594,6 +745,10 @@ poetry run pytest --cov=app --cov-report=term-missing
 | `422 Validation Error` | 請求體格式不符 | 檢查 JSON 欄位是否符合 schema（見 [API 使用教學](api_usage_guide.md)） |
 | `.env` 設定不生效 | docker-compose 覆蓋 | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效 |
 | `Run status 一直 pending` | 背景任務未執行 | 確認 app 容器正常運行，檢查 `docker-compose logs app` |
+| `500 No admin API keys configured` | `ADMIN_API_KEYS` 未設定 | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEYS=your-admin-key`，重啟服務 |
+| `Admin PATCH 回傳 404` | 找不到指定記錄 | 確認 instrument_id 與 trade_date 有對應的日K 資料（先用 Serve API 確認） |
+| `Admin PATCH 回傳 400 No changes` | 提交值與現有值相同 | 確認修正值與 DB 現有值確實不同 |
+| `Admin DQ resolve 回傳 409` | DQ issue 已解決 | 該 issue 已是 resolved 狀態，無需重複標記 |
 
 ---
 
