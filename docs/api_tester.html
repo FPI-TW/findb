@@ -691,6 +691,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 
     <div class="nav-group">
       <div class="nav-group-label">Admin API — 管理維運</div>
+      <a class="nav-item" onclick="scrollTo('ep-dq-issues')">
+        <span class="nav-method m-get">GET</span>DQ Issues
+      </a>
       <a class="nav-item" onclick="scrollTo('ep-patch-eod')">
         <span class="nav-method m-post">PATCH</span>Patch EOD
       </a>
@@ -1703,6 +1706,71 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       操作會建立不可修改的 audit correction 記錄。
     </div>
 
+    <!-- DQ Issues -->
+    <div class="endpoint-card" id="ep-dq-issues">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/admin/dq-issues</span>
+        <span class="endpoint-desc">查詢資料品質問題清單 (取得 issue_id)</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          列出標準化過程中產生的 DQ Issue 記錄。<strong>Resolve DQ Issue 端點所需的 issue_id 從這裡取得。</strong><br>
+          建議先用 <code>resolved=false</code> 篩選出未解決的問題。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>resolved</td><td><span class="param-type">boolean</span></td><td><span class="param-optional">選填</span></td><td>false = 未解決，true = 已解決，不填 = 全部</td></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-optional">選填</span></td><td>篩選特定商品</td></tr>
+            <tr><td>severity</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>嚴重程度：warning / error</td></tr>
+            <tr><td>page / page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>分頁</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>resolved</label>
+              <select id="dq-list-resolved">
+                <option value="">— 全部 —</option>
+                <option value="false">false (未解決)</option>
+                <option value="true">true (已解決)</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label>severity</label>
+              <select id="dq-list-severity">
+                <option value="">— 全部 —</option>
+                <option value="warning">warning</option>
+                <option value="error">error</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label>instrument_id (UUID)</label>
+              <input id="dq-list-instid" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="dq-list-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendDQIssues(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Patch EOD -->
     <div class="endpoint-card" id="ep-patch-eod">
       <div class="endpoint-header" onclick="toggleCard(this)">
@@ -2114,6 +2182,15 @@ function sendCalendar(btn) {
     end_date:   document.getElementById('cal-end').value,
     is_open:    document.getElementById('cal-is-open').value,
     page_size:  document.getElementById('cal-page-size').value,
+  }});
+}
+
+function sendDQIssues(btn) {
+  doRequest(btn, 'GET', '/api/v1/admin/dq-issues', { auth:'admin', params: {
+    resolved:      document.getElementById('dq-list-resolved').value,
+    severity:      document.getElementById('dq-list-severity').value,
+    instrument_id: document.getElementById('dq-list-instid').value,
+    page_size:     document.getElementById('dq-list-page-size').value,
   }});
 }
 

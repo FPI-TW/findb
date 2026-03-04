@@ -15,6 +15,8 @@ from app.dependencies import get_db
 from app.schemas.admin import (
     CorrectionListResponse,
     CorrectionResponse,
+    DQIssueListResponse,
+    DQIssueResponse,
     PatchEODRequest,
     PatchEODResponse,
     ResolveDQIssueRequest,
@@ -26,12 +28,37 @@ from app.services.admin import (
     NoChangesError,
     RecordNotFoundError,
     list_corrections,
+    list_dq_issues,
     patch_eod_record,
     resolve_dq_issue,
 )
 from app.services.admin import _mask_key
 
 router = APIRouter()
+
+
+@router.get("/dq-issues", response_model=DQIssueListResponse)
+async def list_dq_issues_endpoint(
+    resolved: Optional[bool] = Query(None, description="Filter by resolved status"),
+    instrument_id: Optional[UUID] = Query(None, description="Filter by instrument UUID"),
+    severity: Optional[str] = Query(None, description="Filter by severity (warning / error)"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=1000),
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """List DQ issues. Filter by resolved status, instrument, or severity."""
+    rows, total = await list_dq_issues(db, resolved, instrument_id, severity, page, page_size)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    return DQIssueListResponse(
+        data=[DQIssueResponse.model_validate(r) for r in rows],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total,
+            total_pages=total_pages,
+        ),
+    )
 
 
 @router.patch("/eod/{instrument_id}/{trade_date}", response_model=PatchEODResponse)

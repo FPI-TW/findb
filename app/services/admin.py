@@ -186,6 +186,38 @@ async def resolve_dq_issue(
     return correction, issue
 
 
+async def list_dq_issues(
+    db: AsyncSession,
+    resolved: Optional[bool],
+    instrument_id: Optional[UUID],
+    severity: Optional[str],
+    page: int,
+    page_size: int,
+) -> tuple[list[DQIssue], int]:
+    """Return a paginated, newest-first list of DQ issues."""
+    filters = []
+    if resolved is not None:
+        filters.append(DQIssue.resolved == resolved)
+    if instrument_id is not None:
+        filters.append(DQIssue.instrument_id == instrument_id)
+    if severity is not None:
+        filters.append(DQIssue.severity == severity)
+
+    count_stmt = select(func.count(DQIssue.id)).where(*filters)
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    offset = (page - 1) * page_size
+    rows_stmt = (
+        select(DQIssue)
+        .where(*filters)
+        .order_by(DQIssue.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = list((await db.execute(rows_stmt)).scalars().all())
+    return rows, total
+
+
 async def list_corrections(
     db: AsyncSession,
     table_name: Optional[str],

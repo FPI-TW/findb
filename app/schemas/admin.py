@@ -47,6 +47,30 @@ class PatchEODResponse(BaseModel):
 # ── DQ Issue Resolution ────────────────────────────────────────────────────────
 
 
+class DQIssueResponse(BaseModel):
+    """Single DQ issue record."""
+
+    id: UUID
+    run_id: Optional[UUID] = None
+    instrument_id: Optional[UUID] = None
+    trade_date: Optional[date] = None
+    issue_type: str
+    severity: str
+    description: Optional[str] = None
+    raw_data: Optional[dict] = None
+    resolved: bool
+    resolved_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DQIssueListResponse(PaginatedResponse[DQIssueResponse]):
+    """Paginated DQ issue list."""
+
+    pass
+
+
 class ResolveDQIssueRequest(BaseModel):
     """PATCH body for resolving a DQ issue."""
 
