@@ -2,6 +2,7 @@
 SQLAlchemy base configuration and database connection.
 """
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData, text
@@ -46,10 +47,15 @@ async_session_maker = async_sessionmaker(
 
 async def init_db():
     """Initialize database (create tables if not exist)."""
+    # Schema creation in its own transaction to handle multi-worker race condition
+    async with engine.connect() as conn:
+        try:
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+            await conn.commit()
+        except IntegrityError:
+            await conn.rollback()
+    # Create all tables
     async with engine.begin() as conn:
-        # Create raw schema
-        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-        # Create all tables
         await conn.run_sync(Base.metadata.create_all)
 
 
