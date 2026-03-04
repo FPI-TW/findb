@@ -631,76 +631,76 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
   <nav class="sidebar-nav">
     <div class="nav-group">
       <div class="nav-group-label">系統</div>
-      <a class="nav-item" onclick="scrollTo('sec-system')">
+      <a class="nav-item" onclick="goTo('sec-system')">
         <span class="nav-method m-get">GET</span>Health Check
       </a>
     </div>
 
     <div class="nav-group">
       <div class="nav-group-label">Source API — 資料注入</div>
-      <a class="nav-item" onclick="scrollTo('ep-datasets')">
+      <a class="nav-item" onclick="goTo('ep-datasets')">
         <span class="nav-method m-get">GET</span>Datasets 清單
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-ingest-raw')">
+      <a class="nav-item" onclick="goTo('ep-ingest-raw')">
         <span class="nav-method m-post">POST</span>Raw Ingest
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-ingest-direct')">
+      <a class="nav-item" onclick="goTo('ep-ingest-direct')">
         <span class="nav-method m-post">POST</span>Direct Ingest
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-run-status')">
+      <a class="nav-item" onclick="goTo('ep-run-status')">
         <span class="nav-method m-get">GET</span>Run Status
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-rerun')">
+      <a class="nav-item" onclick="goTo('ep-rerun')">
         <span class="nav-method m-post">POST</span>Rerun
       </a>
     </div>
 
     <div class="nav-group">
       <div class="nav-group-label">Serve API — 資料查詢</div>
-      <a class="nav-item" onclick="scrollTo('ep-instruments')">
+      <a class="nav-item" onclick="goTo('ep-instruments')">
         <span class="nav-method m-get">GET</span>Instruments
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-instrument-id')">
+      <a class="nav-item" onclick="goTo('ep-instrument-id')">
         <span class="nav-method m-get">GET</span>Instrument by ID
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-eod')">
+      <a class="nav-item" onclick="goTo('ep-eod')">
         <span class="nav-method m-get">GET</span>EOD 日線
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-eod-id')">
+      <a class="nav-item" onclick="goTo('ep-eod-id')">
         <span class="nav-method m-get">GET</span>EOD by Instrument
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-corp-actions')">
+      <a class="nav-item" onclick="goTo('ep-corp-actions')">
         <span class="nav-method m-get">GET</span>Corporate Actions
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-macro-series')">
+      <a class="nav-item" onclick="goTo('ep-macro-series')">
         <span class="nav-method m-get">GET</span>Macro Series
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-macro-obs')">
+      <a class="nav-item" onclick="goTo('ep-macro-obs')">
         <span class="nav-method m-get">GET</span>Macro Observations
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-futures-contracts')">
+      <a class="nav-item" onclick="goTo('ep-futures-contracts')">
         <span class="nav-method m-get">GET</span>Futures Contracts
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-futures-continuous')">
+      <a class="nav-item" onclick="goTo('ep-futures-continuous')">
         <span class="nav-method m-get">GET</span>Futures Continuous
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-calendar')">
+      <a class="nav-item" onclick="goTo('ep-calendar')">
         <span class="nav-method m-get">GET</span>Trading Calendar
       </a>
     </div>
 
     <div class="nav-group">
       <div class="nav-group-label">Admin API — 管理維運</div>
-      <a class="nav-item" onclick="scrollTo('ep-dq-issues')">
+      <a class="nav-item" onclick="goTo('ep-dq-issues')">
         <span class="nav-method m-get">GET</span>DQ Issues
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-patch-eod')">
+      <a class="nav-item" onclick="goTo('ep-patch-eod')">
         <span class="nav-method m-post">PATCH</span>Patch EOD
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-resolve-dq')">
+      <a class="nav-item" onclick="goTo('ep-resolve-dq')">
         <span class="nav-method m-post">PATCH</span>Resolve DQ Issue
       </a>
-      <a class="nav-item" onclick="scrollTo('ep-corrections')">
+      <a class="nav-item" onclick="goTo('ep-corrections')">
         <span class="nav-method m-get">GET</span>Corrections Log
       </a>
     </div>
@@ -1964,7 +1964,7 @@ const cfg = {
 });
 
 // ─── UI HELPERS ──────────────────────────────────────────
-function scrollTo(id) {
+function goTo(id) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   // Open card if it's an endpoint
   const el = document.getElementById(id);
