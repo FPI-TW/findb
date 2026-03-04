@@ -142,9 +142,14 @@ findb/
 │       ├── uuid7.py
 │       └── datetime_utils.py
 │
+├── .github/
+│   └── workflows/
+│       └── deploy.yml          # CI/CD：test → build → deploy
+│
 ├── scripts/
 │   ├── seed_data.py            # 資料種子腳本
 │   ├── cleanup_raw.py          # Raw 清理腳本
+│   ├── setup_ec2.sh            # EC2 一次性初始化腳本
 │   └── sample_ingest_payload.json
 │
 ├── tests/                      # 測試
@@ -162,7 +167,8 @@ findb/
 ├── plans/                      # 開發計劃
 │   └── normalize_serve_development_plan.md
 │
-├── docker-compose.yml
+├── docker-compose.yml          # 本機開發環境
+├── docker-compose.prod.yml     # 生產環境（AWS EC2）
 ├── Dockerfile
 ├── pyproject.toml
 ├── spec.md                     # 技術規格
@@ -511,14 +517,14 @@ docker-compose exec app bash -c \
 
 ### 目前測試狀況
 
-- **42 tests**（40 passed, 2 skipped）
-- 涵蓋：Source 安全機制、Serve 全端點、正規化邏輯、端到端流程
+- **82 tests**（77 passed, 2 skipped）
+- 涵蓋：Source 安全機制、Serve 全端點、正規化邏輯、端到端流程、Admin API
 
 ---
 
 ## 部署
 
-### Docker Compose（推薦）
+### 本機開發（Docker Compose）
 
 ```bash
 # 啟動
@@ -531,14 +537,84 @@ docker-compose logs -f app
 docker-compose down
 ```
 
-### 服務組成
-
 | 容器 | 說明 | 埠號 |
 |------|------|------|
 | `findb-app` | FastAPI 主程式 | `8000` |
 | `findb-postgres` | PostgreSQL 16 | `5435` → 5432 |
-| `findb-raw-cleanup` | Raw 資料每日清理（自動循環） | — |
+| `findb-raw-cleanup` | Raw 資料每日清理 | — |
 | `findb-pgadmin` | pgAdmin 管理介面 | `5056` |
+
+---
+
+### 生產環境（AWS EC2 + CI/CD）
+
+#### 架構
+
+```
+git push origin main
+       │
+       ▼
+GitHub Actions
+  ├── test     → pytest（postgres service container）
+  ├── build    → docker build + push ghcr.io/fpi-tw/findb
+  └── deploy   → SSH → docker compose pull & up
+```
+
+- **Image Registry**：GitHub Container Registry（ghcr.io）
+- **資料庫**：AWS Aurora/RDS（EC2 不跑 PostgreSQL 容器）
+- **部署方式**：SSH + `docker compose -f docker-compose.prod.yml`
+
+#### 首次 EC2 初始化（一次性）
+
+```bash
+# 1. 安裝 Docker
+sudo bash scripts/setup_ec2.sh
+
+# 2. 複製 compose 檔到 EC2
+scp -i your-key.pem docker-compose.prod.yml ubuntu@<EC2_IP>:/opt/findb/
+
+# 3. 建立 .env（填入 RDS 連線資訊與 API Keys）
+nano /opt/findb/.env
+
+# 4. 初始化資料庫
+docker exec findb-app python /app/scripts/seed_data.py
+```
+
+#### EC2 `.env` 範本
+
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@your-rds.rds.amazonaws.com:5432/findb?ssl=require
+DEBUG=false
+SOURCE_ALLOWLIST_CIDRS=10.0.0.0/8,你的辦公室IP/32
+SOURCE_API_KEYS=production-source-key
+ADMIN_API_KEYS=production-admin-key
+SERVE_REQUIRE_AUTH=false
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW=60
+RAW_RETENTION_DAYS=14
+```
+
+#### GitHub Secrets 設定
+
+| Secret | 說明 |
+|--------|------|
+| `EC2_HOST` | EC2 公開 IP 或 domain |
+| `EC2_USER` | `ubuntu`（Ubuntu AMI）或 `ec2-user` |
+| `EC2_SSH_KEY` | PEM 私鑰完整文字 |
+
+#### 日常部署
+
+```bash
+# 推到 main 即自動觸發完整 CI/CD（約 3~5 分鐘）
+git push origin main
+```
+
+#### 生產容器組成
+
+| 容器 | 說明 | 埠號 |
+|------|------|------|
+| `findb-app` | FastAPI 主程式（2 workers） | `8000` |
+| `findb-raw-cleanup` | Raw 資料每日清理 | — |
 
 ### 環境變數
 
@@ -547,6 +623,7 @@ docker-compose down
 | `DATABASE_URL` | PostgreSQL 連線字串 | `postgresql+asyncpg://findb:findb@localhost:5435/findb` |
 | `DEBUG` | 除錯模式（跳過允許名單強制檢查） | `false` |
 | `SOURCE_API_KEYS` | Source API 金鑰（逗號分隔） | docker-compose 預設 `dev-source-key` |
+| `ADMIN_API_KEYS` | Admin API 金鑰（逗號分隔） | （空） |
 | `SOURCE_ALLOWLIST_CIDRS` | IP 允許名單（CIDR，逗號分隔） | （空）。`DEBUG=false` 時**必填** |
 | `SOURCE_TRUST_PROXY_HEADERS` | 是否信任 X-Forwarded-For | `false` |
 | `SERVE_API_KEYS` | Serve API 金鑰（逗號分隔） | （空） |
