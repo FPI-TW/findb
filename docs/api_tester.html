@@ -622,6 +622,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       <label>Serve API Key</label>
       <input id="cfg-serve-key" type="text" placeholder="X-API-Key for Serve (optional)">
     </div>
+    <div class="settings-field">
+      <label>Admin API Key</label>
+      <input id="cfg-admin-key" type="text" placeholder="X-API-Key for Admin">
+    </div>
   </div>
 
   <nav class="sidebar-nav">
@@ -682,6 +686,19 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       </a>
       <a class="nav-item" onclick="scrollTo('ep-calendar')">
         <span class="nav-method m-get">GET</span>Trading Calendar
+      </a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">Admin API — 管理維運</div>
+      <a class="nav-item" onclick="scrollTo('ep-patch-eod')">
+        <span class="nav-method m-post">PATCH</span>Patch EOD
+      </a>
+      <a class="nav-item" onclick="scrollTo('ep-resolve-dq')">
+        <span class="nav-method m-post">PATCH</span>Resolve DQ Issue
+      </a>
+      <a class="nav-item" onclick="scrollTo('ep-corrections')">
+        <span class="nav-method m-get">GET</span>Corrections Log
       </a>
     </div>
   </nav>
@@ -1475,6 +1492,139 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       </div>
     </div>
 
+    <!-- Corporate Actions by Instrument -->
+    <div class="endpoint-card" id="ep-corp-actions-id">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/serve/corporate-actions/{instrument_id}</span>
+        <span class="endpoint-desc">查詢特定商品的公司行動事件</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>instrument_id (UUID)</label>
+              <input id="caid-input" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>action_type</label>
+              <input id="caid-type" type="text" placeholder="dividend">
+            </div>
+            <div class="form-field">
+              <label>start_date</label>
+              <input id="caid-start" type="date">
+            </div>
+            <div class="form-field">
+              <label>end_date</label>
+              <input id="caid-end" type="date">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="caid-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendCorpActionsById(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Macro Observations by Series -->
+    <div class="endpoint-card" id="ep-macro-obs-id">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/serve/macro/observations/{series_id}</span>
+        <span class="endpoint-desc">查詢特定序列的總經觀測值</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>series_id (UUID)</label>
+              <input id="moid-input" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>start_date</label>
+              <input id="moid-start" type="date">
+            </div>
+            <div class="form-field">
+              <label>end_date</label>
+              <input id="moid-end" type="date">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="moid-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendMacroObsById(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Futures Continuous by Instrument -->
+    <div class="endpoint-card" id="ep-futures-continuous-id">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/serve/futures/continuous/{instrument_id}</span>
+        <span class="endpoint-desc">查詢特定商品的連續期貨日線</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>instrument_id (UUID)</label>
+              <input id="fconid-input" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>start_date</label>
+              <input id="fconid-start" type="date">
+            </div>
+            <div class="form-field">
+              <label>end_date</label>
+              <input id="fconid-end" type="date">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="fconid-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendFuturesContinuousById(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Calendar -->
     <div class="endpoint-card" id="ep-calendar">
       <div class="endpoint-header" onclick="toggleCard(this)">
@@ -1541,6 +1691,190 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 
   </section>
 
+  <!-- ══ ADMIN API ═════════════════════════════════════ -->
+  <section class="api-section" id="sec-admin">
+    <div class="section-heading">
+      <h2>Admin API</h2>
+      <span class="section-sub">管理維運層 — /api/v1/admin</span>
+    </div>
+
+    <div class="info-block accent">
+      所有 Admin API 端點均需要 <code>X-API-Key</code> Header，請在左側設定欄填入 Admin API Key。
+      操作會建立不可修改的 audit correction 記錄。
+    </div>
+
+    <!-- Patch EOD -->
+    <div class="endpoint-card" id="ep-patch-eod">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge POST">PATCH</span>
+        <span class="endpoint-path">/api/v1/admin/eod/{instrument_id}/{trade_date}</span>
+        <span class="endpoint-desc">手動修正 EOD 收盤資料</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          修正特定商品特定日期的 OHLCV 欄位。只需提供要修改的欄位，未填的欄位保持不變。
+          每次修正都會建立一筆 correction audit 記錄，保存修前/修後快照。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Path Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>商品 UUID</td></tr>
+            <tr><td>trade_date</td><td><span class="param-type">date</span></td><td><span class="param-required">必填</span></td><td>交易日期 YYYY-MM-DD</td></tr>
+          </table>
+        </div>
+        <div class="params-section">
+          <div class="params-title">Request Body (PatchEODRequest)</div>
+          <table class="params-table">
+            <tr><th>欄位</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>correction_reason</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>修正原因說明（最多 2000 字）</td></tr>
+            <tr><td>open</td><td><span class="param-type">decimal</span></td><td><span class="param-optional">選填</span></td><td>開盤價</td></tr>
+            <tr><td>high</td><td><span class="param-type">decimal</span></td><td><span class="param-optional">選填</span></td><td>最高價</td></tr>
+            <tr><td>low</td><td><span class="param-type">decimal</span></td><td><span class="param-optional">選填</span></td><td>最低價</td></tr>
+            <tr><td>close</td><td><span class="param-type">decimal</span></td><td><span class="param-optional">選填</span></td><td>收盤價</td></tr>
+            <tr><td>volume</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>成交量</td></tr>
+            <tr><td>turnover</td><td><span class="param-type">decimal</span></td><td><span class="param-optional">選填</span></td><td>成交金額</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>instrument_id (UUID)</label>
+              <input id="patch-eod-instid" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>trade_date</label>
+              <input id="patch-eod-date" type="date">
+            </div>
+          </div>
+          <div class="form-grid single">
+            <div class="form-field">
+              <label>Request Body (JSON) — 只填要修改的欄位</label>
+              <textarea id="patch-eod-body">{
+  "correction_reason": "Bloomberg 資料來源錯誤，依交易所原始資料修正",
+  "close": 185.50,
+  "volume": 55000000
+}</textarea>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendPatchEOD(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resolve DQ Issue -->
+    <div class="endpoint-card" id="ep-resolve-dq">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge POST">PATCH</span>
+        <span class="endpoint-path">/api/v1/admin/dq-issues/{issue_id}/resolve</span>
+        <span class="endpoint-desc">標記 DQ 問題為已解決</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          將資料品質問題（DQ Issue）標記為已解決，並記錄解決原因。
+          同樣會建立 correction audit 記錄。已解決的 issue 無法重複解決（回傳 409）。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>issue_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>DQ Issue UUID</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid single">
+            <div class="form-field">
+              <label>issue_id (UUID)</label>
+              <input id="dq-issue-id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>Request Body (JSON)</label>
+              <textarea id="dq-resolve-body" style="min-height:80px">{
+  "correction_reason": "已確認為資料來源問題，已手動修正 EOD 記錄"
+}</textarea>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendResolveDQ(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Corrections Log -->
+    <div class="endpoint-card" id="ep-corrections">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/admin/corrections</span>
+        <span class="endpoint-desc">查詢所有 correction audit 記錄</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          列出所有修正記錄，包含修前/修後快照（before_snapshot / after_snapshot）。
+          API Key 在回應中以遮罩顯示（前4後4字元）。按建立時間倒序排列。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>table_name</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>篩選 canonical 資料表 (如 market_data_eod)</td></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-optional">選填</span></td><td>篩選特定商品</td></tr>
+            <tr><td>page / page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>分頁</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>table_name</label>
+              <input id="corr-table" type="text" placeholder="market_data_eod">
+            </div>
+            <div class="form-field">
+              <label>instrument_id (UUID)</label>
+              <input id="corr-instid" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="corr-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendCorrections(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
 </div><!-- .main-inner -->
 </main>
 
@@ -1550,10 +1884,11 @@ const cfg = {
   get base()       { return document.getElementById('cfg-base-url').value.replace(/\/$/, ''); },
   get sourceKey()  { return document.getElementById('cfg-source-key').value.trim(); },
   get serveKey()   { return document.getElementById('cfg-serve-key').value.trim(); },
+  get adminKey()   { return document.getElementById('cfg-admin-key').value.trim(); },
 };
 
 // Persist settings
-['cfg-base-url','cfg-source-key','cfg-serve-key'].forEach(id => {
+['cfg-base-url','cfg-source-key','cfg-serve-key','cfg-admin-key'].forEach(id => {
   const el = document.getElementById(id);
   const stored = localStorage.getItem(id);
   if (stored) el.value = stored;
@@ -1618,6 +1953,7 @@ async function doRequest(btn, method, path, opts = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (auth === 'source' && cfg.sourceKey) headers['X-API-Key'] = cfg.sourceKey;
   if (auth === 'serve'  && cfg.serveKey)  headers['X-API-Key'] = cfg.serveKey;
+  if (auth === 'admin'  && cfg.adminKey)  headers['X-API-Key'] = cfg.adminKey;
 
   let url = cfg.base + path;
   if (params) {
@@ -1778,6 +2114,64 @@ function sendCalendar(btn) {
     end_date:   document.getElementById('cal-end').value,
     is_open:    document.getElementById('cal-is-open').value,
     page_size:  document.getElementById('cal-page-size').value,
+  }});
+}
+
+function sendCorpActionsById(btn) {
+  const id = document.getElementById('caid-input').value.trim();
+  if (!id) { alert('請輸入 instrument_id'); return; }
+  doRequest(btn, 'GET', `/api/v1/serve/corporate-actions/${id}`, { auth:'serve', params: {
+    action_type: document.getElementById('caid-type').value,
+    start_date:  document.getElementById('caid-start').value,
+    end_date:    document.getElementById('caid-end').value,
+    page_size:   document.getElementById('caid-page-size').value,
+  }});
+}
+
+function sendMacroObsById(btn) {
+  const id = document.getElementById('moid-input').value.trim();
+  if (!id) { alert('請輸入 series_id'); return; }
+  doRequest(btn, 'GET', `/api/v1/serve/macro/observations/${id}`, { auth:'serve', params: {
+    start_date: document.getElementById('moid-start').value,
+    end_date:   document.getElementById('moid-end').value,
+    page_size:  document.getElementById('moid-page-size').value,
+  }});
+}
+
+function sendFuturesContinuousById(btn) {
+  const id = document.getElementById('fconid-input').value.trim();
+  if (!id) { alert('請輸入 instrument_id'); return; }
+  doRequest(btn, 'GET', `/api/v1/serve/futures/continuous/${id}`, { auth:'serve', params: {
+    start_date: document.getElementById('fconid-start').value,
+    end_date:   document.getElementById('fconid-end').value,
+    page_size:  document.getElementById('fconid-page-size').value,
+  }});
+}
+
+function sendPatchEOD(btn) {
+  const instid = document.getElementById('patch-eod-instid').value.trim();
+  const date   = document.getElementById('patch-eod-date').value.trim();
+  if (!instid || !date) { alert('請填入 instrument_id 和 trade_date'); return; }
+  let body;
+  try { body = JSON.parse(document.getElementById('patch-eod-body').value); }
+  catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
+  doRequest(btn, 'PATCH', `/api/v1/admin/eod/${instid}/${date}`, { auth:'admin', body });
+}
+
+function sendResolveDQ(btn) {
+  const id = document.getElementById('dq-issue-id').value.trim();
+  if (!id) { alert('請輸入 issue_id'); return; }
+  let body;
+  try { body = JSON.parse(document.getElementById('dq-resolve-body').value); }
+  catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
+  doRequest(btn, 'PATCH', `/api/v1/admin/dq-issues/${id}/resolve`, { auth:'admin', body });
+}
+
+function sendCorrections(btn) {
+  doRequest(btn, 'GET', '/api/v1/admin/corrections', { auth:'admin', params: {
+    table_name:    document.getElementById('corr-table').value,
+    instrument_id: document.getElementById('corr-instid').value,
+    page_size:     document.getElementById('corr-page-size').value,
   }});
 }
 
