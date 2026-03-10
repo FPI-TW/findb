@@ -189,11 +189,13 @@ class BaseNormalizer(ABC):
         symbol: str,
         name: Optional[str] = None,
         market: Optional[str] = None,
+        asset_class: Optional[str] = None,
     ) -> Instrument:
         """Get existing instrument or create new one."""
         instrument_market = str(market or self.market).upper().strip()
+        effective_asset_class = asset_class or self.asset_class
         stmt = select(Instrument).where(
-            Instrument.asset_class == self.asset_class,
+            Instrument.asset_class == effective_asset_class,
             Instrument.market == instrument_market,
             Instrument.symbol == symbol,
         )
@@ -206,7 +208,7 @@ class BaseNormalizer(ABC):
         # Create new instrument
         instrument = Instrument(
             instrument_id=uuid7(),
-            asset_class=self.asset_class,
+            asset_class=effective_asset_class,
             market=instrument_market,
             symbol=symbol,
             name=name,
@@ -223,9 +225,11 @@ class BaseNormalizer(ABC):
         identifier_type: str,
         identifier_value: str,
         market: Optional[str] = None,
+        asset_class: Optional[str] = None,
     ) -> Optional[Instrument]:
         """Resolve instrument using identifier mapping."""
         instrument_market = str(market or self.market).upper().strip()
+        effective_asset_class = asset_class or self.asset_class
         stmt = (
             select(Instrument)
             .join(
@@ -235,7 +239,7 @@ class BaseNormalizer(ABC):
             .where(
                 InstrumentIdentifier.id_type == identifier_type,
                 InstrumentIdentifier.id_value == identifier_value,
-                Instrument.asset_class == self.asset_class,
+                Instrument.asset_class == effective_asset_class,
                 Instrument.market == instrument_market,
             )
         )
@@ -272,11 +276,13 @@ class BaseNormalizer(ABC):
     async def resolve_instrument(self, record: MappedRecord) -> Instrument:
         """Resolve instrument by identifier mapping or symbol."""
         record_market = str(getattr(record, "market", None) or self.market).upper().strip()
+        record_asset_class = getattr(record, "asset_class", None) or self.asset_class
         if record.identifier_type and record.identifier_value:
             instrument = await self.get_instrument_by_identifier(
                 record.identifier_type,
                 record.identifier_value,
                 market=record_market,
+                asset_class=record_asset_class,
             )
             if instrument:
                 return instrument
@@ -286,6 +292,7 @@ class BaseNormalizer(ABC):
             symbol=symbol,
             name=record.name,
             market=record_market,
+            asset_class=record_asset_class,
         )
 
         if record.identifier_type and record.identifier_value:
