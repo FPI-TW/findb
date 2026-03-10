@@ -19,10 +19,13 @@ from app.schemas.admin import (
     DQIssueResponse,
     PatchEODRequest,
     PatchEODResponse,
+    RawPayloadListResponse,
+    RawPayloadResponse,
     ResolveDQIssueRequest,
     ResolveDQIssueResponse,
 )
 from app.schemas.common import PaginationInfo
+from app.models.raw import RawMarketPayload
 from app.services.admin import (
     AlreadyResolvedError,
     NoChangesError,
@@ -33,6 +36,7 @@ from app.services.admin import (
     resolve_dq_issue,
 )
 from app.services.admin import _mask_key
+from sqlalchemy import select, func
 
 router = APIRouter()
 
@@ -107,6 +111,61 @@ async def resolve_dq_issue_endpoint(
         resolved_at=issue.resolved_at,
         message="DQ issue resolved successfully",
     )
+
+
+@router.get("/raw-payloads", response_model=RawPayloadListResponse)
+async def list_raw_payloads(
+    dataset_key: Optional[str] = Query(None, description="Filter by dataset key"),
+    run_id: Optional[UUID] = Query(None, description="Filter by ingestion run UUID"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """List raw market payloads, newest first. Optionally filter by dataset_key or run_id."""
+    stmt = select(RawMarketPayload)
+    count_stmt = select(func.count()).select_from(RawMarketPayload)
+
+    if dataset_key:
+        stmt = stmt.where(RawMarketPayload.dataset_key == dataset_key)
+        count_stmt = count_stmt.where(RawMarketPayload.dataset_key == dataset_key)
+    if run_id:
+        stmt = stmt.where(RawMarketPayload.run_id == run_id)
+        count_stmt = count_stmt.where(RawMarketPayload.run_id == run_id)
+
+    total = (await db.execute(count_stmt)).scalar_one()
+    rows = (
+        await db.execute(
+            stmt.order_by(RawMarketPayload.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    return RawPayloadListResponse(
+        data=[RawPayloadResponse.model_validate(r) for r in rows],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total,
+            total_pages=total_pages,
+        ),
+    )
+
+
+@router.get("/raw-payloads/{run_id}", response_model=RawPayloadResponse)
+async def get_raw_payload_by_run(
+    run_id: UUID,
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the raw payload for a specific ingestion run."""
+    stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == run_id)
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Raw payload not found")
+    return RawPayloadResponse.model_validate(row)
 
 
 @router.get("/corrections", response_model=CorrectionListResponse)

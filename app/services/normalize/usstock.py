@@ -143,6 +143,7 @@ class USStockNormalizer(BaseNormalizer):
     def _parse_trade_date_from_item(self, item: dict) -> str | None:
         """
         Get trade date from item, preferring last_update over query_time.
+        Falls back to flat 'date' field for direct-format payloads.
         """
         timestamp = item.get("timestamp", {})
         last_update = timestamp.get("last_update")
@@ -150,7 +151,10 @@ class USStockNormalizer(BaseNormalizer):
             return last_update
 
         query_time = timestamp.get("query_time")
-        return query_time
+        if query_time:
+            return query_time
+
+        return item.get("date")
 
     def map_fields(self, raw_data: dict) -> list[MappedRecord]:
         """
