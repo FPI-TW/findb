@@ -220,6 +220,8 @@ async def list_eod_data(
                 volume=eod.volume,
                 turnover=eod.turnover,
                 source=eod.source,
+                created_at=eod.created_at,
+                updated_at=eod.updated_at,
             )
             for eod, inst in rows
         ],
