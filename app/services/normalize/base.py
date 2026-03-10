@@ -361,7 +361,8 @@ class BaseNormalizer(ABC):
             updated_at=utc_now(),
         )
 
-        # On conflict, update values
+        # On conflict, update only when data has actually changed
+        t = MarketDataEOD.__table__
         stmt = stmt.on_conflict_do_update(
             constraint="uq_eod",
             set_={
@@ -376,6 +377,14 @@ class BaseNormalizer(ABC):
                 "run_id": stmt.excluded.run_id,
                 "updated_at": stmt.excluded.updated_at,
             },
+            where=(
+                (t.c.open.is_distinct_from(stmt.excluded.open))
+                | (t.c.high.is_distinct_from(stmt.excluded.high))
+                | (t.c.low.is_distinct_from(stmt.excluded.low))
+                | (t.c.close.is_distinct_from(stmt.excluded.close))
+                | (t.c.volume.is_distinct_from(stmt.excluded.volume))
+                | (t.c.turnover.is_distinct_from(stmt.excluded.turnover))
+            ),
         )
 
         await self.db.execute(stmt)
