@@ -190,13 +190,13 @@ class USStockNormalizer(BaseNormalizer):
             if not symbol and ticker:
                 symbol = ticker.split()[0].upper()
 
-            # Get price data
-            price = item.get("price", {})
-            open_price = self._parse_decimal(price.get("open"))
-            high_price = self._parse_decimal(price.get("high"))
-            low_price = self._parse_decimal(price.get("low"))
-            close_price = self._parse_decimal(price.get("last"))
-            volume = self._parse_int(price.get("volume"))
+            # Get price data — support both nested {"price": {...}} and flat fields
+            price = item.get("price") or {}
+            open_price = self._parse_decimal(price.get("open") or item.get("open"))
+            high_price = self._parse_decimal(price.get("high") or item.get("high"))
+            low_price = self._parse_decimal(price.get("low") or item.get("low"))
+            close_price = self._parse_decimal(price.get("last") or item.get("close"))
+            volume = self._parse_int(price.get("volume") or item.get("volume"))
 
             # Get source
             item_metadata = item.get("metadata", {})
@@ -360,13 +360,13 @@ class GlobalStockNormalizer(USStockNormalizer):
             if not symbol and ticker:
                 symbol = ticker.split()[0].upper()
 
-            # Get price data
-            price = item.get("price", {})
-            open_price = self._parse_decimal(price.get("open"))
-            high_price = self._parse_decimal(price.get("high"))
-            low_price = self._parse_decimal(price.get("low"))
-            close_price = self._parse_decimal(price.get("last"))
-            volume = self._parse_int(price.get("volume"))
+            # Get price data — support both nested {"price": {...}} and flat fields
+            price = item.get("price") or {}
+            open_price = self._parse_decimal(price.get("open") or item.get("open"))
+            high_price = self._parse_decimal(price.get("high") or item.get("high"))
+            low_price = self._parse_decimal(price.get("low") or item.get("low"))
+            close_price = self._parse_decimal(price.get("last") or item.get("close"))
+            volume = self._parse_int(price.get("volume") or item.get("volume"))
 
             # Get source
             item_metadata = item.get("metadata", {})
