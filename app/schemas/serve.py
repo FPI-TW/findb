@@ -49,6 +49,8 @@ class EODResponse(BaseModel):
     volume: Optional[int] = None
     turnover: Optional[Decimal] = None
     source: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
