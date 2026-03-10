@@ -691,6 +691,12 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 
     <div class="nav-group">
       <div class="nav-group-label">Admin API — 管理維運</div>
+      <a class="nav-item" onclick="goTo('ep-raw-payloads')">
+        <span class="nav-method m-get">GET</span>Raw Payloads
+      </a>
+      <a class="nav-item" onclick="goTo('ep-raw-payload-by-run')">
+        <span class="nav-method m-get">GET</span>Raw Payload (by Run)
+      </a>
       <a class="nav-item" onclick="goTo('ep-dq-issues')">
         <span class="nav-method m-get">GET</span>DQ Issues
       </a>
@@ -1707,6 +1713,99 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       操作會建立不可修改的 audit correction 記錄。
     </div>
 
+    <!-- Raw Payloads List -->
+    <div class="endpoint-card" id="ep-raw-payloads">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/admin/raw-payloads</span>
+        <span class="endpoint-desc">列出 Raw Market Payload 記錄</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          查詢儲存在 <code>raw.market_payload</code> 的原始 JSON，可依 <code>dataset_key</code> 或 <code>run_id</code> 篩選。
+          資料保留 14 天，按建立時間倒序排列。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>如 us_stock_eod、crypto_eod</td></tr>
+            <tr><td>run_id</td><td><span class="param-type">UUID</span></td><td><span class="param-optional">選填</span></td><td>篩選特定注入 run</td></tr>
+            <tr><td>page / page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>分頁，預設 page_size=20</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>dataset_key</label>
+              <input id="raw-list-dataset" type="text" placeholder="us_stock_eod">
+            </div>
+            <div class="form-field">
+              <label>run_id (UUID)</label>
+              <input id="raw-list-run" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="raw-list-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendRawList(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Raw Payload by Run -->
+    <div class="endpoint-card" id="ep-raw-payload-by-run">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/admin/raw-payloads/{run_id}</span>
+        <span class="endpoint-desc">取得單筆 Raw Payload（含完整 JSON）</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          以 <code>run_id</code> 取得該次注入的完整原始 JSON payload。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>run_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>注入 run 的 UUID</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid single">
+            <div class="form-field">
+              <label>run_id</label>
+              <input id="raw-by-run-id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendRawByRun(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
     <!-- DQ Issues -->
     <div class="endpoint-card" id="ep-dq-issues">
       <div class="endpoint-header" onclick="toggleCard(this)">
@@ -2244,6 +2343,20 @@ function sendResolveDQ(btn) {
   try { body = JSON.parse(document.getElementById('dq-resolve-body').value); }
   catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
   doRequest(btn, 'PATCH', `/api/v1/admin/dq-issues/${id}/resolve`, { auth:'admin', body });
+}
+
+function sendRawList(btn) {
+  doRequest(btn, 'GET', '/api/v1/admin/raw-payloads', { auth:'admin', params: {
+    dataset_key: document.getElementById('raw-list-dataset').value,
+    run_id:      document.getElementById('raw-list-run').value,
+    page_size:   document.getElementById('raw-list-page-size').value,
+  }});
+}
+
+function sendRawByRun(btn) {
+  const id = document.getElementById('raw-by-run-id').value.trim();
+  if (!id) { alert('請輸入 run_id'); return; }
+  doRequest(btn, 'GET', `/api/v1/admin/raw-payloads/${id}`, { auth:'admin' });
 }
 
 function sendCorrections(btn) {

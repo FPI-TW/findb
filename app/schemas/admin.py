@@ -113,3 +113,28 @@ class CorrectionListResponse(PaginatedResponse[CorrectionResponse]):
     """Paginated correction list."""
 
     pass
+
+
+# ── Raw Payload ────────────────────────────────────────────────────────────────
+
+
+class RawPayloadResponse(BaseModel):
+    """Single raw market payload record."""
+
+    idempotency_key: str
+    run_id: UUID
+    dataset_key: str
+    source: str
+    request_key: str
+    payload: Any
+    fetched_at: datetime
+    expire_at: datetime
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RawPayloadListResponse(PaginatedResponse[RawPayloadResponse]):
+    """Paginated raw payload list."""
+
+    pass
