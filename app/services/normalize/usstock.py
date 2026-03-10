@@ -210,6 +210,7 @@ class USStockNormalizer(BaseNormalizer):
             record = MappedRecord(
                 symbol=symbol.upper() if symbol else "",
                 trade_date=trade_date,
+                asset_class="index" if self._is_index(ticker) else "equity",
                 name=name,
                 open=open_price,
                 high=high_price,

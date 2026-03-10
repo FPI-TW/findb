@@ -16,6 +16,7 @@ class MappedRecord:
     symbol: str
     trade_date: datetime
     market: Optional[str] = None
+    asset_class: Optional[str] = None
     name: Optional[str] = None
     open: Optional[Decimal] = None
     high: Optional[Decimal] = None
