@@ -273,6 +273,24 @@ async def ingest_macro_data(
     )
 
 
+@router.post("/ingest/crypto/direct", response_model=IngestResponse)
+async def ingest_crypto_direct_data(
+    payload: DirectIngestPayload,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ingest Bloomberg crypto direct payload format."""
+    return await _ingest_direct_payload(
+        payload=payload,
+        dataset_key="crypto_eod",
+        key_prefix="direct_crypto",
+        expected_market="CRYPTO",
+        background_tasks=background_tasks,
+        db=db,
+    )
+
+
 @router.post("/ingest/macro/direct", response_model=IngestResponse)
 async def ingest_macro_direct_data(
     payload: DirectIngestPayload,
