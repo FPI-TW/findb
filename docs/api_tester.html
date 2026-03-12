@@ -761,6 +761,18 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     所有請求直接由瀏覽器發出，回應顯示於各端點下方。</p>
   </div>
 
+  <datalist id="market-options">
+    <option value="CRYPTO"></option>
+    <option value="US"></option>
+    <option value="FX"></option>
+    <option value="MACRO"></option>
+    <option value="WTX"></option>
+    <option value="GLOBAL"></option>
+    <option value="TW"></option>
+    <option value="HK"></option>
+    <option value="CN"></option>
+  </datalist>
+
   <!-- ══ SYSTEM ═══════════════════════════════════════ -->
   <section class="api-section" id="sec-system">
     <div class="section-heading">
@@ -937,7 +949,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="info-block">
           接受 Bloomberg 直接格式 <code>DirectIngestPayload</code>（含 metadata 與 data 陣列），
           系統自動產生 idempotency_key。<br><br>
-          可用端點：<code>usstock/direct</code> · <code>hkchina/direct</code> · <code>macro/direct</code>
+          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
           <div class="params-title">Request Body (DirectIngestPayload)</div>
@@ -953,6 +965,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             <div class="form-field">
               <label>類型</label>
               <select id="direct-type" onchange="updateDirectExample(this)">
+                <option value="crypto">crypto/direct (加密貨幣)</option>
                 <option value="usstock">usstock/direct (美股)</option>
                 <option value="hkchina">hkchina/direct (港股/陸股)</option>
                 <option value="macro">macro/direct (總經數據)</option>
@@ -967,13 +980,13 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
   },
   "data": [
     {
-      "ticker": "AAPL US Equity",
+      "ticker": "BTC",
       "date": "2024-01-15",
-      "open": 185.5,
-      "high": 188.2,
-      "low": 184.8,
-      "close": 187.1,
-      "volume": 55000000
+      "open": 42000,
+      "high": 43500,
+      "low": 41800,
+      "close": 43200,
+      "volume": 18500
     }
   ]
 }</textarea>
@@ -1111,7 +1124,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="inst-market" type="text" placeholder="CRYPTO">
+              <input id="inst-market" type="text" list="market-options" placeholder="CRYPTO">
             </div>
             <div class="form-field">
               <label>asset_class</label>
@@ -1199,7 +1212,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="eod-market" type="text" placeholder="CRYPTO">
+              <input id="eod-market" type="text" list="market-options" placeholder="CRYPTO">
             </div>
             <div class="form-field">
               <label>symbols (逗號分隔)</label>
@@ -1299,7 +1312,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ca-market" type="text" placeholder="US">
+              <input id="ca-market" type="text" list="market-options" placeholder="US">
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1360,7 +1373,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ms-market" type="text" placeholder="US">
+              <input id="ms-market" type="text" list="market-options" placeholder="US">
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1403,7 +1416,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="mo-market" type="text" placeholder="US">
+              <input id="mo-market" type="text" list="market-options" placeholder="US">
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1460,7 +1473,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fc-market" type="text" placeholder="WTX">
+              <input id="fc-market" type="text" list="market-options" placeholder="WTX">
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1506,7 +1519,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fcon-market" type="text" placeholder="WTX">
+              <input id="fcon-market" type="text" list="market-options" placeholder="WTX">
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1699,7 +1712,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market <span class="param-required">*</span></label>
-              <input id="cal-market" type="text" value="US">
+              <input id="cal-market" type="text" list="market-options" value="US">
             </div>
             <div class="form-field">
               <label>is_open</label>
@@ -2197,6 +2210,7 @@ function sendRawIngest(btn) {
 }
 
 const directExamples = {
+  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "BTC",\n      "date": "2024-01-15",\n      "open": 42000,\n      "high": 43500,\n      "low": 41800,\n      "close": 43200,\n      "volume": 18500\n    }\n  ]\n}`,
   usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2024-01-15",\n      "open": 185.5,\n      "high": 188.2,\n      "low": 184.8,\n      "close": 187.1,\n      "volume": 55000000\n    }\n  ]\n}`,
   hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2024-01-15",\n      "open": 295.0,\n      "high": 302.0,\n      "low": 293.5,\n      "close": 299.8,\n      "volume": 12000000\n    }\n  ]\n}`,
   macro:   `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "GDP_YOY Index",\n      "date": "2024-01-01",\n      "value": 2.5\n    }\n  ]\n}`,
@@ -2208,7 +2222,7 @@ function updateDirectExample(sel) {
 
 function sendDirectIngest(btn) {
   const type = document.getElementById('direct-type').value;
-  const pathMap = { usstock:'usstock', hkchina:'hkchina', macro:'macro' };
+  const pathMap = { crypto:'crypto', usstock:'usstock', hkchina:'hkchina', macro:'macro' };
   let body;
   try { body = JSON.parse(document.getElementById('direct-body').value); }
   catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
