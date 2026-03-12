@@ -529,6 +529,50 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
   text-transform: uppercase;
 }
 
+.response-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.response-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: rgba(255,255,255,0.48);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.response-copy-btn:hover:not(:disabled) {
+  border-color: rgba(255,255,255,0.28);
+  color: rgba(255,255,255,0.86);
+  background: rgba(255,255,255,0.06);
+}
+
+.response-copy-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.response-copy-btn svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+}
+
+.response-copy-btn.copied {
+  border-color: rgba(110,186,138,0.45);
+  color: #6EBA8A;
+  background: rgba(110,186,138,0.12);
+}
+
 .response-status {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
@@ -1963,6 +2007,87 @@ const cfg = {
   el.addEventListener('input', () => localStorage.setItem(id, el.value));
 });
 
+const copyIcon = `
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="10" height="10" rx="2"></rect>
+    <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"></path>
+  </svg>
+`;
+
+const copiedIcon = `
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M20 6 9 17l-5-5"></path>
+  </svg>
+`;
+
+function initResponseCopyButtons() {
+  document.querySelectorAll('.response-header').forEach(header => {
+    const statusEl = header.querySelector('.response-status');
+    if (!statusEl || header.querySelector('.response-copy-btn')) return;
+
+    const actions = document.createElement('div');
+    actions.className = 'response-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'response-copy-btn';
+    copyBtn.title = '複製回應';
+    copyBtn.setAttribute('aria-label', '複製回應');
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.disabled = true;
+    copyBtn.addEventListener('click', () => copyResponse(copyBtn));
+
+    actions.append(copyBtn, statusEl);
+    header.appendChild(actions);
+  });
+}
+
+async function copyResponse(copyBtn) {
+  const area = copyBtn.closest('.response-area');
+  const responseText = area?.dataset.responseText || '';
+  if (!responseText) return;
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(responseText);
+    } else {
+      fallbackCopyText(responseText);
+    }
+    flashCopyState(copyBtn, '已複製', copiedIcon, true);
+  } catch (e) {
+    flashCopyState(copyBtn, '複製失敗', copyIcon, false);
+  }
+}
+
+function fallbackCopyText(text) {
+  const temp = document.createElement('textarea');
+  temp.value = text;
+  temp.setAttribute('readonly', '');
+  temp.style.position = 'absolute';
+  temp.style.left = '-9999px';
+  document.body.appendChild(temp);
+  temp.select();
+  document.execCommand('copy');
+  document.body.removeChild(temp);
+}
+
+function flashCopyState(copyBtn, title, icon, copied) {
+  copyBtn.title = title;
+  copyBtn.setAttribute('aria-label', title);
+  copyBtn.innerHTML = icon;
+  copyBtn.classList.toggle('copied', copied);
+
+  window.clearTimeout(copyBtn._resetTimer);
+  copyBtn._resetTimer = window.setTimeout(() => {
+    copyBtn.title = '複製回應';
+    copyBtn.setAttribute('aria-label', '複製回應');
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.classList.remove('copied');
+  }, 1400);
+}
+
+initResponseCopyButtons();
+
 // ─── UI HELPERS ──────────────────────────────────────────
 function goTo(id) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1994,14 +2119,27 @@ function showResponse(btn, status, data) {
   const area = card.querySelector('.response-area');
   const statusEl = area.querySelector('.response-status');
   const preEl = area.querySelector('pre');
+  const copyBtn = area.querySelector('.response-copy-btn');
+  const responseText = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 
   area.style.display = 'block';
+  area.dataset.responseText = responseText;
 
   const ok = status >= 200 && status < 300;
   statusEl.textContent = `HTTP ${status}`;
   statusEl.className = 'response-status ' + (ok ? 'ok' : 'err');
 
   preEl.innerHTML = syntaxHighlight(data);
+
+  if (copyBtn) {
+    copyBtn.disabled = false;
+    copyBtn.title = '複製回應';
+    copyBtn.setAttribute('aria-label', '複製回應');
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.classList.remove('copied');
+    window.clearTimeout(copyBtn._resetTimer);
+  }
+
   btn.disabled = false;
   btn.textContent = '送出請求';
 
