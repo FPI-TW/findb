@@ -800,6 +800,112 @@ class TestSourceAPI:
         assert run.dataset_key == "macro_bloomberg_observation"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "dataset_key", "expected_market", "payload"),
+        [
+            (
+                "/api/v1/source/ingest/crypto/direct",
+                "crypto_bloomberg_eod",
+                "CRYPTO",
+                {
+                    "metadata": {"source": "bloomberg", "query_time": "2026-03-12T08:00:00Z"},
+                    "data": [
+                        {
+                            "ticker": "XBTUSD BGN Curncy",
+                            "date": "2026-03-12",
+                            "open": 95550.07,
+                            "high": 95825.34,
+                            "low": 95119.76,
+                            "close": 95709.01,
+                            "volume": 18500,
+                        }
+                    ],
+                },
+            ),
+            (
+                "/api/v1/source/ingest/fx/direct",
+                "fx_bloomberg_eod",
+                "FX",
+                {
+                    "metadata": {"source": "bloomberg", "query_time": "2026-03-12T08:00:00Z"},
+                    "data": [
+                        {
+                            "pair": "EURUSD",
+                            "ticker": "EURUSD Curncy",
+                            "date": "2026-03-12",
+                            "open": 1.0498,
+                            "high": 1.0567,
+                            "low": 1.0489,
+                            "close": 1.0523,
+                        }
+                    ],
+                },
+            ),
+            (
+                "/api/v1/source/ingest/wtx/direct",
+                "wtx_bloomberg_eod",
+                "WTX",
+                {
+                    "metadata": {"source": "bloomberg", "query_time": "2026-03-12T08:00:00Z"},
+                    "data": [
+                        {
+                            "symbol": "TXF1",
+                            "ticker": "TXF1 Index",
+                            "date": "2026-03-12",
+                            "open": 20800,
+                            "high": 21100,
+                            "low": 20700,
+                            "close": 21000,
+                            "volume": 50000,
+                        }
+                    ],
+                },
+            ),
+            (
+                "/api/v1/source/ingest/macro/direct",
+                "macro_bloomberg_observation",
+                "MACRO",
+                {
+                    "metadata": {"source": "bloomberg", "query_time": "2026-03-12T08:00:00Z"},
+                    "data": [
+                        {
+                            "ticker": "CPI YOY Index",
+                            "date": "2026-01-01",
+                            "value": 2.9,
+                            "market": "US",
+                            "unit": "%",
+                            "frequency": "monthly",
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+    async def test_direct_ingest_bootstraps_missing_builtin_dataset(
+        self,
+        endpoint: str,
+        dataset_key: str,
+        expected_market: str,
+        payload: dict,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        """Ensure direct ingest auto-registers missing built-in dataset definitions."""
+        response = await client.post(
+            endpoint,
+            headers=source_headers,
+            json=payload,
+        )
+
+        assert response.status_code == 200
+
+        dataset = await test_session.get(DatasetRegistry, dataset_key)
+        assert dataset is not None
+        assert dataset.market == expected_market
+        assert dataset.is_active is True
+
+    @pytest.mark.asyncio
     async def test_health_check(self, client: AsyncClient):
         """Test health check endpoint."""
         response = await client.get("/health")

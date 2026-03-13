@@ -3,16 +3,19 @@ Source API endpoints.
 Handles data ingestion from fetch layer.
 """
 
+import copy
 import hashlib
 import json
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status as http_status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
 from app.models.base import async_session_maker
+from app.models.registry import DatasetRegistry
 from app.schemas.source import (
     DatasetInfo,
     DatasetListResponse,
@@ -34,6 +37,95 @@ from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
 
 router = APIRouter()
+
+DIRECT_DATASET_DEFAULTS = {
+    "us_stock_eod": {
+        "name": "美股日K (Bloomberg API)",
+        "description": "Bloomberg API 美國股票每日價格資料",
+        "asset_class": "equity",
+        "market": "US",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_usstock_api",
+            "data_path": "data",
+            "symbol_field": "symbol",
+            "name_field": "name",
+            "source_field": "metadata.source",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "timestamp.query_time",
+                "open": "price.open",
+                "high": "price.high",
+                "low": "price.low",
+                "close": "price.last",
+                "volume": "price.volume",
+            },
+        },
+    },
+    "hkchina_stock_eod": {
+        "name": "港中股票日K (Bloomberg API)",
+        "description": "Bloomberg API 港股與中國相關股票每日價格資料",
+        "asset_class": "equity",
+        "market": "GLOBAL",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_hkchina_api",
+            "data_path": "data",
+            "symbol_field": "symbol",
+            "name_field": "name",
+            "source_field": "metadata.source",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "timestamp.query_time",
+                "open": "price.open",
+                "high": "price.high",
+                "low": "price.low",
+                "close": "price.last",
+                "volume": "price.volume",
+            },
+        },
+    },
+    "crypto_bloomberg_eod": {
+        "name": "加密貨幣日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式加密貨幣每日價格資料",
+        "asset_class": "crypto",
+        "market": "CRYPTO",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_crypto_direct"},
+    },
+    "fx_bloomberg_eod": {
+        "name": "外匯日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式外匯每日價格資料",
+        "asset_class": "fx",
+        "market": "FX",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_fx_direct"},
+    },
+    "wtx_bloomberg_eod": {
+        "name": "WTX 期貨日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式台灣加權指數期貨每日價格資料",
+        "asset_class": "future",
+        "market": "WTX",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_wtx_direct"},
+    },
+    "macro_bloomberg_observation": {
+        "name": "總經觀測值 — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式宏觀經濟指標觀測值",
+        "asset_class": "macro",
+        "market": "MACRO",
+        "frequency": "various",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_macro_direct"},
+    },
+}
 
 
 def _build_session_factory(db: AsyncSession) -> async_sessionmaker[AsyncSession]:
@@ -85,6 +177,35 @@ def _build_direct_ingest_request(
         payload=raw_payload,
         fetched_at=fetched_at,
     )
+
+
+async def _ensure_direct_dataset_exists(db: AsyncSession, dataset_key: str) -> None:
+    """Ensure built-in direct ingest datasets exist in the registry."""
+    defaults = DIRECT_DATASET_DEFAULTS.get(dataset_key)
+    if defaults is None:
+        return
+
+    existing = await db.get(DatasetRegistry, dataset_key)
+    if existing is not None:
+        return
+
+    dataset = DatasetRegistry(
+        dataset_key=dataset_key,
+        name=defaults["name"],
+        description=defaults["description"],
+        asset_class=defaults["asset_class"],
+        market=defaults["market"],
+        frequency=defaults["frequency"],
+        is_active=defaults["is_active"],
+        config=copy.deepcopy(defaults["config"]),
+    )
+
+    try:
+        async with db.begin_nested():
+            db.add(dataset)
+            await db.flush()
+    except IntegrityError:
+        pass
 
 
 async def _ingest_by_market(
@@ -164,6 +285,7 @@ async def _ingest_direct_payload(
     db: AsyncSession,
 ) -> IngestResponse:
     """Ingest direct market payload with inferred ingestion fields."""
+    await _ensure_direct_dataset_exists(db, dataset_key)
     request = _build_direct_ingest_request(payload, dataset_key, key_prefix)
     return await _ingest_by_market(
         request=request,
