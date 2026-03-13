@@ -365,3 +365,92 @@ class MacroNormalizer(BaseNormalizer):
             await self.db.commit()
 
         return result
+
+
+class MacroBloombergNormalizer(MacroNormalizer):
+    """
+    Normalizer for macro data from Bloomberg API direct format.
+
+    Maps Bloomberg's price.last → value and timestamp.last_update → obs_date.
+    The ticker field serves as source_code; name/unit/frequency/market come from
+    item fields or item metadata.
+
+    Expected data format:
+    {
+        "metadata": {"source": "Bloomberg API", "category": "Macro Indicators"},
+        "data": [
+            {
+                "ticker": "CPI YOY Index",
+                "name": "US CPI YoY",
+                "price": {"last": 2.9},
+                "timestamp": {"query_time": "...", "last_update": "2026-01-01"},
+                "metadata": {"market": "US", "unit": "%", "frequency": "monthly",
+                             "source": "Bloomberg"}
+            }
+        ]
+    }
+    """
+
+    dataset_key = "macro_bloomberg_observation"
+    asset_class = "macro"
+    market = "MACRO"
+
+    def map_fields(self, raw_data: dict) -> list[MacroObservationRecord]:
+        """Map Bloomberg macro data to canonical format."""
+        data_items = raw_data.get("data", [])
+        if not isinstance(data_items, list):
+            return []
+
+        global_meta = raw_data.get("metadata", {})
+        records: list[MacroObservationRecord] = []
+
+        for item in data_items:
+            source_code = item.get("ticker") or item.get("symbol") or item.get("source_code")
+            if not source_code:
+                continue
+
+            name = item.get("name")
+            item_metadata = item.get("metadata", {})
+            market = (
+                item.get("market")
+                or item_metadata.get("market")
+                or global_meta.get("market")
+            )
+            unit = item.get("unit") or item_metadata.get("unit")
+            frequency = item.get("frequency") or item_metadata.get("frequency")
+
+            source = item_metadata.get("source") or global_meta.get("source")
+            if source:
+                source_lower = source.lower()
+                source = "bloomberg" if source_lower.startswith("bloomberg") else source_lower
+            else:
+                source = "bloomberg"
+
+            timestamp = item.get("timestamp", {})
+            obs_date_str = (
+                timestamp.get("last_update")
+                or item.get("date")
+                or item.get("obs_date")
+                or timestamp.get("query_time")
+            )
+            obs_date = self._parse_obs_date(obs_date_str)
+
+            price = item.get("price") or {}
+            value = self._parse_decimal(
+                price.get("last") or item.get("value") or item.get("close")
+            )
+
+            record = MacroObservationRecord(
+                source_code=str(source_code).strip(),
+                obs_date=obs_date,
+                value=value,
+                name=name,
+                unit=unit,
+                frequency=frequency,
+                market=market,
+                source=source,
+                raw_data=item,
+            )
+            records.append(self._normalize_record(record))
+
+        return records

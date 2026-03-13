@@ -234,7 +234,7 @@ class USIndexNormalizer(USStockNormalizer):
     Extends USStockNormalizer but specifically for index data.
     """
 
-    dataset_key = "us_index_eod"
+    dataset_key = "us_stock_index_eod"
     asset_class = "index"
     market = "US"
 

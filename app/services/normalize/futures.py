@@ -575,3 +575,97 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             await self.db.commit()
 
         return result
+
+
+class WTXBloombergNormalizer(FuturesContinuousNormalizer):
+    """
+    Normalizer for WTX futures continuous EOD data from Bloomberg API direct format.
+    Writes to futures_continuous_eod; roll_rule fields are None (not provided by Bloomberg API).
+
+    Expected data format:
+    {
+        "metadata": {"source": "Bloomberg API", "category": "Futures"},
+        "data": [
+            {
+                "symbol": "TXF1",
+                "name": "TAIFEX TX Futures 1",
+                "ticker": "TXF1 Index",
+                "price": {"last": 21000.0, "open": 20800.0, "high": 21100.0, "low": 20700.0,
+                          "volume": 50000},
+                "timestamp": {"query_time": "...", "last_update": "2026-03-12"},
+                "metadata": {"source": "Bloomberg"}
+            }
+        ]
+    }
+    """
+
+    dataset_key = "wtx_bloomberg_eod"
+    asset_class = "future"
+    market = "WTX"
+
+    def map_fields(self, raw_data: dict) -> list[FuturesContinuousRecord]:
+        """Map Bloomberg futures data to canonical format."""
+        data_items = raw_data.get("data", [])
+        if not isinstance(data_items, list):
+            return []
+
+        records: list[FuturesContinuousRecord] = []
+
+        for item in data_items:
+            timestamp = item.get("timestamp", {})
+            trade_date_str = (
+                timestamp.get("last_update")
+                or item.get("date")
+                or timestamp.get("query_time")
+            )
+            trade_date = self._parse_trade_date(trade_date_str)
+            if trade_date is None:
+                continue
+
+            symbol = item.get("symbol")
+            name = item.get("name")
+            ticker = item.get("ticker")
+
+            if not symbol and ticker:
+                symbol = ticker.split()[0].upper()
+
+            if not symbol and not ticker:
+                continue
+
+            price = item.get("price") or {}
+            open_price = self._parse_decimal(price.get("open") or item.get("open"))
+            high_price = self._parse_decimal(price.get("high") or item.get("high"))
+            low_price = self._parse_decimal(price.get("low") or item.get("low"))
+            close_price = self._parse_decimal(price.get("last") or item.get("close"))
+            volume = self._parse_int(price.get("volume") or item.get("volume"))
+            turnover = self._parse_decimal(price.get("turnover") or item.get("turnover"))
+
+            item_metadata = item.get("metadata", {})
+            source = item_metadata.get("source") or raw_data.get("metadata", {}).get("source")
+            if source:
+                source_lower = source.lower()
+                source = "bloomberg" if source_lower.startswith("bloomberg") else source_lower
+            else:
+                source = "bloomberg"
+
+            record = FuturesContinuousRecord(
+                symbol=symbol.upper() if symbol else "",
+                trade_date=trade_date,
+                name=name,
+                open=open_price,
+                high=high_price,
+                low=low_price,
+                close=close_price,
+                volume=volume,
+                turnover=turnover,
+                source=source,
+                raw_data=item,
+                identifier_type="bloomberg" if ticker else None,
+                identifier_value=ticker,
+                roll_rule_name=None,
+                roll_rule_description=None,
+                roll_rule_config=None,
+            )
+            records.append(self._normalize_record(record))
+
+        return records
