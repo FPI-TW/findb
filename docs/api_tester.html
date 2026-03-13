@@ -792,6 +792,13 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="info-block">
           不需要 API Key。回傳服務版本、狀態及 allowlist 配置情況。
         </div>
+        <div class="params-section">
+          <div class="params-title">Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>—</td><td>—</td><td>—</td><td style="color:var(--text-3)">無參數</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-actions">
@@ -835,8 +842,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="params-section">
           <div class="params-title">Parameters</div>
           <table class="params-table">
-            <tr><th>名稱</th><th>類型</th><th>說明</th></tr>
-            <tr><td>—</td><td>—</td><td style="color:var(--text-3)">無參數</td></tr>
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>—</td><td>—</td><td>—</td><td style="color:var(--text-3)">無參數</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -952,11 +959,18 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>type</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>直接格式端點類型 (crypto / usstock / hkchina / fx / wtx / macro)</td></tr>
+          </table>
+        </div>
+        <div class="params-section">
           <div class="params-title">Request Body (DirectIngestPayload)</div>
           <table class="params-table">
-            <tr><th>欄位</th><th>類型</th><th>說明</th></tr>
-            <tr><td>metadata</td><td><span class="param-type">object</span></td><td>包含 source、query_time 等元資訊</td></tr>
-            <tr><td>data</td><td><span class="param-type">array</span></td><td>資料列表</td></tr>
+            <tr><th>欄位</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>metadata</td><td><span class="param-type">object</span></td><td><span class="param-optional">選填</span></td><td>包含 source、query_time 等元資訊</td></tr>
+            <tr><td>data</td><td><span class="param-type">array</span></td><td><span class="param-optional">選填</span></td><td>資料列表</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -1062,6 +1076,13 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           對已存在的 run_id 重新觸發標準化流程，會讀取 <code>raw.market_payload</code> 中的原始資料，
           建立新的 IngestionRun 並重新執行。適合修正 normalizer bug 後重處理歷史資料。
         </div>
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>run_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>要重跑的原始 ingestion run UUID</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid single">
@@ -1133,6 +1154,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
               <input id="inst-asset-class" type="text" placeholder="equity">
             </div>
             <div class="form-field">
+              <label>status</label>
+              <input id="inst-status" type="text" placeholder="active">
+            </div>
+            <div class="form-field">
               <label>symbol</label>
               <input id="inst-symbol" type="text" placeholder="BTC">
             </div>
@@ -1168,6 +1193,13 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>商品 UUID，可從 Instruments 清單端點取得</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid single">
@@ -1264,6 +1296,23 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>商品 UUID，可從 Instruments 清單端點取得</td></tr>
+          </table>
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1314,11 +1363,14 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
-            <tr><th>名稱</th><th>類型</th><th>說明</th></tr>
-            <tr><td>market</td><td><span class="param-type">string</span></td><td>市場代碼</td></tr>
-            <tr><td>symbols</td><td><span class="param-type">string</span></td><td>逗號分隔 Symbol</td></tr>
-            <tr><td>action_type</td><td><span class="param-type">string</span></td><td>事件類型 (dividend / split / ...)</td></tr>
-            <tr><td>start_date / end_date</td><td><span class="param-type">date</span></td><td>除息日範圍</td></tr>
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>市場代碼</td></tr>
+            <tr><td>symbols</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>逗號分隔 Symbol</td></tr>
+            <tr><td>action_type</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>事件類型 (dividend / split / ...)</td></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>除息日開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>除息日結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -1379,11 +1431,13 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
-            <tr><th>名稱</th><th>類型</th><th>說明</th></tr>
-            <tr><td>market</td><td><span class="param-type">string</span></td><td>市場代碼</td></tr>
-            <tr><td>source</td><td><span class="param-type">string</span></td><td>資料來源</td></tr>
-            <tr><td>source_code</td><td><span class="param-type">string</span></td><td>來源代碼 (如 GDP_US)</td></tr>
-            <tr><td>name</td><td><span class="param-type">string</span></td><td>序列名稱（模糊搜尋）</td></tr>
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>市場代碼</td></tr>
+            <tr><td>source</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>資料來源 (如 bloomberg)</td></tr>
+            <tr><td>source_code</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>來源代碼 (如 GDP_US)</td></tr>
+            <tr><td>name</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>序列名稱（模糊搜尋）</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -1392,6 +1446,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             <div class="form-field">
               <label>market</label>
               <input id="ms-market" type="text" list="market-options" placeholder="US">
+            </div>
+            <div class="form-field">
+              <label>source</label>
+              <input id="ms-source" type="text" placeholder="bloomberg">
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1433,6 +1491,18 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>市場代碼</td></tr>
+            <tr><td>source_code</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>來源代碼 (如 GDP_US)</td></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1487,11 +1557,14 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
-            <tr><th>名稱</th><th>類型</th><th>說明</th></tr>
-            <tr><td>market</td><td><span class="param-type">string</span></td><td>市場代碼</td></tr>
-            <tr><td>symbols</td><td><span class="param-type">string</span></td><td>逗號分隔 Symbol</td></tr>
-            <tr><td>contract_code</td><td><span class="param-type">string</span></td><td>合約代碼 (如 ESH24)</td></tr>
-            <tr><td>start_expiry / end_expiry</td><td><span class="param-type">date</span></td><td>到期日範圍</td></tr>
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>市場代碼</td></tr>
+            <tr><td>symbols</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>逗號分隔 Symbol</td></tr>
+            <tr><td>contract_code</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>合約代碼 (如 ESH24)</td></tr>
+            <tr><td>start_expiry</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>到期日開始 YYYY-MM-DD</td></tr>
+            <tr><td>end_expiry</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>到期日結束 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -1508,6 +1581,14 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             <div class="form-field">
               <label>contract_code</label>
               <input id="fc-code" type="text" placeholder="ESH24">
+            </div>
+            <div class="form-field">
+              <label>start_expiry</label>
+              <input id="fc-expiry-start" type="date">
+            </div>
+            <div class="form-field">
+              <label>end_expiry</label>
+              <input id="fc-expiry-end" type="date">
             </div>
             <div class="form-field">
               <label>page_size</label>
@@ -1543,6 +1624,18 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       <div class="endpoint-body">
         <div class="info-block">
           連續期貨 EOD 資料，已依 Roll Rule 拼接跨月合約成連續序列，適合量化回測使用。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>市場代碼</td></tr>
+            <tr><td>symbols</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>逗號分隔 Symbol</td></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
+          </table>
         </div>
         <div class="form-section">
           <div class="form-title">請求</div>
@@ -1595,6 +1688,24 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>商品 UUID，可先用 Instruments 端點查詢取得</td></tr>
+          </table>
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>action_type</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>事件類型 (dividend / split / ...)</td></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>除息日開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>除息日結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1646,6 +1757,23 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>series_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>總經序列 UUID，可先用 Macro Series 端點查詢取得</td></tr>
+          </table>
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1693,6 +1821,23 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>instrument_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>商品 UUID，可先用 Futures Contracts 端點查詢取得</td></tr>
+          </table>
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期 YYYY-MM-DD</td></tr>
+            <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期 YYYY-MM-DD</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
+          </table>
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1751,6 +1896,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期</td></tr>
             <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期</td></tr>
             <tr><td>is_open</td><td><span class="param-type">boolean</span></td><td><span class="param-optional">選填</span></td><td>true = 僅交易日，false = 僅休市日</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -2305,6 +2452,7 @@ function sendInstruments(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/instruments', { auth:'serve', params: {
     market:     document.getElementById('inst-market').value,
     asset_class: document.getElementById('inst-asset-class').value,
+    status:     document.getElementById('inst-status').value,
     symbol:     document.getElementById('inst-symbol').value,
     page_size:  document.getElementById('inst-page-size').value,
     page:       document.getElementById('inst-page').value,
@@ -2354,6 +2502,7 @@ function sendCorpActions(btn) {
 function sendMacroSeries(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/macro/series', { auth:'serve', params: {
     market:      document.getElementById('ms-market').value,
+    source:      document.getElementById('ms-source').value,
     source_code: document.getElementById('ms-source-code').value,
     name:        document.getElementById('ms-name').value,
     page_size:   document.getElementById('ms-page-size').value,
@@ -2377,6 +2526,8 @@ function sendFuturesContracts(btn) {
     market:        document.getElementById('fc-market').value,
     symbols:       document.getElementById('fc-symbols').value,
     contract_code: document.getElementById('fc-code').value,
+    start_expiry:  document.getElementById('fc-expiry-start').value,
+    end_expiry:    document.getElementById('fc-expiry-end').value,
     page_size:     document.getElementById('fc-page-size').value,
     page:          document.getElementById('fc-page').value,
   }});
