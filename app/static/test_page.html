@@ -1186,6 +1186,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          以 <code>instrument_id</code>（UUID）查詢單一金融商品的完整資料，包含 asset_class、market、symbol、name、currency、status 等欄位。
+          可從 Instruments 清單端點取得 <code>instrument_id</code>。找不到時回傳 404。
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid single">
@@ -1278,6 +1282,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          以 <code>instrument_id</code> 查詢單一商品的日線 OHLCV 資料，可搭配 <code>start_date</code> / <code>end_date</code> 縮小日期範圍。
+          適合在已知 instrument_id 的情況下做精確查詢，效率比跨商品篩選更高。
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1321,6 +1329,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          查詢股息（dividend）、股票分割（split）、股票合併（reverse split）、增資（rights）等公司行動事件。
+          可依 market、symbols（逗號分隔）、action_type 及日期範圍篩選。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1382,6 +1394,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          列出所有宏觀經濟指標的序列定義（metadata），包含 <code>source_code</code>（如 <code>USYC2Y10 Index</code>）、name、market、unit、frequency 等。
+          先查此端點取得 <code>series_id</code>，再用 Macro Observations 端點查詢實際數值。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1435,6 +1451,11 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          查詢宏觀經濟指標的實際觀測數值（如 CPI、GDP、失業率、殖利率利差等）。
+          以 <code>source_code</code> 精確篩選特定指標（例如 <code>USYC2Y10 Index</code>），搭配 <code>start_date</code> / <code>end_date</code> 縮小日期範圍。
+          結果依 source_code + obs_date 降序排列。
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1482,6 +1503,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          查詢期貨合約清單，包含合約代碼、到期日、標的商品等基本資訊。可依市場（如 WTX）、商品代號或合約代碼篩選；若要查詢連續期貨日線資料，請使用下方的 <code>/futures/continuous</code> 端點。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1585,6 +1609,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          依 instrument_id 查詢特定商品的公司行動事件（如除息、除權、增資）。先透過上方的 Instruments 端點取得 instrument_id，再帶入此處查詢。可搭配 action_type 和日期範圍縮小結果範圍。
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1632,6 +1659,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          依 series_id 查詢特定總經序列的所有觀測值，按觀測日期排序。先透過上方的 Macro Series 端點取得 series_id（可用 source_code 如 <code>USYC2Y10 Index</code> 搜尋），再帶入此處查詢歷史時間序列。
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
@@ -1675,6 +1705,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          依 instrument_id 查詢特定商品的連續期貨 EOD 日線資料（已依 Roll Rule 拼接跨月合約）。先透過上方的 Futures Contracts 端點取得商品對應的 instrument_id，再帶入此處查詢完整的歷史連續序列。
+        </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid">
