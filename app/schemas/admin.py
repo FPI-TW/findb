@@ -138,3 +138,13 @@ class RawPayloadListResponse(PaginatedResponse[RawPayloadResponse]):
     """Paginated raw payload list."""
 
     pass
+
+
+class BulkRerunResponse(BaseModel):
+    """Response for bulk rerun operation."""
+
+    queued: int
+    skipped: int
+    errors: int
+    new_run_ids: list[str]
+    error_details: list[str]

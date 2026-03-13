@@ -7,12 +7,13 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_admin_api_key
 from app.dependencies import get_db
 from app.schemas.admin import (
+    BulkRerunResponse,
     CorrectionListResponse,
     CorrectionResponse,
     DQIssueListResponse,
@@ -36,8 +37,16 @@ from app.services.admin import (
     resolve_dq_issue,
 )
 from app.services.admin import _mask_key
+from app.services.ingestion import (
+    IngestionService,
+    RawPayloadNotFoundError,
+    trigger_normalization,
+)
+from app.models.base import async_session_maker
+from app.models.registry import IngestionRun
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 router = APIRouter()
 
@@ -214,4 +223,68 @@ async def list_corrections_endpoint(
             total_records=total,
             total_pages=total_pages,
         ),
+    )
+
+
+@router.post("/runs/bulk-rerun", response_model=BulkRerunResponse)
+async def bulk_rerun_runs(
+    background_tasks: BackgroundTasks,
+    dataset_key: Optional[str] = Query(None, description="Filter by dataset_key"),
+    run_status: Optional[str] = Query(
+        "completed",
+        alias="status",
+        description="Run status to include: completed / failed / all",
+    ),
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rerun normalization for all existing runs matching the given filters.
+
+    Creates a new ingestion run for each match and queues normalization as
+    a background task. Returns immediately with a summary.
+    """
+    stmt = select(IngestionRun.run_id)
+    if dataset_key:
+        stmt = stmt.where(IngestionRun.dataset_key == dataset_key)
+    if run_status and run_status != "all":
+        stmt = stmt.where(IngestionRun.status == run_status)
+    stmt = stmt.order_by(IngestionRun.created_at)
+
+    result = await db.execute(stmt)
+    run_ids = [row[0] for row in result.all()]
+
+    if db.bind is None:
+        session_factory = async_session_maker
+    else:
+        session_factory = async_sessionmaker(
+            bind=db.bind,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+    service = IngestionService(db)
+    queued = 0
+    skipped = 0
+    errors = 0
+    new_run_ids: list[str] = []
+    error_details: list[str] = []
+
+    for run_id in run_ids:
+        try:
+            new_run_id, _, dk, payload = await service.rerun_from_raw(run_id)
+            background_tasks.add_task(trigger_normalization, dk, payload, new_run_id, session_factory)
+            new_run_ids.append(str(new_run_id))
+            queued += 1
+        except RawPayloadNotFoundError:
+            skipped += 1
+        except Exception as e:
+            errors += 1
+            error_details.append(f"{run_id}: {e}")
+
+    return BulkRerunResponse(
+        queued=queued,
+        skipped=skipped,
+        errors=errors,
+        new_run_ids=new_run_ids,
+        error_details=error_details,
     )
