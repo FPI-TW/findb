@@ -949,7 +949,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="info-block">
           接受 Bloomberg 直接格式 <code>DirectIngestPayload</code>（含 metadata 與 data 陣列），
           系統自動產生 idempotency_key。<br><br>
-          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>macro/direct</code>
+          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
           <div class="params-title">Request Body (DirectIngestPayload)</div>
@@ -968,6 +968,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
                 <option value="crypto">crypto/direct (加密貨幣)</option>
                 <option value="usstock">usstock/direct (美股)</option>
                 <option value="hkchina">hkchina/direct (港股/陸股)</option>
+                <option value="fx">fx/direct (外匯)</option>
+                <option value="wtx">wtx/direct (期貨)</option>
                 <option value="macro">macro/direct (總經數據)</option>
               </select>
             </div>
@@ -2213,6 +2215,8 @@ const directExamples = {
   crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "BTC",\n      "date": "2024-01-15",\n      "open": 42000,\n      "high": 43500,\n      "low": 41800,\n      "close": 43200,\n      "volume": 18500\n    }\n  ]\n}`,
   usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2024-01-15",\n      "open": 185.5,\n      "high": 188.2,\n      "low": 184.8,\n      "close": 187.1,\n      "volume": 55000000\n    }\n  ]\n}`,
   hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2024-01-15",\n      "open": 295.0,\n      "high": 302.0,\n      "low": 293.5,\n      "close": 299.8,\n      "volume": 12000000\n    }\n  ]\n}`,
+  fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2024-01-15",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
+  wtx:     `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "ticker": "TXF1 Index",\n      "date": "2024-01-15",\n      "open": 20800,\n      "high": 21100,\n      "low": 20700,\n      "close": 21000,\n      "volume": 50000\n    }\n  ]\n}`,
   macro:   `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "GDP_YOY Index",\n      "date": "2024-01-01",\n      "value": 2.5\n    }\n  ]\n}`,
 };
 
@@ -2222,7 +2226,7 @@ function updateDirectExample(sel) {
 
 function sendDirectIngest(btn) {
   const type = document.getElementById('direct-type').value;
-  const pathMap = { crypto:'crypto', usstock:'usstock', hkchina:'hkchina', macro:'macro' };
+  const pathMap = { crypto:'crypto', usstock:'usstock', hkchina:'hkchina', fx:'fx', wtx:'wtx', macro:'macro' };
   let body;
   try { body = JSON.parse(document.getElementById('direct-body').value); }
   catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
