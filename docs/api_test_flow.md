@@ -1,6 +1,6 @@
 # API 測試流程
 
-> **最後更新**: 2026-03-03
+> **最後更新**: 2026-03-13
 
 完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
 
@@ -54,7 +54,7 @@ docker-compose ps
 docker-compose exec app python /app/scripts/seed_data.py
 ```
 
-會寫入 16+ 個 dataset 定義與加密貨幣/美股/外匯等標的。
+會寫入 20+ 個 dataset 定義（含 Bloomberg Direct 格式）與加密貨幣/美股/外匯等標的。
 
 ---
 
@@ -231,6 +231,66 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
         "change": { "net": 1.50, "percent_1d": 0.65 },
         "timestamp": { "query_time": "2026-02-04T16:00:51", "last_update": "2026-02-04" },
         "metadata": { "source": "Bloomberg", "data_type": "equity" }
+      }
+    ]
+  }'
+```
+
+### 3.4b Direct 格式攝取（Crypto）
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "Bloomberg API", "category": "Cryptocurrency", "query_time": "2026-01-16T14:49:14Z" },
+    "data": [
+      {
+        "symbol": "BTC",
+        "ticker": "XBTUSD BGN Curncy",
+        "price": { "last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76 },
+        "timestamp": { "query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16" },
+        "metadata": { "source": "Bloomberg" }
+      }
+    ]
+  }'
+```
+
+### 3.4c Direct 格式攝取（FX）
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/ingest/fx/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "Bloomberg API", "category": "FX" },
+    "data": [
+      {
+        "pair": "EURUSD",
+        "ticker": "EURUSD Curncy",
+        "price": { "last": 1.0523, "open": 1.0498, "high": 1.0567, "low": 1.0489 },
+        "timestamp": { "last_update": "2026-03-12" },
+        "metadata": { "source": "Bloomberg" }
+      }
+    ]
+  }'
+```
+
+### 3.4d Direct 格式攝取（WTX 期貨）
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/source/ingest/wtx/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "Bloomberg API", "category": "Futures" },
+    "data": [
+      {
+        "symbol": "TXF1",
+        "ticker": "TXF1 Index",
+        "price": { "last": 21000, "open": 20800, "high": 21100, "low": 20700, "volume": 50000 },
+        "timestamp": { "last_update": "2026-03-12" },
+        "metadata": { "source": "Bloomberg" }
       }
     ]
   }'
@@ -705,9 +765,10 @@ docker-compose exec app bash -c \
 | `test_serve_api.py` | instruments、eod、corporate-actions、macro、futures、calendar | ~8 |
 | `test_normalize.py` | Crypto/Equity/FX 正規化邏輯 | ~5 |
 | `test_usstock_normalize.py` | US Stock/Global/TW/HK/CN 正規化、區域篩選 | ~12 |
+| `test_bloomberg_direct_normalize.py` | FX/Crypto/WTX/Macro Bloomberg direct 正規化 | 32 |
 | `test_end_to_end.py` | 完整 ingest → normalize → query 流程 | ~3 |
 | `test_admin_api.py` | Admin 認證（401/403/500）、PATCH EOD（404/400/200）、Resolve DQ（404/409/200）、audit log、分頁、corrected_by 遮罩 | 24 |
-| **合計** | | **~66**（~64 passed, 2 skipped） |
+| **合計** | | **~112**（~110 passed, 2 skipped） |
 
 ### 指定執行
 

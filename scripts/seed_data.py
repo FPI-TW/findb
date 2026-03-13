@@ -510,6 +510,47 @@ DATASETS = [
             },
         },
     },
+    # Bloomberg direct format datasets
+    {
+        "dataset_key": "crypto_bloomberg_eod",
+        "name": "加密貨幣日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式加密貨幣每日價格資料",
+        "asset_class": "crypto",
+        "market": "CRYPTO",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_crypto_direct"},
+    },
+    {
+        "dataset_key": "fx_bloomberg_eod",
+        "name": "外匯日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式外匯每日價格資料",
+        "asset_class": "fx",
+        "market": "FX",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_fx_direct"},
+    },
+    {
+        "dataset_key": "wtx_bloomberg_eod",
+        "name": "WTX 期貨日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式台灣加權指數期貨每日價格資料",
+        "asset_class": "future",
+        "market": "WTX",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_wtx_direct"},
+    },
+    {
+        "dataset_key": "macro_bloomberg_observation",
+        "name": "總經觀測值 — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式宏觀經濟指標觀測值",
+        "asset_class": "macro",
+        "market": "MACRO",
+        "frequency": "various",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_macro_direct"},
+    },
 ]
 
 
