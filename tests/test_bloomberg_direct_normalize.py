@@ -169,6 +169,26 @@ class TestCryptoBloombergNormalizer:
         records = self._n().map_fields(self._payload(ticker="DOGUSD Curncy", symbol="DOGE"))
         assert records[0].symbol == "DOGE"
 
+    def test_original_flat_payload(self):
+        payload = {
+            "metadata": {"source": "bloomberg", "query_time": "2026-01-16T14:49:14Z"},
+            "data": [
+                {
+                    "ticker": "XBTUSD BGN Curncy",
+                    "date": "2026-01-16",
+                    "open": 95550.07,
+                    "high": 95825.34,
+                    "low": 95119.76,
+                    "close": 95709.01,
+                    "volume": 18500,
+                }
+            ],
+        }
+        records = self._n().map_fields(payload)
+        assert len(records) == 1
+        assert records[0].symbol == "BTC"
+        assert records[0].close == Decimal("95709.01")
+
     def test_dataset_key(self):
         assert CryptoBloombergNormalizer.dataset_key == "crypto_bloomberg_eod"
         assert CryptoBloombergNormalizer.market == "CRYPTO"
@@ -320,6 +340,26 @@ class TestMacroBloombergNormalizer:
         payload["data"][0]["value"] = 3.1
         records = self._n().map_fields(payload)
         assert records[0].value == Decimal("3.1")
+
+    def test_original_flat_payload(self):
+        payload = {
+            "metadata": {"source": "bloomberg", "query_time": "2026-02-01T10:00:00Z"},
+            "data": [
+                {
+                    "ticker": "CPI YOY Index",
+                    "date": "2026-01-01",
+                    "value": 2.9,
+                    "market": "US",
+                    "unit": "%",
+                    "frequency": "monthly",
+                }
+            ],
+        }
+        records = self._n().map_fields(payload)
+        assert len(records) == 1
+        assert records[0].source_code == "CPI YOY Index"
+        assert str(records[0].obs_date) == "2026-01-01"
+        assert records[0].value == Decimal("2.9")
 
     def test_skip_record_without_ticker_or_symbol(self):
         payload = self._payload()

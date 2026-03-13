@@ -217,20 +217,19 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
   -H "Content-Type: application/json" \
   -d '{
     "metadata": {
-      "source": "Bloomberg API",
-      "category": "US Stock",
-      "query_time": "2026-02-04T16:00:51"
+      "source": "bloomberg",
+      "query_time": "2026-02-04T16:00:51Z"
     },
     "data": [
       {
-        "symbol": "AAPL",
-        "name": "Apple Inc",
         "ticker": "AAPL US Equity",
-        "price": { "last": 232.50, "open": 231.00, "high": 233.00, "low": 230.50 },
+        "date": "2026-02-04",
+        "open": 231.00,
+        "high": 233.00,
+        "low": 230.50,
+        "close": 232.50,
         "volume": 45000000,
-        "change": { "net": 1.50, "percent_1d": 0.65 },
-        "timestamp": { "query_time": "2026-02-04T16:00:51", "last_update": "2026-02-04" },
-        "metadata": { "source": "Bloomberg", "data_type": "equity" }
+        "name": "Apple Inc"
       }
     ]
   }'
@@ -243,14 +242,16 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "metadata": { "source": "Bloomberg API", "category": "Cryptocurrency", "query_time": "2026-01-16T14:49:14Z" },
+    "metadata": { "source": "bloomberg", "query_time": "2026-01-16T14:49:14Z" },
     "data": [
       {
-        "symbol": "BTC",
         "ticker": "XBTUSD BGN Curncy",
-        "price": { "last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76 },
-        "timestamp": { "query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16" },
-        "metadata": { "source": "Bloomberg" }
+        "date": "2026-01-16",
+        "open": 95550.07,
+        "high": 95825.34,
+        "low": 95119.76,
+        "close": 95709.01,
+        "volume": 18500
       }
     ]
   }'
@@ -263,14 +264,16 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/fx/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "metadata": { "source": "Bloomberg API", "category": "FX" },
+    "metadata": { "source": "bloomberg", "query_time": "2026-03-12T08:00:00Z" },
     "data": [
       {
         "pair": "EURUSD",
         "ticker": "EURUSD Curncy",
-        "price": { "last": 1.0523, "open": 1.0498, "high": 1.0567, "low": 1.0489 },
-        "timestamp": { "last_update": "2026-03-12" },
-        "metadata": { "source": "Bloomberg" }
+        "date": "2026-03-12",
+        "open": 1.0498,
+        "high": 1.0567,
+        "low": 1.0489,
+        "close": 1.0523
       }
     ]
   }'
@@ -283,14 +286,17 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/wtx/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "metadata": { "source": "Bloomberg API", "category": "Futures" },
+    "metadata": { "source": "bloomberg", "query_time": "2026-03-12T08:00:00Z" },
     "data": [
       {
         "symbol": "TXF1",
         "ticker": "TXF1 Index",
-        "price": { "last": 21000, "open": 20800, "high": 21100, "low": 20700, "volume": 50000 },
-        "timestamp": { "last_update": "2026-03-12" },
-        "metadata": { "source": "Bloomberg" }
+        "date": "2026-03-12",
+        "open": 20800,
+        "high": 21100,
+        "low": 20700,
+        "close": 21000,
+        "volume": 50000
       }
     ]
   }'
@@ -303,8 +309,18 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/hkchina/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "metadata": { "source": "Bloomberg API", "category": "HK China Stock" },
-    "data": []
+    "metadata": { "source": "bloomberg", "query_time": "2026-03-12T08:00:00Z" },
+    "data": [
+      {
+        "ticker": "700 HK Equity",
+        "date": "2026-03-12",
+        "open": 415.0,
+        "high": 425.0,
+        "low": 413.0,
+        "close": 420.0,
+        "volume": 18000000
+      }
+    ]
   }'
 ```
 
@@ -315,8 +331,17 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/macro/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "metadata": { "source": "Bloomberg API", "category": "Macro" },
-    "data": []
+    "metadata": { "source": "bloomberg", "query_time": "2026-03-12T08:00:00Z" },
+    "data": [
+      {
+        "ticker": "CPI YOY Index",
+        "date": "2026-01-01",
+        "value": 2.9,
+        "market": "US",
+        "unit": "%",
+        "frequency": "monthly"
+      }
+    ]
   }'
 ```
 

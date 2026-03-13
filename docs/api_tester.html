@@ -955,7 +955,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       <div class="endpoint-body">
         <div class="info-block">
           接受 Bloomberg 直接格式 <code>DirectIngestPayload</code>（含 metadata 與 data 陣列），
-          系統自動產生 idempotency_key。<br><br>
+          系統自動產生 idempotency_key。預設以原始扁平格式為主，<code>data[]</code> 可直接使用
+          <code>ticker</code>、<code>date</code>、<code>open</code>、<code>high</code>、<code>low</code>、
+          <code>close</code>、<code>volume</code> 等欄位；也相容巢狀 <code>price</code> / <code>timestamp</code> 格式。<br><br>
+          <code>metadata</code> 建議保留 <code>source</code> 與 <code>query_time</code>；<code>category</code> 非必需。<br><br>
           可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
@@ -969,8 +972,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="params-title">Request Body (DirectIngestPayload)</div>
           <table class="params-table">
             <tr><th>欄位</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>metadata</td><td><span class="param-type">object</span></td><td><span class="param-optional">選填</span></td><td>包含 source、query_time 等元資訊</td></tr>
-            <tr><td>data</td><td><span class="param-type">array</span></td><td><span class="param-optional">選填</span></td><td>資料列表</td></tr>
+            <tr><td>metadata</td><td><span class="param-type">object</span></td><td><span class="param-optional">選填</span></td><td>建議提供 source、query_time；query_time 會作為本批資料抓取時間</td></tr>
+            <tr><td>data</td><td><span class="param-type">array</span></td><td><span class="param-optional">選填</span></td><td>資料列表；建議以扁平欄位直接傳入 ticker/date/open/high/low/close/volume/value</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -996,7 +999,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
   },
   "data": [
     {
-      "ticker": "BTC",
+      "ticker": "XBTUSD BGN Curncy",
       "date": "2024-01-15",
       "open": 42000,
       "high": 43500,
@@ -2415,12 +2418,12 @@ function sendRawIngest(btn) {
 }
 
 const directExamples = {
-  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "BTC",\n      "date": "2024-01-15",\n      "open": 42000,\n      "high": 43500,\n      "low": 41800,\n      "close": 43200,\n      "volume": 18500\n    }\n  ]\n}`,
+  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "XBTUSD BGN Curncy",\n      "date": "2024-01-15",\n      "open": 42000,\n      "high": 43500,\n      "low": 41800,\n      "close": 43200,\n      "volume": 18500\n    }\n  ]\n}`,
   usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2024-01-15",\n      "open": 185.5,\n      "high": 188.2,\n      "low": 184.8,\n      "close": 187.1,\n      "volume": 55000000\n    }\n  ]\n}`,
   hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2024-01-15",\n      "open": 295.0,\n      "high": 302.0,\n      "low": 293.5,\n      "close": 299.8,\n      "volume": 12000000\n    }\n  ]\n}`,
   fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2024-01-15",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
   wtx:     `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "ticker": "TXF1 Index",\n      "date": "2024-01-15",\n      "open": 20800,\n      "high": 21100,\n      "low": 20700,\n      "close": 21000,\n      "volume": 50000\n    }\n  ]\n}`,
-  macro:   `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "GDP_YOY Index",\n      "date": "2024-01-01",\n      "value": 2.5\n    }\n  ]\n}`,
+  macro:   `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "GDP_YOY Index",\n      "date": "2024-01-01",\n      "value": 2.5,\n      "market": "US",\n      "unit": "%",\n      "frequency": "quarterly"\n    }\n  ]\n}`,
 };
 
 function updateDirectExample(sel) {

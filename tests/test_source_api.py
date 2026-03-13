@@ -530,29 +530,19 @@ class TestSourceAPI:
 
         payload = {
             "metadata": {
-                "source": "Bloomberg API",
-                "category": "US Stock",
-                "query_time": "2026-02-04T16:00:51.164789",
+                "source": "bloomberg",
+                "query_time": "2026-02-04T16:00:51.164789Z",
                 "total_records": 1,
             },
             "data": [
                 {
-                    "stock_id": "aapl",
-                    "symbol": "AAPL",
-                    "name": "APPLE INC",
                     "ticker": "AAPL US Equity",
-                    "price": {
-                        "last": 269.48,
-                        "open": 269.2,
-                        "high": 271.875,
-                        "low": 267.61,
-                        "volume": 64394655.0,
-                    },
-                    "timestamp": {
-                        "query_time": "2026-02-04T16:00:51.151296",
-                        "last_update": "2026-02-04",
-                    },
-                    "metadata": {"source": "Bloomberg", "data_type": "stock"},
+                    "date": "2026-02-04",
+                    "open": 269.2,
+                    "high": 271.875,
+                    "low": 267.61,
+                    "close": 269.48,
+                    "volume": 64394655.0,
                 }
             ],
         }
@@ -614,30 +604,19 @@ class TestSourceAPI:
             headers=source_headers,
             json={
                 "metadata": {
-                    "source": "Bloomberg API",
-                    "category": "HK/China Stock",
-                    "query_time": "2026-02-09T15:55:22.900700",
+                    "source": "bloomberg",
+                    "query_time": "2026-02-09T15:55:22.900700Z",
                     "total_records": 1,
                 },
                 "data": [
                     {
-                        "stock_id": "700",
-                        "symbol": "700",
-                        "name": "TENCENT HOLDINGS LTD",
                         "ticker": "700 HK Equity",
-                        "market": "HK",
-                        "price": {
-                            "last": 560.0,
-                            "open": 550.0,
-                            "high": 562.5,
-                            "low": 550.0,
-                            "volume": 23494910.0,
-                        },
-                        "timestamp": {
-                            "query_time": "2026-02-09T15:55:22.581572",
-                            "last_update": "2026-02-09",
-                        },
-                        "metadata": {"source": "Bloomberg", "data_type": "stock"},
+                        "date": "2026-02-09",
+                        "open": 550.0,
+                        "high": 562.5,
+                        "low": 550.0,
+                        "close": 560.0,
+                        "volume": 23494910.0,
                     }
                 ],
             },
@@ -796,23 +775,18 @@ class TestSourceAPI:
             headers=source_headers,
             json={
                 "metadata": {
-                    "source": "Bloomberg API",
-                    "category": "Macro Economic",
-                    "query_time": "2026-02-09T14:51:37.266145",
+                    "source": "bloomberg",
+                    "query_time": "2026-02-09T14:51:37.266145Z",
                     "total_records": 1,
                 },
                 "data": [
                     {
-                        "index_id": "move",
-                        "symbol": "MOVE",
-                        "name": "MOVE",
                         "ticker": "MOVE Index",
-                        "price": {"last": 63.62},
-                        "timestamp": {
-                            "query_time": "2026-02-09T14:51:35.347331",
-                            "last_update": "2026-02-07",
-                        },
-                        "metadata": {"source": "Bloomberg", "data_type": "macro"},
+                        "date": "2026-02-07",
+                        "value": 63.62,
+                        "market": "US",
+                        "unit": "bp",
+                        "frequency": "daily",
                     }
                 ],
             },
