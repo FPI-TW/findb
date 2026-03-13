@@ -36,6 +36,7 @@ from app.services.admin import (
     resolve_dq_issue,
 )
 from app.services.admin import _mask_key
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
 
 router = APIRouter()
@@ -117,12 +118,14 @@ async def resolve_dq_issue_endpoint(
 async def list_raw_payloads(
     dataset_key: Optional[str] = Query(None, description="Filter by dataset key"),
     run_id: Optional[UUID] = Query(None, description="Filter by ingestion run UUID"),
+    date_from: Optional[date] = Query(None, description="Filter created_at >= this date (YYYY-MM-DD, UTC)"),
+    date_to: Optional[date] = Query(None, description="Filter created_at <= this date (YYYY-MM-DD, UTC)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List raw market payloads, newest first. Optionally filter by dataset_key or run_id."""
+    """List raw market payloads, newest first. Optionally filter by dataset_key, run_id, or date range."""
     stmt = select(RawMarketPayload)
     count_stmt = select(func.count()).select_from(RawMarketPayload)
 
@@ -132,6 +135,14 @@ async def list_raw_payloads(
     if run_id:
         stmt = stmt.where(RawMarketPayload.run_id == run_id)
         count_stmt = count_stmt.where(RawMarketPayload.run_id == run_id)
+    if date_from:
+        dt_from = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+        stmt = stmt.where(RawMarketPayload.created_at >= dt_from)
+        count_stmt = count_stmt.where(RawMarketPayload.created_at >= dt_from)
+    if date_to:
+        dt_to = datetime(date_to.year, date_to.month, date_to.day, tzinfo=timezone.utc) + timedelta(days=1)
+        stmt = stmt.where(RawMarketPayload.created_at < dt_to)
+        count_stmt = count_stmt.where(RawMarketPayload.created_at < dt_to)
 
     total = (await db.execute(count_stmt)).scalar_one()
     rows = (
