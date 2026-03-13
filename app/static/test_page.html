@@ -763,6 +763,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       <a class="nav-item" onclick="goTo('ep-resolve-dq')">
         <span class="nav-method m-post">PATCH</span>Resolve DQ Issue
       </a>
+      <a class="nav-item" onclick="goTo('ep-bulk-rerun')">
+        <span class="nav-method m-post">POST</span>Bulk Rerun
+      </a>
       <a class="nav-item" onclick="goTo('ep-corrections')">
         <span class="nav-method m-get">GET</span>Corrections Log
       </a>
@@ -2073,6 +2076,57 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     </div>
 
     <!-- Corrections Log -->
+    <div class="endpoint-card" id="ep-bulk-rerun">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge POST">POST</span>
+        <span class="endpoint-path">/api/v1/admin/runs/bulk-rerun</span>
+        <span class="endpoint-desc">批量重跑所有 run 的正規化</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          對所有符合條件的 ingestion run 重新觸發正規化流程。
+          適用於更新 normalizer 邏輯後需重跑歷史資料的情境。
+          立即回傳 queued 數量，實際正規化在背景執行。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>篩選特定 dataset（不填 = 全部）</td></tr>
+            <tr><td>status</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>completed（預設）/ failed / all</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>dataset_key</label>
+              <input id="bulk-rerun-dataset" type="text" placeholder="（不填 = 全部）">
+            </div>
+            <div class="form-field">
+              <label>status</label>
+              <select id="bulk-rerun-status">
+                <option value="completed">completed（預設）</option>
+                <option value="failed">failed</option>
+                <option value="all">all</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendBulkRerun(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
     <div class="endpoint-card" id="ep-corrections">
       <div class="endpoint-header" onclick="toggleCard(this)">
         <span class="method-badge GET">GET</span>
@@ -2544,6 +2598,13 @@ function sendRawByRun(btn) {
   const id = document.getElementById('raw-by-run-id').value.trim();
   if (!id) { alert('請輸入 run_id'); return; }
   doRequest(btn, 'GET', `/api/v1/admin/raw-payloads/${id}`, { auth:'admin' });
+}
+
+function sendBulkRerun(btn) {
+  doRequest(btn, 'POST', '/api/v1/admin/runs/bulk-rerun', { auth:'admin', params: {
+    dataset_key: document.getElementById('bulk-rerun-dataset').value,
+    status:      document.getElementById('bulk-rerun-status').value,
+  }});
 }
 
 function sendCorrections(btn) {
