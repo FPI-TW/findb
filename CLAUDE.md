@@ -104,7 +104,7 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 - `SOURCE_API_KEYS` must be set for auth tests to pass
 - Tables are auto-created and torn down per test session
 - Rate limit state resets between tests automatically
-- Current state: ~42 tests (40 passed, 2 skipped)
+- Current state: ~112 tests (~110 passed, 2 skipped)
 
 ## Infrastructure
 

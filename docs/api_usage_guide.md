@@ -1,6 +1,6 @@
 # FinDB API 使用教學
 
-> **版本**: 0.1.0 | **最後更新**: 2026-03-03
+> **版本**: 0.1.0 | **最後更新**: 2026-03-13
 
 本文件說明如何使用 FinDB 的 Source API（資料寫入）、Serve API（資料查詢）與 Admin API（資料修正）。
 涵蓋認證機制、所有端點規格、請求/回應格式、錯誤處理與完整範例。
@@ -337,9 +337,12 @@ Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
 
 | 方法 | 路徑 | 對應市場 | 自動 dataset_key | 說明 |
 |------|------|---------|-----------------|------|
+| POST | `/ingest/crypto/direct` | CRYPTO | `crypto_bloomberg_eod` | Bloomberg 加密貨幣直接格式 |
+| POST | `/ingest/fx/direct` | FX | `fx_bloomberg_eod` | Bloomberg 外匯直接格式 |
+| POST | `/ingest/wtx/direct` | WTX | `wtx_bloomberg_eod` | Bloomberg WTX 期貨直接格式 |
 | POST | `/ingest/usstock/direct` | US | `us_stock_eod` | Bloomberg 美股直接格式 |
 | POST | `/ingest/hkchina/direct` | GLOBAL | `hkchina_stock_eod` | Bloomberg 港中股直接格式 |
-| POST | `/ingest/macro/direct` | MACRO | `macro_observation` | Bloomberg 宏觀直接格式 |
+| POST | `/ingest/macro/direct` | MACRO | `macro_bloomberg_observation` | Bloomberg 宏觀直接格式 |
 
 #### curl 範例
 
@@ -371,6 +374,63 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@bloomberg_usstock_20260204_160051_api_format.json"
+```
+
+```bash
+# 直接匯入加密貨幣資料
+curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "Bloomberg API", "category": "Cryptocurrency", "query_time": "2026-01-16T14:49:14Z" },
+    "data": [
+      {
+        "symbol": "BTC",
+        "ticker": "XBTUSD BGN Curncy",
+        "price": { "last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76 },
+        "timestamp": { "query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16" },
+        "metadata": { "source": "Bloomberg" }
+      }
+    ]
+  }'
+```
+
+```bash
+# 直接匯入外匯資料
+curl -X POST "http://localhost:8000/api/v1/source/ingest/fx/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "Bloomberg API", "category": "FX" },
+    "data": [
+      {
+        "pair": "EURUSD",
+        "ticker": "EURUSD Curncy",
+        "price": { "last": 1.0523, "open": 1.0498, "high": 1.0567, "low": 1.0489 },
+        "timestamp": { "last_update": "2026-03-12" },
+        "metadata": { "source": "Bloomberg" }
+      }
+    ]
+  }'
+```
+
+```bash
+# 直接匯入 WTX 期貨資料
+curl -X POST "http://localhost:8000/api/v1/source/ingest/wtx/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "Bloomberg API", "category": "Futures" },
+    "data": [
+      {
+        "symbol": "TXF1",
+        "ticker": "TXF1 Index",
+        "price": { "last": 21000, "open": 20800, "high": 21100, "low": 20700, "volume": 50000 },
+        "timestamp": { "last_update": "2026-03-12" },
+        "metadata": { "source": "Bloomberg" }
+      }
+    ]
+  }'
 ```
 
 ---
