@@ -784,9 +784,6 @@ class TestSourceAPI:
                         "ticker": "MOVE Index",
                         "date": "2026-02-07",
                         "value": 63.62,
-                        "market": "US",
-                        "unit": "bp",
-                        "frequency": "daily",
                     }
                 ],
             },
@@ -872,9 +869,6 @@ class TestSourceAPI:
                             "ticker": "CPI YOY Index",
                             "date": "2026-01-01",
                             "value": 2.9,
-                            "market": "US",
-                            "unit": "%",
-                            "frequency": "monthly",
                         }
                     ],
                 },

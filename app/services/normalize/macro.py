@@ -94,6 +94,8 @@ class MacroNormalizer(BaseNormalizer):
             record.frequency = str(record.frequency).lower().strip()
         if record.market:
             record.market = str(record.market).upper().strip()
+        else:
+            record.market = self.market
         if record.source:
             record.source = str(record.source).lower().strip()
         return record

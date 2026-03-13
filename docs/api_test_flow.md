@@ -331,15 +331,17 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/macro/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "metadata": { "source": "bloomberg", "query_time": "2026-03-12T08:00:00Z" },
+    "metadata": { "source": "Bloomberg", "query_time": "2026-03-12T08:00:00Z" },
     "data": [
       {
-        "ticker": "CPI YOY Index",
-        "date": "2026-01-01",
-        "value": 2.9,
-        "market": "US",
-        "unit": "%",
-        "frequency": "monthly"
+        "ticker": "SOFRRATE Index",
+        "date": "2026-03-12",
+        "value": 5.32
+      },
+      {
+        "ticker": "USGG10YR Index",
+        "date": "2026-03-12",
+        "value": 4.85
       }
     ]
   }'
