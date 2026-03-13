@@ -349,9 +349,6 @@ class TestMacroBloombergNormalizer:
                     "ticker": "CPI YOY Index",
                     "date": "2026-01-01",
                     "value": 2.9,
-                    "market": "US",
-                    "unit": "%",
-                    "frequency": "monthly",
                 }
             ],
         }
@@ -360,6 +357,8 @@ class TestMacroBloombergNormalizer:
         assert records[0].source_code == "CPI YOY Index"
         assert str(records[0].obs_date) == "2026-01-01"
         assert records[0].value == Decimal("2.9")
+        assert records[0].market == "MACRO"
+        assert records[0].source == "bloomberg"
 
     def test_skip_record_without_ticker_or_symbol(self):
         payload = self._payload()

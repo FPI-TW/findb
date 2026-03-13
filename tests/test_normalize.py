@@ -19,6 +19,7 @@ from app.services.dq.validators import DQValidator
 from app.services.normalize.base import BaseNormalizer
 from app.services.normalize.crypto import CryptoNormalizer
 from app.services.normalize.futures import FuturesContinuousNormalizer
+from app.services.normalize.macro import MacroNormalizer
 from app.services.normalize.types import MappedRecord
 from app.utils import utc_now, uuid7
 
@@ -76,6 +77,42 @@ class TestCryptoNormalizer:
         assert normalizer._resolve_symbol("XSO Curncy") == "SOL"
         assert normalizer._resolve_symbol("XAD BGN Curncy") == "ADA"
         assert normalizer._resolve_symbol("UNKNOWN") == "UNKNOWN"
+
+
+class TestMacroNormalizer:
+    """Tests for Macro Normalizer."""
+
+    def test_minimal_macro_payload_defaults_market(self):
+        """Minimal macro payload should default market to MACRO."""
+
+        class TestNormalizer(MacroNormalizer):
+            def __init__(self):
+                self.dq_validator = DQValidator()
+
+        normalizer = TestNormalizer()
+        records = normalizer.map_fields(
+            {
+                "metadata": {
+                    "source": "Bloomberg",
+                    "query_time": "2023-10-27T10:00:00Z",
+                },
+                "data": [
+                    {
+                        "ticker": "SOFRRATE Index",
+                        "date": "2023-10-26",
+                        "value": 5.32,
+                    }
+                ],
+            }
+        )
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.source_code == "SOFRRATE Index"
+        assert str(record.obs_date) == "2023-10-26"
+        assert record.value == Decimal("5.32")
+        assert record.market == "MACRO"
+        assert record.source == "bloomberg"
 
 
 class TestDQValidator:
