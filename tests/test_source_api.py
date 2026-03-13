@@ -780,20 +780,13 @@ class TestSourceAPI:
     ):
         """Ensure macro direct payload format can be ingested."""
         dataset = DatasetRegistry(
-            dataset_key="macro_observation",
-            name="Macro Observation",
+            dataset_key="macro_bloomberg_observation",
+            name="Macro Bloomberg Observation",
             asset_class="macro",
             market="MACRO",
             frequency="varies",
             is_active=True,
-            config={
-                "data_path": "data",
-                "field_mapping": {
-                    "source_code": "source_code",
-                    "obs_date": "date",
-                    "value": "value",
-                },
-            },
+            config={},
         )
         test_session.add(dataset)
         await test_session.commit()
@@ -830,7 +823,7 @@ class TestSourceAPI:
         run_id = data["run_id"]
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
-        assert run.dataset_key == "macro_observation"
+        assert run.dataset_key == "macro_bloomberg_observation"
 
     @pytest.mark.asyncio
     async def test_health_check(self, client: AsyncClient):

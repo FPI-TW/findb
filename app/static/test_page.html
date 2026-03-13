@@ -529,6 +529,50 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
   text-transform: uppercase;
 }
 
+.response-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.response-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: rgba(255,255,255,0.48);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.response-copy-btn:hover:not(:disabled) {
+  border-color: rgba(255,255,255,0.28);
+  color: rgba(255,255,255,0.86);
+  background: rgba(255,255,255,0.06);
+}
+
+.response-copy-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.response-copy-btn svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+}
+
+.response-copy-btn.copied {
+  border-color: rgba(110,186,138,0.45);
+  color: #6EBA8A;
+  background: rgba(110,186,138,0.12);
+}
+
 .response-status {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
@@ -723,6 +767,18 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     所有請求直接由瀏覽器發出，回應顯示於各端點下方。</p>
   </div>
 
+  <datalist id="market-options">
+    <option value="CRYPTO"></option>
+    <option value="US"></option>
+    <option value="FX"></option>
+    <option value="MACRO"></option>
+    <option value="WTX"></option>
+    <option value="GLOBAL"></option>
+    <option value="TW"></option>
+    <option value="HK"></option>
+    <option value="CN"></option>
+  </datalist>
+
   <!-- ══ SYSTEM ═══════════════════════════════════════ -->
   <section class="api-section" id="sec-system">
     <div class="section-heading">
@@ -899,7 +955,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <div class="info-block">
           接受 Bloomberg 直接格式 <code>DirectIngestPayload</code>（含 metadata 與 data 陣列），
           系統自動產生 idempotency_key。<br><br>
-          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>macro/direct</code>
+          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
           <div class="params-title">Request Body (DirectIngestPayload)</div>
@@ -918,6 +974,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
                 <option value="crypto">crypto/direct (加密貨幣)</option>
                 <option value="usstock">usstock/direct (美股)</option>
                 <option value="hkchina">hkchina/direct (港股/陸股)</option>
+                <option value="fx">fx/direct (外匯)</option>
+                <option value="wtx">wtx/direct (期貨)</option>
                 <option value="macro">macro/direct (總經數據)</option>
               </select>
             </div>
@@ -1074,7 +1132,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="inst-market" type="text" placeholder="CRYPTO">
+              <input id="inst-market" type="text" list="market-options" placeholder="CRYPTO">
             </div>
             <div class="form-field">
               <label>asset_class</label>
@@ -1162,7 +1220,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="eod-market" type="text" placeholder="CRYPTO">
+              <input id="eod-market" type="text" list="market-options" placeholder="CRYPTO">
             </div>
             <div class="form-field">
               <label>symbols (逗號分隔)</label>
@@ -1262,7 +1320,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ca-market" type="text" placeholder="US">
+              <input id="ca-market" type="text" list="market-options" placeholder="US">
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1323,7 +1381,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ms-market" type="text" placeholder="US">
+              <input id="ms-market" type="text" list="market-options" placeholder="US">
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1366,7 +1424,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="mo-market" type="text" placeholder="US">
+              <input id="mo-market" type="text" list="market-options" placeholder="US">
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1423,7 +1481,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fc-market" type="text" placeholder="WTX">
+              <input id="fc-market" type="text" list="market-options" placeholder="WTX">
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1469,7 +1527,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fcon-market" type="text" placeholder="WTX">
+              <input id="fcon-market" type="text" list="market-options" placeholder="WTX">
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1662,7 +1720,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market <span class="param-required">*</span></label>
-              <input id="cal-market" type="text" value="US">
+              <input id="cal-market" type="text" list="market-options" value="US">
             </div>
             <div class="form-field">
               <label>is_open</label>
@@ -2063,6 +2121,87 @@ const cfg = {
   el.addEventListener('input', () => localStorage.setItem(id, el.value));
 });
 
+const copyIcon = `
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="10" height="10" rx="2"></rect>
+    <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"></path>
+  </svg>
+`;
+
+const copiedIcon = `
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M20 6 9 17l-5-5"></path>
+  </svg>
+`;
+
+function initResponseCopyButtons() {
+  document.querySelectorAll('.response-header').forEach(header => {
+    const statusEl = header.querySelector('.response-status');
+    if (!statusEl || header.querySelector('.response-copy-btn')) return;
+
+    const actions = document.createElement('div');
+    actions.className = 'response-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'response-copy-btn';
+    copyBtn.title = '複製回應';
+    copyBtn.setAttribute('aria-label', '複製回應');
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.disabled = true;
+    copyBtn.addEventListener('click', () => copyResponse(copyBtn));
+
+    actions.append(copyBtn, statusEl);
+    header.appendChild(actions);
+  });
+}
+
+async function copyResponse(copyBtn) {
+  const area = copyBtn.closest('.response-area');
+  const responseText = area?.dataset.responseText || '';
+  if (!responseText) return;
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(responseText);
+    } else {
+      fallbackCopyText(responseText);
+    }
+    flashCopyState(copyBtn, '已複製', copiedIcon, true);
+  } catch (e) {
+    flashCopyState(copyBtn, '複製失敗', copyIcon, false);
+  }
+}
+
+function fallbackCopyText(text) {
+  const temp = document.createElement('textarea');
+  temp.value = text;
+  temp.setAttribute('readonly', '');
+  temp.style.position = 'absolute';
+  temp.style.left = '-9999px';
+  document.body.appendChild(temp);
+  temp.select();
+  document.execCommand('copy');
+  document.body.removeChild(temp);
+}
+
+function flashCopyState(copyBtn, title, icon, copied) {
+  copyBtn.title = title;
+  copyBtn.setAttribute('aria-label', title);
+  copyBtn.innerHTML = icon;
+  copyBtn.classList.toggle('copied', copied);
+
+  window.clearTimeout(copyBtn._resetTimer);
+  copyBtn._resetTimer = window.setTimeout(() => {
+    copyBtn.title = '複製回應';
+    copyBtn.setAttribute('aria-label', '複製回應');
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.classList.remove('copied');
+  }, 1400);
+}
+
+initResponseCopyButtons();
+
 // ─── UI HELPERS ──────────────────────────────────────────
 function goTo(id) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2094,14 +2233,27 @@ function showResponse(btn, status, data) {
   const area = card.querySelector('.response-area');
   const statusEl = area.querySelector('.response-status');
   const preEl = area.querySelector('pre');
+  const copyBtn = area.querySelector('.response-copy-btn');
+  const responseText = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 
   area.style.display = 'block';
+  area.dataset.responseText = responseText;
 
   const ok = status >= 200 && status < 300;
   statusEl.textContent = `HTTP ${status}`;
   statusEl.className = 'response-status ' + (ok ? 'ok' : 'err');
 
   preEl.innerHTML = syntaxHighlight(data);
+
+  if (copyBtn) {
+    copyBtn.disabled = false;
+    copyBtn.title = '複製回應';
+    copyBtn.setAttribute('aria-label', '複製回應');
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.classList.remove('copied');
+    window.clearTimeout(copyBtn._resetTimer);
+  }
+
   btn.disabled = false;
   btn.textContent = '送出請求';
 
@@ -2159,10 +2311,12 @@ function sendRawIngest(btn) {
 }
 
 const directExamples = {
-  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "BTC",\n      "date": "2024-01-15",\n      "open": 42000,\n      "high": 43500,\n      "low": 41800,\n      "close": 43200,\n      "volume": 18500\n    }\n  ]\n}`,
-  usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2024-01-15",\n      "open": 185.5,\n      "high": 188.2,\n      "low": 184.8,\n      "close": 187.1,\n      "volume": 55000000\n    }\n  ]\n}`,
-  hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2024-01-15",\n      "open": 295.0,\n      "high": 302.0,\n      "low": 293.5,\n      "close": 299.8,\n      "volume": 12000000\n    }\n  ]\n}`,
-  macro:   `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "GDP_YOY Index",\n      "date": "2024-01-01",\n      "value": 2.5\n    }\n  ]\n}`,
+  crypto:  `{\n  "metadata": {\n    "source": "Bloomberg API",\n    "category": "Cryptocurrency",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "BTC",\n      "name": "Bitcoin",\n      "ticker": "XBTUSD BGN Curncy",\n      "price": {\n        "last": 95709.01,\n        "open": 95550.07,\n        "high": 95825.34,\n        "low": 95119.76\n      },\n      "timestamp": {\n        "query_time": "2026-03-12T08:00:00Z",\n        "last_update": "2026-03-12"\n      },\n      "metadata": { "source": "Bloomberg" }\n    }\n  ]\n}`,
+  usstock: `{\n  "metadata": {\n    "source": "Bloomberg API",\n    "category": "US Stock",\n    "query_time": "2026-03-12T16:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "AAPL",\n      "name": "APPLE INC",\n      "ticker": "AAPL US Equity",\n      "price": {\n        "last": 220.50,\n        "open": 218.20,\n        "high": 221.80,\n        "low": 217.60,\n        "volume": 55000000\n      },\n      "timestamp": {\n        "query_time": "2026-03-12T16:00:00Z",\n        "last_update": "2026-03-12"\n      },\n      "metadata": { "source": "Bloomberg" }\n    }\n  ]\n}`,
+  hkchina: `{\n  "metadata": {\n    "source": "Bloomberg API",\n    "category": "HK/China Stock",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "700",\n      "name": "TENCENT HOLDINGS LTD",\n      "ticker": "700 HK Equity",\n      "price": {\n        "last": 420.0,\n        "open": 415.0,\n        "high": 425.0,\n        "low": 413.0,\n        "volume": 18000000\n      },\n      "timestamp": {\n        "query_time": "2026-03-12T08:00:00Z",\n        "last_update": "2026-03-12"\n      },\n      "metadata": { "source": "Bloomberg" }\n    }\n  ]\n}`,
+  fx:      `{\n  "metadata": {\n    "source": "Bloomberg API",\n    "category": "FX",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "symbol": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "price": {\n        "last": 1.0523,\n        "open": 1.0498,\n        "high": 1.0567,\n        "low": 1.0489\n      },\n      "timestamp": {\n        "query_time": "2026-03-12T08:00:00Z",\n        "last_update": "2026-03-12"\n      },\n      "metadata": { "source": "Bloomberg" }\n    }\n  ]\n}`,
+  wtx:     `{\n  "metadata": {\n    "source": "Bloomberg API",\n    "category": "Futures",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "name": "TAIFEX TX Futures 1",\n      "ticker": "TXF1 Index",\n      "price": {\n        "last": 21000.0,\n        "open": 20800.0,\n        "high": 21100.0,\n        "low": 20700.0,\n        "volume": 50000\n      },\n      "timestamp": {\n        "query_time": "2026-03-12T08:00:00Z",\n        "last_update": "2026-03-12"\n      },\n      "metadata": { "source": "Bloomberg" }\n    }\n  ]\n}`,
+  macro:   `{\n  "metadata": {\n    "source": "Bloomberg API",\n    "category": "Macro Indicators",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "CPI YOY Index",\n      "name": "US CPI YoY",\n      "price": { "last": 2.9 },\n      "timestamp": {\n        "query_time": "2026-03-12T08:00:00Z",\n        "last_update": "2026-01-01"\n      },\n      "metadata": {\n        "market": "US",\n        "unit": "%",\n        "frequency": "monthly",\n        "source": "Bloomberg"\n      }\n    }\n  ]\n}`,
 };
 
 function updateDirectExample(sel) {
@@ -2171,7 +2325,7 @@ function updateDirectExample(sel) {
 
 function sendDirectIngest(btn) {
   const type = document.getElementById('direct-type').value;
-  const pathMap = { crypto:'crypto', usstock:'usstock', hkchina:'hkchina', macro:'macro' };
+  const pathMap = { crypto:'crypto', usstock:'usstock', hkchina:'hkchina', fx:'fx', wtx:'wtx', macro:'macro' };
   let body;
   try { body = JSON.parse(document.getElementById('direct-body').value); }
   catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }

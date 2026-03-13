@@ -283,9 +283,27 @@ async def ingest_crypto_direct_data(
     """Ingest Bloomberg crypto direct payload format."""
     return await _ingest_direct_payload(
         payload=payload,
-        dataset_key="crypto_eod",
+        dataset_key="crypto_bloomberg_eod",
         key_prefix="direct_crypto",
         expected_market="CRYPTO",
+        background_tasks=background_tasks,
+        db=db,
+    )
+
+
+@router.post("/ingest/fx/direct", response_model=IngestResponse)
+async def ingest_fx_direct_data(
+    payload: DirectIngestPayload,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ingest Bloomberg FX direct payload format."""
+    return await _ingest_direct_payload(
+        payload=payload,
+        dataset_key="fx_bloomberg_eod",
+        key_prefix="direct_fx",
+        expected_market="FX",
         background_tasks=background_tasks,
         db=db,
     )
@@ -301,9 +319,27 @@ async def ingest_macro_direct_data(
     """Ingest Bloomberg macro direct payload format."""
     return await _ingest_direct_payload(
         payload=payload,
-        dataset_key="macro_observation",
+        dataset_key="macro_bloomberg_observation",
         key_prefix="direct_macro",
         expected_market="MACRO",
+        background_tasks=background_tasks,
+        db=db,
+    )
+
+
+@router.post("/ingest/wtx/direct", response_model=IngestResponse)
+async def ingest_wtx_direct_data(
+    payload: DirectIngestPayload,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ingest Bloomberg WTX futures direct payload format."""
+    return await _ingest_direct_payload(
+        payload=payload,
+        dataset_key="wtx_bloomberg_eod",
+        key_prefix="direct_wtx",
+        expected_market="WTX",
         background_tasks=background_tasks,
         db=db,
     )
