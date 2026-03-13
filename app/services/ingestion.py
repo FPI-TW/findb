@@ -20,14 +20,18 @@ from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.source import IngestRequest
 from app.services.normalize import (
     CryptoNormalizer,
+    CryptoBloombergNormalizer,
     CryptoIndexNormalizer,
     EquityNormalizer,
     FXNormalizer,
+    FXBloombergNormalizer,
     IndexNormalizer,
     CorporateActionNormalizer,
     MacroNormalizer,
+    MacroBloombergNormalizer,
     FuturesContractNormalizer,
     FuturesContinuousNormalizer,
+    WTXBloombergNormalizer,
     USStockNormalizer,
     USIndexNormalizer,
     GlobalStockNormalizer,
@@ -65,6 +69,11 @@ NORMALIZER_MAP = {
     "tw_index_eod": TWIndexNormalizer,
     "hk_index_eod": HKIndexNormalizer,
     "cn_index_eod": CNIndexNormalizer,
+    # Bloomberg direct format — other markets
+    "fx_bloomberg_eod": FXBloombergNormalizer,
+    "crypto_bloomberg_eod": CryptoBloombergNormalizer,
+    "wtx_bloomberg_eod": WTXBloombergNormalizer,
+    "macro_bloomberg_observation": MacroBloombergNormalizer,
 }
 
 
