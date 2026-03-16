@@ -783,17 +783,6 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     所有請求直接由瀏覽器發出，回應顯示於各端點下方。</p>
   </div>
 
-  <datalist id="market-options">
-    <option value="CRYPTO"></option>
-    <option value="US"></option>
-    <option value="FX"></option>
-    <option value="MACRO"></option>
-    <option value="WTX"></option>
-    <option value="GLOBAL"></option>
-    <option value="TW"></option>
-    <option value="HK"></option>
-    <option value="CN"></option>
-  </datalist>
 
   <!-- ══ SYSTEM ═══════════════════════════════════════ -->
   <section class="api-section" id="sec-system">
@@ -1172,7 +1161,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="inst-market" type="text" list="market-options" placeholder="CRYPTO">
+              <select id="inst-market">
+                <option value="CRYPTO" selected>CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>asset_class</label>
@@ -1280,7 +1279,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="eod-market" type="text" list="market-options" placeholder="CRYPTO">
+              <select id="eod-market">
+                <option value="CRYPTO" selected>CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols (逗號分隔)</label>
@@ -1416,7 +1425,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ca-market" type="text" list="market-options" placeholder="US">
+              <select id="ca-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1487,7 +1506,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ms-market" type="text" list="market-options" placeholder="US">
+              <select id="ms-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>source</label>
@@ -1555,7 +1584,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="mo-market" type="text" list="market-options" placeholder="US">
+              <select id="mo-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1622,7 +1661,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fc-market" type="text" list="market-options" placeholder="WTX">
+              <select id="fc-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX" selected>WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1692,7 +1741,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fcon-market" type="text" list="market-options" placeholder="WTX">
+              <select id="fcon-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX" selected>WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1964,7 +2023,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market <span class="param-required">*</span></label>
-              <input id="cal-market" type="text" list="market-options" value="US">
+              <select id="cal-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>is_open</label>
