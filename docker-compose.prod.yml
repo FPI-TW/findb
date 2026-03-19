@@ -3,10 +3,12 @@ services:
     image: ghcr.io/fpi-tw/findb:latest
     container_name: findb-app
     env_file: .env
+    environment:
+      PORT: ${PORT:-8080}
     ports:
-      - "8000:8000"
+      - "${PORT:-8080}:${PORT:-8080}"
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 2"
 
   raw-cleanup:
     image: ghcr.io/fpi-tw/findb:latest

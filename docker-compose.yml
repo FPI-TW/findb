@@ -25,16 +25,17 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
       DEBUG: ${DEBUG:-true}
+      PORT: ${PORT:-8080}
       SOURCE_API_KEYS: ${SOURCE_API_KEYS:-dev-source-key}
     ports:
-      - "8000:8000"
+      - "${PORT:-8080}:${PORT:-8080}"
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./app:/app/app:ro
       - ./scripts:/app/scripts:ro
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --reload"
 
   raw-cleanup:
     build:

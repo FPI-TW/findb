@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "FinDB"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
+    PORT: int = 8080
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
