@@ -6,6 +6,7 @@
 <title>FinDB — API Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300;400;500&family=Noto+Sans+JP:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
 <style>
 :root {
   --bg:          #F0EDE5;
@@ -647,32 +648,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
   color: #BDB5A6;
 }
 
-.response-chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-}
-
-.response-chart-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.78rem;
-  color: #D6D0C5;
-}
-
-.response-chart-legend-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  flex: 0 0 auto;
-}
-
-.response-chart-svg {
-  display: block;
+.response-chart-canvas {
   width: 100%;
-  height: 220px;
+  height: 300px;
 }
 
 .loading-dots::after {
@@ -2717,6 +2695,7 @@ const responseChartConfigs = {
 };
 
 const responseChartPalette = ['#8BB3D4', '#A8C7A0', '#D4A86A', '#CC8866', '#C99AD9', '#7BC8B6'];
+let responseChartResizeBound = false;
 
 function toFiniteNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -2753,13 +2732,22 @@ function ensureResponseChartArea(area) {
         <div class="response-chart-title">Chart Preview</div>
         <div class="response-chart-meta"></div>
       </div>
-      <div class="response-chart-legend"></div>
     </div>
-    <svg class="response-chart-svg" viewBox="0 0 640 220" preserveAspectRatio="none" aria-hidden="true"></svg>
+    <div class="response-chart-canvas" aria-label="chart preview"></div>
   `;
 
   const responseBody = area.querySelector('.response-body');
   area.insertBefore(chart, responseBody);
+
+  if (!responseChartResizeBound) {
+    window.addEventListener('resize', () => {
+      document.querySelectorAll('.response-chart-canvas').forEach(node => {
+        node._chartInstance?.resize();
+      });
+    });
+    responseChartResizeBound = true;
+  }
+
   return chart;
 }
 
@@ -2841,68 +2829,132 @@ function buildResponseChartModel(cardId, data) {
   };
 }
 
-function buildResponseChartSvg(model) {
-  const width = 640;
-  const height = 220;
-  const padding = { top: 16, right: 18, bottom: 28, left: 52 };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const safeMin = model.minY === model.maxY ? model.minY - 1 : model.minY;
-  const safeMax = model.minY === model.maxY ? model.maxY + 1 : model.maxY;
-  const labelIndex = new Map(model.labels.map((label, index) => [label, index]));
+function buildResponseChartOption(model) {
+  return {
+    color: responseChartPalette,
+    animationDuration: 240,
+    backgroundColor: 'transparent',
+    legend: {
+      type: 'scroll',
+      top: 0,
+      textStyle: {
+        color: '#D6D0C5',
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 11,
+      },
+      pageTextStyle: {
+        color: '#D6D0C5',
+      },
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'cross',
+        label: { backgroundColor: '#403A34' },
+      },
+      backgroundColor: 'rgba(24, 22, 20, 0.94)',
+      borderColor: 'rgba(255,255,255,0.1)',
+      textStyle: {
+        color: '#F6F3ED',
+        fontFamily: 'JetBrains Mono, monospace',
+      },
+    },
+    toolbox: {
+      right: 0,
+      feature: {
+        dataZoom: { yAxisIndex: 'none' },
+        restore: {},
+        saveAsImage: {},
+      },
+      iconStyle: {
+        borderColor: '#C8C4BB',
+      },
+      emphasis: {
+        iconStyle: {
+          borderColor: '#F6F3ED',
+        },
+      },
+    },
+    grid: {
+      left: 54,
+      right: 24,
+      top: 56,
+      bottom: 72,
+      containLabel: false,
+    },
+    xAxis: {
+      type: 'category',
+      data: model.labels,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.16)' } },
+      axisLabel: {
+        color: 'rgba(255,255,255,0.46)',
+        fontFamily: 'JetBrains Mono, monospace',
+        hideOverlap: true,
+      },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      min: model.minY === model.maxY ? model.minY - 1 : 'dataMin',
+      max: model.minY === model.maxY ? model.maxY + 1 : 'dataMax',
+      splitLine: {
+        lineStyle: { color: 'rgba(255,255,255,0.08)' },
+      },
+      axisLine: { show: false },
+      axisLabel: {
+        color: 'rgba(255,255,255,0.46)',
+        fontFamily: 'JetBrains Mono, monospace',
+      },
+    },
+    dataZoom: [
+      {
+        type: 'inside',
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true,
+      },
+      {
+        type: 'slider',
+        height: 20,
+        bottom: 24,
+        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        fillerColor: 'rgba(139,179,212,0.18)',
+        textStyle: { color: 'rgba(255,255,255,0.42)' },
+      },
+    ],
+    series: model.series.map(item => ({
+      name: item.name,
+      type: 'line',
+      showSymbol: item.points.length <= 24,
+      smooth: false,
+      symbolSize: 7,
+      emphasis: {
+        focus: 'series',
+      },
+      lineStyle: {
+        width: 2.2,
+      },
+      connectNulls: false,
+      data: model.labels.map(label => {
+        const point = item.points.find(candidate => candidate.x === label);
+        return point ? point.y : null;
+      }),
+    })),
+  };
+}
 
-  const getX = index => (
-    model.labels.length <= 1
-      ? padding.left + plotWidth / 2
-      : padding.left + (index / (model.labels.length - 1)) * plotWidth
-  );
-  const getY = value => padding.top + (1 - ((value - safeMin) / (safeMax - safeMin))) * plotHeight;
+function ensureResponseChartInstance(chart) {
+  const container = chart.querySelector('.response-chart-canvas');
+  if (!container) return null;
+  if (!window.echarts) return null;
 
-  const gridLines = Array.from({ length: 4 }, (_, index) => {
-    const ratio = index / 3;
-    const y = padding.top + ratio * plotHeight;
-    return `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />`;
-  }).join('');
+  if (!container._chartInstance) {
+    container._chartInstance = window.echarts.init(container, null, { renderer: 'canvas' });
+  }
 
-  const yLabels = `
-    <text x="${padding.left - 8}" y="${padding.top + 4}" text-anchor="end" fill="rgba(255,255,255,0.42)" font-family="JetBrains Mono, monospace" font-size="11">${escapeHtml(safeMax.toFixed(2))}</text>
-    <text x="${padding.left - 8}" y="${padding.top + plotHeight + 4}" text-anchor="end" fill="rgba(255,255,255,0.42)" font-family="JetBrains Mono, monospace" font-size="11">${escapeHtml(safeMin.toFixed(2))}</text>
-  `;
-
-  const xLabelIndexes = Array.from(new Set([0, Math.floor((model.labels.length - 1) / 2), Math.max(model.labels.length - 1, 0)]))
-    .filter(index => model.labels[index] !== undefined);
-  const xLabels = xLabelIndexes.map(index => `
-    <text x="${getX(index)}" y="${height - 8}" text-anchor="middle" fill="rgba(255,255,255,0.42)" font-family="JetBrains Mono, monospace" font-size="11">${escapeHtml(model.labels[index])}</text>
-  `).join('');
-
-  const seriesSvg = model.series.map(item => {
-    const points = item.points.map(point => {
-      const x = getX(labelIndex.get(point.x) ?? 0);
-      const y = getY(point.y);
-      return { x, y, label: point.x, value: point.y };
-    });
-
-    const polyline = points.length > 1
-      ? `<polyline fill="none" stroke="${item.color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" points="${points.map(point => `${point.x},${point.y}`).join(' ')}" />`
-      : '';
-
-    const circles = points.map(point => `
-      <circle cx="${point.x}" cy="${point.y}" r="3.2" fill="${item.color}" stroke="#171515" stroke-width="1.2">
-        <title>${escapeHtml(item.name)} | ${escapeHtml(point.label)} | ${escapeHtml(point.value.toFixed(4))}</title>
-      </circle>
-    `).join('');
-
-    return `${polyline}${circles}`;
-  }).join('');
-
-  return `
-    <svg class="response-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
-      ${gridLines}
-      ${seriesSvg}
-      ${yLabels}
-      ${xLabels}
-    </svg>
-  `;
+  return container._chartInstance;
 }
 
 function renderResponseChart(area, cardId, status, data) {
@@ -2930,15 +2982,14 @@ function renderResponseChart(area, cardId, status, data) {
   if (model.hiddenSeriesCount > 0) metaParts.push(`另有 ${model.hiddenSeriesCount} 條序列未顯示`);
   chart.querySelector('.response-chart-meta').textContent = metaParts.join(' · ');
 
-  const legend = chart.querySelector('.response-chart-legend');
-  legend.innerHTML = model.series.map(item => `
-    <span class="response-chart-legend-item">
-      <span class="response-chart-legend-dot" style="background:${item.color}"></span>
-      <span>${escapeHtml(item.name)}</span>
-    </span>
-  `).join('');
+  const instance = ensureResponseChartInstance(chart);
+  if (!instance) {
+    chart.querySelector('.response-chart-meta').textContent = 'ECharts 載入失敗，無法顯示互動圖表';
+    return;
+  }
 
-  chart.querySelector('.response-chart-svg').outerHTML = buildResponseChartSvg(model);
+  instance.setOption(buildResponseChartOption(model), true);
+  requestAnimationFrame(() => instance.resize());
 }
 
 function showResponse(btn, status, data) {
