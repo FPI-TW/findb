@@ -71,6 +71,8 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 | `app/models/canonical.py` | All canonical ORM models |
 | `app/models/registry.py` | `DatasetRegistry`, `IngestionRun`, `DQIssue` |
 | `app/models/raw.py` | `raw.market_payload` |
+| `frontend/app/` + `frontend/features/` | Primary frontend pages and feature work |
+| `app/static/test_page.html` | Static `/test` API tester; only modify when explicitly requested |
 | `tests/conftest.py` | Async fixtures, DB override via dependency injection |
 
 ## Conventions
@@ -82,6 +84,7 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 - **Router handlers**: keep thin — business logic belongs in services.
 - **Config/secrets**: always from `app.config.Settings` via env — never hardcode.
 - **Source provider names**: normalize to stable lowercase (e.g., `bloomberg`).
+- **Frontend edits**: default to `frontend/` for UI/page changes; do not modify `app/static/test_page.html` unless explicitly requested.
 
 ## Adding a New Normalizer
 

@@ -14,10 +14,13 @@ Core stack: Python 3.11+, FastAPI, SQLAlchemy async, PostgreSQL, Poetry, pytest.
 ```text
 findb/
 |- app/                      # API, services, models, schemas, utils
-|  |- api/v1/                # Source (write ingest) + Serve (read query) routers
+|  |- api/v1/                # Source (write ingest), Serve (read query), Admin routers
 |  |- services/normalize/    # Market-specific normalizers and mapping logic
 |  |- models/                # Canonical, raw, registry ORM models
-|  `- schemas/               # Pydantic request/response models
+|  |- schemas/               # Pydantic request/response models
+|  `- static/                # /test API dashboard assets
+|- frontend/                 # Primary frontend app (Next.js App Router)
+|- docs/                     # API guide, manual test flow, exported tester page
 |- tests/                    # Async API/service integration and unit tests
 |- scripts/                  # Seed and cleanup scripts
 |- docker-compose.yml        # Local app + postgres + pgadmin stack
@@ -36,6 +39,8 @@ findb/
 | DQ rules | `app/services/dq/validators.py` | Error blocks writes; warning does not |
 | ORM/data model | `app/models/` | Raw schema + canonical tables + run registry |
 | API schemas | `app/schemas/` | Request and response contracts |
+| Frontend pages/features | `frontend/app/` + `frontend/features/` | Primary location for frontend page changes |
+| Test dashboard | `app/static/test_page.html` | Static `/test` API tester; only update when explicitly requested |
 | Tests and fixtures | `tests/` + `tests/conftest.py` | AsyncClient + ASGITransport + DB fixtures |
 
 ## CODE MAP
@@ -70,7 +75,10 @@ Use directory-local AGENTS files for deep module guidance:
 
 - Raw payload persistence is separated into PostgreSQL schema `raw`.
 - Normalizer routing uses an explicit `NORMALIZER_MAP` in `app/services/ingestion.py`.
-- Direct-format source ingest endpoints exist for selected markets (`.../direct`).
+- Direct-format source ingest endpoints exist for selected markets (`.../direct`) and auto-bootstrap built-in dataset registry rows when missing.
+- Macro direct payloads default `market=MACRO` when the payload omits market.
+- The primary frontend lives under `frontend/`; update frontend pages there by default.
+- A static API dashboard is served at `/test` from `app/static/test_page.html`, but it is not the default target for frontend page changes.
 - Test suite heavily uses async fixtures and dependency overrides (`tests/conftest.py`).
 
 ## COMMANDS
