@@ -63,7 +63,7 @@ docker-compose exec app python /app/scripts/seed_data.py
 ### 1.1 健康檢查
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8080/health
 ```
 
 預期回傳：
@@ -81,7 +81,7 @@ curl http://localhost:8000/health
 ### 1.2 根端點
 
 ```bash
-curl http://localhost:8000/
+curl http://localhost:8080/
 ```
 
 預期回傳：
@@ -96,7 +96,7 @@ curl http://localhost:8000/
 
 ### 1.3 Swagger UI
 
-瀏覽器開啟 [http://localhost:8000/docs](http://localhost:8000/docs)，確認可看到所有端點。
+瀏覽器開啟 [http://localhost:8080/docs](http://localhost:8080/docs)，確認可看到所有端點。
 
 ---
 
@@ -106,7 +106,7 @@ curl http://localhost:8000/
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
-  -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+  -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -117,7 +117,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
-  -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+  -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: wrong-key" \
   -H "Content-Type: application/json" \
   -d '{}'
@@ -129,7 +129,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
-  "http://localhost:8000/api/v1/source/datasets" \
+  "http://localhost:8080/api/v1/source/datasets" \
   -H "X-API-Key: dev-source-key"
 ```
 
@@ -144,7 +144,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 # 快速發送 105 次
 for i in $(seq 1 105); do
   code=$(curl -s -o /dev/null -w "%{http_code}" \
-    "http://localhost:8000/api/v1/source/datasets" \
+    "http://localhost:8080/api/v1/source/datasets" \
     -H "X-API-Key: dev-source-key")
   if [ "$code" = "429" ]; then
     echo "第 $i 次請求被限流 (429)"
@@ -170,7 +170,7 @@ done
 ### 3.1 查詢可用 Dataset
 
 ```bash
-curl "http://localhost:8000/api/v1/source/datasets" \
+curl "http://localhost:8080/api/v1/source/datasets" \
   -H "X-API-Key: dev-source-key"
 ```
 
@@ -179,7 +179,7 @@ curl "http://localhost:8000/api/v1/source/datasets" \
 ### 3.2 標準格式攝取（Crypto）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@scripts/sample_ingest_payload.json"
@@ -201,7 +201,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
 ### 3.3 去重驗證（再送一次相同 idempotency_key）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@scripts/sample_ingest_payload.json"
@@ -212,7 +212,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
 ### 3.4 Direct 格式攝取（US Stock）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/usstock/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -238,7 +238,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
 ### 3.4b Direct 格式攝取（Crypto）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -260,7 +260,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto/direct" \
 ### 3.4c Direct 格式攝取（FX）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/fx/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/fx/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -282,7 +282,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/fx/direct" \
 ### 3.4d Direct 格式攝取（WTX 期貨）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/wtx/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/wtx/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -305,7 +305,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/wtx/direct" \
 ### 3.5 Direct 格式攝取（HK/China）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/hkchina/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/hkchina/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -327,7 +327,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/hkchina/direct" \
 ### 3.6 Direct 格式攝取（Macro）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/ingest/macro/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/macro/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -351,7 +351,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/macro/direct" \
 
 ```bash
 # 台灣
-curl -X POST "http://localhost:8000/api/v1/source/ingest/tw" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/tw" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -364,7 +364,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/tw" \
   }'
 
 # 香港
-curl -X POST "http://localhost:8000/api/v1/source/ingest/hk" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/hk" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -377,7 +377,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/hk" \
   }'
 
 # 中國
-curl -X POST "http://localhost:8000/api/v1/source/ingest/cn" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/cn" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -395,7 +395,7 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/cn" \
 將 §3.2 取得的 `run_id` 代入：
 
 ```bash
-curl "http://localhost:8000/api/v1/source/runs/{run_id}" \
+curl "http://localhost:8080/api/v1/source/runs/{run_id}" \
   -H "X-API-Key: dev-source-key"
 ```
 
@@ -404,7 +404,7 @@ curl "http://localhost:8000/api/v1/source/runs/{run_id}" \
 ### 3.9 重新執行正規化（Rerun）
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/source/runs/{run_id}/rerun" \
+curl -X POST "http://localhost:8080/api/v1/source/runs/{run_id}/rerun" \
   -H "X-API-Key: dev-source-key"
 ```
 
@@ -416,7 +416,7 @@ curl -X POST "http://localhost:8000/api/v1/source/runs/{run_id}/rerun" \
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
-  -X POST "http://localhost:8000/api/v1/source/ingest/us" \
+  -X POST "http://localhost:8080/api/v1/source/ingest/us" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -441,16 +441,16 @@ Serve API 預設不需認證（`SERVE_REQUIRE_AUTH=false`）。
 
 ```bash
 # 全部標的
-curl "http://localhost:8000/api/v1/serve/instruments"
+curl "http://localhost:8080/api/v1/serve/instruments"
 
 # 按市場篩選
-curl "http://localhost:8000/api/v1/serve/instruments?market=CRYPTO"
+curl "http://localhost:8080/api/v1/serve/instruments?market=CRYPTO"
 
 # 按資產類別篩選
-curl "http://localhost:8000/api/v1/serve/instruments?asset_class=equity"
+curl "http://localhost:8080/api/v1/serve/instruments?asset_class=equity"
 
 # 精確查詢
-curl "http://localhost:8000/api/v1/serve/instruments?symbol=BTC"
+curl "http://localhost:8080/api/v1/serve/instruments?symbol=BTC"
 ```
 
 ### 4.2 單一標的
@@ -458,7 +458,7 @@ curl "http://localhost:8000/api/v1/serve/instruments?symbol=BTC"
 從 §4.1 取得 `instrument_id`，代入：
 
 ```bash
-curl "http://localhost:8000/api/v1/serve/instruments/{instrument_id}"
+curl "http://localhost:8080/api/v1/serve/instruments/{instrument_id}"
 ```
 
 不存在的 ID 應回傳 404。
@@ -467,68 +467,68 @@ curl "http://localhost:8000/api/v1/serve/instruments/{instrument_id}"
 
 ```bash
 # 按市場 + 代碼 + 日期範圍
-curl "http://localhost:8000/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
+curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
 
 # 按單一標的 ID
-curl "http://localhost:8000/api/v1/serve/eod/{instrument_id}?start_date=2026-01-01"
+curl "http://localhost:8080/api/v1/serve/eod/{instrument_id}?start_date=2026-01-01"
 ```
 
 ### 4.4 公司行為
 
 ```bash
 # 全部公司行為
-curl "http://localhost:8000/api/v1/serve/corporate-actions"
+curl "http://localhost:8080/api/v1/serve/corporate-actions"
 
 # 按市場 + 類型篩選
-curl "http://localhost:8000/api/v1/serve/corporate-actions?market=US&action_type=dividend"
+curl "http://localhost:8080/api/v1/serve/corporate-actions?market=US&action_type=dividend"
 
 # 按標的 ID
-curl "http://localhost:8000/api/v1/serve/corporate-actions/{instrument_id}"
+curl "http://localhost:8080/api/v1/serve/corporate-actions/{instrument_id}"
 ```
 
 ### 4.5 宏觀經濟指標
 
 ```bash
 # 列出指標序列
-curl "http://localhost:8000/api/v1/serve/macro/series"
+curl "http://localhost:8080/api/v1/serve/macro/series"
 
 # 模糊搜尋名稱
-curl "http://localhost:8000/api/v1/serve/macro/series?name=CPI"
+curl "http://localhost:8080/api/v1/serve/macro/series?name=CPI"
 
 # 列出觀測值
-curl "http://localhost:8000/api/v1/serve/macro/observations"
+curl "http://localhost:8080/api/v1/serve/macro/observations"
 
 # 按來源代碼篩選
-curl "http://localhost:8000/api/v1/serve/macro/observations?source_code=CPI_YOY"
+curl "http://localhost:8080/api/v1/serve/macro/observations?source_code=CPI_YOY"
 
 # 按序列 ID 查詢觀測值
-curl "http://localhost:8000/api/v1/serve/macro/observations/{series_id}?start_date=2025-01-01"
+curl "http://localhost:8080/api/v1/serve/macro/observations/{series_id}?start_date=2025-01-01"
 ```
 
 ### 4.6 期貨
 
 ```bash
 # 列出期貨合約
-curl "http://localhost:8000/api/v1/serve/futures/contracts"
+curl "http://localhost:8080/api/v1/serve/futures/contracts"
 
 # 按市場篩選
-curl "http://localhost:8000/api/v1/serve/futures/contracts?market=WTX"
+curl "http://localhost:8080/api/v1/serve/futures/contracts?market=WTX"
 
 # 連續期貨日K
-curl "http://localhost:8000/api/v1/serve/futures/continuous?symbols=WTX&start_date=2026-01-01"
+curl "http://localhost:8080/api/v1/serve/futures/continuous?symbols=WTX&start_date=2026-01-01"
 
 # 按標的 ID 查詢連續期貨
-curl "http://localhost:8000/api/v1/serve/futures/continuous/{instrument_id}"
+curl "http://localhost:8080/api/v1/serve/futures/continuous/{instrument_id}"
 ```
 
 ### 4.7 交易日曆
 
 ```bash
 # 必須指定 market
-curl "http://localhost:8000/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
+curl "http://localhost:8080/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
 
 # 只查休市日
-curl "http://localhost:8000/api/v1/serve/calendar?market=US&is_open=false&start_date=2026-01-01&end_date=2026-12-31"
+curl "http://localhost:8080/api/v1/serve/calendar?market=US&is_open=false&start_date=2026-01-01&end_date=2026-12-31"
 ```
 
 未帶 `market` 應回傳 422（必填參數）。
@@ -537,10 +537,10 @@ curl "http://localhost:8000/api/v1/serve/calendar?market=US&is_open=false&start_
 
 ```bash
 # 第 1 頁，每頁 5 筆
-curl "http://localhost:8000/api/v1/serve/instruments?page=1&page_size=5"
+curl "http://localhost:8080/api/v1/serve/instruments?page=1&page_size=5"
 
 # 第 2 頁
-curl "http://localhost:8000/api/v1/serve/instruments?page=2&page_size=5"
+curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=5"
 ```
 
 確認 `pagination.total_records` 與 `pagination.total_pages` 正確。
@@ -561,16 +561,16 @@ curl "http://localhost:8000/api/v1/serve/instruments?page=2&page_size=5"
 ```bash
 # 未帶 API Key → 401
 curl -s -o /dev/null -w "%{http_code}" \
-  "http://localhost:8000/api/v1/admin/corrections"
+  "http://localhost:8080/api/v1/admin/corrections"
 
 # 錯誤 API Key → 403
 curl -s -o /dev/null -w "%{http_code}" \
-  "http://localhost:8000/api/v1/admin/corrections" \
+  "http://localhost:8080/api/v1/admin/corrections" \
   -H "X-API-Key: wrong-key"
 
 # 正確 API Key → 200
 curl -s -o /dev/null -w "%{http_code}" \
-  "http://localhost:8000/api/v1/admin/corrections" \
+  "http://localhost:8080/api/v1/admin/corrections" \
   -H "X-API-Key: dev-admin-key"
 ```
 
@@ -579,20 +579,20 @@ curl -s -o /dev/null -w "%{http_code}" \
 先從 Serve API 取得一筆日K 的 `instrument_id`：
 
 ```bash
-curl "http://localhost:8000/api/v1/serve/instruments?symbol=BTC"
+curl "http://localhost:8080/api/v1/serve/instruments?symbol=BTC"
 ```
 
 從回應取得 `instrument_id`，再確認該日期有日K 資料：
 
 ```bash
-curl "http://localhost:8000/api/v1/serve/eod?market=CRYPTO&symbols=BTC"
+curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC"
 ```
 
 從回應記下 `instrument_id` 與某筆的 `trade_date`，然後修正收盤價：
 
 ```bash
 curl -X PATCH \
-  "http://localhost:8000/api/v1/admin/eod/{instrument_id}/{trade_date}" \
+  "http://localhost:8080/api/v1/admin/eod/{instrument_id}/{trade_date}" \
   -H "X-API-Key: dev-admin-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -606,7 +606,7 @@ curl -X PATCH \
 **驗證**：再次查詢 Serve API 確認 close 已更新：
 
 ```bash
-curl "http://localhost:8000/api/v1/serve/eod/{instrument_id}?start_date={trade_date}&end_date={trade_date}"
+curl "http://localhost:8080/api/v1/serve/eod/{instrument_id}?start_date={trade_date}&end_date={trade_date}"
 ```
 
 ### 5.3 找不到記錄 → 404
@@ -614,7 +614,7 @@ curl "http://localhost:8000/api/v1/serve/eod/{instrument_id}?start_date={trade_d
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
   -X PATCH \
-  "http://localhost:8000/api/v1/admin/eod/00000000-0000-0000-0000-000000000000/2026-01-16" \
+  "http://localhost:8080/api/v1/admin/eod/00000000-0000-0000-0000-000000000000/2026-01-16" \
   -H "X-API-Key: dev-admin-key" \
   -H "Content-Type: application/json" \
   -d '{"correction_reason": "test"}'
@@ -628,12 +628,12 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ```bash
 # 先查詢現有收盤價
-curl "http://localhost:8000/api/v1/serve/eod/{instrument_id}?start_date={trade_date}&end_date={trade_date}"
+curl "http://localhost:8080/api/v1/serve/eod/{instrument_id}?start_date={trade_date}&end_date={trade_date}"
 
 # 送相同的值（close = 原本的值）
 curl -s -o /dev/null -w "%{http_code}" \
   -X PATCH \
-  "http://localhost:8000/api/v1/admin/eod/{instrument_id}/{trade_date}" \
+  "http://localhost:8080/api/v1/admin/eod/{instrument_id}/{trade_date}" \
   -H "X-API-Key: dev-admin-key" \
   -H "Content-Type: application/json" \
   -d '{"correction_reason": "test", "close": <現有值>}'
@@ -648,7 +648,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 ```bash
 # 若有已知的 issue_id，標記為已解決
 curl -X PATCH \
-  "http://localhost:8000/api/v1/admin/dq-issues/{issue_id}/resolve" \
+  "http://localhost:8080/api/v1/admin/dq-issues/{issue_id}/resolve" \
   -H "X-API-Key: dev-admin-key" \
   -H "Content-Type: application/json" \
   -d '{"correction_reason": "手動驗證確認資料正確，標記 DQ issue 已解決"}'
@@ -662,7 +662,7 @@ curl -X PATCH \
 # 再次標記同一個 issue → 409 Conflict
 curl -s -o /dev/null -w "%{http_code}" \
   -X PATCH \
-  "http://localhost:8000/api/v1/admin/dq-issues/{issue_id}/resolve" \
+  "http://localhost:8080/api/v1/admin/dq-issues/{issue_id}/resolve" \
   -H "X-API-Key: dev-admin-key" \
   -H "Content-Type: application/json" \
   -d '{"correction_reason": "重複標記測試"}'
@@ -674,15 +674,15 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ```bash
 # 查詢所有修正紀錄
-curl "http://localhost:8000/api/v1/admin/corrections" \
+curl "http://localhost:8080/api/v1/admin/corrections" \
   -H "X-API-Key: dev-admin-key"
 
 # 篩選 EOD 修正
-curl "http://localhost:8000/api/v1/admin/corrections?table_name=market_data_eod" \
+curl "http://localhost:8080/api/v1/admin/corrections?table_name=market_data_eod" \
   -H "X-API-Key: dev-admin-key"
 
 # 篩選特定標的
-curl "http://localhost:8000/api/v1/admin/corrections?instrument_id={instrument_id}" \
+curl "http://localhost:8080/api/v1/admin/corrections?instrument_id={instrument_id}" \
   -H "X-API-Key: dev-admin-key"
 ```
 
@@ -700,7 +700,7 @@ curl "http://localhost:8000/api/v1/admin/corrections?instrument_id={instrument_i
 ```bash
 #!/bin/bash
 set -e
-BASE="http://localhost:8000"
+BASE="http://localhost:8080"
 KEY="dev-source-key"
 
 echo "=== 1. 健康檢查 ==="
@@ -749,7 +749,8 @@ chmod +x scripts/smoke_test.sh
 
 ## 7. 視覺化測試面板
 
-瀏覽器開啟 [http://localhost:8000/test](http://localhost:8000/test)。
+瀏覽器開啟 [http://localhost:8080/test](http://localhost:8080/test)。
+若需要靜態快照版本，可直接開啟 repo 內的 `docs/api_tester.html`。
 
 測試面板提供：
 
@@ -765,6 +766,7 @@ chmod +x scripts/smoke_test.sh
 | **Corporate Actions** | 查詢公司行為 |
 | **Macro Observations** | 查詢宏觀觀測值 |
 | **Futures Continuous** | 查詢連續期貨日K |
+| **查詢結果圖表** | EOD / Macro Observations / Futures Continuous 會自動顯示 ECharts 互動圖表 |
 | **一鍵煙霧測試** | 自動跑完 health → datasets → ingest → status → instruments → eod |
 
 ---

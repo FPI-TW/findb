@@ -6,6 +6,7 @@
 <title>FinDB — API Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300;400;500&family=Noto+Sans+JP:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
 <style>
 :root {
   --bg:          #F0EDE5;
@@ -480,6 +481,19 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 .btn-send:active { transform: scale(0.98); }
 .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.btn-today {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  background: var(--accent);
+  color: var(--bg-alt);
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.btn-today:hover { opacity: 0.85; }
+
 .btn-clear {
   padding: 10px 18px;
   background: transparent;
@@ -603,6 +617,41 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 .response-body pre .number  { color: #D4A86A; }
 .response-body pre .boolean { color: #CC8866; }
 .response-body pre .null    { color: #888; }
+
+.response-chart {
+  display: none;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
+}
+
+.response-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.response-chart-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  color: rgba(255,255,255,0.34);
+  text-transform: uppercase;
+}
+
+.response-chart-meta {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: #BDB5A6;
+}
+
+.response-chart-canvas {
+  width: 100%;
+  height: 300px;
+}
 
 .loading-dots::after {
   content: '';
@@ -735,6 +784,12 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 
     <div class="nav-group">
       <div class="nav-group-label">Admin API — 管理維運</div>
+      <a class="nav-item" onclick="goTo('ep-raw-payloads')">
+        <span class="nav-method m-get">GET</span>Raw Payloads
+      </a>
+      <a class="nav-item" onclick="goTo('ep-raw-payload-by-run')">
+        <span class="nav-method m-get">GET</span>Raw Payload (by Run)
+      </a>
       <a class="nav-item" onclick="goTo('ep-dq-issues')">
         <span class="nav-method m-get">GET</span>DQ Issues
       </a>
@@ -743,6 +798,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       </a>
       <a class="nav-item" onclick="goTo('ep-resolve-dq')">
         <span class="nav-method m-post">PATCH</span>Resolve DQ Issue
+      </a>
+      <a class="nav-item" onclick="goTo('ep-bulk-rerun')">
+        <span class="nav-method m-post">POST</span>Bulk Rerun
       </a>
       <a class="nav-item" onclick="goTo('ep-corrections')">
         <span class="nav-method m-get">GET</span>Corrections Log
@@ -761,17 +819,6 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     所有請求直接由瀏覽器發出，回應顯示於各端點下方。</p>
   </div>
 
-  <datalist id="market-options">
-    <option value="CRYPTO"></option>
-    <option value="US"></option>
-    <option value="FX"></option>
-    <option value="MACRO"></option>
-    <option value="WTX"></option>
-    <option value="GLOBAL"></option>
-    <option value="TW"></option>
-    <option value="HK"></option>
-    <option value="CN"></option>
-  </datalist>
 
   <!-- ══ SYSTEM ═══════════════════════════════════════ -->
   <section class="api-section" id="sec-system">
@@ -1150,7 +1197,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="inst-market" type="text" list="market-options" placeholder="CRYPTO">
+              <select id="inst-market">
+                <option value="CRYPTO" selected>CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>asset_class</label>
@@ -1196,6 +1253,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          以 <code>instrument_id</code>（UUID）查詢單一金融商品的完整資料，包含 asset_class、market、symbol、name、currency、status 等欄位。
+          可從 Instruments 清單端點取得 <code>instrument_id</code>。找不到時回傳 404。
+        </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
@@ -1245,7 +1306,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             <tr><td>symbols</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>逗號分隔 Symbol (如 BTC,ETH)</td></tr>
             <tr><td>start_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>開始日期 YYYY-MM-DD</td></tr>
             <tr><td>end_date</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>結束日期 YYYY-MM-DD</td></tr>
-            <tr><td>page / page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>分頁</td></tr>
+            <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
+            <tr><td>page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>每頁筆數 (預設 100, 最大 1000)</td></tr>
           </table>
         </div>
         <div class="form-section">
@@ -1253,7 +1315,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="eod-market" type="text" list="market-options" placeholder="CRYPTO">
+              <select id="eod-market">
+                <option value="CRYPTO" selected>CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols (逗號分隔)</label>
@@ -1299,6 +1371,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          以 <code>instrument_id</code> 查詢單一商品的日線 OHLCV 資料，可搭配 <code>start_date</code> / <code>end_date</code> 縮小日期範圍。
+          適合在已知 instrument_id 的情況下做精確查詢，效率比跨商品篩選更高。
+        </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
@@ -1363,6 +1439,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          查詢股息（dividend）、股票分割（split）、股票合併（reverse split）、增資（rights）等公司行動事件。
+          可依 market、symbols（逗號分隔）、action_type 及日期範圍篩選。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1381,7 +1461,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ca-market" type="text" list="market-options" placeholder="US">
+              <select id="ca-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1431,6 +1521,10 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          列出所有宏觀經濟指標的序列定義（metadata），包含 <code>source_code</code>（如 <code>USYC2Y10 Index</code>）、name、market、unit、frequency 等。
+          先查此端點取得 <code>series_id</code>，再用 Macro Observations 端點查詢實際數值。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1448,7 +1542,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="ms-market" type="text" list="market-options" placeholder="US">
+              <select id="ms-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>source</label>
@@ -1494,6 +1598,11 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          查詢宏觀經濟指標的實際觀測數值（如 CPI、GDP、失業率、殖利率利差等）。
+          以 <code>source_code</code> 精確篩選特定指標（例如 <code>USYC2Y10 Index</code>），搭配 <code>start_date</code> / <code>end_date</code> 縮小日期範圍。
+          結果依 source_code + obs_date 降序排列。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1511,7 +1620,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="mo-market" type="text" list="market-options" placeholder="US">
+              <select id="mo-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -1557,6 +1676,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          查詢期貨合約清單，包含合約代碼、到期日、標的商品等基本資訊。可依市場（如 WTX）、商品代號或合約代碼篩選；若要查詢連續期貨日線資料，請使用下方的 <code>/futures/continuous</code> 端點。
+        </div>
         <div class="params-section">
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
@@ -1575,7 +1697,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fc-market" type="text" list="market-options" placeholder="WTX">
+              <select id="fc-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX" selected>WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1645,7 +1777,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market</label>
-              <input id="fcon-market" type="text" list="market-options" placeholder="WTX">
+              <select id="fcon-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US">US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX" selected>WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>symbols</label>
@@ -1691,6 +1833,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          依 instrument_id 查詢特定商品的公司行動事件（如除息、除權、增資）。先透過上方的 Instruments 端點取得 instrument_id，再帶入此處查詢。可搭配 action_type 和日期範圍縮小結果範圍。
+        </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
@@ -1760,6 +1905,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          依 series_id 查詢特定總經序列的所有觀測值，按觀測日期排序。先透過上方的 Macro Series 端點取得 series_id（可用 source_code 如 <code>USYC2Y10 Index</code> 搜尋），再帶入此處查詢歷史時間序列。
+        </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
@@ -1824,6 +1972,9 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
+        <div class="info-block">
+          依 instrument_id 查詢特定商品的連續期貨 EOD 日線資料（已依 Roll Rule 拼接跨月合約）。先透過上方的 Futures Contracts 端點取得商品對應的 instrument_id，再帶入此處查詢完整的歷史連續序列。
+        </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
@@ -1908,7 +2059,17 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>market <span class="param-required">*</span></label>
-              <input id="cal-market" type="text" list="market-options" value="US">
+              <select id="cal-market">
+                <option value="CRYPTO">CRYPTO</option>
+                <option value="US" selected>US</option>
+                <option value="FX">FX</option>
+                <option value="MACRO">MACRO</option>
+                <option value="WTX">WTX</option>
+                <option value="GLOBAL">GLOBAL</option>
+                <option value="TW">TW</option>
+                <option value="HK">HK</option>
+                <option value="CN">CN</option>
+              </select>
             </div>
             <div class="form-field">
               <label>is_open</label>
@@ -1961,6 +2122,111 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     <div class="info-block accent">
       所有 Admin API 端點均需要 <code>X-API-Key</code> Header，請在左側設定欄填入 Admin API Key。
       操作會建立不可修改的 audit correction 記錄。
+    </div>
+
+    <!-- Raw Payloads List -->
+    <div class="endpoint-card" id="ep-raw-payloads">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/admin/raw-payloads</span>
+        <span class="endpoint-desc">列出 Raw Market Payload 記錄</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          查詢儲存在 <code>raw.market_payload</code> 的原始 JSON，可依 <code>dataset_key</code>、<code>run_id</code> 或日期範圍篩選。
+          資料保留 14 天，按建立時間倒序排列。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>如 us_stock_eod、crypto_bloomberg_eod</td></tr>
+            <tr><td>run_id</td><td><span class="param-type">UUID</span></td><td><span class="param-optional">選填</span></td><td>篩選特定注入 run</td></tr>
+            <tr><td>date_from</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>建立日期起始（YYYY-MM-DD，UTC）</td></tr>
+            <tr><td>date_to</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>建立日期結束（YYYY-MM-DD，UTC，含當天）</td></tr>
+            <tr><td>page / page_size</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>分頁，預設 page_size=20</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>dataset_key</label>
+              <input id="raw-list-dataset" type="text" placeholder="us_stock_eod">
+            </div>
+            <div class="form-field">
+              <label>run_id (UUID)</label>
+              <input id="raw-list-run" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-field">
+              <label>date_from
+                <button type="button" class="btn-today" onclick="setToday('raw-list-date-from','raw-list-date-to')">今天</button>
+              </label>
+              <input id="raw-list-date-from" type="date">
+            </div>
+            <div class="form-field">
+              <label>date_to</label>
+              <input id="raw-list-date-to" type="date">
+            </div>
+            <div class="form-field">
+              <label>page_size</label>
+              <input id="raw-list-page-size" type="text" value="20">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendRawList(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Raw Payload by Run -->
+    <div class="endpoint-card" id="ep-raw-payload-by-run">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge GET">GET</span>
+        <span class="endpoint-path">/api/v1/admin/raw-payloads/{run_id}</span>
+        <span class="endpoint-desc">取得單筆 Raw Payload（含完整 JSON）</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          以 <code>run_id</code> 取得該次注入的完整原始 JSON payload。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Path Parameter</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>run_id</td><td><span class="param-type">UUID</span></td><td><span class="param-required">必填</span></td><td>注入 run 的 UUID</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid single">
+            <div class="form-field">
+              <label>run_id</label>
+              <input id="raw-by-run-id" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendRawByRun(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
     </div>
 
     <!-- DQ Issues -->
@@ -2151,6 +2417,57 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     </div>
 
     <!-- Corrections Log -->
+    <div class="endpoint-card" id="ep-bulk-rerun">
+      <div class="endpoint-header" onclick="toggleCard(this)">
+        <span class="method-badge POST">POST</span>
+        <span class="endpoint-path">/api/v1/admin/runs/bulk-rerun</span>
+        <span class="endpoint-desc">批量重跑所有 run 的正規化</span>
+        <span class="endpoint-toggle">▼</span>
+      </div>
+      <div class="endpoint-body">
+        <div class="info-block">
+          對所有符合條件的 ingestion run 重新觸發正規化流程。
+          適用於更新 normalizer 邏輯後需重跑歷史資料的情境。
+          立即回傳 queued 數量，實際正規化在背景執行。
+        </div>
+        <div class="params-section">
+          <div class="params-title">Query Parameters</div>
+          <table class="params-table">
+            <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
+            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>篩選特定 dataset（不填 = 全部）</td></tr>
+            <tr><td>status</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>completed（預設）/ failed / all</td></tr>
+          </table>
+        </div>
+        <div class="form-section">
+          <div class="form-title">請求</div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>dataset_key</label>
+              <input id="bulk-rerun-dataset" type="text" placeholder="（不填 = 全部）">
+            </div>
+            <div class="form-field">
+              <label>status</label>
+              <select id="bulk-rerun-status">
+                <option value="completed">completed（預設）</option>
+                <option value="failed">failed</option>
+                <option value="all">all</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn-send" onclick="sendBulkRerun(this)">送出請求</button>
+          </div>
+        </div>
+        <div class="response-area" style="display:none">
+          <div class="response-header">
+            <span class="response-label">Response</span>
+            <span class="response-status"></span>
+          </div>
+          <div class="response-body"><pre></pre></div>
+        </div>
+      </div>
+    </div>
+
     <div class="endpoint-card" id="ep-corrections">
       <div class="endpoint-header" onclick="toggleCard(this)">
         <span class="method-badge GET">GET</span>
@@ -2186,10 +2503,6 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             <div class="form-field">
               <label>page_size</label>
               <input id="corr-page-size" type="text" value="20">
-            </div>
-            <div class="form-field">
-              <label>page</label>
-              <input id="corr-page" type="text" value="1">
             </div>
           </div>
           <div class="form-actions">
@@ -2335,6 +2648,350 @@ function syntaxHighlight(json) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+const responseChartConfigs = {
+  'ep-eod': {
+    title: 'EOD 收盤走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'adj_close', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id'],
+  },
+  'ep-eod-id': {
+    title: 'EOD 收盤走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'adj_close', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id'],
+  },
+  'ep-macro-obs': {
+    title: 'Macro 觀測值走勢',
+    xKeys: ['obs_date', 'date'],
+    yKeys: ['value'],
+    groupKeys: ['series_name', 'source_code', 'series_id'],
+  },
+  'ep-macro-obs-id': {
+    title: 'Macro 觀測值走勢',
+    xKeys: ['obs_date', 'date'],
+    yKeys: ['value'],
+    groupKeys: ['series_name', 'source_code', 'series_id'],
+  },
+  'ep-futures-continuous': {
+    title: '連續期貨走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'settlement_price', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id', 'contract_code'],
+  },
+  'ep-futures-continuous-id': {
+    title: '連續期貨走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'settlement_price', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id', 'contract_code'],
+  },
+};
+
+const responseChartPalette = ['#8BB3D4', '#A8C7A0', '#D4A86A', '#CC8866', '#C99AD9', '#7BC8B6'];
+let responseChartResizeBound = false;
+
+function toFiniteNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function getResponseRecords(data) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.data)) return data.data;
+  return [];
+}
+
+function pickExistingKey(records, candidates, predicate) {
+  return candidates.find(key => records.some(record => predicate(record?.[key]))) || null;
+}
+
+function isNonEmptyValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+function ensureResponseChartArea(area) {
+  let chart = area.querySelector('.response-chart');
+  if (chart) return chart;
+
+  chart = document.createElement('div');
+  chart.className = 'response-chart';
+  chart.innerHTML = `
+    <div class="response-chart-head">
+      <div>
+        <div class="response-chart-title">Chart Preview</div>
+        <div class="response-chart-meta"></div>
+      </div>
+    </div>
+    <div class="response-chart-canvas" aria-label="chart preview"></div>
+  `;
+
+  const responseBody = area.querySelector('.response-body');
+  area.insertBefore(chart, responseBody);
+
+  if (!responseChartResizeBound) {
+    window.addEventListener('resize', () => {
+      document.querySelectorAll('.response-chart-canvas').forEach(node => {
+        node._chartInstance?.resize();
+      });
+    });
+    responseChartResizeBound = true;
+  }
+
+  return chart;
+}
+
+function hideResponseChart(area) {
+  const chart = area.querySelector('.response-chart');
+  if (chart) chart.style.display = 'none';
+}
+
+function isDateLikeLabel(label) {
+  return /^\d{4}-\d{2}-\d{2}/.test(String(label));
+}
+
+function buildResponseChartModel(cardId, data) {
+  const config = responseChartConfigs[cardId];
+  if (!config) return null;
+
+  const records = getResponseRecords(data).filter(record => record && typeof record === 'object' && !Array.isArray(record));
+  if (!records.length) return null;
+
+  const xKey = pickExistingKey(records, config.xKeys, isNonEmptyValue);
+  const yKey = pickExistingKey(records, config.yKeys, value => toFiniteNumber(value) !== null);
+  const groupKey = pickExistingKey(records, config.groupKeys, isNonEmptyValue);
+
+  if (!xKey || !yKey) return null;
+
+  const grouped = new Map();
+
+  records.forEach(record => {
+    const xValue = record[xKey];
+    const yValue = toFiniteNumber(record[yKey]);
+    if (!isNonEmptyValue(xValue) || yValue === null) return;
+
+    const seriesName = groupKey && isNonEmptyValue(record[groupKey]) ? String(record[groupKey]).trim() : 'series';
+    if (!grouped.has(seriesName)) grouped.set(seriesName, []);
+    grouped.get(seriesName).push({
+      x: String(xValue).trim(),
+      y: yValue,
+    });
+  });
+
+  let series = Array.from(grouped.entries())
+    .map(([name, points]) => ({ name, points }))
+    .filter(item => item.points.length > 0)
+    .sort((a, b) => b.points.length - a.points.length);
+
+  if (!series.length) return null;
+
+  const hiddenSeriesCount = Math.max(series.length - 6, 0);
+  series = series.slice(0, 6);
+
+  const labelSet = new Set();
+  series.forEach(item => item.points.forEach(point => labelSet.add(point.x)));
+  let labels = Array.from(labelSet);
+  if (labels.every(isDateLikeLabel)) labels = labels.sort();
+
+  const labelIndex = new Map(labels.map((label, index) => [label, index]));
+  series = series.map((item, index) => ({
+    name: item.name,
+    color: responseChartPalette[index % responseChartPalette.length],
+    points: item.points.sort((a, b) => (labelIndex.get(a.x) ?? 0) - (labelIndex.get(b.x) ?? 0)),
+  }));
+
+  const allValues = series.flatMap(item => item.points.map(point => point.y));
+  if (!allValues.length) return null;
+
+  const minY = Math.min(...allValues);
+  const maxY = Math.max(...allValues);
+
+  return {
+    title: config.title,
+    xKey,
+    yKey,
+    labels,
+    series,
+    minY,
+    maxY,
+    totalPoints: allValues.length,
+    hiddenSeriesCount,
+  };
+}
+
+function buildResponseChartOption(model) {
+  return {
+    color: responseChartPalette,
+    animationDuration: 240,
+    backgroundColor: 'transparent',
+    legend: {
+      type: 'scroll',
+      top: 0,
+      textStyle: {
+        color: '#D6D0C5',
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 11,
+      },
+      pageTextStyle: {
+        color: '#D6D0C5',
+      },
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'cross',
+        label: { backgroundColor: '#403A34' },
+      },
+      backgroundColor: 'rgba(24, 22, 20, 0.94)',
+      borderColor: 'rgba(255,255,255,0.1)',
+      textStyle: {
+        color: '#F6F3ED',
+        fontFamily: 'JetBrains Mono, monospace',
+      },
+    },
+    toolbox: {
+      right: 0,
+      feature: {
+        dataZoom: { yAxisIndex: 'none' },
+        restore: {},
+        saveAsImage: {},
+      },
+      iconStyle: {
+        borderColor: '#C8C4BB',
+      },
+      emphasis: {
+        iconStyle: {
+          borderColor: '#F6F3ED',
+        },
+      },
+    },
+    grid: {
+      left: 54,
+      right: 24,
+      top: 56,
+      bottom: 72,
+      containLabel: false,
+    },
+    xAxis: {
+      type: 'category',
+      data: model.labels,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.16)' } },
+      axisLabel: {
+        color: 'rgba(255,255,255,0.46)',
+        fontFamily: 'JetBrains Mono, monospace',
+        hideOverlap: true,
+      },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      min: model.minY === model.maxY ? model.minY - 1 : 'dataMin',
+      max: model.minY === model.maxY ? model.maxY + 1 : 'dataMax',
+      splitLine: {
+        lineStyle: { color: 'rgba(255,255,255,0.08)' },
+      },
+      axisLine: { show: false },
+      axisLabel: {
+        color: 'rgba(255,255,255,0.46)',
+        fontFamily: 'JetBrains Mono, monospace',
+      },
+    },
+    dataZoom: [
+      {
+        type: 'inside',
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true,
+      },
+      {
+        type: 'slider',
+        height: 20,
+        bottom: 24,
+        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        fillerColor: 'rgba(139,179,212,0.18)',
+        textStyle: { color: 'rgba(255,255,255,0.42)' },
+      },
+    ],
+    series: model.series.map(item => ({
+      name: item.name,
+      type: 'line',
+      showSymbol: item.points.length <= 24,
+      smooth: false,
+      symbolSize: 7,
+      emphasis: {
+        focus: 'series',
+      },
+      lineStyle: {
+        width: 2.2,
+      },
+      connectNulls: false,
+      data: model.labels.map(label => {
+        const point = item.points.find(candidate => candidate.x === label);
+        return point ? point.y : null;
+      }),
+    })),
+  };
+}
+
+function ensureResponseChartInstance(chart) {
+  const container = chart.querySelector('.response-chart-canvas');
+  if (!container) return null;
+  if (!window.echarts) return null;
+
+  if (!container._chartInstance) {
+    container._chartInstance = window.echarts.init(container, null, { renderer: 'canvas' });
+  }
+
+  return container._chartInstance;
+}
+
+function renderResponseChart(area, cardId, status, data) {
+  if (!(status >= 200 && status < 300)) {
+    hideResponseChart(area);
+    return;
+  }
+
+  const model = buildResponseChartModel(cardId, data);
+  if (!model) {
+    hideResponseChart(area);
+    return;
+  }
+
+  const chart = ensureResponseChartArea(area);
+  chart.style.display = 'block';
+
+  chart.querySelector('.response-chart-title').textContent = model.title;
+
+  const metaParts = [
+    `${model.series.length} 條序列`,
+    `${model.totalPoints} 個資料點`,
+    `Y 軸：${model.yKey}`,
+  ];
+  if (model.hiddenSeriesCount > 0) metaParts.push(`另有 ${model.hiddenSeriesCount} 條序列未顯示`);
+  chart.querySelector('.response-chart-meta').textContent = metaParts.join(' · ');
+
+  const instance = ensureResponseChartInstance(chart);
+  if (!instance) {
+    chart.querySelector('.response-chart-meta').textContent = 'ECharts 載入失敗，無法顯示互動圖表';
+    return;
+  }
+
+  instance.setOption(buildResponseChartOption(model), true);
+  requestAnimationFrame(() => instance.resize());
+}
+
 function showResponse(btn, status, data) {
   const card = btn.closest('.endpoint-card');
   const area = card.querySelector('.response-area');
@@ -2351,6 +3008,7 @@ function showResponse(btn, status, data) {
   statusEl.className = 'response-status ' + (ok ? 'ok' : 'err');
 
   preEl.innerHTML = syntaxHighlight(data);
+  renderResponseChart(area, card.id, status, data);
 
   if (copyBtn) {
     copyBtn.disabled = false;
@@ -2418,12 +3076,12 @@ function sendRawIngest(btn) {
 }
 
 const directExamples = {
-  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "XBTUSD BGN Curncy",\n      "date": "2024-01-15",\n      "open": 42000,\n      "high": 43500,\n      "low": 41800,\n      "close": 43200,\n      "volume": 18500\n    }\n  ]\n}`,
-  usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2024-01-15",\n      "open": 185.5,\n      "high": 188.2,\n      "low": 184.8,\n      "close": 187.1,\n      "volume": 55000000\n    }\n  ]\n}`,
-  hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2024-01-15",\n      "open": 295.0,\n      "high": 302.0,\n      "low": 293.5,\n      "close": 299.8,\n      "volume": 12000000\n    }\n  ]\n}`,
-  fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2024-01-15",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
-  wtx:     `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "ticker": "TXF1 Index",\n      "date": "2024-01-15",\n      "open": 20800,\n      "high": 21100,\n      "low": 20700,\n      "close": 21000,\n      "volume": 50000\n    }\n  ]\n}`,
-  macro:   `{\n  "metadata": {\n    "source": "Bloomberg",\n    "query_time": "2024-01-15T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "SOFRRATE Index",\n      "date": "2024-01-15",\n      "value": 5.32\n    },\n    {\n      "ticker": "USGG10YR Index",\n      "date": "2024-01-15",\n      "value": 4.85\n    }\n  ]\n}`,
+  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "XBTUSD BGN Curncy",\n      "date": "2026-03-12",\n      "open": 95550.07,\n      "high": 95825.34,\n      "low": 95119.76,\n      "close": 95709.01,\n      "volume": 18500\n    }\n  ]\n}`,
+  usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T16:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2026-03-12",\n      "open": 218.2,\n      "high": 221.8,\n      "low": 217.6,\n      "close": 220.5,\n      "volume": 55000000\n    }\n  ]\n}`,
+  hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2026-03-12",\n      "open": 415.0,\n      "high": 425.0,\n      "low": 413.0,\n      "close": 420.0,\n      "volume": 18000000\n    }\n  ]\n}`,
+  fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2026-03-12",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
+  wtx:     `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "ticker": "TXF1 Index",\n      "date": "2026-03-12",\n      "open": 20800,\n      "high": 21100,\n      "low": 20700,\n      "close": 21000,\n      "volume": 50000\n    }\n  ]\n}`,
+  macro:   `{\n  "metadata": {\n    "source": "Bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "SOFRRATE Index",\n      "date": "2026-03-12",\n      "value": 5.32\n    },\n    {\n      "ticker": "USGG10YR Index",\n      "date": "2026-03-12",\n      "value": 4.85\n    }\n  ]\n}`,
 };
 
 function updateDirectExample(sel) {
@@ -2478,7 +3136,6 @@ function sendEOD(btn) {
     page:      document.getElementById('eod-page').value,
   }});
 }
-
 function sendEODById(btn) {
   const id = document.getElementById('eodid-input').value.trim();
   if (!id) { alert('請輸入 instrument_id'); return; }
@@ -2489,7 +3146,6 @@ function sendEODById(btn) {
     page:      document.getElementById('eodid-page').value,
   }});
 }
-
 function sendCorpActions(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/corporate-actions', { auth:'serve', params: {
     market:      document.getElementById('ca-market').value,
@@ -2501,7 +3157,6 @@ function sendCorpActions(btn) {
     page:        document.getElementById('ca-page').value,
   }});
 }
-
 function sendMacroSeries(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/macro/series', { auth:'serve', params: {
     market:      document.getElementById('ms-market').value,
@@ -2512,7 +3167,6 @@ function sendMacroSeries(btn) {
     page:        document.getElementById('ms-page').value,
   }});
 }
-
 function sendMacroObs(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/macro/observations', { auth:'serve', params: {
     market:      document.getElementById('mo-market').value,
@@ -2523,7 +3177,6 @@ function sendMacroObs(btn) {
     page:        document.getElementById('mo-page').value,
   }});
 }
-
 function sendFuturesContracts(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/futures/contracts', { auth:'serve', params: {
     market:        document.getElementById('fc-market').value,
@@ -2535,7 +3188,6 @@ function sendFuturesContracts(btn) {
     page:          document.getElementById('fc-page').value,
   }});
 }
-
 function sendFuturesContinuous(btn) {
   doRequest(btn, 'GET', '/api/v1/serve/futures/continuous', { auth:'serve', params: {
     market:     document.getElementById('fcon-market').value,
@@ -2546,7 +3198,6 @@ function sendFuturesContinuous(btn) {
     page:       document.getElementById('fcon-page').value,
   }});
 }
-
 function sendCalendar(btn) {
   const market = document.getElementById('cal-market').value.trim();
   if (!market) { alert('market 為必填'); return; }
@@ -2559,7 +3210,6 @@ function sendCalendar(btn) {
     page:       document.getElementById('cal-page').value,
   }});
 }
-
 function sendDQIssues(btn) {
   doRequest(btn, 'GET', '/api/v1/admin/dq-issues', { auth:'admin', params: {
     resolved:      document.getElementById('dq-list-resolved').value,
@@ -2569,7 +3219,6 @@ function sendDQIssues(btn) {
     page:          document.getElementById('dq-list-page').value,
   }});
 }
-
 function sendCorpActionsById(btn) {
   const id = document.getElementById('caid-input').value.trim();
   if (!id) { alert('請輸入 instrument_id'); return; }
@@ -2581,7 +3230,6 @@ function sendCorpActionsById(btn) {
     page:        document.getElementById('caid-page').value,
   }});
 }
-
 function sendMacroObsById(btn) {
   const id = document.getElementById('moid-input').value.trim();
   if (!id) { alert('請輸入 series_id'); return; }
@@ -2592,7 +3240,6 @@ function sendMacroObsById(btn) {
     page:       document.getElementById('moid-page').value,
   }});
 }
-
 function sendFuturesContinuousById(btn) {
   const id = document.getElementById('fconid-input').value.trim();
   if (!id) { alert('請輸入 instrument_id'); return; }
@@ -2623,12 +3270,40 @@ function sendResolveDQ(btn) {
   doRequest(btn, 'PATCH', `/api/v1/admin/dq-issues/${id}/resolve`, { auth:'admin', body });
 }
 
+function setToday(fromId, toId) {
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById(fromId).value = today;
+  document.getElementById(toId).value = today;
+}
+
+function sendRawList(btn) {
+  doRequest(btn, 'GET', '/api/v1/admin/raw-payloads', { auth:'admin', params: {
+    dataset_key: document.getElementById('raw-list-dataset').value,
+    run_id:      document.getElementById('raw-list-run').value,
+    date_from:   document.getElementById('raw-list-date-from').value,
+    date_to:     document.getElementById('raw-list-date-to').value,
+    page_size:   document.getElementById('raw-list-page-size').value,
+  }});
+}
+
+function sendRawByRun(btn) {
+  const id = document.getElementById('raw-by-run-id').value.trim();
+  if (!id) { alert('請輸入 run_id'); return; }
+  doRequest(btn, 'GET', `/api/v1/admin/raw-payloads/${id}`, { auth:'admin' });
+}
+
+function sendBulkRerun(btn) {
+  doRequest(btn, 'POST', '/api/v1/admin/runs/bulk-rerun', { auth:'admin', params: {
+    dataset_key: document.getElementById('bulk-rerun-dataset').value,
+    status:      document.getElementById('bulk-rerun-status').value,
+  }});
+}
+
 function sendCorrections(btn) {
   doRequest(btn, 'GET', '/api/v1/admin/corrections', { auth:'admin', params: {
     table_name:    document.getElementById('corr-table').value,
     instrument_id: document.getElementById('corr-instid').value,
     page_size:     document.getElementById('corr-page-size').value,
-    page:          document.getElementById('corr-page').value,
   }});
 }
 

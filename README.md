@@ -105,18 +105,21 @@ findb/
 │   ├── api/                    # API 路由
 │   │   ├── v1/
 │   │   │   ├── source.py       # Source API 端點（寫入路徑）
-│   │   │   └── serve.py        # Serve API 端點（查詢路徑）
+│   │   │   ├── serve.py        # Serve API 端點（查詢路徑）
+│   │   │   └── admin.py        # Admin API 端點（人工修正 / DQ）
 │   │   └── deps.py             # API 依賴（認證/允許名單/限流）
 │   │
 │   ├── models/                 # SQLAlchemy 模型
 │   │   ├── base.py             # 資料庫連線設定
 │   │   ├── raw.py              # Raw Layer 模型
 │   │   ├── canonical.py        # Canonical Layer 模型
-│   │   └── registry.py         # 系統註冊表模型
+│   │   ├── registry.py         # 系統註冊表模型
+│   │   └── correction.py       # 人工修正紀錄模型
 │   │
 │   ├── schemas/                # Pydantic 模型
 │   │   ├── source.py           # Source API 請求/回應
 │   │   ├── serve.py            # Serve API 回應
+│   │   ├── admin.py            # Admin API 請求/回應
 │   │   └── common.py           # 分頁等通用模型
 │   │
 │   ├── services/               # 業務邏輯
@@ -136,7 +139,7 @@ findb/
 │   │       └── validators.py
 │   │
 │   ├── static/                 # 靜態檔案
-│   │   └── test_page.html      # 視覺化測試面板
+│   │   └── test_page.html      # 互動式 /test API 測試頁（含 ECharts 圖表）
 │   │
 │   └── utils/                  # 工具函式
 │       ├── uuid7.py
@@ -162,7 +165,8 @@ findb/
 │
 ├── docs/                       # 文件
 │   ├── api_usage_guide.md      # API 使用教學（完整版）
-│   └── api_test_flow.md        # API 測試流程
+│   ├── api_test_flow.md        # API 測試流程
+│   └── api_tester.html         # 匯出的靜態 API 測試頁快照
 │
 ├── plans/                      # 開發計劃
 │   └── normalize_serve_development_plan.md
@@ -219,14 +223,16 @@ docker-compose exec app python /app/scripts/seed_data.py
 
 ```bash
 # 健康檢查
-curl http://localhost:8000/health
+curl http://localhost:8080/health
 
 # API 互動式文件
-open http://localhost:8000/docs
+open http://localhost:8080/docs
 
-# 視覺化測試面板
-open http://localhost:8000/test
+# 互動式測試頁
+open http://localhost:8080/test
 ```
+
+`/test` 目前提供查詢結果 JSON 檢視與時間序列圖表預覽；若回應資料符合格式，會自動以 ECharts 顯示互動圖表。
 
 ### 本機開發（不使用 Docker）
 
@@ -277,13 +283,13 @@ poetry run uvicorn app.main:app --reload
 
 ```bash
 # 標準格式攝取
-curl -X POST "http://localhost:8000/api/v1/source/ingest/crypto" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@scripts/sample_ingest_payload.json"
 
 # Direct 格式攝取（US Stock）
-curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
+curl -X POST "http://localhost:8080/api/v1/source/ingest/usstock/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@bloomberg_usstock.json"
@@ -338,22 +344,22 @@ curl -X POST "http://localhost:8000/api/v1/source/ingest/usstock/direct" \
 
 ```bash
 # 查詢加密貨幣標的
-curl "http://localhost:8000/api/v1/serve/instruments?market=CRYPTO"
+curl "http://localhost:8080/api/v1/serve/instruments?market=CRYPTO"
 
 # 查詢 BTC/ETH 日K
-curl "http://localhost:8000/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
+curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
 
 # 查詢美股除權息
-curl "http://localhost:8000/api/v1/serve/corporate-actions?market=US&action_type=dividend"
+curl "http://localhost:8080/api/v1/serve/corporate-actions?market=US&action_type=dividend"
 
 # 查詢宏觀序列
-curl "http://localhost:8000/api/v1/serve/macro/series?name=CPI"
+curl "http://localhost:8080/api/v1/serve/macro/series?name=CPI"
 
 # 查詢期貨合約
-curl "http://localhost:8000/api/v1/serve/futures/contracts?market=WTX"
+curl "http://localhost:8080/api/v1/serve/futures/contracts?market=WTX"
 
 # 查詢交易日曆
-curl "http://localhost:8000/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
+curl "http://localhost:8080/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
 ```
 
 ### 分頁
@@ -649,6 +655,7 @@ git push origin main
 
 - **[API 使用教學](docs/api_usage_guide.md)** — 完整端點規格、範例、錯誤代碼
 - [API 測試流程](docs/api_test_flow.md)
+- [API 測試頁快照](docs/api_tester.html)
 - [技術規格](spec.md)
 - [產品路線圖](roadmap.md)
 - [開發計劃](plans/normalize_serve_development_plan.md)

@@ -91,7 +91,7 @@
 
 - instrument_id（UUID v7）
 - asset_class（equity / index / fx / crypto / bond / future / macro）
-- market（US / TW / HK / CN / FX / CRYPTO / WTX / MACRO）
+- market（US / TW / HK / CN / FX / CRYPTO / WTX / MACRO / GLOBAL）
 - currency
 - timezone
 - name
