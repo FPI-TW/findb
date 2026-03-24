@@ -617,6 +617,64 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
 .response-body pre .boolean { color: #CC8866; }
 .response-body pre .null    { color: #888; }
 
+.response-chart {
+  display: none;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
+}
+
+.response-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.response-chart-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  color: rgba(255,255,255,0.34);
+  text-transform: uppercase;
+}
+
+.response-chart-meta {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: #BDB5A6;
+}
+
+.response-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.response-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  color: #D6D0C5;
+}
+
+.response-chart-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.response-chart-svg {
+  display: block;
+  width: 100%;
+  height: 220px;
+}
+
 .loading-dots::after {
   content: '';
   animation: dots 1.2s steps(3, end) infinite;
@@ -2612,6 +2670,277 @@ function syntaxHighlight(json) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+const responseChartConfigs = {
+  'ep-eod': {
+    title: 'EOD 收盤走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'adj_close', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id'],
+  },
+  'ep-eod-id': {
+    title: 'EOD 收盤走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'adj_close', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id'],
+  },
+  'ep-macro-obs': {
+    title: 'Macro 觀測值走勢',
+    xKeys: ['obs_date', 'date'],
+    yKeys: ['value'],
+    groupKeys: ['series_name', 'source_code', 'series_id'],
+  },
+  'ep-macro-obs-id': {
+    title: 'Macro 觀測值走勢',
+    xKeys: ['obs_date', 'date'],
+    yKeys: ['value'],
+    groupKeys: ['series_name', 'source_code', 'series_id'],
+  },
+  'ep-futures-continuous': {
+    title: '連續期貨走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'settlement_price', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id', 'contract_code'],
+  },
+  'ep-futures-continuous-id': {
+    title: '連續期貨走勢',
+    xKeys: ['trade_date', 'date'],
+    yKeys: ['close', 'settlement_price', 'open', 'high', 'low'],
+    groupKeys: ['symbol', 'instrument_id', 'contract_code'],
+  },
+};
+
+const responseChartPalette = ['#8BB3D4', '#A8C7A0', '#D4A86A', '#CC8866', '#C99AD9', '#7BC8B6'];
+
+function toFiniteNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function getResponseRecords(data) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.data)) return data.data;
+  return [];
+}
+
+function pickExistingKey(records, candidates, predicate) {
+  return candidates.find(key => records.some(record => predicate(record?.[key]))) || null;
+}
+
+function isNonEmptyValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+function ensureResponseChartArea(area) {
+  let chart = area.querySelector('.response-chart');
+  if (chart) return chart;
+
+  chart = document.createElement('div');
+  chart.className = 'response-chart';
+  chart.innerHTML = `
+    <div class="response-chart-head">
+      <div>
+        <div class="response-chart-title">Chart Preview</div>
+        <div class="response-chart-meta"></div>
+      </div>
+      <div class="response-chart-legend"></div>
+    </div>
+    <svg class="response-chart-svg" viewBox="0 0 640 220" preserveAspectRatio="none" aria-hidden="true"></svg>
+  `;
+
+  const responseBody = area.querySelector('.response-body');
+  area.insertBefore(chart, responseBody);
+  return chart;
+}
+
+function hideResponseChart(area) {
+  const chart = area.querySelector('.response-chart');
+  if (chart) chart.style.display = 'none';
+}
+
+function isDateLikeLabel(label) {
+  return /^\d{4}-\d{2}-\d{2}/.test(String(label));
+}
+
+function buildResponseChartModel(cardId, data) {
+  const config = responseChartConfigs[cardId];
+  if (!config) return null;
+
+  const records = getResponseRecords(data).filter(record => record && typeof record === 'object' && !Array.isArray(record));
+  if (!records.length) return null;
+
+  const xKey = pickExistingKey(records, config.xKeys, isNonEmptyValue);
+  const yKey = pickExistingKey(records, config.yKeys, value => toFiniteNumber(value) !== null);
+  const groupKey = pickExistingKey(records, config.groupKeys, isNonEmptyValue);
+
+  if (!xKey || !yKey) return null;
+
+  const grouped = new Map();
+
+  records.forEach(record => {
+    const xValue = record[xKey];
+    const yValue = toFiniteNumber(record[yKey]);
+    if (!isNonEmptyValue(xValue) || yValue === null) return;
+
+    const seriesName = groupKey && isNonEmptyValue(record[groupKey]) ? String(record[groupKey]).trim() : 'series';
+    if (!grouped.has(seriesName)) grouped.set(seriesName, []);
+    grouped.get(seriesName).push({
+      x: String(xValue).trim(),
+      y: yValue,
+    });
+  });
+
+  let series = Array.from(grouped.entries())
+    .map(([name, points]) => ({ name, points }))
+    .filter(item => item.points.length > 0)
+    .sort((a, b) => b.points.length - a.points.length);
+
+  if (!series.length) return null;
+
+  const hiddenSeriesCount = Math.max(series.length - 6, 0);
+  series = series.slice(0, 6);
+
+  const labelSet = new Set();
+  series.forEach(item => item.points.forEach(point => labelSet.add(point.x)));
+  let labels = Array.from(labelSet);
+  if (labels.every(isDateLikeLabel)) labels = labels.sort();
+
+  const labelIndex = new Map(labels.map((label, index) => [label, index]));
+  series = series.map((item, index) => ({
+    name: item.name,
+    color: responseChartPalette[index % responseChartPalette.length],
+    points: item.points.sort((a, b) => (labelIndex.get(a.x) ?? 0) - (labelIndex.get(b.x) ?? 0)),
+  }));
+
+  const allValues = series.flatMap(item => item.points.map(point => point.y));
+  if (!allValues.length) return null;
+
+  const minY = Math.min(...allValues);
+  const maxY = Math.max(...allValues);
+
+  return {
+    title: config.title,
+    xKey,
+    yKey,
+    labels,
+    series,
+    minY,
+    maxY,
+    totalPoints: allValues.length,
+    hiddenSeriesCount,
+  };
+}
+
+function buildResponseChartSvg(model) {
+  const width = 640;
+  const height = 220;
+  const padding = { top: 16, right: 18, bottom: 28, left: 52 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const safeMin = model.minY === model.maxY ? model.minY - 1 : model.minY;
+  const safeMax = model.minY === model.maxY ? model.maxY + 1 : model.maxY;
+  const labelIndex = new Map(model.labels.map((label, index) => [label, index]));
+
+  const getX = index => (
+    model.labels.length <= 1
+      ? padding.left + plotWidth / 2
+      : padding.left + (index / (model.labels.length - 1)) * plotWidth
+  );
+  const getY = value => padding.top + (1 - ((value - safeMin) / (safeMax - safeMin))) * plotHeight;
+
+  const gridLines = Array.from({ length: 4 }, (_, index) => {
+    const ratio = index / 3;
+    const y = padding.top + ratio * plotHeight;
+    return `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />`;
+  }).join('');
+
+  const yLabels = `
+    <text x="${padding.left - 8}" y="${padding.top + 4}" text-anchor="end" fill="rgba(255,255,255,0.42)" font-family="JetBrains Mono, monospace" font-size="11">${escapeHtml(safeMax.toFixed(2))}</text>
+    <text x="${padding.left - 8}" y="${padding.top + plotHeight + 4}" text-anchor="end" fill="rgba(255,255,255,0.42)" font-family="JetBrains Mono, monospace" font-size="11">${escapeHtml(safeMin.toFixed(2))}</text>
+  `;
+
+  const xLabelIndexes = Array.from(new Set([0, Math.floor((model.labels.length - 1) / 2), Math.max(model.labels.length - 1, 0)]))
+    .filter(index => model.labels[index] !== undefined);
+  const xLabels = xLabelIndexes.map(index => `
+    <text x="${getX(index)}" y="${height - 8}" text-anchor="middle" fill="rgba(255,255,255,0.42)" font-family="JetBrains Mono, monospace" font-size="11">${escapeHtml(model.labels[index])}</text>
+  `).join('');
+
+  const seriesSvg = model.series.map(item => {
+    const points = item.points.map(point => {
+      const x = getX(labelIndex.get(point.x) ?? 0);
+      const y = getY(point.y);
+      return { x, y, label: point.x, value: point.y };
+    });
+
+    const polyline = points.length > 1
+      ? `<polyline fill="none" stroke="${item.color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" points="${points.map(point => `${point.x},${point.y}`).join(' ')}" />`
+      : '';
+
+    const circles = points.map(point => `
+      <circle cx="${point.x}" cy="${point.y}" r="3.2" fill="${item.color}" stroke="#171515" stroke-width="1.2">
+        <title>${escapeHtml(item.name)} | ${escapeHtml(point.label)} | ${escapeHtml(point.value.toFixed(4))}</title>
+      </circle>
+    `).join('');
+
+    return `${polyline}${circles}`;
+  }).join('');
+
+  return `
+    <svg class="response-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+      ${gridLines}
+      ${seriesSvg}
+      ${yLabels}
+      ${xLabels}
+    </svg>
+  `;
+}
+
+function renderResponseChart(area, cardId, status, data) {
+  if (!(status >= 200 && status < 300)) {
+    hideResponseChart(area);
+    return;
+  }
+
+  const model = buildResponseChartModel(cardId, data);
+  if (!model) {
+    hideResponseChart(area);
+    return;
+  }
+
+  const chart = ensureResponseChartArea(area);
+  chart.style.display = 'block';
+
+  chart.querySelector('.response-chart-title').textContent = model.title;
+
+  const metaParts = [
+    `${model.series.length} 條序列`,
+    `${model.totalPoints} 個資料點`,
+    `Y 軸：${model.yKey}`,
+  ];
+  if (model.hiddenSeriesCount > 0) metaParts.push(`另有 ${model.hiddenSeriesCount} 條序列未顯示`);
+  chart.querySelector('.response-chart-meta').textContent = metaParts.join(' · ');
+
+  const legend = chart.querySelector('.response-chart-legend');
+  legend.innerHTML = model.series.map(item => `
+    <span class="response-chart-legend-item">
+      <span class="response-chart-legend-dot" style="background:${item.color}"></span>
+      <span>${escapeHtml(item.name)}</span>
+    </span>
+  `).join('');
+
+  chart.querySelector('.response-chart-svg').outerHTML = buildResponseChartSvg(model);
+}
+
 function showResponse(btn, status, data) {
   const card = btn.closest('.endpoint-card');
   const area = card.querySelector('.response-area');
@@ -2628,6 +2957,7 @@ function showResponse(btn, status, data) {
   statusEl.className = 'response-status ' + (ok ? 'ok' : 'err');
 
   preEl.innerHTML = syntaxHighlight(data);
+  renderResponseChart(area, card.id, status, data);
 
   if (copyBtn) {
     copyBtn.disabled = false;
