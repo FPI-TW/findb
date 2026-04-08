@@ -630,6 +630,81 @@ class TestSourceAPI:
         assert run.dataset_key == "hkchina_stock_eod"
 
     @pytest.mark.asyncio
+    async def test_ingest_hkchina_index_direct_routes_records_to_hk_and_cn(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        """Ensure HK/China index direct payloads infer market and persist as regional indices."""
+        response = await client.post(
+            "/api/v1/source/ingest/hkchina-index/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "source": "bloomberg",
+                    "query_time": "2026-04-08T02:29:42.484080Z",
+                    "total_records": 2,
+                },
+                "data": [
+                    {
+                        "ticker": "HSI Index",
+                        "date": "2026-04-09",
+                        "open": 25772.56,
+                        "high": 25872.30,
+                        "low": 25711.23,
+                        "close": 25741.55,
+                        "volume": 0,
+                    },
+                    {
+                        "ticker": "SH000911 Index",
+                        "date": "2026-04-08",
+                        "open": 5941.521,
+                        "high": 5966.992,
+                        "low": 5940.137,
+                        "close": 5960.012,
+                        "volume": 0,
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        run = await test_session.get(IngestionRun, run_id)
+        assert run is not None
+        assert run.dataset_key == "hkchina_index_eod"
+        assert run.status == "completed"
+        assert run.total_records == 2
+        assert run.success_records == 2
+        assert run.failed_records == 0
+
+        hk_inst_response = await client.get(
+            "/api/v1/serve/instruments?market=HK&asset_class=index&symbol=HSI"
+        )
+        assert hk_inst_response.status_code == 200
+        hk_instruments = hk_inst_response.json()["data"]
+        assert len(hk_instruments) == 1
+        assert hk_instruments[0]["symbol"] == "HSI"
+
+        cn_inst_response = await client.get(
+            "/api/v1/serve/instruments?market=CN&asset_class=index&symbol=SH000911"
+        )
+        assert cn_inst_response.status_code == 200
+        cn_instruments = cn_inst_response.json()["data"]
+        assert len(cn_instruments) == 1
+        assert cn_instruments[0]["symbol"] == "SH000911"
+
+        cn_eod_response = await client.get(
+            "/api/v1/serve/eod?market=CN&symbols=SH000911&start_date=2026-04-08&end_date=2026-04-08"
+        )
+        assert cn_eod_response.status_code == 200
+        cn_eod_data = cn_eod_response.json()["data"]
+        assert len(cn_eod_data) == 1
+        assert cn_eod_data[0]["close"] == "5960.01200000"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("endpoint", "dataset_key", "market", "ticker"),
         [
