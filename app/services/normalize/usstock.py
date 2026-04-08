@@ -99,6 +99,17 @@ class USStockNormalizer(BaseNormalizer):
         "GR": "DE",  # Germany (Xetra)
     }
 
+    SYMBOL_MARKET_MAP = {
+        "SHCOMP": "CN",
+        "SHSZ300": "CN",
+        "SZCOMP": "CN",
+        "HSI": "HK",
+        "HSCEI": "HK",
+        "HSTECH": "HK",
+        "HSMSI": "HK",
+        "VHSI": "HK",
+    }
+
     # Index tickers that should be classified as index instead of equity
     INDEX_TICKERS = {
         "SPX Index",
@@ -127,6 +138,25 @@ class USStockNormalizer(BaseNormalizer):
             return False
         return ticker in self.INDEX_TICKERS or ticker.upper().endswith(" INDEX")
 
+    def _extract_symbol_from_ticker(self, ticker: str | None) -> str:
+        """Extract the leading symbol from a Bloomberg ticker."""
+        if not ticker:
+            return ""
+        return str(ticker).strip().split()[0].upper()
+
+    def _infer_market_from_symbol(self, symbol: str | None) -> str | None:
+        """Infer regional market for Bloomberg index symbols without exchange suffixes."""
+        normalized = (symbol or "").strip().upper()
+        if not normalized:
+            return None
+        if normalized in self.SYMBOL_MARKET_MAP:
+            return self.SYMBOL_MARKET_MAP[normalized]
+        if normalized.startswith(("SH", "SZ")):
+            return "CN"
+        if normalized.startswith("HS") or normalized.startswith("VH"):
+            return "HK"
+        return None
+
     def _extract_market_from_ticker(self, ticker: str | None) -> str:
         """Extract market code from Bloomberg ticker."""
         if not ticker:
@@ -137,6 +167,10 @@ class USStockNormalizer(BaseNormalizer):
             market_suffix = parts[-2].upper() if parts[-1].upper() in ("EQUITY", "INDEX") else None
             if market_suffix and market_suffix in self.MARKET_MAP:
                 return self.MARKET_MAP[market_suffix]
+
+        inferred_market = self._infer_market_from_symbol(self._extract_symbol_from_ticker(ticker))
+        if inferred_market:
+            return inferred_market
 
         return self.market
 
@@ -302,6 +336,35 @@ class CNIndexNormalizer(RegionalIndexNormalizer):
 
     dataset_key = "cn_index_eod"
     market = "CN"
+
+
+class HKChinaIndexNormalizer(USIndexNormalizer):
+    """Normalizer for Hong Kong and China indices from direct Bloomberg payloads."""
+
+    dataset_key = "hkchina_index_eod"
+    market = "GLOBAL"
+    SUPPORTED_MARKETS = {"HK", "CN"}
+
+    def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+        """Map index records and infer whether each one belongs to HK or CN."""
+        index_records = super().map_fields(raw_data)
+        normalized: list[MappedRecord] = []
+
+        for record in index_records:
+            ticker = record.identifier_value
+            resolved_market = self._extract_market_from_ticker(ticker)
+
+            if resolved_market == self.market and isinstance(record.raw_data, dict):
+                raw_market = record.raw_data.get("market")
+                if raw_market:
+                    raw_market_code = str(raw_market).upper().strip()
+                    resolved_market = self.MARKET_MAP.get(raw_market_code, raw_market_code)
+
+            if resolved_market in self.SUPPORTED_MARKETS:
+                record.market = resolved_market
+                normalized.append(record)
+
+        return normalized
 
 
 class GlobalStockNormalizer(USStockNormalizer):

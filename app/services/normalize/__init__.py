@@ -21,6 +21,7 @@ from app.services.normalize.usstock import (
     TWIndexNormalizer,
     HKIndexNormalizer,
     CNIndexNormalizer,
+    HKChinaIndexNormalizer,
 )
 from app.services.normalize.types import (
     MappedRecord,
@@ -56,6 +57,7 @@ __all__ = [
     "TWIndexNormalizer",
     "HKIndexNormalizer",
     "CNIndexNormalizer",
+    "HKChinaIndexNormalizer",
     "CorporateActionRecord",
     "MacroObservationRecord",
     "FuturesContractRecord",

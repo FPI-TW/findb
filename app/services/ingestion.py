@@ -41,6 +41,7 @@ from app.services.normalize import (
     TWIndexNormalizer,
     HKIndexNormalizer,
     CNIndexNormalizer,
+    HKChinaIndexNormalizer,
 )
 from app.utils import uuid7, utc_now
 from app.utils.datetime_utils import ensure_utc
@@ -69,6 +70,7 @@ NORMALIZER_MAP = {
     "tw_index_eod": TWIndexNormalizer,
     "hk_index_eod": HKIndexNormalizer,
     "cn_index_eod": CNIndexNormalizer,
+    "hkchina_index_eod": HKChinaIndexNormalizer,
     # Bloomberg direct format — other markets
     "fx_bloomberg_eod": FXBloombergNormalizer,
     "crypto_bloomberg_eod": CryptoBloombergNormalizer,
