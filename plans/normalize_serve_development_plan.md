@@ -1,15 +1,21 @@
 # Normalize 與 Serve 層開發計劃
 
-> **建立時間**: 2026-01-21  
-> **負責範圍**: Normalize Layer + Serve Layer  
-> **技術選型**: Python + FastAPI + PostgreSQL  
+> **建立時間**: 2026-01-21
+> **狀態更新**: 2026-04-08
+> **負責範圍**: Normalize Layer + Serve Layer
+> **技術選型**: Python + FastAPI + PostgreSQL
 > **目標市場**: Phase 1（加密貨幣、美股、全球外匯）
+
+> 目前補充說明：
+> - Phase 0 共用底座已完成。
+> - Phase 1 主流程已可用，另已提前實作部分 Phase 2 / 3 能力（TW/HK/CN、Macro、WTX、Admin）。
+> - 最新整體狀態請以 [roadmap.md](roadmap.md) 為主，本文件保留較細的開發拆解與歷史脈絡。
 
 ---
 
 ## 一、專案概述
 
-根據 [roadmap.md](../roadmap.md) 與 [spec.md](../spec.md) 的架構設計，本計劃負責開發金融資料庫的 **Normalize** 與 **Serve** 兩層。
+根據 [roadmap.md](roadmap.md) 與 [spec.md](spec.md) 的架構設計，本計劃負責開發金融資料庫的 **Normalize** 與 **Serve** 兩層。
 
 ### 系統架構圖
 

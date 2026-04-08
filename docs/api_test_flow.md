@@ -1,6 +1,6 @@
 # API 測試流程
 
-> **最後更新**: 2026-03-13
+> **最後更新**: 2026-04-08
 
 完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
 
@@ -33,6 +33,7 @@ cp .env.example .env
 
 > `docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法。
 > 若 `.env` 未設定 `SOURCE_API_KEYS`，預設使用 `dev-source-key`。
+> `RAW_RETENTION_ENABLED` 預設為 `false`，raw payload 目前不會因保留期限自動被刪除。
 
 ### 0.2 啟動 Docker 服務
 
@@ -302,7 +303,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/wtx/direct" \
   }'
 ```
 
-### 3.5 Direct 格式攝取（HK/China）
+### 3.5 Direct 格式攝取（HK/China 混合）
 
 ```bash
 curl -X POST "http://localhost:8080/api/v1/source/ingest/hkchina/direct" \
@@ -319,10 +320,54 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/hkchina/direct" \
         "low": 413.0,
         "close": 420.0,
         "volume": 18000000
+      },
+      {
+        "ticker": "SH000911 Index",
+        "date": "2026-03-12",
+        "open": 5915.2,
+        "high": 5968.4,
+        "low": 5901.6,
+        "close": 5950.8,
+        "volume": 0
       }
     ]
   }'
 ```
+
+預期：同一個 run 會同時寫入 `HK` equity 與 `CN` index 標的。
+
+### 3.5b Direct 格式攝取（HK/China 指數，相容舊流程）
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/source/ingest/hkchina-index/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "bloomberg", "query_time": "2026-04-08T02:29:42Z" },
+    "data": [
+      {
+        "ticker": "HSI Index",
+        "date": "2026-04-09",
+        "open": 25772.56,
+        "high": 25872.30,
+        "low": 25711.23,
+        "close": 25741.55,
+        "volume": 0
+      },
+      {
+        "ticker": "SH000911 Index",
+        "date": "2026-04-08",
+        "open": 5941.521,
+        "high": 5966.992,
+        "low": 5940.137,
+        "close": 5960.012,
+        "volume": 0
+      }
+    ]
+  }'
+```
+
+預期：`HSI` 會落到 `HK/index`，`SH000911` 會落到 `CN/index`。
 
 ### 3.6 Direct 格式攝取（Macro）
 
@@ -670,7 +715,48 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 預期：`409`
 
-### 5.6 查詢修正紀錄
+### 5.6 查詢 DQ Issues
+
+```bash
+# 查所有未解決 issue
+curl "http://localhost:8080/api/v1/admin/dq-issues?resolved=false" \
+  -H "X-API-Key: dev-admin-key"
+
+# 查特定 severity
+curl "http://localhost:8080/api/v1/admin/dq-issues?severity=warning" \
+  -H "X-API-Key: dev-admin-key"
+
+# 查特定 instrument
+curl "http://localhost:8080/api/v1/admin/dq-issues?instrument_id={instrument_id}" \
+  -H "X-API-Key: dev-admin-key"
+```
+
+確認：
+- 可依 `resolved`、`severity`、`instrument_id` 篩選
+- 回應包含 `pagination`
+
+### 5.7 查詢 Raw Payload
+
+```bash
+# 查最新 raw payload
+curl "http://localhost:8080/api/v1/admin/raw-payloads" \
+  -H "X-API-Key: dev-admin-key"
+
+# 依 dataset_key 篩選
+curl "http://localhost:8080/api/v1/admin/raw-payloads?dataset_key=crypto_bloomberg_eod&page_size=5" \
+  -H "X-API-Key: dev-admin-key"
+
+# 依 run_id 查單筆 payload
+curl "http://localhost:8080/api/v1/admin/raw-payloads/{run_id}" \
+  -H "X-API-Key: dev-admin-key"
+```
+
+確認：
+- 清單預設為最新優先
+- `run_id` 查詢可對回先前 Source API ingest 取得的 run
+- 找不到資料時應回傳 `404`
+
+### 5.8 查詢修正紀錄
 
 ```bash
 # 查詢所有修正紀錄
@@ -690,6 +776,23 @@ curl "http://localhost:8080/api/v1/admin/corrections?instrument_id={instrument_i
 - `corrected_by` 格式為 `xxxx****`（前 4 碼 + 遮罩）
 - `before_snapshot` 與 `after_snapshot` 包含修改前後的欄位值
 - 結果為**最新優先**排序
+
+### 5.9 批次重跑既有 Run
+
+```bash
+# 重跑所有 completed runs
+curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun" \
+  -H "X-API-Key: dev-admin-key"
+
+# 只重跑特定 dataset 的 failed runs
+curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun?dataset_key=crypto_bloomberg_eod&status=failed" \
+  -H "X-API-Key: dev-admin-key"
+```
+
+確認：
+- 回應包含 `queued`、`skipped`、`errors`、`new_run_ids`
+- `new_run_ids` 可再用 Source API `/runs/{run_id}` 查狀態
+- `status=all` 時會同時納入 completed 與 failed runs
 
 ---
 
@@ -788,16 +891,17 @@ docker-compose exec app bash -c \
 
 ### 測試涵蓋範圍
 
-| 測試檔案 | 涵蓋範圍 | 數量 |
-|---------|---------|------|
-| `test_source_api.py` | 認證（401/403）、攝取、去重、market mismatch、allowlist、限流、生產環境 | ~22 |
-| `test_serve_api.py` | instruments、eod、corporate-actions、macro、futures、calendar | ~8 |
-| `test_normalize.py` | Crypto/Equity/FX 正規化邏輯 | ~5 |
-| `test_usstock_normalize.py` | US Stock/Global/TW/HK/CN 正規化、區域篩選 | ~12 |
-| `test_bloomberg_direct_normalize.py` | FX/Crypto/WTX/Macro Bloomberg direct 正規化 | 32 |
-| `test_end_to_end.py` | 完整 ingest → normalize → query 流程 | ~3 |
-| `test_admin_api.py` | Admin 認證（401/403/500）、PATCH EOD（404/400/200）、Resolve DQ（404/409/200）、audit log、分頁、corrected_by 遮罩 | 24 |
-| **合計** | | **~112**（~110 passed, 2 skipped） |
+| 測試檔案 | 涵蓋範圍 |
+|---------|---------|
+| `test_source_api.py` | 認證、攝取、去重、market mismatch、allowlist、限流、生產環境檢查 |
+| `test_serve_api.py` | instruments、eod、corporate-actions、macro、futures、calendar |
+| `test_normalize.py` | Crypto / Index / Macro / DQ 基本正規化邏輯 |
+| `test_usstock_normalize.py` | US Stock / Global / TW / HK / CN 正規化與區域篩選 |
+| `test_bloomberg_direct_normalize.py` | FX / Crypto / WTX / Macro 的 Bloomberg direct 正規化 |
+| `test_end_to_end.py` | 完整 ingest -> normalize -> serve 流程 |
+| `test_admin_api.py` | Admin 認證、PATCH EOD、Resolve DQ、audit log、分頁與遮罩欄位 |
+
+> 測試案例數量會隨功能擴充持續變動，請以實際 `pytest` 收集結果為準。
 
 ### 指定執行
 
@@ -845,5 +949,5 @@ poetry run pytest --cov=app --cov-report=term-missing
 ## 相關文件
 
 - **[API 使用教學](api_usage_guide.md)** — 完整端點規格、請求/回應格式、Python 範例
-- [技術規格](../spec.md)
-- [產品路線圖](../roadmap.md)
+- [技術規格](../plans/spec.md)
+- [產品路線圖](../plans/roadmap.md)

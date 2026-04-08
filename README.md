@@ -5,6 +5,7 @@ Normalize + Serve 層後端服務，用於金融資料的標準化、儲存與�
 ## 目錄
 
 - [專案概述](#專案概述)
+- [目前進度](#目前進度)
 - [系統架構](#系統架構)
 - [技術選型](#技術選型)
 - [專案結構](#專案結構)
@@ -48,6 +49,36 @@ FinDB 是一套可長期維護、逐步擴充的金融資料庫系統，採用�
 - 投資研究與策略驗證
 - 圖表繪製
 - AI / RAG 資料正確性確認
+
+---
+
+## 目前進度
+
+### 已完成
+
+- Source / Normalize / Serve / Admin 四條主路徑已串接完成
+- Source API 已支援標準 ingest、run status、rerun、dataset registry 查詢
+- Bloomberg direct ingest 已支援 `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina`
+- Serve API 已支援 instruments、EOD、corporate actions、macro、futures、calendar 查詢
+- Admin API 已支援 DQ issue 查詢/解決、EOD patch、更正紀錄、raw payload 查詢、bulk rerun
+- 測試已涵蓋 Source / Serve / Admin / normalize / direct ingest / end-to-end 主流程
+
+### 目前可用資料範圍
+
+| 類型 | 現況 |
+|------|------|
+| `CRYPTO` | EOD、指數 EOD、Bloomberg direct ingest |
+| `US` | Equity / Index EOD、corporate actions、Bloomberg direct ingest |
+| `FX` | EOD、Bloomberg direct ingest |
+| `TW` / `HK` / `CN` | 區域股票與指數正規化已實作，港中 direct ingest 已串接 |
+| `MACRO` | Observation 與 Bloomberg direct ingest 已實作 |
+| `WTX` | Continuous futures 與 Bloomberg direct ingest 已實作 |
+
+### 下一階段重點
+
+- 將 normalize 從 FastAPI `BackgroundTasks` 拆到獨立 worker / queue
+- 補齊 migration、bulk write、索引與大批量效能優化
+- 持續擴充樣本資料、壓測與維運文件
 
 ---
 
@@ -169,14 +200,14 @@ findb/
 │   └── api_tester.html         # 匯出的靜態 API 測試頁快照
 │
 ├── plans/                      # 開發計劃
-│   └── normalize_serve_development_plan.md
+│   ├── normalize_serve_development_plan.md
+│   ├── spec.md                 # 技術規格
+│   └── roadmap.md              # 產品路線圖
 │
 ├── docker-compose.yml          # 本機開發環境
 ├── docker-compose.prod.yml     # 生產環境（AWS EC2）
 ├── Dockerfile
 ├── pyproject.toml
-├── spec.md                     # 技術規格
-├── roadmap.md                  # 產品路線圖
 └── .env.example
 ```
 
@@ -201,6 +232,7 @@ cp .env.example .env
 ```env
 SOURCE_API_KEYS=your-source-key
 SERVE_API_KEYS=your-serve-key
+ADMIN_API_KEYS=your-admin-key
 SERVE_REQUIRE_AUTH=false
 ```
 
@@ -272,8 +304,12 @@ poetry run uvicorn app.main:app --reload
 | POST | `/api/v1/source/ingest/tw` | 接收 TW 市場 raw payload |
 | POST | `/api/v1/source/ingest/hk` | 接收 HK 市場 raw payload |
 | POST | `/api/v1/source/ingest/cn` | 接收 CN 市場 raw payload |
+| POST | `/api/v1/source/ingest/crypto/direct` | Bloomberg 加密貨幣直接格式 |
+| POST | `/api/v1/source/ingest/fx/direct` | Bloomberg 外匯直接格式 |
+| POST | `/api/v1/source/ingest/wtx/direct` | Bloomberg WTX 期貨直接格式 |
 | POST | `/api/v1/source/ingest/usstock/direct` | Bloomberg 美股直接格式 |
-| POST | `/api/v1/source/ingest/hkchina/direct` | Bloomberg 港中股直接格式 |
+| POST | `/api/v1/source/ingest/hkchina/direct` | Bloomberg 港中混合直接格式（股票 + 指數） |
+| POST | `/api/v1/source/ingest/hkchina-index/direct` | Bloomberg 港中指數直接格式（相容舊流程） |
 | POST | `/api/v1/source/ingest/macro/direct` | Bloomberg 宏觀直接格式 |
 | GET | `/api/v1/source/runs/{run_id}` | 查詢批次狀態 |
 | POST | `/api/v1/source/runs/{run_id}/rerun` | 以原始 payload 重新執行正規化 |
@@ -523,8 +559,11 @@ docker-compose exec app bash -c \
 
 ### 目前測試狀況
 
-- **82 tests**（77 passed, 2 skipped）
-- 涵蓋：Source 安全機制、Serve 全端點、正規化邏輯、端到端流程、Admin API
+- 已建立完整 pytest 測試組合，涵蓋：
+- Source API 安全機制、標準 ingest、direct ingest、rerun、allowlist、rate limit
+- Serve API 全端點查詢
+- Admin API 修正、DQ issue、raw payload、bulk rerun
+- 正規化邏輯與端到端 ingest -> normalize -> serve 流程
 
 ---
 
@@ -597,6 +636,7 @@ ADMIN_API_KEYS=production-admin-key
 SERVE_REQUIRE_AUTH=false
 RATE_LIMIT_REQUESTS=100
 RATE_LIMIT_WINDOW=60
+RAW_RETENTION_ENABLED=false
 RAW_RETENTION_DAYS=14
 ```
 
@@ -636,10 +676,12 @@ git push origin main
 | `SERVE_REQUIRE_AUTH` | Serve API 是否需要認證 | `false` |
 | `RATE_LIMIT_REQUESTS` | 限流上限（每 window 內的請求數） | `100` |
 | `RATE_LIMIT_WINDOW` | 限流時間窗口（秒） | `60` |
+| `RAW_RETENTION_ENABLED` | 是否啟用 Raw 過期清理 | `false` |
 | `RAW_RETENTION_DAYS` | Raw 資料保留天數 | `14` |
 
 > **注意**：`docker-compose.yml` 使用 `${VAR:-default}` 語法讀取環境變數。
 > `.env` 的設定值會生效；若未設定則使用預設值。
+> 目前預設不會自動刪除 raw payload；正式上線時再將 `RAW_RETENTION_ENABLED=true` 啟用即可。
 
 ### 生產環境注意事項
 
@@ -656,8 +698,8 @@ git push origin main
 - **[API 使用教學](docs/api_usage_guide.md)** — 完整端點規格、範例、錯誤代碼
 - [API 測試流程](docs/api_test_flow.md)
 - [API 測試頁快照](docs/api_tester.html)
-- [技術規格](spec.md)
-- [產品路線圖](roadmap.md)
+- [技術規格](plans/spec.md)
+- [產品路線圖](plans/roadmap.md)
 - [開發計劃](plans/normalize_serve_development_plan.md)
 
 ---
