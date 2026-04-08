@@ -437,6 +437,8 @@ class BaseNormalizer(ABC):
         )
 
         await self.db.execute(stmt)
+        # Keep subsequent ORM reads in the same session from returning stale pre-upsert rows.
+        self.db.expire_all()
         return True
 
     async def check_duplicate_in_db(
