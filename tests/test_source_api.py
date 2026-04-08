@@ -576,29 +576,7 @@ class TestSourceAPI:
         source_headers: dict,
         test_session,
     ):
-        """Ensure HK/China direct payload format can be ingested."""
-        dataset = DatasetRegistry(
-            dataset_key="hkchina_stock_eod",
-            name="HK China Stock EOD",
-            asset_class="equity",
-            market="GLOBAL",
-            frequency="daily",
-            is_active=True,
-            config={
-                "data_path": "data",
-                "field_mapping": {
-                    "trade_date": "timestamp.query_time",
-                    "open": "price.open",
-                    "high": "price.high",
-                    "low": "price.low",
-                    "close": "price.last",
-                    "volume": "price.volume",
-                },
-            },
-        )
-        test_session.add(dataset)
-        await test_session.commit()
-
+        """Ensure HK/China mixed direct payload persists both equities and indices."""
         response = await client.post(
             "/api/v1/source/ingest/hkchina/direct",
             headers=source_headers,
@@ -606,7 +584,7 @@ class TestSourceAPI:
                 "metadata": {
                     "source": "bloomberg",
                     "query_time": "2026-02-09T15:55:22.900700Z",
-                    "total_records": 1,
+                    "total_records": 2,
                 },
                 "data": [
                     {
@@ -617,17 +595,44 @@ class TestSourceAPI:
                         "low": 550.0,
                         "close": 560.0,
                         "volume": 23494910.0,
-                    }
+                    },
+                    {
+                        "ticker": "SH000911 Index",
+                        "date": "2026-02-09",
+                        "open": 5901.0,
+                        "high": 5968.4,
+                        "low": 5899.5,
+                        "close": 5950.8,
+                        "volume": 0,
+                    },
                 ],
             },
         )
 
         assert response.status_code == 200
-        data = response.json()
-        run_id = data["run_id"]
+        run_id = response.json()["run_id"]
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
-        assert run.dataset_key == "hkchina_stock_eod"
+        assert run.dataset_key == "hkchina_mixed_eod"
+        assert run.status == "completed"
+        assert run.total_records == 2
+        assert run.success_records == 2
+
+        hk_equity_response = await client.get(
+            "/api/v1/serve/instruments?market=HK&asset_class=equity&symbol=700"
+        )
+        assert hk_equity_response.status_code == 200
+        hk_equities = hk_equity_response.json()["data"]
+        assert len(hk_equities) == 1
+        assert hk_equities[0]["symbol"] == "700"
+
+        cn_index_response = await client.get(
+            "/api/v1/serve/instruments?market=CN&asset_class=index&symbol=SH000911"
+        )
+        assert cn_index_response.status_code == 200
+        cn_indices = cn_index_response.json()["data"]
+        assert len(cn_indices) == 1
+        assert cn_indices[0]["symbol"] == "SH000911"
 
     @pytest.mark.asyncio
     async def test_ingest_hkchina_index_direct_routes_records_to_hk_and_cn(

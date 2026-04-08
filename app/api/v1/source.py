@@ -64,6 +64,28 @@ DIRECT_DATASET_DEFAULTS = {
             },
         },
     },
+    "hkchina_mixed_eod": {
+        "name": "港中股票與指數日K (Bloomberg API)",
+        "description": "Bloomberg API 港股與中國相關股票及指數每日價格資料",
+        "asset_class": "mixed",
+        "market": "GLOBAL",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_hkchina_mixed_api",
+            "data_path": "data",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "volume",
+            },
+        },
+    },
     "hkchina_stock_eod": {
         "name": "港中股票日K (Bloomberg API)",
         "description": "Bloomberg API 港股與中國相關股票每日價格資料",
@@ -374,10 +396,10 @@ async def ingest_hkchina_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg HK/China stock direct payload format."""
+    """Ingest Bloomberg HK/China stock and index direct payload format."""
     return await _ingest_direct_payload(
         payload=payload,
-        dataset_key="hkchina_stock_eod",
+        dataset_key="hkchina_mixed_eod",
         key_prefix="direct_hkchina",
         expected_market="GLOBAL",
         background_tasks=background_tasks,

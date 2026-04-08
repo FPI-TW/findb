@@ -41,6 +41,7 @@ from app.services.normalize import (
     TWIndexNormalizer,
     HKIndexNormalizer,
     CNIndexNormalizer,
+    HKChinaMixedNormalizer,
     HKChinaIndexNormalizer,
 )
 from app.utils import uuid7, utc_now
@@ -64,6 +65,7 @@ NORMALIZER_MAP = {
     "us_stock_index_eod": USIndexNormalizer,
     "global_stock_eod": GlobalStockNormalizer,
     "hkchina_stock_eod": GlobalStockNormalizer,
+    "hkchina_mixed_eod": HKChinaMixedNormalizer,
     "tw_equity_eod": TWEquityNormalizer,
     "hk_equity_eod": HKEquityNormalizer,
     "cn_equity_eod": CNEquityNormalizer,

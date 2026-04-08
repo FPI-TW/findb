@@ -1006,13 +1006,13 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <code>ticker</code>、<code>date</code>、<code>open</code>、<code>high</code>、<code>low</code>、
           <code>close</code>、<code>volume</code> 等欄位；也相容巢狀 <code>price</code> / <code>timestamp</code> 格式。<br><br>
           <code>metadata</code> 建議保留 <code>source</code> 與 <code>query_time</code>；<code>category</code> 非必需。<br><br>
-          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code> · <code>hkchina-index/direct</code> · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
+          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>hkchina/direct</code>（股票+指數整合） · <code>hkchina-index/direct</code>（相容舊流程） · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
             <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>type</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>直接格式端點類型 (crypto / usstock / hkchina / hkchina-index / fx / wtx / macro)</td></tr>
+            <tr><td>type</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>直接格式端點類型 (crypto / usstock / hkchina[mixed] / hkchina-index / fx / wtx / macro)</td></tr>
           </table>
         </div>
         <div class="params-section">
@@ -1031,8 +1031,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
               <select id="direct-type" onchange="updateDirectExample(this)">
                 <option value="crypto">crypto/direct (加密貨幣)</option>
                 <option value="usstock">usstock/direct (美股)</option>
-                <option value="hkchina">hkchina/direct (港股/陸股)</option>
-                <option value="hkchina-index">hkchina-index/direct (港中指數)</option>
+                <option value="hkchina">hkchina/direct (港股/陸股/港中指數)</option>
+                <option value="hkchina-index">hkchina-index/direct (港中指數，舊流程)</option>
                 <option value="fx">fx/direct (外匯)</option>
                 <option value="wtx">wtx/direct (期貨)</option>
                 <option value="macro">macro/direct (總經數據)</option>
@@ -3079,7 +3079,7 @@ function sendRawIngest(btn) {
 const directExamples = {
   crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "XBTUSD BGN Curncy",\n      "date": "2026-03-12",\n      "open": 95550.07,\n      "high": 95825.34,\n      "low": 95119.76,\n      "close": 95709.01,\n      "volume": 18500\n    }\n  ]\n}`,
   usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T16:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2026-03-12",\n      "open": 218.2,\n      "high": 221.8,\n      "low": 217.6,\n      "close": 220.5,\n      "volume": 55000000\n    }\n  ]\n}`,
-  hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2026-03-12",\n      "open": 415.0,\n      "high": 425.0,\n      "low": 413.0,\n      "close": 420.0,\n      "volume": 18000000\n    }\n  ]\n}`,
+  hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2026-03-12",\n      "open": 415.0,\n      "high": 425.0,\n      "low": 413.0,\n      "close": 420.0,\n      "volume": 18000000\n    },\n    {\n      "ticker": "SH000911 Index",\n      "date": "2026-03-12",\n      "open": 5915.2,\n      "high": 5968.4,\n      "low": 5901.6,\n      "close": 5950.8,\n      "volume": 0\n    }\n  ]\n}`,
   "hkchina-index": `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "HSI Index",\n      "date": "2026-03-12",\n      "open": 17120.0,\n      "high": 17280.0,\n      "low": 17085.0,\n      "close": 17235.0,\n      "volume": 0\n    },\n    {\n      "ticker": "SH000911 Index",\n      "date": "2026-03-12",\n      "open": 5915.2,\n      "high": 5968.4,\n      "low": 5901.6,\n      "close": 5950.8,\n      "volume": 0\n    }\n  ]\n}`,
   fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2026-03-12",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
   wtx:     `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "ticker": "TXF1 Index",\n      "date": "2026-03-12",\n      "open": 20800,\n      "high": 21100,\n      "low": 20700,\n      "close": 21000,\n      "volume": 50000\n    }\n  ]\n}`,
