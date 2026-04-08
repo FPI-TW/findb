@@ -20,6 +20,10 @@ settings = get_settings()
 
 async def cleanup_expired_raw():
     """Delete expired raw data records."""
+    if not settings.RAW_RETENTION_ENABLED:
+        logger.info("Raw data retention cleanup is disabled; skipping delete pass.")
+        return 0
+
     engine = create_async_engine(settings.DATABASE_URL)
     async_session = async_sessionmaker(engine, class_=AsyncSession)
 

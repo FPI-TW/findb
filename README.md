@@ -597,6 +597,7 @@ ADMIN_API_KEYS=production-admin-key
 SERVE_REQUIRE_AUTH=false
 RATE_LIMIT_REQUESTS=100
 RATE_LIMIT_WINDOW=60
+RAW_RETENTION_ENABLED=false
 RAW_RETENTION_DAYS=14
 ```
 
@@ -636,10 +637,12 @@ git push origin main
 | `SERVE_REQUIRE_AUTH` | Serve API 是否需要認證 | `false` |
 | `RATE_LIMIT_REQUESTS` | 限流上限（每 window 內的請求數） | `100` |
 | `RATE_LIMIT_WINDOW` | 限流時間窗口（秒） | `60` |
+| `RAW_RETENTION_ENABLED` | 是否啟用 Raw 過期清理 | `false` |
 | `RAW_RETENTION_DAYS` | Raw 資料保留天數 | `14` |
 
 > **注意**：`docker-compose.yml` 使用 `${VAR:-default}` 語法讀取環境變數。
 > `.env` 的設定值會生效；若未設定則使用預設值。
+> 目前預設不會自動刪除 raw payload；正式上線時再將 `RAW_RETENTION_ENABLED=true` 啟用即可。
 
 ### 生產環境注意事項
 

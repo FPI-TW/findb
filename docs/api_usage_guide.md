@@ -1756,7 +1756,8 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 
 ### Q: 原始資料保留多久？
 
-預設 14 天（`RAW_RETENTION_DAYS=14`）。超過保留期限的 raw payload 會被清理服務自動刪除。
+目前預設不啟用自動刪除（`RAW_RETENTION_ENABLED=false`）。
+若之後啟用 retention，則會依 `RAW_RETENTION_DAYS=14` 計算過期時間，超過期限的 raw payload 會被清理服務刪除。
 過期後就無法再用 `/runs/{run_id}/rerun` 重跑。
 
 ### Q: 支援哪些市場？
@@ -1820,5 +1821,6 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | `ADMIN_API_KEYS` | （空） | Admin API 金鑰（逗號分隔），**必須設定**才能使用 Admin API |
 | `RATE_LIMIT_REQUESTS` | `100` | 限流上限（每 window 內的請求數） |
 | `RATE_LIMIT_WINDOW` | `60` | 限流時間窗口（秒） |
+| `RAW_RETENTION_ENABLED` | `false` | 是否啟用原始資料過期清理 |
 | `RAW_RETENTION_DAYS` | `14` | 原始資料保留天數 |
 | `DEBUG` | `false` | 除錯模式（跳過 allowlist 強制檢查） |
