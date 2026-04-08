@@ -52,6 +52,11 @@ class BaseNormalizer(ABC):
         self.db = db
         self.dataset_config = dataset_config or {}
         self.dq_validator = DQValidator()
+        self._flush_interval = 1000
+        self._instrument_cache: dict[tuple[str, str, str], Instrument] = {}
+        self._identifier_cache: dict[tuple[str, str, str, str], Instrument | None] = {}
+        self._identifier_exists_cache: set[tuple[str, str]] = set()
+        self._trading_day_cache: set[tuple[str, date]] = set()
 
     def _get_nested_value(self, data: dict, path: str | None) -> Any:
         """Get value from nested dict using dot notation."""
@@ -184,6 +189,11 @@ class BaseNormalizer(ABC):
         """
         pass
 
+    async def _maybe_flush(self, processed_count: int) -> None:
+        """Flush periodically so large runs surface DB errors earlier."""
+        if processed_count > 0 and processed_count % self._flush_interval == 0:
+            await self.db.flush()
+
     async def get_or_create_instrument(
         self,
         symbol: str,
@@ -194,6 +204,11 @@ class BaseNormalizer(ABC):
         """Get existing instrument or create new one."""
         instrument_market = str(market or self.market).upper().strip()
         effective_asset_class = asset_class or self.asset_class
+        cache_key = (effective_asset_class, instrument_market, symbol)
+        cached = self._instrument_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         stmt = select(Instrument).where(
             Instrument.asset_class == effective_asset_class,
             Instrument.market == instrument_market,
@@ -203,6 +218,7 @@ class BaseNormalizer(ABC):
         instrument = result.scalar_one_or_none()
 
         if instrument:
+            self._instrument_cache[cache_key] = instrument
             return instrument
 
         # Create new instrument
@@ -218,6 +234,7 @@ class BaseNormalizer(ABC):
         )
         self.db.add(instrument)
         await self.db.flush()
+        self._instrument_cache[cache_key] = instrument
         return instrument
 
     async def get_instrument_by_identifier(
@@ -230,6 +247,10 @@ class BaseNormalizer(ABC):
         """Resolve instrument using identifier mapping."""
         instrument_market = str(market or self.market).upper().strip()
         effective_asset_class = asset_class or self.asset_class
+        cache_key = (identifier_type, identifier_value, effective_asset_class, instrument_market)
+        if cache_key in self._identifier_cache:
+            return self._identifier_cache[cache_key]
+
         stmt = (
             select(Instrument)
             .join(
@@ -244,7 +265,16 @@ class BaseNormalizer(ABC):
             )
         )
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        instrument = result.scalar_one_or_none()
+        self._identifier_cache[cache_key] = instrument
+        if instrument is not None:
+            instrument_cache_key = (
+                instrument.asset_class,
+                instrument.market,
+                instrument.symbol,
+            )
+            self._instrument_cache[instrument_cache_key] = instrument
+        return instrument
 
     async def ensure_instrument_identifier(
         self,
@@ -253,6 +283,10 @@ class BaseNormalizer(ABC):
         identifier_value: str,
     ) -> None:
         """Ensure instrument identifier mapping exists."""
+        cache_key = (identifier_type, identifier_value)
+        if cache_key in self._identifier_exists_cache:
+            return
+
         stmt = select(InstrumentIdentifier).where(
             InstrumentIdentifier.id_type == identifier_type,
             InstrumentIdentifier.id_value == identifier_value,
@@ -260,6 +294,7 @@ class BaseNormalizer(ABC):
         result = await self.db.execute(stmt)
         existing = result.scalar_one_or_none()
         if existing:
+            self._identifier_exists_cache.add(cache_key)
             return
 
         identifier = InstrumentIdentifier(
@@ -272,6 +307,7 @@ class BaseNormalizer(ABC):
         )
         self.db.add(identifier)
         await self.db.flush()
+        self._identifier_exists_cache.add(cache_key)
 
     async def resolve_instrument(self, record: MappedRecord) -> Instrument:
         """Resolve instrument by identifier mapping or symbol."""
@@ -301,6 +337,13 @@ class BaseNormalizer(ABC):
                 record.identifier_type,
                 record.identifier_value,
             )
+            identifier_cache_key = (
+                record.identifier_type,
+                record.identifier_value,
+                record_asset_class,
+                record_market,
+            )
+            self._identifier_cache[identifier_cache_key] = instrument
 
         return instrument
 
@@ -312,6 +355,10 @@ class BaseNormalizer(ABC):
         """Ensure trading calendar entry exists for market/date."""
         trade_date_value = trade_date.date() if isinstance(trade_date, datetime) else trade_date
         calendar_market = str(market or self.market).upper().strip()
+        cache_key = (calendar_market, trade_date_value)
+        if cache_key in self._trading_day_cache:
+            return
+
         stmt = select(TradingCalendar).where(
             TradingCalendar.market == calendar_market,
             TradingCalendar.trade_date == trade_date_value,
@@ -319,6 +366,7 @@ class BaseNormalizer(ABC):
         result = await self.db.execute(stmt)
         calendar = result.scalar_one_or_none()
         if calendar:
+            self._trading_day_cache.add(cache_key)
             return
 
         calendar = TradingCalendar(
@@ -329,6 +377,7 @@ class BaseNormalizer(ABC):
         )
         self.db.add(calendar)
         await self.db.flush()
+        self._trading_day_cache.add(cache_key)
 
     async def upsert_eod(
         self,
@@ -388,7 +437,6 @@ class BaseNormalizer(ABC):
         )
 
         await self.db.execute(stmt)
-        self.db.expire_all()
         return True
 
     async def check_duplicate_in_db(
@@ -517,6 +565,7 @@ class BaseNormalizer(ABC):
             result.total_records = len(mapped_records)
 
             seen_keys: set[tuple[str, str, datetime]] = set()
+            processed_records = 0
 
             for record in mapped_records:
                 try:
@@ -567,7 +616,8 @@ class BaseNormalizer(ABC):
                         result.failed_records += 1
                         continue
 
-                    if self.asset_class == "equity":
+                    record_asset_class = getattr(record, "asset_class", None) or self.asset_class
+                    if record_asset_class == "equity":
                         continuity_issue = (
                             await self.dq_validator.check_corporate_action_continuity(
                                 self.db,
@@ -601,6 +651,9 @@ class BaseNormalizer(ABC):
                             raw_data=record.raw_data,
                         )
                     )
+                finally:
+                    processed_records += 1
+                    await self._maybe_flush(processed_records)
 
             # Update final status
             status = "completed" if result.failed_records == 0 else "completed_with_errors"

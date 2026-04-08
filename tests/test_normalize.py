@@ -18,6 +18,8 @@ from app.models.registry import DQIssue, DatasetRegistry, IngestionRun
 from app.services.dq.validators import DQValidator
 from app.services.normalize.base import BaseNormalizer
 from app.services.normalize.crypto import CryptoNormalizer
+from app.services.normalize.crypto_index import CryptoIndexNormalizer
+from app.services.normalize.equity import IndexNormalizer
 from app.services.normalize.futures import FuturesContinuousNormalizer
 from app.services.normalize.macro import MacroNormalizer
 from app.services.normalize.types import MappedRecord
@@ -77,6 +79,92 @@ class TestCryptoNormalizer:
         assert normalizer._resolve_symbol("XSO Curncy") == "SOL"
         assert normalizer._resolve_symbol("XAD BGN Curncy") == "ADA"
         assert normalizer._resolve_symbol("UNKNOWN") == "UNKNOWN"
+
+
+class TestCryptoIndexNormalizer:
+    """Tests for crypto index normalization."""
+
+    def test_map_fields_bloomberg_index_format(self):
+        """Crypto index payload should normalize into CRYPTO/index records."""
+        raw_data = {
+            "metadata": {"source": "Bloomberg API"},
+            "data": [
+                {
+                    "symbol": "BGCI",
+                    "name": "Bloomberg Galaxy Crypto Index",
+                    "ticker": "BGCI Index",
+                    "price": {
+                        "open": 1825.11,
+                        "high": 1840.22,
+                        "low": 1805.44,
+                        "last": 1836.78,
+                    },
+                    "timestamp": {"last_update": "2026-04-08T02:29:52Z"},
+                }
+            ],
+        }
+
+        class TestNormalizer(CryptoIndexNormalizer):
+            def __init__(self):
+                self.dq_validator = DQValidator()
+
+        normalizer = TestNormalizer()
+        records = normalizer.map_fields(raw_data)
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.symbol == "BGCI"
+        assert record.identifier_value == "BGCI Index"
+        assert record.identifier_type == "bloomberg"
+        assert record.source == "bloomberg"
+        assert record.open == Decimal("1825.11")
+        assert record.high == Decimal("1840.22")
+        assert record.low == Decimal("1805.44")
+        assert record.close == Decimal("1836.78")
+
+
+class TestLegacyIndexNormalizer:
+    """Tests for the legacy us_index_eod normalizer."""
+
+    def test_map_fields_legacy_index_payload(self):
+        """Legacy index payload should normalize as an index record."""
+        raw_data = {
+            "metadata": {"source": "Bloomberg API"},
+            "data": [
+                {
+                    "symbol": "SPX",
+                    "name": "S&P 500 INDEX",
+                    "ticker": "SPX Index",
+                    "price": {
+                        "open": 6534.55,
+                        "high": 6618.26,
+                        "low": 6520.31,
+                        "last": 6616.85,
+                    },
+                    "volume": 1178883695,
+                    "timestamp": {"last_update": "2026-04-08T02:29:54Z"},
+                }
+            ],
+        }
+
+        class TestNormalizer(IndexNormalizer):
+            def __init__(self):
+                self.dq_validator = DQValidator()
+
+        normalizer = TestNormalizer()
+        records = normalizer.map_fields(raw_data)
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.symbol == "SPX"
+        assert record.identifier_value == "SPX Index"
+        assert record.identifier_type == "bloomberg"
+        assert record.source == "bloomberg"
+        assert record.open == Decimal("6534.55")
+        assert record.high == Decimal("6618.26")
+        assert record.low == Decimal("6520.31")
+        assert record.close == Decimal("6616.85")
+        assert record.volume == 1178883695
 
 
 class TestMacroNormalizer:

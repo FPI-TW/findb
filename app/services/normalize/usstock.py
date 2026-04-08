@@ -338,6 +338,97 @@ class CNIndexNormalizer(RegionalIndexNormalizer):
     market = "CN"
 
 
+class HKChinaMixedNormalizer(USStockNormalizer):
+    """Normalizer for mixed Hong Kong and China stock/index direct payloads."""
+
+    dataset_key = "hkchina_mixed_eod"
+    asset_class = "mixed"
+    market = "GLOBAL"
+    SUPPORTED_MARKETS = {"HK", "CN"}
+
+    def _resolve_supported_market(self, item: dict, ticker: str | None) -> str | None:
+        """Resolve HK/CN market for a mixed payload item."""
+        resolved_market = self._extract_market_from_ticker(ticker)
+        if resolved_market in self.SUPPORTED_MARKETS:
+            return resolved_market
+
+        raw_market = item.get("market")
+        if raw_market:
+            raw_market_code = str(raw_market).upper().strip()
+            fallback_market = self.MARKET_MAP.get(raw_market_code, raw_market_code)
+            if fallback_market in self.SUPPORTED_MARKETS:
+                return fallback_market
+
+        return None
+
+    def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+        """Map mixed stock/index payloads and infer per-record asset class plus market."""
+        config = _merge_config(self.DEFAULT_CONFIG, getattr(self, "dataset_config", None))
+
+        data_path = config.get("data_path", "data")
+        data_items = self._get_nested_value(raw_data, data_path) if data_path else None
+        if data_items is None:
+            data_items = raw_data.get("data", [])
+        if not isinstance(data_items, list):
+            return []
+
+        normalized: list[MappedRecord] = []
+
+        for item in data_items:
+            trade_date_str = self._parse_trade_date_from_item(item)
+            trade_date = self._parse_trade_date(trade_date_str)
+            if trade_date is None:
+                continue
+
+            ticker = item.get("ticker")
+            symbol = item.get("symbol")
+            name = item.get("name")
+
+            if not symbol and ticker:
+                symbol = self._extract_symbol_from_ticker(ticker)
+            if not symbol:
+                continue
+
+            market = self._resolve_supported_market(item, ticker)
+            if market is None:
+                continue
+
+            price = item.get("price") or {}
+            open_price = self._parse_decimal(price.get("open") or item.get("open"))
+            high_price = self._parse_decimal(price.get("high") or item.get("high"))
+            low_price = self._parse_decimal(price.get("low") or item.get("low"))
+            close_price = self._parse_decimal(price.get("last") or item.get("close"))
+            volume = self._parse_int(price.get("volume") or item.get("volume"))
+
+            item_metadata = item.get("metadata", {})
+            source = item_metadata.get("source") or raw_data.get("metadata", {}).get("source")
+            if source:
+                source_lower = source.lower()
+                source = "bloomberg" if source_lower.startswith("bloomberg") else source_lower
+            else:
+                source = "bloomberg"
+
+            record = MappedRecord(
+                symbol=str(symbol).upper(),
+                trade_date=trade_date,
+                market=market,
+                asset_class="index" if self._is_index(ticker) else "equity",
+                name=name,
+                open=open_price,
+                high=high_price,
+                low=low_price,
+                close=close_price,
+                volume=volume,
+                source=source,
+                raw_data=item,
+                identifier_type="bloomberg" if ticker else None,
+                identifier_value=ticker,
+            )
+            normalized.append(record)
+
+        return normalized
+
+
 class HKChinaIndexNormalizer(USIndexNormalizer):
     """Normalizer for Hong Kong and China indices from direct Bloomberg payloads."""
 
