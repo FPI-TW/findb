@@ -8,11 +8,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from app.api.v1 import admin, serve, source
 from app.config import get_settings
-from app.api.v1 import source, serve, admin
 from app.models.base import init_db
-
 
 settings = get_settings()
 
@@ -47,6 +47,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include routers
 app.include_router(
