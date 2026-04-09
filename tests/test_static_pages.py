@@ -22,6 +22,7 @@ async def test_instrument_lookup_page_is_served():
     assert page_response.status_code == 200
     assert "FinDB" in page_response.text
     assert "標的查詢" in page_response.text
+    assert "const DATA_URL = '/static/data/instruments.json';" in page_response.text
 
 
 def test_instrument_cache_path_is_gitignored():
