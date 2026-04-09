@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FinDB — 標的查詢</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300&family=Noto+Sans+JP:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #F5F3EE;
+  --bg-card:      #FDFCFA;
+  --bg-hover:     #F0EDE6;
+  --bg-subtle:    #FAF8F5;
+  --text-1:       #2C2825;
+  --text-2:       #8A847B;
+  --text-3:       #B5AFA6;
+  --accent:       #B84C3A;
+  --accent-soft:  #F5EAE7;
+  --border:       #E2DED6;
+  --border-light: #EDEAE4;
+  --shadow-soft:  rgba(69, 49, 40, 0.05);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { font-size: 16px; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text-1);
+  font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', sans-serif;
+  font-weight: 300;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.62), transparent 36%),
+    linear-gradient(180deg, #F8F6F1 0%, var(--bg) 100%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.26) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.2) 1px, transparent 1px);
+  background-size: 20px 20px, 20px 20px;
+  mix-blend-mode: soft-light;
+}
+
+.page {
+  position: relative;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px 72px;
+}
+
+.page-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.eyebrow {
+  margin-bottom: 12px;
+  font-size: 0.74rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.page-title {
+  margin: 0;
+  font-family: 'Noto Serif JP', serif;
+  font-weight: 200;
+  font-size: clamp(1.9rem, 3vw, 2.35rem);
+  letter-spacing: 0.15em;
+}
+
+.page-title .accent {
+  color: var(--accent);
+}
+
+.page-subtitle {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 0.85rem;
+  line-height: 1.8;
+}
+
+.panel {
+  background: var(--bg-card);
+  border: 1px solid rgba(226, 222, 214, 0.8);
+  box-shadow: 0 18px 36px var(--shadow-soft);
+}
+
+.controls {
+  padding: 24px 24px 20px;
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+
+.search-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 10px 0 8px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.search-input::placeholder {
+  color: var(--text-3);
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
+.filters {
+  display: grid;
+  gap: 14px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.filter-label {
+  min-width: 54px;
+  padding-top: 6px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pill {
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-2);
+  padding: 6px 16px;
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pill:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.pill.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 24px 0;
+  color: var(--text-2);
+  font-size: 0.84rem;
+}
+
+.table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+thead th {
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sort-indicator {
+  width: 10px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  opacity: 0.5;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.sort-button:hover .sort-indicator,
+.sort-button.active .sort-indicator {
+  opacity: 1;
+}
+
+.sort-button.active .sort-indicator {
+  color: var(--accent);
+}
+
+tbody td {
+  height: 48px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 0.94rem;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--bg-subtle);
+}
+
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.cell-symbol {
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.cell-name {
+  min-width: 220px;
+}
+
+.cell-status {
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+
+.cell-status.delisted {
+  text-decoration: line-through;
+}
+
+.empty-state,
+.error-state,
+.loading-state {
+  padding: 64px 24px;
+  text-align: center;
+  color: var(--text-2);
+  line-height: 1.9;
+}
+
+.error-state strong {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.retry-button {
+  margin-top: 16px;
+  border: 0;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 8px 18px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px 24px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.page-button {
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  padding: 4px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.page-button:hover:not(:disabled) {
+  color: var(--text-1);
+}
+
+.page-button:disabled {
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.page-button.current {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 6px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 36px 18px 56px;
+  }
+
+  .controls,
+  .status-line,
+  .footer-row {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .filter-group {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .filter-label {
+    min-width: 0;
+    padding-top: 0;
+  }
+
+  .status-line,
+  .footer-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  thead th,
+  tbody td {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}
+</style>
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <div class="eyebrow">Instrument Index</div>
+      <h1 class="page-title">FinDB <span class="accent">—</span> 標的查詢</h1>
+      <p class="page-subtitle" id="header-meta">載入資料中…</p>
+    </header>
+
+    <section class="panel">
+      <div class="controls">
+        <div class="search-row">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.5"></circle>
+            <path d="M20 20L16.65 16.65" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+          </svg>
+          <input
+            id="search-input"
+            class="search-input"
+            type="search"
+            placeholder="標的名稱、代碼…"
+            autocomplete="off"
+            spellcheck="false"
+          >
+        </div>
+
+        <div class="filters">
+          <div class="filter-group">
+            <div class="filter-label">市場</div>
+            <div class="pill-row" id="market-filters"></div>
+          </div>
+          <div class="filter-group">
+            <div class="filter-label">類別</div>
+            <div class="pill-row" id="asset-filters"></div>
+          </div>
+          <div class="filter-group">
+            <div class="filter-label">狀態</div>
+            <div class="pill-row" id="status-filters"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-line">
+        <div id="result-summary">尚未載入資料</div>
+        <div id="active-filters">預設顯示 active 標的</div>
+      </div>
+
+      <div id="loading-state" class="loading-state">正在整理標的資料，請稍候。</div>
+      <div id="error-state" class="error-state hidden">
+        <strong>無法載入 instruments.json</strong>
+        <div id="error-message">請確認快取檔案已產生，或稍後再試。</div>
+        <button class="retry-button" id="retry-button" type="button">重新載入</button>
+      </div>
+      <div id="table-section" class="hidden">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr id="table-head"></tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+        <div id="empty-state" class="empty-state hidden">沒有符合條件的標的。</div>
+        <div class="footer-row">
+          <div id="count-label">顯示 0 / 共 0 筆</div>
+          <div id="pagination" class="pagination"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<script>
+(() => {
+  const PAGE_SIZE = 50;
+  const DATA_URL = './data/instruments.json';
+  const columns = [
+    { key: 'market', label: 'Market', sortable: true },
+    { key: 'symbol', label: 'Symbol', sortable: true },
+    { key: 'name', label: 'Name', sortable: true },
+    { key: 'asset_class', label: 'Asset Class', sortable: true },
+    { key: 'currency', label: 'CCY', sortable: true },
+    { key: 'status', label: 'Status', sortable: true },
+  ];
+
+  const state = {
+    source: [],
+    filtered: [],
+    markets: [],
+    assetClasses: [],
+    searchTerm: '',
+    market: 'ALL',
+    assetClass: 'ALL',
+    status: 'active',
+    sortBy: 'market',
+    sortDir: 'asc',
+    currentPage: 1,
+    generatedAt: '',
+    total: 0,
+  };
+
+  const elements = {
+    headerMeta: document.getElementById('header-meta'),
+    searchInput: document.getElementById('search-input'),
+    marketFilters: document.getElementById('market-filters'),
+    assetFilters: document.getElementById('asset-filters'),
+    statusFilters: document.getElementById('status-filters'),
+    resultSummary: document.getElementById('result-summary'),
+    activeFilters: document.getElementById('active-filters'),
+    loadingState: document.getElementById('loading-state'),
+    errorState: document.getElementById('error-state'),
+    errorMessage: document.getElementById('error-message'),
+    retryButton: document.getElementById('retry-button'),
+    tableSection: document.getElementById('table-section'),
+    tableHead: document.getElementById('table-head'),
+    tableBody: document.getElementById('table-body'),
+    emptyState: document.getElementById('empty-state'),
+    countLabel: document.getElementById('count-label'),
+    pagination: document.getElementById('pagination'),
+  };
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function normalizeText(value) {
+    return String(value ?? '').trim().toLowerCase();
+  }
+
+  function compareText(left, right) {
+    return String(left ?? '').localeCompare(String(right ?? ''), 'en', { sensitivity: 'base' });
+  }
+
+  function sortItems(items) {
+    const direction = state.sortDir === 'asc' ? 1 : -1;
+    const sorted = [...items].sort((a, b) => {
+      const primary = compareText(a[state.sortBy], b[state.sortBy]);
+      if (primary !== 0) {
+        return primary * direction;
+      }
+
+      const marketFallback = compareText(a.market, b.market);
+      if (marketFallback !== 0) {
+        return marketFallback;
+      }
+
+      const symbolFallback = compareText(a.symbol, b.symbol);
+      if (symbolFallback !== 0) {
+        return symbolFallback;
+      }
+
+      return compareText(a.name, b.name);
+    });
+
+    return sorted;
+  }
+
+  function applyFilters() {
+    const query = normalizeText(state.searchTerm);
+    const items = state.source.filter((item) => {
+      const matchedSearch = !query || normalizeText(item.symbol).includes(query) || normalizeText(item.name).includes(query);
+      const matchedMarket = state.market === 'ALL' || item.market === state.market;
+      const matchedAsset = state.assetClass === 'ALL' || item.asset_class === state.assetClass;
+      const matchedStatus = state.status === 'ALL' || item.status === state.status;
+
+      return matchedSearch && matchedMarket && matchedAsset && matchedStatus;
+    });
+
+    state.filtered = sortItems(items);
+
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / PAGE_SIZE));
+    if (state.currentPage > totalPages) {
+      state.currentPage = totalPages;
+    }
+  }
+
+  function getVisibleRows() {
+    const start = (state.currentPage - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    return state.filtered.slice(start, end);
+  }
+
+  function formatGeneratedAt(raw) {
+    if (!raw) {
+      return '未知';
+    }
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      return escapeHtml(raw);
+    }
+
+    return parsed.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  }
+
+  function updateHeader() {
+    elements.headerMeta.textContent = `資料更新時間：${formatGeneratedAt(state.generatedAt)} | 共 ${state.total.toLocaleString()} 筆`;
+  }
+
+  function updateResultSummary() {
+    const total = state.filtered.length;
+    if (total === 0) {
+      elements.resultSummary.textContent = '目前沒有符合條件的資料';
+      elements.countLabel.textContent = '顯示 0 / 共 0 筆';
+      return;
+    }
+
+    const start = (state.currentPage - 1) * PAGE_SIZE + 1;
+    const end = Math.min(state.currentPage * PAGE_SIZE, total);
+    elements.resultSummary.textContent = `共找到 ${total.toLocaleString()} 筆符合條件的標的`;
+    elements.countLabel.textContent = `顯示 ${start.toLocaleString()}–${end.toLocaleString()} / 共 ${total.toLocaleString()} 筆`;
+  }
+
+  function updateActiveFilterSummary() {
+    const parts = [];
+
+    if (state.searchTerm.trim()) {
+      parts.push(`搜尋「${state.searchTerm.trim()}」`);
+    }
+    if (state.market !== 'ALL') {
+      parts.push(`市場 ${state.market}`);
+    }
+    if (state.assetClass !== 'ALL') {
+      parts.push(`類別 ${state.assetClass}`);
+    }
+    if (state.status !== 'ALL') {
+      parts.push(`狀態 ${state.status}`);
+    }
+
+    elements.activeFilters.textContent = parts.length > 0 ? parts.join(' / ') : '顯示全部標的';
+  }
+
+  function createPill(value, label, currentValue, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `pill${value === currentValue ? ' active' : ''}`;
+    button.textContent = label;
+    button.addEventListener('click', () => onClick(value));
+    return button;
+  }
+
+  function renderFilters() {
+    elements.marketFilters.replaceChildren(
+      createPill('ALL', '全部', state.market, (value) => {
+        state.market = value;
+        state.currentPage = 1;
+        render();
+      }),
+      ...state.markets.map((market) =>
+        createPill(market, market, state.market, (value) => {
+          state.market = value;
+          state.currentPage = 1;
+          render();
+        })
+      )
+    );
+
+    elements.assetFilters.replaceChildren(
+      createPill('ALL', '全部', state.assetClass, (value) => {
+        state.assetClass = value;
+        state.currentPage = 1;
+        render();
+      }),
+      ...state.assetClasses.map((assetClass) =>
+        createPill(assetClass, assetClass, state.assetClass, (value) => {
+          state.assetClass = value;
+          state.currentPage = 1;
+          render();
+        })
+      )
+    );
+
+    const statusOptions = [
+      { value: 'ALL', label: '全部' },
+      { value: 'active', label: 'active' },
+      { value: 'delisted', label: 'delisted' },
+    ];
+
+    elements.statusFilters.replaceChildren(
+      ...statusOptions.map((option) =>
+        createPill(option.value, option.label, state.status, (value) => {
+          state.status = value;
+          state.currentPage = 1;
+          render();
+        })
+      )
+    );
+  }
+
+  function renderTableHead() {
+    const fragment = document.createDocumentFragment();
+
+    columns.forEach((column) => {
+      const th = document.createElement('th');
+      if (!column.sortable) {
+        th.textContent = column.label;
+        fragment.appendChild(th);
+        return;
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `sort-button${state.sortBy === column.key ? ' active' : ''}`;
+      button.addEventListener('click', () => {
+        if (state.sortBy === column.key) {
+          state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          state.sortBy = column.key;
+          state.sortDir = 'asc';
+        }
+        render();
+      });
+
+      const label = document.createElement('span');
+      label.textContent = column.label;
+      const indicator = document.createElement('span');
+      indicator.className = 'sort-indicator';
+      indicator.textContent = state.sortBy === column.key ? (state.sortDir === 'asc' ? '▲' : '▼') : '▵';
+
+      button.append(label, indicator);
+      th.appendChild(button);
+      fragment.appendChild(th);
+    });
+
+    elements.tableHead.replaceChildren(fragment);
+  }
+
+  function renderTableBody() {
+    const rows = getVisibleRows();
+    const hasRows = rows.length > 0;
+
+    elements.tableBody.innerHTML = rows.map((item) => {
+      const statusClass = item.status === 'delisted' ? 'cell-status delisted' : 'cell-status';
+      const statusText = item.status === 'delisted' ? 'delisted' : '';
+
+      return `
+        <tr>
+          <td>${escapeHtml(item.market || '-')}</td>
+          <td class="cell-symbol">${escapeHtml(item.symbol || '-')}</td>
+          <td class="cell-name">${escapeHtml(item.name || '-')}</td>
+          <td>${escapeHtml(item.asset_class || '-')}</td>
+          <td>${escapeHtml(item.currency || '-')}</td>
+          <td class="${statusClass}">${escapeHtml(statusText)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    elements.emptyState.classList.toggle('hidden', hasRows);
+  }
+
+  function createPageButton(label, disabled, onClick, className = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `page-button${className ? ` ${className}` : ''}`;
+    button.textContent = label;
+    button.disabled = disabled;
+    if (!disabled) {
+      button.addEventListener('click', onClick);
+    }
+    return button;
+  }
+
+  function renderPagination() {
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / PAGE_SIZE));
+    const fragment = document.createDocumentFragment();
+
+    fragment.appendChild(
+      createPageButton('← 前', state.currentPage === 1, () => {
+        state.currentPage -= 1;
+        render();
+      })
+    );
+
+    for (let page = 1; page <= totalPages; page += 1) {
+      fragment.appendChild(
+        createPageButton(String(page), false, () => {
+          state.currentPage = page;
+          render();
+        }, page === state.currentPage ? 'current' : '')
+      );
+    }
+
+    fragment.appendChild(
+      createPageButton('後 →', state.currentPage === totalPages, () => {
+        state.currentPage += 1;
+        render();
+      })
+    );
+
+    elements.pagination.replaceChildren(fragment);
+    elements.pagination.classList.toggle('hidden', state.filtered.length <= PAGE_SIZE);
+  }
+
+  function setMode(mode) {
+    elements.loadingState.classList.toggle('hidden', mode !== 'loading');
+    elements.errorState.classList.toggle('hidden', mode !== 'error');
+    elements.tableSection.classList.toggle('hidden', mode !== 'ready');
+  }
+
+  function render() {
+    applyFilters();
+    renderFilters();
+    renderTableHead();
+    renderTableBody();
+    renderPagination();
+    updateHeader();
+    updateResultSummary();
+    updateActiveFilterSummary();
+  }
+
+  async function loadData() {
+    setMode('loading');
+
+    try {
+      const response = await fetch(DATA_URL, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      state.source = Array.isArray(payload.data) ? payload.data : [];
+      state.markets = Array.isArray(payload.markets) ? payload.markets : [];
+      state.assetClasses = Array.isArray(payload.asset_classes) ? payload.asset_classes : [];
+      state.generatedAt = payload.generated_at || '';
+      state.total = Number.isFinite(payload.total) ? payload.total : state.source.length;
+      state.currentPage = 1;
+
+      render();
+      setMode('ready');
+    } catch (error) {
+      elements.errorMessage.textContent = `請確認快取檔案已產生。錯誤訊息：${error.message}`;
+      setMode('error');
+    }
+  }
+
+  elements.searchInput.addEventListener('input', (event) => {
+    state.searchTerm = event.target.value;
+    state.currentPage = 1;
+    render();
+  });
+
+  elements.retryButton.addEventListener('click', () => {
+    loadData();
+  });
+
+  renderFilters();
+  renderTableHead();
+  loadData();
+})();
+</script>
+</body>
+</html>
