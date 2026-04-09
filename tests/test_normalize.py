@@ -707,3 +707,156 @@ async def test_completed_with_errors_sets_completed_at(test_session):
     assert persisted_run is not None
     assert persisted_run.status == "completed_with_errors"
     assert persisted_run.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_process_handles_multiple_dates_for_same_symbol(test_session):
+    """Repeated dates for the same symbol in one run should not fail after the first insert."""
+
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "crypto_eod"
+        asset_class = "crypto"
+        market = "CRYPTO"
+
+        def __init__(self, db, records: list[MappedRecord]):
+            super().__init__(db)
+            self._records = records
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return self._records
+
+    dataset = DatasetRegistry(
+        dataset_key="crypto_eod",
+        name="Crypto EOD",
+        asset_class="crypto",
+        market="CRYPTO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="crypto_eod",
+        status="pending",
+        raw_records=2,
+        created_at=utc_now(),
+    )
+    test_session.add_all([dataset, run])
+    await test_session.commit()
+
+    records = [
+        MappedRecord(
+            symbol="BTC",
+            trade_date=datetime(2026, 2, 9, tzinfo=timezone.utc),
+            open=Decimal("100"),
+            high=Decimal("110"),
+            low=Decimal("95"),
+            close=Decimal("108"),
+            volume=1000,
+            source="bloomberg",
+            raw_data={"symbol": "BTC", "date": "2026-02-09"},
+        ),
+        MappedRecord(
+            symbol="BTC",
+            trade_date=datetime(2026, 2, 10, tzinfo=timezone.utc),
+            open=Decimal("108"),
+            high=Decimal("112"),
+            low=Decimal("101"),
+            close=Decimal("109"),
+            volume=1200,
+            source="bloomberg",
+            raw_data={"symbol": "BTC", "date": "2026-02-10"},
+        ),
+    ]
+    normalizer = DummyNormalizer(test_session, records)
+
+    result = await normalizer.process({}, run_id)
+
+    assert result.success_records == 2
+    assert result.failed_records == 0
+
+    rows = (
+        await test_session.execute(select(MarketDataEOD).where(MarketDataEOD.run_id == run_id))
+    ).scalars().all()
+    assert len(rows) == 2
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed"
+    assert persisted_run.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_process_persists_processing_errors(test_session):
+    """Unexpected record-level exceptions should be stored as DQ issues and summarized on the run."""
+
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "crypto_eod"
+        asset_class = "crypto"
+        market = "CRYPTO"
+
+        def __init__(self, db, records: list[MappedRecord]):
+            super().__init__(db)
+            self._records = records
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return self._records
+
+        async def upsert_eod(self, instrument_id, record, run_id):
+            raise RuntimeError("boom")
+
+    dataset = DatasetRegistry(
+        dataset_key="crypto_eod",
+        name="Crypto EOD",
+        asset_class="crypto",
+        market="CRYPTO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="crypto_eod",
+        status="pending",
+        raw_records=1,
+        created_at=utc_now(),
+    )
+    test_session.add_all([dataset, run])
+    await test_session.commit()
+
+    record = MappedRecord(
+        symbol="BTC",
+        trade_date=datetime(2026, 2, 9, tzinfo=timezone.utc),
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("95"),
+        close=Decimal("108"),
+        volume=1000,
+        source="bloomberg",
+        raw_data={"symbol": "BTC", "date": "2026-02-09"},
+    )
+    normalizer = DummyNormalizer(test_session, [record])
+
+    result = await normalizer.process({}, run_id)
+
+    assert result.success_records == 0
+    assert result.failed_records == 1
+
+    dq_issue = (
+        await test_session.execute(
+            select(DQIssue).where(
+                DQIssue.run_id == run_id,
+                DQIssue.issue_type == "processing_error",
+            )
+        )
+    ).scalar_one()
+    assert dq_issue.description == "RuntimeError: boom"
+    assert dq_issue.instrument_id is not None
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed_with_errors"
+    assert persisted_run.error_message is not None
+    assert "RuntimeError: boom" in persisted_run.error_message
