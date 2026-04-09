@@ -38,6 +38,7 @@ app = FastAPI(
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TEST_PAGE_PATH = STATIC_DIR / "test_page.html"
+INSTRUMENT_LOOKUP_PAGE_PATH = STATIC_DIR / "instrument-lookup.html"
 
 # CORS middleware
 app.add_middleware(
@@ -94,3 +95,9 @@ async def root():
 async def test_page():
     """Test dashboard page."""
     return FileResponse(TEST_PAGE_PATH, media_type="text/html")
+
+
+@app.get("/instrument-lookup", include_in_schema=False)
+async def instrument_lookup_page():
+    """Instrument lookup page."""
+    return FileResponse(INSTRUMENT_LOOKUP_PAGE_PATH, media_type="text/html")

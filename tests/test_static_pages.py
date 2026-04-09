@@ -15,11 +15,13 @@ async def test_instrument_lookup_page_is_served():
     """Ensure the static instrument lookup page is available."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/static/instrument-lookup.html")
+        static_response = await client.get("/static/instrument-lookup.html")
+        page_response = await client.get("/instrument-lookup")
 
-    assert response.status_code == 200
-    assert "FinDB" in response.text
-    assert "標的查詢" in response.text
+    assert static_response.status_code == 200
+    assert page_response.status_code == 200
+    assert "FinDB" in page_response.text
+    assert "標的查詢" in page_response.text
 
 
 def test_instrument_cache_path_is_gitignored():
