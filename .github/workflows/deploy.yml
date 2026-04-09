@@ -102,12 +102,29 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 30m
           envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE
           script: |
+            set -e
+            echo "Logging in to GHCR"
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+            echo "Deploying containers"
             cd /opt/findb
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            echo "Generating instrument cache"
+            docker compose -f docker-compose.prod.yml exec -T app sh -lc '
+              for attempt in 1 2 3 4 5 6; do
+                python /app/scripts/generate_instrument_cache.py && exit 0
+                echo "Cache generation attempt ${attempt} failed; retrying in 5s..."
+                sleep 5
+              done
+              exit 1
+            '
+
+            echo "Pruning old images"
             docker image prune -f
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
