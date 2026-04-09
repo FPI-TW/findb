@@ -436,9 +436,13 @@ class BaseNormalizer(ABC):
             ),
         )
 
-        # Avoid expiring the whole session here: callers reuse cached Instrument ORM
-        # instances across many records in the same async run.
         await self.db.execute(stmt)
+        # Refresh ORM state for follow-up reads while dropping cached Instrument
+        # instances that would otherwise become expired and unsafe to reuse in the
+        # remaining async batch.
+        self.db.expire_all()
+        self._instrument_cache.clear()
+        self._identifier_cache.clear()
         return True
 
     async def check_duplicate_in_db(
