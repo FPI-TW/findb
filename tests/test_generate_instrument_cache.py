@@ -59,6 +59,50 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
     }
 
 
+def test_build_macro_series_payload_sorts_and_extracts_metadata():
+    module = load_module()
+
+    payload = module.build_macro_series_payload(
+        [
+            {
+                "series_id": "2",
+                "name": "US CPI YoY",
+                "unit": "percent",
+                "frequency": "monthly",
+                "market": "US",
+                "source_code": "CPI_YOY",
+                "source": "bloomberg",
+                "ignored": "value",
+            },
+            {
+                "series_id": "1",
+                "name": "Global Manufacturing PMI",
+                "unit": "index",
+                "frequency": "monthly",
+                "market": "GLOBAL",
+                "source_code": "PMI_GLOBAL",
+                "source": "bloomberg",
+            },
+        ],
+        generated_at=datetime(2026, 4, 9, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["generated_at"] == "2026-04-09T10:00:00Z"
+    assert payload["total"] == 2
+    assert payload["markets"] == ["GLOBAL", "US"]
+    assert payload["frequencies"] == ["monthly"]
+    assert payload["sources"] == ["bloomberg"]
+    assert payload["data"][0] == {
+        "series_id": "1",
+        "name": "Global Manufacturing PMI",
+        "unit": "index",
+        "frequency": "monthly",
+        "market": "GLOBAL",
+        "source_code": "PMI_GLOBAL",
+        "source": "bloomberg",
+    }
+
+
 def test_collect_instruments_reads_all_pages(monkeypatch):
     module = load_module()
 
@@ -90,3 +134,36 @@ def test_collect_instruments_reads_all_pages(monkeypatch):
     )
 
     assert instruments == [{"instrument_id": "1"}, {"instrument_id": "2"}]
+
+
+def test_collect_macro_series_reads_all_pages(monkeypatch):
+    module = load_module()
+
+    responses = {
+        1: {
+            "success": True,
+            "data": [{"series_id": "1"}],
+            "pagination": {"page": 1, "total_pages": 2},
+        },
+        2: {
+            "success": True,
+            "data": [{"series_id": "2"}],
+            "pagination": {"page": 2, "total_pages": 2},
+        },
+    }
+
+    def fake_fetch(base_url, page, page_size, api_key=None):
+        assert base_url == "http://localhost:8080"
+        assert page_size == module.PAGE_SIZE
+        assert api_key == "demo-key"
+        return responses[page]
+
+    monkeypatch.setattr(module, "fetch_macro_series_page", fake_fetch)
+
+    series = module.collect_macro_series(
+        "http://localhost:8080",
+        api_key="demo-key",
+        page_size=module.PAGE_SIZE,
+    )
+
+    assert series == [{"series_id": "1"}, {"series_id": "2"}]

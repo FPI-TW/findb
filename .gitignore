@@ -27,6 +27,7 @@ htmlcov/
 
 *.log
 app/static/data/instruments.json
+app/static/data/macro-series.json
 
 .idea/
 .vscode/
