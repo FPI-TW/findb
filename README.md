@@ -171,9 +171,10 @@ findb/
 │   │
 │   ├── static/                 # 靜態檔案
 │   │   ├── test_page.html      # 互動式 /test API 測試頁（含 ECharts 圖表）
-│   │   ├── instrument-lookup.html  # 標的查詢頁
+│   │   ├── instrument-lookup.html  # 標的與宏觀序列查詢頁
 │   │   └── data/
-│   │       └── instruments.json    # 標的靜態快取（腳本產出，不進 git）
+│   │       ├── instruments.json    # 標的靜態快取（腳本產出，不進 git）
+│   │       └── macro-series.json   # 宏觀序列靜態快取（腳本產出，不進 git）
 │   │
 │   └── utils/                  # 工具函式
 │       ├── uuid7.py
@@ -186,7 +187,7 @@ findb/
 ├── scripts/
 │   ├── seed_data.py            # 資料種子腳本
 │   ├── cleanup_raw.py          # Raw 清理腳本
-│   ├── generate_instrument_cache.py  # 產生標的查詢快取
+│   ├── generate_instrument_cache.py  # 產生標的與宏觀序列查詢快取
 │   ├── setup_ec2.sh            # EC2 一次性初始化腳本
 │   └── sample_ingest_payload.json
 │
@@ -243,7 +244,7 @@ SERVE_REQUIRE_AUTH=false
 > **注意**：`docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法，
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
 
-## 靜態標的查詢頁
+## 靜態標的與宏觀序列查詢頁
 
 先產生快取檔：
 

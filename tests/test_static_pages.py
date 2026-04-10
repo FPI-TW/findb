@@ -21,11 +21,13 @@ async def test_instrument_lookup_page_is_served():
     assert static_response.status_code == 200
     assert page_response.status_code == 200
     assert "FinDB" in page_response.text
-    assert "標的查詢" in page_response.text
-    assert "const DATA_URL = '/static/data/instruments.json';" in page_response.text
+    assert "標的與宏觀查詢" in page_response.text
+    assert "/static/data/instruments.json" in page_response.text
+    assert "/static/data/macro-series.json" in page_response.text
 
 
 def test_instrument_cache_path_is_gitignored():
     """Ensure generated cache files are not tracked."""
     gitignore = Path(".gitignore").read_text(encoding="utf-8")
     assert "app/static/data/instruments.json" in gitignore
+    assert "app/static/data/macro-series.json" in gitignore

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FinDB — 標的查詢</title>
+<title>FinDB — 標的與宏觀查詢</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300&family=Noto+Sans+JP:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
@@ -99,6 +99,36 @@ body::before {
 
 .controls {
   padding: 24px 24px 20px;
+}
+
+.dataset-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.dataset-tab {
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-2);
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dataset-tab:hover {
+  border-color: var(--border);
+  color: var(--text-1);
+}
+
+.dataset-tab.active {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .search-row {
@@ -400,12 +430,14 @@ tbody tr:hover {
   <main class="page">
     <header class="page-header">
       <div class="eyebrow">Instrument Index</div>
-      <h1 class="page-title">FinDB <span class="accent">—</span> 標的查詢</h1>
+      <h1 class="page-title">FinDB <span class="accent">—</span> 標的與宏觀查詢</h1>
       <p class="page-subtitle" id="header-meta">載入資料中…</p>
     </header>
 
     <section class="panel">
       <div class="controls">
+        <div class="dataset-tabs" id="dataset-tabs" aria-label="資料集切換"></div>
+
         <div class="search-row">
           <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.5"></circle>
@@ -415,7 +447,7 @@ tbody tr:hover {
             id="search-input"
             class="search-input"
             type="search"
-            placeholder="標的名稱、代碼…"
+            placeholder="標的名稱、代碼、宏觀序列…"
             autocomplete="off"
             spellcheck="false"
           >
@@ -427,11 +459,11 @@ tbody tr:hover {
             <div class="pill-row" id="market-filters"></div>
           </div>
           <div class="filter-group">
-            <div class="filter-label">類別</div>
+            <div class="filter-label" id="asset-filter-label">類別</div>
             <div class="pill-row" id="asset-filters"></div>
           </div>
           <div class="filter-group">
-            <div class="filter-label">狀態</div>
+            <div class="filter-label" id="status-filter-label">狀態</div>
             <div class="pill-row" id="status-filters"></div>
           </div>
         </div>
@@ -444,7 +476,7 @@ tbody tr:hover {
 
       <div id="loading-state" class="loading-state">正在整理標的資料，請稍候。</div>
       <div id="error-state" class="error-state hidden">
-        <strong>無法載入 instruments.json</strong>
+        <strong>無法載入查詢快取</strong>
         <div id="error-message">請確認快取檔案已產生，或稍後再試。</div>
         <button class="retry-button" id="retry-button" type="button">重新載入</button>
       </div>
@@ -469,37 +501,82 @@ tbody tr:hover {
 <script>
 (() => {
   const PAGE_SIZE = 50;
-  const DATA_URL = '/static/data/instruments.json';
-  const columns = [
-    { key: 'market', label: 'Market', sortable: true },
-    { key: 'symbol', label: 'Symbol', sortable: true },
-    { key: 'name', label: 'Name', sortable: true },
-    { key: 'asset_class', label: 'Asset Class', sortable: true },
-    { key: 'currency', label: 'CCY', sortable: true },
-    { key: 'status', label: 'Status', sortable: true },
-  ];
+  const DATASETS = {
+    instruments: {
+      label: '金融商品',
+      itemLabel: '標的',
+      url: '/static/data/instruments.json',
+      defaultSort: 'market',
+      searchPlaceholder: '標的名稱、Symbol、Instrument ID…',
+      searchFields: ['symbol', 'name', 'instrument_id', 'market', 'asset_class', 'currency'],
+      columns: [
+        { key: 'market', label: 'Market', sortable: true },
+        { key: 'symbol', label: 'Symbol', sortable: true, className: 'cell-symbol' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name' },
+        { key: 'asset_class', label: 'Asset Class', sortable: true },
+        { key: 'currency', label: 'CCY', sortable: true },
+        { key: 'status', label: 'Status', sortable: true, type: 'status' },
+      ],
+    },
+    macro: {
+      label: '宏觀序列',
+      itemLabel: '宏觀序列',
+      url: '/static/data/macro-series.json',
+      defaultSort: 'market',
+      searchPlaceholder: '宏觀序列名稱、Source Code、Series ID…',
+      searchFields: ['name', 'source_code', 'series_id', 'unit', 'frequency', 'source', 'market'],
+      columns: [
+        { key: 'market', label: 'Market', sortable: true },
+        { key: 'source_code', label: 'Source Code', sortable: true, className: 'cell-symbol' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name' },
+        { key: 'frequency', label: 'Frequency', sortable: true },
+        { key: 'unit', label: 'Unit', sortable: true },
+        { key: 'source', label: 'Source', sortable: true },
+      ],
+    },
+  };
 
   const state = {
-    source: [],
+    dataset: 'instruments',
+    source: {
+      instruments: [],
+      macro: [],
+    },
     filtered: [],
-    markets: [],
-    assetClasses: [],
+    metadata: {
+      instruments: {
+        markets: [],
+        assetClasses: [],
+        generatedAt: '',
+        total: 0,
+      },
+      macro: {
+        markets: [],
+        frequencies: [],
+        sources: [],
+        generatedAt: '',
+        total: 0,
+      },
+    },
     searchTerm: '',
     market: 'ALL',
     assetClass: 'ALL',
     status: 'active',
+    frequency: 'ALL',
+    sourceFilter: 'ALL',
     sortBy: 'market',
     sortDir: 'asc',
     currentPage: 1,
-    generatedAt: '',
-    total: 0,
   };
 
   const elements = {
     headerMeta: document.getElementById('header-meta'),
+    datasetTabs: document.getElementById('dataset-tabs'),
     searchInput: document.getElementById('search-input'),
     marketFilters: document.getElementById('market-filters'),
+    assetFilterLabel: document.getElementById('asset-filter-label'),
     assetFilters: document.getElementById('asset-filters'),
+    statusFilterLabel: document.getElementById('status-filter-label'),
     statusFilters: document.getElementById('status-filters'),
     resultSummary: document.getElementById('result-summary'),
     activeFilters: document.getElementById('active-filters'),
@@ -514,6 +591,18 @@ tbody tr:hover {
     countLabel: document.getElementById('count-label'),
     pagination: document.getElementById('pagination'),
   };
+
+  function getDatasetConfig() {
+    return DATASETS[state.dataset];
+  }
+
+  function getDatasetMetadata() {
+    return state.metadata[state.dataset];
+  }
+
+  function getDatasetItems() {
+    return state.source[state.dataset] || [];
+  }
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -534,6 +623,7 @@ tbody tr:hover {
 
   function sortItems(items) {
     const direction = state.sortDir === 'asc' ? 1 : -1;
+    const config = getDatasetConfig();
     const sorted = [...items].sort((a, b) => {
       const primary = compareText(a[state.sortBy], b[state.sortBy]);
       if (primary !== 0) {
@@ -550,6 +640,13 @@ tbody tr:hover {
         return symbolFallback;
       }
 
+      if (config.columns.some((column) => column.key === 'source_code')) {
+        const sourceCodeFallback = compareText(a.source_code, b.source_code);
+        if (sourceCodeFallback !== 0) {
+          return sourceCodeFallback;
+        }
+      }
+
       return compareText(a.name, b.name);
     });
 
@@ -558,13 +655,18 @@ tbody tr:hover {
 
   function applyFilters() {
     const query = normalizeText(state.searchTerm);
-    const items = state.source.filter((item) => {
-      const matchedSearch = !query || normalizeText(item.symbol).includes(query) || normalizeText(item.name).includes(query);
+    const config = getDatasetConfig();
+    const items = getDatasetItems().filter((item) => {
+      const matchedSearch = !query || config.searchFields.some((field) => normalizeText(item[field]).includes(query));
       const matchedMarket = state.market === 'ALL' || item.market === state.market;
-      const matchedAsset = state.assetClass === 'ALL' || item.asset_class === state.assetClass;
-      const matchedStatus = state.status === 'ALL' || item.status === state.status;
+      const matchedSecondary = state.dataset === 'macro'
+        ? state.frequency === 'ALL' || item.frequency === state.frequency
+        : state.assetClass === 'ALL' || item.asset_class === state.assetClass;
+      const matchedTertiary = state.dataset === 'macro'
+        ? state.sourceFilter === 'ALL' || item.source === state.sourceFilter
+        : state.status === 'ALL' || item.status === state.status;
 
-      return matchedSearch && matchedMarket && matchedAsset && matchedStatus;
+      return matchedSearch && matchedMarket && matchedSecondary && matchedTertiary;
     });
 
     state.filtered = sortItems(items);
@@ -595,11 +697,14 @@ tbody tr:hover {
   }
 
   function updateHeader() {
-    elements.headerMeta.textContent = `資料更新時間：${formatGeneratedAt(state.generatedAt)} | 共 ${state.total.toLocaleString()} 筆`;
+    const metadata = getDatasetMetadata();
+    const config = getDatasetConfig();
+    elements.headerMeta.textContent = `${config.label}更新時間：${formatGeneratedAt(metadata.generatedAt)} | 共 ${metadata.total.toLocaleString()} 筆`;
   }
 
   function updateResultSummary() {
     const total = state.filtered.length;
+    const config = getDatasetConfig();
     if (total === 0) {
       elements.resultSummary.textContent = '目前沒有符合條件的資料';
       elements.countLabel.textContent = '顯示 0 / 共 0 筆';
@@ -608,7 +713,7 @@ tbody tr:hover {
 
     const start = (state.currentPage - 1) * PAGE_SIZE + 1;
     const end = Math.min(state.currentPage * PAGE_SIZE, total);
-    elements.resultSummary.textContent = `共找到 ${total.toLocaleString()} 筆符合條件的標的`;
+    elements.resultSummary.textContent = `共找到 ${total.toLocaleString()} 筆符合條件的${config.itemLabel}`;
     elements.countLabel.textContent = `顯示 ${start.toLocaleString()}–${end.toLocaleString()} / 共 ${total.toLocaleString()} 筆`;
   }
 
@@ -621,14 +726,24 @@ tbody tr:hover {
     if (state.market !== 'ALL') {
       parts.push(`市場 ${state.market}`);
     }
-    if (state.assetClass !== 'ALL') {
-      parts.push(`類別 ${state.assetClass}`);
-    }
-    if (state.status !== 'ALL') {
-      parts.push(`狀態 ${state.status}`);
+
+    if (state.dataset === 'macro') {
+      if (state.frequency !== 'ALL') {
+        parts.push(`頻率 ${state.frequency}`);
+      }
+      if (state.sourceFilter !== 'ALL') {
+        parts.push(`來源 ${state.sourceFilter}`);
+      }
+    } else {
+      if (state.assetClass !== 'ALL') {
+        parts.push(`類別 ${state.assetClass}`);
+      }
+      if (state.status !== 'ALL') {
+        parts.push(`狀態 ${state.status}`);
+      }
     }
 
-    elements.activeFilters.textContent = parts.length > 0 ? parts.join(' / ') : '顯示全部標的';
+    elements.activeFilters.textContent = parts.length > 0 ? parts.join(' / ') : `顯示全部${getDatasetConfig().itemLabel}`;
   }
 
   function createPill(value, label, currentValue, onClick) {
@@ -640,14 +755,43 @@ tbody tr:hover {
     return button;
   }
 
+  function renderDatasetTabs() {
+    elements.datasetTabs.replaceChildren(
+      ...Object.entries(DATASETS).map(([value, config]) =>
+        createPill(value, config.label, state.dataset, (nextDataset) => {
+          if (state.dataset === nextDataset) {
+            return;
+          }
+
+          state.dataset = nextDataset;
+          state.market = 'ALL';
+          state.assetClass = 'ALL';
+          state.status = nextDataset === 'instruments' ? 'active' : 'ALL';
+          state.frequency = 'ALL';
+          state.sourceFilter = 'ALL';
+          state.sortBy = DATASETS[nextDataset].defaultSort;
+          state.sortDir = 'asc';
+          state.currentPage = 1;
+          elements.searchInput.placeholder = DATASETS[nextDataset].searchPlaceholder;
+          render();
+        })
+      )
+    );
+
+    elements.datasetTabs.querySelectorAll('.pill').forEach((button) => {
+      button.classList.add('dataset-tab');
+    });
+  }
+
   function renderFilters() {
+    const metadata = getDatasetMetadata();
     elements.marketFilters.replaceChildren(
       createPill('ALL', '全部', state.market, (value) => {
         state.market = value;
         state.currentPage = 1;
         render();
       }),
-      ...state.markets.map((market) =>
+      ...metadata.markets.map((market) =>
         createPill(market, market, state.market, (value) => {
           state.market = value;
           state.currentPage = 1;
@@ -656,31 +800,50 @@ tbody tr:hover {
       )
     );
 
+    elements.assetFilterLabel.textContent = state.dataset === 'macro' ? '頻率' : '類別';
     elements.assetFilters.replaceChildren(
-      createPill('ALL', '全部', state.assetClass, (value) => {
-        state.assetClass = value;
+      createPill('ALL', '全部', state.dataset === 'macro' ? state.frequency : state.assetClass, (value) => {
+        if (state.dataset === 'macro') {
+          state.frequency = value;
+        } else {
+          state.assetClass = value;
+        }
         state.currentPage = 1;
         render();
       }),
-      ...state.assetClasses.map((assetClass) =>
-        createPill(assetClass, assetClass, state.assetClass, (value) => {
-          state.assetClass = value;
+      ...(state.dataset === 'macro' ? metadata.frequencies : metadata.assetClasses).map((value) =>
+        createPill(value, value, state.dataset === 'macro' ? state.frequency : state.assetClass, (nextValue) => {
+          if (state.dataset === 'macro') {
+            state.frequency = nextValue;
+          } else {
+            state.assetClass = nextValue;
+          }
           state.currentPage = 1;
           render();
         })
       )
     );
 
-    const statusOptions = [
-      { value: 'ALL', label: '全部' },
-      { value: 'active', label: 'active' },
-      { value: 'delisted', label: 'delisted' },
-    ];
+    elements.statusFilterLabel.textContent = state.dataset === 'macro' ? '來源' : '狀態';
+    const statusOptions = state.dataset === 'macro'
+      ? [
+          { value: 'ALL', label: '全部' },
+          ...metadata.sources.map((source) => ({ value: source, label: source })),
+        ]
+      : [
+          { value: 'ALL', label: '全部' },
+          { value: 'active', label: 'active' },
+          { value: 'delisted', label: 'delisted' },
+        ];
 
     elements.statusFilters.replaceChildren(
       ...statusOptions.map((option) =>
-        createPill(option.value, option.label, state.status, (value) => {
-          state.status = value;
+        createPill(option.value, option.label, state.dataset === 'macro' ? state.sourceFilter : state.status, (value) => {
+          if (state.dataset === 'macro') {
+            state.sourceFilter = value;
+          } else {
+            state.status = value;
+          }
           state.currentPage = 1;
           render();
         })
@@ -691,7 +854,7 @@ tbody tr:hover {
   function renderTableHead() {
     const fragment = document.createDocumentFragment();
 
-    columns.forEach((column) => {
+    getDatasetConfig().columns.forEach((column) => {
       const th = document.createElement('th');
       if (!column.sortable) {
         th.textContent = column.label;
@@ -726,27 +889,44 @@ tbody tr:hover {
     elements.tableHead.replaceChildren(fragment);
   }
 
+  function renderCell(item, column) {
+    if (column.type === 'status') {
+      return item.status === 'delisted' ? 'delisted' : '';
+    }
+
+    return item[column.key] || '-';
+  }
+
   function renderTableBody() {
     const rows = getVisibleRows();
     const hasRows = rows.length > 0;
+    const columns = getDatasetConfig().columns;
 
     elements.tableBody.innerHTML = rows.map((item) => {
-      const statusClass = item.status === 'delisted' ? 'cell-status delisted' : 'cell-status';
-      const statusText = item.status === 'delisted' ? 'delisted' : '';
+      const cells = columns.map((column) => {
+        const classNames = [];
+        if (column.className) {
+          classNames.push(column.className);
+        }
+        if (column.type === 'status') {
+          classNames.push('cell-status');
+          if (item.status === 'delisted') {
+            classNames.push('delisted');
+          }
+        }
+        const classAttribute = classNames.length ? ` class="${classNames.join(' ')}"` : '';
+        return `<td${classAttribute}>${escapeHtml(renderCell(item, column))}</td>`;
+      }).join('');
 
       return `
         <tr>
-          <td>${escapeHtml(item.market || '-')}</td>
-          <td class="cell-symbol">${escapeHtml(item.symbol || '-')}</td>
-          <td class="cell-name">${escapeHtml(item.name || '-')}</td>
-          <td>${escapeHtml(item.asset_class || '-')}</td>
-          <td>${escapeHtml(item.currency || '-')}</td>
-          <td class="${statusClass}">${escapeHtml(statusText)}</td>
+          ${cells}
         </tr>
       `;
     }).join('');
 
     elements.emptyState.classList.toggle('hidden', hasRows);
+    elements.emptyState.textContent = `沒有符合條件的${getDatasetConfig().itemLabel}。`;
   }
 
   function createPageButton(label, disabled, onClick, className = '') {
@@ -800,6 +980,7 @@ tbody tr:hover {
 
   function render() {
     applyFilters();
+    renderDatasetTabs();
     renderFilters();
     renderTableHead();
     renderTableBody();
@@ -813,23 +994,36 @@ tbody tr:hover {
     setMode('loading');
 
     try {
-      const response = await fetch(DATA_URL, { cache: 'no-store' });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      const entries = await Promise.all(
+        Object.entries(DATASETS).map(async ([dataset, config]) => {
+          const response = await fetch(config.url, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error(`${config.url} HTTP ${response.status}`);
+          }
+          return [dataset, await response.json()];
+        })
+      );
 
-      const payload = await response.json();
-      state.source = Array.isArray(payload.data) ? payload.data : [];
-      state.markets = Array.isArray(payload.markets) ? payload.markets : [];
-      state.assetClasses = Array.isArray(payload.asset_classes) ? payload.asset_classes : [];
-      state.generatedAt = payload.generated_at || '';
-      state.total = Number.isFinite(payload.total) ? payload.total : state.source.length;
+      entries.forEach(([dataset, payload]) => {
+        state.source[dataset] = Array.isArray(payload.data) ? payload.data : [];
+        state.metadata[dataset].markets = Array.isArray(payload.markets) ? payload.markets : [];
+        state.metadata[dataset].generatedAt = payload.generated_at || '';
+        state.metadata[dataset].total = Number.isFinite(payload.total) ? payload.total : state.source[dataset].length;
+
+        if (dataset === 'instruments') {
+          state.metadata[dataset].assetClasses = Array.isArray(payload.asset_classes) ? payload.asset_classes : [];
+        } else {
+          state.metadata[dataset].frequencies = Array.isArray(payload.frequencies) ? payload.frequencies : [];
+          state.metadata[dataset].sources = Array.isArray(payload.sources) ? payload.sources : [];
+        }
+      });
+
       state.currentPage = 1;
 
       render();
       setMode('ready');
     } catch (error) {
-      elements.errorMessage.textContent = `請確認快取檔案已產生。錯誤訊息：${error.message}`;
+      elements.errorMessage.textContent = `請確認 instruments.json 與 macro-series.json 都已產生。錯誤訊息：${error.message}`;
       setMode('error');
     }
   }
@@ -844,6 +1038,8 @@ tbody tr:hover {
     loadData();
   });
 
+  elements.searchInput.placeholder = getDatasetConfig().searchPlaceholder;
+  renderDatasetTabs();
   renderFilters();
   renderTableHead();
   loadData();
