@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import PaginatedResponse
 
-
 # ── EOD Correction ────────────────────────────────────────────────────────────
 
 
@@ -148,3 +147,63 @@ class BulkRerunResponse(BaseModel):
     errors: int
     new_run_ids: list[str]
     error_details: list[str]
+
+
+# ── Instrument Cache ──────────────────────────────────────────────────────────
+
+
+class InstrumentCacheItem(BaseModel):
+    """Single item in the generated static instrument cache."""
+
+    instrument_id: str = Field(..., min_length=1)
+    market: Optional[str] = None
+    asset_class: Optional[str] = None
+    symbol: str = Field(..., min_length=1)
+    name: Optional[str] = None
+    currency: Optional[str] = None
+    status: Optional[str] = None
+
+
+class InstrumentCacheDocument(BaseModel):
+    """Full generated instruments.json document."""
+
+    generated_at: str
+    total: int = Field(..., ge=0)
+    markets: list[str]
+    asset_classes: list[str]
+    data: list[InstrumentCacheItem]
+
+
+class InstrumentCacheReplaceRequest(InstrumentCacheDocument):
+    """PUT body for replacing the generated instruments.json document."""
+
+    pass
+
+
+class InstrumentCacheItemPatchRequest(BaseModel):
+    """PATCH body for editing a single cached instrument."""
+
+    market: Optional[str] = None
+    asset_class: Optional[str] = None
+    symbol: Optional[str] = Field(default=None, min_length=1)
+    name: Optional[str] = None
+    currency: Optional[str] = None
+    status: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class InstrumentCacheWriteResponse(BaseModel):
+    """Response after writing instruments.json."""
+
+    success: bool = True
+    message: str
+    data: InstrumentCacheDocument
+
+
+class InstrumentCacheItemUpdateResponse(BaseModel):
+    """Response after updating a single cached instrument."""
+
+    success: bool = True
+    message: str
+    data: InstrumentCacheItem

@@ -3,21 +3,30 @@ Admin API endpoints.
 Provides manual correction and DQ resolution capabilities for the canonical layer.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import verify_admin_api_key
 from app.dependencies import get_db
+from app.models.base import async_session_maker
+from app.models.raw import RawMarketPayload
+from app.models.registry import IngestionRun
 from app.schemas.admin import (
     BulkRerunResponse,
     CorrectionListResponse,
     CorrectionResponse,
     DQIssueListResponse,
     DQIssueResponse,
+    InstrumentCacheDocument,
+    InstrumentCacheItemPatchRequest,
+    InstrumentCacheItemUpdateResponse,
+    InstrumentCacheReplaceRequest,
+    InstrumentCacheWriteResponse,
     PatchEODRequest,
     PatchEODResponse,
     RawPayloadListResponse,
@@ -26,29 +35,89 @@ from app.schemas.admin import (
     ResolveDQIssueResponse,
 )
 from app.schemas.common import PaginationInfo
-from app.models.raw import RawMarketPayload
 from app.services.admin import (
     AlreadyResolvedError,
     NoChangesError,
     RecordNotFoundError,
+    _mask_key,
     list_corrections,
     list_dq_issues,
     patch_eod_record,
     resolve_dq_issue,
 )
-from app.services.admin import _mask_key
 from app.services.ingestion import (
     IngestionService,
     RawPayloadNotFoundError,
     trigger_normalization,
 )
-from app.models.base import async_session_maker
-from app.models.registry import IngestionRun
-from datetime import datetime, timedelta, timezone
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from app.services.instrument_cache import (
+    InstrumentCacheItemNotFoundError,
+    InstrumentCacheNotFoundError,
+    InstrumentCacheValidationError,
+    read_instrument_cache,
+    replace_instrument_cache,
+    update_instrument_cache_item,
+)
 
 router = APIRouter()
+
+
+@router.get("/instrument-cache", response_model=InstrumentCacheDocument)
+async def get_instrument_cache(
+    api_key: str = Depends(verify_admin_api_key),
+):
+    """Return the generated static instrument lookup cache."""
+    try:
+        return read_instrument_cache()
+    except InstrumentCacheNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InstrumentCacheValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.put("/instrument-cache", response_model=InstrumentCacheWriteResponse)
+async def put_instrument_cache(
+    body: InstrumentCacheReplaceRequest,
+    api_key: str = Depends(verify_admin_api_key),
+):
+    """Replace instruments.json with a validated and normalized document."""
+    try:
+        payload = replace_instrument_cache(body.model_dump(mode="json"))
+    except InstrumentCacheValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return InstrumentCacheWriteResponse(
+        message="Instrument cache updated successfully",
+        data=payload,
+    )
+
+
+@router.patch(
+    "/instrument-cache/items/{instrument_id}",
+    response_model=InstrumentCacheItemUpdateResponse,
+)
+async def patch_instrument_cache_item(
+    instrument_id: str,
+    body: InstrumentCacheItemPatchRequest,
+    api_key: str = Depends(verify_admin_api_key),
+):
+    """Patch a single instrument inside the generated instruments.json cache."""
+    try:
+        item = update_instrument_cache_item(
+            instrument_id,
+            body.model_dump(mode="json", exclude_unset=True),
+        )
+    except InstrumentCacheNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InstrumentCacheItemNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InstrumentCacheValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return InstrumentCacheItemUpdateResponse(
+        message="Instrument cache item updated successfully",
+        data=item,
+    )
 
 
 @router.get("/dq-issues", response_model=DQIssueListResponse)

@@ -2,20 +2,23 @@
 Tests for Admin API endpoints.
 """
 
+import json
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.main import app
 from app.models.canonical import Instrument, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.registry import DQIssue
+from app.services import instrument_cache as instrument_cache_service
 from app.utils import utc_now, uuid7
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +78,44 @@ async def _create_dq_issue(
     return issue
 
 
+def _sample_instrument_cache() -> dict:
+    return {
+        "generated_at": "2026-04-09T07:08:40.626344Z",
+        "total": 2,
+        "markets": ["US", "HK"],
+        "asset_classes": ["equity"],
+        "data": [
+            {
+                "instrument_id": "instrument-us-aapl",
+                "market": "US",
+                "asset_class": "equity",
+                "symbol": "AAPL",
+                "name": None,
+                "currency": "USD",
+                "status": "active",
+            },
+            {
+                "instrument_id": "instrument-hk-0700",
+                "market": "HK",
+                "asset_class": "equity",
+                "symbol": "0700",
+                "name": "Tencent",
+                "currency": "HKD",
+                "status": "active",
+            },
+        ],
+    }
+
+
+def _write_instrument_cache(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _admin_api_client() -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
 # ── Auth Tests ─────────────────────────────────────────────────────────────────
 
 
@@ -128,6 +169,152 @@ class TestAdminAuth:
     ):
         response = await client.get("/api/v1/admin/corrections")
         assert response.status_code == 401
+
+
+# ── Instrument Cache Tests ────────────────────────────────────────────────────
+
+
+class TestInstrumentCacheAdmin:
+    @pytest.fixture
+    def cache_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        path = tmp_path / "static" / "data" / "instruments.json"
+        monkeypatch.setattr(instrument_cache_service, "INSTRUMENT_CACHE_PATH", path)
+        return path
+
+    @pytest.mark.asyncio
+    async def test_get_instrument_cache_without_api_key_returns_401(
+        self,
+        cache_path: Path,
+    ):
+        _write_instrument_cache(cache_path, _sample_instrument_cache())
+
+        async with _admin_api_client() as client:
+            response = await client.get("/api/v1/admin/instrument-cache")
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_get_instrument_cache_returns_generated_json(
+        self,
+        cache_path: Path,
+        admin_headers: dict,
+    ):
+        _write_instrument_cache(cache_path, _sample_instrument_cache())
+
+        async with _admin_api_client() as client:
+            response = await client.get(
+                "/api/v1/admin/instrument-cache",
+                headers=admin_headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 2
+        assert data["data"][0]["instrument_id"] == "instrument-us-aapl"
+
+    @pytest.mark.asyncio
+    async def test_get_instrument_cache_missing_file_returns_404(
+        self,
+        cache_path: Path,
+        admin_headers: dict,
+    ):
+        async with _admin_api_client() as client:
+            response = await client.get(
+                "/api/v1/admin/instrument-cache",
+                headers=admin_headers,
+            )
+
+        assert response.status_code == 404
+        assert str(cache_path) in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_instrument_cache_replaces_and_normalizes_json(
+        self,
+        cache_path: Path,
+        admin_headers: dict,
+    ):
+        payload = _sample_instrument_cache()
+        payload["total"] = 99
+        payload["markets"] = ["WRONG"]
+
+        async with _admin_api_client() as client:
+            response = await client.put(
+                "/api/v1/admin/instrument-cache",
+                headers=admin_headers,
+                json=payload,
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 2
+        assert data["markets"] == ["HK", "US"]
+
+        stored = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert stored["total"] == 2
+        assert stored["markets"] == ["HK", "US"]
+        assert stored["data"][0]["instrument_id"] == "instrument-hk-0700"
+
+    @pytest.mark.asyncio
+    async def test_patch_instrument_cache_item_updates_json(
+        self,
+        cache_path: Path,
+        admin_headers: dict,
+    ):
+        _write_instrument_cache(cache_path, _sample_instrument_cache())
+
+        async with _admin_api_client() as client:
+            response = await client.patch(
+                "/api/v1/admin/instrument-cache/items/instrument-us-aapl",
+                headers=admin_headers,
+                json={"name": "Apple Inc.", "status": "inactive"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["name"] == "Apple Inc."
+        assert data["status"] == "inactive"
+
+        stored = json.loads(cache_path.read_text(encoding="utf-8"))
+        stored_item = next(
+            item for item in stored["data"] if item["instrument_id"] == "instrument-us-aapl"
+        )
+        assert stored_item["name"] == "Apple Inc."
+        assert stored_item["status"] == "inactive"
+
+    @pytest.mark.asyncio
+    async def test_patch_instrument_cache_item_not_found_returns_404(
+        self,
+        cache_path: Path,
+        admin_headers: dict,
+    ):
+        _write_instrument_cache(cache_path, _sample_instrument_cache())
+
+        async with _admin_api_client() as client:
+            response = await client.patch(
+                "/api/v1/admin/instrument-cache/items/missing-instrument",
+                headers=admin_headers,
+                json={"name": "Missing"},
+            )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_patch_instrument_cache_item_without_fields_returns_400(
+        self,
+        cache_path: Path,
+        admin_headers: dict,
+    ):
+        _write_instrument_cache(cache_path, _sample_instrument_cache())
+
+        async with _admin_api_client() as client:
+            response = await client.patch(
+                "/api/v1/admin/instrument-cache/items/instrument-us-aapl",
+                headers=admin_headers,
+                json={},
+            )
+
+        assert response.status_code == 400
+        assert "No instrument fields" in response.json()["detail"]
 
 
 # ── Patch EOD Tests ────────────────────────────────────────────────────────────
