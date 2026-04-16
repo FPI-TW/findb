@@ -6,42 +6,42 @@ Provides data access for consumers.
 from datetime import date
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func, and_
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
-from app.dependencies import get_db
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import and_, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import verify_serve_api_key
+from app.dependencies import get_db
 from app.models.canonical import (
-    Instrument,
-    MarketDataEOD,
-    TradingCalendar,
     CorporateAction,
-    MacroSeries,
-    MacroObservation,
-    FuturesContract,
     FuturesContinuousEOD,
+    FuturesContract,
+    Instrument,
+    MacroObservation,
+    MacroSeries,
+    MarketDataEOD,
     RollRule,
+    TradingCalendar,
 )
 from app.schemas.common import PaginationInfo
 from app.schemas.serve import (
-    InstrumentResponse,
-    InstrumentListResponse,
-    EODResponse,
-    EODListResponse,
-    CorporateActionResponse,
-    CorporateActionListResponse,
-    CalendarResponse,
     CalendarListResponse,
-    MacroSeriesResponse,
-    MacroSeriesListResponse,
-    MacroObservationResponse,
-    MacroObservationListResponse,
-    FuturesContractResponse,
-    FuturesContractListResponse,
-    FuturesContinuousResponse,
+    CalendarResponse,
+    CorporateActionListResponse,
+    CorporateActionResponse,
+    EODListResponse,
+    EODResponse,
     FuturesContinuousListResponse,
+    FuturesContinuousResponse,
+    FuturesContractListResponse,
+    FuturesContractResponse,
+    InstrumentListResponse,
+    InstrumentResponse,
+    MacroObservationListResponse,
+    MacroObservationResponse,
+    MacroSeriesListResponse,
+    MacroSeriesResponse,
 )
 
 router = APIRouter()
@@ -59,8 +59,27 @@ async def list_instruments(
     db: AsyncSession = Depends(get_db),
 ):
     """List instruments with optional filtering."""
+    latest_trade_date = (
+        select(func.max(MarketDataEOD.trade_date))
+        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    latest_price = (
+        select(MarketDataEOD.close)
+        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
+        .order_by(MarketDataEOD.trade_date.desc())
+        .limit(1)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+
     # Build query
-    query = select(Instrument)
+    query = select(
+        Instrument,
+        latest_trade_date.label("latest_trade_date"),
+        latest_price.label("latest_price"),
+    )
     count_query = select(func.count(Instrument.instrument_id))
 
     # Apply filters
@@ -88,7 +107,7 @@ async def list_instruments(
 
     # Execute query
     result = await db.execute(query)
-    instruments = result.scalars().all()
+    rows = result.all()
 
     # Calculate total pages
     total_pages = (total_records + page_size - 1) // page_size
@@ -107,8 +126,10 @@ async def list_instruments(
                 status=inst.status,
                 listed_date=inst.listed_date,
                 delisted_date=inst.delisted_date,
+                latest_trade_date=latest_trade_date,
+                latest_price=latest_price,
             )
-            for inst in instruments
+            for inst, latest_trade_date, latest_price in rows
         ],
         pagination=PaginationInfo(
             page=page,
@@ -126,15 +147,36 @@ async def get_instrument(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a single instrument by ID."""
-    result = await db.execute(select(Instrument).where(Instrument.instrument_id == instrument_id))
-    instrument = result.scalar_one_or_none()
+    latest_trade_date = (
+        select(func.max(MarketDataEOD.trade_date))
+        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    latest_price = (
+        select(MarketDataEOD.close)
+        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
+        .order_by(MarketDataEOD.trade_date.desc())
+        .limit(1)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    result = await db.execute(
+        select(
+            Instrument,
+            latest_trade_date.label("latest_trade_date"),
+            latest_price.label("latest_price"),
+        ).where(Instrument.instrument_id == instrument_id)
+    )
+    row = result.one_or_none()
 
-    if not instrument:
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instrument {instrument_id} not found",
         )
 
+    instrument, latest_trade_date_value, latest_price_value = row
     return InstrumentResponse(
         instrument_id=instrument.instrument_id,
         asset_class=instrument.asset_class,
@@ -146,6 +188,8 @@ async def get_instrument(
         status=instrument.status,
         listed_date=instrument.listed_date,
         delisted_date=instrument.delisted_date,
+        latest_trade_date=latest_trade_date_value,
+        latest_price=latest_price_value,
     )
 
 

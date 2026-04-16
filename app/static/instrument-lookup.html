@@ -234,26 +234,29 @@ body::before {
 
 table {
   width: 100%;
-  min-width: 760px;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 thead th {
-  padding: 14px 24px;
+  padding: 14px 10px;
   border-bottom: 1px solid var(--border);
   color: var(--text-2);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 400;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sort-button {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
+  max-width: 100%;
   border: 0;
   padding: 0;
   background: transparent;
@@ -264,9 +267,16 @@ thead th {
   cursor: pointer;
 }
 
+.sort-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sort-indicator {
   width: 10px;
   height: 12px;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -286,9 +296,12 @@ thead th {
 
 tbody td {
   height: 48px;
-  padding: 14px 24px;
+  padding: 14px 10px;
   border-bottom: 1px solid var(--border-light);
-  font-size: 0.94rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 tbody tr:nth-child(even) {
@@ -307,7 +320,18 @@ tbody tr:hover {
 }
 
 .cell-name {
-  min-width: 220px;
+  min-width: 0;
+}
+
+.cell-date,
+.cell-price {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.cell-price {
+  text-align: right;
 }
 
 .cell-status {
@@ -420,8 +444,12 @@ tbody tr:hover {
 
   thead th,
   tbody td {
-    padding-left: 18px;
-    padding-right: 18px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  table {
+    min-width: 760px;
   }
 }
 </style>
@@ -483,6 +511,7 @@ tbody tr:hover {
       <div id="table-section" class="hidden">
         <div class="table-wrap">
           <table>
+            <colgroup id="table-columns"></colgroup>
             <thead>
               <tr id="table-head"></tr>
             </thead>
@@ -510,12 +539,14 @@ tbody tr:hover {
       searchPlaceholder: '標的名稱、Symbol、Instrument ID…',
       searchFields: ['symbol', 'name', 'instrument_id', 'market', 'asset_class', 'currency'],
       columns: [
-        { key: 'market', label: 'Market', sortable: true },
-        { key: 'symbol', label: 'Symbol', sortable: true, className: 'cell-symbol' },
-        { key: 'name', label: 'Name', sortable: true, className: 'cell-name' },
-        { key: 'asset_class', label: 'Asset Class', sortable: true },
-        { key: 'currency', label: 'CCY', sortable: true },
-        { key: 'status', label: 'Status', sortable: true, type: 'status' },
+        { key: 'market', label: 'Market', sortable: true, width: '9%' },
+        { key: 'symbol', label: 'Symbol', sortable: true, className: 'cell-symbol', width: '11%' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name', width: '22%' },
+        { key: 'asset_class', label: 'Asset Class', sortable: true, width: '12%' },
+        { key: 'currency', label: 'CCY', sortable: true, width: '7%' },
+        { key: 'latest_trade_date', label: 'Last Date', sortable: true, type: 'date', className: 'cell-date', width: '14%' },
+        { key: 'latest_price', label: 'Last Price', sortable: true, type: 'number', className: 'cell-price', width: '16%' },
+        { key: 'status', label: 'Status', sortable: true, type: 'status', width: '9%' },
       ],
     },
     macro: {
@@ -526,12 +557,12 @@ tbody tr:hover {
       searchPlaceholder: '宏觀序列名稱、Source Code、Series ID…',
       searchFields: ['name', 'source_code', 'series_id', 'unit', 'frequency', 'source', 'market'],
       columns: [
-        { key: 'market', label: 'Market', sortable: true },
-        { key: 'source_code', label: 'Source Code', sortable: true, className: 'cell-symbol' },
-        { key: 'name', label: 'Name', sortable: true, className: 'cell-name' },
-        { key: 'frequency', label: 'Frequency', sortable: true },
-        { key: 'unit', label: 'Unit', sortable: true },
-        { key: 'source', label: 'Source', sortable: true },
+        { key: 'market', label: 'Market', sortable: true, width: '12%' },
+        { key: 'source_code', label: 'Source Code', sortable: true, className: 'cell-symbol', width: '22%' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name', width: '34%' },
+        { key: 'frequency', label: 'Frequency', sortable: true, width: '12%' },
+        { key: 'unit', label: 'Unit', sortable: true, width: '10%' },
+        { key: 'source', label: 'Source', sortable: true, width: '10%' },
       ],
     },
   };
@@ -585,6 +616,7 @@ tbody tr:hover {
     errorMessage: document.getElementById('error-message'),
     retryButton: document.getElementById('retry-button'),
     tableSection: document.getElementById('table-section'),
+    tableColumns: document.getElementById('table-columns'),
     tableHead: document.getElementById('table-head'),
     tableBody: document.getElementById('table-body'),
     emptyState: document.getElementById('empty-state'),
@@ -621,11 +653,49 @@ tbody tr:hover {
     return String(left ?? '').localeCompare(String(right ?? ''), 'en', { sensitivity: 'base' });
   }
 
+  function getSortColumn() {
+    return getDatasetConfig().columns.find((column) => column.key === state.sortBy);
+  }
+
+  function compareDate(left, right) {
+    const leftTime = Date.parse(left || '');
+    const rightTime = Date.parse(right || '');
+    const normalizedLeft = Number.isNaN(leftTime) ? -Infinity : leftTime;
+    const normalizedRight = Number.isNaN(rightTime) ? -Infinity : rightTime;
+    return normalizedLeft - normalizedRight;
+  }
+
+  function compareNumber(left, right) {
+    if (left === null || left === undefined || left === '') {
+      return right === null || right === undefined || right === '' ? 0 : -Infinity;
+    }
+    if (right === null || right === undefined || right === '') {
+      return Infinity;
+    }
+
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    const normalizedLeft = Number.isFinite(leftNumber) ? leftNumber : -Infinity;
+    const normalizedRight = Number.isFinite(rightNumber) ? rightNumber : -Infinity;
+    return normalizedLeft - normalizedRight;
+  }
+
+  function compareValues(left, right, column) {
+    if (column?.type === 'date') {
+      return compareDate(left, right);
+    }
+    if (column?.type === 'number') {
+      return compareNumber(left, right);
+    }
+    return compareText(left, right);
+  }
+
   function sortItems(items) {
     const direction = state.sortDir === 'asc' ? 1 : -1;
     const config = getDatasetConfig();
+    const sortColumn = getSortColumn();
     const sorted = [...items].sort((a, b) => {
-      const primary = compareText(a[state.sortBy], b[state.sortBy]);
+      const primary = compareValues(a[state.sortBy], b[state.sortBy], sortColumn);
       if (primary !== 0) {
         return primary * direction;
       }
@@ -694,6 +764,25 @@ tbody tr:hover {
     }
 
     return parsed.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  }
+
+  function formatTradeDate(value) {
+    return value || '-';
+  }
+
+  function formatPrice(value) {
+    if (value === null || value === undefined || value === '') {
+      return '-';
+    }
+
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return '-';
+    }
+
+    return new Intl.NumberFormat('en-US', {
+      maximumFractionDigits: 8,
+    }).format(numericValue);
   }
 
   function updateHeader() {
@@ -876,6 +965,7 @@ tbody tr:hover {
       });
 
       const label = document.createElement('span');
+      label.className = 'sort-label';
       label.textContent = column.label;
       const indicator = document.createElement('span');
       indicator.className = 'sort-indicator';
@@ -889,9 +979,29 @@ tbody tr:hover {
     elements.tableHead.replaceChildren(fragment);
   }
 
+  function renderTableColumns() {
+    const fragment = document.createDocumentFragment();
+
+    getDatasetConfig().columns.forEach((column) => {
+      const col = document.createElement('col');
+      if (column.width) {
+        col.style.width = column.width;
+      }
+      fragment.appendChild(col);
+    });
+
+    elements.tableColumns.replaceChildren(fragment);
+  }
+
   function renderCell(item, column) {
     if (column.type === 'status') {
       return item.status === 'delisted' ? 'delisted' : '';
+    }
+    if (column.type === 'date') {
+      return formatTradeDate(item[column.key]);
+    }
+    if (column.type === 'number') {
+      return formatPrice(item[column.key]);
     }
 
     return item[column.key] || '-';
@@ -982,6 +1092,7 @@ tbody tr:hover {
     applyFilters();
     renderDatasetTabs();
     renderFilters();
+    renderTableColumns();
     renderTableHead();
     renderTableBody();
     renderPagination();

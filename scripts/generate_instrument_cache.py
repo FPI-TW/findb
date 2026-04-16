@@ -24,6 +24,7 @@ import os
 import sys
 import tempfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from urllib.request import Request, urlopen
 BASE_URL = os.getenv("FINDB_BASE_URL", "http://localhost:8080").rstrip("/")
 SERVE_API_KEY = os.getenv("FINDB_SERVE_API_KEY", "").strip()
 PAGE_SIZE = 1000
+LATEST_PRICE_WORKERS = int(os.getenv("FINDB_LATEST_PRICE_WORKERS", "12"))
 TIMEOUT_SECONDS = 30
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = PROJECT_ROOT / "app" / "static" / "data" / "instruments.json"
@@ -46,6 +48,8 @@ INSTRUMENT_FIELDS = (
     "name",
     "currency",
     "status",
+    "latest_trade_date",
+    "latest_price",
 )
 MACRO_SERIES_FIELDS = (
     "series_id",
@@ -133,9 +137,13 @@ def fetch_page(
     page: int,
     page_size: int,
     api_key: str | None = None,
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fetch a single paginated response from a Serve API endpoint."""
-    query = parse.urlencode({"page": page, "page_size": page_size})
+    query_params: dict[str, Any] = {"page": page, "page_size": page_size}
+    if params:
+        query_params.update(params)
+    query = parse.urlencode(query_params)
     url = f"{base_url}/api/v1/serve/{endpoint}?{query}"
     headers = {"Accept": "application/json"}
 
@@ -163,6 +171,72 @@ def fetch_instruments_page(
 ) -> dict[str, Any]:
     """Fetch a single paginated instruments response from the Serve API."""
     return fetch_page(base_url, "instruments", page, page_size, api_key)
+
+
+def fetch_latest_eod(
+    base_url: str,
+    instrument_id: str,
+    api_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Fetch the newest EOD record for one instrument."""
+    payload = fetch_page(base_url, f"eod/{instrument_id}", page=1, page_size=1, api_key=api_key)
+    if payload.get("success") is not True:
+        raise RuntimeError(f"EOD API returned unsuccessful payload for {instrument_id}")
+
+    page_items = payload.get("data")
+    if not isinstance(page_items, list):
+        raise RuntimeError(f"Unexpected EOD response format for {instrument_id}: missing data array")
+
+    return page_items[0] if page_items else None
+
+
+def fetch_latest_futures_continuous(
+    base_url: str,
+    market: str,
+    symbol: str,
+    api_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Fetch the newest continuous futures record for one symbol."""
+    payload = fetch_page(
+        base_url,
+        "futures/continuous",
+        page=1,
+        page_size=1,
+        api_key=api_key,
+        params={"market": market, "symbols": symbol},
+    )
+    if payload.get("success") is not True:
+        raise RuntimeError(f"Futures continuous API returned unsuccessful payload for {market} {symbol}")
+
+    page_items = payload.get("data")
+    if not isinstance(page_items, list):
+        raise RuntimeError(f"Unexpected futures response format for {market} {symbol}: missing data array")
+
+    return page_items[0] if page_items else None
+
+
+def fetch_latest_price_snapshot(
+    base_url: str,
+    instrument: dict[str, Any],
+    api_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Fetch the latest date/price snapshot from the matching read-only Serve endpoint."""
+    instrument_id = str(instrument["instrument_id"])
+    latest = fetch_latest_eod(base_url, instrument_id, api_key=api_key)
+    if latest is not None:
+        return latest
+
+    market = instrument.get("market")
+    symbol = instrument.get("symbol")
+    if market and symbol:
+        return fetch_latest_futures_continuous(
+            base_url,
+            str(market),
+            str(symbol),
+            api_key=api_key,
+        )
+
+    return None
 
 
 def fetch_macro_series_page(
@@ -203,6 +277,50 @@ def collect_instruments(
         page += 1
 
     return collected
+
+
+def enrich_instruments_with_latest_prices(
+    instruments: list[dict[str, Any]],
+    base_url: str,
+    api_key: str | None = None,
+    max_workers: int = LATEST_PRICE_WORKERS,
+) -> list[dict[str, Any]]:
+    """Add latest EOD trade date and close price when the instruments API omits them."""
+    needs_enrichment = [
+        item
+        for item in instruments
+        if item.get("instrument_id")
+        and (item.get("latest_trade_date") is None or item.get("latest_price") is None)
+    ]
+    if not needs_enrichment:
+        return instruments
+
+    enriched_by_id: dict[str, dict[str, Any]] = {}
+    worker_count = max(1, min(max_workers, len(needs_enrichment)))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(
+                fetch_latest_price_snapshot,
+                base_url,
+                item,
+                api_key,
+            ): item
+            for item in needs_enrichment
+        }
+        for future in as_completed(futures):
+            item = futures[future]
+            instrument_id = str(item["instrument_id"])
+            latest_eod = future.result()
+            enriched = dict(item)
+            enriched["latest_trade_date"] = latest_eod.get("trade_date") if latest_eod else None
+            enriched["latest_price"] = latest_eod.get("close") if latest_eod else None
+            enriched_by_id[instrument_id] = enriched
+
+    return [
+        enriched_by_id.get(str(item.get("instrument_id")), item)
+        for item in instruments
+    ]
 
 
 def collect_macro_series(
@@ -290,6 +408,11 @@ def main() -> int:
     """CLI entry point."""
     try:
         instruments = collect_instruments(BASE_URL, api_key=SERVE_API_KEY or None)
+        instruments = enrich_instruments_with_latest_prices(
+            instruments,
+            BASE_URL,
+            api_key=SERVE_API_KEY or None,
+        )
         payload = build_cache_payload(instruments)
         macro_series = collect_macro_series(BASE_URL, api_key=SERVE_API_KEY or None)
         macro_payload = build_macro_series_payload(macro_series)

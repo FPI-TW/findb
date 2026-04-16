@@ -30,6 +30,8 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
                 "currency": "USD",
                 "status": "active",
                 "timezone": "America/New_York",
+                "latest_trade_date": "2026-04-08",
+                "latest_price": "269.48000000",
             },
             {
                 "instrument_id": "1",
@@ -39,6 +41,8 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
                 "name": "Bitcoin",
                 "currency": "USD",
                 "status": "active",
+                "latest_trade_date": "2026-04-09",
+                "latest_price": "95709.01000000",
             },
         ],
         generated_at=datetime(2026, 4, 9, 10, 0, tzinfo=timezone.utc),
@@ -56,6 +60,8 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
         "name": "Bitcoin",
         "currency": "USD",
         "status": "active",
+        "latest_trade_date": "2026-04-09",
+        "latest_price": "95709.01000000",
     }
 
 
@@ -134,6 +140,58 @@ def test_collect_instruments_reads_all_pages(monkeypatch):
     )
 
     assert instruments == [{"instrument_id": "1"}, {"instrument_id": "2"}]
+
+
+def test_enrich_instruments_with_latest_prices(monkeypatch):
+    module = load_module()
+
+    calls = []
+
+    def fake_fetch_latest_eod(base_url, instrument_id, api_key=None):
+        calls.append((base_url, instrument_id, api_key))
+        if instrument_id == "2":
+            return None
+        return {"trade_date": "2026-04-09", "close": "95709.01000000"}
+
+    def fake_fetch_latest_futures_continuous(base_url, market, symbol, api_key=None):
+        assert base_url == "http://localhost:8080"
+        assert api_key == "demo-key"
+        assert (market, symbol) == ("WTX", "TXF1")
+        return {"trade_date": "2026-03-12", "close": "21000.00000000"}
+
+    monkeypatch.setattr(module, "fetch_latest_eod", fake_fetch_latest_eod)
+    monkeypatch.setattr(
+        module,
+        "fetch_latest_futures_continuous",
+        fake_fetch_latest_futures_continuous,
+    )
+
+    enriched = module.enrich_instruments_with_latest_prices(
+        [
+            {"instrument_id": "1", "symbol": "BTC"},
+            {
+                "instrument_id": "existing",
+                "symbol": "AAPL",
+                "latest_trade_date": "2026-04-08",
+                "latest_price": "269.48000000",
+            },
+            {"instrument_id": "2", "market": "WTX", "symbol": "TXF1"},
+        ],
+        "http://localhost:8080",
+        api_key="demo-key",
+        max_workers=1,
+    )
+
+    assert calls == [
+        ("http://localhost:8080", "1", "demo-key"),
+        ("http://localhost:8080", "2", "demo-key"),
+    ]
+    assert enriched[0]["latest_trade_date"] == "2026-04-09"
+    assert enriched[0]["latest_price"] == "95709.01000000"
+    assert enriched[1]["latest_trade_date"] == "2026-04-08"
+    assert enriched[1]["latest_price"] == "269.48000000"
+    assert enriched[2]["latest_trade_date"] == "2026-03-12"
+    assert enriched[2]["latest_price"] == "21000.00000000"
 
 
 def test_collect_macro_series_reads_all_pages(monkeypatch):

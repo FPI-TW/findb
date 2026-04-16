@@ -24,6 +24,8 @@ async def test_instrument_lookup_page_is_served():
     assert "標的與宏觀查詢" in page_response.text
     assert "/static/data/instruments.json" in page_response.text
     assert "/static/data/macro-series.json" in page_response.text
+    assert "Last Date" in page_response.text
+    assert "Last Price" in page_response.text
 
 
 def test_instrument_cache_path_is_gitignored():

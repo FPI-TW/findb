@@ -23,6 +23,8 @@ INSTRUMENT_FIELDS = (
     "name",
     "currency",
     "status",
+    "latest_trade_date",
+    "latest_price",
 )
 
 
@@ -182,6 +184,15 @@ def _normalize_instrument_item(item: Any) -> dict[str, Any]:
         value = normalized[field]
         if value is not None and not isinstance(value, str):
             raise InstrumentCacheValidationError(f"Instrument field {field} must be a string")
+
+    latest_trade_date = normalized["latest_trade_date"]
+    if latest_trade_date is not None and not isinstance(latest_trade_date, str):
+        raise InstrumentCacheValidationError("Instrument field latest_trade_date must be a string")
+    latest_price = normalized["latest_price"]
+    if latest_price is not None and not isinstance(latest_price, (int, float, str)):
+        raise InstrumentCacheValidationError(
+            "Instrument field latest_price must be a string or number"
+        )
 
     return normalized
 

@@ -162,6 +162,8 @@ class InstrumentCacheItem(BaseModel):
     name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
+    latest_trade_date: Optional[date] = None
+    latest_price: Optional[Decimal] = None
 
 
 class InstrumentCacheDocument(BaseModel):
@@ -189,6 +191,8 @@ class InstrumentCacheItemPatchRequest(BaseModel):
     name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
+    latest_trade_date: Optional[date] = None
+    latest_price: Optional[Decimal] = None
 
     model_config = ConfigDict(extra="forbid")
 

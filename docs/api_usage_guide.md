@@ -1,6 +1,6 @@
 # FinDB API 使用教學
 
-> **版本**: 0.1.0 | **最後更新**: 2026-03-13
+> **版本**: 0.1.0 | **最後更新**: 2026-04-08
 
 本文件說明如何使用 FinDB 的 Source API（資料寫入）、Serve API（資料查詢）與 Admin API（資料修正）。
 涵蓋認證機制、所有端點規格、請求/回應格式、錯誤處理與完整範例。
@@ -10,6 +10,7 @@
 ## 目錄
 
 - [系統架構概述](#系統架構概述)
+- [目前實作範圍](#目前實作範圍)
 - [快速開始](#快速開始)
 - [認證機制](#認證機制)
 - [通用格式](#通用格式)
@@ -25,9 +26,12 @@
   - [期貨](#期貨)
   - [交易日曆](#交易日曆)
 - [Admin API（資料修正）](#admin-api資料修正)
+  - [查詢 DQ Issues](#查詢-dq-issues)
   - [修正日K 資料](#修正日k-資料)
   - [標記 DQ Issue 已解決](#標記-dq-issue-已解決)
+  - [查詢 Raw Payload](#查詢-raw-payload)
   - [查詢修正紀錄](#查詢修正紀錄)
+  - [批次重跑既有 Run](#批次重跑既有-run)
 - [分頁機制](#分頁機制)
 - [錯誤代碼一覽](#錯誤代碼一覽)
 - [Python 範例](#python-範例)
@@ -58,6 +62,22 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | **Source API** | 寫入路徑 | 接收原始 payload、去重、觸發正規化 |
 | **Serve API** | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料 |
 | **Admin API** | 修正路徑 | 人工修正 Canonical 資料，寫入不可變 audit log |
+
+---
+
+## 目前實作範圍
+
+以下內容是 2026-04-08 這個版本的實際可用範圍：
+
+| 區塊 | 現況 |
+|------|------|
+| Source API | 標準 ingest、direct ingest、run status、rerun、dataset list 已可用 |
+| Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina` 已可用 |
+| Serve API | instruments、EOD、corporate actions、macro、futures、calendar 已可用 |
+| Admin API | DQ issue、EOD patch、corrections、raw payload、bulk rerun 已可用 |
+| 區域市場 | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程 |
+
+> 目前 normalize 仍由 FastAPI `BackgroundTasks` 觸發，若要評估大批量 ingest 與部署策略，請一併參考 [scalability checklist](scalability_optimization_checklist.md)。
 
 ---
 
@@ -346,8 +366,12 @@ Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
 | POST | `/ingest/fx/direct` | FX | `fx_bloomberg_eod` | Bloomberg 外匯直接格式 |
 | POST | `/ingest/wtx/direct` | WTX | `wtx_bloomberg_eod` | Bloomberg WTX 期貨直接格式 |
 | POST | `/ingest/usstock/direct` | US | `us_stock_eod` | Bloomberg 美股直接格式 |
-| POST | `/ingest/hkchina/direct` | GLOBAL | `hkchina_stock_eod` | Bloomberg 港中股直接格式 |
+| POST | `/ingest/hkchina/direct` | GLOBAL | `hkchina_mixed_eod` | Bloomberg 港中混合直接格式（股票 + 指數） |
+| POST | `/ingest/hkchina-index/direct` | GLOBAL | `hkchina_index_eod` | Bloomberg 港中指數直接格式（相容舊流程） |
 | POST | `/ingest/macro/direct` | MACRO | `macro_bloomberg_observation` | Bloomberg 宏觀直接格式 |
+
+> `hkchina/direct` 會在同一批 payload 中同時處理港股/中資股票與港中指數，並依 ticker 自動落到 `HK` 或 `CN` 市場。
+> 若上游仍維持舊的純 index 匯出流程，可繼續使用 `hkchina-index/direct`。
 
 #### curl 範例
 
@@ -399,6 +423,66 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto/direct" \
         "low": 95119.76,
         "close": 95709.01,
         "volume": 18500
+      }
+    ]
+  }'
+```
+
+```bash
+# 直接匯入港中混合資料（股票 + 指數）
+curl -X POST "http://localhost:8080/api/v1/source/ingest/hkchina/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "bloomberg", "query_time": "2026-04-08T02:29:42Z" },
+    "data": [
+      {
+        "ticker": "700 HK Equity",
+        "date": "2026-04-08",
+        "open": 558.0,
+        "high": 567.0,
+        "low": 550.0,
+        "close": 560.0,
+        "volume": 23494910
+      },
+      {
+        "ticker": "SH000911 Index",
+        "date": "2026-04-08",
+        "open": 5941.521,
+        "high": 5966.992,
+        "low": 5940.137,
+        "close": 5960.012,
+        "volume": 0
+      }
+    ]
+  }'
+```
+
+```bash
+# 直接匯入港中指數資料（相容舊流程）
+curl -X POST "http://localhost:8080/api/v1/source/ingest/hkchina-index/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": { "source": "bloomberg", "query_time": "2026-04-08T02:29:42Z" },
+    "data": [
+      {
+        "ticker": "HSI Index",
+        "date": "2026-04-09",
+        "open": 25772.56,
+        "high": 25872.30,
+        "low": 25711.23,
+        "close": 25741.55,
+        "volume": 0
+      },
+      {
+        "ticker": "SH000911 Index",
+        "date": "2026-04-08",
+        "open": 5941.521,
+        "high": 5966.992,
+        "low": 5940.137,
+        "close": 5960.012,
+        "volume": 0
       }
     ]
   }'
@@ -482,6 +566,7 @@ GET /api/v1/source/runs/{run_id}
 | `pending` | 已排入佇列，等待處理 |
 | `running` | 正規化處理中 |
 | `completed` | 處理完成 |
+| `completed_with_errors` | 已完成，但部分資料寫入或 DQ 流程有錯誤 |
 | `failed` | 處理失敗（查看 `error_message`） |
 
 #### curl 範例
@@ -1038,9 +1123,65 @@ Admin API 用於人工修正 Canonical 資料。每次修正都會自動寫入 `
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
+| GET | `/dq-issues` | 查詢 DQ issue 清單 |
 | PATCH | `/eod/{instrument_id}/{trade_date}` | 修正日K 的 OHLCV 欄位 |
 | PATCH | `/dq-issues/{issue_id}/resolve` | 標記 DQ issue 為已解決 |
+| GET | `/raw-payloads` | 查詢 raw payload 清單 |
+| GET | `/raw-payloads/{run_id}` | 依 run_id 查詢原始 payload |
 | GET | `/corrections` | 查詢修正 audit log |
+| POST | `/runs/bulk-rerun` | 批次重跑既有 runs |
+
+---
+
+### 查詢 DQ Issues
+
+```
+GET /api/v1/admin/dq-issues
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `resolved` | query | bool | 否 | 篩選已解決 / 未解決 |
+| `instrument_id` | query | UUID | 否 | 篩選特定標的 |
+| `severity` | query | string | 否 | 篩選 `warning` / `error` |
+| `page` | query | int | 否 | 頁碼（預設 1） |
+| `page_size` | query | int | 否 | 每頁筆數（預設 100，最大 1000） |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "019462f0-7c00-7000-8000-000000000050",
+      "instrument_id": "019462f0-7c00-7000-8000-000000000002",
+      "issue_type": "MISSING_OHLC",
+      "severity": "warning",
+      "description": "Missing OHLC fields: high",
+      "resolved": false,
+      "resolved_at": null,
+      "created_at": "2026-03-03T10:00:00Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 100,
+    "total_records": 1,
+    "total_pages": 1
+  }
+}
+```
+
+```bash
+# 查全部未解決 issue
+curl "http://localhost:8080/api/v1/admin/dq-issues?resolved=false" \
+  -H "X-API-Key: your-admin-key"
+
+# 查指定 instrument 的 warning
+curl "http://localhost:8080/api/v1/admin/dq-issues?instrument_id=019462f0-7c00-7000-8000-000000000002&severity=warning" \
+  -H "X-API-Key: your-admin-key"
+```
 
 ---
 
@@ -1085,7 +1226,7 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
   "record_id": "019462f0-7c00-7000-8000-000000000001",
   "instrument_id": "019462f0-7c00-7000-8000-000000000002",
   "trade_date": "2026-01-16",
-  "message": "EOD record updated and correction logged"
+  "message": "EOD record corrected successfully"
 }
 ```
 
@@ -1165,7 +1306,7 @@ PATCH /api/v1/admin/dq-issues/{issue_id}/resolve
   "correction_id": "019462f0-7c00-7000-8000-000000000099",
   "issue_id": "019462f0-7c00-7000-8000-000000000050",
   "resolved_at": "2026-03-03T10:00:00Z",
-  "message": "DQ issue marked as resolved and correction logged"
+  "message": "DQ issue resolved successfully"
 }
 ```
 
@@ -1191,6 +1332,56 @@ curl -X PATCH \
 
 ---
 
+### 查詢 Raw Payload
+
+#### 查詢清單
+
+```
+GET /api/v1/admin/raw-payloads
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `dataset_key` | query | string | 否 | 篩選特定 dataset |
+| `run_id` | query | UUID | 否 | 篩選特定 run |
+| `date_from` | query | date | 否 | `created_at >=` 這一天（UTC） |
+| `date_to` | query | date | 否 | `created_at <` 次日（UTC） |
+| `page` | query | int | 否 | 頁碼（預設 1） |
+| `page_size` | query | int | 否 | 每頁筆數（預設 20，最大 200） |
+
+```bash
+# 查最新 raw payload
+curl "http://localhost:8080/api/v1/admin/raw-payloads" \
+  -H "X-API-Key: your-admin-key"
+
+# 依 dataset_key 篩選
+curl "http://localhost:8080/api/v1/admin/raw-payloads?dataset_key=crypto_bloomberg_eod&page_size=10" \
+  -H "X-API-Key: your-admin-key"
+
+# 依日期區間篩選
+curl "http://localhost:8080/api/v1/admin/raw-payloads?date_from=2026-04-01&date_to=2026-04-08" \
+  -H "X-API-Key: your-admin-key"
+```
+
+#### 依 run_id 查詢單筆 raw payload
+
+```
+GET /api/v1/admin/raw-payloads/{run_id}
+```
+
+```bash
+curl "http://localhost:8080/api/v1/admin/raw-payloads/019462f0-7c00-7000-8000-000000000001" \
+  -H "X-API-Key: your-admin-key"
+```
+
+此端點適合用來：
+
+- 追蹤特定 ingestion run 的原始輸入
+- 重新比對上游 payload 與 canonical 寫入結果
+- 配合 Source API rerun / Admin bulk rerun 做除錯
+
+---
+
 ### 查詢修正紀錄
 
 ```
@@ -1202,7 +1393,7 @@ GET /api/v1/admin/corrections
 | `table_name` | query | string | 否 | 篩選修正的資料表（`market_data_eod`、`dq_issue`） |
 | `instrument_id` | query | UUID | 否 | 篩選特定標的的修正紀錄 |
 | `page` | query | int | 否 | 頁碼（預設 1） |
-| `page_size` | query | int | 否 | 每頁筆數（預設 20，最大 200） |
+| `page_size` | query | int | 否 | 每頁筆數（預設 100，最大 1000） |
 
 回應為**最新優先**排序。
 
@@ -1255,6 +1446,48 @@ curl "http://localhost:8080/api/v1/admin/corrections?instrument_id=019462f0-7c00
 curl "http://localhost:8080/api/v1/admin/corrections?table_name=dq_issue&page_size=50" \
   -H "X-API-Key: your-admin-key"
 ```
+
+---
+
+### 批次重跑既有 Run
+
+```
+POST /api/v1/admin/runs/bulk-rerun
+```
+
+| 參數 | 位置 | 類型 | 必填 | 說明 |
+|------|------|------|------|------|
+| `dataset_key` | query | string | 否 | 只重跑特定 dataset |
+| `status` | query | string | 否 | 篩選 `completed`、`failed`、`all`，預設 `completed` |
+
+回應範例：
+
+```json
+{
+  "success": true,
+  "queued": 3,
+  "skipped": 1,
+  "errors": 0,
+  "new_run_ids": [
+    "019462f0-7c00-7000-8000-000000000101",
+    "019462f0-7c00-7000-8000-000000000102",
+    "019462f0-7c00-7000-8000-000000000103"
+  ],
+  "error_details": []
+}
+```
+
+```bash
+# 重跑所有 completed runs
+curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun" \
+  -H "X-API-Key: your-admin-key"
+
+# 只重跑某個 dataset 的 failed runs
+curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun?dataset_key=crypto_bloomberg_eod&status=failed" \
+  -H "X-API-Key: your-admin-key"
+```
+
+> `bulk-rerun` 會為每個符合條件的 run 建立新的 `ingestion_run`，並重新排入 normalize，不會覆寫舊的 run 記錄。
 
 ---
 
@@ -1337,6 +1570,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=50"
 | `"No admin API keys configured"` | 500 | 未設定 `ADMIN_API_KEYS` 環境變數 |
 | `"EOD record not found..."` | 404 | 指定的 instrument_id + trade_date 無日K 記錄 |
 | `"DQ issue ... not found"` | 404 | 指定的 issue_id 不存在 |
+| `"Raw payload not found"` | 404 | 指定的 run_id 找不到 raw payload |
 | `"No OHLCV fields provided..."` | 400 | PATCH 請求未包含任何 OHLCV 欄位 |
 | `"No changes detected..."` | 400 | 提交的值與現有值完全相同 |
 | `"DQ issue ... is already resolved"` | 409 | 該 DQ issue 已是 resolved 狀態 |
