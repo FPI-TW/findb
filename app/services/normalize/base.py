@@ -437,8 +437,12 @@ class BaseNormalizer(ABC):
         )
 
         await self.db.execute(stmt)
-        # Keep subsequent ORM reads in the same session from returning stale pre-upsert rows.
+        # Refresh ORM state for follow-up reads while dropping cached Instrument
+        # instances that would otherwise become expired and unsafe to reuse in the
+        # remaining async batch.
         self.db.expire_all()
+        self._instrument_cache.clear()
+        self._identifier_cache.clear()
         return True
 
     async def check_duplicate_in_db(
@@ -545,6 +549,48 @@ class BaseNormalizer(ABC):
             if status in ("completed", "completed_with_errors", "failed"):
                 run.completed_at = utc_now()
 
+    def _build_processing_error_issue(
+        self,
+        record: MappedRecord,
+        exc: Exception,
+    ) -> DQIssueRecord:
+        """Convert an unexpected record-level exception into a persisted DQ issue."""
+        description = str(exc).strip()
+        if description:
+            description = f"{type(exc).__name__}: {description}"
+        else:
+            description = type(exc).__name__
+
+        return DQIssueRecord(
+            issue_type="processing_error",
+            severity="error",
+            description=description,
+            trade_date=record.trade_date if isinstance(record.trade_date, datetime) else None,
+            raw_data=record.raw_data,
+        )
+
+    def _summarize_processing_errors(self, issues: list[DQIssueRecord]) -> Optional[str]:
+        """Build a compact run-level summary for unexpected processing errors."""
+        processing_errors = [issue for issue in issues if issue.issue_type == "processing_error"]
+        if not processing_errors:
+            return None
+
+        samples: list[str] = []
+        seen: set[str] = set()
+        for issue in processing_errors:
+            description = issue.description.strip() if issue.description else issue.issue_type
+            if description in seen:
+                continue
+            seen.add(description)
+            samples.append(description)
+            if len(samples) == 3:
+                break
+
+        joined_samples = "; ".join(samples)
+        if len(processing_errors) == 1:
+            return f"Processing error: {joined_samples}"
+        return f"{len(processing_errors)} processing errors. Samples: {joined_samples}"
+
     async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
         """
         Main processing method.
@@ -570,6 +616,7 @@ class BaseNormalizer(ABC):
             processed_records = 0
 
             for record in mapped_records:
+                instrument: Instrument | None = None
                 try:
                     # Validate record
                     issues = self.dq_validator.validate_eod(record, seen_keys=seen_keys)
@@ -645,26 +692,27 @@ class BaseNormalizer(ABC):
 
                 except Exception as e:
                     result.failed_records += 1
-                    result.dq_issues.append(
-                        DQIssueRecord(
-                            issue_type="processing_error",
-                            severity="error",
-                            description=str(e),
-                            raw_data=record.raw_data,
-                        )
+                    issue = self._build_processing_error_issue(record, e)
+                    await self.record_dq_issue(
+                        issue,
+                        run_id,
+                        instrument.instrument_id if instrument is not None else None,
                     )
+                    result.dq_issues.append(issue)
                 finally:
                     processed_records += 1
                     await self._maybe_flush(processed_records)
 
             # Update final status
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
+            error_summary = self._summarize_processing_errors(result.dq_issues)
             await self.update_run_status(
                 run_id,
                 status,
                 result.total_records,
                 result.success_records,
                 result.failed_records,
+                error_summary,
             )
 
             await self.db.commit()

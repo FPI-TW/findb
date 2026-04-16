@@ -8,11 +8,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from app.api.v1 import admin, serve, source
 from app.config import get_settings
-from app.api.v1 import source, serve, admin
 from app.models.base import init_db
-
 
 settings = get_settings()
 
@@ -38,6 +38,7 @@ app = FastAPI(
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TEST_PAGE_PATH = STATIC_DIR / "test_page.html"
+INSTRUMENT_LOOKUP_PAGE_PATH = STATIC_DIR / "instrument-lookup.html"
 
 # CORS middleware
 app.add_middleware(
@@ -47,6 +48,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include routers
 app.include_router(
@@ -92,3 +95,9 @@ async def root():
 async def test_page():
     """Test dashboard page."""
     return FileResponse(TEST_PAGE_PATH, media_type="text/html")
+
+
+@app.get("/instrument-lookup", include_in_schema=False)
+async def instrument_lookup_page():
+    """Instrument lookup page."""
+    return FileResponse(INSTRUMENT_LOOKUP_PAGE_PATH, media_type="text/html")

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_WINDOW: int = 60  # seconds
 
     # Raw Data Retention
+    RAW_RETENTION_ENABLED: bool = False
     RAW_RETENTION_DAYS: int = 14
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
