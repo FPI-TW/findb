@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FinDB — 標的與宏觀查詢</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300&family=Noto+Sans+JP:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #F5F3EE;
+  --bg-card:      #FDFCFA;
+  --bg-hover:     #F0EDE6;
+  --bg-subtle:    #FAF8F5;
+  --text-1:       #2C2825;
+  --text-2:       #8A847B;
+  --text-3:       #B5AFA6;
+  --accent:       #B84C3A;
+  --accent-soft:  #F5EAE7;
+  --border:       #E2DED6;
+  --border-light: #EDEAE4;
+  --shadow-soft:  rgba(69, 49, 40, 0.05);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { font-size: 16px; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text-1);
+  font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', sans-serif;
+  font-weight: 300;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.62), transparent 36%),
+    linear-gradient(180deg, #F8F6F1 0%, var(--bg) 100%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.26) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.2) 1px, transparent 1px);
+  background-size: 20px 20px, 20px 20px;
+  mix-blend-mode: soft-light;
+}
+
+.page {
+  position: relative;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px 72px;
+}
+
+.page-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.eyebrow {
+  margin-bottom: 12px;
+  font-size: 0.74rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.page-title {
+  margin: 0;
+  font-family: 'Noto Serif JP', serif;
+  font-weight: 200;
+  font-size: clamp(1.9rem, 3vw, 2.35rem);
+  letter-spacing: 0.15em;
+}
+
+.page-title .accent {
+  color: var(--accent);
+}
+
+.page-subtitle {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 0.85rem;
+  line-height: 1.8;
+}
+
+.panel {
+  background: var(--bg-card);
+  border: 1px solid rgba(226, 222, 214, 0.8);
+  box-shadow: 0 18px 36px var(--shadow-soft);
+}
+
+.controls {
+  padding: 24px 24px 20px;
+}
+
+.dataset-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.dataset-tab {
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-2);
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dataset-tab:hover {
+  border-color: var(--border);
+  color: var(--text-1);
+}
+
+.dataset-tab.active {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+
+.search-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 10px 0 8px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.search-input::placeholder {
+  color: var(--text-3);
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
+.filters {
+  display: grid;
+  gap: 14px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.filter-label {
+  min-width: 54px;
+  padding-top: 6px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pill {
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-2);
+  padding: 6px 16px;
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pill:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.pill.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 24px 0;
+  color: var(--text-2);
+  font-size: 0.84rem;
+}
+
+.table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+thead th {
+  padding: 14px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 0.74rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sort-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-indicator {
+  width: 10px;
+  height: 12px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  opacity: 0.5;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.sort-button:hover .sort-indicator,
+.sort-button.active .sort-indicator {
+  opacity: 1;
+}
+
+.sort-button.active .sort-indicator {
+  color: var(--accent);
+}
+
+tbody td {
+  height: 48px;
+  padding: 14px 10px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--bg-subtle);
+}
+
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.cell-symbol {
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.cell-name {
+  min-width: 0;
+}
+
+.cell-date,
+.cell-price {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.cell-price {
+  text-align: right;
+}
+
+.cell-status {
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+
+.cell-status.delisted {
+  text-decoration: line-through;
+}
+
+.empty-state,
+.error-state,
+.loading-state {
+  padding: 64px 24px;
+  text-align: center;
+  color: var(--text-2);
+  line-height: 1.9;
+}
+
+.error-state strong {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.retry-button {
+  margin-top: 16px;
+  border: 0;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 8px 18px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px 24px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.page-button {
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  padding: 4px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.page-button:hover:not(:disabled) {
+  color: var(--text-1);
+}
+
+.page-button:disabled {
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.page-button.current {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 6px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 36px 18px 56px;
+  }
+
+  .controls,
+  .status-line,
+  .footer-row {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .filter-group {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .filter-label {
+    min-width: 0;
+    padding-top: 0;
+  }
+
+  .status-line,
+  .footer-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  thead th,
+  tbody td {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  table {
+    min-width: 760px;
+  }
+}
+</style>
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <div class="eyebrow">Instrument Index</div>
+      <h1 class="page-title">FinDB <span class="accent">—</span> 標的與宏觀查詢</h1>
+      <p class="page-subtitle" id="header-meta">載入資料中…</p>
+    </header>
+
+    <section class="panel">
+      <div class="controls">
+        <div class="dataset-tabs" id="dataset-tabs" aria-label="資料集切換"></div>
+
+        <div class="search-row">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.5"></circle>
+            <path d="M20 20L16.65 16.65" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+          </svg>
+          <input
+            id="search-input"
+            class="search-input"
+            type="search"
+            placeholder="標的名稱、代碼、宏觀序列…"
+            autocomplete="off"
+            spellcheck="false"
+          >
+        </div>
+
+        <div class="filters">
+          <div class="filter-group">
+            <div class="filter-label">市場</div>
+            <div class="pill-row" id="market-filters"></div>
+          </div>
+          <div class="filter-group">
+            <div class="filter-label" id="asset-filter-label">類別</div>
+            <div class="pill-row" id="asset-filters"></div>
+          </div>
+          <div class="filter-group">
+            <div class="filter-label" id="status-filter-label">狀態</div>
+            <div class="pill-row" id="status-filters"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-line">
+        <div id="result-summary">尚未載入資料</div>
+        <div id="active-filters">預設顯示 active 標的</div>
+      </div>
+
+      <div id="loading-state" class="loading-state">正在整理標的資料，請稍候。</div>
+      <div id="error-state" class="error-state hidden">
+        <strong>無法載入查詢快取</strong>
+        <div id="error-message">請確認快取檔案已產生，或稍後再試。</div>
+        <button class="retry-button" id="retry-button" type="button">重新載入</button>
+      </div>
+      <div id="table-section" class="hidden">
+        <div class="table-wrap">
+          <table>
+            <colgroup id="table-columns"></colgroup>
+            <thead>
+              <tr id="table-head"></tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+        <div id="empty-state" class="empty-state hidden">沒有符合條件的標的。</div>
+        <div class="footer-row">
+          <div id="count-label">顯示 0 / 共 0 筆</div>
+          <div id="pagination" class="pagination"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<script>
+(() => {
+  const PAGE_SIZE = 50;
+  const DATASETS = {
+    instruments: {
+      label: '金融商品',
+      itemLabel: '標的',
+      url: '/static/data/instruments.json',
+      defaultSort: 'market',
+      searchPlaceholder: '標的名稱、Symbol、Instrument ID…',
+      searchFields: ['symbol', 'name', 'instrument_id', 'market', 'asset_class', 'currency'],
+      columns: [
+        { key: 'market', label: 'Market', sortable: true, width: '9%' },
+        { key: 'symbol', label: 'Symbol', sortable: true, className: 'cell-symbol', width: '11%' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name', width: '22%' },
+        { key: 'asset_class', label: 'Asset Class', sortable: true, width: '12%' },
+        { key: 'currency', label: 'CCY', sortable: true, width: '7%' },
+        { key: 'latest_trade_date', label: 'Last Date', sortable: true, type: 'date', className: 'cell-date', width: '14%' },
+        { key: 'latest_price', label: 'Last Price', sortable: true, type: 'number', className: 'cell-price', width: '16%' },
+        { key: 'status', label: 'Status', sortable: true, type: 'status', width: '9%' },
+      ],
+    },
+    macro: {
+      label: '宏觀序列',
+      itemLabel: '宏觀序列',
+      url: '/static/data/macro-series.json',
+      defaultSort: 'market',
+      searchPlaceholder: '宏觀序列名稱、Source Code、Series ID…',
+      searchFields: ['name', 'source_code', 'series_id', 'unit', 'frequency', 'source', 'market'],
+      columns: [
+        { key: 'market', label: 'Market', sortable: true, width: '12%' },
+        { key: 'source_code', label: 'Source Code', sortable: true, className: 'cell-symbol', width: '22%' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name', width: '34%' },
+        { key: 'frequency', label: 'Frequency', sortable: true, width: '12%' },
+        { key: 'unit', label: 'Unit', sortable: true, width: '10%' },
+        { key: 'source', label: 'Source', sortable: true, width: '10%' },
+      ],
+    },
+  };
+
+  const state = {
+    dataset: 'instruments',
+    source: {
+      instruments: [],
+      macro: [],
+    },
+    filtered: [],
+    metadata: {
+      instruments: {
+        markets: [],
+        assetClasses: [],
+        generatedAt: '',
+        total: 0,
+      },
+      macro: {
+        markets: [],
+        frequencies: [],
+        sources: [],
+        generatedAt: '',
+        total: 0,
+      },
+    },
+    searchTerm: '',
+    market: 'ALL',
+    assetClass: 'ALL',
+    status: 'active',
+    frequency: 'ALL',
+    sourceFilter: 'ALL',
+    sortBy: 'market',
+    sortDir: 'asc',
+    currentPage: 1,
+  };
+
+  const elements = {
+    headerMeta: document.getElementById('header-meta'),
+    datasetTabs: document.getElementById('dataset-tabs'),
+    searchInput: document.getElementById('search-input'),
+    marketFilters: document.getElementById('market-filters'),
+    assetFilterLabel: document.getElementById('asset-filter-label'),
+    assetFilters: document.getElementById('asset-filters'),
+    statusFilterLabel: document.getElementById('status-filter-label'),
+    statusFilters: document.getElementById('status-filters'),
+    resultSummary: document.getElementById('result-summary'),
+    activeFilters: document.getElementById('active-filters'),
+    loadingState: document.getElementById('loading-state'),
+    errorState: document.getElementById('error-state'),
+    errorMessage: document.getElementById('error-message'),
+    retryButton: document.getElementById('retry-button'),
+    tableSection: document.getElementById('table-section'),
+    tableColumns: document.getElementById('table-columns'),
+    tableHead: document.getElementById('table-head'),
+    tableBody: document.getElementById('table-body'),
+    emptyState: document.getElementById('empty-state'),
+    countLabel: document.getElementById('count-label'),
+    pagination: document.getElementById('pagination'),
+  };
+
+  function getDatasetConfig() {
+    return DATASETS[state.dataset];
+  }
+
+  function getDatasetMetadata() {
+    return state.metadata[state.dataset];
+  }
+
+  function getDatasetItems() {
+    return state.source[state.dataset] || [];
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function normalizeText(value) {
+    return String(value ?? '').trim().toLowerCase();
+  }
+
+  function compareText(left, right) {
+    return String(left ?? '').localeCompare(String(right ?? ''), 'en', { sensitivity: 'base' });
+  }
+
+  function getSortColumn() {
+    return getDatasetConfig().columns.find((column) => column.key === state.sortBy);
+  }
+
+  function compareDate(left, right) {
+    const leftTime = Date.parse(left || '');
+    const rightTime = Date.parse(right || '');
+    const normalizedLeft = Number.isNaN(leftTime) ? -Infinity : leftTime;
+    const normalizedRight = Number.isNaN(rightTime) ? -Infinity : rightTime;
+    return normalizedLeft - normalizedRight;
+  }
+
+  function compareNumber(left, right) {
+    if (left === null || left === undefined || left === '') {
+      return right === null || right === undefined || right === '' ? 0 : -Infinity;
+    }
+    if (right === null || right === undefined || right === '') {
+      return Infinity;
+    }
+
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    const normalizedLeft = Number.isFinite(leftNumber) ? leftNumber : -Infinity;
+    const normalizedRight = Number.isFinite(rightNumber) ? rightNumber : -Infinity;
+    return normalizedLeft - normalizedRight;
+  }
+
+  function compareValues(left, right, column) {
+    if (column?.type === 'date') {
+      return compareDate(left, right);
+    }
+    if (column?.type === 'number') {
+      return compareNumber(left, right);
+    }
+    return compareText(left, right);
+  }
+
+  function sortItems(items) {
+    const direction = state.sortDir === 'asc' ? 1 : -1;
+    const config = getDatasetConfig();
+    const sortColumn = getSortColumn();
+    const sorted = [...items].sort((a, b) => {
+      const primary = compareValues(a[state.sortBy], b[state.sortBy], sortColumn);
+      if (primary !== 0) {
+        return primary * direction;
+      }
+
+      const marketFallback = compareText(a.market, b.market);
+      if (marketFallback !== 0) {
+        return marketFallback;
+      }
+
+      const symbolFallback = compareText(a.symbol, b.symbol);
+      if (symbolFallback !== 0) {
+        return symbolFallback;
+      }
+
+      if (config.columns.some((column) => column.key === 'source_code')) {
+        const sourceCodeFallback = compareText(a.source_code, b.source_code);
+        if (sourceCodeFallback !== 0) {
+          return sourceCodeFallback;
+        }
+      }
+
+      return compareText(a.name, b.name);
+    });
+
+    return sorted;
+  }
+
+  function applyFilters() {
+    const query = normalizeText(state.searchTerm);
+    const config = getDatasetConfig();
+    const items = getDatasetItems().filter((item) => {
+      const matchedSearch = !query || config.searchFields.some((field) => normalizeText(item[field]).includes(query));
+      const matchedMarket = state.market === 'ALL' || item.market === state.market;
+      const matchedSecondary = state.dataset === 'macro'
+        ? state.frequency === 'ALL' || item.frequency === state.frequency
+        : state.assetClass === 'ALL' || item.asset_class === state.assetClass;
+      const matchedTertiary = state.dataset === 'macro'
+        ? state.sourceFilter === 'ALL' || item.source === state.sourceFilter
+        : state.status === 'ALL' || item.status === state.status;
+
+      return matchedSearch && matchedMarket && matchedSecondary && matchedTertiary;
+    });
+
+    state.filtered = sortItems(items);
+
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / PAGE_SIZE));
+    if (state.currentPage > totalPages) {
+      state.currentPage = totalPages;
+    }
+  }
+
+  function getVisibleRows() {
+    const start = (state.currentPage - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    return state.filtered.slice(start, end);
+  }
+
+  function formatGeneratedAt(raw) {
+    if (!raw) {
+      return '未知';
+    }
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      return escapeHtml(raw);
+    }
+
+    return parsed.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  }
+
+  function formatTradeDate(value) {
+    return value || '-';
+  }
+
+  function formatPrice(value) {
+    if (value === null || value === undefined || value === '') {
+      return '-';
+    }
+
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return '-';
+    }
+
+    return new Intl.NumberFormat('en-US', {
+      maximumFractionDigits: 8,
+    }).format(numericValue);
+  }
+
+  function updateHeader() {
+    const metadata = getDatasetMetadata();
+    const config = getDatasetConfig();
+    elements.headerMeta.textContent = `${config.label}更新時間：${formatGeneratedAt(metadata.generatedAt)} | 共 ${metadata.total.toLocaleString()} 筆`;
+  }
+
+  function updateResultSummary() {
+    const total = state.filtered.length;
+    const config = getDatasetConfig();
+    if (total === 0) {
+      elements.resultSummary.textContent = '目前沒有符合條件的資料';
+      elements.countLabel.textContent = '顯示 0 / 共 0 筆';
+      return;
+    }
+
+    const start = (state.currentPage - 1) * PAGE_SIZE + 1;
+    const end = Math.min(state.currentPage * PAGE_SIZE, total);
+    elements.resultSummary.textContent = `共找到 ${total.toLocaleString()} 筆符合條件的${config.itemLabel}`;
+    elements.countLabel.textContent = `顯示 ${start.toLocaleString()}–${end.toLocaleString()} / 共 ${total.toLocaleString()} 筆`;
+  }
+
+  function updateActiveFilterSummary() {
+    const parts = [];
+
+    if (state.searchTerm.trim()) {
+      parts.push(`搜尋「${state.searchTerm.trim()}」`);
+    }
+    if (state.market !== 'ALL') {
+      parts.push(`市場 ${state.market}`);
+    }
+
+    if (state.dataset === 'macro') {
+      if (state.frequency !== 'ALL') {
+        parts.push(`頻率 ${state.frequency}`);
+      }
+      if (state.sourceFilter !== 'ALL') {
+        parts.push(`來源 ${state.sourceFilter}`);
+      }
+    } else {
+      if (state.assetClass !== 'ALL') {
+        parts.push(`類別 ${state.assetClass}`);
+      }
+      if (state.status !== 'ALL') {
+        parts.push(`狀態 ${state.status}`);
+      }
+    }
+
+    elements.activeFilters.textContent = parts.length > 0 ? parts.join(' / ') : `顯示全部${getDatasetConfig().itemLabel}`;
+  }
+
+  function createPill(value, label, currentValue, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `pill${value === currentValue ? ' active' : ''}`;
+    button.textContent = label;
+    button.addEventListener('click', () => onClick(value));
+    return button;
+  }
+
+  function renderDatasetTabs() {
+    elements.datasetTabs.replaceChildren(
+      ...Object.entries(DATASETS).map(([value, config]) =>
+        createPill(value, config.label, state.dataset, (nextDataset) => {
+          if (state.dataset === nextDataset) {
+            return;
+          }
+
+          state.dataset = nextDataset;
+          state.market = 'ALL';
+          state.assetClass = 'ALL';
+          state.status = nextDataset === 'instruments' ? 'active' : 'ALL';
+          state.frequency = 'ALL';
+          state.sourceFilter = 'ALL';
+          state.sortBy = DATASETS[nextDataset].defaultSort;
+          state.sortDir = 'asc';
+          state.currentPage = 1;
+          elements.searchInput.placeholder = DATASETS[nextDataset].searchPlaceholder;
+          render();
+        })
+      )
+    );
+
+    elements.datasetTabs.querySelectorAll('.pill').forEach((button) => {
+      button.classList.add('dataset-tab');
+    });
+  }
+
+  function renderFilters() {
+    const metadata = getDatasetMetadata();
+    elements.marketFilters.replaceChildren(
+      createPill('ALL', '全部', state.market, (value) => {
+        state.market = value;
+        state.currentPage = 1;
+        render();
+      }),
+      ...metadata.markets.map((market) =>
+        createPill(market, market, state.market, (value) => {
+          state.market = value;
+          state.currentPage = 1;
+          render();
+        })
+      )
+    );
+
+    elements.assetFilterLabel.textContent = state.dataset === 'macro' ? '頻率' : '類別';
+    elements.assetFilters.replaceChildren(
+      createPill('ALL', '全部', state.dataset === 'macro' ? state.frequency : state.assetClass, (value) => {
+        if (state.dataset === 'macro') {
+          state.frequency = value;
+        } else {
+          state.assetClass = value;
+        }
+        state.currentPage = 1;
+        render();
+      }),
+      ...(state.dataset === 'macro' ? metadata.frequencies : metadata.assetClasses).map((value) =>
+        createPill(value, value, state.dataset === 'macro' ? state.frequency : state.assetClass, (nextValue) => {
+          if (state.dataset === 'macro') {
+            state.frequency = nextValue;
+          } else {
+            state.assetClass = nextValue;
+          }
+          state.currentPage = 1;
+          render();
+        })
+      )
+    );
+
+    elements.statusFilterLabel.textContent = state.dataset === 'macro' ? '來源' : '狀態';
+    const statusOptions = state.dataset === 'macro'
+      ? [
+          { value: 'ALL', label: '全部' },
+          ...metadata.sources.map((source) => ({ value: source, label: source })),
+        ]
+      : [
+          { value: 'ALL', label: '全部' },
+          { value: 'active', label: 'active' },
+          { value: 'delisted', label: 'delisted' },
+        ];
+
+    elements.statusFilters.replaceChildren(
+      ...statusOptions.map((option) =>
+        createPill(option.value, option.label, state.dataset === 'macro' ? state.sourceFilter : state.status, (value) => {
+          if (state.dataset === 'macro') {
+            state.sourceFilter = value;
+          } else {
+            state.status = value;
+          }
+          state.currentPage = 1;
+          render();
+        })
+      )
+    );
+  }
+
+  function renderTableHead() {
+    const fragment = document.createDocumentFragment();
+
+    getDatasetConfig().columns.forEach((column) => {
+      const th = document.createElement('th');
+      if (!column.sortable) {
+        th.textContent = column.label;
+        fragment.appendChild(th);
+        return;
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `sort-button${state.sortBy === column.key ? ' active' : ''}`;
+      button.addEventListener('click', () => {
+        if (state.sortBy === column.key) {
+          state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          state.sortBy = column.key;
+          state.sortDir = 'asc';
+        }
+        render();
+      });
+
+      const label = document.createElement('span');
+      label.className = 'sort-label';
+      label.textContent = column.label;
+      const indicator = document.createElement('span');
+      indicator.className = 'sort-indicator';
+      indicator.textContent = state.sortBy === column.key ? (state.sortDir === 'asc' ? '▲' : '▼') : '▵';
+
+      button.append(label, indicator);
+      th.appendChild(button);
+      fragment.appendChild(th);
+    });
+
+    elements.tableHead.replaceChildren(fragment);
+  }
+
+  function renderTableColumns() {
+    const fragment = document.createDocumentFragment();
+
+    getDatasetConfig().columns.forEach((column) => {
+      const col = document.createElement('col');
+      if (column.width) {
+        col.style.width = column.width;
+      }
+      fragment.appendChild(col);
+    });
+
+    elements.tableColumns.replaceChildren(fragment);
+  }
+
+  function renderCell(item, column) {
+    if (column.type === 'status') {
+      return item.status === 'delisted' ? 'delisted' : '';
+    }
+    if (column.type === 'date') {
+      return formatTradeDate(item[column.key]);
+    }
+    if (column.type === 'number') {
+      return formatPrice(item[column.key]);
+    }
+
+    return item[column.key] || '-';
+  }
+
+  function renderTableBody() {
+    const rows = getVisibleRows();
+    const hasRows = rows.length > 0;
+    const columns = getDatasetConfig().columns;
+
+    elements.tableBody.innerHTML = rows.map((item) => {
+      const cells = columns.map((column) => {
+        const classNames = [];
+        if (column.className) {
+          classNames.push(column.className);
+        }
+        if (column.type === 'status') {
+          classNames.push('cell-status');
+          if (item.status === 'delisted') {
+            classNames.push('delisted');
+          }
+        }
+        const classAttribute = classNames.length ? ` class="${classNames.join(' ')}"` : '';
+        return `<td${classAttribute}>${escapeHtml(renderCell(item, column))}</td>`;
+      }).join('');
+
+      return `
+        <tr>
+          ${cells}
+        </tr>
+      `;
+    }).join('');
+
+    elements.emptyState.classList.toggle('hidden', hasRows);
+    elements.emptyState.textContent = `沒有符合條件的${getDatasetConfig().itemLabel}。`;
+  }
+
+  function createPageButton(label, disabled, onClick, className = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `page-button${className ? ` ${className}` : ''}`;
+    button.textContent = label;
+    button.disabled = disabled;
+    if (!disabled) {
+      button.addEventListener('click', onClick);
+    }
+    return button;
+  }
+
+  function renderPagination() {
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / PAGE_SIZE));
+    const fragment = document.createDocumentFragment();
+
+    fragment.appendChild(
+      createPageButton('← 前', state.currentPage === 1, () => {
+        state.currentPage -= 1;
+        render();
+      })
+    );
+
+    for (let page = 1; page <= totalPages; page += 1) {
+      fragment.appendChild(
+        createPageButton(String(page), false, () => {
+          state.currentPage = page;
+          render();
+        }, page === state.currentPage ? 'current' : '')
+      );
+    }
+
+    fragment.appendChild(
+      createPageButton('後 →', state.currentPage === totalPages, () => {
+        state.currentPage += 1;
+        render();
+      })
+    );
+
+    elements.pagination.replaceChildren(fragment);
+    elements.pagination.classList.toggle('hidden', state.filtered.length <= PAGE_SIZE);
+  }
+
+  function setMode(mode) {
+    elements.loadingState.classList.toggle('hidden', mode !== 'loading');
+    elements.errorState.classList.toggle('hidden', mode !== 'error');
+    elements.tableSection.classList.toggle('hidden', mode !== 'ready');
+  }
+
+  function render() {
+    applyFilters();
+    renderDatasetTabs();
+    renderFilters();
+    renderTableColumns();
+    renderTableHead();
+    renderTableBody();
+    renderPagination();
+    updateHeader();
+    updateResultSummary();
+    updateActiveFilterSummary();
+  }
+
+  async function loadData() {
+    setMode('loading');
+
+    try {
+      const entries = await Promise.all(
+        Object.entries(DATASETS).map(async ([dataset, config]) => {
+          const response = await fetch(config.url, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error(`${config.url} HTTP ${response.status}`);
+          }
+          return [dataset, await response.json()];
+        })
+      );
+
+      entries.forEach(([dataset, payload]) => {
+        state.source[dataset] = Array.isArray(payload.data) ? payload.data : [];
+        state.metadata[dataset].markets = Array.isArray(payload.markets) ? payload.markets : [];
+        state.metadata[dataset].generatedAt = payload.generated_at || '';
+        state.metadata[dataset].total = Number.isFinite(payload.total) ? payload.total : state.source[dataset].length;
+
+        if (dataset === 'instruments') {
+          state.metadata[dataset].assetClasses = Array.isArray(payload.asset_classes) ? payload.asset_classes : [];
+        } else {
+          state.metadata[dataset].frequencies = Array.isArray(payload.frequencies) ? payload.frequencies : [];
+          state.metadata[dataset].sources = Array.isArray(payload.sources) ? payload.sources : [];
+        }
+      });
+
+      state.currentPage = 1;
+
+      render();
+      setMode('ready');
+    } catch (error) {
+      elements.errorMessage.textContent = `請確認 instruments.json 與 macro-series.json 都已產生。錯誤訊息：${error.message}`;
+      setMode('error');
+    }
+  }
+
+  elements.searchInput.addEventListener('input', (event) => {
+    state.searchTerm = event.target.value;
+    state.currentPage = 1;
+    render();
+  });
+
+  elements.retryButton.addEventListener('click', () => {
+    loadData();
+  });
+
+  elements.searchInput.placeholder = getDatasetConfig().searchPlaceholder;
+  renderDatasetTabs();
+  renderFilters();
+  renderTableHead();
+  loadData();
+})();
+</script>
+</body>
+</html>

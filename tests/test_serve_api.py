@@ -25,8 +25,9 @@ from app.utils import utc_now, uuid7
 @pytest.mark.asyncio
 async def test_list_instruments_returns_data(client: AsyncClient, test_session):
     """Ensure instruments list returns seeded instruments."""
+    instrument_id = uuid7()
     instrument = Instrument(
-        instrument_id=uuid7(),
+        instrument_id=instrument_id,
         asset_class="crypto",
         market="CRYPTO",
         symbol="BTC",
@@ -35,7 +36,25 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    test_session.add(instrument)
+    stale_eod = MarketDataEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=date(2026, 1, 15),
+        close=Decimal("95700.00"),
+        asof_ts=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    latest_eod = MarketDataEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=date(2026, 1, 16),
+        close=Decimal("95709.01"),
+        asof_ts=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([instrument, stale_eod, latest_eod])
     await test_session.commit()
 
     response = await client.get("/api/v1/serve/instruments?market=CRYPTO")
@@ -44,6 +63,8 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
     assert data["success"] is True
     assert len(data["data"]) == 1
     assert data["data"][0]["symbol"] == "BTC"
+    assert data["data"][0]["latest_trade_date"] == "2026-01-16"
+    assert data["data"][0]["latest_price"] == "95709.01000000"
 
 
 @pytest.mark.asyncio
@@ -67,6 +88,8 @@ async def test_get_instrument_by_id(client: AsyncClient, test_session):
     assert response.status_code == 200
     data = response.json()
     assert data["symbol"] == "ETH"
+    assert data["latest_trade_date"] is None
+    assert data["latest_price"] is None
 
 
 @pytest.mark.asyncio

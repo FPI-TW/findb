@@ -2,11 +2,12 @@
 Serve API Pydantic schemas.
 """
 
-from datetime import datetime, date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict
+
+from pydantic import BaseModel, ConfigDict
 
 from app.schemas.common import PaginatedResponse
 
@@ -24,6 +25,8 @@ class InstrumentResponse(BaseModel):
     status: str
     listed_date: Optional[date] = None
     delisted_date: Optional[date] = None
+    latest_trade_date: Optional[date] = None
+    latest_price: Optional[Decimal] = None
 
     model_config = ConfigDict(from_attributes=True)
 
