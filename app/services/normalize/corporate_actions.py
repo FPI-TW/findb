@@ -231,103 +231,108 @@ class CorporateActionNormalizer(BaseNormalizer):
                     Any,
                 ]
             ] = set()
+            processed_records = 0
 
             for record in mapped_records:
-                issues: list[DQIssueRecord] = []
+                try:
+                    issues: list[DQIssueRecord] = []
 
-                if not record.action_type:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_ACTION_TYPE",
+                    if not record.action_type:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_ACTION_TYPE",
+                                severity="error",
+                                description="Missing action_type",
+                                trade_date=self._to_datetime(record.ex_date),
+                                raw_data=record.raw_data,
+                            )
+                        )
+                    if not record.ex_date:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_EX_DATE",
+                                severity="error",
+                                description="Missing ex_date",
+                                raw_data=record.raw_data,
+                            )
+                        )
+                    if not record.symbol and not record.identifier_value:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_IDENTIFIER",
+                                severity="error",
+                                description="Missing symbol/identifier",
+                                raw_data=record.raw_data,
+                            )
+                        )
+
+                    if issues:
+                        for issue in issues:
+                            await self.record_dq_issue(issue, run_id)
+                            result.dq_issues.append(issue)
+                        result.failed_records += 1
+                        continue
+
+                    instrument = await self.resolve_instrument(record)
+
+                    key = (
+                        instrument.instrument_id,
+                        record.action_type,
+                        record.ex_date,
+                        record.record_date,
+                        record.pay_date,
+                        record.ratio,
+                        record.cash_amount,
+                    )
+                    if key in seen_keys:
+                        issue = DQIssueRecord(
+                            issue_type="DUPLICATE_KEY",
                             severity="error",
-                            description="Missing action_type",
+                            description="Duplicate corporate action in batch",
                             trade_date=self._to_datetime(record.ex_date),
                             raw_data=record.raw_data,
                         )
-                    )
-                if not record.ex_date:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_EX_DATE",
-                            severity="error",
-                            description="Missing ex_date",
-                            raw_data=record.raw_data,
-                        )
-                    )
-                if not record.symbol and not record.identifier_value:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_IDENTIFIER",
-                            severity="error",
-                            description="Missing symbol/identifier",
-                            raw_data=record.raw_data,
-                        )
-                    )
-
-                if issues:
-                    for issue in issues:
-                        await self.record_dq_issue(issue, run_id)
+                        await self.record_dq_issue(issue, run_id, instrument.instrument_id)
                         result.dq_issues.append(issue)
-                    result.failed_records += 1
-                    continue
+                        result.failed_records += 1
+                        continue
+                    seen_keys.add(key)
 
-                instrument = await self.resolve_instrument(record)
+                    if await self.check_duplicate_in_db(instrument.instrument_id, record):
+                        issue = DQIssueRecord(
+                            issue_type="DUPLICATE_KEY",
+                            severity="error",
+                            description="Duplicate corporate action already exists",
+                            trade_date=self._to_datetime(record.ex_date),
+                            raw_data=record.raw_data,
+                        )
+                        await self.record_dq_issue(issue, run_id, instrument.instrument_id)
+                        result.dq_issues.append(issue)
+                        result.failed_records += 1
+                        continue
 
-                key = (
-                    instrument.instrument_id,
-                    record.action_type,
-                    record.ex_date,
-                    record.record_date,
-                    record.pay_date,
-                    record.ratio,
-                    record.cash_amount,
-                )
-                if key in seen_keys:
-                    issue = DQIssueRecord(
-                        issue_type="DUPLICATE_KEY",
-                        severity="error",
-                        description="Duplicate corporate action in batch",
-                        trade_date=self._to_datetime(record.ex_date),
-                        raw_data=record.raw_data,
+                    action = CorporateAction(
+                        action_id=uuid7(),
+                        instrument_id=instrument.instrument_id,
+                        action_type=record.action_type or "",
+                        ex_date=record.ex_date,
+                        record_date=record.record_date,
+                        pay_date=record.pay_date,
+                        ratio=record.ratio,
+                        cash_amount=record.cash_amount,
+                        currency=record.currency,
+                        extra=record.extra,
+                        source=record.source,
+                        asof_ts=utc_now(),
+                        run_id=run_id,
+                        created_at=utc_now(),
+                        updated_at=utc_now(),
                     )
-                    await self.record_dq_issue(issue, run_id, instrument.instrument_id)
-                    result.dq_issues.append(issue)
-                    result.failed_records += 1
-                    continue
-                seen_keys.add(key)
-
-                if await self.check_duplicate_in_db(instrument.instrument_id, record):
-                    issue = DQIssueRecord(
-                        issue_type="DUPLICATE_KEY",
-                        severity="error",
-                        description="Duplicate corporate action already exists",
-                        trade_date=self._to_datetime(record.ex_date),
-                        raw_data=record.raw_data,
-                    )
-                    await self.record_dq_issue(issue, run_id, instrument.instrument_id)
-                    result.dq_issues.append(issue)
-                    result.failed_records += 1
-                    continue
-
-                action = CorporateAction(
-                    action_id=uuid7(),
-                    instrument_id=instrument.instrument_id,
-                    action_type=record.action_type or "",
-                    ex_date=record.ex_date,
-                    record_date=record.record_date,
-                    pay_date=record.pay_date,
-                    ratio=record.ratio,
-                    cash_amount=record.cash_amount,
-                    currency=record.currency,
-                    extra=record.extra,
-                    source=record.source,
-                    asof_ts=utc_now(),
-                    run_id=run_id,
-                    created_at=utc_now(),
-                    updated_at=utc_now(),
-                )
-                self.db.add(action)
-                result.success_records += 1
+                    self.db.add(action)
+                    result.success_records += 1
+                finally:
+                    processed_records += 1
+                    await self._maybe_flush(processed_records)
 
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
