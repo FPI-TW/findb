@@ -19,10 +19,10 @@ from app.models.canonical import (
     MarketDataEOD,
     TradingCalendar,
 )
-from app.models.registry import IngestionRun, DQIssue
-from app.services.dq.validators import DQValidator, DQIssueRecord
+from app.models.registry import DQIssue, IngestionRun
+from app.services.dq.validators import DQIssueRecord, DQValidator
 from app.services.normalize.types import MappedRecord
-from app.utils import uuid7, utc_now
+from app.utils import utc_now, uuid7
 from app.utils.datetime_utils import ensure_utc, parse_datetime
 
 

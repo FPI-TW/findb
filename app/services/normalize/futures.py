@@ -9,10 +9,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from app.models.canonical import FuturesContract, FuturesContinuousEOD, RollRule
+from app.models.canonical import FuturesContinuousEOD, FuturesContract, RollRule
 from app.services.dq.validators import DQIssueRecord
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
-from app.services.normalize.types import FuturesContractRecord, FuturesContinuousRecord
+from app.services.normalize.types import FuturesContinuousRecord, FuturesContractRecord
 from app.utils import utc_now, uuid7
 
 
