@@ -647,30 +647,16 @@ GitHub Actions
 # 1. 安裝 Docker
 sudo bash scripts/setup_ec2.sh
 
-# 2. 複製 compose 檔到 EC2
-scp -i your-key.pem docker-compose.prod.yml ubuntu@<EC2_IP>:/opt/findb/
+# 2. 在 GitHub Actions 設定下方 Secrets / Variables
 
-# 3. 建立 .env（填入 RDS 連線資訊與 API Keys）
-nano /opt/findb/.env
+# 3. push 到 main，由 GitHub Actions 同步 compose 並部署
+git push origin main
 
-# 4. 初始化資料庫
+# 4. 首次部署完成後初始化資料庫
 docker exec findb-app python /app/scripts/seed_data.py
 ```
 
-#### EC2 `.env` 範本
-
-```env
-DATABASE_URL=postgresql+asyncpg://user:password@your-rds.rds.amazonaws.com:5432/findb?ssl=require
-DEBUG=false
-SOURCE_ALLOWLIST_CIDRS=10.0.0.0/8,你的辦公室IP/32
-SOURCE_API_KEYS=production-source-key
-ADMIN_API_KEYS=production-admin-key
-SERVE_REQUIRE_AUTH=false
-RATE_LIMIT_REQUESTS=100
-RATE_LIMIT_WINDOW=60
-RAW_RETENTION_ENABLED=false
-RAW_RETENTION_DAYS=14
-```
+> 生產環境不再使用 `/opt/findb/.env`。`docker-compose.prod.yml` 會由 GitHub Actions 在 SSH 部署時注入所有環境變數。
 
 #### GitHub Secrets 設定
 
@@ -679,6 +665,33 @@ RAW_RETENTION_DAYS=14
 | `EC2_HOST` | EC2 公開 IP 或 domain |
 | `EC2_USER` | `ubuntu`（Ubuntu AMI）或 `ec2-user` |
 | `EC2_SSH_KEY` | PEM 私鑰完整文字 |
+| `DATABASE_URL` | RDS / Aurora PostgreSQL 連線字串 |
+| `SOURCE_API_KEYS` | Source API 金鑰（逗號分隔） |
+| `ADMIN_API_KEYS` | Admin API 金鑰（逗號分隔） |
+| `SERVE_API_KEYS` | Serve API 金鑰（`SERVE_REQUIRE_AUTH=true` 時必填） |
+| `FINDB_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
+
+#### GitHub Variables 設定
+
+| Variable | 建議值 / 說明 |
+|----------|---------------|
+| `APP_NAME` | `FinDB` |
+| `APP_VERSION` | `0.1.0` |
+| `DEBUG` | 生產環境使用 `false` |
+| `PORT` | `8080` |
+| `DATABASE_POOL_SIZE` | `5` |
+| `DATABASE_MAX_OVERFLOW` | `10` |
+| `API_V1_PREFIX` | `/api/v1` |
+| `API_KEY_HEADER` | `X-API-Key` |
+| `SOURCE_ALLOWLIST_CIDRS` | 生產允許名單，例如 `10.0.0.0/8,203.0.113.50/32` |
+| `SOURCE_TRUST_PROXY_HEADERS` | 是否信任反向代理 header，例如 `false` |
+| `SERVE_REQUIRE_AUTH` | Serve API 是否需要認證，例如 `false` |
+| `RATE_LIMIT_REQUESTS` | `100` |
+| `RATE_LIMIT_WINDOW` | `60` |
+| `RAW_RETENTION_ENABLED` | 是否啟用 raw 清理，例如 `false` |
+| `RAW_RETENTION_DAYS` | `14` |
+| `FINDB_BASE_URL` | 部署後服務 URL；若 cache 在 app container 內產生可用 `http://localhost:8080` |
+| `FINDB_LATEST_PRICE_WORKERS` | 靜態快取查詢最新價格的並行數，例如 `12` |
 
 #### 日常部署
 
@@ -691,7 +704,7 @@ git push origin main
 
 | 容器 | 說明 | 埠號 |
 |------|------|------|
-| `findb-app` | FastAPI 主程式（2 workers） | `8000` |
+| `findb-app` | FastAPI 主程式（2 workers） | `8080` |
 | `findb-raw-cleanup` | Raw 資料每日清理 | — |
 
 ### 環境變數
@@ -711,8 +724,7 @@ git push origin main
 | `RAW_RETENTION_ENABLED` | 是否啟用 Raw 過期清理 | `false` |
 | `RAW_RETENTION_DAYS` | Raw 資料保留天數 | `14` |
 
-> **注意**：`docker-compose.yml` 使用 `${VAR:-default}` 語法讀取環境變數。
-> `.env` 的設定值會生效；若未設定則使用預設值。
+> **注意**：本機 `docker-compose.yml` 仍可讀取 `.env` 或 shell 環境變數；生產 `docker-compose.prod.yml` 只接受 GitHub Actions 在部署時傳入的環境變數。
 > 目前預設不會自動刪除 raw payload；正式上線時再將 `RAW_RETENTION_ENABLED=true` 啟用即可。
 
 ### 生產環境注意事項
