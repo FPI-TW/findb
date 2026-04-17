@@ -61,6 +61,10 @@ class MacroNormalizer(BaseNormalizer):
         },
     }
 
+    def __init__(self, db, dataset_config: dict | None = None):
+        super().__init__(db, dataset_config)
+        self._series_cache: dict[str, MacroSeries] = {}
+
     def _resolve_value(self, item: dict, raw_data: dict, paths: list[str]) -> Any:
         """Resolve a value from item or payload using candidate paths."""
         for path in paths:
@@ -207,6 +211,10 @@ class MacroNormalizer(BaseNormalizer):
 
     async def get_or_create_series(self, record: MacroObservationRecord) -> MacroSeries:
         """Get or create macro series by source_code."""
+        cached = self._series_cache.get(record.source_code)
+        if cached is not None:
+            return cached
+
         stmt = select(MacroSeries).where(MacroSeries.source_code == record.source_code)
         result = await self.db.execute(stmt)
         series = result.scalar_one_or_none()
@@ -230,6 +238,7 @@ class MacroNormalizer(BaseNormalizer):
                 updated = True
             if updated:
                 series.updated_at = utc_now()
+            self._series_cache[record.source_code] = series
             return series
 
         series = MacroSeries(
@@ -245,6 +254,7 @@ class MacroNormalizer(BaseNormalizer):
         )
         self.db.add(series)
         await self.db.flush()
+        self._series_cache[record.source_code] = series
         return series
 
     async def upsert_observation(
@@ -288,68 +298,73 @@ class MacroNormalizer(BaseNormalizer):
             result.total_records = len(mapped_records)
 
             seen_keys: set[tuple[str, Optional[date]]] = set()
+            processed_records = 0
 
             for record in mapped_records:
-                issues: list[DQIssueRecord] = []
+                try:
+                    issues: list[DQIssueRecord] = []
 
-                if not record.source_code:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_SOURCE_CODE",
-                            severity="error",
-                            description="Missing macro series source_code",
-                            raw_data=record.raw_data,
+                    if not record.source_code:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_SOURCE_CODE",
+                                severity="error",
+                                description="Missing macro series source_code",
+                                raw_data=record.raw_data,
+                            )
                         )
-                    )
-                if not record.obs_date:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_OBS_DATE",
-                            severity="error",
-                            description="Missing observation date",
-                            raw_data=record.raw_data,
+                    if not record.obs_date:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_OBS_DATE",
+                                severity="error",
+                                description="Missing observation date",
+                                raw_data=record.raw_data,
+                            )
                         )
-                    )
-                if record.value is None:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_VALUE",
-                            severity="warning",
-                            description="Missing observation value",
-                            raw_data=record.raw_data,
+                    if record.value is None:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_VALUE",
+                                severity="warning",
+                                description="Missing observation value",
+                                raw_data=record.raw_data,
+                            )
                         )
-                    )
 
-                key = (record.source_code, record.obs_date)
-                if record.source_code and record.obs_date and key in seen_keys:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="DUPLICATE_KEY",
-                            severity="error",
-                            description="Duplicate series/obs_date in batch",
-                            raw_data=record.raw_data,
+                    key = (record.source_code, record.obs_date)
+                    if record.source_code and record.obs_date and key in seen_keys:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="DUPLICATE_KEY",
+                                severity="error",
+                                description="Duplicate series/obs_date in batch",
+                                raw_data=record.raw_data,
+                            )
                         )
-                    )
-                else:
-                    if record.source_code and record.obs_date:
-                        seen_keys.add(key)
+                    else:
+                        if record.source_code and record.obs_date:
+                            seen_keys.add(key)
 
-                blocking_issues = [i for i in issues if i.severity == "error"]
-                if blocking_issues:
+                    blocking_issues = [i for i in issues if i.severity == "error"]
+                    if blocking_issues:
+                        for issue in issues:
+                            await self.record_dq_issue(issue, run_id)
+                            result.dq_issues.append(issue)
+                        result.failed_records += 1
+                        continue
+
+                    series = await self.get_or_create_series(record)
+
                     for issue in issues:
                         await self.record_dq_issue(issue, run_id)
                         result.dq_issues.append(issue)
-                    result.failed_records += 1
-                    continue
 
-                series = await self.get_or_create_series(record)
-
-                for issue in issues:
-                    await self.record_dq_issue(issue, run_id)
-                    result.dq_issues.append(issue)
-
-                await self.upsert_observation(series.series_id, record, run_id)
-                result.success_records += 1
+                    await self.upsert_observation(series.series_id, record, run_id)
+                    result.success_records += 1
+                finally:
+                    processed_records += 1
+                    await self._maybe_flush(processed_records)
 
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(

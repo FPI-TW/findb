@@ -9,10 +9,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from app.models.canonical import FuturesContract, FuturesContinuousEOD, RollRule
+from app.models.canonical import FuturesContinuousEOD, FuturesContract, RollRule
 from app.services.dq.validators import DQIssueRecord
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
-from app.services.normalize.types import FuturesContractRecord, FuturesContinuousRecord
+from app.services.normalize.types import FuturesContinuousRecord, FuturesContractRecord
 from app.utils import utc_now, uuid7
 
 
@@ -176,62 +176,67 @@ class FuturesContractNormalizer(BaseNormalizer):
             result.total_records = len(mapped_records)
 
             seen_keys: set[tuple[UUID, str]] = set()
+            processed_records = 0
 
             for record in mapped_records:
-                issues: list[DQIssueRecord] = []
+                try:
+                    issues: list[DQIssueRecord] = []
 
-                if not record.symbol and not record.identifier_value:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_IDENTIFIER",
+                    if not record.symbol and not record.identifier_value:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_IDENTIFIER",
+                                severity="error",
+                                description="Missing symbol/identifier",
+                                raw_data=record.raw_data,
+                            )
+                        )
+
+                    if not record.contract_code:
+                        if record.symbol:
+                            record.contract_code = record.symbol
+                        elif record.identifier_value:
+                            record.contract_code = str(record.identifier_value).split(" ")[0]
+
+                    if not record.contract_code:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="MISSING_CONTRACT_CODE",
+                                severity="error",
+                                description="Missing contract_code",
+                                raw_data=record.raw_data,
+                            )
+                        )
+
+                    if issues:
+                        blocking = [i for i in issues if i.severity == "error"]
+                        if blocking:
+                            for issue in issues:
+                                await self.record_dq_issue(issue, run_id)
+                                result.dq_issues.append(issue)
+                            result.failed_records += 1
+                            continue
+
+                    instrument = await self.resolve_instrument(record)
+                    key = (instrument.instrument_id, record.contract_code or "")
+                    if key in seen_keys:
+                        issue = DQIssueRecord(
+                            issue_type="DUPLICATE_KEY",
                             severity="error",
-                            description="Missing symbol/identifier",
+                            description="Duplicate contract in batch",
                             raw_data=record.raw_data,
                         )
-                    )
-
-                if not record.contract_code:
-                    if record.symbol:
-                        record.contract_code = record.symbol
-                    elif record.identifier_value:
-                        record.contract_code = str(record.identifier_value).split(" ")[0]
-
-                if not record.contract_code:
-                    issues.append(
-                        DQIssueRecord(
-                            issue_type="MISSING_CONTRACT_CODE",
-                            severity="error",
-                            description="Missing contract_code",
-                            raw_data=record.raw_data,
-                        )
-                    )
-
-                if issues:
-                    blocking = [i for i in issues if i.severity == "error"]
-                    if blocking:
-                        for issue in issues:
-                            await self.record_dq_issue(issue, run_id)
-                            result.dq_issues.append(issue)
+                        await self.record_dq_issue(issue, run_id, instrument.instrument_id)
+                        result.dq_issues.append(issue)
                         result.failed_records += 1
                         continue
+                    seen_keys.add(key)
 
-                instrument = await self.resolve_instrument(record)
-                key = (instrument.instrument_id, record.contract_code or "")
-                if key in seen_keys:
-                    issue = DQIssueRecord(
-                        issue_type="DUPLICATE_KEY",
-                        severity="error",
-                        description="Duplicate contract in batch",
-                        raw_data=record.raw_data,
-                    )
-                    await self.record_dq_issue(issue, run_id, instrument.instrument_id)
-                    result.dq_issues.append(issue)
-                    result.failed_records += 1
-                    continue
-                seen_keys.add(key)
-
-                await self.upsert_contract(instrument.instrument_id, record, run_id)
-                result.success_records += 1
+                    await self.upsert_contract(instrument.instrument_id, record, run_id)
+                    result.success_records += 1
+                finally:
+                    processed_records += 1
+                    await self._maybe_flush(processed_records)
 
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
@@ -288,6 +293,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             self.asset_class = str(self.dataset_config["asset_class"])
         if self.dataset_config.get("market"):
             self.market = str(self.dataset_config["market"])
+        self._roll_rule_cache: dict[str, RollRule] = {}
 
     def _normalize_record(self, record: FuturesContinuousRecord) -> FuturesContinuousRecord:
         """Normalize futures continuous record."""
@@ -380,6 +386,19 @@ class FuturesContinuousNormalizer(BaseNormalizer):
         if not name:
             return None
 
+        cached = self._roll_rule_cache.get(name)
+        if cached is not None:
+            updated = False
+            if description and cached.description != description:
+                cached.description = description
+                updated = True
+            if config and cached.config != config:
+                cached.config = config
+                updated = True
+            if updated:
+                cached.updated_at = utc_now()
+            return cached.rule_id
+
         stmt = select(RollRule).where(RollRule.name == name)
         result = await self.db.execute(stmt)
         rule = result.scalar_one_or_none()
@@ -394,6 +413,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                 updated = True
             if updated:
                 rule.updated_at = utc_now()
+            self._roll_rule_cache[name] = rule
             return rule.rule_id
 
         rule = RollRule(
@@ -406,6 +426,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
         )
         self.db.add(rule)
         await self.db.flush()
+        self._roll_rule_cache[name] = rule
         return rule.rule_id
 
     async def check_duplicate_in_db(
@@ -469,6 +490,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
 
         await self.db.execute(stmt)
         self.db.expire_all()
+        self._instrument_cache.clear()
+        self._identifier_cache.clear()
+        self._roll_rule_cache.clear()
 
     async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
         """Process futures continuous payload and upsert into canonical storage."""
@@ -481,6 +505,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             result.total_records = len(mapped_records)
 
             seen_keys: set[tuple[str, str, datetime]] = set()
+            processed_records = 0
 
             for record in mapped_records:
                 try:
@@ -558,6 +583,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                             raw_data=record.raw_data,
                         )
                     )
+                finally:
+                    processed_records += 1
+                    await self._maybe_flush(processed_records)
 
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(

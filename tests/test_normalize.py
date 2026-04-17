@@ -14,7 +14,7 @@ from app.models.canonical import (
     MarketDataEOD,
     TradingCalendar,
 )
-from app.models.registry import DQIssue, DatasetRegistry, IngestionRun
+from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
 from app.services.dq.validators import DQValidator
 from app.services.normalize.base import BaseNormalizer
 from app.services.normalize.crypto import CryptoNormalizer
