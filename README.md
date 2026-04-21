@@ -112,7 +112,7 @@ FinDB 是一套可長期維護、逐步擴充的金融資料庫系統，採用�
 
 | 項目 | 選擇 |
 |------|------|
-| 語言 | Python 3.11+ |
+| 語言 | Python 3.13+ |
 | 框架 | FastAPI |
 | 資料庫 | PostgreSQL 16 |
 | ORM | SQLAlchemy 2.0 (async) |
@@ -222,7 +222,7 @@ findb/
 
 ### 前置需求
 
-- Python 3.11+
+- Python 3.13+
 - Docker & Docker Compose
 - uv
 

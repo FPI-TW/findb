@@ -7,7 +7,7 @@ Branch: main
 ## OVERVIEW
 
 FinDB is a FastAPI backend for ingesting market payloads, normalizing into canonical models, and serving read-only query APIs.
-Core stack: Python 3.11+, FastAPI, SQLAlchemy async, PostgreSQL, uv, pytest.
+Core stack: Python 3.13+, FastAPI, SQLAlchemy async, PostgreSQL, uv, pytest.
 
 ## STRUCTURE
 
