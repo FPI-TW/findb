@@ -205,13 +205,15 @@ class InstrumentCacheWriteResponse(BaseModel):
     data: InstrumentCacheDocument
 
 
-# ── refresh_instrument_cache ──────────────────────────────────────────────────────────
 class InstrumentCacheItemUpdateResponse(BaseModel):
     """Response after updating a single cached instrument."""
 
     success: bool = True
     message: str
     data: InstrumentCacheItem
+
+
+# ── refresh_instrument_cache ──────────────────────────────────────────────────────────
 
 class CacheTriggerResponse(BaseModel):
     message: str
