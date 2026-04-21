@@ -60,7 +60,7 @@ FinDB 是一套可長期維護、逐步擴充的金融資料庫系統，採用�
 - Source API 已支援標準 ingest、run status、rerun、dataset registry 查詢
 - Bloomberg direct ingest 已支援 `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina`
 - Serve API 已支援 instruments、EOD、corporate actions、macro、futures、calendar 查詢
-- Admin API 已支援 DQ issue 查詢/解決、EOD patch、更正紀錄、raw payload 查詢、bulk rerun
+- Admin API 已支援 DQ issue 查詢/解決、EOD patch、更正紀錄、raw payload 查詢、bulk rerun、instrument cache 維護
 - 測試已涵蓋 Source / Serve / Admin / normalize / direct ingest / end-to-end 主流程
 
 ### 目前可用資料範圍
@@ -235,6 +235,7 @@ cp .env.example .env
 編輯 `.env` 設定 API Keys：
 
 ```env
+DEBUG=true
 SOURCE_API_KEYS=your-source-key
 SERVE_API_KEYS=your-serve-key
 ADMIN_API_KEYS=your-admin-key
@@ -243,6 +244,7 @@ SERVE_REQUIRE_AUTH=false
 
 > **注意**：`docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法，
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
+> 若 `DEBUG=false`，需額外設定 `SOURCE_ALLOWLIST_CIDRS` 才能通過啟動檢查。
 
 ## 靜態標的與宏觀序列查詢頁
 
@@ -430,6 +432,23 @@ curl "http://localhost:8080/api/v1/serve/futures/contracts?market=WTX"
 curl "http://localhost:8080/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
 ```
 
+### Admin API（資料修正與快取維護）
+
+Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEYS` 中配置的值。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/v1/admin/dq-issues` | 查詢 DQ issue |
+| PATCH | `/api/v1/admin/eod/{instrument_id}/{trade_date}` | 修正 EOD 欄位並寫入 audit log |
+| PATCH | `/api/v1/admin/dq-issues/{issue_id}/resolve` | 標記 DQ issue 已解決 |
+| GET | `/api/v1/admin/raw-payloads` | 查詢 raw payload 清單 |
+| GET | `/api/v1/admin/raw-payloads/{run_id}` | 查詢指定 run 的 raw payload |
+| GET | `/api/v1/admin/corrections` | 查詢修正紀錄 |
+| POST | `/api/v1/admin/runs/bulk-rerun` | 批次重跑既有 runs |
+| GET | `/api/v1/admin/instrument-cache` | 讀取 `app/static/data/instruments.json` |
+| PUT | `/api/v1/admin/instrument-cache` | 全量覆蓋 instrument cache |
+| PATCH | `/api/v1/admin/instrument-cache/items/{instrument_id}` | 更新單一 instrument cache 項目 |
+
 ### 分頁
 
 所有列表端點支援分頁，參數統一為 `page`（預設 1）與 `page_size`（預設 100，最大 1000）。
@@ -457,6 +476,7 @@ curl "http://localhost:8080/api/v1/serve/calendar?market=US&start_date=2026-01-0
 |------|------|--------|
 | Source API | **必要** | `X-API-Key: {SOURCE_API_KEYS}` |
 | Serve API | 可選（`SERVE_REQUIRE_AUTH`） | `X-API-Key: {SERVE_API_KEYS}` |
+| Admin API | **必要** | `X-API-Key: {ADMIN_API_KEYS}` |
 
 ### IP 允許名單
 
@@ -505,6 +525,7 @@ Source API 限制每個 API Key + Client IP 組合的請求頻率：
 | `corporate_action` | 公司行為（除權息） |
 | `macro_series` / `macro_observation` | 宏觀指標 |
 | `futures_contract` / `futures_continuous_eod` | 期貨 |
+| `canonical_correction` | Admin 人工修正不可變稽核紀錄 |
 | `dataset_registry` | 資料集定義 |
 | `ingestion_run` | 攝取批次記錄 |
 | `dq_issue` | 資料品質問題 |
@@ -594,7 +615,7 @@ docker-compose exec app bash -c \
 - 已建立完整 pytest 測試組合，涵蓋：
 - Source API 安全機制、標準 ingest、direct ingest、rerun、allowlist、rate limit
 - Serve API 全端點查詢
-- Admin API 修正、DQ issue、raw payload、bulk rerun
+- Admin API 修正、DQ issue、raw payload、bulk rerun、instrument cache
 - 正規化邏輯與端到端 ingest -> normalize -> serve 流程
 
 ---
@@ -616,7 +637,7 @@ docker-compose down
 
 | 容器 | 說明 | 埠號 |
 |------|------|------|
-| `findb-app` | FastAPI 主程式 | `8000` |
+| `findb-app` | FastAPI 主程式 | `8080` |
 | `findb-postgres` | PostgreSQL 16 | `5435` → 5432 |
 | `findb-raw-cleanup` | Raw 資料每日清理 | — |
 | `findb-pgadmin` | pgAdmin 管理介面 | `5056` |

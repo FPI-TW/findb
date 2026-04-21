@@ -1,6 +1,6 @@
 # FinDB API 使用教學
 
-> **版本**: 0.1.0 | **最後更新**: 2026-04-08
+> **版本**: 0.1.0 | **最後更新**: 2026-04-21
 
 本文件說明如何使用 FinDB 的 Source API（資料寫入）、Serve API（資料查詢）與 Admin API（資料修正）。
 涵蓋認證機制、所有端點規格、請求/回應格式、錯誤處理與完整範例。
@@ -26,6 +26,7 @@
   - [期貨](#期貨)
   - [交易日曆](#交易日曆)
 - [Admin API（資料修正）](#admin-api資料修正)
+  - [管理 Instrument Cache](#管理-instrument-cache)
   - [查詢 DQ Issues](#查詢-dq-issues)
   - [修正日K 資料](#修正日k-資料)
   - [標記 DQ Issue 已解決](#標記-dq-issue-已解決)
@@ -57,25 +58,25 @@ Source API ──▶ Normalize ──▶ Canonical DB
                （資料修正）
 ```
 
-| 層級 | 角色 | 說明 |
-|------|------|------|
-| **Source API** | 寫入路徑 | 接收原始 payload、去重、觸發正規化 |
-| **Serve API** | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料 |
-| **Admin API** | 修正路徑 | 人工修正 Canonical 資料，寫入不可變 audit log |
+| 層級           | 角色     | 說明                                          |
+| -------------- | -------- | --------------------------------------------- |
+| **Source API** | 寫入路徑 | 接收原始 payload、去重、觸發正規化            |
+| **Serve API**  | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料             |
+| **Admin API**  | 修正路徑 | 人工修正 Canonical 資料，寫入不可變 audit log |
 
 ---
 
 ## 目前實作範圍
 
-以下內容是 2026-04-08 這個版本的實際可用範圍：
+以下內容是 2026-04-21 這個版本的實際可用範圍：
 
-| 區塊 | 現況 |
-|------|------|
-| Source API | 標準 ingest、direct ingest、run status、rerun、dataset list 已可用 |
-| Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina` 已可用 |
-| Serve API | instruments、EOD、corporate actions、macro、futures、calendar 已可用 |
-| Admin API | DQ issue、EOD patch、corrections、raw payload、bulk rerun 已可用 |
-| 區域市場 | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程 |
+| 區塊          | 現況                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------- |
+| Source API    | 標準 ingest、direct ingest、run status、rerun、dataset list 已可用                     |
+| Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina` 已可用                            |
+| Serve API     | instruments、EOD、corporate actions、macro、futures、calendar 已可用                   |
+| Admin API     | DQ issue、EOD patch、corrections、raw payload、bulk rerun、instrument cache 管理已可用 |
+| 區域市場      | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程                   |
 
 > 目前 normalize 仍由 FastAPI `BackgroundTasks` 觸發，若要評估大批量 ingest 與部署策略，請一併參考 [scalability checklist](scalability_optimization_checklist.md)。
 
@@ -91,6 +92,8 @@ cp .env.example .env
 
 # 編輯 .env，設定 API Key
 # SOURCE_API_KEYS=your-source-key
+# ADMIN_API_KEYS=your-admin-key
+# DEBUG=true
 
 # 啟動 Docker 容器
 docker-compose up -d --build
@@ -98,6 +101,8 @@ docker-compose up -d --build
 # 初始化資料集
 docker-compose exec app python /app/scripts/seed_data.py
 ```
+
+> 若保留 `DEBUG=false`，必須同時設定 `SOURCE_ALLOWLIST_CIDRS` 才能通過啟動檢查。
 
 ### 2. 驗證服務
 
@@ -137,10 +142,10 @@ X-API-Key: your-source-key
 
 Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 
-| 設定值 | 行為 |
-|--------|------|
-| `false`（預設） | 不需要認證，任何人皆可查詢 |
-| `true` | 必須帶入 `X-API-Key`，金鑰設定於 `SERVE_API_KEYS` |
+| 設定值          | 行為                                              |
+| --------------- | ------------------------------------------------- |
+| `false`（預設） | 不需要認證，任何人皆可查詢                        |
+| `true`          | 必須帶入 `X-API-Key`，金鑰設定於 `SERVE_API_KEYS` |
 
 啟用 Serve 認證時，使用方式與 Source API 相同：
 
@@ -156,21 +161,21 @@ X-API-Key: your-serve-key
 X-API-Key: your-admin-key
 ```
 
-| 狀況 | 結果 |
-|------|------|
-| 未帶入 `X-API-Key` | `401` |
-| API Key 無效 | `403` |
+| 狀況                    | 結果  |
+| ----------------------- | ----- |
+| 未帶入 `X-API-Key`      | `401` |
+| API Key 無效            | `403` |
 | `ADMIN_API_KEYS` 未配置 | `500` |
 
 > **注意**：Admin API 不設 IP 允許名單，金鑰是唯一保護機制，請妥善保管並與 Source/Serve API Key 分開管理。
 
 ### 安全機制
 
-| 機制 | 說明 |
-|------|------|
+| 機制            | 說明                                                          |
+| --------------- | ------------------------------------------------------------- |
 | **IP 允許名單** | `SOURCE_ALLOWLIST_CIDRS`（CIDR 格式，逗號分隔），生產環境必填 |
-| **限流** | 預設每個 API Key + IP 組合，每 60 秒最多 100 次請求 |
-| **Proxy 支援** | 設定 `SOURCE_TRUST_PROXY_HEADERS=true` 讀取 `X-Forwarded-For` |
+| **限流**        | 預設每個 API Key + IP 組合，每 60 秒最多 100 次請求           |
+| **Proxy 支援**  | 設定 `SOURCE_TRUST_PROXY_HEADERS=true` 讀取 `X-Forwarded-For` |
 
 ---
 
@@ -233,14 +238,14 @@ http://localhost:8080
 }
 ```
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
-| `dataset_key` | string | 是 | 資料集識別碼（如 `crypto_eod`、`us_stock_eod`） |
-| `source` | string | 是 | 資料來源（如 `bloomberg`） |
-| `request_key` | string | 是 | 上游請求識別碼，用於追蹤 |
-| `idempotency_key` | string | 是 | 去重鍵值，相同值不會重複處理 |
-| `payload` | object | 是 | 原始資料 payload（包含 `metadata` 與 `data`） |
-| `fetched_at` | datetime | 是 | 資料擷取時間（UTC ISO 8601） |
+| 欄位              | 類型     | 必填 | 說明                                            |
+| ----------------- | -------- | ---- | ----------------------------------------------- |
+| `dataset_key`     | string   | 是   | 資料集識別碼（如 `crypto_eod`、`us_stock_eod`） |
+| `source`          | string   | 是   | 資料來源（如 `bloomberg`）                      |
+| `request_key`     | string   | 是   | 上游請求識別碼，用於追蹤                        |
+| `idempotency_key` | string   | 是   | 去重鍵值，相同值不會重複處理                    |
+| `payload`         | object   | 是   | 原始資料 payload（包含 `metadata` 與 `data`）   |
+| `fetched_at`      | datetime | 是   | 資料擷取時間（UTC ISO 8601）                    |
 
 #### 回應格式（IngestResponse）
 
@@ -253,29 +258,29 @@ http://localhost:8080
 }
 ```
 
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| `success` | bool | 是否成功 |
-| `run_id` | UUID | 攝取批次 ID，可用於查詢處理狀態 |
-| `status` | string | 批次狀態（`pending`、`running`、`completed`、`failed`） |
-| `message` | string | 說明訊息 |
+| 欄位      | 類型   | 說明                                                    |
+| --------- | ------ | ------------------------------------------------------- |
+| `success` | bool   | 是否成功                                                |
+| `run_id`  | UUID   | 攝取批次 ID，可用於查詢處理狀態                         |
+| `status`  | string | 批次狀態（`pending`、`running`、`completed`、`failed`） |
+| `message` | string | 說明訊息                                                |
 
 > **去重機制**：若 `idempotency_key` 已存在，不會重新處理，回應 message 為
 > `"Duplicate idempotency_key, returning existing run"`。
 
 #### 端點一覽
 
-| 方法 | 路徑 | 市場 | 說明 |
-|------|------|------|------|
-| POST | `/ingest/crypto` | CRYPTO | 加密貨幣 |
-| POST | `/ingest/us` | US | 美國股市 |
-| POST | `/ingest/fx` | FX | 全球外匯 |
-| POST | `/ingest/macro` | MACRO | 宏觀經濟 |
-| POST | `/ingest/wtx` | WTX | 台灣加權指數 |
-| POST | `/ingest/global` | GLOBAL | 全球市場 |
-| POST | `/ingest/tw` | TW | 台灣市場 |
-| POST | `/ingest/hk` | HK | 香港市場 |
-| POST | `/ingest/cn` | CN | 中國市場 |
+| 方法 | 路徑             | 市場   | 說明         |
+| ---- | ---------------- | ------ | ------------ |
+| POST | `/ingest/crypto` | CRYPTO | 加密貨幣     |
+| POST | `/ingest/us`     | US     | 美國股市     |
+| POST | `/ingest/fx`     | FX     | 全球外匯     |
+| POST | `/ingest/macro`  | MACRO  | 宏觀經濟     |
+| POST | `/ingest/wtx`    | WTX    | 台灣加權指數 |
+| POST | `/ingest/global` | GLOBAL | 全球市場     |
+| POST | `/ingest/tw`     | TW     | 台灣市場     |
+| POST | `/ingest/hk`     | HK     | 香港市場     |
+| POST | `/ingest/cn`     | CN     | 中國市場     |
 
 #### curl 範例
 
@@ -340,35 +345,35 @@ Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
     {
       "ticker": "AAPL US Equity",
       "date": "2026-02-04",
-      "open": 231.00,
-      "high": 233.00,
-      "low": 230.50,
-      "close": 232.50,
+      "open": 231.0,
+      "high": 233.0,
+      "low": 230.5,
+      "close": 232.5,
       "volume": 45000000
     }
   ]
 }
 ```
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
-| `metadata` | object | 否 | 中繼資料；建議保留 `source` 與 `query_time` |
-| `data` | array | 否 | 資料陣列；建議以原始扁平格式直接傳 `ticker`、`date`、`open`、`high`、`low`、`close`、`volume`、`value` |
+| 欄位       | 類型   | 必填 | 說明                                                                                                   |
+| ---------- | ------ | ---- | ------------------------------------------------------------------------------------------------------ |
+| `metadata` | object | 否   | 中繼資料；建議保留 `source` 與 `query_time`                                                            |
+| `data`     | array  | 否   | 資料陣列；建議以原始扁平格式直接傳 `ticker`、`date`、`open`、`high`、`low`、`close`、`volume`、`value` |
 
 > Direct ingest 預設以原始扁平格式為主，也相容巢狀 `price` / `timestamp` 格式。
 > `metadata.query_time` 會作為這批資料的抓取時間；`metadata.category` 非必需。
 
 #### 端點一覽
 
-| 方法 | 路徑 | 對應市場 | 自動 dataset_key | 說明 |
-|------|------|---------|-----------------|------|
-| POST | `/ingest/crypto/direct` | CRYPTO | `crypto_bloomberg_eod` | Bloomberg 加密貨幣直接格式 |
-| POST | `/ingest/fx/direct` | FX | `fx_bloomberg_eod` | Bloomberg 外匯直接格式 |
-| POST | `/ingest/wtx/direct` | WTX | `wtx_bloomberg_eod` | Bloomberg WTX 期貨直接格式 |
-| POST | `/ingest/usstock/direct` | US | `us_stock_eod` | Bloomberg 美股直接格式 |
-| POST | `/ingest/hkchina/direct` | GLOBAL | `hkchina_mixed_eod` | Bloomberg 港中混合直接格式（股票 + 指數） |
-| POST | `/ingest/hkchina-index/direct` | GLOBAL | `hkchina_index_eod` | Bloomberg 港中指數直接格式（相容舊流程） |
-| POST | `/ingest/macro/direct` | MACRO | `macro_bloomberg_observation` | Bloomberg 宏觀直接格式 |
+| 方法 | 路徑                           | 對應市場 | 自動 dataset_key              | 說明                                      |
+| ---- | ------------------------------ | -------- | ----------------------------- | ----------------------------------------- |
+| POST | `/ingest/crypto/direct`        | CRYPTO   | `crypto_bloomberg_eod`        | Bloomberg 加密貨幣直接格式                |
+| POST | `/ingest/fx/direct`            | FX       | `fx_bloomberg_eod`            | Bloomberg 外匯直接格式                    |
+| POST | `/ingest/wtx/direct`           | WTX      | `wtx_bloomberg_eod`           | Bloomberg WTX 期貨直接格式                |
+| POST | `/ingest/usstock/direct`       | US       | `us_stock_eod`                | Bloomberg 美股直接格式                    |
+| POST | `/ingest/hkchina/direct`       | GLOBAL   | `hkchina_mixed_eod`           | Bloomberg 港中混合直接格式（股票 + 指數） |
+| POST | `/ingest/hkchina-index/direct` | GLOBAL   | `hkchina_index_eod`           | Bloomberg 港中指數直接格式（相容舊流程）  |
+| POST | `/ingest/macro/direct`         | MACRO    | `macro_bloomberg_observation` | Bloomberg 宏觀直接格式                    |
 
 > `hkchina/direct` 會在同一批 payload 中同時處理港股/中資股票與港中指數，並依 ticker 自動落到 `HK` 或 `CN` 市場。
 > 若上游仍維持舊的純 index 匯出流程，可繼續使用 `hkchina-index/direct`。
@@ -541,9 +546,9 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/wtx/direct" \
 GET /api/v1/source/runs/{run_id}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `run_id` | path | UUID | 是 | 攝取批次 ID |
+| 參數     | 位置 | 類型 | 必填 | 說明        |
+| -------- | ---- | ---- | ---- | ----------- |
+| `run_id` | path | UUID | 是   | 攝取批次 ID |
 
 回應範例：
 
@@ -561,13 +566,13 @@ GET /api/v1/source/runs/{run_id}
 }
 ```
 
-| 狀態值 | 說明 |
-|--------|------|
-| `pending` | 已排入佇列，等待處理 |
-| `running` | 正規化處理中 |
-| `completed` | 處理完成 |
+| 狀態值                  | 說明                                   |
+| ----------------------- | -------------------------------------- |
+| `pending`               | 已排入佇列，等待處理                   |
+| `running`               | 正規化處理中                           |
+| `completed`             | 處理完成                               |
 | `completed_with_errors` | 已完成，但部分資料寫入或 DQ 流程有錯誤 |
-| `failed` | 處理失敗（查看 `error_message`） |
+| `failed`                | 處理失敗（查看 `error_message`）       |
 
 #### curl 範例
 
@@ -584,9 +589,9 @@ curl "http://localhost:8080/api/v1/source/runs/019462f0-7c00-7000-8000-000000000
 POST /api/v1/source/runs/{run_id}/rerun
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `run_id` | path | UUID | 是 | 原始攝取批次 ID |
+| 參數     | 位置 | 類型 | 必填 | 說明            |
+| -------- | ---- | ---- | ---- | --------------- |
+| `run_id` | path | UUID | 是   | 原始攝取批次 ID |
 
 回應格式同 `IngestResponse`，會產生一筆**新的** `run_id`。
 
@@ -651,14 +656,14 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 GET /api/v1/serve/instruments
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選（`CRYPTO`、`US`、`FX`、`TW`、`HK`、`CN`、`GLOBAL` 等） |
-| `asset_class` | query | string | 否 | 資產類別篩選（`crypto`、`equity`、`index`、`fx`） |
-| `status` | query | string | 否 | 狀態篩選（`active`、`delisted`） |
-| `symbol` | query | string | 否 | 精確代碼篩選 |
-| `page` | query | int | 否 | 頁碼（預設 1） |
-| `page_size` | query | int | 否 | 每頁筆數（預設 100，最大 1000） |
+| 參數          | 位置  | 類型   | 必填 | 說明                                                            |
+| ------------- | ----- | ------ | ---- | --------------------------------------------------------------- |
+| `market`      | query | string | 否   | 市場篩選（`CRYPTO`、`US`、`FX`、`TW`、`HK`、`CN`、`GLOBAL` 等） |
+| `asset_class` | query | string | 否   | 資產類別篩選（`crypto`、`equity`、`index`、`fx`）               |
+| `status`      | query | string | 否   | 狀態篩選（`active`、`delisted`）                                |
+| `symbol`      | query | string | 否   | 精確代碼篩選                                                    |
+| `page`        | query | int    | 否   | 頁碼（預設 1）                                                  |
+| `page_size`   | query | int    | 否   | 每頁筆數（預設 100，最大 1000）                                 |
 
 回應範例：
 
@@ -707,9 +712,9 @@ curl "http://localhost:8080/api/v1/serve/instruments?symbol=BTC"
 GET /api/v1/serve/instruments/{instrument_id}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `instrument_id` | path | UUID | 是 | 標的 ID |
+| 參數            | 位置 | 類型 | 必填 | 說明    |
+| --------------- | ---- | ---- | ---- | ------- |
+| `instrument_id` | path | UUID | 是   | 標的 ID |
 
 ```bash
 curl "http://localhost:8080/api/v1/serve/instruments/019462f0-7c00-7000-8000-000000000001"
@@ -725,14 +730,14 @@ curl "http://localhost:8080/api/v1/serve/instruments/019462f0-7c00-7000-8000-000
 GET /api/v1/serve/eod
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選 |
-| `symbols` | query | string | 否 | 代碼篩選（逗號分隔，如 `BTC,ETH`） |
-| `start_date` | query | date | 否 | 起始日期（`YYYY-MM-DD`） |
-| `end_date` | query | date | 否 | 結束日期（`YYYY-MM-DD`） |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數         | 位置  | 類型   | 必填 | 說明                               |
+| ------------ | ----- | ------ | ---- | ---------------------------------- |
+| `market`     | query | string | 否   | 市場篩選                           |
+| `symbols`    | query | string | 否   | 代碼篩選（逗號分隔，如 `BTC,ETH`） |
+| `start_date` | query | date   | 否   | 起始日期（`YYYY-MM-DD`）           |
+| `end_date`   | query | date   | 否   | 結束日期（`YYYY-MM-DD`）           |
+| `page`       | query | int    | 否   | 頁碼                               |
+| `page_size`  | query | int    | 否   | 每頁筆數                           |
 
 回應範例：
 
@@ -775,13 +780,13 @@ curl "http://localhost:8080/api/v1/serve/eod?market=US&symbols=AAPL&start_date=2
 GET /api/v1/serve/eod/{instrument_id}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `instrument_id` | path | UUID | 是 | 標的 ID |
-| `start_date` | query | date | 否 | 起始日期 |
-| `end_date` | query | date | 否 | 結束日期 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數            | 位置  | 類型 | 必填 | 說明     |
+| --------------- | ----- | ---- | ---- | -------- |
+| `instrument_id` | path  | UUID | 是   | 標的 ID  |
+| `start_date`    | query | date | 否   | 起始日期 |
+| `end_date`      | query | date | 否   | 結束日期 |
+| `page`          | query | int  | 否   | 頁碼     |
+| `page_size`     | query | int  | 否   | 每頁筆數 |
 
 ```bash
 curl "http://localhost:8080/api/v1/serve/eod/019462f0-7c00-7000-8000-000000000001?start_date=2026-01-01"
@@ -797,15 +802,15 @@ curl "http://localhost:8080/api/v1/serve/eod/019462f0-7c00-7000-8000-00000000000
 GET /api/v1/serve/corporate-actions
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選 |
-| `symbols` | query | string | 否 | 代碼篩選（逗號分隔） |
-| `action_type` | query | string | 否 | 行為類型篩選（如 `dividend`、`split`） |
-| `start_date` | query | date | 否 | 起始除權息日 |
-| `end_date` | query | date | 否 | 結束除權息日 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數          | 位置  | 類型   | 必填 | 說明                                   |
+| ------------- | ----- | ------ | ---- | -------------------------------------- |
+| `market`      | query | string | 否   | 市場篩選                               |
+| `symbols`     | query | string | 否   | 代碼篩選（逗號分隔）                   |
+| `action_type` | query | string | 否   | 行為類型篩選（如 `dividend`、`split`） |
+| `start_date`  | query | date   | 否   | 起始除權息日                           |
+| `end_date`    | query | date   | 否   | 結束除權息日                           |
+| `page`        | query | int    | 否   | 頁碼                                   |
+| `page_size`   | query | int    | 否   | 每頁筆數                               |
 
 回應範例：
 
@@ -845,14 +850,14 @@ curl "http://localhost:8080/api/v1/serve/corporate-actions?market=US&action_type
 GET /api/v1/serve/corporate-actions/{instrument_id}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `instrument_id` | path | UUID | 是 | 標的 ID |
-| `action_type` | query | string | 否 | 行為類型篩選 |
-| `start_date` | query | date | 否 | 起始除權息日 |
-| `end_date` | query | date | 否 | 結束除權息日 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數            | 位置  | 類型   | 必填 | 說明         |
+| --------------- | ----- | ------ | ---- | ------------ |
+| `instrument_id` | path  | UUID   | 是   | 標的 ID      |
+| `action_type`   | query | string | 否   | 行為類型篩選 |
+| `start_date`    | query | date   | 否   | 起始除權息日 |
+| `end_date`      | query | date   | 否   | 結束除權息日 |
+| `page`          | query | int    | 否   | 頁碼         |
+| `page_size`     | query | int    | 否   | 每頁筆數     |
 
 ---
 
@@ -864,14 +869,14 @@ GET /api/v1/serve/corporate-actions/{instrument_id}
 GET /api/v1/serve/macro/series
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選 |
-| `source` | query | string | 否 | 資料來源篩選 |
-| `source_code` | query | string | 否 | 來源代碼精確篩選 |
-| `name` | query | string | 否 | 序列名稱模糊搜尋 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數          | 位置  | 類型   | 必填 | 說明             |
+| ------------- | ----- | ------ | ---- | ---------------- |
+| `market`      | query | string | 否   | 市場篩選         |
+| `source`      | query | string | 否   | 資料來源篩選     |
+| `source_code` | query | string | 否   | 來源代碼精確篩選 |
+| `name`        | query | string | 否   | 序列名稱模糊搜尋 |
+| `page`        | query | int    | 否   | 頁碼             |
+| `page_size`   | query | int    | 否   | 每頁筆數         |
 
 回應範例：
 
@@ -907,14 +912,14 @@ curl "http://localhost:8080/api/v1/serve/macro/series?name=CPI"
 GET /api/v1/serve/macro/observations
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選 |
-| `source_code` | query | string | 否 | 來源代碼篩選 |
-| `start_date` | query | date | 否 | 起始日期 |
-| `end_date` | query | date | 否 | 結束日期 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數          | 位置  | 類型   | 必填 | 說明         |
+| ------------- | ----- | ------ | ---- | ------------ |
+| `market`      | query | string | 否   | 市場篩選     |
+| `source_code` | query | string | 否   | 來源代碼篩選 |
+| `start_date`  | query | date   | 否   | 起始日期     |
+| `end_date`    | query | date   | 否   | 結束日期     |
+| `page`        | query | int    | 否   | 頁碼         |
+| `page_size`   | query | int    | 否   | 每頁筆數     |
 
 回應範例：
 
@@ -945,13 +950,13 @@ curl "http://localhost:8080/api/v1/serve/macro/observations?source_code=CPI_YOY&
 GET /api/v1/serve/macro/observations/{series_id}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `series_id` | path | UUID | 是 | 序列 ID |
-| `start_date` | query | date | 否 | 起始日期 |
-| `end_date` | query | date | 否 | 結束日期 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數         | 位置  | 類型 | 必填 | 說明     |
+| ------------ | ----- | ---- | ---- | -------- |
+| `series_id`  | path  | UUID | 是   | 序列 ID  |
+| `start_date` | query | date | 否   | 起始日期 |
+| `end_date`   | query | date | 否   | 結束日期 |
+| `page`       | query | int  | 否   | 頁碼     |
+| `page_size`  | query | int  | 否   | 每頁筆數 |
 
 ---
 
@@ -963,15 +968,15 @@ GET /api/v1/serve/macro/observations/{series_id}
 GET /api/v1/serve/futures/contracts
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選 |
-| `symbols` | query | string | 否 | 代碼篩選（逗號分隔） |
-| `contract_code` | query | string | 否 | 合約代碼精確篩選 |
-| `start_expiry` | query | date | 否 | 起始到期日 |
-| `end_expiry` | query | date | 否 | 結束到期日 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數            | 位置  | 類型   | 必填 | 說明                 |
+| --------------- | ----- | ------ | ---- | -------------------- |
+| `market`        | query | string | 否   | 市場篩選             |
+| `symbols`       | query | string | 否   | 代碼篩選（逗號分隔） |
+| `contract_code` | query | string | 否   | 合約代碼精確篩選     |
+| `start_expiry`  | query | date   | 否   | 起始到期日           |
+| `end_expiry`    | query | date   | 否   | 結束到期日           |
+| `page`          | query | int    | 否   | 頁碼                 |
+| `page_size`     | query | int    | 否   | 每頁筆數             |
 
 回應範例：
 
@@ -1006,14 +1011,14 @@ curl "http://localhost:8080/api/v1/serve/futures/contracts?market=WTX"
 GET /api/v1/serve/futures/continuous
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | 否 | 市場篩選 |
-| `symbols` | query | string | 否 | 代碼篩選（逗號分隔） |
-| `start_date` | query | date | 否 | 起始日期 |
-| `end_date` | query | date | 否 | 結束日期 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數         | 位置  | 類型   | 必填 | 說明                 |
+| ------------ | ----- | ------ | ---- | -------------------- |
+| `market`     | query | string | 否   | 市場篩選             |
+| `symbols`    | query | string | 否   | 代碼篩選（逗號分隔） |
+| `start_date` | query | date   | 否   | 起始日期             |
+| `end_date`   | query | date   | 否   | 結束日期             |
+| `page`       | query | int    | 否   | 頁碼                 |
+| `page_size`  | query | int    | 否   | 每頁筆數             |
 
 回應範例：
 
@@ -1027,10 +1032,10 @@ GET /api/v1/serve/futures/continuous
       "symbol": "WTX",
       "name": "台指期",
       "trade_date": "2026-01-16",
-      "open": 22500.00,
-      "high": 22650.00,
-      "low": 22400.00,
-      "close": 22600.00,
+      "open": 22500.0,
+      "high": 22650.0,
+      "low": 22400.0,
+      "close": 22600.0,
       "volume": 120000,
       "turnover": null,
       "source": "bloomberg",
@@ -1052,13 +1057,13 @@ curl "http://localhost:8080/api/v1/serve/futures/continuous?symbols=WTX&start_da
 GET /api/v1/serve/futures/continuous/{instrument_id}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `instrument_id` | path | UUID | 是 | 標的 ID |
-| `start_date` | query | date | 否 | 起始日期 |
-| `end_date` | query | date | 否 | 結束日期 |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數            | 位置  | 類型 | 必填 | 說明     |
+| --------------- | ----- | ---- | ---- | -------- |
+| `instrument_id` | path  | UUID | 是   | 標的 ID  |
+| `start_date`    | query | date | 否   | 起始日期 |
+| `end_date`      | query | date | 否   | 結束日期 |
+| `page`          | query | int  | 否   | 頁碼     |
+| `page_size`     | query | int  | 否   | 每頁筆數 |
 
 ---
 
@@ -1068,14 +1073,14 @@ GET /api/v1/serve/futures/continuous/{instrument_id}
 GET /api/v1/serve/calendar
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `market` | query | string | **是** | 市場代碼（必填） |
-| `start_date` | query | date | 否 | 起始日期 |
-| `end_date` | query | date | 否 | 結束日期 |
-| `is_open` | query | bool | 否 | 僅顯示開市日（`true`）或休市日（`false`） |
-| `page` | query | int | 否 | 頁碼 |
-| `page_size` | query | int | 否 | 每頁筆數 |
+| 參數         | 位置  | 類型   | 必填   | 說明                                      |
+| ------------ | ----- | ------ | ------ | ----------------------------------------- |
+| `market`     | query | string | **是** | 市場代碼（必填）                          |
+| `start_date` | query | date   | 否     | 起始日期                                  |
+| `end_date`   | query | date   | 否     | 結束日期                                  |
+| `is_open`    | query | bool   | 否     | 僅顯示開市日（`true`）或休市日（`false`） |
+| `page`       | query | int    | 否     | 頁碼                                      |
+| `page_size`  | query | int    | 否     | 每頁筆數                                  |
 
 回應範例：
 
@@ -1121,15 +1126,72 @@ curl "http://localhost:8080/api/v1/serve/calendar?market=US&is_open=false&start_
 
 Admin API 用於人工修正 Canonical 資料。每次修正都會自動寫入 `canonical_correction` 表作為不可變的 audit log，記錄修改前後快照與操作者資訊。
 
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| GET | `/dq-issues` | 查詢 DQ issue 清單 |
-| PATCH | `/eod/{instrument_id}/{trade_date}` | 修正日K 的 OHLCV 欄位 |
-| PATCH | `/dq-issues/{issue_id}/resolve` | 標記 DQ issue 為已解決 |
-| GET | `/raw-payloads` | 查詢 raw payload 清單 |
-| GET | `/raw-payloads/{run_id}` | 依 run_id 查詢原始 payload |
-| GET | `/corrections` | 查詢修正 audit log |
-| POST | `/runs/bulk-rerun` | 批次重跑既有 runs |
+| 方法  | 路徑                                      | 說明                                    |
+| ----- | ----------------------------------------- | --------------------------------------- |
+| GET   | `/dq-issues`                              | 查詢 DQ issue 清單                      |
+| PATCH | `/eod/{instrument_id}/{trade_date}`       | 修正日K 的 OHLCV 欄位                   |
+| PATCH | `/dq-issues/{issue_id}/resolve`           | 標記 DQ issue 為已解決                  |
+| GET   | `/raw-payloads`                           | 查詢 raw payload 清單                   |
+| GET   | `/raw-payloads/{run_id}`                  | 依 run_id 查詢原始 payload              |
+| GET   | `/corrections`                            | 查詢修正 audit log                      |
+| POST  | `/runs/bulk-rerun`                        | 批次重跑既有 runs                       |
+| GET   | `/instrument-cache`                       | 讀取 `app/static/data/instruments.json` |
+| PUT   | `/instrument-cache`                       | 全量覆蓋 instrument cache               |
+| PATCH | `/instrument-cache/items/{instrument_id}` | 更新單一 instrument cache 項目          |
+
+---
+
+### 管理 Instrument Cache
+
+#### 讀取快取
+
+```
+GET /api/v1/admin/instrument-cache
+```
+
+```bash
+curl "http://localhost:8080/api/v1/admin/instrument-cache" \
+  -H "X-API-Key: your-admin-key"
+```
+
+#### 全量覆蓋快取
+
+```
+PUT /api/v1/admin/instrument-cache
+```
+
+請求體需提供完整快取文件（`generated_at`、`total`、`markets`、`asset_classes`、`data`）。服務端會驗證欄位並重新排序/正規化後落檔。
+
+```bash
+curl -X PUT "http://localhost:8080/api/v1/admin/instrument-cache" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d @cache_payload.json
+```
+
+#### 更新單一標的
+
+```
+PATCH /api/v1/admin/instrument-cache/items/{instrument_id}
+```
+
+可更新欄位：`market`、`asset_class`、`symbol`、`name`、`currency`、`status`、`latest_trade_date`、`latest_price`。
+
+```bash
+curl -X PATCH "http://localhost:8080/api/v1/admin/instrument-cache/items/instrument-us-aapl" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Apple Inc.",
+    "latest_trade_date": "2026-04-21",
+    "latest_price": "191.23"
+  }'
+```
+
+常見錯誤：
+
+- `404`: 快取檔尚未產生，或指定 `instrument_id` 不存在
+- `400`: 請求欄位格式不符或更新內容不合法
 
 ---
 
@@ -1139,13 +1201,13 @@ Admin API 用於人工修正 Canonical 資料。每次修正都會自動寫入 `
 GET /api/v1/admin/dq-issues
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `resolved` | query | bool | 否 | 篩選已解決 / 未解決 |
-| `instrument_id` | query | UUID | 否 | 篩選特定標的 |
-| `severity` | query | string | 否 | 篩選 `warning` / `error` |
-| `page` | query | int | 否 | 頁碼（預設 1） |
-| `page_size` | query | int | 否 | 每頁筆數（預設 100，最大 1000） |
+| 參數            | 位置  | 類型   | 必填 | 說明                            |
+| --------------- | ----- | ------ | ---- | ------------------------------- |
+| `resolved`      | query | bool   | 否   | 篩選已解決 / 未解決             |
+| `instrument_id` | query | UUID   | 否   | 篩選特定標的                    |
+| `severity`      | query | string | 否   | 篩選 `warning` / `error`        |
+| `page`          | query | int    | 否   | 頁碼（預設 1）                  |
+| `page_size`     | query | int    | 否   | 每頁筆數（預設 100，最大 1000） |
 
 回應範例：
 
@@ -1191,29 +1253,29 @@ curl "http://localhost:8080/api/v1/admin/dq-issues?instrument_id=019462f0-7c00-7
 PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `instrument_id` | path | UUID | 是 | 標的 ID |
-| `trade_date` | path | date | 是 | 交易日（`YYYY-MM-DD`） |
+| 參數            | 位置 | 類型 | 必填 | 說明                   |
+| --------------- | ---- | ---- | ---- | ---------------------- |
+| `instrument_id` | path | UUID | 是   | 標的 ID                |
+| `trade_date`    | path | date | 是   | 交易日（`YYYY-MM-DD`） |
 
 #### 請求體格式（PatchEODRequest）
 
 ```json
 {
   "correction_reason": "Bloomberg 原始資料錯誤，收盤價多一個零",
-  "close": 153.00
+  "close": 153.0
 }
 ```
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
-| `correction_reason` | string | **是** | 修正原因（將被記錄到 audit log） |
-| `open` | Decimal | 否 | 開盤價（null 表示清除） |
-| `high` | Decimal | 否 | 最高價（null 表示清除） |
-| `low` | Decimal | 否 | 最低價（null 表示清除） |
-| `close` | Decimal | 否 | 收盤價（null 表示清除） |
-| `volume` | int | 否 | 成交量（null 表示清除） |
-| `turnover` | Decimal | 否 | 成交額（null 表示清除） |
+| 欄位                | 類型    | 必填   | 說明                             |
+| ------------------- | ------- | ------ | -------------------------------- |
+| `correction_reason` | string  | **是** | 修正原因（將被記錄到 audit log） |
+| `open`              | Decimal | 否     | 開盤價（null 表示清除）          |
+| `high`              | Decimal | 否     | 最高價（null 表示清除）          |
+| `low`               | Decimal | 否     | 最低價（null 表示清除）          |
+| `close`             | Decimal | 否     | 收盤價（null 表示清除）          |
+| `volume`            | int     | 否     | 成交量（null 表示清除）          |
+| `turnover`          | Decimal | 否     | 成交額（null 表示清除）          |
 
 > 至少須提供一個 OHLCV 欄位，且新值必須與現有值不同，否則回傳 `400`。
 
@@ -1232,10 +1294,10 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 
 #### 錯誤情境
 
-| 狀態碼 | 說明 |
-|--------|------|
-| `404` | instrument_id + trade_date 找不到對應的日K 記錄 |
-| `400` | 未提供任何 OHLCV 欄位，或新值與現有值完全相同 |
+| 狀態碼 | 說明                                            |
+| ------ | ----------------------------------------------- |
+| `404`  | instrument_id + trade_date 找不到對應的日K 記錄 |
+| `400`  | 未提供任何 OHLCV 欄位，或新值與現有值完全相同   |
 
 #### curl 範例
 
@@ -1282,9 +1344,9 @@ curl -X PATCH \
 PATCH /api/v1/admin/dq-issues/{issue_id}/resolve
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `issue_id` | path | UUID | 是 | DQ issue ID |
+| 參數       | 位置 | 類型 | 必填 | 說明        |
+| ---------- | ---- | ---- | ---- | ----------- |
+| `issue_id` | path | UUID | 是   | DQ issue ID |
 
 #### 請求體格式（ResolveDQIssueRequest）
 
@@ -1294,8 +1356,8 @@ PATCH /api/v1/admin/dq-issues/{issue_id}/resolve
 }
 ```
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
+| 欄位                | 類型   | 必填   | 說明                             |
+| ------------------- | ------ | ------ | -------------------------------- |
 | `correction_reason` | string | **是** | 解決原因（將被記錄到 audit log） |
 
 #### 回應範例（200 OK）
@@ -1312,10 +1374,10 @@ PATCH /api/v1/admin/dq-issues/{issue_id}/resolve
 
 #### 錯誤情境
 
-| 狀態碼 | 說明 |
-|--------|------|
-| `404` | issue_id 找不到對應的 DQ issue |
-| `409` | 該 DQ issue 已經是 resolved 狀態 |
+| 狀態碼 | 說明                             |
+| ------ | -------------------------------- |
+| `404`  | issue_id 找不到對應的 DQ issue   |
+| `409`  | 該 DQ issue 已經是 resolved 狀態 |
 
 #### curl 範例
 
@@ -1340,14 +1402,14 @@ curl -X PATCH \
 GET /api/v1/admin/raw-payloads
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `dataset_key` | query | string | 否 | 篩選特定 dataset |
-| `run_id` | query | UUID | 否 | 篩選特定 run |
-| `date_from` | query | date | 否 | `created_at >=` 這一天（UTC） |
-| `date_to` | query | date | 否 | `created_at <` 次日（UTC） |
-| `page` | query | int | 否 | 頁碼（預設 1） |
-| `page_size` | query | int | 否 | 每頁筆數（預設 20，最大 200） |
+| 參數          | 位置  | 類型   | 必填 | 說明                          |
+| ------------- | ----- | ------ | ---- | ----------------------------- |
+| `dataset_key` | query | string | 否   | 篩選特定 dataset              |
+| `run_id`      | query | UUID   | 否   | 篩選特定 run                  |
+| `date_from`   | query | date   | 否   | `created_at >=` 這一天（UTC） |
+| `date_to`     | query | date   | 否   | `created_at <` 次日（UTC）    |
+| `page`        | query | int    | 否   | 頁碼（預設 1）                |
+| `page_size`   | query | int    | 否   | 每頁筆數（預設 20，最大 200） |
 
 ```bash
 # 查最新 raw payload
@@ -1388,12 +1450,12 @@ curl "http://localhost:8080/api/v1/admin/raw-payloads/019462f0-7c00-7000-8000-00
 GET /api/v1/admin/corrections
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `table_name` | query | string | 否 | 篩選修正的資料表（`market_data_eod`、`dq_issue`） |
-| `instrument_id` | query | UUID | 否 | 篩選特定標的的修正紀錄 |
-| `page` | query | int | 否 | 頁碼（預設 1） |
-| `page_size` | query | int | 否 | 每頁筆數（預設 100，最大 1000） |
+| 參數            | 位置  | 類型   | 必填 | 說明                                              |
+| --------------- | ----- | ------ | ---- | ------------------------------------------------- |
+| `table_name`    | query | string | 否   | 篩選修正的資料表（`market_data_eod`、`dq_issue`） |
+| `instrument_id` | query | UUID   | 否   | 篩選特定標的的修正紀錄                            |
+| `page`          | query | int    | 否   | 頁碼（預設 1）                                    |
+| `page_size`     | query | int    | 否   | 每頁筆數（預設 100，最大 1000）                   |
 
 回應為**最新優先**排序。
 
@@ -1455,10 +1517,10 @@ curl "http://localhost:8080/api/v1/admin/corrections?table_name=dq_issue&page_si
 POST /api/v1/admin/runs/bulk-rerun
 ```
 
-| 參數 | 位置 | 類型 | 必填 | 說明 |
-|------|------|------|------|------|
-| `dataset_key` | query | string | 否 | 只重跑特定 dataset |
-| `status` | query | string | 否 | 篩選 `completed`、`failed`、`all`，預設 `completed` |
+| 參數          | 位置  | 類型   | 必填 | 說明                                                |
+| ------------- | ----- | ------ | ---- | --------------------------------------------------- |
+| `dataset_key` | query | string | 否   | 只重跑特定 dataset                                  |
+| `status`      | query | string | 否   | 篩選 `completed`、`failed`、`all`，預設 `completed` |
 
 回應範例：
 
@@ -1495,10 +1557,10 @@ curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun?dataset_key=cry
 
 所有列表端點支援分頁，參數統一為：
 
-| 參數 | 預設值 | 範圍 | 說明 |
-|------|--------|------|------|
-| `page` | 1 | ≥ 1 | 頁碼 |
-| `page_size` | 100 | 1–1000 | 每頁筆數 |
+| 參數        | 預設值 | 範圍   | 說明     |
+| ----------- | ------ | ------ | -------- |
+| `page`      | 1      | ≥ 1    | 頁碼     |
+| `page_size` | 100    | 1–1000 | 每頁筆數 |
 
 回應中的 `pagination` 物件：
 
@@ -1529,17 +1591,17 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=50"
 
 ### HTTP 狀態碼
 
-| 狀態碼 | 說明 | 常見原因 |
-|--------|------|---------|
-| `200` | 成功 | 請求正常處理 |
-| `400` | 請求錯誤 | dataset 不存在、market 不符、payload 驗證失敗、dataset 已停用 |
-| `401` | 未認證 | 未帶入 `X-API-Key` Header |
-| `403` | 禁止存取 | API Key 無效、IP 不在允許名單 |
-| `404` | 找不到資源 | instrument_id / run_id / series_id / issue_id 不存在 |
-| `409` | 衝突 | 操作與現有狀態衝突（如重複標記已解決的 DQ issue） |
-| `422` | 驗證錯誤 | 請求體格式不符 Pydantic schema |
-| `429` | 請求過多 | 超過限流上限 |
-| `500` | 伺服器錯誤 | 內部錯誤、未設定 API Key、未設定允許名單（生產環境） |
+| 狀態碼 | 說明       | 常見原因                                                      |
+| ------ | ---------- | ------------------------------------------------------------- |
+| `200`  | 成功       | 請求正常處理                                                  |
+| `400`  | 請求錯誤   | dataset 不存在、market 不符、payload 驗證失敗、dataset 已停用 |
+| `401`  | 未認證     | 未帶入 `X-API-Key` Header                                     |
+| `403`  | 禁止存取   | API Key 無效、IP 不在允許名單                                 |
+| `404`  | 找不到資源 | instrument_id / run_id / series_id / issue_id 不存在          |
+| `409`  | 衝突       | 操作與現有狀態衝突（如重複標記已解決的 DQ issue）             |
+| `422`  | 驗證錯誤   | 請求體格式不符 Pydantic schema                                |
+| `429`  | 請求過多   | 超過限流上限                                                  |
+| `500`  | 伺服器錯誤 | 內部錯誤、未設定 API Key、未設定允許名單（生產環境）          |
 
 ### 錯誤回應格式
 
@@ -1551,29 +1613,32 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=50"
 
 ### Source API 常見錯誤
 
-| 錯誤訊息 | 狀態碼 | 說明 |
-|---------|--------|------|
-| `"Missing API key"` | 401 | 未帶入 X-API-Key |
-| `"Invalid API key"` | 403 | API Key 不正確 |
-| `"Client IP not allowlisted"` | 403 | IP 不在 SOURCE_ALLOWLIST_CIDRS |
-| `"Rate limit exceeded"` | 429 | 請求頻率超過限制 |
-| `"Dataset 'xxx' not found"` | 400 | 指定的 dataset_key 不存在 |
-| `"Dataset 'xxx' is inactive"` | 400 | 資料集已停用 |
-| `"Market mismatch..."` | 400 | payload 市場與端點市場不符 |
+| 錯誤訊息                      | 狀態碼 | 說明                           |
+| ----------------------------- | ------ | ------------------------------ |
+| `"Missing API key"`           | 401    | 未帶入 X-API-Key               |
+| `"Invalid API key"`           | 403    | API Key 不正確                 |
+| `"Client IP not allowlisted"` | 403    | IP 不在 SOURCE_ALLOWLIST_CIDRS |
+| `"Rate limit exceeded"`       | 429    | 請求頻率超過限制               |
+| `"Dataset 'xxx' not found"`   | 400    | 指定的 dataset_key 不存在      |
+| `"Dataset 'xxx' is inactive"` | 400    | 資料集已停用                   |
+| `"Market mismatch..."`        | 400    | payload 市場與端點市場不符     |
 
 ### Admin API 常見錯誤
 
-| 錯誤訊息 | 狀態碼 | 說明 |
-|---------|--------|------|
-| `"Missing API key"` | 401 | 未帶入 X-API-Key |
-| `"Invalid API key"` | 403 | Admin API Key 不正確 |
-| `"No admin API keys configured"` | 500 | 未設定 `ADMIN_API_KEYS` 環境變數 |
-| `"EOD record not found..."` | 404 | 指定的 instrument_id + trade_date 無日K 記錄 |
-| `"DQ issue ... not found"` | 404 | 指定的 issue_id 不存在 |
-| `"Raw payload not found"` | 404 | 指定的 run_id 找不到 raw payload |
-| `"No OHLCV fields provided..."` | 400 | PATCH 請求未包含任何 OHLCV 欄位 |
-| `"No changes detected..."` | 400 | 提交的值與現有值完全相同 |
-| `"DQ issue ... is already resolved"` | 409 | 該 DQ issue 已是 resolved 狀態 |
+| 錯誤訊息                              | 狀態碼 | 說明                                         |
+| ------------------------------------- | ------ | -------------------------------------------- |
+| `"Missing API key"`                   | 401    | 未帶入 X-API-Key                             |
+| `"Invalid API key"`                   | 403    | Admin API Key 不正確                         |
+| `"No admin API keys configured"`      | 500    | 未設定 `ADMIN_API_KEYS` 環境變數             |
+| `"EOD record not found..."`           | 404    | 指定的 instrument_id + trade_date 無日K 記錄 |
+| `"DQ issue ... not found"`            | 404    | 指定的 issue_id 不存在                       |
+| `"Raw payload not found"`             | 404    | 指定的 run_id 找不到 raw payload             |
+| `"Instrument cache not found..."`     | 404    | 尚未產生 `app/static/data/instruments.json`  |
+| `"Instrument ... not found in cache"` | 404    | instrument cache 中找不到指定 instrument_id  |
+| `"Instrument cache ... invalid"`      | 400    | instrument cache 文件格式不合法              |
+| `"No OHLCV fields provided..."`       | 400    | PATCH 請求未包含任何 OHLCV 欄位              |
+| `"No changes detected..."`            | 400    | 提交的值與現有值完全相同                     |
+| `"DQ issue ... is already resolved"`  | 409    | 該 DQ issue 已是 resolved 狀態               |
 
 ---
 
@@ -1998,17 +2063,17 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 
 可用 `/api/v1/source/datasets` 查詢。目前支援的市場代碼：
 
-| 市場代碼 | 說明 |
-|---------|------|
-| `CRYPTO` | 加密貨幣 |
-| `US` | 美國股市 |
-| `FX` | 全球外匯 |
-| `MACRO` | 宏觀經濟 |
-| `WTX` | 台灣加權指數期貨 |
-| `GLOBAL` | 全球市場 |
-| `TW` | 台灣市場 |
-| `HK` | 香港市場 |
-| `CN` | 中國市場 |
+| 市場代碼 | 說明             |
+| -------- | ---------------- |
+| `CRYPTO` | 加密貨幣         |
+| `US`     | 美國股市         |
+| `FX`     | 全球外匯         |
+| `MACRO`  | 宏觀經濟         |
+| `WTX`    | 台灣加權指數期貨 |
+| `GLOBAL` | 全球市場         |
+| `TW`     | 台灣市場         |
+| `HK`     | 香港市場         |
+| `CN`     | 中國市場         |
 
 ### Q: Admin API 修正後，原始資料會被刪除嗎？
 
@@ -2044,17 +2109,17 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 
 ## 環境變數參考
 
-| 變數 | 預設值 | 說明 |
-|------|--------|------|
-| `DATABASE_URL` | `postgresql+asyncpg://findb:findb@localhost:5435/findb` | PostgreSQL 連線字串 |
-| `SOURCE_API_KEYS` | （空） | Source API 金鑰（逗號分隔） |
-| `SOURCE_ALLOWLIST_CIDRS` | （空） | IP 允許名單（CIDR，逗號分隔），生產環境必填 |
-| `SOURCE_TRUST_PROXY_HEADERS` | `false` | 是否信任 X-Forwarded-For |
-| `SERVE_API_KEYS` | （空） | Serve API 金鑰（逗號分隔） |
-| `SERVE_REQUIRE_AUTH` | `false` | Serve API 是否需要認證 |
-| `ADMIN_API_KEYS` | （空） | Admin API 金鑰（逗號分隔），**必須設定**才能使用 Admin API |
-| `RATE_LIMIT_REQUESTS` | `100` | 限流上限（每 window 內的請求數） |
-| `RATE_LIMIT_WINDOW` | `60` | 限流時間窗口（秒） |
-| `RAW_RETENTION_ENABLED` | `false` | 是否啟用原始資料過期清理 |
-| `RAW_RETENTION_DAYS` | `14` | 原始資料保留天數 |
-| `DEBUG` | `false` | 除錯模式（跳過 allowlist 強制檢查） |
+| 變數                         | 預設值                                                  | 說明                                                       |
+| ---------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- |
+| `DATABASE_URL`               | `postgresql+asyncpg://findb:findb@localhost:5435/findb` | PostgreSQL 連線字串                                        |
+| `SOURCE_API_KEYS`            | （空）                                                  | Source API 金鑰（逗號分隔）                                |
+| `SOURCE_ALLOWLIST_CIDRS`     | （空）                                                  | IP 允許名單（CIDR，逗號分隔），生產環境必填                |
+| `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For                                   |
+| `SERVE_API_KEYS`             | （空）                                                  | Serve API 金鑰（逗號分隔）                                 |
+| `SERVE_REQUIRE_AUTH`         | `false`                                                 | Serve API 是否需要認證                                     |
+| `ADMIN_API_KEYS`             | （空）                                                  | Admin API 金鑰（逗號分隔），**必須設定**才能使用 Admin API |
+| `RATE_LIMIT_REQUESTS`        | `100`                                                   | 限流上限（每 window 內的請求數）                           |
+| `RATE_LIMIT_WINDOW`          | `60`                                                    | 限流時間窗口（秒）                                         |
+| `RAW_RETENTION_ENABLED`      | `false`                                                 | 是否啟用原始資料過期清理                                   |
+| `RAW_RETENTION_DAYS`         | `14`                                                    | 原始資料保留天數                                           |
+| `DEBUG`                      | `false`                                                 | 除錯模式（跳過 allowlist 強制檢查）                        |

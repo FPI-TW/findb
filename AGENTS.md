@@ -18,8 +18,7 @@ findb/
 |  |- services/normalize/    # Market-specific normalizers and mapping logic
 |  |- models/                # Canonical, raw, registry ORM models
 |  |- schemas/               # Pydantic request/response models
-|  `- static/                # /test API dashboard assets
-|- frontend/                 # Primary frontend app (Next.js App Router)
+|  `- static/                # /test and /instrument-lookup static assets
 |- docs/                     # API guide, manual test flow, exported tester page
 |- tests/                    # Async API/service integration and unit tests
 |- scripts/                  # Seed and cleanup scripts
@@ -39,8 +38,8 @@ findb/
 | DQ rules | `app/services/dq/validators.py` | Error blocks writes; warning does not |
 | ORM/data model | `app/models/` | Raw schema + canonical tables + run registry |
 | API schemas | `app/schemas/` | Request and response contracts |
-| Frontend pages/features | `frontend/app/` + `frontend/features/` | Primary location for frontend page changes |
-| Test dashboard | `app/static/test_page.html` | Static `/test` API tester; only update when explicitly requested |
+| Static lookup and cache flow | `app/static/instrument-lookup.html` + `scripts/generate_instrument_cache.py` | `/instrument-lookup` UI and generated `app/static/data/*.json` cache |
+| Test dashboard | `app/static/test_page.html` | Static `/test` API tester |
 | Tests and fixtures | `tests/` + `tests/conftest.py` | AsyncClient + ASGITransport + DB fixtures |
 
 ## CODE MAP
@@ -77,8 +76,8 @@ Use directory-local AGENTS files for deep module guidance:
 - Normalizer routing uses an explicit `NORMALIZER_MAP` in `app/services/ingestion.py`.
 - Direct-format source ingest endpoints exist for selected markets (`.../direct`) and auto-bootstrap built-in dataset registry rows when missing.
 - Macro direct payloads default `market=MACRO` when the payload omits market.
-- The primary frontend lives under `frontend/`; update frontend pages there by default.
-- A static API dashboard is served at `/test` from `app/static/test_page.html`, but it is not the default target for frontend page changes.
+- UI surfaces are static pages under `app/static/` and are served by `app/main.py` (`/test`, `/instrument-lookup`, and `/static/*`).
+- Instrument and macro lookup data are generated cache files (`app/static/data/instruments.json`, `app/static/data/macro-series.json`), not committed source-of-truth data.
 - Test suite heavily uses async fixtures and dependency overrides (`tests/conftest.py`).
 
 ## COMMANDS
@@ -104,5 +103,6 @@ poetry run pytest
 
 - Host DB port is `5435` -> container `5432`; app container uses `db:5432`.
 - `SOURCE_API_KEYS` must be set for auth-covered tests and ingest endpoints.
-- Known gaps: rate limiting/allowlist not implemented; Alembic migrations not wired.
+- `ADMIN_API_KEYS` must be set for Admin API endpoints and admin-related tests.
+- Known gaps: Alembic migrations are not wired yet (runtime `create_all()` is still used).
 - Keep this file high-level; put domain specifics in nearest subdirectory AGENTS.
