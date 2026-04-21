@@ -116,7 +116,7 @@ curl http://localhost:8080/health
 {
   "status": "healthy",
   "version": "0.1.0",
-  "source_allowlist_configured": false
+  "source_allowlist_configured": true
 }
 ```
 
@@ -2113,7 +2113,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | ---------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- |
 | `DATABASE_URL`               | `postgresql+asyncpg://findb:findb@localhost:5435/findb` | PostgreSQL 連線字串                                        |
 | `SOURCE_API_KEYS`            | （空）                                                  | Source API 金鑰（逗號分隔）                                |
-| `SOURCE_ALLOWLIST_CIDRS`     | （空）                                                  | IP 允許名單（CIDR，逗號分隔），生產環境必填                |
+| `SOURCE_ALLOWLIST_CIDRS`     | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | IP 允許名單（CIDR，逗號分隔），生產環境必填                |
 | `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For                                   |
 | `SERVE_API_KEYS`             | （空）                                                  | Serve API 金鑰（逗號分隔）                                 |
 | `SERVE_REQUIRE_AUTH`         | `false`                                                 | Serve API 是否需要認證                                     |

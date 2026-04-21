@@ -1,4 +1,4 @@
-.PHONY: up-db up-server up test-db down
+.PHONY: up-db up-server up test-db down format
 
 up-db:
 	uv run python scripts/dev.py up-db
@@ -14,3 +14,6 @@ test-db:
 
 down:
 	uv run python scripts/dev.py down
+
+format:
+	uv run black app tests scripts

@@ -75,11 +75,11 @@ curl http://localhost:8080/health
 {
   "status": "healthy",
   "version": "0.1.0",
-  "source_allowlist_configured": false
+  "source_allowlist_configured": true
 }
 ```
 
-> `source_allowlist_configured` 為 `false` 表示未設定 IP 允許名單（開發模式下正常）。
+> 目前 `.env.example` 預設已包含 `SOURCE_ALLOWLIST_CIDRS`，因此通常為 `true`。
 
 ### 1.2 根端點
 
