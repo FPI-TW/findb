@@ -910,7 +910,7 @@ chmod +x scripts/smoke_test.sh
 ### 本機
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### Docker 容器內
@@ -939,19 +939,19 @@ docker-compose exec app bash -c \
 
 ```bash
 # 只跑 Source API 測試
-poetry run pytest tests/test_source_api.py -v
+uv run pytest tests/test_source_api.py -v
 
 # 只跑 Admin API 測試
-poetry run pytest tests/test_admin_api.py -v
+uv run pytest tests/test_admin_api.py -v
 
 # 只跑 crypto 相關
-poetry run pytest -k "crypto" -v
+uv run pytest -k "crypto" -v
 
 # 只跑安全機制測試
-poetry run pytest -k "allowlist or rate_limit or admin_auth" -v
+uv run pytest -k "allowlist or rate_limit or admin_auth" -v
 
 # 顯示覆蓋率
-poetry run pytest --cov=app --cov-report=term-missing
+uv run pytest --cov=app --cov-report=term-missing
 ```
 
 ---

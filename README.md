@@ -118,7 +118,7 @@ FinDB 是一套可長期維護、逐步擴充的金融資料庫系統，採用�
 | ORM | SQLAlchemy 2.0 (async) |
 | 時間基準 | UTC |
 | 主鍵策略 | UUID v7 |
-| 套件管理 | Poetry |
+| 套件管理 | uv |
 | 容器化 | Docker / Docker Compose |
 
 ---
@@ -224,7 +224,7 @@ findb/
 
 - Python 3.11+
 - Docker & Docker Compose
-- Poetry
+- uv
 
 ### 1. 複製環境設定
 
@@ -304,16 +304,16 @@ open http://localhost:8080/test
 
 ```bash
 # 安裝依賴
-poetry install
+uv sync
 
 # 啟動 PostgreSQL（需自行準備或使用 docker-compose up db）
 docker-compose up -d db
 
 # 執行 seed
-poetry run python scripts/seed_data.py
+uv run python scripts/seed_data.py
 
 # 啟動 API
-poetry run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 ---
@@ -544,13 +544,13 @@ Source API 限制每個 API Key + Client IP 組合的請求頻率：
 
 ```bash
 # 格式化
-poetry run black app tests
+uv run black app tests
 
 # Lint
-poetry run ruff check .
+uv run ruff check .
 
 # 型別檢查
-poetry run mypy app
+uv run mypy app
 ```
 
 ### 新增 Normalizer
@@ -580,19 +580,19 @@ poetry run mypy app
 
 ```bash
 # 執行所有測試
-poetry run pytest
+uv run pytest
 
 # 執行單一檔案
-poetry run pytest tests/test_source_api.py
+uv run pytest tests/test_source_api.py
 
 # 執行特定測試
-poetry run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
+uv run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
 
 # 依關鍵字執行
-poetry run pytest -k "crypto"
+uv run pytest -k "crypto"
 
 # 顯示覆蓋率
-poetry run pytest --cov=app
+uv run pytest --cov=app
 ```
 
 ### Docker 容器內測試

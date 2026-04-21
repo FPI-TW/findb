@@ -8,14 +8,12 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY pyproject.toml ./
+# Copy dependency manifests first for better Docker layer cache reuse
+COPY pyproject.toml uv.lock ./
 
-# Install Python dependencies
-ENV POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_NO_INTERACTION=1
-RUN pip install --no-cache-dir "poetry==1.7.1" && \
-    poetry install --no-dev --no-ansi --no-root
+# Install Python dependencies with uv into /app/.venv
+RUN pip install --no-cache-dir "uv==0.9.9" && \
+    uv sync --frozen --no-dev --no-install-project
 
 # Copy application code
 COPY app ./app
@@ -26,6 +24,7 @@ COPY scripts ./scripts
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
+ENV PATH="/app/.venv/bin:${PATH}"
 
 # Expose port
 EXPOSE 8080

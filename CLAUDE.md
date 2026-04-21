@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies
-poetry install
+uv sync
 
 # Local development (requires PostgreSQL running)
 docker-compose up -d db
-poetry run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 
 # Docker full stack
 docker-compose up -d --build
@@ -18,16 +18,16 @@ docker-compose exec app python /app/scripts/seed_data.py
 docker-compose down
 
 # Code quality
-poetry run black app tests
-poetry run ruff check .
-poetry run mypy app
+uv run black app tests
+uv run ruff check .
+uv run mypy app
 
 # Tests
-poetry run pytest                                                          # all tests
-poetry run pytest tests/test_source_api.py                                # single file
-poetry run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key  # single test
-poetry run pytest -k "crypto"                                              # by keyword
-poetry run pytest --cov=app                                                # with coverage
+uv run pytest                                                          # all tests
+uv run pytest tests/test_source_api.py                                # single file
+uv run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key  # single test
+uv run pytest -k "crypto"                                              # by keyword
+uv run pytest --cov=app                                                # with coverage
 
 # Docker container tests (uses findb_test DB)
 docker-compose exec app bash -c \
