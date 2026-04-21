@@ -1,7 +1,7 @@
 # 開發體驗改善計劃（DevEx）
 
 > **建立時間**: 2026-04-21  
-> **狀態**: Proposed  
+> **狀態**: Completed  
 > **目標**: 讓本地開發、提交流程、資料庫演進流程可預期且一致
 
 ---
@@ -24,6 +24,16 @@
 非目標（本輪不做）：
 - 不改動業務 API 行為。
 - 不在本計劃內引入 queue / worker 架構調整。
+
+### 1.1 目前進度（2026-04-21）
+
+- [x] `uv` 固定主命令與雙平台 wrapper 已落地（`scripts/dev.py`、`Makefile`、`scripts/dev.ps1`）。
+- [x] Compose 啟動邊界已落地（`raw-cleanup`、`pgadmin` 改為 tools profile）。
+- [x] commit / push hooks 已落地（pre-commit format、pre-push 測試）。
+- [x] README 與測試文件已更新為跨平台命令。
+- [x] Alembic 初始化與 baseline revision 已建立。
+- [x] CI 新增 migration smoke test（`alembic upgrade head`）。
+- [x] 遠端既有資料庫 baseline stamp 與 rollout 已完成（依環境排程執行）。
 
 ---
 
