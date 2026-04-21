@@ -10,7 +10,7 @@
 
 | 項目 | 規格 |
 |------|------|
-| 語言 | Python 3.11+ |
+| 語言 | Python 3.13+ |
 | Web Framework | FastAPI |
 | ORM | SQLAlchemy 2.0 async |
 | 資料庫 | PostgreSQL |

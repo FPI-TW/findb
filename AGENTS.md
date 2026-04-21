@@ -7,7 +7,7 @@ Branch: main
 ## OVERVIEW
 
 FinDB is a FastAPI backend for ingesting market payloads, normalizing into canonical models, and serving read-only query APIs.
-Core stack: Python 3.11+, FastAPI, SQLAlchemy async, PostgreSQL, Poetry, pytest.
+Core stack: Python 3.13+, FastAPI, SQLAlchemy async, PostgreSQL, uv, pytest.
 
 ## STRUCTURE
 
@@ -23,7 +23,7 @@ findb/
 |- tests/                    # Async API/service integration and unit tests
 |- scripts/                  # Seed and cleanup scripts
 |- docker-compose.yml        # Local app + postgres + pgadmin stack
-`- pyproject.toml            # Poetry deps + black/ruff/mypy/pytest settings
+`- pyproject.toml            # uv deps + black/ruff/mypy/pytest settings
 ```
 
 ## WHERE TO LOOK
@@ -84,8 +84,8 @@ Use directory-local AGENTS files for deep module guidance:
 
 ```bash
 # local
-poetry install
-poetry run uvicorn app.main:app --reload
+uv sync
+uv run uvicorn app.main:app --reload
 
 # docker
 docker-compose up -d --build
@@ -93,10 +93,10 @@ docker-compose exec app python /app/scripts/seed_data.py
 docker-compose down
 
 # quality + tests
-poetry run black app tests
-poetry run ruff check .
-poetry run mypy app
-poetry run pytest
+uv run black app tests
+uv run ruff check .
+uv run mypy app
+uv run pytest
 ```
 
 ## NOTES
