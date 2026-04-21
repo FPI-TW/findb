@@ -43,7 +43,7 @@ def _normalize_decimal(value: Decimal) -> str:
     """Serialize Decimal to a consistent string, removing unnecessary trailing zeros."""
     normalized = value.normalize()
     # avoid scientific notation (e.g. 1E+2)
-    return format(normalized, 'f')
+    return format(normalized, "f")
 
 
 def _snapshot(obj: Any, fields: set[str]) -> dict[str, Any]:
@@ -114,7 +114,9 @@ async def patch_eod_record(
         setattr(eod, field, getattr(patch, field))
 
     if all(_values_equal(original_values[f], getattr(eod, f)) for f in changed_fields):
-        raise NoChangesError("No changes detected — submitted values are identical to current values")
+        raise NoChangesError(
+            "No changes detected — submitted values are identical to current values"
+        )
 
     after = _snapshot(eod, changed_fields)
 

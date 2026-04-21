@@ -27,9 +27,7 @@ class CanonicalCorrection(Base):
         Index("idx_correction_created", "created_at"),
     )
 
-    id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     # Which canonical table was corrected (e.g., "market_data_eod", "dq_issue")
     table_name: Mapped[str] = mapped_column(String(100), nullable=False)
     # PK of the corrected record — no DB FK constraint to survive record deletion

@@ -428,11 +428,7 @@ class MacroBloombergNormalizer(MacroNormalizer):
 
             name = item.get("name")
             item_metadata = item.get("metadata", {})
-            market = (
-                item.get("market")
-                or item_metadata.get("market")
-                or global_meta.get("market")
-            )
+            market = item.get("market") or item_metadata.get("market") or global_meta.get("market")
             unit = item.get("unit") or item_metadata.get("unit")
             frequency = item.get("frequency") or item_metadata.get("frequency")
 
@@ -453,9 +449,7 @@ class MacroBloombergNormalizer(MacroNormalizer):
             obs_date = self._parse_obs_date(obs_date_str)
 
             price = item.get("price") or {}
-            value = self._parse_decimal(
-                price.get("last") or item.get("value") or item.get("close")
-            )
+            value = self._parse_decimal(price.get("last") or item.get("value") or item.get("close"))
 
             record = MacroObservationRecord(
                 source_code=str(source_code).strip(),

@@ -1,6 +1,7 @@
 """
 End-to-end test: Source -> Normalize -> Serve.
 """
+
 import asyncio
 from datetime import datetime, timezone
 
@@ -81,9 +82,7 @@ async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session):
     assert run is not None
     assert run.status in {"completed", "completed_with_errors"}
 
-    result = await test_session.execute(
-        MarketDataEOD.__table__.select().limit(1)
-    )
+    result = await test_session.execute(MarketDataEOD.__table__.select().limit(1))
     assert result.first() is not None
 
     serve_response = await client.get(

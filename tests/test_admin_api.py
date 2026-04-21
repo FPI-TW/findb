@@ -164,9 +164,7 @@ class TestAdminAuth:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_list_corrections_without_api_key_returns_401(
-        self, client: AsyncClient
-    ):
+    async def test_list_corrections_without_api_key_returns_401(self, client: AsyncClient):
         response = await client.get("/api/v1/admin/corrections")
         assert response.status_code == 401
 
@@ -433,9 +431,7 @@ class TestPatchEOD:
         correction_id = response.json()["correction_id"]
 
         result = await test_session.execute(
-            select(CanonicalCorrection).where(
-                CanonicalCorrection.id == UUID(correction_id)
-            )
+            select(CanonicalCorrection).where(CanonicalCorrection.id == UUID(correction_id))
         )
         correction = result.scalar_one_or_none()
         assert correction is not None
@@ -461,9 +457,7 @@ class TestPatchEOD:
         correction_id = response.json()["correction_id"]
 
         result = await test_session.execute(
-            select(CanonicalCorrection).where(
-                CanonicalCorrection.id == UUID(correction_id)
-            )
+            select(CanonicalCorrection).where(CanonicalCorrection.id == UUID(correction_id))
         )
         correction = result.scalar_one()
         assert Decimal(correction.before_snapshot["close"]) == Decimal("153.00")
@@ -545,9 +539,7 @@ class TestResolveDQIssue:
         correction_id = response.json()["correction_id"]
 
         result = await test_session.execute(
-            select(CanonicalCorrection).where(
-                CanonicalCorrection.id == UUID(correction_id)
-            )
+            select(CanonicalCorrection).where(CanonicalCorrection.id == UUID(correction_id))
         )
         correction = result.scalar_one_or_none()
         assert correction is not None
@@ -595,9 +587,7 @@ class TestResolveDQIssue:
 
 class TestListCorrections:
     @pytest.mark.asyncio
-    async def test_list_corrections_empty(
-        self, client: AsyncClient, admin_headers: dict
-    ):
+    async def test_list_corrections_empty(self, client: AsyncClient, admin_headers: dict):
         response = await client.get("/api/v1/admin/corrections", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()

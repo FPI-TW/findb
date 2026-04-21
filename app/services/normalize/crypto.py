@@ -128,7 +128,9 @@ class CryptoNormalizer(BaseNormalizer):
         if name is None:
             name = self.NAME_MAP.get(symbol)
 
-        return await super().get_or_create_instrument(symbol, name, market=market, asset_class=asset_class)
+        return await super().get_or_create_instrument(
+            symbol, name, market=market, asset_class=asset_class
+        )
 
 
 class CryptoBloombergNormalizer(USStockNormalizer):

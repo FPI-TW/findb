@@ -95,9 +95,7 @@ class TestFXBloombergNormalizer:
     def test_flat_price_fields(self):
         payload = self._payload()
         del payload["data"][0]["price"]
-        payload["data"][0].update(
-            {"open": 1.04, "high": 1.06, "low": 1.03, "close": 1.05}
-        )
+        payload["data"][0].update({"open": 1.04, "high": 1.06, "low": 1.03, "close": 1.05})
         records = self._n().map_fields(payload)
         assert records[0].close == Decimal("1.05")
 
@@ -157,7 +155,9 @@ class TestCryptoBloombergNormalizer:
         n = self._n()
         for ticker, expected_symbol in cases:
             records = n.map_fields(self._payload(ticker=ticker, symbol=ticker.split()[0]))
-            assert records[0].symbol == expected_symbol, f"Ticker {ticker} should map to {expected_symbol}"
+            assert (
+                records[0].symbol == expected_symbol
+            ), f"Ticker {ticker} should map to {expected_symbol}"
 
     def test_name_from_name_map_when_missing(self):
         payload = self._payload()
@@ -291,8 +291,12 @@ class TestMacroBloombergNormalizer:
             "name": "US CPI YoY",
             "price": {"last": 2.9},
             "timestamp": {"query_time": "2026-02-01T10:00:00", "last_update": "2026-01-01"},
-            "metadata": {"market": "US", "unit": "%", "frequency": "monthly",
-                         "source": "Bloomberg"},
+            "metadata": {
+                "market": "US",
+                "unit": "%",
+                "frequency": "monthly",
+                "source": "Bloomberg",
+            },
         }
         item.update(overrides)
         return {
@@ -389,16 +393,24 @@ class TestMacroBloombergNormalizer:
                     "name": "US GDP YoY",
                     "price": {"last": 3.2},
                     "timestamp": {"last_update": "2026-01-01"},
-                    "metadata": {"market": "US", "unit": "%", "frequency": "quarterly",
-                                 "source": "Bloomberg"},
+                    "metadata": {
+                        "market": "US",
+                        "unit": "%",
+                        "frequency": "quarterly",
+                        "source": "Bloomberg",
+                    },
                 },
                 {
                     "ticker": "UNEMP Index",
                     "name": "US Unemployment Rate",
                     "price": {"last": 4.1},
                     "timestamp": {"last_update": "2026-02-01"},
-                    "metadata": {"market": "US", "unit": "%", "frequency": "monthly",
-                                 "source": "Bloomberg"},
+                    "metadata": {
+                        "market": "US",
+                        "unit": "%",
+                        "frequency": "monthly",
+                        "source": "Bloomberg",
+                    },
                 },
             ],
         }

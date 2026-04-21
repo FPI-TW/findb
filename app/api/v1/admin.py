@@ -196,8 +196,12 @@ async def resolve_dq_issue_endpoint(
 async def list_raw_payloads(
     dataset_key: Optional[str] = Query(None, description="Filter by dataset key"),
     run_id: Optional[UUID] = Query(None, description="Filter by ingestion run UUID"),
-    date_from: Optional[date] = Query(None, description="Filter created_at >= this date (YYYY-MM-DD, UTC)"),
-    date_to: Optional[date] = Query(None, description="Filter created_at <= this date (YYYY-MM-DD, UTC)"),
+    date_from: Optional[date] = Query(
+        None, description="Filter created_at >= this date (YYYY-MM-DD, UTC)"
+    ),
+    date_to: Optional[date] = Query(
+        None, description="Filter created_at <= this date (YYYY-MM-DD, UTC)"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     api_key: str = Depends(verify_admin_api_key),
@@ -218,18 +222,24 @@ async def list_raw_payloads(
         stmt = stmt.where(RawMarketPayload.created_at >= dt_from)
         count_stmt = count_stmt.where(RawMarketPayload.created_at >= dt_from)
     if date_to:
-        dt_to = datetime(date_to.year, date_to.month, date_to.day, tzinfo=timezone.utc) + timedelta(days=1)
+        dt_to = datetime(date_to.year, date_to.month, date_to.day, tzinfo=timezone.utc) + timedelta(
+            days=1
+        )
         stmt = stmt.where(RawMarketPayload.created_at < dt_to)
         count_stmt = count_stmt.where(RawMarketPayload.created_at < dt_to)
 
     total = (await db.execute(count_stmt)).scalar_one()
     rows = (
-        await db.execute(
-            stmt.order_by(RawMarketPayload.created_at.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+        (
+            await db.execute(
+                stmt.order_by(RawMarketPayload.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     total_pages = (total + page_size - 1) // page_size if total else 0
     return RawPayloadListResponse(
@@ -341,7 +351,9 @@ async def bulk_rerun_runs(
     for run_id in run_ids:
         try:
             new_run_id, _, dk, payload = await service.rerun_from_raw(run_id)
-            background_tasks.add_task(trigger_normalization, dk, payload, new_run_id, session_factory)
+            background_tasks.add_task(
+                trigger_normalization, dk, payload, new_run_id, session_factory
+            )
             new_run_ids.append(str(new_run_id))
             queued += 1
         except RawPayloadNotFoundError:

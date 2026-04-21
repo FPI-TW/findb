@@ -11,9 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-INSTRUMENT_CACHE_PATH = (
-    Path(__file__).resolve().parents[1] / "static" / "data" / "instruments.json"
-)
+INSTRUMENT_CACHE_PATH = Path(__file__).resolve().parents[1] / "static" / "data" / "instruments.json"
 
 INSTRUMENT_FIELDS = (
     "instrument_id",
@@ -43,9 +41,7 @@ class InstrumentCacheItemNotFoundError(LookupError):
 def read_instrument_cache() -> dict[str, Any]:
     """Read and validate the generated instrument cache JSON."""
     if not INSTRUMENT_CACHE_PATH.exists():
-        raise InstrumentCacheNotFoundError(
-            f"Instrument cache not found at {INSTRUMENT_CACHE_PATH}"
-        )
+        raise InstrumentCacheNotFoundError(f"Instrument cache not found at {INSTRUMENT_CACHE_PATH}")
 
     try:
         with INSTRUMENT_CACHE_PATH.open("r", encoding="utf-8") as handle:
@@ -81,9 +77,7 @@ def update_instrument_cache_item(
             break
 
     if updated_item is None:
-        raise InstrumentCacheItemNotFoundError(
-            f"Instrument {instrument_id} not found in cache"
-        )
+        raise InstrumentCacheItemNotFoundError(f"Instrument {instrument_id} not found in cache")
 
     normalized = normalize_instrument_cache_payload(payload)
     write_instrument_cache(normalized)
@@ -92,9 +86,7 @@ def update_instrument_cache_item(
         if item.get("instrument_id") == instrument_id:
             return item
 
-    raise InstrumentCacheItemNotFoundError(
-        f"Instrument {instrument_id} not found in cache"
-    )
+    raise InstrumentCacheItemNotFoundError(f"Instrument {instrument_id} not found in cache")
 
 
 def validate_instrument_cache_payload(payload: Any) -> dict[str, Any]:
@@ -136,9 +128,7 @@ def normalize_instrument_cache_payload(
     return {
         "generated_at": generated_at or _utc_now_iso(),
         "total": len(ordered),
-        "markets": sorted(
-            {item["market"] for item in ordered if item.get("market")}
-        ),
+        "markets": sorted({item["market"] for item in ordered if item.get("market")}),
         "asset_classes": sorted(
             {item["asset_class"] for item in ordered if item.get("asset_class")}
         ),

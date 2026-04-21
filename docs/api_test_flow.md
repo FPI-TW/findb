@@ -1,6 +1,6 @@
 # API 測試流程
 
-> **最後更新**: 2026-04-08
+> **最後更新**: 2026-04-21
 
 完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
 
@@ -34,6 +34,8 @@ cp .env.example .env
 > `docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法。
 > 若 `.env` 未設定 `SOURCE_API_KEYS`，預設使用 `dev-source-key`。
 > `RAW_RETENTION_ENABLED` 預設為 `false`，raw payload 目前不會因保留期限自動被刪除。
+> 本機測試建議設定 `DEBUG=true`（或自行設定 `SOURCE_ALLOWLIST_CIDRS`）。
+> 若要測 Admin API，請先設定 `ADMIN_API_KEYS=dev-admin-key`。
 
 ### 0.2 啟動 Docker 服務
 
@@ -794,6 +796,35 @@ curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun?dataset_key=cry
 - `new_run_ids` 可再用 Source API `/runs/{run_id}` 查狀態
 - `status=all` 時會同時納入 completed 與 failed runs
 
+### 5.10 Instrument Cache 管理
+
+```bash
+# 讀取快取
+curl "http://localhost:8080/api/v1/admin/instrument-cache" \
+  -H "X-API-Key: dev-admin-key"
+
+# 全量覆蓋快取（示例：請先準備 payload 檔）
+curl -X PUT "http://localhost:8080/api/v1/admin/instrument-cache" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d @cache_payload.json
+
+# 更新單一標的
+curl -X PATCH "http://localhost:8080/api/v1/admin/instrument-cache/items/{instrument_id}" \
+  -H "X-API-Key: dev-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Manual override name",
+    "latest_trade_date": "2026-04-21",
+    "latest_price": "100.01"
+  }'
+```
+
+確認：
+- `GET` 在快取檔不存在時回傳 `404`
+- `PUT` 會重新正規化並更新 `total` / `markets` / `asset_classes`
+- `PATCH` 只更新單一 instrument，找不到 `instrument_id` 時回傳 `404`
+
 ---
 
 ## 6. 端到端煙霧測試
@@ -899,7 +930,8 @@ docker-compose exec app bash -c \
 | `test_usstock_normalize.py` | US Stock / Global / TW / HK / CN 正規化與區域篩選 |
 | `test_bloomberg_direct_normalize.py` | FX / Crypto / WTX / Macro 的 Bloomberg direct 正規化 |
 | `test_end_to_end.py` | 完整 ingest -> normalize -> serve 流程 |
-| `test_admin_api.py` | Admin 認證、PATCH EOD、Resolve DQ、audit log、分頁與遮罩欄位 |
+| `test_admin_api.py` | Admin 認證、PATCH EOD、Resolve DQ、instrument cache、audit log、分頁與遮罩欄位 |
+| `test_static_pages.py` | `/test` 與 `/instrument-lookup` 靜態頁面可用性、查詢快取路徑驗證 |
 
 > 測試案例數量會隨功能擴充持續變動，請以實際 `pytest` 收集結果為準。
 

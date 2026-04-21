@@ -171,9 +171,9 @@ class CorporateActionNormalizer(BaseNormalizer):
 
             record = CorporateActionRecord(
                 symbol=symbol_value or "",
-                action_type=str(action_type_value).strip()
-                if action_type_value is not None
-                else None,
+                action_type=(
+                    str(action_type_value).strip() if action_type_value is not None else None
+                ),
                 ex_date=self._parse_action_date(ex_date_value),
                 record_date=self._parse_action_date(record_date_value),
                 pay_date=self._parse_action_date(pay_date_value),

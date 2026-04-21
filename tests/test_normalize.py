@@ -410,9 +410,7 @@ async def test_db_duplicate_key_check(test_session):
 
     assert await normalizer.check_duplicate_in_db(instrument_id, trade_date) is True
     assert (
-        await normalizer.check_duplicate_in_db(
-            instrument_id, trade_date + timedelta(days=1)
-        )
+        await normalizer.check_duplicate_in_db(instrument_id, trade_date + timedelta(days=1))
         is False
     )
 
@@ -777,8 +775,10 @@ async def test_process_handles_multiple_dates_for_same_symbol(test_session):
     assert result.failed_records == 0
 
     rows = (
-        await test_session.execute(select(MarketDataEOD).where(MarketDataEOD.run_id == run_id))
-    ).scalars().all()
+        (await test_session.execute(select(MarketDataEOD).where(MarketDataEOD.run_id == run_id)))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 2
 
     persisted_run = await test_session.get(IngestionRun, run_id)

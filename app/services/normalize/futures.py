@@ -455,9 +455,11 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             id=uuid7(),
             instrument_id=instrument_id,
             roll_rule_id=roll_rule_id,
-            trade_date=record.trade_date.date()
-            if isinstance(record.trade_date, datetime)
-            else record.trade_date,
+            trade_date=(
+                record.trade_date.date()
+                if isinstance(record.trade_date, datetime)
+                else record.trade_date
+            ),
             open=record.open,
             high=record.high,
             low=record.low,
@@ -642,9 +644,7 @@ class WTXBloombergNormalizer(FuturesContinuousNormalizer):
         for item in data_items:
             timestamp = item.get("timestamp", {})
             trade_date_str = (
-                timestamp.get("last_update")
-                or item.get("date")
-                or timestamp.get("query_time")
+                timestamp.get("last_update") or item.get("date") or timestamp.get("query_time")
             )
             trade_date = self._parse_trade_date(trade_date_str)
             if trade_date is None:

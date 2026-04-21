@@ -394,9 +394,11 @@ class BaseNormalizer(ABC):
         stmt = insert(MarketDataEOD).values(
             id=uuid7(),
             instrument_id=instrument_id,
-            trade_date=record.trade_date.date()
-            if isinstance(record.trade_date, datetime)
-            else record.trade_date,
+            trade_date=(
+                record.trade_date.date()
+                if isinstance(record.trade_date, datetime)
+                else record.trade_date
+            ),
             open=record.open,
             high=record.high,
             low=record.low,
