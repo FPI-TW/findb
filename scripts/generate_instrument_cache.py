@@ -46,6 +46,7 @@ INSTRUMENT_FIELDS = (
     "asset_class",
     "symbol",
     "name",
+    "short_name",
     "currency",
     "status",
     "latest_trade_date",
@@ -71,7 +72,7 @@ def sort_key(item: dict[str, Any]) -> tuple[str, str, str]:
     """Stable default ordering for the static dataset."""
     market = str(item.get("market") or "")
     symbol = str(item.get("symbol") or "")
-    name = str(item.get("name") or "")
+    name = str(item.get("short_name") or item.get("name") or "")
     return (market.upper(), symbol.upper(), name.upper())
 
 
