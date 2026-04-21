@@ -96,10 +96,10 @@ cp .env.example .env
 # DEBUG=true
 
 # 啟動 Docker 容器
-docker-compose up -d --build
+docker compose up -d --build
 
 # 初始化資料集
-docker-compose exec app python /app/scripts/seed_data.py
+docker compose exec app python /app/scripts/seed_data.py
 ```
 
 > 若保留 `DEBUG=false`，必須同時設定 `SOURCE_ALLOWLIST_CIDRS` 才能通過啟動檢查。

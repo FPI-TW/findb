@@ -40,13 +40,13 @@ cp .env.example .env
 ### 0.2 啟動 Docker 服務
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 確認所有服務就緒：
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 預期看到 `findb-app`、`findb-postgres`、`findb-raw-cleanup`、`findb-pgadmin` 皆為 running。
@@ -54,7 +54,7 @@ docker-compose ps
 ### 0.3 初始化資料種子
 
 ```bash
-docker-compose exec app python /app/scripts/seed_data.py
+docker compose exec app python /app/scripts/seed_data.py
 ```
 
 會寫入 20+ 個 dataset 定義（含 Bloomberg Direct 格式）與加密貨幣/美股/外匯等標的。
@@ -600,7 +600,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=5"
 
 > 若使用 Docker 環境，需先在 `docker-compose.yml` 或 `.env` 設定 `ADMIN_API_KEYS=dev-admin-key`，然後重啟服務：
 > ```bash
-> docker-compose restart app
+> docker compose restart app
 > ```
 
 ### 5.1 認證測試
@@ -916,7 +916,7 @@ uv run pytest
 ### Docker 容器內
 
 ```bash
-docker-compose exec app bash -c \
+docker compose exec app bash -c \
   "TEST_DATABASE_URL=postgresql+asyncpg://findb:findb@db:5432/findb_test pytest"
 ```
 
@@ -960,17 +960,17 @@ uv run pytest --cov=app --cov-report=term-missing
 
 | 症狀 | 原因 | 解法 |
 |------|------|------|
-| `Connection refused` | Docker 未啟動 | `docker-compose up -d --build`，確認 `docker-compose ps` 顯示 healthy |
-| `ForeignKeyViolationError` | 未初始化種子資料 | `docker-compose exec app python /app/scripts/seed_data.py` |
+| `Connection refused` | Docker 未啟動 | `docker compose up -d --build`，確認 `docker compose ps` 顯示 healthy |
+| `ForeignKeyViolationError` | 未初始化種子資料 | `docker compose exec app python /app/scripts/seed_data.py` |
 | `401 Missing API key` | 未帶 X-API-Key Header | 加入 `-H "X-API-Key: dev-source-key"` |
-| `403 Invalid API key` | Key 與設定不符 | 確認使用 `dev-source-key`（docker-compose 預設值） |
+| `403 Invalid API key` | Key 與設定不符 | 確認使用 `dev-source-key`（docker compose 預設值） |
 | `403 Client IP not allowlisted` | IP 不在允許名單 | 開發環境設定 `DEBUG=true` 或調整 `SOURCE_ALLOWLIST_CIDRS` |
 | `429 Rate limit exceeded` | 請求頻率超過限制 | 等待 60 秒後重試，或調大 `RATE_LIMIT_REQUESTS` |
 | `400 Dataset 'xxx' not found` | dataset_key 不存在 | 先跑 seed，或用 `/datasets` 確認可用的 key |
 | `400 Market mismatch` | payload 的 dataset 市場與端點不符 | 確認 dataset_key 的 market 與端點路徑一致 |
 | `422 Validation Error` | 請求體格式不符 | 檢查 JSON 欄位是否符合 schema（見 [API 使用教學](api_usage_guide.md)） |
-| `.env` 設定不生效 | docker-compose 覆蓋 | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效 |
-| `Run status 一直 pending` | 背景任務未執行 | 確認 app 容器正常運行，檢查 `docker-compose logs app` |
+| `.env` 設定不生效 | docker compose 覆蓋 | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效 |
+| `Run status 一直 pending` | 背景任務未執行 | 確認 app 容器正常運行，檢查 `docker compose logs app` |
 | `500 No admin API keys configured` | `ADMIN_API_KEYS` 未設定 | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEYS=your-admin-key`，重啟服務 |
 | `Admin PATCH 回傳 404` | 找不到指定記錄 | 確認 instrument_id 與 trade_date 有對應的日K 資料（先用 Serve API 確認） |
 | `Admin PATCH 回傳 400 No changes` | 提交值與現有值相同 | 確認修正值與 DB 現有值確實不同 |

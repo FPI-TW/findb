@@ -15,6 +15,8 @@ Normalize + Serve 層後端服務，用於金融資料的標準化、儲存與�
 - [資料模型](#資料模型)
 - [開發指南](#開發指南)
 - [測試](#測試)
+- [Git Hooks](#git-hookscommit--push-守門)
+- [Migration](#migration)
 - [部署](#部署)
 
 ---
@@ -246,12 +248,86 @@ SERVE_REQUIRE_AUTH=false
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
 > 若 `DEBUG=false`，需額外設定 `SOURCE_ALLOWLIST_CIDRS` 才能通過啟動檢查。
 
+### 2. 開發命令（固定主命令）
+
+以下為標準入口（macOS / Linux / Windows 共通）：
+
+```bash
+uv run python scripts/dev.py up-db
+uv run python scripts/dev.py up-server
+uv run python scripts/dev.py up
+uv run python scripts/dev.py test-db
+uv run python scripts/dev.py down
+```
+
+雙平台 wrapper：
+
+```bash
+# macOS / Linux
+make up-db
+make up-server
+make up
+make test-db
+make down
+```
+
+```powershell
+# Windows PowerShell
+.\scripts\dev.ps1 up-db
+.\scripts\dev.ps1 up-server
+.\scripts\dev.ps1 up
+.\scripts\dev.ps1 test-db
+.\scripts\dev.ps1 down
+```
+
+### 3. 常用開發流程
+
+```bash
+# 安裝依賴
+uv sync
+
+# 只啟動 DB
+uv run python scripts/dev.py up-db
+
+# 只啟動本機 server（連線本機 5435 DB）
+uv run python scripts/dev.py up-server
+```
+
+```bash
+# 同時啟動 app image + db image（兩容器）
+uv run python scripts/dev.py up
+
+# 初始化資料
+docker compose exec app python /app/scripts/seed_data.py
+
+# 跑包含 DB 的測試
+uv run python scripts/dev.py test-db
+```
+
+可選工具服務（不預設啟動）：
+
+```bash
+docker compose --profile tools up -d pgadmin raw-cleanup
+```
+
+### 4. 驗證服務
+
+```bash
+# 健康檢查
+curl http://localhost:8080/health
+```
+
+- API 文件：`http://localhost:8080/docs`
+- 互動測試頁：`http://localhost:8080/test`
+
+`/test` 目前提供查詢結果 JSON 檢視與時間序列圖表預覽；若回應資料符合格式，會自動以 ECharts 顯示互動圖表。
+
 ## 靜態標的與宏觀序列查詢頁
 
 先產生快取檔：
 
 ```bash
-python scripts/generate_instrument_cache.py
+uv run python scripts/generate_instrument_cache.py
 ```
 
 可用環境變數：
@@ -271,49 +347,6 @@ http://localhost:8080/static/instrument-lookup.html
 
 ```bash
 0 6 * * * cd /app && python scripts/generate_instrument_cache.py
-```
-
-### 2. 啟動服務（Docker）
-
-```bash
-docker-compose up -d --build
-```
-
-### 3. 初始化資料
-
-```bash
-docker-compose exec app python /app/scripts/seed_data.py
-```
-
-### 4. 驗證服務
-
-```bash
-# 健康檢查
-curl http://localhost:8080/health
-
-# API 互動式文件
-open http://localhost:8080/docs
-
-# 互動式測試頁
-open http://localhost:8080/test
-```
-
-`/test` 目前提供查詢結果 JSON 檢視與時間序列圖表預覽；若回應資料符合格式，會自動以 ECharts 顯示互動圖表。
-
-### 本機開發（不使用 Docker）
-
-```bash
-# 安裝依賴
-uv sync
-
-# 啟動 PostgreSQL（需自行準備或使用 docker-compose up db）
-docker-compose up -d db
-
-# 執行 seed
-uv run python scripts/seed_data.py
-
-# 啟動 API
-uv run uvicorn app.main:app --reload
 ```
 
 ---
@@ -579,6 +612,9 @@ uv run mypy app
 ### 本機測試
 
 ```bash
+# 標準命令（先確保 DB 可用）
+uv run python scripts/dev.py test-db
+
 # 執行所有測試
 uv run pytest
 
@@ -599,7 +635,7 @@ uv run pytest --cov=app
 
 ```bash
 # 使用容器內的 test DB
-docker-compose exec app bash -c \
+docker compose exec app bash -c \
   "TEST_DATABASE_URL=postgresql+asyncpg://findb:findb@db:5432/findb_test pytest"
 ```
 
@@ -618,6 +654,23 @@ docker-compose exec app bash -c \
 - Admin API 修正、DQ issue、raw payload、bulk rerun、instrument cache
 - 正規化邏輯與端到端 ingest -> normalize -> serve 流程
 
+## Git Hooks（commit / push 守門）
+
+```bash
+# 安裝 hooks（一次）
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+目前規則：
+
+- `pre-commit`：執行 `black` 自動格式化。
+- `pre-push`：執行含 DB 的測試流程（`uv run python scripts/dev.py test-db`）。
+
+## Migration
+
+- 操作流程與 baseline/stamp 策略請見：[docs/migration_workflow.md](docs/migration_workflow.md)
+- 常用命令：`uv run alembic current`、`uv run alembic revision --autogenerate -m \"...\"`、`uv run alembic upgrade head`
+
 ---
 
 ## 部署
@@ -626,13 +679,13 @@ docker-compose exec app bash -c \
 
 ```bash
 # 啟動
-docker-compose up -d --build
+docker compose up -d --build app db
 
 # 查看日誌
-docker-compose logs -f app
+docker compose logs -f app
 
 # 停止
-docker-compose down
+docker compose down
 ```
 
 | 容器 | 說明 | 埠號 |
@@ -734,7 +787,7 @@ git push origin main
 |------|------|--------|
 | `DATABASE_URL` | PostgreSQL 連線字串 | `postgresql+asyncpg://findb:findb@localhost:5435/findb` |
 | `DEBUG` | 除錯模式（跳過允許名單強制檢查） | `false` |
-| `SOURCE_API_KEYS` | Source API 金鑰（逗號分隔） | docker-compose 預設 `dev-source-key` |
+| `SOURCE_API_KEYS` | Source API 金鑰（逗號分隔） | `docker compose` 開發環境預設 `dev-source-key` |
 | `ADMIN_API_KEYS` | Admin API 金鑰（逗號分隔） | （空） |
 | `SOURCE_ALLOWLIST_CIDRS` | IP 允許名單（CIDR，逗號分隔） | （空）。`DEBUG=false` 時**必填** |
 | `SOURCE_TRUST_PROXY_HEADERS` | 是否信任 X-Forwarded-For | `false` |
