@@ -2,10 +2,15 @@
 SQLAlchemy base configuration and database connection.
 """
 
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from pathlib import Path
+
+from alembic.config import Config as AlembicConfig
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import MetaData, text
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
 
@@ -46,17 +51,52 @@ async_session_maker = async_sessionmaker(
 
 
 async def init_db():
-    """Initialize database (create tables if not exist)."""
-    # Schema creation in its own transaction to handle multi-worker race condition
+    """Validate database migration state before serving traffic."""
+    expected_heads = _expected_alembic_heads()
     async with engine.connect() as conn:
-        try:
-            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-            await conn.commit()
-        except IntegrityError:
-            await conn.rollback()
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        current_heads = await conn.run_sync(_current_db_heads)
+        await _verify_required_objects(conn)
+
+    if not current_heads:
+        raise RuntimeError(
+            "Database has no Alembic revision stamp. Run `uv run alembic upgrade head` (or stamp baseline first for existing schema)."
+        )
+
+    if set(current_heads) != set(expected_heads):
+        raise RuntimeError(
+            "Database schema version mismatch: "
+            f"current={','.join(current_heads)} expected={','.join(expected_heads)}. "
+            "Run `uv run alembic upgrade head`."
+        )
+
+
+def _expected_alembic_heads() -> tuple[str, ...]:
+    project_root = Path(__file__).resolve().parents[2]
+    alembic_config = AlembicConfig(str(project_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(project_root / "migrations"))
+    script_dir = ScriptDirectory.from_config(alembic_config)
+    heads = tuple(script_dir.get_heads())
+    if not heads:
+        raise RuntimeError("Alembic head revision is not configured.")
+    return heads
+
+
+def _current_db_heads(connection: Connection) -> tuple[str, ...]:
+    context = MigrationContext.configure(connection)
+    return tuple(context.get_current_heads())
+
+
+async def _verify_required_objects(conn) -> None:
+    required_objects = ("public.dataset_registry", "public.instruments", "raw.market_payload")
+    for relation in required_objects:
+        exists = await conn.scalar(
+            text("SELECT to_regclass(:relation) IS NOT NULL"), {"relation": relation}
+        )
+        if not exists:
+            raise RuntimeError(
+                f"Missing required relation '{relation}'. "
+                "Ensure bootstrap migrations are applied with `uv run alembic upgrade head`."
+            )
 
 
 async def get_session() -> AsyncSession:

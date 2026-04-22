@@ -1,0 +1,128 @@
+{
+  "profile": "prod_partial_1y_3inst_all_tables",
+  "config_path": "configs/partial_dump.yaml",
+  "generated_at_utc": "2026-04-22T02:44:18.189230+00:00",
+  "dry_run": false,
+  "results": [
+    {
+      "schema": "public",
+      "name": "alembic_version",
+      "status": "skipped",
+      "row_count": null,
+      "file": null,
+      "reason": "no instrument_id/time column; unresolved_table_policy requests skip"
+    },
+    {
+      "schema": "public",
+      "name": "canonical_correction",
+      "status": "exported",
+      "row_count": 0,
+      "file": "tables/public.canonical_correction.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "corporate_action",
+      "status": "exported",
+      "row_count": 0,
+      "file": "tables/public.corporate_action.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "dataset_registry",
+      "status": "exported",
+      "row_count": 25,
+      "file": "tables/public.dataset_registry.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "dq_issue",
+      "status": "exported",
+      "row_count": 63,
+      "file": "tables/public.dq_issue.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "futures_continuous_eod",
+      "status": "exported",
+      "row_count": 1,
+      "file": "tables/public.futures_continuous_eod.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "futures_contract",
+      "status": "exported",
+      "row_count": 0,
+      "file": "tables/public.futures_contract.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "ingestion_run",
+      "status": "exported",
+      "row_count": 6820,
+      "file": "tables/public.ingestion_run.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "instrument_identifiers",
+      "status": "exported",
+      "row_count": 19,
+      "file": "tables/public.instrument_identifiers.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "instruments",
+      "status": "exported",
+      "row_count": 16,
+      "file": "tables/public.instruments.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "macro_observation",
+      "status": "exported",
+      "row_count": 9572,
+      "file": "tables/public.macro_observation.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "macro_series",
+      "status": "exported",
+      "row_count": 50,
+      "file": "tables/public.macro_series.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "market_data_eod",
+      "status": "exported",
+      "row_count": 3357,
+      "file": "tables/public.market_data_eod.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "roll_rule",
+      "status": "exported",
+      "row_count": 0,
+      "file": "tables/public.roll_rule.csv",
+      "reason": null
+    },
+    {
+      "schema": "public",
+      "name": "trading_calendar",
+      "status": "exported",
+      "row_count": 1389,
+      "file": "tables/public.trading_calendar.csv",
+      "reason": null
+    }
+  ]
+}
