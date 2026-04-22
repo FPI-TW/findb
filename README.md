@@ -258,6 +258,8 @@ uv run python scripts/dev.py up-server
 uv run python scripts/dev.py up
 uv run python scripts/dev.py test-db
 uv run python scripts/dev.py down
+uv run python scripts/dev.py partial-dump-validate
+uv run python scripts/dev.py partial-dump-run --dry-run
 ```
 
 雙平台 wrapper：
@@ -269,6 +271,8 @@ make up-server
 make up
 make test-db
 make down
+make partial-dump-validate
+make partial-dump-run
 ```
 
 ```powershell
@@ -278,6 +282,8 @@ make down
 .\scripts\dev.ps1 up
 .\scripts\dev.ps1 test-db
 .\scripts\dev.ps1 down
+.\scripts\dev.ps1 partial-dump-validate
+.\scripts\dev.ps1 partial-dump-run --dry-run
 ```
 
 ### 3. 常用開發流程
@@ -310,7 +316,27 @@ uv run python scripts/dev.py test-db
 docker compose --profile tools up -d pgadmin raw-cleanup
 ```
 
-### 4. 驗證服務
+### 4. Partial Dump（Phase A 先行落地）
+
+```bash
+# 1) 準備來源 DB 連線（唯讀）
+export FINDB_REMOTE_DATABASE_URL='postgresql+asyncpg://user:pass@host:5432/dbname'
+
+# 2) 驗證 partial_dump.yaml 契約
+uv run python scripts/dev.py partial-dump-validate
+
+# 3) 先看規劃結果（不匯出資料）
+uv run python scripts/dev.py partial-dump-run --dry-run
+
+# 4) 實際匯出（CSV + manifest）
+uv run python scripts/dev.py partial-dump-run
+```
+
+- 設定檔：`configs/partial_dump.yaml`
+- 強制規則：`raw.market_payload` 必須顯式設定且 `limit <= 1000`
+- 預設抽樣：每市場 3 檔標的、最近 1 年（依 `selection` 調整）
+
+### 5. 驗證服務
 
 ```bash
 # 健康檢查

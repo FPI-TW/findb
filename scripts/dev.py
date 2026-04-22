@@ -89,6 +89,22 @@ def cmd_down(_args: argparse.Namespace) -> int:
     return _run([*compose, "down"])
 
 
+def cmd_partial_dump_validate(args: argparse.Namespace) -> int:
+    cmd = ["uv", "run", "python", "-m", "scripts.partial_dump", "validate", "--config", args.config]
+    if args.no_require_env:
+        cmd.append("--no-require-env")
+    return _run(cmd)
+
+
+def cmd_partial_dump_run(args: argparse.Namespace) -> int:
+    cmd = ["uv", "run", "python", "-m", "scripts.partial_dump", "dump", "--config", args.config]
+    if args.output_dir:
+        cmd.extend(["--output-dir", args.output_dir])
+    if args.dry_run:
+        cmd.append("--dry-run")
+    return _run(cmd)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="FinDB development command wrapper")
     subparsers = parser.add_subparsers(dest="command")
@@ -109,6 +125,40 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("test-db", help="Run pytest after ensuring db container is up")
     subparsers.add_parser("down", help="Stop development containers")
 
+    partial_dump_validate = subparsers.add_parser(
+        "partial-dump-validate",
+        help="Validate configs/partial_dump.yaml contract",
+    )
+    partial_dump_validate.add_argument(
+        "--config",
+        default="configs/partial_dump.yaml",
+        help="Partial dump config path",
+    )
+    partial_dump_validate.add_argument(
+        "--no-require-env",
+        action="store_true",
+        help="Skip source environment-variable existence check",
+    )
+
+    partial_dump_run = subparsers.add_parser(
+        "partial-dump-run",
+        help="Run partial dump export flow",
+    )
+    partial_dump_run.add_argument(
+        "--config",
+        default="configs/partial_dump.yaml",
+        help="Partial dump config path",
+    )
+    partial_dump_run.add_argument(
+        "--output-dir",
+        help="Override output root directory",
+    )
+    partial_dump_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan only; skip data export",
+    )
+
     return parser
 
 
@@ -122,6 +172,8 @@ def main() -> int:
         "up": cmd_up,
         "test-db": cmd_test_db,
         "down": cmd_down,
+        "partial-dump-validate": cmd_partial_dump_validate,
+        "partial-dump-run": cmd_partial_dump_run,
     }
 
     if not args.command:

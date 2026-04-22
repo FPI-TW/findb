@@ -1,4 +1,4 @@
-.PHONY: up-db up-server up test-db down format
+.PHONY: up-db up-server up test-db down format partial-dump-validate partial-dump-run
 
 up-db:
 	uv run python scripts/dev.py up-db
@@ -17,3 +17,9 @@ down:
 
 format:
 	uv run black app tests scripts
+
+partial-dump-validate:
+	uv run python scripts/dev.py partial-dump-validate
+
+partial-dump-run:
+	uv run python scripts/dev.py partial-dump-run

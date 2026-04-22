@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.13.0,<3.0.0",
     "pydantic-settings>=2.14.0,<3.0.0",
     "alembic>=1.18.4,<2.0.0",
+    "pyyaml>=6.0.3,<7.0.0",
     "python-dotenv>=1.2.2,<2.0.0",
 ]
 

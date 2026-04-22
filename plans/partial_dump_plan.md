@@ -1,7 +1,7 @@
 # Partial Dump 功能計劃與 `partial_dump.yaml` v1 欄位規格
 
 > **建立時間**: 2026-04-22  
-> **狀態**: Proposed  
+> **狀態**: In Progress  
 > **目的**: 將遠端資料庫的「部分資料」可重複地匯出並載入本地開發環境
 
 ---
@@ -363,3 +363,19 @@ ORDER BY cnt DESC;
 2. 同一份 config 重跑可得到可驗證、可重放的產物。
 3. 匯出與匯入流程可在 macOS/Windows 透過 `uv` 主命令一致操作。
 4. 安全邊界清楚：唯讀來源、敏感欄位可脫敏、產物不入版控。
+
+---
+
+## 八、執行進度（2026-04-22）
+
+1. ✅ 已落地 Phase A（Config Contract）：
+   - `app/schemas/partial_dump.py`：`partial_dump.yaml` 欄位契約與強制驗證。
+   - `scripts/partial_dump.py validate`：可在本機與 CI 驗證配置。
+   - `configs/partial_dump.yaml`：預設 profile（含 `raw.market_payload limit: 1000`）。
+2. ✅ 已接入雙平台入口：
+   - `uv run python scripts/dev.py partial-dump-validate`
+   - `uv run python scripts/dev.py partial-dump-run`
+   - `make` 與 `scripts/dev.ps1` 可直接呼叫同命令。
+3. ✅ 已加入單元測試：`tests/test_partial_dump_config.py`。
+4. ⏳ 下一步（Phase B）：
+   - 擴充 dump SQL 生成策略（含更完整依賴順序與 upsert 載入路徑）。
