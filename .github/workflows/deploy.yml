@@ -156,7 +156,7 @@ jobs:
           command_timeout: 30m
           envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEYS,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEYS,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_BASE_URL,FINDB_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
           script: |
-            set -e
+            set -euo pipefail
             echo "Logging in to GHCR"
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
@@ -165,15 +165,45 @@ jobs:
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
+            echo "Waiting for app readiness"
+            ready=0
+            for attempt in $(seq 1 24); do
+              if docker compose -f docker-compose.prod.yml exec -T app sh -lc 'python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5); print(\"ok\")"' >/dev/null 2>&1; then
+                echo "App is ready"
+                ready=1
+                break
+              fi
+              echo "App not ready (attempt ${attempt}/24); waiting 5s..."
+              sleep 5
+            done
+
+            if [ "$ready" -ne 1 ]; then
+              echo "App did not become ready in time; recent app logs:"
+              docker compose -f docker-compose.prod.yml logs --tail=200 app
+              exit 1
+            fi
+
             echo "Generating instrument cache"
-            docker compose -f docker-compose.prod.yml exec -T app sh -lc '
-              for attempt in 1 2 3 4 5 6; do
+            if ! docker compose -f docker-compose.prod.yml exec -T app sh -lc '
+              for attempt in 1 2 3 4 5 6 7 8 9 10; do
                 python /app/scripts/generate_instrument_cache.py && exit 0
                 echo "Cache generation attempt ${attempt} failed; retrying in 5s..."
                 sleep 5
               done
               exit 1
-            '
+            '; then
+              echo "Cache generation failed; recent app logs:"
+              docker compose -f docker-compose.prod.yml logs --tail=200 app
+              exit 1
+            fi
+
+            if ! docker compose -f docker-compose.prod.yml exec -T app sh -lc '
+              python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"
+            '; then
+              echo "Post-deploy health check failed"
+              docker compose -f docker-compose.prod.yml logs --tail=200 app
+              exit 1
+            fi
 
             echo "Pruning old images"
             docker image prune -f
