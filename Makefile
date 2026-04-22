@@ -1,4 +1,4 @@
-.PHONY: up-db up-server up test-db down format partial-dump-validate partial-dump-run seed-upsert
+.PHONY: up-db up-server up test-db down format partial-dump-validate partial-dump-run seed-upsert seed-upsert-truncate
 
 up-db:
 	uv run python scripts/dev.py up-db
@@ -20,3 +20,6 @@ format:
 
 seed-upsert:
 	uv run python scripts/dev.py seed-upsert
+
+seed-upsert-truncate:
+	uv run python scripts/dev.py seed-upsert --truncate

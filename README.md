@@ -261,6 +261,8 @@ uv run python scripts/dev.py down
 uv run python scripts/dev.py partial-dump-validate
 uv run python scripts/dev.py partial-dump-run --dry-run
 uv run python scripts/dev.py seed-upsert
+uv run python scripts/dev.py seed-upsert --truncate
+uv run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/<artifact_name>
 ```
 
 雙平台 wrapper：
@@ -275,6 +277,7 @@ make down
 make partial-dump-validate
 make partial-dump-run
 make seed-upsert
+make seed-upsert-truncate
 ```
 
 ```powershell
@@ -287,6 +290,8 @@ make seed-upsert
 .\scripts\dev.ps1 partial-dump-validate
 .\scripts\dev.ps1 partial-dump-run --dry-run
 .\scripts\dev.ps1 seed-upsert
+.\scripts\dev.ps1 seed-upsert --truncate
+.\scripts\dev.ps1 seed-upsert --artifact-dir seed/partial_dump/<artifact_name>
 ```
 
 ### 3. 常用開發流程
@@ -306,8 +311,8 @@ uv run python scripts/dev.py up-server
 # 同時啟動 app image + db image（兩容器）
 uv run python scripts/dev.py up
 
-# 初始化資料
-docker compose exec app python /app/scripts/seed_data.py
+# 初始化資料（以 seed artifact 匯入可重現資料）
+uv run python scripts/dev.py seed-upsert
 
 # 跑包含 DB 的測試
 uv run python scripts/dev.py test-db
@@ -336,12 +341,20 @@ uv run python scripts/dev.py partial-dump-run
 
 # 5) 對啟動中的本地 DB 套用初始資料（UPSERT）
 uv run python scripts/dev.py seed-upsert
+
+# 6) 指定 artifact 版本（避免拿到最新包）
+uv run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/prod_partial_1y_3inst_all_tables_20260422T024418Z
+
+# 7) 大改版時重建本地資料（清空 + 刪除舊表後再 UPSERT）
+uv run python scripts/dev.py seed-upsert --truncate
 ```
 
 - 設定檔：`configs/partial_dump.yaml`
 - 目前預設只匯出 `public` schema（不含 `raw`）
 - 預設抽樣：每市場 3 檔標的、最近 1 年（依 `selection` 調整）
 - `seed-upsert` 預設會選 `seed/partial_dump/` 最新一包 artifact（建議進版控），並依主鍵做 upsert 到 `DATABASE_URL`
+- `seed-upsert --artifact-dir ...` 可鎖定特定 artifact 版本，避免「最新包」隨時間變動
+- `seed-upsert --truncate` 會先刪除 `artifact` 同 schema 中「不在 artifact 內」的舊表（保留 `public.alembic_version`），再 `TRUNCATE ... RESTART IDENTITY CASCADE` 後匯入，適合本地大改版重建
 
 ### 5. 驗證服務
 
@@ -596,7 +609,7 @@ Source API 限制每個 API Key + Client IP 組合的請求頻率：
 | `ingestion_run`                               | 攝取批次記錄                        |
 | `dq_issue`                                    | 資料品質問題                        |
 
-### Raw Layer（短期儲存 14 天）
+### Raw Layer（清理策略可配置）
 
 | 資料表               | 說明              |
 | -------------------- | ----------------- |
@@ -610,7 +623,7 @@ Source API 限制每個 API Key + Client IP 組合的請求頻率：
 
 ```bash
 # 格式化
-uv run black app tests
+uv run black app tests scripts
 
 # Lint
 uv run ruff check .
@@ -759,12 +772,9 @@ sudo bash scripts/setup_ec2.sh
 
 # 3. push 到 main，由 GitHub Actions 同步 compose 並部署
 git push origin main
-
-# 4. 首次部署完成後初始化資料庫
-docker exec findb-app python /app/scripts/seed_data.py
 ```
 
-> 生產環境不再使用 `/opt/findb/.env`。`docker-compose.prod.yml` 會由 GitHub Actions 在 SSH 部署時注入所有環境變數。
+> 生產環境不再使用 `/opt/findb/.env`。`docker-compose.prod.yml` 會由 GitHub Actions 在 SSH 部署時注入所有環境變數。部署前請先完成 Alembic baseline/stamp 與 migration rollout。
 
 #### GitHub Secrets 設定
 

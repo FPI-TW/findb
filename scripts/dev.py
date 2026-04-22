@@ -115,6 +115,8 @@ def cmd_seed_upsert(args: argparse.Namespace) -> int:
         cmd.extend(["--database-url", args.database_url])
     if args.chunk_size:
         cmd.extend(["--chunk-size", str(args.chunk_size)])
+    if args.truncate:
+        cmd.append("--truncate")
     return _run(cmd)
 
 
@@ -194,6 +196,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1000,
         help="Rows per upsert batch",
+    )
+    seed_upsert.add_argument(
+        "--truncate",
+        action="store_true",
+        help=(
+            "Reset managed schemas before upsert: drop obsolete tables "
+            "(except public.alembic_version) and truncate imported tables"
+        ),
     )
 
     return parser

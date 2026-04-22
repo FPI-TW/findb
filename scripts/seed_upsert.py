@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import MetaData, Table, text
+from sqlalchemy import MetaData, Table, bindparam, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSON, JSONB, UUID, insert
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from sqlalchemy.sql import sqltypes
+
+PROTECTED_TABLES = {"public.alembic_version"}
 
 
 @dataclass
@@ -37,6 +39,14 @@ def _normalize_database_url(database_url: str) -> str:
     if database_url.startswith("postgresql://"):
         return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
     return database_url
+
+
+def _quote_ident(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _qualified_table(schema: str, table: str) -> str:
+    return f"{_quote_ident(schema)}.{_quote_ident(table)}"
 
 
 def _coerce_bool(value: str) -> bool:
@@ -199,6 +209,52 @@ async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
     ]
 
 
+async def _load_existing_tables(conn: AsyncConnection, schemas: set[str]) -> set[str]:
+    if not schemas:
+        return set()
+
+    stmt = text("""
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+          AND table_schema IN :schemas
+    """).bindparams(bindparam("schemas", expanding=True))
+
+    result = await conn.execute(stmt, {"schemas": sorted(schemas)})
+    return {f"{row.table_schema}.{row.table_name}" for row in result}
+
+
+async def _truncate_and_cleanup(conn: AsyncConnection, tables: list[ArtifactTable]) -> None:
+    target_table_keys = {table.key for table in tables}
+    managed_schemas = {table.schema for table in tables}
+
+    existing_tables = await _load_existing_tables(conn, managed_schemas)
+    missing_tables = sorted(target_table_keys - existing_tables)
+    if missing_tables:
+        missing_preview = ", ".join(missing_tables[:10])
+        suffix = " ..." if len(missing_tables) > 10 else ""
+        raise ValueError(
+            "target database is missing required tables in artifact: "
+            f"{missing_preview}{suffix}. Run alembic upgrade first."
+        )
+
+    obsolete_tables = sorted(existing_tables - target_table_keys - PROTECTED_TABLES)
+    for table_key in obsolete_tables:
+        schema, table = table_key.split(".", 1)
+        await conn.execute(text(f"DROP TABLE IF EXISTS {_qualified_table(schema, table)} CASCADE"))
+        print(f"dropped obsolete table: {table_key}")
+
+    truncate_sql = ", ".join(
+        _qualified_table(table.schema, table.name)
+        for table in sorted(tables, key=lambda item: item.key)
+    )
+    await conn.execute(text(f"TRUNCATE TABLE {truncate_sql} RESTART IDENTITY CASCADE"))
+    print(
+        "truncate complete: "
+        f"tables={len(target_table_keys)}, dropped_obsolete={len(obsolete_tables)}"
+    )
+
+
 def _sort_tables_by_fk(
     tables: list[ArtifactTable],
     fk_edges: list[tuple[str, str]],
@@ -317,6 +373,7 @@ async def _run_upsert(
     artifact_dir: Path,
     database_url: str,
     chunk_size: int,
+    truncate: bool,
 ) -> int:
     manifest = _load_manifest(artifact_dir)
     tables = _load_artifact_tables(artifact_dir, manifest)
@@ -324,6 +381,9 @@ async def _run_upsert(
     engine = create_async_engine(_normalize_database_url(database_url), echo=False)
     try:
         async with engine.begin() as conn:
+            if truncate:
+                await _truncate_and_cleanup(conn, tables)
+
             fk_edges = await _load_fk_edges(conn)
             ordered_tables = _sort_tables_by_fk(tables, fk_edges)
 
@@ -367,6 +427,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Rows per upsert batch",
     )
+    parser.add_argument(
+        "--truncate",
+        action="store_true",
+        help=(
+            "Reset managed schemas before upsert: drop obsolete tables "
+            "(except public.alembic_version) and truncate imported tables"
+        ),
+    )
     return parser
 
 
@@ -394,11 +462,19 @@ def main() -> int:
 
     print(f"artifact: {artifact_dir}")
     print(f"target_db: {database_url.split('@')[-1]}")
+    print(f"mode: {'truncate+upsert' if args.truncate else 'upsert'}")
 
     import asyncio
 
     try:
-        return asyncio.run(_run_upsert(artifact_dir, database_url, args.chunk_size))
+        return asyncio.run(
+            _run_upsert(
+                artifact_dir=artifact_dir,
+                database_url=database_url,
+                chunk_size=args.chunk_size,
+                truncate=args.truncate,
+            )
+        )
     except Exception as exc:
         print(f"error: {type(exc).__name__}: {exc!r}")
         return 2
