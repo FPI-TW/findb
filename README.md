@@ -696,6 +696,7 @@ uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 
 - 操作流程與 baseline/stamp 策略請見：[docs/migration_workflow.md](docs/migration_workflow.md)
 - 常用命令：`uv run alembic current`、`uv run alembic revision --autogenerate -m \"...\"`、`uv run alembic upgrade head`
+- 啟動時不再自動 `create_all()`；若資料庫版本未到 `head` 或缺核心表，服務會直接啟動失敗並提示先跑 migration。
 
 ---
 

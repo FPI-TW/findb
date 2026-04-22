@@ -42,5 +42,10 @@ uv run alembic stamp <baseline_revision>
 
 ## Notes for this repository
 
-- Runtime `create_all()` still exists for backward compatibility during migration rollout.
-- New schema changes should be introduced through Alembic revisions.
+- Runtime startup no longer performs `create_all()`.
+- Application startup now checks:
+  - database has Alembic revision stamp
+  - current revision equals Alembic `head`
+  - required core relations exist (`public.dataset_registry`, `public.instruments`, `raw.market_payload`)
+- If check fails, app exits and you must run `uv run alembic upgrade head` (or stamp baseline first, then upgrade).
+- All schema changes must be introduced through Alembic revisions only.
