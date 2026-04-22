@@ -537,7 +537,7 @@ tbody tr:hover {
       url: '/static/data/instruments.json',
       defaultSort: 'market',
       searchPlaceholder: '標的名稱、Symbol、Instrument ID…',
-      searchFields: ['symbol', 'name', 'instrument_id', 'market', 'asset_class', 'currency'],
+      searchFields: ['symbol', 'name', 'short_name','instrument_id', 'market', 'asset_class', 'currency'],
       columns: [
         { key: 'market', label: 'Market', sortable: true, width: '9%' },
         { key: 'symbol', label: 'Symbol', sortable: true, className: 'cell-symbol', width: '11%' },
@@ -1002,6 +1002,9 @@ tbody tr:hover {
     }
     if (column.type === 'number') {
       return formatPrice(item[column.key]);
+    }
+    if (column.key === 'name') {
+      return item.name || item.short_name || '-';
     }
 
     return item[column.key] || '-';
