@@ -33,6 +33,17 @@ services:
     restart: unless-stopped
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
 
+  nginx:
+      image: nginx:alpine
+      container_name: findb-nginx
+      ports:
+        - "80:80"
+      volumes:
+        - ./app/deploy/nginx/findb.conf:/etc/nginx/conf.d/default.conf:ro
+      depends_on:
+        - app
+      restart: unless-stopped
+
   raw-cleanup:
     image: ghcr.io/fpi-tw/findb:latest
     container_name: findb-raw-cleanup
