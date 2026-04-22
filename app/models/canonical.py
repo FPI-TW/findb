@@ -2,24 +2,26 @@
 Canonical Layer database models.
 """
 
-from datetime import datetime, date, time
+from datetime import date, datetime, time
 from decimal import Decimal
-from uuid import UUID
 from typing import Optional
+from uuid import UUID
+
 from sqlalchemy import (
-    String,
-    Text,
-    Date,
-    Time,
-    DateTime,
-    Boolean,
     BigInteger,
+    Boolean,
+    Date,
+    DateTime,
     ForeignKey,
     Index,
+    String,
+    Text,
+    Time,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB, NUMERIC
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID, NUMERIC
 
 from app.models.base import Base
 from app.utils import utc_now, uuid7

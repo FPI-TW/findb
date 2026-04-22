@@ -9,9 +9,8 @@ from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.models.base import async_session_maker
@@ -19,32 +18,32 @@ from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.source import IngestRequest
 from app.services.normalize import (
-    CryptoNormalizer,
+    CNEquityNormalizer,
+    CNIndexNormalizer,
+    CorporateActionNormalizer,
     CryptoBloombergNormalizer,
     CryptoIndexNormalizer,
+    CryptoNormalizer,
     EquityNormalizer,
-    FXNormalizer,
-    FXBloombergNormalizer,
-    IndexNormalizer,
-    CorporateActionNormalizer,
-    MacroNormalizer,
-    MacroBloombergNormalizer,
-    FuturesContractNormalizer,
     FuturesContinuousNormalizer,
-    WTXBloombergNormalizer,
-    USStockNormalizer,
-    USIndexNormalizer,
+    FuturesContractNormalizer,
+    FXBloombergNormalizer,
+    FXNormalizer,
     GlobalStockNormalizer,
-    TWEquityNormalizer,
-    HKEquityNormalizer,
-    CNEquityNormalizer,
-    TWIndexNormalizer,
-    HKIndexNormalizer,
-    CNIndexNormalizer,
-    HKChinaMixedNormalizer,
     HKChinaIndexNormalizer,
+    HKChinaMixedNormalizer,
+    HKEquityNormalizer,
+    HKIndexNormalizer,
+    IndexNormalizer,
+    MacroBloombergNormalizer,
+    MacroNormalizer,
+    TWEquityNormalizer,
+    TWIndexNormalizer,
+    USIndexNormalizer,
+    USStockNormalizer,
+    WTXBloombergNormalizer,
 )
-from app.utils import uuid7, utc_now
+from app.utils import utc_now, uuid7
 from app.utils.datetime_utils import ensure_utc
 
 settings = get_settings()
@@ -212,7 +211,7 @@ class IngestionService:
         """Get dataset configuration."""
         stmt = select(DatasetRegistry).where(DatasetRegistry.dataset_key == dataset_key)
         if not include_inactive:
-            stmt = stmt.where(DatasetRegistry.is_active == True)
+            stmt = stmt.where(DatasetRegistry.is_active.is_(True))
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -518,6 +517,6 @@ class IngestionService:
 
     async def list_datasets(self) -> list[DatasetRegistry]:
         """List all active datasets."""
-        stmt = select(DatasetRegistry).where(DatasetRegistry.is_active == True)
+        stmt = select(DatasetRegistry).where(DatasetRegistry.is_active.is_(True))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())

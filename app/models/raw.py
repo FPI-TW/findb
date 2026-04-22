@@ -4,9 +4,11 @@ Raw Layer database models.
 
 from datetime import datetime
 from uuid import UUID
-from sqlalchemy import String, Index, DateTime
+
+from sqlalchemy import DateTime, Index, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 
 from app.models.base import Base
 from app.utils import utc_now

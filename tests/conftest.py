@@ -7,16 +7,16 @@ from typing import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.api.deps import reset_source_rate_limit_state
+from app.config import get_settings
+from app.dependencies import get_db
 from app.main import app
 from app.models.base import Base
-from app.dependencies import get_db
-from app.config import get_settings
-from app.api.deps import reset_source_rate_limit_state
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",

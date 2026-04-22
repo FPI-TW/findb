@@ -42,6 +42,9 @@ target-version = ["py313"]
 
 [tool.ruff]
 line-length = 100
+exclude = [".claude"]
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
 
