@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-Generated: 2026-02-23 10:37:13 +08:00
-Commit: a5fa4d3
+Updated: 2026-04-22
+Commit: 2d283e3
 Branch: main
 
 ## OVERVIEW
@@ -16,14 +16,19 @@ findb/
 |- app/                      # API, services, models, schemas, utils
 |  |- api/v1/                # Source (write ingest), Serve (read query), Admin routers
 |  |- services/normalize/    # Market-specific normalizers and mapping logic
-|  |- models/                # Canonical, raw, registry ORM models
+|  |- models/                # Canonical, raw, registry ORM models (base.py has Alembic check)
 |  |- schemas/               # Pydantic request/response models
-|  `- static/                # /test and /instrument-lookup static assets
-|- docs/                     # API guide, manual test flow, exported tester page
+|  `- static/                # /test and /instrument-lookup static assets + data/ cache
+|- migrations/               # Alembic migration scripts
+|- configs/                  # YAML configs (partial_dump.yaml)
+|- docs/                     # API guide, manual test flow, migration workflow
 |- tests/                    # Async API/service integration and unit tests
-|- scripts/                  # Seed and cleanup scripts
+|- scripts/                  # dev.py, seed_upsert.py, partial_dump.py, cleanup, cache gen
+|- seed/                     # Partial dump data for local development
+|- plans/                    # Architecture and development plans
 |- docker-compose.yml        # Local app + postgres + pgadmin stack
-`- pyproject.toml            # uv deps + black/ruff/mypy/pytest settings
+|- Makefile                  # Dev workflow shortcuts (wraps scripts/dev.py)
+`- pyproject.toml            # uv deps + black/ruff/mypy/pytest settings (Python 3.13)
 ```
 
 ## WHERE TO LOOK
@@ -41,6 +46,11 @@ findb/
 | Static lookup and cache flow | `app/static/instrument-lookup.html` + `scripts/generate_instrument_cache.py` | `/instrument-lookup` UI and generated `app/static/data/*.json` cache |
 | Test dashboard | `app/static/test_page.html` | Static `/test` API tester |
 | Tests and fixtures | `tests/` + `tests/conftest.py` | AsyncClient + ASGITransport + DB fixtures |
+| Alembic migrations | `alembic.ini` + `migrations/` | Schema-as-code via Alembic; `init_db()` validates revision at startup |
+| Dev workflow | `scripts/dev.py` + `Makefile` | Cross-platform local commands (up-db, up-server, test-db, seed-upsert) |
+| Partial dump tooling | `scripts/partial_dump.py` + `configs/partial_dump.yaml` | Export/import partial prod data for local dev |
+| Seed upsert | `scripts/seed_upsert.py` | Load partial dump CSVs into local DB (upsert or truncate mode) |
+| Deploy workflow | `.github/workflows/deploy.yml` | CI/CD via GitHub Actions to EC2 |
 
 ## CODE MAP
 
@@ -101,8 +111,10 @@ uv run pytest
 
 ## NOTES
 
-- Host DB port is `5435` -> container `5432`; app container uses `db:5432`.
+- Host DB port is `5435` -> container `5432`; app container uses `db:5432`. Default app port: `8080`.
 - `SOURCE_API_KEYS` must be set for auth-covered tests and ingest endpoints.
 - `ADMIN_API_KEYS` must be set for Admin API endpoints and admin-related tests.
-- Known gaps: Alembic migrations are not wired yet (runtime `create_all()` is still used).
+- Schema evolution is managed by Alembic. Runtime `init_db()` validates Alembic revision and required tables — it does NOT run `create_all()`.
+- All schema changes must go through Alembic revisions (`uv run alembic revision --autogenerate`).
+- Pre-commit hooks: Black formatting on commit, pytest on push.
 - Keep this file high-level; put domain specifics in nearest subdirectory AGENTS.
