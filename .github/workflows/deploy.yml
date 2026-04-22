@@ -163,6 +163,13 @@ jobs:
             echo "Deploying containers"
             cd /opt/findb
             docker compose -f docker-compose.prod.yml pull
+
+            echo "Running Alembic migrations"
+            docker compose -f docker-compose.prod.yml run --rm app sh -lc '
+              uv run alembic upgrade head
+              uv run alembic current
+            '
+
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
             echo "Waiting for app readiness"
