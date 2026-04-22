@@ -57,7 +57,7 @@ anonymization_rules: {}
 
 load:
   truncate_before_load: true
-  disable_triggers: false
+  disable_triggers: true
   verify_fk_after_load: true
   on_conflict: upsert
   parallel_jobs: 1

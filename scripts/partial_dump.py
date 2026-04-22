@@ -67,6 +67,10 @@ def _serialize_value(value: Any) -> str | int | float | bool | None:
     return value
 
 
+def _table_key(schema: str, name: str) -> str:
+    return f"{schema}.{name}"
+
+
 async def _discover_tables(
     conn: AsyncConnection, config: PartialDumpConfig
 ) -> list[tuple[str, str]]:
@@ -360,6 +364,10 @@ def _write_load_sql(
 
     lines.append("BEGIN;")
     lines.append("")
+    if config.load.disable_triggers:
+        lines.append("-- disable trigger/FK checks during load (local development use only)")
+        lines.append("SET session_replication_role = replica;")
+        lines.append("")
 
     if config.load.truncate_before_load:
         for entry in exported_tables:
@@ -377,9 +385,85 @@ def _write_load_sql(
         )
 
     lines.append("")
+    if config.load.disable_triggers:
+        lines.append("SET session_replication_role = origin;")
+        lines.append("")
     lines.append("COMMIT;")
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
+    result = await conn.execute(text("""
+            SELECT
+                child_ns.nspname AS child_schema,
+                child_cls.relname AS child_table,
+                parent_ns.nspname AS parent_schema,
+                parent_cls.relname AS parent_table
+            FROM pg_constraint con
+            JOIN pg_class child_cls ON child_cls.oid = con.conrelid
+            JOIN pg_namespace child_ns ON child_ns.oid = child_cls.relnamespace
+            JOIN pg_class parent_cls ON parent_cls.oid = con.confrelid
+            JOIN pg_namespace parent_ns ON parent_ns.oid = parent_cls.relnamespace
+            WHERE con.contype = 'f'
+            """))
+    return [
+        (
+            _table_key(row.child_schema, row.child_table),
+            _table_key(row.parent_schema, row.parent_table),
+        )
+        for row in result
+    ]
+
+
+def _sort_tables_by_fk(
+    exported_tables: list[dict[str, Any]],
+    fk_edges: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    if not exported_tables:
+        return exported_tables
+
+    key_to_item = {_table_key(item["schema"], item["name"]): item for item in exported_tables}
+    original_order = {
+        _table_key(item["schema"], item["name"]): index
+        for index, item in enumerate(exported_tables)
+    }
+    node_keys = set(key_to_item.keys())
+
+    dependencies: dict[str, set[str]] = {key: set() for key in node_keys}
+    reverse_deps: dict[str, set[str]] = {key: set() for key in node_keys}
+    for child_key, parent_key in fk_edges:
+        if child_key not in node_keys or parent_key not in node_keys or child_key == parent_key:
+            continue
+        if parent_key in dependencies[child_key]:
+            continue
+        dependencies[child_key].add(parent_key)
+        reverse_deps[parent_key].add(child_key)
+
+    indegree = {key: len(parent_keys) for key, parent_keys in dependencies.items()}
+    ready = sorted(
+        [key for key, degree in indegree.items() if degree == 0],
+        key=lambda key: original_order[key],
+    )
+
+    ordered_keys: list[str] = []
+    while ready:
+        current = ready.pop(0)
+        ordered_keys.append(current)
+        for child in sorted(reverse_deps[current], key=lambda key: original_order[key]):
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                ready.append(child)
+        ready.sort(key=lambda key: original_order[key])
+
+    if len(ordered_keys) < len(node_keys):
+        remaining = sorted(
+            [key for key in node_keys if key not in ordered_keys],
+            key=lambda key: original_order[key],
+        )
+        ordered_keys.extend(remaining)
+
+    return [key_to_item[key] for key in ordered_keys]
 
 
 async def _run_dump(
@@ -402,6 +486,7 @@ async def _run_dump(
 
     exported_tables_for_sql: list[dict[str, Any]] = []
     exported_table_columns: dict[str, list[TableColumn]] = {}
+    fk_edges: list[tuple[str, str]] = []
 
     try:
         async with engine.connect() as conn:
@@ -418,6 +503,7 @@ async def _run_dump(
             sampled_ids = await _sample_instrument_ids(
                 conn, config.selection.instrument_sample_size
             )
+            fk_edges = await _load_fk_edges(conn)
 
             for table, explicit_override in resolved_tables:
                 key = f"{table.table_schema}.{table.name}"
@@ -511,7 +597,8 @@ async def _run_dump(
             _write_schema_sql(artifact_dir / "schema.sql", exported_table_columns)
 
         if config.target.include_load_sql and not dry_run and exported_tables_for_sql:
-            _write_load_sql(artifact_dir / "load.sql", config, exported_tables_for_sql)
+            sorted_for_load = _sort_tables_by_fk(exported_tables_for_sql, fk_edges)
+            _write_load_sql(artifact_dir / "load.sql", config, sorted_for_load)
 
         if config.target.include_manifest:
             (artifact_dir / "manifest.json").write_text(
