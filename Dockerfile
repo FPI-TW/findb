@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy dependency manifests first for better Docker layer cache reuse
 COPY pyproject.toml uv.lock ./
+COPY alembic.ini ./
 
 # Install Python dependencies with uv into /app/.venv
 RUN pip install --no-cache-dir "uv==0.9.9" && \
