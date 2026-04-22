@@ -28,8 +28,6 @@ services:
       FINDB_BASE_URL: "${FINDB_BASE_URL:?FINDB_BASE_URL must be set in GitHub Actions variables}"
       FINDB_SERVE_API_KEY: "${FINDB_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
-    ports:
-      - "${PORT:?PORT must be set in GitHub Actions variables}:${PORT:?PORT must be set in GitHub Actions variables}"
     restart: unless-stopped
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
 
