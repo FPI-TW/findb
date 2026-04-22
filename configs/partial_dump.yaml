@@ -9,7 +9,7 @@ source:
   readonly_required: true
 
 target:
-  output_dir: artifacts/partial_dump
+  output_dir: seed/partial_dump
   artifact_name: "{profile}_{utc_ts}"
   format: csv
   compress: zstd
@@ -41,17 +41,11 @@ selection:
 
 table_discovery:
   enabled: true
-  include_schemas: [public, raw]
+  include_schemas: [public]
   exclude_tables: []
   require_pk_for_upsert: true
 
-tables:
-  - schema: raw
-    name: market_payload
-    mode: latest_n_days
-    latest_by_column: fetched_at
-    latest_n_days: 365
-    limit: 1000
+tables: []
 
 anonymization_rules: {}
 

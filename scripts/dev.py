@@ -105,6 +105,19 @@ def cmd_partial_dump_run(args: argparse.Namespace) -> int:
     return _run(cmd)
 
 
+def cmd_seed_upsert(args: argparse.Namespace) -> int:
+    cmd = ["uv", "run", "python", "-m", "scripts.seed_upsert"]
+    if args.artifact_dir:
+        cmd.extend(["--artifact-dir", args.artifact_dir])
+    if args.partial_dump_root:
+        cmd.extend(["--partial-dump-root", args.partial_dump_root])
+    if args.database_url:
+        cmd.extend(["--database-url", args.database_url])
+    if args.chunk_size:
+        cmd.extend(["--chunk-size", str(args.chunk_size)])
+    return _run(cmd)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="FinDB development command wrapper")
     subparsers = parser.add_subparsers(dest="command")
@@ -159,6 +172,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Plan only; skip data export",
     )
 
+    seed_upsert = subparsers.add_parser(
+        "seed-upsert",
+        help="Upsert seed data artifact into a running database",
+    )
+    seed_upsert.add_argument(
+        "--artifact-dir",
+        help="Specific artifact directory containing manifest.json",
+    )
+    seed_upsert.add_argument(
+        "--partial-dump-root",
+        default="seed/partial_dump",
+        help="Artifact root to auto-pick latest dump when --artifact-dir is omitted",
+    )
+    seed_upsert.add_argument(
+        "--database-url",
+        help="Override target database URL (default: env DATABASE_URL)",
+    )
+    seed_upsert.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1000,
+        help="Rows per upsert batch",
+    )
+
     return parser
 
 
@@ -174,6 +211,7 @@ def main() -> int:
         "down": cmd_down,
         "partial-dump-validate": cmd_partial_dump_validate,
         "partial-dump-run": cmd_partial_dump_run,
+        "seed-upsert": cmd_seed_upsert,
     }
 
     if not args.command:

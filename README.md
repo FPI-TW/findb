@@ -260,6 +260,7 @@ uv run python scripts/dev.py test-db
 uv run python scripts/dev.py down
 uv run python scripts/dev.py partial-dump-validate
 uv run python scripts/dev.py partial-dump-run --dry-run
+uv run python scripts/dev.py seed-upsert
 ```
 
 雙平台 wrapper：
@@ -273,6 +274,7 @@ make test-db
 make down
 make partial-dump-validate
 make partial-dump-run
+make seed-upsert
 ```
 
 ```powershell
@@ -284,6 +286,7 @@ make partial-dump-run
 .\scripts\dev.ps1 down
 .\scripts\dev.ps1 partial-dump-validate
 .\scripts\dev.ps1 partial-dump-run --dry-run
+.\scripts\dev.ps1 seed-upsert
 ```
 
 ### 3. 常用開發流程
@@ -316,7 +319,7 @@ uv run python scripts/dev.py test-db
 docker compose --profile tools up -d pgadmin raw-cleanup
 ```
 
-### 4. Partial Dump（Phase A 先行落地）
+### 4. Partial Dump
 
 ```bash
 # 1) 準備來源 DB 連線（唯讀）
@@ -330,11 +333,15 @@ uv run python scripts/dev.py partial-dump-run --dry-run
 
 # 4) 實際匯出（CSV + manifest）
 uv run python scripts/dev.py partial-dump-run
+
+# 5) 對啟動中的本地 DB 套用初始資料（UPSERT）
+uv run python scripts/dev.py seed-upsert
 ```
 
 - 設定檔：`configs/partial_dump.yaml`
-- 強制規則：`raw.market_payload` 必須顯式設定且 `limit <= 1000`
+- 目前預設只匯出 `public` schema（不含 `raw`）
 - 預設抽樣：每市場 3 檔標的、最近 1 年（依 `selection` 調整）
+- `seed-upsert` 預設會選 `seed/partial_dump/` 最新一包 artifact（建議進版控），並依主鍵做 upsert 到 `DATABASE_URL`
 
 ### 5. 驗證服務
 
