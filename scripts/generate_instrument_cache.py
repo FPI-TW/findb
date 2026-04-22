@@ -72,8 +72,9 @@ def sort_key(item: dict[str, Any]) -> tuple[str, str, str]:
     """Stable default ordering for the static dataset."""
     market = str(item.get("market") or "")
     symbol = str(item.get("symbol") or "")
-    name = str(item.get("short_name") or item.get("name") or "")
-    return (market.upper(), symbol.upper(), name.upper())
+    name = str(item.get("name") or "")
+    short_name = str(item.get("short_name") or "")
+    return (market.upper(), symbol.upper(), name.upper(), short_name.upper())
 
 
 def normalize_macro_series(payload: dict[str, Any]) -> dict[str, Any]:
