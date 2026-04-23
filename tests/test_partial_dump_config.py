@@ -21,7 +21,7 @@ def _base_config() -> dict:
             "readonly_required": True,
         },
         "target": {
-            "output_dir": "artifacts/partial_dump",
+            "output_dir": "seed/partial_dump",
             "artifact_name": "{profile}_{utc_ts}",
             "format": "csv",
             "compress": "zstd",

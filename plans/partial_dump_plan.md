@@ -65,8 +65,8 @@
 
 | 欄位                 | 型別   | 必填 | 預設值               | 說明                                      |
 | -------------------- | ------ | ---- | -------------------- | ----------------------------------------- |
-| `output_dir`         | string | 是   | -                    | 輸出根目錄，例如 `artifacts/partial_dump` |
-| `artifact_name`      | string | 否   | `{profile}_{utc_ts}` | 產物名稱模板                              |
+| `output_dir`         | string | 是   | -                    | 輸出根目錄，例如 `seed/partial_dump`      |
+| `artifact_name`      | string | 否   | `{profile}_{utc_ts}` | seed 包名稱模板（欄位名沿用舊稱）         |
 | `format`             | string | 否   | `csv`                | 目前固定 `csv`                            |
 | `compress`           | string | 否   | `zstd`               | `none` / `gzip` / `zstd`                  |
 | `include_schema_sql` | bool   | 否   | `true`               | 是否輸出 `schema.sql`                     |
@@ -230,7 +230,7 @@ source:
   readonly_required: true
 
 target:
-  output_dir: artifacts/partial_dump
+  output_dir: seed/partial_dump
   artifact_name: "{profile}_{utc_ts}"
   format: csv
   compress: zstd
