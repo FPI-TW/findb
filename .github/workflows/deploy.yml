@@ -159,6 +159,42 @@ jobs:
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
+            echo "Waiting for app readiness"
+            ready=0
+            for attempt in $(seq 1 24); do
+              if docker compose -f docker-compose.prod.yml exec -T app sh -lc 'python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5); print(\"ok\")"' >/dev/null 2>&1; then
+                echo "App is ready"
+                ready=1
+                break
+              fi
+              echo "App not ready (attempt ${attempt}/24); waiting 5s..."
+              sleep 5
+            done
+
+            if [ "$ready" -ne 1 ]; then
+              echo "App did not become ready in time; recent app logs:"
+              docker compose -f docker-compose.prod.yml logs --tail=200 app
+              exit 1
+            fi
+
+            echo "Checking nginx proxy health (warning only)"
+            proxy_ready=0
+            for attempt in $(seq 1 12); do
+              health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx 2>/dev/null || true)"
+              if [ "$health_status" = "healthy" ]; then
+                echo "Nginx proxy is healthy"
+                proxy_ready=1
+                break
+              fi
+              echo "Nginx proxy health is '${health_status:-unknown}' (attempt ${attempt}/12); waiting 5s..."
+              sleep 5
+            done
+
+            if [ "$proxy_ready" -ne 1 ]; then
+              echo "::warning title=Nginx proxy check failed::Nginx did not report healthy in time. Check TLS cert mounts and upstream app routing."
+              docker compose -f docker-compose.prod.yml logs --tail=200 nginx || true
+            fi
+
             echo "Generating instrument cache"
             docker compose -f docker-compose.prod.yml exec -T app sh -lc '
               for attempt in 1 2 3 4 5 6; do
