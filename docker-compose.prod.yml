@@ -38,9 +38,9 @@ services:
         - "80:80"
         - "443:443"
       volumes:
-        - ./app/deploy/nginx/findb.conf:/etc/nginx/conf.d/default.conf:ro
-        - /home/ubuntu/app/deploy/nginx/server.crt:/etc/nginx/ssl/server.crt:ro
-        - /home/ubuntu/app/deploy/nginx/server.key:/etc/nginx/ssl/server.key:ro
+        - /home/ubuntu/etc/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+        - /home/ubuntu/etc/nginx/ssl/server.crt:/etc/nginx/ssl/server.crt:ro
+        - /home/ubuntu/etc/nginx/ssl/server.key:/etc/nginx/ssl/server.key:ro
       healthcheck:
         test: ["CMD-SHELL", "wget -q --no-check-certificate --spider https://127.0.0.1/health"]
         interval: 15s
