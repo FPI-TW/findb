@@ -194,6 +194,22 @@ def test_missing_source_env_is_rejected(tmp_path: Path, monkeypatch: pytest.Monk
     config_file = tmp_path / "partial_dump.yaml"
     _write_yaml(config_file, _base_config())
     monkeypatch.delenv("FINDB_REMOTE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
     with pytest.raises(ValueError):
         load_partial_dump_config(config_file)
+
+
+def test_missing_source_env_uses_database_url_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "partial_dump.yaml"
+    _write_yaml(config_file, _base_config())
+    monkeypatch.delenv("FINDB_REMOTE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/db")
+
+    config = load_partial_dump_config(config_file)
+
+    env_name, env_value = config.resolve_source_database_url()
+    assert env_name == "DATABASE_URL"
+    assert env_value == "postgresql+asyncpg://user:pass@localhost:5432/db"
