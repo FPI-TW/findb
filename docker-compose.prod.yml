@@ -46,7 +46,7 @@ services:
         interval: 15s
         timeout: 5s
         retries: 4
-        start_period: 20s
+        start_period: 60s
       depends_on:
         - app
       restart: unless-stopped
