@@ -55,6 +55,7 @@ INSTRUMENT_FIELDS = (
 MACRO_SERIES_FIELDS = (
     "series_id",
     "name",
+    "short_name",
     "unit",
     "frequency",
     "market",

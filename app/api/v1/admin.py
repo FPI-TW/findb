@@ -381,7 +381,6 @@ async def refresh_instrument_cache(
     Manually refresh the static instrument cache (instruments.json). 
     This long-running task will be processed in the background.
     """
-    # Define background task
     def task_wrapper():
         print("Starting background cache generation...")
         exit_code = run_cache_generation()
@@ -390,7 +389,6 @@ async def refresh_instrument_cache(
         else:
             print("Background cache generation failed.")
 
-    # Assign task into FastAPI background task queue
     background_tasks.add_task(task_wrapper)
 
     return CacheTriggerResponse(
