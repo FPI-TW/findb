@@ -137,16 +137,35 @@ jobs:
           fi
           exit "$missing"
 
+      - name: Prepare deploy directories on EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
+
       - name: Sync deploy artifacts to EC2
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: |
-            docker-compose.prod.yml
-            infra/nginx/findb.conf
+          source: "docker-compose.prod.yml"
           target: /opt/findb
+          overwrite: true
+
+      - name: Sync nginx.conf to EC2 nginx path
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "infra/nginx/nginx.conf"
+          target: /home/ubuntu/etc/nginx
+          strip_components: 2
           overwrite: true
 
       - name: Deploy to EC2
@@ -164,16 +183,16 @@ jobs:
 
             echo "Deploying containers"
             cd /opt/findb
-            if [ ! -f /opt/findb/infra/nginx/findb.conf ]; then
-              echo "::error title=Missing nginx config::/opt/findb/infra/nginx/findb.conf not found on target host"
+            if [ ! -f /home/ubuntu/etc/nginx/nginx.conf ]; then
+              echo "::error title=Missing nginx config::/home/ubuntu/etc/nginx/nginx.conf not found on target host"
               exit 1
             fi
-            if [ ! -f /home/ubuntu/app/deploy/nginx/server.crt ]; then
-              echo "::error title=Missing TLS cert::/home/ubuntu/app/deploy/nginx/server.crt not found on target host"
+            if [ ! -f /home/ubuntu/etc/nginx/ssl/server.crt ]; then
+              echo "::error title=Missing TLS cert::/home/ubuntu/etc/nginx/ssl/server.crt not found on target host"
               exit 1
             fi
-            if [ ! -f /home/ubuntu/app/deploy/nginx/server.key ]; then
-              echo "::error title=Missing TLS key::/home/ubuntu/app/deploy/nginx/server.key not found on target host"
+            if [ ! -f /home/ubuntu/etc/nginx/ssl/server.key ]; then
+              echo "::error title=Missing TLS key::/home/ubuntu/etc/nginx/ssl/server.key not found on target host"
               exit 1
             fi
             docker compose -f docker-compose.prod.yml pull
