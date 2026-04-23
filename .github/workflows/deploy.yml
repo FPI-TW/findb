@@ -137,13 +137,15 @@ jobs:
           fi
           exit "$missing"
 
-      - name: Sync docker-compose.prod.yml to EC2
+      - name: Sync deploy artifacts to EC2
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: docker-compose.prod.yml
+          source: |
+            docker-compose.prod.yml
+            infra/nginx/findb.conf
           target: /opt/findb
           overwrite: true
 
@@ -162,6 +164,18 @@ jobs:
 
             echo "Deploying containers"
             cd /opt/findb
+            if [ ! -f /opt/findb/infra/nginx/findb.conf ]; then
+              echo "::error title=Missing nginx config::/opt/findb/infra/nginx/findb.conf not found on target host"
+              exit 1
+            fi
+            if [ ! -f /home/ubuntu/app/deploy/nginx/server.crt ]; then
+              echo "::error title=Missing TLS cert::/home/ubuntu/app/deploy/nginx/server.crt not found on target host"
+              exit 1
+            fi
+            if [ ! -f /home/ubuntu/app/deploy/nginx/server.key ]; then
+              echo "::error title=Missing TLS key::/home/ubuntu/app/deploy/nginx/server.key not found on target host"
+              exit 1
+            fi
             docker compose -f docker-compose.prod.yml pull
 
             echo "Running Alembic migrations"
@@ -188,6 +202,24 @@ jobs:
               echo "App did not become ready in time; recent app logs:"
               docker compose -f docker-compose.prod.yml logs --tail=200 app
               exit 1
+            fi
+
+            echo "Checking nginx proxy health (warning only)"
+            proxy_ready=0
+            for attempt in $(seq 1 12); do
+              health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx 2>/dev/null || true)"
+              if [ "$health_status" = "healthy" ]; then
+                echo "Nginx proxy is healthy"
+                proxy_ready=1
+                break
+              fi
+              echo "Nginx proxy health is '${health_status:-unknown}' (attempt ${attempt}/12); waiting 5s..."
+              sleep 5
+            done
+
+            if [ "$proxy_ready" -ne 1 ]; then
+              echo "::warning title=Nginx proxy check failed::Nginx did not report healthy in time. Check TLS cert mounts and upstream app routing."
+              docker compose -f docker-compose.prod.yml logs --tail=200 nginx || true
             fi
 
             echo "Generating instrument cache"
