@@ -372,13 +372,13 @@ async def bulk_rerun_runs(
         error_details=error_details,
     )
 
-@router.post("/instrument-cache/refresh", response_model=CacheTriggerResponse)
+@router.post("/instrument-cache/refresh", response_model=CacheTriggerResponse, status_code=status.HTTP_202_ACCEPTED)
 async def refresh_instrument_cache(
     background_tasks: BackgroundTasks,
     api_key: str = Depends(verify_admin_api_key),
 ):
     """
-    Manually refresh the static instrument cache (instruments.json). 
+    Manually refresh the static instrument cache (instruments.json).
     This long-running task will be processed in the background.
     """
     def task_wrapper():
