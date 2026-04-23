@@ -39,6 +39,7 @@ services:
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --reload"
 
   raw-cleanup:
+    profiles: ["tools"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -56,6 +57,7 @@ services:
     restart: unless-stopped
 
   pgadmin:
+    profiles: ["tools"]
     image: dpage/pgadmin4
     container_name: findb-pgadmin
     environment:

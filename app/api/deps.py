@@ -8,6 +8,7 @@ from time import time
 
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
+
 from app.config import get_settings
 
 settings = get_settings()

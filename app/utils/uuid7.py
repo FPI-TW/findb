@@ -3,8 +3,8 @@ UUID v7 generation utility.
 UUID v7 is time-ordered and uses Unix timestamp in milliseconds.
 """
 
-import time
 import os
+import time
 from uuid import UUID
 
 

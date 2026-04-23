@@ -83,7 +83,7 @@ flowchart TB
 #### 0.1 專案結構與環境設置
 
 - [x] 建立專案目錄結構
-- [x] 設定 Python 虛擬環境與依賴管理（Poetry 或 pip）
+- [x] 設定 Python 虛擬環境與依賴管理（uv 或 pip）
 - [x] 設定 FastAPI 基本框架
 - [x] 設定資料庫連線與 ORM（SQLAlchemy）
 - [x] 設定環境變數管理（.env）

@@ -29,6 +29,7 @@ jobs:
           --health-retries 5
 
     env:
+      DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
       TEST_DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
       SOURCE_API_KEYS: test-source-key
       ADMIN_API_KEYS: test-admin-key
@@ -39,16 +40,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
-      - name: Install Poetry
-        run: pip install poetry==1.7.1
+      - name: Install uv
+        run: pip install uv
 
       - name: Install dependencies
-        run: poetry install --no-interaction
+        run: uv sync --frozen
+
+      - name: Run migration smoke test
+        run: |
+          uv run alembic upgrade head
+          uv run alembic current
 
       - name: Run tests
-        run: poetry run pytest --tb=short -q
+        run: uv run pytest --tb=short -q
 
   build-push:
     needs: test
@@ -150,13 +156,20 @@ jobs:
           command_timeout: 30m
           envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEYS,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEYS,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_BASE_URL,FINDB_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
           script: |
-            set -e
+            set -euo pipefail
             echo "Logging in to GHCR"
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
             echo "Deploying containers"
             cd /opt/findb
             docker compose -f docker-compose.prod.yml pull
+
+            echo "Running Alembic migrations"
+            docker compose -f docker-compose.prod.yml run --rm app sh -lc '
+              uv run alembic upgrade head
+              uv run alembic current
+            '
+
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
             echo "Waiting for app readiness"
@@ -177,6 +190,7 @@ jobs:
               exit 1
             fi
 
+<<<<<<< HEAD
             echo "Checking nginx proxy health (warning only)"
             proxy_ready=0
             for attempt in $(seq 1 12); do
@@ -195,15 +209,29 @@ jobs:
               docker compose -f docker-compose.prod.yml logs --tail=200 nginx || true
             fi
 
+=======
+>>>>>>> main
             echo "Generating instrument cache"
-            docker compose -f docker-compose.prod.yml exec -T app sh -lc '
-              for attempt in 1 2 3 4 5 6; do
+            if ! docker compose -f docker-compose.prod.yml exec -T app sh -lc '
+              for attempt in 1 2 3 4 5 6 7 8 9 10; do
                 python /app/scripts/generate_instrument_cache.py && exit 0
                 echo "Cache generation attempt ${attempt} failed; retrying in 5s..."
                 sleep 5
               done
               exit 1
-            '
+            '; then
+              echo "Cache generation failed; recent app logs:"
+              docker compose -f docker-compose.prod.yml logs --tail=200 app
+              exit 1
+            fi
+
+            if ! docker compose -f docker-compose.prod.yml exec -T app sh -lc '
+              python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"
+            '; then
+              echo "Post-deploy health check failed"
+              docker compose -f docker-compose.prod.yml logs --tail=200 app
+              exit 1
+            fi
 
             echo "Pruning old images"
             docker image prune -f

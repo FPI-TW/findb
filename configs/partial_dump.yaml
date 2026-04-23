@@ -1,0 +1,74 @@
+version: "1"
+profile: prod_partial_1y_3inst_all_tables
+
+source:
+  database_url_env: FINDB_REMOTE_DATABASE_URL
+  require_ssl: true
+  statement_timeout_ms: 120000
+  application_name: findb-partial-dump
+  readonly_required: true
+
+target:
+  output_dir: seed/partial_dump
+  artifact_name: "{profile}_{utc_ts}"
+  format: csv
+  compress: zstd
+  include_schema_sql: true
+  include_load_sql: true
+  include_manifest: true
+
+snapshot:
+  enabled: true
+  isolation_level: repeatable_read
+  lock_timeout_ms: 5000
+  idle_in_transaction_timeout_ms: 60000
+
+defaults:
+  mode: where
+  where_sql: null
+  params: {}
+  order_by: null
+  limit: null
+  chunk_size: 50000
+
+selection:
+  window_days: 365
+  instrument_sample_size: 3
+  instrument_scope: by_market
+  non_instrument_table_strategy: time_window
+  time_columns_priority: [trade_date, obs_date, created_at, updated_at]
+  unresolved_table_policy: discuss
+
+table_discovery:
+  enabled: true
+  include_schemas: [public]
+  exclude_tables: []
+  require_pk_for_upsert: true
+
+tables: []
+
+anonymization_rules: {}
+
+load:
+  truncate_before_load: true
+  disable_triggers: true
+  verify_fk_after_load: true
+  on_conflict: upsert
+  parallel_jobs: 1
+
+validation:
+  row_count_tolerance_pct: 0.0
+  required_tables: []
+  table_checks: []
+
+runtime:
+  retries: 2
+  retry_backoff_ms: 1000
+  log_level: info
+  fail_fast: true
+
+metadata:
+  owner: data-platform
+  ticket: FINDB-PartialDump-Prod
+  tags: [prod, partial-dump, one-year, three-instruments]
+  notes: "Default profile for one-year partial dump with market-level instrument sampling"

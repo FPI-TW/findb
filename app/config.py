@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
+    FINDB_REMOTE_DATABASE_URL: str = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
 

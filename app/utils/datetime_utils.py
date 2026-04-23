@@ -3,7 +3,6 @@ Datetime utility functions.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
 
 
 def utc_now() -> datetime:

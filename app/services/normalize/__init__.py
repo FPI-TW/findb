@@ -1,35 +1,35 @@
 # Normalize services
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
-from app.services.normalize.crypto import CryptoNormalizer, CryptoBloombergNormalizer
+from app.services.normalize.corporate_actions import CorporateActionNormalizer
+from app.services.normalize.crypto import CryptoBloombergNormalizer, CryptoNormalizer
 from app.services.normalize.crypto_index import CryptoIndexNormalizer
 from app.services.normalize.equity import EquityNormalizer, IndexNormalizer
-from app.services.normalize.fx import FXNormalizer, FXBloombergNormalizer
-from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.services.normalize.futures import (
-    FuturesContractNormalizer,
     FuturesContinuousNormalizer,
+    FuturesContractNormalizer,
     WTXBloombergNormalizer,
 )
-from app.services.normalize.macro import MacroNormalizer, MacroBloombergNormalizer
-from app.services.normalize.usstock import (
-    USStockNormalizer,
-    USIndexNormalizer,
-    GlobalStockNormalizer,
-    TWEquityNormalizer,
-    HKEquityNormalizer,
-    CNEquityNormalizer,
-    TWIndexNormalizer,
-    HKIndexNormalizer,
-    CNIndexNormalizer,
-    HKChinaMixedNormalizer,
-    HKChinaIndexNormalizer,
-)
+from app.services.normalize.fx import FXBloombergNormalizer, FXNormalizer
+from app.services.normalize.macro import MacroBloombergNormalizer, MacroNormalizer
 from app.services.normalize.types import (
-    MappedRecord,
     CorporateActionRecord,
-    MacroObservationRecord,
-    FuturesContractRecord,
     FuturesContinuousRecord,
+    FuturesContractRecord,
+    MacroObservationRecord,
+    MappedRecord,
+)
+from app.services.normalize.usstock import (
+    CNEquityNormalizer,
+    CNIndexNormalizer,
+    GlobalStockNormalizer,
+    HKChinaIndexNormalizer,
+    HKChinaMixedNormalizer,
+    HKEquityNormalizer,
+    HKIndexNormalizer,
+    TWEquityNormalizer,
+    TWIndexNormalizer,
+    USIndexNormalizer,
+    USStockNormalizer,
 )
 
 __all__ = [

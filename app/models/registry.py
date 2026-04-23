@@ -3,11 +3,13 @@ System registry and tracking models.
 """
 
 from datetime import datetime
-from uuid import UUID
 from typing import Optional
-from sqlalchemy import String, Text, Boolean, Integer, ForeignKey, Index, DateTime
+from uuid import UUID
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 
 from app.models.base import Base
 from app.utils import utc_now, uuid7

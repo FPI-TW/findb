@@ -31,9 +31,7 @@ async def cleanup_expired_raw():
     async with async_session() as session:
         try:
             # Delete expired records
-            stmt = delete(RawMarketPayload).where(
-                RawMarketPayload.expire_at < utc_now()
-            )
+            stmt = delete(RawMarketPayload).where(RawMarketPayload.expire_at < utc_now())
             result = await session.execute(stmt)
             deleted_count = result.rowcount
 

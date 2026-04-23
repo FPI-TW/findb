@@ -20,7 +20,7 @@
 - equity 類型會逐筆查 corporate action continuity。
 - Serve API list endpoint 幾乎都是 `count(*) + offset/limit`。
 - raw payload 目前以整包 JSONB 落到 `raw.market_payload`。
-- schema lifecycle 仍包含 startup `create_all()`。
+- schema lifecycle 已改為 Alembic 版本化遷移與啟動版本檢查（不再 startup `create_all()`）。
 
 ---
 
@@ -113,7 +113,7 @@
 - [ ] `futures_continuous_eod` 依 `instrument_id + trade_date` 的查詢排序
 - [ ] 評估按 `trade_date` 做 partitioning 的必要性
 - [ ] 評估 raw schema 是否需要 retention job 與定期清理
-- [ ] 將 schema 變更正式遷移到 Alembic，而不是 runtime `create_all()`
+- [x] 將 schema 變更正式遷移到 Alembic，而不是 runtime `create_all()`
 
 建議優先修改位置：
 - `app/models/canonical.py`
