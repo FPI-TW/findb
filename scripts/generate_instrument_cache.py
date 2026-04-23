@@ -19,6 +19,7 @@ Crontab example:
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import sys
@@ -60,6 +61,8 @@ MACRO_SERIES_FIELDS = (
     "source_code",
     "source",
 )
+
+_LOCAL_TEST_CLIENT = None
 
 
 def normalize_instrument(payload: dict[str, Any]) -> dict[str, Any]:
@@ -160,7 +163,68 @@ def fetch_page(
         detail = exc.read().decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"API request failed with HTTP {exc.code}: {detail}") from exc
     except error.URLError as exc:
+        if _is_local_base_url(base_url):
+            try:
+                return _fetch_page_local_asgi(endpoint, page, page_size, api_key, params)
+            except Exception as fallback_exc:
+                raise RuntimeError(
+                    (
+                        f"Unable to reach FinDB API at {url}: {exc.reason}. "
+                        f"Local ASGI fallback also failed: {fallback_exc}"
+                    )
+                ) from fallback_exc
         raise RuntimeError(f"Unable to reach FinDB API at {url}: {exc.reason}") from exc
+
+
+def _is_local_base_url(base_url: str) -> bool:
+    parsed = parse.urlparse(base_url)
+    return parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def _fetch_page_local_asgi(
+    endpoint: str,
+    page: int,
+    page_size: int,
+    api_key: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    query_params: dict[str, Any] = {"page": page, "page_size": page_size}
+    if params:
+        query_params.update(params)
+
+    client = _get_local_test_client()
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers[API_KEY_HEADER] = api_key
+
+    response = client.get(
+        f"/api/v1/serve/{endpoint}",
+        params=query_params,
+        headers=headers,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"local ASGI request failed with HTTP {response.status_code}")
+    return response.json()
+
+
+def _get_local_test_client():
+    global _LOCAL_TEST_CLIENT
+    if _LOCAL_TEST_CLIENT is not None:
+        return _LOCAL_TEST_CLIENT
+
+    project_root = str(PROJECT_ROOT)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    client.__enter__()
+    atexit.register(client.__exit__, None, None, None)
+    _LOCAL_TEST_CLIENT = client
+    return _LOCAL_TEST_CLIENT
 
 
 def fetch_instruments_page(

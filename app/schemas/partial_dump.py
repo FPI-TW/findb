@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TableMode = Literal["full", "where", "latest_n_days", "sample"]
@@ -259,10 +259,26 @@ class PartialDumpConfig(BaseModel):
             )
 
     def ensure_source_env_present(self) -> None:
+        self.resolve_source_database_url()
+
+    def resolve_source_database_url(self) -> tuple[str, str]:
         env_name = self.source.database_url_env
-        env_value = os.getenv(env_name, "")
-        if not env_value.strip():
-            raise ValueError(f"environment variable '{env_name}' is required and cannot be empty")
+        env_value = os.getenv(env_name, "").strip()
+        if env_value:
+            return env_name, env_value
+
+        if env_name != "DATABASE_URL":
+            fallback_name = "DATABASE_URL"
+            fallback_value = os.getenv(fallback_name, "").strip()
+            if fallback_value:
+                return fallback_name, fallback_value
+
+        raise ValueError(
+            (
+                f"environment variable '{env_name}' is required and cannot be empty"
+                " (or set DATABASE_URL for local fallback)"
+            )
+        )
 
 
 def load_partial_dump_config(path: Path, require_env: bool = True) -> PartialDumpConfig:

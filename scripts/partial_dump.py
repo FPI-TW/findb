@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import csv
 import json
-import os
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass
@@ -469,7 +468,8 @@ def _sort_tables_by_fk(
 async def _run_dump(
     config: PartialDumpConfig, config_path: Path, output_dir: str | None, dry_run: bool
 ) -> int:
-    database_url = _normalize_database_url(os.environ[config.source.database_url_env])
+    _, source_database_url = config.resolve_source_database_url()
+    database_url = _normalize_database_url(source_database_url)
     engine = create_async_engine(database_url, echo=False)
 
     artifact_dir = _artifact_dir(config, output_dir)

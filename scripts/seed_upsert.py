@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from sqlalchemy.sql import sqltypes
 
 PROTECTED_TABLES = {"public.alembic_version"}
+GIT_LFS_POINTER_HEADER = "version https://git-lfs.github.com/spec/v1"
 
 
 @dataclass
@@ -146,7 +147,8 @@ def _artifact_has_exported_tables(artifact_dir: Path) -> bool:
         file_rel = item.get("file")
         if not file_rel:
             continue
-        if (artifact_dir / file_rel).exists():
+        file_path = artifact_dir / file_rel
+        if file_path.exists() and not _is_git_lfs_pointer(file_path):
             return True
     return False
 
@@ -170,6 +172,13 @@ def _load_artifact_tables(artifact_dir: Path, manifest: dict[str, Any]) -> list[
         file_path = artifact_dir / file_rel
         if not file_path.exists():
             raise FileNotFoundError(f"artifact file not found: {file_path}")
+        if _is_git_lfs_pointer(file_path):
+            raise ValueError(
+                (
+                    f"artifact file is a Git LFS pointer, not CSV data: {file_path}. "
+                    "Pull LFS files or regenerate artifact via partial-dump-run."
+                )
+            )
         tables.append(
             ArtifactTable(
                 schema=item["schema"],
@@ -184,6 +193,15 @@ def _load_artifact_tables(artifact_dir: Path, manifest: dict[str, Any]) -> list[
         )
 
     return tables
+
+
+def _is_git_lfs_pointer(file_path: Path) -> bool:
+    try:
+        with file_path.open("r", encoding="utf-8", newline="") as file:
+            first_line = file.readline().strip()
+            return first_line == GIT_LFS_POINTER_HEADER
+    except OSError:
+        return False
 
 
 async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
