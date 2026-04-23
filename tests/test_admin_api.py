@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from unittest.mock import patch
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -782,3 +783,33 @@ class TestListCorrections:
         assert len(items) == 2
         assert items[0]["correction_reason"] == "Second"
         assert items[1]["correction_reason"] == "First"
+
+
+# ── Refresh instrument cache Tests ────────────────────────────────────────────────────
+
+class TestRefreshInstrumentCache:
+    @pytest.mark.asyncio
+    async def test_refresh_instrument_cache_without_api_key_returns_401(self):
+        async with _admin_api_client() as client:
+            response = await client.post("/api/v1/admin/instrument-cache/refresh")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch("scripts.generate_instrument_cache.main")
+    async def test_refresh_instrument_cache_queues_task(
+        self,
+        mock_run_cache,
+        admin_headers
+    ):
+        mock_run_cache.return_value = 0
+
+        async with _admin_api_client() as client:
+            response = await client.post(
+                "/api/v1/admin/instrument-cache/refresh",
+                headers=admin_headers,
+            )
+
+        assert response.status_code == 202
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert "queued" in data["message"]
