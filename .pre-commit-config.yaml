@@ -1,0 +1,17 @@
+repos:
+  - repo: local
+    hooks:
+      - id: black-format
+        name: black format
+        entry: uv run black
+        language: system
+        types_or: [python]
+        stages: [pre-commit]
+
+      - id: pytest-pre-push
+        name: pytest pre-push
+        entry: uv run python scripts/dev.py test-db
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

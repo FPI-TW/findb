@@ -5,7 +5,7 @@ Data Quality validators.
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import select

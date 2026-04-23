@@ -187,7 +187,9 @@ def fetch_latest_eod(
 
     page_items = payload.get("data")
     if not isinstance(page_items, list):
-        raise RuntimeError(f"Unexpected EOD response format for {instrument_id}: missing data array")
+        raise RuntimeError(
+            f"Unexpected EOD response format for {instrument_id}: missing data array"
+        )
 
     return page_items[0] if page_items else None
 
@@ -208,11 +210,15 @@ def fetch_latest_futures_continuous(
         params={"market": market, "symbols": symbol},
     )
     if payload.get("success") is not True:
-        raise RuntimeError(f"Futures continuous API returned unsuccessful payload for {market} {symbol}")
+        raise RuntimeError(
+            f"Futures continuous API returned unsuccessful payload for {market} {symbol}"
+        )
 
     page_items = payload.get("data")
     if not isinstance(page_items, list):
-        raise RuntimeError(f"Unexpected futures response format for {market} {symbol}: missing data array")
+        raise RuntimeError(
+            f"Unexpected futures response format for {market} {symbol}: missing data array"
+        )
 
     return page_items[0] if page_items else None
 
@@ -319,10 +325,7 @@ def enrich_instruments_with_latest_prices(
             enriched["latest_price"] = latest_eod.get("close") if latest_eod else None
             enriched_by_id[instrument_id] = enriched
 
-    return [
-        enriched_by_id.get(str(item.get("instrument_id")), item)
-        for item in instruments
-    ]
+    return [enriched_by_id.get(str(item.get("instrument_id")), item) for item in instruments]
 
 
 def collect_macro_series(
@@ -348,7 +351,9 @@ def collect_macro_series(
         page_items = payload.get("data")
         pagination = payload.get("pagination") or {}
         if not isinstance(page_items, list):
-            raise RuntimeError(f"Unexpected macro response format on page {page}: missing data array")
+            raise RuntimeError(
+                f"Unexpected macro response format on page {page}: missing data array"
+            )
 
         total_pages = int(pagination.get("total_pages") or 0)
         if total_pages <= 0:

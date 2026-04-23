@@ -6,32 +6,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies
-poetry install
+uv sync
 
-# Local development (requires PostgreSQL running)
-docker-compose up -d db
-poetry run uvicorn app.main:app --reload
+# Local development (cross-platform dev script)
+make up-db                          # start PostgreSQL via Docker
+make up-server                      # start FastAPI dev server
+make up                             # both in one step
+# Or manually:
+docker compose up -d db
+uv run alembic upgrade head         # apply migrations
+uv run uvicorn app.main:app --reload
 
 # Docker full stack
-docker-compose up -d --build
-docker-compose exec app python /app/scripts/seed_data.py
-docker-compose down
+docker compose up -d --build
+docker compose exec app python /app/scripts/seed_data.py
+docker compose down
+
+# Seed local DB from partial dump
+make seed-upsert                    # upsert mode (safe)
+make seed-upsert-truncate           # truncate + reload
 
 # Code quality
-poetry run black app tests
-poetry run ruff check .
-poetry run mypy app
+uv run black app tests scripts
+uv run ruff check .
+uv run mypy app
 
 # Tests
-poetry run pytest                                                          # all tests
-poetry run pytest tests/test_source_api.py                                # single file
-poetry run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key  # single test
-poetry run pytest -k "crypto"                                              # by keyword
-poetry run pytest --cov=app                                                # with coverage
+uv run pytest                                                          # all tests
+uv run pytest tests/test_source_api.py                                # single file
+uv run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key  # single test
+uv run pytest -k "crypto"                                              # by keyword
+uv run pytest --cov=app                                                # with coverage
 
-# Docker container tests (uses findb_test DB)
-docker-compose exec app bash -c \
-  "TEST_DATABASE_URL=postgresql+asyncpg://findb:findb@db:5432/findb_test pytest"
+# Run tests via dev script (creates findb_test DB automatically)
+uv run python scripts/dev.py test-db
+
+# Alembic migrations
+uv run alembic current              # show current revision
+uv run alembic upgrade head         # apply all pending migrations
+uv run alembic revision --autogenerate -m "describe change"  # generate migration
+uv run alembic downgrade -1         # rollback one step
 ```
 
 ## Architecture
@@ -65,14 +79,21 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 | `app/main.py` | FastAPI app, lifespan DB init, router mounts, health endpoint |
 | `app/config.py` | All settings from env via `get_settings()` |
 | `app/api/deps.py` | Auth dependencies: `verify_source_api_key`, `verify_serve_api_key`, IP allowlist, rate limiting |
+| `app/models/base.py` | SQLAlchemy Base, engine, session factory, Alembic version check in `init_db()` |
 | `app/services/ingestion.py` | `NORMALIZER_MAP` routing, run lifecycle, rerun support |
 | `app/services/normalize/base.py` | `BaseNormalizer` — all normalizers subclass this |
 | `app/services/dq/validators.py` | DQ rules; `severity="error"` blocks writes, `"warning"` does not |
 | `app/models/canonical.py` | All canonical ORM models |
 | `app/models/registry.py` | `DatasetRegistry`, `IngestionRun`, `DQIssue` |
 | `app/models/raw.py` | `raw.market_payload` |
-| `frontend/app/` + `frontend/features/` | Primary frontend pages and feature work |
+| `alembic.ini` + `migrations/` | Alembic configuration and migration scripts |
+| `scripts/dev.py` | Cross-platform dev commands (up-db, up-server, test-db, seed-upsert) |
+| `scripts/seed_upsert.py` | Load partial dump data into local DB |
+| `scripts/partial_dump.py` | Export partial data from remote DB for local dev |
+| `scripts/generate_instrument_cache.py` | Generate static instrument/macro lookup cache |
+| `Makefile` | Shortcut targets wrapping `scripts/dev.py` |
 | `app/static/test_page.html` | Static `/test` API tester; only modify when explicitly requested |
+| `app/static/instrument-lookup.html` | Static `/instrument-lookup` page |
 | `tests/conftest.py` | Async fixtures, DB override via dependency injection |
 
 ## Conventions
@@ -84,6 +105,9 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 - **Router handlers**: keep thin — business logic belongs in services.
 - **Config/secrets**: always from `app.config.Settings` via env — never hardcode.
 - **Source provider names**: normalize to stable lowercase (e.g., `bloomberg`).
+- **Schema changes**: all DDL through Alembic migrations only — runtime `init_db()` validates Alembic state, never runs `create_all()`.
+- **Dependencies**: managed by `uv` (`pyproject.toml` + `uv.lock`). Python 3.13 required.
+- **Pre-commit hooks**: Black formatting on commit, pytest on push (`.pre-commit-config.yaml`).
 - **Frontend edits**: default to `frontend/` for UI/page changes; do not modify `app/static/test_page.html` unless explicitly requested.
 
 ## Adding a New Normalizer
@@ -97,6 +121,7 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 ## Security
 
 - **Source API**: requires `X-API-Key` header matching `SOURCE_API_KEYS` env var
+- **Admin API**: requires `X-API-Key` header matching `ADMIN_API_KEYS` env var
 - **IP allowlist**: `SOURCE_ALLOWLIST_CIDRS` (CIDR, comma-separated). Optional when `DEBUG=true`; **required when `DEBUG=false`** (app refuses to start without it)
 - **Serve API**: auth optional, controlled by `SERVE_REQUIRE_AUTH`; Serve layer must remain read-only
 - **Rate limiting**: in-process per (API key + client IP); resets on restart
@@ -105,17 +130,18 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 
 - Tests use `findb_test` DB (override via `TEST_DATABASE_URL`)
 - `SOURCE_API_KEYS` must be set for auth tests to pass
+- `ADMIN_API_KEYS` must be set for admin API tests to pass
 - Tables are auto-created and torn down per test session
 - Rate limit state resets between tests automatically
-- Current state: ~112 tests (~110 passed, 2 skipped)
+- Preferred test runner: `uv run python scripts/dev.py test-db` (auto-creates test DB)
 
 ## Infrastructure
 
 | Container | Description | Port |
 |-----------|-------------|------|
-| `findb-app` | FastAPI app | 8000 |
+| `findb-app` | FastAPI app | 8080 |
 | `findb-postgres` | PostgreSQL 16 | 5435 → 5432 |
-| `findb-raw-cleanup` | Daily raw TTL cleanup | — |
-| `findb-pgadmin` | pgAdmin UI | 5056 |
+| `findb-raw-cleanup` | Daily raw TTL cleanup (profile: tools) | — |
+| `findb-pgadmin` | pgAdmin UI (profile: tools) | 5056 |
 
-Host DB port is `5435`; app container connects to `db:5432`.
+Host DB port is `5435`; app container connects to `db:5432`. Default app port is `8080`.

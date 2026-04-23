@@ -6,14 +6,14 @@ import asyncio
 import logging
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.models.base import Base
-from app.models.registry import DatasetRegistry
 from app.models.canonical import Instrument, InstrumentIdentifier
-from app.utils import uuid7, utc_now
+from app.models.registry import DatasetRegistry
+from app.utils import utc_now, uuid7
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

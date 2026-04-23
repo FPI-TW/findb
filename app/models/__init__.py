@@ -1,20 +1,20 @@
 # Database models
 from app.models.base import Base
-from app.models.raw import RawMarketPayload
 from app.models.canonical import (
+    CorporateAction,
+    FuturesContinuousEOD,
+    FuturesContract,
     Instrument,
     InstrumentIdentifier,
-    TradingCalendar,
-    MarketDataEOD,
-    CorporateAction,
-    MacroSeries,
     MacroObservation,
-    FuturesContract,
-    FuturesContinuousEOD,
+    MacroSeries,
+    MarketDataEOD,
     RollRule,
+    TradingCalendar,
 )
-from app.models.registry import DatasetRegistry, IngestionRun, DQIssue
 from app.models.correction import CanonicalCorrection
+from app.models.raw import RawMarketPayload
+from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
 
 __all__ = [
     "Base",

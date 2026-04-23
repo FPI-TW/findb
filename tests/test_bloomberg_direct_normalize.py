@@ -4,12 +4,10 @@ Tests for Bloomberg direct format normalizers: FX, CRYPTO, WTX, MACRO.
 
 from decimal import Decimal
 
-import pytest
-
 from app.services.dq.validators import DQValidator
 from app.services.normalize.crypto import CryptoBloombergNormalizer
-from app.services.normalize.fx import FXBloombergNormalizer
 from app.services.normalize.futures import WTXBloombergNormalizer
+from app.services.normalize.fx import FXBloombergNormalizer
 from app.services.normalize.macro import MacroBloombergNormalizer
 
 
