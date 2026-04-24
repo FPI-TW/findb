@@ -15,6 +15,7 @@ Normalize + Serve 層後端服務，用於金融資料的標準化、儲存與�
 - [資料模型](#資料模型)
 - [開發指南](#開發指南)
 - [測試](#測試)
+- [Git LFS](#git-lfs)
 - [Git Hooks](#git-hookscommit--push-守門)
 - [Migration](#migration)
 - [部署](#部署)
@@ -355,6 +356,88 @@ uv run python scripts/dev.py seed-upsert --truncate
 - `seed-upsert` 預設會選 `seed/partial_dump/` 最新一包 seed 包（建議進版控），並依主鍵做 upsert 到 `DATABASE_URL`
 - `seed-upsert --artifact-dir ...` 可鎖定特定 seed 包版本（參數名沿用舊稱），避免「最新包」隨時間變動
 - `seed-upsert --truncate` 會先刪除與 seed 包同 schema 中「不在 seed 包內」的舊表（保留 `public.alembic_version`），再 `TRUNCATE ... RESTART IDENTITY CASCADE` 後匯入，適合本地大改版重建
+
+<a id="git-lfs"></a>
+
+### 4.1 Git LFS：seed CSV 管理
+
+本專案使用 Git LFS 管理 partial dump seed 包內的 CSV，避免大型資料檔直接進入 Git 物件庫。
+
+目前 `.gitattributes` 規則：
+
+```gitattributes
+seed/**/*.csv filter=lfs diff=lfs merge=lfs -text
+```
+
+也就是說，`seed/partial_dump/<seed_package_name>/tables/*.csv` 會由 Git LFS 追蹤；`manifest.json`、`schema.sql`、`load.sql` 仍是一般 Git 文字檔。
+
+#### 第一次使用或重新 clone
+
+```bash
+# 確認本機有 Git LFS
+git lfs version
+
+# 啟用目前使用者的 Git LFS hook/filter
+git lfs install
+
+# clone 後拉下 LFS 實體檔案
+git lfs pull
+```
+
+若 seed CSV 內容看起來像 `version https://git-lfs.github.com/spec/v1` 的 pointer，代表尚未拉下 LFS 物件，請執行：
+
+```bash
+git lfs pull
+```
+
+#### 確認目前 LFS 應用狀態
+
+```bash
+# 查看追蹤規則
+git lfs track
+
+# 查看目前被 LFS 管理的檔案
+git lfs ls-files
+
+# 確認指定 seed CSV 是否命中 LFS filter
+git check-attr filter diff merge text -- seed/partial_dump/<seed_package_name>/tables/public.market_data_eod.csv
+```
+
+正常情況下，`git check-attr` 會顯示 `filter: lfs`、`diff: lfs`、`merge: lfs`、`text: unset`。
+
+#### 新增或更新 seed 包
+
+```bash
+# 1) 產生 partial dump seed 包
+uv run python scripts/dev.py partial-dump-run
+
+# 2) 確認 CSV 會被 LFS 規則接住
+git lfs track
+git check-attr filter -- seed/partial_dump/<seed_package_name>/tables/public.market_data_eod.csv
+
+# 3) 檢查 LFS 追蹤清單
+git lfs ls-files
+
+# 4) staging：CSV 會以 LFS pointer 進 Git，實體內容由 LFS 管理
+git add .gitattributes seed/partial_dump/<seed_package_name>
+
+# 5) commit
+git commit -m "Add partial dump seed package"
+```
+
+如果未來需要把其他大型 seed 檔案類型納入 LFS，先更新追蹤規則，再加入檔案：
+
+```bash
+git lfs track "seed/**/*.parquet"
+git add .gitattributes seed/
+```
+
+#### 維護注意事項
+
+- 不要手動編輯 LFS pointer 檔；要修改資料內容時請修改原始 CSV，再重新 `git add`。
+- 新增 seed CSV 前先確認 `.gitattributes` 已包含對應規則，避免大型檔案直接進入一般 Git history。
+- 若切換分支後 seed CSV 遺失或仍是 pointer，執行 `git lfs pull`。
+- 發現 LFS 物件缺失或毀損時可先跑 `git lfs fsck` 檢查，再重新拉取。
 
 ### 5. 驗證服務
 
