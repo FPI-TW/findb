@@ -33,29 +33,30 @@ findb/
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-|------|----------|-------|
-| App startup/lifecycle | `app/main.py` | Registers routers, lifespan DB init, health endpoints |
-| Source ingest flow | `app/api/v1/source.py` | Auth, idempotency, ingestion route dispatch |
-| Serve query flow | `app/api/v1/serve.py` | Read-only query endpoints and filters |
-| Ingestion orchestration | `app/services/ingestion.py` | Dataset validation, run tracking, normalizer map |
-| Market normalization | `app/services/normalize/` | Per-market mapping, DQ checks, canonical writes |
-| DQ rules | `app/services/dq/validators.py` | Error blocks writes; warning does not |
-| ORM/data model | `app/models/` | Raw schema + canonical tables + run registry |
-| API schemas | `app/schemas/` | Request and response contracts |
-| Static lookup and cache flow | `app/static/instrument-lookup.html` + `scripts/generate_instrument_cache.py` | `/instrument-lookup` UI and generated `app/static/data/*.json` cache |
-| Test dashboard | `app/static/test_page.html` | Static `/test` API tester |
-| Tests and fixtures | `tests/` + `tests/conftest.py` | AsyncClient + ASGITransport + DB fixtures |
-| Alembic migrations | `alembic.ini` + `migrations/` | Schema-as-code via Alembic; `init_db()` validates revision at startup |
-| Dev workflow | `scripts/dev.py` + `Makefile` | Cross-platform local commands (up-db, up-server, test-db, seed-upsert) |
-| Partial dump tooling | `scripts/partial_dump.py` + `configs/partial_dump.yaml` | Export/import partial prod data for local dev |
-| Seed upsert | `scripts/seed_upsert.py` | Load partial dump CSVs into local DB (upsert or truncate mode) |
-| Deploy workflow | `.github/workflows/deploy.yml` | CI/CD via GitHub Actions to EC2 |
+| Task                         | Location                                                                     | Notes                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| App startup/lifecycle        | `app/main.py`                                                                | Registers routers, lifespan DB init, health endpoints                  |
+| Source ingest flow           | `app/api/v1/source.py`                                                       | Auth, idempotency, ingestion route dispatch                            |
+| Serve query flow             | `app/api/v1/serve.py`                                                        | Read-only query endpoints and filters                                  |
+| Ingestion orchestration      | `app/services/ingestion.py`                                                  | Dataset validation, run tracking, normalizer map                       |
+| Market normalization         | `app/services/normalize/`                                                    | Per-market mapping, DQ checks, canonical writes                        |
+| DQ rules                     | `app/services/dq/validators.py`                                              | Error blocks writes; warning does not                                  |
+| ORM/data model               | `app/models/`                                                                | Raw schema + canonical tables + run registry                           |
+| API schemas                  | `app/schemas/`                                                               | Request and response contracts                                         |
+| Static lookup and cache flow | `app/static/instrument-lookup.html` + `scripts/generate_instrument_cache.py` | `/instrument-lookup` UI and generated `app/static/data/*.json` cache   |
+| Test dashboard               | `app/static/test_page.html`                                                  | Static `/test` API tester                                              |
+| Tests and fixtures           | `tests/` + `tests/conftest.py`                                               | AsyncClient + ASGITransport + DB fixtures                              |
+| Alembic migrations           | `alembic.ini` + `migrations/`                                                | Schema-as-code via Alembic; `init_db()` validates revision at startup  |
+| Dev workflow                 | `scripts/dev.py` + `Makefile`                                                | Cross-platform local commands (up-db, up-server, test-db, seed-upsert) |
+| Partial dump tooling         | `scripts/partial_dump.py` + `configs/partial_dump.yaml`                      | Export/import partial prod data for local dev                          |
+| Seed upsert                  | `scripts/seed_upsert.py`                                                     | Load partial dump CSVs into local DB (upsert or truncate mode)         |
+| Deploy workflow              | `.github/workflows/deploy.yml`                                               | CI/CD via GitHub Actions to EC2                                        |
 
 ## CODE MAP
 
 LSP symbol map is unavailable in this environment (basedpyright not installed).
 Use directory-local AGENTS files for deep module guidance:
+
 - `app/services/normalize/AGENTS.md`
 - `app/api/v1/AGENTS.md`
 - `app/models/AGENTS.md`
@@ -118,3 +119,10 @@ uv run pytest
 - All schema changes must go through Alembic revisions (`uv run alembic revision --autogenerate`).
 - Pre-commit hooks: Black formatting on commit, pytest on push.
 - Keep this file high-level; put domain specifics in nearest subdirectory AGENTS.
+
+### Git 行為
+
+- merge時，使用--no-ff，永遠禁止 --no-verify。
+- 分支命名格式：`<type>/<scope>/<summary-kebab-case>`，例如：`feat/app/platform-command-split`、`fix/server/auth-refresh-bug`。
+- commit 訊息格式：`<type>(<scope>): <summary>`，例如：`feat(app): split package scripts by platform`、`fix(app): guard renderer process access`。
+- `type` 建議使用：`feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`build`、`ci`。

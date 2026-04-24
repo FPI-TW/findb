@@ -59,11 +59,11 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 
 ### Data Layers
 
-| Layer | Storage | Retention |
-|-------|---------|-----------|
-| Raw | `raw.market_payload` (jsonb) | 14 days |
+| Layer     | Storage                                                                                                             | Retention |
+| --------- | ------------------------------------------------------------------------------------------------------------------- | --------- |
+| Raw       | `raw.market_payload` (jsonb)                                                                                        | 14 days   |
 | Canonical | `instruments`, `market_data_eod`, `corporate_action`, `macro_series/observation`, `futures_contract/continuous_eod` | Long-term |
-| Registry | `dataset_registry`, `ingestion_run`, `dq_issue` | Long-term |
+| Registry  | `dataset_registry`, `ingestion_run`, `dq_issue`                                                                     | Long-term |
 
 ### Request Flow
 
@@ -74,27 +74,27 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 
 ### Key Files
 
-| File | Purpose |
-|------|---------|
-| `app/main.py` | FastAPI app, lifespan DB init, router mounts, health endpoint |
-| `app/config.py` | All settings from env via `get_settings()` |
-| `app/api/deps.py` | Auth dependencies: `verify_source_api_key`, `verify_serve_api_key`, IP allowlist, rate limiting |
-| `app/models/base.py` | SQLAlchemy Base, engine, session factory, Alembic version check in `init_db()` |
-| `app/services/ingestion.py` | `NORMALIZER_MAP` routing, run lifecycle, rerun support |
-| `app/services/normalize/base.py` | `BaseNormalizer` — all normalizers subclass this |
-| `app/services/dq/validators.py` | DQ rules; `severity="error"` blocks writes, `"warning"` does not |
-| `app/models/canonical.py` | All canonical ORM models |
-| `app/models/registry.py` | `DatasetRegistry`, `IngestionRun`, `DQIssue` |
-| `app/models/raw.py` | `raw.market_payload` |
-| `alembic.ini` + `migrations/` | Alembic configuration and migration scripts |
-| `scripts/dev.py` | Cross-platform dev commands (up-db, up-server, test-db, seed-upsert) |
-| `scripts/seed_upsert.py` | Load partial dump data into local DB |
-| `scripts/partial_dump.py` | Export partial data from remote DB for local dev |
-| `scripts/generate_instrument_cache.py` | Generate static instrument/macro lookup cache |
-| `Makefile` | Shortcut targets wrapping `scripts/dev.py` |
-| `app/static/test_page.html` | Static `/test` API tester; only modify when explicitly requested |
-| `app/static/instrument-lookup.html` | Static `/instrument-lookup` page |
-| `tests/conftest.py` | Async fixtures, DB override via dependency injection |
+| File                                   | Purpose                                                                                         |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `app/main.py`                          | FastAPI app, lifespan DB init, router mounts, health endpoint                                   |
+| `app/config.py`                        | All settings from env via `get_settings()`                                                      |
+| `app/api/deps.py`                      | Auth dependencies: `verify_source_api_key`, `verify_serve_api_key`, IP allowlist, rate limiting |
+| `app/models/base.py`                   | SQLAlchemy Base, engine, session factory, Alembic version check in `init_db()`                  |
+| `app/services/ingestion.py`            | `NORMALIZER_MAP` routing, run lifecycle, rerun support                                          |
+| `app/services/normalize/base.py`       | `BaseNormalizer` — all normalizers subclass this                                                |
+| `app/services/dq/validators.py`        | DQ rules; `severity="error"` blocks writes, `"warning"` does not                                |
+| `app/models/canonical.py`              | All canonical ORM models                                                                        |
+| `app/models/registry.py`               | `DatasetRegistry`, `IngestionRun`, `DQIssue`                                                    |
+| `app/models/raw.py`                    | `raw.market_payload`                                                                            |
+| `alembic.ini` + `migrations/`          | Alembic configuration and migration scripts                                                     |
+| `scripts/dev.py`                       | Cross-platform dev commands (up-db, up-server, test-db, seed-upsert)                            |
+| `scripts/seed_upsert.py`               | Load partial dump data into local DB                                                            |
+| `scripts/partial_dump.py`              | Export partial data from remote DB for local dev                                                |
+| `scripts/generate_instrument_cache.py` | Generate static instrument/macro lookup cache                                                   |
+| `Makefile`                             | Shortcut targets wrapping `scripts/dev.py`                                                      |
+| `app/static/test_page.html`            | Static `/test` API tester; only modify when explicitly requested                                |
+| `app/static/instrument-lookup.html`    | Static `/instrument-lookup` page                                                                |
+| `tests/conftest.py`                    | Async fixtures, DB override via dependency injection                                            |
 
 ## Conventions
 
@@ -137,11 +137,18 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 
 ## Infrastructure
 
-| Container | Description | Port |
-|-----------|-------------|------|
-| `findb-app` | FastAPI app | 8080 |
-| `findb-postgres` | PostgreSQL 16 | 5435 → 5432 |
-| `findb-raw-cleanup` | Daily raw TTL cleanup (profile: tools) | — |
-| `findb-pgadmin` | pgAdmin UI (profile: tools) | 5056 |
+| Container           | Description                            | Port        |
+| ------------------- | -------------------------------------- | ----------- |
+| `findb-app`         | FastAPI app                            | 8080        |
+| `findb-postgres`    | PostgreSQL 16                          | 5435 → 5432 |
+| `findb-raw-cleanup` | Daily raw TTL cleanup (profile: tools) | —           |
+| `findb-pgadmin`     | pgAdmin UI (profile: tools)            | 5056        |
 
 Host DB port is `5435`; app container connects to `db:5432`. Default app port is `8080`.
+
+### Git 行為
+
+- merge時，使用--no-ff，永遠禁止 --no-verify。
+- 分支命名格式：`<type>/<scope>/<summary-kebab-case>`，例如：`feat/app/platform-command-split`、`fix/server/auth-refresh-bug`。
+- commit 訊息格式：`<type>(<scope>): <summary>`，例如：`feat(app): split package scripts by platform`、`fix(app): guard renderer process access`。
+- `type` 建議使用：`feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`build`、`ci`。
