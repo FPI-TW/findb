@@ -2,6 +2,7 @@
 SQLAlchemy base configuration and database connection.
 """
 
+import logging
 from pathlib import Path
 
 from alembic.config import Config as AlembicConfig
@@ -15,6 +16,10 @@ from sqlalchemy.orm import DeclarativeBase
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+DB_INIT_COMMAND = "docker compose run --rm app uv run alembic upgrade head"
+ALEMBIC_UPGRADE_COMMAND = "uv run alembic upgrade head"
 
 # Naming convention for constraints
 convention = {
@@ -55,19 +60,27 @@ async def init_db():
     expected_heads = _expected_alembic_heads()
     async with engine.connect() as conn:
         current_heads = await conn.run_sync(_current_db_heads)
-        await _verify_required_objects(conn)
 
     if not current_heads:
-        raise RuntimeError(
-            "Database has no Alembic revision stamp. Run `uv run alembic upgrade head` (or stamp baseline first for existing schema)."
+        message = (
+            "Database is not initialized: no Alembic revision stamp was found. "
+            f"Run `{ALEMBIC_UPGRADE_COMMAND}` before starting the app. "
+            f"For local Docker, run `{DB_INIT_COMMAND}`."
         )
+        logger.warning(message)
+        raise RuntimeError(message)
+
+    async with engine.connect() as conn:
+        await _verify_required_objects(conn)
 
     if set(current_heads) != set(expected_heads):
-        raise RuntimeError(
+        message = (
             "Database schema version mismatch: "
             f"current={','.join(current_heads)} expected={','.join(expected_heads)}. "
-            "Run `uv run alembic upgrade head`."
+            f"Run `{ALEMBIC_UPGRADE_COMMAND}`."
         )
+        logger.warning(message)
+        raise RuntimeError(message)
 
 
 def _expected_alembic_heads() -> tuple[str, ...]:
@@ -93,10 +106,14 @@ async def _verify_required_objects(conn) -> None:
             text("SELECT to_regclass(:relation) IS NOT NULL"), {"relation": relation}
         )
         if not exists:
-            raise RuntimeError(
+            message = (
                 f"Missing required relation '{relation}'. "
-                "Ensure bootstrap migrations are applied with `uv run alembic upgrade head`."
+                "Database schema is incomplete. "
+                f"Ensure bootstrap migrations are applied with `{ALEMBIC_UPGRADE_COMMAND}`. "
+                f"For local Docker, run `{DB_INIT_COMMAND}`."
             )
+            logger.warning(message)
+            raise RuntimeError(message)
 
 
 async def get_session() -> AsyncSession:

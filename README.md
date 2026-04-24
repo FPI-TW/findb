@@ -225,7 +225,7 @@ findb/
 
 ### 前置需求
 
-- Python 3.13+
+- Python 3.13
 - Docker & Docker Compose
 - uv
 
@@ -248,6 +248,23 @@ SERVE_REQUIRE_AUTH=false
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
 > `.env.example` 已提供本機 `SOURCE_ALLOWLIST_CIDRS` 預設值（localhost + 私網段）；
 > 若改成自訂來源，請依實際來源 IP/CIDR 調整。
+
+### 1.1 初次使用或重建本機環境
+
+若是第一次使用本專案，或需要重建乾淨的本機 DB，請在複製並調整 `.env` 後執行：
+
+```bash
+docker compose down
+docker volume rm findb_postgres_data
+git lfs pull
+docker compose up -d db
+docker compose run --rm app uv run alembic upgrade head
+uv run python scripts/dev.py seed-upsert --truncate
+docker compose up -d app
+```
+
+> **注意**：`docker compose down -v` 會刪除本機 Docker volume，包含 PostgreSQL 既有資料。
+> `git lfs pull` 只會把 seed CSV 拉到本機工作目錄；真正匯入 DB 的步驟是 `seed-upsert --truncate`。
 
 ### 2. 開發命令（固定主命令）
 
