@@ -223,7 +223,10 @@ jobs:
               exit 1
             fi
 
-            echo "Checking nginx proxy health (warning only)"
+            echo "Restarting nginx proxy"
+            docker compose -f docker-compose.prod.yml restart nginx
+
+            echo "Checking nginx proxy health"
             proxy_ready=0
             for attempt in $(seq 1 12); do
               health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx 2>/dev/null || true)"
@@ -237,8 +240,9 @@ jobs:
             done
 
             if [ "$proxy_ready" -ne 1 ]; then
-              echo "::warning title=Nginx proxy check failed::Nginx did not report healthy in time. Check TLS cert mounts and upstream app routing."
-              docker compose -f docker-compose.prod.yml logs --tail=200 nginx || true
+              echo "::error title=Nginx proxy check failed::Nginx did not report healthy in time. Check TLS cert mounts and upstream app routing."
+              docker compose -f docker-compose.prod.yml logs --tail=200 nginx
+              exit 1
             fi
 
             echo "Generating instrument cache"
