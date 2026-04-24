@@ -160,6 +160,7 @@ class InstrumentCacheItem(BaseModel):
     asset_class: Optional[str] = None
     symbol: str = Field(..., min_length=1)
     name: Optional[str] = None
+    short_name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
     latest_trade_date: Optional[date] = None
@@ -189,6 +190,7 @@ class InstrumentCacheItemPatchRequest(BaseModel):
     asset_class: Optional[str] = None
     symbol: Optional[str] = Field(default=None, min_length=1)
     name: Optional[str] = None
+    short_name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
     latest_trade_date: Optional[date] = None
@@ -211,3 +213,11 @@ class InstrumentCacheItemUpdateResponse(BaseModel):
     success: bool = True
     message: str
     data: InstrumentCacheItem
+
+
+# ── refresh_instrument_cache ──────────────────────────────────────────────────────────
+
+
+class CacheTriggerResponse(BaseModel):
+    message: str
+    status: str

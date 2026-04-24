@@ -27,6 +27,7 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
                 "asset_class": "equity",
                 "symbol": "AAPL",
                 "name": "Apple",
+                "short_name": "APL",
                 "currency": "USD",
                 "status": "active",
                 "timezone": "America/New_York",
@@ -39,6 +40,7 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
                 "asset_class": "crypto",
                 "symbol": "BTC",
                 "name": "Bitcoin",
+                "short_name": "BTC",
                 "currency": "USD",
                 "status": "active",
                 "latest_trade_date": "2026-04-09",
@@ -58,6 +60,7 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
         "asset_class": "crypto",
         "symbol": "BTC",
         "name": "Bitcoin",
+        "short_name": "BTC",
         "currency": "USD",
         "status": "active",
         "latest_trade_date": "2026-04-09",
@@ -73,6 +76,7 @@ def test_build_macro_series_payload_sorts_and_extracts_metadata():
             {
                 "series_id": "2",
                 "name": "US CPI YoY",
+                "short_name": "UCY",
                 "unit": "percent",
                 "frequency": "monthly",
                 "market": "US",
@@ -83,6 +87,7 @@ def test_build_macro_series_payload_sorts_and_extracts_metadata():
             {
                 "series_id": "1",
                 "name": "Global Manufacturing PMI",
+                "short_name": "GMP",
                 "unit": "index",
                 "frequency": "monthly",
                 "market": "GLOBAL",
@@ -101,6 +106,7 @@ def test_build_macro_series_payload_sorts_and_extracts_metadata():
     assert payload["data"][0] == {
         "series_id": "1",
         "name": "Global Manufacturing PMI",
+        "short_name": "GMP",
         "unit": "index",
         "frequency": "monthly",
         "market": "GLOBAL",

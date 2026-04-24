@@ -18,6 +18,7 @@ from app.models.raw import RawMarketPayload
 from app.models.registry import IngestionRun
 from app.schemas.admin import (
     BulkRerunResponse,
+    CacheTriggerResponse,
     CorrectionListResponse,
     CorrectionResponse,
     DQIssueListResponse,
@@ -58,6 +59,7 @@ from app.services.instrument_cache import (
     replace_instrument_cache,
     update_instrument_cache_item,
 )
+from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
 
@@ -368,4 +370,33 @@ async def bulk_rerun_runs(
         errors=errors,
         new_run_ids=new_run_ids,
         error_details=error_details,
+    )
+
+
+@router.post(
+    "/instrument-cache/refresh",
+    response_model=CacheTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def refresh_instrument_cache(
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_admin_api_key),
+):
+    """
+    Manually refresh the static instrument cache (instruments.json).
+    This long-running task will be processed in the background.
+    """
+
+    def task_wrapper():
+        print("Starting background cache generation...")
+        exit_code = run_cache_generation()
+        if exit_code == 0:
+            print("Background cache generation completed successfully.")
+        else:
+            print("Background cache generation failed.")
+
+    background_tasks.add_task(task_wrapper)
+
+    return CacheTriggerResponse(
+        message="Cache generation task has been queued in the background.", status="accepted"
     )

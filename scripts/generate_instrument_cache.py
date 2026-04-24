@@ -46,6 +46,7 @@ INSTRUMENT_FIELDS = (
     "asset_class",
     "symbol",
     "name",
+    "short_name",
     "currency",
     "status",
     "latest_trade_date",
@@ -54,6 +55,7 @@ INSTRUMENT_FIELDS = (
 MACRO_SERIES_FIELDS = (
     "series_id",
     "name",
+    "short_name",
     "unit",
     "frequency",
     "market",
@@ -72,7 +74,8 @@ def sort_key(item: dict[str, Any]) -> tuple[str, str, str]:
     market = str(item.get("market") or "")
     symbol = str(item.get("symbol") or "")
     name = str(item.get("name") or "")
-    return (market.upper(), symbol.upper(), name.upper())
+    short_name = str(item.get("short_name") or "")
+    return (market.upper(), symbol.upper(), name.upper(), short_name.upper())
 
 
 def normalize_macro_series(payload: dict[str, Any]) -> dict[str, Any]:

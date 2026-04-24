@@ -19,6 +19,7 @@ INSTRUMENT_FIELDS = (
     "asset_class",
     "symbol",
     "name",
+    "short_name",
     "currency",
     "status",
     "latest_trade_date",
@@ -170,7 +171,7 @@ def _normalize_instrument_item(item: Any) -> dict[str, Any]:
         raise InstrumentCacheValidationError("Each instrument must include symbol")
 
     normalized = {field: item.get(field) for field in INSTRUMENT_FIELDS}
-    for field in ("market", "asset_class", "name", "currency", "status"):
+    for field in ("market", "asset_class", "name", "short_name", "currency", "status"):
         value = normalized[field]
         if value is not None and not isinstance(value, str):
             raise InstrumentCacheValidationError(f"Instrument field {field} must be a string")
@@ -187,11 +188,12 @@ def _normalize_instrument_item(item: Any) -> dict[str, Any]:
     return normalized
 
 
-def _sort_key(item: dict[str, Any]) -> tuple[str, str, str]:
+def _sort_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     market = str(item.get("market") or "")
     symbol = str(item.get("symbol") or "")
     name = str(item.get("name") or "")
-    return (market.upper(), symbol.upper(), name.upper())
+    short_name = str(item.get("short_name") or "")
+    return (market.upper(), symbol.upper(), name.upper(), short_name.upper())
 
 
 def _utc_now_iso() -> str:
