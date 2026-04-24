@@ -6,10 +6,10 @@ import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
-from unittest.mock import patch
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,6 +92,7 @@ def _sample_instrument_cache() -> dict:
                 "asset_class": "equity",
                 "symbol": "AAPL",
                 "name": None,
+                "short_name": "Apple",
                 "currency": "USD",
                 "status": "active",
             },
@@ -101,6 +102,7 @@ def _sample_instrument_cache() -> dict:
                 "asset_class": "equity",
                 "symbol": "0700",
                 "name": "Tencent",
+                "short_name": "Tencent",
                 "currency": "HKD",
                 "status": "active",
             },
@@ -210,6 +212,7 @@ class TestInstrumentCacheAdmin:
         data = response.json()
         assert data["total"] == 2
         assert data["data"][0]["instrument_id"] == "instrument-us-aapl"
+        assert data["data"][0]["short_name"] == "Apple"
 
     @pytest.mark.asyncio
     async def test_get_instrument_cache_missing_file_returns_404(
@@ -252,6 +255,7 @@ class TestInstrumentCacheAdmin:
         assert stored["total"] == 2
         assert stored["markets"] == ["HK", "US"]
         assert stored["data"][0]["instrument_id"] == "instrument-hk-0700"
+        assert stored["data"][0]["short_name"] == "Tencent"
 
     @pytest.mark.asyncio
     async def test_patch_instrument_cache_item_updates_json(
@@ -279,6 +283,7 @@ class TestInstrumentCacheAdmin:
         )
         assert stored_item["name"] == "Apple Inc."
         assert stored_item["status"] == "inactive"
+        assert stored_item["short_name"] == "Apple"
 
     @pytest.mark.asyncio
     async def test_patch_instrument_cache_item_not_found_returns_404(
@@ -787,6 +792,7 @@ class TestListCorrections:
 
 # ── Refresh instrument cache Tests ────────────────────────────────────────────────────
 
+
 class TestRefreshInstrumentCache:
     @pytest.mark.asyncio
     async def test_refresh_instrument_cache_without_api_key_returns_401(self):
@@ -795,12 +801,8 @@ class TestRefreshInstrumentCache:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    @patch("scripts.generate_instrument_cache.main")
-    async def test_refresh_instrument_cache_queues_task(
-        self,
-        mock_run_cache,
-        admin_headers
-    ):
+    @patch("app.api.v1.admin.run_cache_generation")
+    async def test_refresh_instrument_cache_queues_task(self, mock_run_cache, admin_headers):
         mock_run_cache.return_value = 0
 
         async with _admin_api_client() as client:
@@ -813,3 +815,4 @@ class TestRefreshInstrumentCache:
         data = response.json()
         assert data["status"] == "accepted"
         assert "queued" in data["message"]
+        mock_run_cache.assert_called_once()
