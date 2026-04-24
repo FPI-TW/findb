@@ -27,6 +27,7 @@ services:
       DEBUG: ${DEBUG:-true}
       PORT: ${PORT:-8080}
       SOURCE_API_KEYS: ${SOURCE_API_KEYS:-dev-source-key}
+      SOURCE_ALLOWLIST_CIDRS: ${SOURCE_ALLOWLIST_CIDRS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     depends_on:
@@ -35,6 +36,7 @@ services:
     volumes:
       - ./app:/app/app:ro
       - ./app/static:/app/app/static
+      - ./migrations:/app/migrations:ro
       - ./scripts:/app/scripts:ro
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --reload"
 
