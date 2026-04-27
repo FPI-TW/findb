@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.models.canonical import CorporateAction
 from app.services.dq.validators import DQIssueRecord
@@ -191,27 +191,11 @@ class CorporateActionNormalizer(BaseNormalizer):
 
         return records
 
-    async def check_duplicate_in_db(
-        self,
-        instrument_id: UUID,
-        record: CorporateActionRecord,
-    ) -> bool:
-        """Check if corporate action already exists in the database."""
-        stmt = (
-            select(CorporateAction.action_id)
-            .where(CorporateAction.instrument_id == instrument_id)
-            .where(CorporateAction.action_type == record.action_type)
-            .where(CorporateAction.ex_date == record.ex_date)
-            .where(CorporateAction.record_date == record.record_date)
-            .where(CorporateAction.pay_date == record.pay_date)
-            .where(CorporateAction.ratio == record.ratio)
-            .where(CorporateAction.cash_amount == record.cash_amount)
-        )
-        result = await self.db.execute(stmt)
-        return result.scalar_one_or_none() is not None
-
     async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
-        """Process corporate action payload and upsert into canonical storage."""
+        """
+        Process corporate action payload and upsert into canonical storage.
+        Optimized with PostgreSQL ON CONFLICT to prevent race conditions.
+        """
         result = NormalizeResult(run_id=run_id)
 
         try:
@@ -220,17 +204,7 @@ class CorporateActionNormalizer(BaseNormalizer):
             mapped_records = self.map_fields(raw_payload)
             result.total_records = len(mapped_records)
 
-            seen_keys: set[
-                tuple[
-                    UUID | None,
-                    Optional[str],
-                    Optional[date],
-                    Optional[date],
-                    Optional[date],
-                    Any,
-                    Any,
-                ]
-            ] = set()
+            seen_keys: set[tuple] = set()
             processed_records = 0
 
             for record in mapped_records:
@@ -238,15 +212,23 @@ class CorporateActionNormalizer(BaseNormalizer):
                     issues: list[DQIssueRecord] = []
 
                     if not record.action_type:
+                        trade_date_val = None
+                        if record.ex_date:
+                            try:
+                                trade_date_val = self._to_datetime(record.ex_date)
+                            except Exception:
+                                trade_date_val = None
+
                         issues.append(
                             DQIssueRecord(
                                 issue_type="MISSING_ACTION_TYPE",
                                 severity="error",
                                 description="Missing action_type",
-                                trade_date=self._to_datetime(record.ex_date),
+                                trade_date=trade_date_val,
                                 raw_data=record.raw_data,
                             )
                         )
+
                     if not record.ex_date:
                         issues.append(
                             DQIssueRecord(
@@ -256,6 +238,7 @@ class CorporateActionNormalizer(BaseNormalizer):
                                 raw_data=record.raw_data,
                             )
                         )
+
                     if not record.symbol and not record.identifier_value:
                         issues.append(
                             DQIssueRecord(
@@ -275,20 +258,12 @@ class CorporateActionNormalizer(BaseNormalizer):
 
                     instrument = await self.resolve_instrument(record)
 
-                    key = (
-                        instrument.instrument_id,
-                        record.action_type,
-                        record.ex_date,
-                        record.record_date,
-                        record.pay_date,
-                        record.ratio,
-                        record.cash_amount,
-                    )
+                    key = (instrument.instrument_id, record.action_type, record.ex_date)
                     if key in seen_keys:
                         issue = DQIssueRecord(
                             issue_type="DUPLICATE_KEY",
-                            severity="error",
-                            description="Duplicate corporate action in batch",
+                            severity="warning",
+                            description="Duplicate corporate action in same batch",
                             trade_date=self._to_datetime(record.ex_date),
                             raw_data=record.raw_data,
                         )
@@ -298,20 +273,8 @@ class CorporateActionNormalizer(BaseNormalizer):
                         continue
                     seen_keys.add(key)
 
-                    if await self.check_duplicate_in_db(instrument.instrument_id, record):
-                        issue = DQIssueRecord(
-                            issue_type="DUPLICATE_KEY",
-                            severity="error",
-                            description="Duplicate corporate action already exists",
-                            trade_date=self._to_datetime(record.ex_date),
-                            raw_data=record.raw_data,
-                        )
-                        await self.record_dq_issue(issue, run_id, instrument.instrument_id)
-                        result.dq_issues.append(issue)
-                        result.failed_records += 1
-                        continue
-
-                    action = CorporateAction(
+                    now = utc_now()
+                    insert_stmt = insert(CorporateAction).values(
                         action_id=uuid7(),
                         instrument_id=instrument.instrument_id,
                         action_type=record.action_type or "",
@@ -323,28 +286,54 @@ class CorporateActionNormalizer(BaseNormalizer):
                         currency=record.currency,
                         extra=record.extra,
                         source=record.source,
-                        asof_ts=utc_now(),
+                        asof_ts=now,
                         run_id=run_id,
-                        created_at=utc_now(),
-                        updated_at=utc_now(),
+                        created_at=now,
+                        updated_at=now,
                     )
-                    self.db.add(action)
+
+                    upsert_stmt = insert_stmt.on_conflict_do_update(
+                        constraint="uq_ca_instrument_action_date",
+                        set_={
+                            "record_date": insert_stmt.excluded.record_date,
+                            "pay_date": insert_stmt.excluded.pay_date,
+                            "ratio": insert_stmt.excluded.ratio,
+                            "cash_amount": insert_stmt.excluded.cash_amount,
+                            "currency": insert_stmt.excluded.currency,
+                            "extra": insert_stmt.excluded.extra,
+                            "source": insert_stmt.excluded.source,
+                            "asof_ts": insert_stmt.excluded.asof_ts,
+                            "run_id": insert_stmt.excluded.run_id,
+                            "updated_at": now,
+                        },
+                    )
+
+                    await self.db.execute(upsert_stmt)
                     result.success_records += 1
+
+                except Exception as e:
+                    result.failed_records += 1
+                    await self.record_dq_issue(
+                        DQIssueRecord(
+                            issue_type="PROCESSING_ERROR",
+                            severity="error",
+                            description=str(e),
+                            raw_data=record.raw_data,
+                        ),
+                        run_id,
+                    )
                 finally:
                     processed_records += 1
                     await self._maybe_flush(processed_records)
 
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
-                run_id,
-                status,
-                result.total_records,
-                result.success_records,
-                result.failed_records,
+                run_id, status, result.total_records, result.success_records, result.failed_records
             )
             await self.db.commit()
 
         except Exception as e:
+            await self.db.rollback()
             result.error_message = str(e)
             await self.update_run_status(run_id, "failed", 0, 0, 0, str(e))
             await self.db.commit()
