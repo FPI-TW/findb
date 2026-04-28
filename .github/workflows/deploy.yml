@@ -137,6 +137,13 @@ jobs:
           fi
           exit "$missing"
 
+      - name: Render nginx Source API allowlist
+        run: |
+          set -euo pipefail
+          python scripts/render_nginx_source_allowlist.py \
+            --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
+            --output infra/nginx/source-allowlist.conf
+
       - name: Prepare deploy directories on EC2
         uses: appleboy/ssh-action@v1
         with:
@@ -163,7 +170,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "infra/nginx/nginx.conf"
+          source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf"
           target: /home/ubuntu/etc/nginx
           strip_components: 2
           overwrite: true
@@ -175,7 +182,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEYS,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEYS,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_BASE_URL,FINDB_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEYS,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEYS,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_BASE_URL,FINDB_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
           script: |
             set -euo pipefail
             echo "Logging in to GHCR"
@@ -185,6 +192,10 @@ jobs:
             cd /opt/findb
             if [ ! -f /home/ubuntu/etc/nginx/nginx.conf ]; then
               echo "::error title=Missing nginx config::/home/ubuntu/etc/nginx/nginx.conf not found on target host"
+              exit 1
+            fi
+            if [ ! -f /home/ubuntu/etc/nginx/source-allowlist.conf ]; then
+              echo "::error title=Missing nginx allowlist::/home/ubuntu/etc/nginx/source-allowlist.conf not found on target host"
               exit 1
             fi
             if [ ! -f /home/ubuntu/etc/nginx/ssl/server.crt ]; then

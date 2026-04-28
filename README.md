@@ -246,8 +246,8 @@ SERVE_REQUIRE_AUTH=false
 
 > **注意**：`docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法，
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
-> `.env.example` 已提供本機 `SOURCE_ALLOWLIST_CIDRS` 預設值（localhost + 私網段）；
-> 若改成自訂來源，請依實際來源 IP/CIDR 調整。
+> `SOURCE_ALLOWLIST_CIDRS` 由生產環境 nginx 用於限制 `/api/v1/source/*`；
+> 本機直接跑 app 時不會由 FastAPI 執行 IP 允許名單。
 
 ### 1.1 初次使用或重建本機環境
 
@@ -659,10 +659,10 @@ Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEYS` 中配置的值。
 
 ### IP 允許名單
 
-Source API 支援 CIDR 格式的 IP 允許名單，透過 `SOURCE_ALLOWLIST_CIDRS` 設定。
+Source API 的 IP 允許名單在生產環境由 nginx 執行，透過 `SOURCE_ALLOWLIST_CIDRS` 產生 `/api/v1/source/*` 專用的 nginx `allow` / `deny` 規則。FastAPI 層仍負責 API Key、rate limit 與 ingest 邏輯。
 
-- **開發環境**（`DEBUG=true`）：允許名單為選填，未設定時允許所有 IP
-- **生產環境**（`DEBUG=false`）：允許名單為**必填**，未設定將無法啟動
+- **生產環境**：`SOURCE_ALLOWLIST_CIDRS` 為**必填**，部署流程會渲染 `source-allowlist.conf`
+- **本機直接跑 app**：不執行 nginx IP 允許名單；需要驗證阻擋行為時，請透過 nginx 或部署環境測試
 
 ```env
 # 允許單一 IP
@@ -677,6 +677,8 @@ SOURCE_ALLOWLIST_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 ```env
 SOURCE_TRUST_PROXY_HEADERS=true
 ```
+
+nginx 會覆寫 `X-Real-IP` 與 `X-Forwarded-For` 為實際來源 IP；Source API 的進站阻擋在請求到達 FastAPI 前完成。
 
 ### 限流
 
@@ -901,7 +903,7 @@ git push origin main
 | `DATABASE_MAX_OVERFLOW`      | `10`                                                                         |
 | `API_V1_PREFIX`              | `/api/v1`                                                                    |
 | `API_KEY_HEADER`             | `X-API-Key`                                                                  |
-| `SOURCE_ALLOWLIST_CIDRS`     | 生產允許名單，例如 `10.0.0.0/8,203.0.113.50/32`                              |
+| `SOURCE_ALLOWLIST_CIDRS`     | nginx Source API 允許名單，例如 `10.0.0.0/8,203.0.113.50/32`                 |
 | `SOURCE_TRUST_PROXY_HEADERS` | 是否信任反向代理 header，例如 `false`                                        |
 | `SERVE_REQUIRE_AUTH`         | Serve API 是否需要認證，例如 `false`                                         |
 | `RATE_LIMIT_REQUESTS`        | `100`                                                                        |
@@ -930,11 +932,11 @@ git push origin main
 | 變數                         | 說明                             | 預設值                                                         |
 | ---------------------------- | -------------------------------- | -------------------------------------------------------------- |
 | `DATABASE_URL`               | PostgreSQL 連線字串              | `postgresql+asyncpg://findb:findb@localhost:5435/findb`        |
-| `DEBUG`                      | 除錯模式（跳過允許名單強制檢查） | `false`                                                        |
+| `DEBUG`                      | 除錯模式                         | `false`                                                        |
 | `SOURCE_API_KEYS`            | Source API 金鑰（逗號分隔）      | `docker compose` 開發環境預設 `dev-source-key`                 |
 | `ADMIN_API_KEYS`             | Admin API 金鑰（逗號分隔）       | （空）                                                         |
-| `SOURCE_ALLOWLIST_CIDRS`     | IP 允許名單（CIDR，逗號分隔）    | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
-| `SOURCE_TRUST_PROXY_HEADERS` | 是否信任 X-Forwarded-For         | `false`                                                        |
+| `SOURCE_ALLOWLIST_CIDRS`     | nginx `/api/v1/source/*` IP 允許名單（CIDR，逗號分隔） | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
+| `SOURCE_TRUST_PROXY_HEADERS` | 是否信任 X-Forwarded-For（rate limit client IP 用） | `false`                                                        |
 | `SERVE_API_KEYS`             | Serve API 金鑰（逗號分隔）       | （空）                                                         |
 | `SERVE_REQUIRE_AUTH`         | Serve API 是否需要認證           | `false`                                                        |
 | `RATE_LIMIT_REQUESTS`        | 限流上限（每 window 內的請求數） | `100`                                                          |
@@ -947,7 +949,7 @@ git push origin main
 
 ### 生產環境注意事項
 
-1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`（`DEBUG=false` 時為必要）
+1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist
 2. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
 3. **建議**設定 CORS `allow_origins` 為特定網域（目前預設 `*`）
 4. **建議**使用反向代理（如 nginx）處理 HTTPS

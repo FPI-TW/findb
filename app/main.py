@@ -21,8 +21,6 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
-    if not settings.DEBUG and not settings.SOURCE_ALLOWLIST_CIDRS.strip():
-        raise RuntimeError("SOURCE_ALLOWLIST_CIDRS is required when DEBUG is false")
     await init_db()
     yield
     # Shutdown
@@ -77,7 +75,6 @@ async def health_check():
     return {
         "status": "healthy",
         "version": settings.APP_VERSION,
-        "source_allowlist_configured": bool(settings.SOURCE_ALLOWLIST_CIDRS.strip()),
     }
 
 

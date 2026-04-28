@@ -1,8 +1,5 @@
-"""
-API dependencies including authentication.
-"""
+"""API dependencies including authentication."""
 
-import ipaddress
 from threading import Lock
 from time import time
 
@@ -40,26 +37,6 @@ def get_admin_api_keys() -> list[str]:
     return [key.strip() for key in settings.ADMIN_API_KEYS.split(",") if key.strip()]
 
 
-def get_source_allowlist_networks() -> list[ipaddress._BaseNetwork]:
-    if not settings.SOURCE_ALLOWLIST_CIDRS:
-        return []
-
-    networks: list[ipaddress._BaseNetwork] = []
-    for raw_value in settings.SOURCE_ALLOWLIST_CIDRS.split(","):
-        value = raw_value.strip()
-        if not value:
-            continue
-        try:
-            network = ipaddress.ip_network(value, strict=False)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Invalid SOURCE_ALLOWLIST_CIDRS entry: {value}",
-            ) from exc
-        networks.append(network)
-    return networks
-
-
 def _extract_client_ip(request: Request) -> str | None:
     if settings.SOURCE_TRUST_PROXY_HEADERS:
         forwarded_for = request.headers.get("x-forwarded-for")
@@ -73,37 +50,13 @@ def _extract_client_ip(request: Request) -> str | None:
     return None
 
 
-def _enforce_source_allowlist(request: Request) -> str:
+def _get_source_client_ip(request: Request) -> str:
     client_ip = _extract_client_ip(request)
     if not client_ip:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Client IP unavailable",
         )
-
-    networks = get_source_allowlist_networks()
-    if not networks:
-        if not settings.DEBUG:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="SOURCE_ALLOWLIST_CIDRS must be configured when DEBUG is false",
-            )
-        return client_ip
-
-    try:
-        parsed_ip = ipaddress.ip_address(client_ip)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid client IP address",
-        ) from exc
-
-    if not any(parsed_ip in network for network in networks):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Client IP not allowlisted",
-        )
-
     return client_ip
 
 
@@ -158,7 +111,7 @@ async def verify_source_api_key(
             detail="Invalid API key",
         )
 
-    client_ip = _enforce_source_allowlist(request)
+    client_ip = _get_source_client_ip(request)
     _enforce_source_rate_limit(api_key, client_ip)
 
     return api_key

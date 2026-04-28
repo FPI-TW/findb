@@ -53,33 +53,6 @@ class TestSourceAPI:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_ingest_rejects_non_allowlisted_client(
-        self,
-        client: AsyncClient,
-        source_headers: dict,
-    ):
-        original_allowlist = settings.SOURCE_ALLOWLIST_CIDRS
-        settings.SOURCE_ALLOWLIST_CIDRS = "10.0.0.0/8"
-
-        try:
-            response = await client.post(
-                "/api/v1/source/ingest/crypto",
-                headers=source_headers,
-                json={
-                    "dataset_key": "unknown_dataset",
-                    "source": "bloomberg",
-                    "request_key": "allowlist_block",
-                    "idempotency_key": "allowlist_block",
-                    "payload": {"data": []},
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            assert response.status_code == 403
-            assert "allowlisted" in response.json()["detail"].lower()
-        finally:
-            settings.SOURCE_ALLOWLIST_CIDRS = original_allowlist
-
-    @pytest.mark.asyncio
     async def test_ingest_rate_limit_returns_429(
         self,
         client: AsyncClient,
@@ -87,10 +60,8 @@ class TestSourceAPI:
     ):
         original_limit = settings.RATE_LIMIT_REQUESTS
         original_window = settings.RATE_LIMIT_WINDOW
-        original_allowlist = settings.SOURCE_ALLOWLIST_CIDRS
         settings.RATE_LIMIT_REQUESTS = 1
         settings.RATE_LIMIT_WINDOW = 60
-        settings.SOURCE_ALLOWLIST_CIDRS = ""
 
         body = {
             "dataset_key": "unknown_dataset",
@@ -119,37 +90,6 @@ class TestSourceAPI:
         finally:
             settings.RATE_LIMIT_REQUESTS = original_limit
             settings.RATE_LIMIT_WINDOW = original_window
-            settings.SOURCE_ALLOWLIST_CIDRS = original_allowlist
-
-    @pytest.mark.asyncio
-    async def test_ingest_requires_allowlist_in_production(
-        self,
-        client: AsyncClient,
-        source_headers: dict,
-    ):
-        original_debug = settings.DEBUG
-        original_allowlist = settings.SOURCE_ALLOWLIST_CIDRS
-        settings.DEBUG = False
-        settings.SOURCE_ALLOWLIST_CIDRS = ""
-
-        try:
-            response = await client.post(
-                "/api/v1/source/ingest/crypto",
-                headers=source_headers,
-                json={
-                    "dataset_key": "unknown_dataset",
-                    "source": "bloomberg",
-                    "request_key": "prod_allowlist_required",
-                    "idempotency_key": "prod_allowlist_required",
-                    "payload": {"data": []},
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            assert response.status_code == 500
-            assert "source_allowlist_cidrs" in response.json()["detail"].lower()
-        finally:
-            settings.DEBUG = original_debug
-            settings.SOURCE_ALLOWLIST_CIDRS = original_allowlist
 
     @pytest.mark.asyncio
     async def test_ingest_unknown_dataset_returns_400(
@@ -986,7 +926,7 @@ class TestSourceAPI:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert "source_allowlist_configured" in data
+        assert "source_allowlist_configured" not in data
 
     @pytest.mark.asyncio
     async def test_root_endpoint(self, client: AsyncClient):

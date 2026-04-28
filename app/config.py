@@ -28,7 +28,6 @@ class Settings(BaseSettings):
 
     # Source API Keys (comma-separated)
     SOURCE_API_KEYS: str = ""
-    SOURCE_ALLOWLIST_CIDRS: str = ""
     SOURCE_TRUST_PROXY_HEADERS: bool = False
 
     # Serve API Keys (comma-separated, optional)
@@ -46,7 +45,7 @@ class Settings(BaseSettings):
     RAW_RETENTION_ENABLED: bool = False
     RAW_RETENTION_DAYS: int = 14
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 @lru_cache()
