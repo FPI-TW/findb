@@ -1068,19 +1068,19 @@ class TestCorporateActionNormalizer:
     @pytest.mark.parametrize(
         "payload_data, expected_issue_type, expected_trade_date",
         [
-            # 1. 缺 action_type，但有有效日期 -> 應該要能解析出 trade_date
+            # 1. Missing action_type, but the ex_date is valid -> should parse trade_date
             (
                 {"ticker": "AAPL US Equity", "action": {"ex_date": "2024-05-20"}},
                 "MISSING_ACTION_TYPE",
                 datetime(2024, 5, 20, tzinfo=timezone.utc),
             ),
-            # 2. 缺 action_type，且日期格式錯誤 -> trade_date 應為 None，且程式不能崩潰
+            # 2. Missing action_type and wrong format -> trade_date should be None and doesn't break the progress
             (
                 {"ticker": "AAPL US Equity", "action": {"ex_date": "invalid-date"}},
                 "MISSING_ACTION_TYPE",
                 None,
             ),
-            # 3. 缺 ex_date -> 預期 issue 為 MISSING_EX_DATE
+            # 3. Missing ex_date -> expecting issue MISSING_EX_DATE
             ({"ticker": "AAPL US Equity", "action": {"type": "dividend"}}, "MISSING_EX_DATE", None),
         ],
     )
@@ -1092,7 +1092,7 @@ class TestCorporateActionNormalizer:
         Test that missing action_type safely attempts to capture trade_date
         without crashing on invalid formats.
         """
-        # Arrange
+
         await self.setup_test_data(test_session)
         run_id = uuid7()
         test_session.add(
@@ -1103,10 +1103,8 @@ class TestCorporateActionNormalizer:
         bad_payload = {"data": [payload_data]}
         normalizer = CorporateActionNormalizer(test_session)
 
-        # Act
         result = await normalizer.process(bad_payload, run_id)
 
-        # Assert
         assert result.failed_records == 1
 
         dq_stmt = select(DQIssue).where(
@@ -1115,7 +1113,6 @@ class TestCorporateActionNormalizer:
         issue = (await test_session.execute(dq_stmt)).scalars().first()
 
         assert issue is not None
-        # 驗證 trade_date 是否符合預期（解析成功或安全回退為 None）
         assert issue.trade_date == expected_trade_date
 
     @pytest.mark.asyncio
@@ -1128,11 +1125,11 @@ class TestCorporateActionNormalizer:
         )
         await test_session.commit()
 
-        # 構造一個會觸發 missing action_type 且有日期的資料
+        # Build a missing action_type with valid ex_date data
         payload = {"data": [{"ticker": "AAPL", "action": {"ex_date": "2024-05-20"}}]}
         normalizer = CorporateActionNormalizer(test_session)
 
-        # 重點：Mock _to_datetime 讓它拋出異常
+        # Mock _to_datetime to throw exception
         with patch.object(
             CorporateActionNormalizer, "_to_datetime", side_effect=ValueError("Test Exception")
         ):
