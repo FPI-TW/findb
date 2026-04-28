@@ -123,7 +123,7 @@ uv run pytest
 ### Git 行為
 
 - merge時，使用--no-ff，永遠禁止 --no-verify。
-- 分支命名格式：`<type>/<scope>/<summary-kebab-case>`，例如：`feat/app/platform-command-split`、`fix/server/auth-refresh-bug`。
-- commit 訊息格式：`<type>(<scope>): <summary>`，例如：`feat(app): split package scripts by platform`、`fix(app): guard renderer process access`。
+- 分支命名格式：`<type>/<summary-kebab-case>`，例如：`feat/platform-command-split`、`fix/auth-refresh-bug`。
+- commit 訊息格式：`<type>: <summary>`，例如：`feat: split package scripts by platform`、`fix: guard renderer process access`。
 - 發 PR 時，PR 標題、描述、變更摘要與測試說明使用繁體中文。
 - `type` 建議使用：`feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`build`、`ci`。
