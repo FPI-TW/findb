@@ -34,7 +34,7 @@ cp .env.example .env
 > `docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法。
 > 若 `.env` 未設定 `SOURCE_API_KEYS`，預設使用 `dev-source-key`。
 > `RAW_RETENTION_ENABLED` 預設為 `false`，raw payload 目前不會因保留期限自動被刪除。
-> 本機測試建議設定 `DEBUG=true`（或自行設定 `SOURCE_ALLOWLIST_CIDRS`）。
+> `SOURCE_ALLOWLIST_CIDRS` 由生產環境 nginx 用於限制 `/api/v1/source/*`；本機直接跑 app 時不執行 IP 允許名單。
 > 若要測 Admin API，請先設定 `ADMIN_API_KEYS=dev-admin-key`。
 
 ### 0.2 啟動 Docker 服務
@@ -74,12 +74,11 @@ curl http://localhost:8080/health
 ```json
 {
   "status": "healthy",
-  "version": "0.1.0",
-  "source_allowlist_configured": true
+  "version": "0.1.0"
 }
 ```
 
-> 目前 `.env.example` 預設已包含 `SOURCE_ALLOWLIST_CIDRS`，因此通常為 `true`。
+> Source API IP 允許名單由生產 nginx 執行，不再出現在 FastAPI `/health` 回應中。
 
 ### 1.2 根端點
 
@@ -158,10 +157,10 @@ done
 
 ### 2.5 IP 允許名單測試（選擇性）
 
-若已設定 `SOURCE_ALLOWLIST_CIDRS`，從非允許 IP 發送請求應收到 403：
+生產環境 nginx 會根據 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*`。從非允許 IP 發送請求應收到 nginx 回覆的 403：
 
 ```json
-{ "detail": "Client IP not allowlisted" }
+{ "detail": "Source API client IP not allowlisted" }
 ```
 
 ---
@@ -964,7 +963,7 @@ uv run pytest --cov=app --cov-report=term-missing
 | `ForeignKeyViolationError` | 未初始化種子資料 | `docker compose exec app python /app/scripts/seed_data.py` |
 | `401 Missing API key` | 未帶 X-API-Key Header | 加入 `-H "X-API-Key: dev-source-key"` |
 | `403 Invalid API key` | Key 與設定不符 | 確認使用 `dev-source-key`（docker compose 預設值） |
-| `403 Client IP not allowlisted` | IP 不在允許名單 | 開發環境設定 `DEBUG=true` 或調整 `SOURCE_ALLOWLIST_CIDRS` |
+| `403 Forbidden` | IP 不在 nginx Source API 允許名單 | 調整 `SOURCE_ALLOWLIST_CIDRS` 並重新部署 nginx |
 | `429 Rate limit exceeded` | 請求頻率超過限制 | 等待 60 秒後重試，或調大 `RATE_LIMIT_REQUESTS` |
 | `400 Dataset 'xxx' not found` | dataset_key 不存在 | 先跑 seed，或用 `/datasets` 確認可用的 key |
 | `400 Market mismatch` | payload 的 dataset 市場與端點不符 | 確認 dataset_key 的 market 與端點路徑一致 |

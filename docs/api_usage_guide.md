@@ -102,7 +102,7 @@ docker compose up -d --build
 docker compose exec app python /app/scripts/seed_data.py
 ```
 
-> 若保留 `DEBUG=false`，必須同時設定 `SOURCE_ALLOWLIST_CIDRS` 才能通過啟動檢查。
+> 生產環境由 nginx 使用 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*`；本機直接跑 FastAPI 時不執行 IP 允許名單。
 
 ### 2. 驗證服務
 
@@ -115,8 +115,7 @@ curl http://localhost:8080/health
 ```json
 {
   "status": "healthy",
-  "version": "0.1.0",
-  "source_allowlist_configured": true
+  "version": "0.1.0"
 }
 ```
 
@@ -173,9 +172,9 @@ X-API-Key: your-admin-key
 
 | 機制            | 說明                                                          |
 | --------------- | ------------------------------------------------------------- |
-| **IP 允許名單** | `SOURCE_ALLOWLIST_CIDRS`（CIDR 格式，逗號分隔），生產環境必填 |
+| **IP 允許名單** | 生產環境 nginx 使用 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*` |
 | **限流**        | 預設每個 API Key + IP 組合，每 60 秒最多 100 次請求           |
-| **Proxy 支援**  | 設定 `SOURCE_TRUST_PROXY_HEADERS=true` 讀取 `X-Forwarded-For` |
+| **Proxy 支援**  | nginx 會覆寫 `X-Real-IP` 與 `X-Forwarded-For` 為實際來源 IP |
 
 ---
 
@@ -1617,7 +1616,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=50"
 | ----------------------------- | ------ | ------------------------------ |
 | `"Missing API key"`           | 401    | 未帶入 X-API-Key               |
 | `"Invalid API key"`           | 403    | API Key 不正確                 |
-| `"Client IP not allowlisted"` | 403    | IP 不在 SOURCE_ALLOWLIST_CIDRS |
+| `"Source API client IP not allowlisted"` | 403    | IP 不在 nginx Source API allowlist |
 | `"Rate limit exceeded"`       | 429    | 請求頻率超過限制               |
 | `"Dataset 'xxx' not found"`   | 400    | 指定的 dataset_key 不存在      |
 | `"Dataset 'xxx' is inactive"` | 400    | 資料集已停用                   |
@@ -2023,7 +2022,7 @@ with httpx.Client() as client:
 **可能原因：**
 
 1. **API Key 錯誤** — 確認 `X-API-Key` Header 的值與 `SOURCE_API_KEYS` 環境變數一致
-2. **IP 不在允許名單** — 若已設定 `SOURCE_ALLOWLIST_CIDRS`，確認你的 IP 在名單內
+2. **IP 不在允許名單** — 生產環境由 nginx 回覆 403，請確認你的 IP 在 `SOURCE_ALLOWLIST_CIDRS` 內
 3. **docker-compose.yml 覆蓋了 .env** — `docker-compose.yml` 的 `environment` 區塊會覆蓋 `.env` 的值。預設 compose 內硬編碼 `SOURCE_API_KEYS: dev-source-key`，即使 `.env` 設了其他值也無效
 
 **解法：** 本機測試使用 `dev-source-key`，或修改 `docker-compose.yml` 移除硬編碼值。
@@ -2093,7 +2092,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 
 ### Q: 生產環境需要注意什麼？
 
-1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`（`DEBUG=false` 時為必要，否則無法啟動）
+1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist
 2. **必須**設定 `ADMIN_API_KEYS`（否則所有 Admin API 端點回傳 500）
 3. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
 4. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
@@ -2113,8 +2112,8 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | ---------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- |
 | `DATABASE_URL`               | `postgresql+asyncpg://findb:findb@localhost:5435/findb` | PostgreSQL 連線字串                                        |
 | `SOURCE_API_KEYS`            | （空）                                                  | Source API 金鑰（逗號分隔）                                |
-| `SOURCE_ALLOWLIST_CIDRS`     | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | IP 允許名單（CIDR，逗號分隔），生產環境必填                |
-| `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For                                   |
+| `SOURCE_ALLOWLIST_CIDRS`     | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | nginx `/api/v1/source/*` IP 允許名單（CIDR，逗號分隔）     |
+| `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For（rate limit client IP 用）        |
 | `SERVE_API_KEYS`             | （空）                                                  | Serve API 金鑰（逗號分隔）                                 |
 | `SERVE_REQUIRE_AUTH`         | `false`                                                 | Serve API 是否需要認證                                     |
 | `ADMIN_API_KEYS`             | （空）                                                  | Admin API 金鑰（逗號分隔），**必須設定**才能使用 Admin API |
@@ -2122,4 +2121,4 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | `RATE_LIMIT_WINDOW`          | `60`                                                    | 限流時間窗口（秒）                                         |
 | `RAW_RETENTION_ENABLED`      | `false`                                                 | 是否啟用原始資料過期清理                                   |
 | `RAW_RETENTION_DAYS`         | `14`                                                    | 原始資料保留天數                                           |
-| `DEBUG`                      | `false`                                                 | 除錯模式（跳過 allowlist 強制檢查）                        |
+| `DEBUG`                      | `false`                                                 | 除錯模式                                                    |

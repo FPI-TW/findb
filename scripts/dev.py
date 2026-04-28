@@ -78,7 +78,6 @@ def cmd_test_db(_args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.setdefault("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     env["DEBUG"] = "true"
-    env["SOURCE_ALLOWLIST_CIDRS"] = ""
     env["SOURCE_API_KEYS"] = env.get("SOURCE_API_KEYS", "test-source-key")
     env["ADMIN_API_KEYS"] = env.get("ADMIN_API_KEYS", "test-admin-key")
     return _run(["uv", "run", "pytest", "--tb=short", "-q"], env=env)
