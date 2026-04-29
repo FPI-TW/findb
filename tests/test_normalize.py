@@ -4,6 +4,7 @@ Tests for Normalize services.
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from app.models.canonical import (
     Instrument,
     MarketDataEOD,
     TradingCalendar,
+    CorporateAction,
 )
 from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
 from app.services.dq.validators import DQValidator
@@ -23,6 +25,7 @@ from app.services.normalize.equity import IndexNormalizer
 from app.services.normalize.futures import FuturesContinuousNormalizer
 from app.services.normalize.macro import MacroNormalizer
 from app.services.normalize.types import MappedRecord
+from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.utils import utc_now, uuid7
 
 
@@ -860,3 +863,274 @@ async def test_process_persists_processing_errors(test_session):
     assert persisted_run.status == "completed_with_errors"
     assert persisted_run.error_message is not None
     assert "RuntimeError: boom" in persisted_run.error_message
+
+
+@pytest.mark.asyncio
+class TestCorporateActionNormalizer:
+    """Test for Corporate Action Normalizer"""
+
+    async def setup_test_data(self, test_session):
+        """Init test data"""
+        dataset = DatasetRegistry(
+            dataset_key="us_equity_corporate_actions",
+            name="US Equity Corporate Actions",
+            asset_class="equity",
+            market="US",
+            frequency="daily",
+            is_active=True,
+            config={},
+        )
+        instrument_id = uuid7()
+        instrument = Instrument(
+            instrument_id=instrument_id,
+            asset_class="equity",
+            market="US",
+            symbol="AAPL",
+            name="Apple Inc",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        test_session.add_all([dataset, instrument])
+        await test_session.commit()
+        return instrument_id
+
+    async def test_process_success_and_upsert(self, test_session):
+        instrument_id = await self.setup_test_data(test_session)
+        run_id = uuid7()
+
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        payload = {
+            "metadata": {"source": "bloomberg"},
+            "data": [
+                {
+                    "ticker": "AAPL US Equity",
+                    "action": {
+                        "type": "dividend",
+                        "ex_date": "2024-05-20",
+                        "cash_amount": 0.25,
+                        "currency": "USD",
+                    },
+                }
+            ],
+        }
+
+        normalizer = CorporateActionNormalizer(test_session)
+
+        result1 = await normalizer.process(payload, run_id)
+        assert result1.success_records == 1
+
+        payload["data"][0]["action"]["cash_amount"] = 0.30
+        result2 = await normalizer.process(payload, run_id)
+        assert result2.success_records == 1
+
+        test_session.expire_all()
+
+        stmt = select(CorporateAction).where(CorporateAction.instrument_id == instrument_id)
+        updated_ca = (await test_session.execute(stmt)).scalar_one()
+
+        assert updated_ca.cash_amount.quantize(Decimal("0.00")) == Decimal("0.30")
+
+    @pytest.mark.parametrize(
+        "payload_data, expected_issue_type",
+        [
+            # 1. Missing ex_date
+            ({"ticker": "AAPL US Equity", "action": {"type": "dividend"}}, "MISSING_EX_DATE"),
+            # 2. Missing action
+            ({"ticker": "AAPL US Equity"}, "MISSING_ACTION_TYPE"),
+            # 3. Missing ticker
+            ({"action": {"type": "dividend", "ex_date": "2024-05-20"}}, "MISSING_IDENTIFIER"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_process_failed_dq_cases(self, test_session, payload_data, expected_issue_type):
+        """Test all issues when missing field in payload"""
+        await self.setup_test_data(test_session)
+        run_id = uuid7()
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        bad_payload = {"data": [payload_data]}
+        normalizer = CorporateActionNormalizer(test_session)
+
+        result = await normalizer.process(bad_payload, run_id)
+
+        assert result.failed_records == 1
+
+        dq_stmt = select(DQIssue).where(DQIssue.run_id == run_id)
+        all_issues = (await test_session.execute(dq_stmt)).scalars().all()
+
+        issue_types = [i.issue_type for i in all_issues]
+        assert expected_issue_type in issue_types
+
+    async def test_process_failed_dq_duplicate_key(self, test_session):
+        """Test catch duplicate keys"""
+        instrument_id = await self.setup_test_data(test_session)
+        run_id = uuid7()
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        duplicate_record = {
+            "ticker": "AAPL US Equity",
+            "action": {"type": "dividend", "ex_date": "2024-05-20", "cash_amount": 0.25},
+        }
+        payload = {"data": [duplicate_record, duplicate_record]}
+
+        normalizer = CorporateActionNormalizer(test_session)
+        result = await normalizer.process(payload, run_id)
+
+        assert result.success_records == 1
+        assert result.failed_records == 1
+
+        dq_stmt = select(DQIssue).where(
+            DQIssue.run_id == run_id, DQIssue.issue_type == "DUPLICATE_KEY"
+        )
+        issue = (await test_session.execute(dq_stmt)).scalar_one()
+        assert "Duplicate corporate action" in issue.description
+        assert issue.instrument_id == instrument_id
+
+    @pytest.mark.asyncio
+    async def test_process_unexpected_exception_handling(self, test_session):
+        """Test PROCESSING_ERROR when error happens"""
+
+        await self.setup_test_data(test_session)
+        run_id = uuid7()
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        payload = {
+            "data": [
+                {
+                    "ticker": "AAPL US Equity",
+                    "action": {"type": "dividend", "ex_date": "2024-05-20", "cash_amount": 0.25},
+                }
+            ]
+        }
+
+        normalizer = CorporateActionNormalizer(test_session)
+
+        with patch.object(
+            CorporateActionNormalizer,
+            "resolve_instrument",
+            side_effect=RuntimeError("Database Connection Lost"),
+        ):
+            result = await normalizer.process(payload, run_id)
+
+        assert result.failed_records == 1
+        assert result.success_records == 0
+
+        dq_stmt = select(DQIssue).where(
+            DQIssue.run_id == run_id, DQIssue.issue_type == "PROCESSING_ERROR"
+        )
+        issue = (await test_session.execute(dq_stmt)).scalar_one()
+        assert "Database Connection Lost" in issue.description
+
+    @pytest.mark.asyncio
+    async def test_process_outer_exception_rollback(self, test_session):
+        """
+        Test that a critical error outside the record loop triggers a rollback
+        and sets the run status to 'failed'.
+        """
+        # Arrange
+        await self.setup_test_data(test_session)
+        run_id = uuid7()
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        normalizer = CorporateActionNormalizer(test_session)
+
+        with patch.object(
+            CorporateActionNormalizer,
+            "map_fields",
+            side_effect=ValueError("Critical System Failure"),
+        ):
+            result = await normalizer.process({"some": "data"}, run_id)
+
+        assert result.error_message == "Critical System Failure"
+
+        test_session.expire_all()
+        persisted_run = await test_session.get(IngestionRun, run_id)
+        assert persisted_run.status == "failed"
+        assert "Critical System Failure" in persisted_run.error_message
+
+    @pytest.mark.parametrize(
+        "payload_data, expected_issue_type, expected_trade_date",
+        [
+            # 1. Missing action_type, but the ex_date is valid -> should parse trade_date
+            (
+                {"ticker": "AAPL US Equity", "action": {"ex_date": "2024-05-20"}},
+                "MISSING_ACTION_TYPE",
+                datetime(2024, 5, 20, tzinfo=timezone.utc),
+            ),
+            # 2. Missing action_type and wrong format -> trade_date should be None and doesn't break the progress
+            (
+                {"ticker": "AAPL US Equity", "action": {"ex_date": "invalid-date"}},
+                "MISSING_ACTION_TYPE",
+                None,
+            ),
+            # 3. Missing ex_date -> expecting issue MISSING_EX_DATE
+            ({"ticker": "AAPL US Equity", "action": {"type": "dividend"}}, "MISSING_EX_DATE", None),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_process_failed_dq_date_logic(
+        self, test_session, payload_data, expected_issue_type, expected_trade_date
+    ):
+        """
+        Test that missing action_type safely attempts to capture trade_date
+        without crashing on invalid formats.
+        """
+
+        await self.setup_test_data(test_session)
+        run_id = uuid7()
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        bad_payload = {"data": [payload_data]}
+        normalizer = CorporateActionNormalizer(test_session)
+
+        result = await normalizer.process(bad_payload, run_id)
+
+        assert result.failed_records == 1
+
+        dq_stmt = select(DQIssue).where(
+            DQIssue.run_id == run_id, DQIssue.issue_type == expected_issue_type
+        )
+        issue = (await test_session.execute(dq_stmt)).scalars().first()
+
+        assert issue is not None
+        assert issue.trade_date == expected_trade_date
+
+    @pytest.mark.asyncio
+    async def test_process_date_exception_coverage(self, test_session):
+        """Force execution of the date parsing exception block for coverage."""
+        await self.setup_test_data(test_session)
+        run_id = uuid7()
+        test_session.add(
+            IngestionRun(run_id=run_id, dataset_key="us_equity_corporate_actions", status="pending")
+        )
+        await test_session.commit()
+
+        # Build a missing action_type with valid ex_date data
+        payload = {"data": [{"ticker": "AAPL", "action": {"ex_date": "2024-05-20"}}]}
+        normalizer = CorporateActionNormalizer(test_session)
+
+        # Mock _to_datetime to throw exception
+        with patch.object(
+            CorporateActionNormalizer, "_to_datetime", side_effect=ValueError("Test Exception")
+        ):
+            await normalizer.process(payload, run_id)

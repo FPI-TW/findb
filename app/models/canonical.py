@@ -163,7 +163,9 @@ class CorporateAction(Base):
 
     __tablename__ = "corporate_action"
     __table_args__ = (
-        Index("idx_ca_inst_date", "instrument_id", "ex_date"),
+        UniqueConstraint(
+            "instrument_id", "action_type", "ex_date", name="uq_ca_instrument_action_date"
+        ),
         Index("idx_ca_action", "action_type"),
     )
 
