@@ -1,9 +1,16 @@
 repos:
   - repo: local
     hooks:
+      - id: ruff-fix
+        name: ruff fix
+        entry: .venv/bin/ruff check --fix
+        language: system
+        types_or: [python]
+        stages: [pre-commit]
+
       - id: black-format
         name: black format
-        entry: uv run black
+        entry: .venv/bin/black
         language: system
         types_or: [python]
         stages: [pre-commit]
