@@ -137,12 +137,14 @@ jobs:
           fi
           exit "$missing"
 
-      - name: Render nginx Source API allowlist
+      - name: Render nginx configs
         run: |
           set -euo pipefail
           python scripts/render_nginx_source_allowlist.py \
             --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
             --output infra/nginx/source-allowlist.conf
+          python scripts/render_nginx_cloudflare_real_ip.py \
+            --output infra/nginx/cloudflare-real-ip.conf
 
       - name: Prepare deploy directories on EC2
         uses: appleboy/ssh-action@v1
@@ -170,7 +172,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf"
+          source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf"
           target: /home/ubuntu/etc/nginx
           strip_components: 2
           overwrite: true
@@ -196,6 +198,10 @@ jobs:
             fi
             if [ ! -f /home/ubuntu/etc/nginx/source-allowlist.conf ]; then
               echo "::error title=Missing nginx allowlist::/home/ubuntu/etc/nginx/source-allowlist.conf not found on target host"
+              exit 1
+            fi
+            if [ ! -f /home/ubuntu/etc/nginx/cloudflare-real-ip.conf ]; then
+              echo "::error title=Missing Cloudflare real-IP config::/home/ubuntu/etc/nginx/cloudflare-real-ip.conf not found on target host"
               exit 1
             fi
             if [ ! -f /home/ubuntu/etc/nginx/ssl/server.crt ]; then
