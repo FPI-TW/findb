@@ -21,10 +21,17 @@ if config.config_file_name is not None:
 
 settings = get_settings()
 target_metadata = Base.metadata
+INCLUDED_SCHEMAS = {None, "raw"}
 
 
 def _database_url() -> str:
     return os.getenv("DATABASE_URL") or settings.DATABASE_URL
+
+
+def _include_name(name: str | None, type_: str, parent_names: dict[str, str | None]) -> bool:
+    if type_ == "schema":
+        return name in INCLUDED_SCHEMAS
+    return True
 
 
 def run_migrations_offline() -> None:
@@ -32,6 +39,8 @@ def run_migrations_offline() -> None:
     context.configure(
         url=_database_url(),
         target_metadata=target_metadata,
+        include_schemas=True,
+        include_name=_include_name,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
@@ -46,6 +55,8 @@ def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
+        include_schemas=True,
+        include_name=_include_name,
         compare_type=True,
         compare_server_default=True,
     )
