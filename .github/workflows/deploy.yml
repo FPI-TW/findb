@@ -215,7 +215,7 @@ jobs:
             docker compose -f docker-compose.prod.yml pull
 
             echo "Running Alembic migrations"
-            docker compose -f docker-compose.prod.yml run --rm app sh -lc '
+            docker compose -f docker-compose.prod.yml run --rm app sh -euc '
               uv run alembic upgrade head
               uv run alembic current
             '
