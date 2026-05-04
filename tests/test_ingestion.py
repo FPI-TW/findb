@@ -84,6 +84,52 @@ class TestTriggerNormalization:
         assert mock_run.status == "failed"
         assert "not found" in mock_run.error_message
 
+    @pytest.mark.asyncio
+    async def test_trigger_normalization_process_exception_marks_run_failed(self):
+        """Should fail a non-terminal run when the normalizer crashes."""
+        mock_session = AsyncMock()
+        mock_session_factory = MagicMock(return_value=AsyncContextManagerMock(mock_session))
+
+        mock_dataset = MagicMock(config={})
+        mock_run = MagicMock(status="processing")
+        mock_session.get.side_effect = [mock_dataset, mock_run]
+
+        mock_normalizer_inst = MagicMock()
+        mock_normalizer_inst.process = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_normalizer_cls = MagicMock(return_value=mock_normalizer_inst)
+
+        with patch("app.services.ingestion.NORMALIZER_MAP", {"test": mock_normalizer_cls}):
+            await trigger_normalization("test", {}, uuid4(), mock_session_factory)
+
+        assert mock_run.status == "failed"
+        assert mock_run.error_message == "Normalization failed: RuntimeError: boom"
+        assert mock_run.completed_at is not None
+        mock_session.rollback.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_trigger_normalization_process_exception_preserves_terminal_run_status(self):
+        """Should not overwrite a terminal run status set by the normalizer."""
+        mock_session = AsyncMock()
+        mock_session_factory = MagicMock(return_value=AsyncContextManagerMock(mock_session))
+
+        mock_dataset = MagicMock(config={})
+        mock_run = MagicMock(status="completed_with_errors")
+        mock_run.error_message = "existing summary"
+        mock_session.get.side_effect = [mock_dataset, mock_run]
+
+        mock_normalizer_inst = MagicMock()
+        mock_normalizer_inst.process = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_normalizer_cls = MagicMock(return_value=mock_normalizer_inst)
+
+        with patch("app.services.ingestion.NORMALIZER_MAP", {"test": mock_normalizer_cls}):
+            await trigger_normalization("test", {}, uuid4(), mock_session_factory)
+
+        assert mock_run.status == "completed_with_errors"
+        assert mock_run.error_message == "existing summary"
+        mock_session.rollback.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
+
 
 class TestIngestionService:
     class TestGetRawPayloadByIdempotencyKey:

@@ -5,7 +5,7 @@ Handles raw data storage and triggers normalization.
 
 import logging
 from datetime import timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Protocol
 from uuid import UUID
 
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.source import IngestRequest
 from app.services.normalize import (
+    BaseNormalizer,
     CNEquityNormalizer,
     CNIndexNormalizer,
     CorporateActionNormalizer,
@@ -49,7 +50,19 @@ from app.utils.datetime_utils import ensure_utc
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-NORMALIZER_MAP = {
+_NORMALIZATION_FALLBACK_FAILURE_STATUSES = {"pending", "processing", "running"}
+_NORMALIZATION_ERROR_MESSAGE_LIMIT = 1000
+
+
+class NormalizerFactory(Protocol):
+    def __call__(
+        self,
+        db: AsyncSession,
+        dataset_config: dict | None = None,
+    ) -> BaseNormalizer: ...
+
+
+NORMALIZER_MAP: dict[str, NormalizerFactory] = {
     "crypto_eod": CryptoNormalizer,
     "crypto_index_eod": CryptoIndexNormalizer,
     "us_equity_eod": EquityNormalizer,
@@ -147,6 +160,60 @@ def _any_item_has_any_path(items: list[dict], paths: list[str]) -> bool:
     return False
 
 
+def _format_normalization_error(exc: Exception) -> str:
+    """Build a bounded run-level error message for unexpected normalization failures."""
+    error_type = type(exc).__name__
+    error_detail = str(exc).strip()
+    message = f"Normalization failed: {error_type}"
+    if error_detail:
+        message = f"{message}: {error_detail}"
+    if len(message) > _NORMALIZATION_ERROR_MESSAGE_LIMIT:
+        return f"{message[: _NORMALIZATION_ERROR_MESSAGE_LIMIT - 3]}..."
+    return message
+
+
+async def _mark_unhandled_normalization_failure(
+    session: AsyncSession,
+    run_id: UUID,
+    exc: Exception,
+) -> None:
+    """Persist a failed run status when a normalizer crashes before doing so."""
+    try:
+        await session.rollback()
+    except Exception:
+        logger.exception(
+            "Rollback failed after normalization error (run_id=%s)",
+            run_id,
+        )
+        return
+
+    try:
+        run = await session.get(IngestionRun, run_id)
+        if not run:
+            logger.warning(
+                "Normalization failed but ingestion run was not found (run_id=%s)",
+                run_id,
+            )
+            return
+        if run.status not in _NORMALIZATION_FALLBACK_FAILURE_STATUSES:
+            logger.info(
+                "Normalization failed but run already has status %s (run_id=%s)",
+                run.status,
+                run_id,
+            )
+            return
+
+        run.status = "failed"
+        run.error_message = _format_normalization_error(exc)
+        run.completed_at = utc_now()
+        await session.commit()
+    except Exception:
+        logger.exception(
+            "Failed to persist normalization failure status (run_id=%s)",
+            run_id,
+        )
+
+
 async def trigger_normalization(
     dataset_key: str,
     payload: dict,
@@ -182,7 +249,8 @@ async def trigger_normalization(
         normalizer = normalizer_cls(session, dataset.config or {})
         try:
             await normalizer.process(payload, run_id)
-        except Exception:
+        except Exception as exc:
+            await _mark_unhandled_normalization_failure(session, run_id, exc)
             logger.exception("Normalization failed for %s (run_id=%s)", dataset_key, run_id)
 
 
