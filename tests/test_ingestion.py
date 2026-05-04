@@ -183,6 +183,7 @@ class TestIngestionService:
         async def test_create_ingestion_run_success(self):
             """Should correctly initialize an IngestionRun with default values and flush to DB."""
             mock_db = AsyncMock()
+            mock_db.add = MagicMock()
             service = IngestionService(mock_db)
 
             test_key = "us_equity_eod"
