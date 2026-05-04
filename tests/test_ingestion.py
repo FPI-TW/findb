@@ -105,29 +105,44 @@ class TestIngestionService:
             assert result == mock_payload
 
     class TestGetDataset:
-        @pytest.mark.parametrize(
-            "include_inactive, expected_where_count",
-            [
-                (True, 1),
-                (False, 2),
-            ],
-        )
         @pytest.mark.asyncio
-        async def test_get_dataset_success(self, include_inactive, expected_where_count):
-            """Should apply the correct active status filter based on include_inactive flag."""
-            mock_db = AsyncMock()
-            service = IngestionService(mock_db)
+        async def test_get_dataset_filters_inactive_by_default(self, test_session):
+            """Should return inactive datasets only when explicitly requested."""
+            active_dataset = DatasetRegistry(
+                dataset_key="active_dataset",
+                name="Active Dataset",
+                asset_class="equity",
+                market="US",
+                frequency="daily",
+                is_active=True,
+            )
+            inactive_dataset = DatasetRegistry(
+                dataset_key="inactive_dataset",
+                name="Inactive Dataset",
+                asset_class="equity",
+                market="US",
+                frequency="daily",
+                is_active=False,
+            )
+            test_session.add_all([active_dataset, inactive_dataset])
+            await test_session.commit()
 
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = MagicMock(spec=DatasetRegistry)
-            mock_db.execute.return_value = mock_result
+            service = IngestionService(test_session)
 
-            await service.get_dataset("test_key", include_inactive=include_inactive)
+            found_active = await service.get_dataset("active_dataset")
+            hidden_inactive = await service.get_dataset("inactive_dataset")
+            found_inactive = await service.get_dataset(
+                "inactive_dataset",
+                include_inactive=True,
+            )
+            missing_dataset = await service.get_dataset("missing_dataset", include_inactive=True)
 
-            args, _ = mock_db.execute.call_args
-            stmt = args[0]
-
-            assert len(stmt._where_criteria) == expected_where_count
+            assert found_active is not None
+            assert found_active.dataset_key == "active_dataset"
+            assert hidden_inactive is None
+            assert found_inactive is not None
+            assert found_inactive.dataset_key == "inactive_dataset"
+            assert missing_dataset is None
 
     class TestValidatePayloadSchema:
         @pytest.mark.parametrize(
