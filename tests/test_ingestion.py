@@ -85,7 +85,7 @@ class TestTriggerNormalization:
         assert "not found" in mock_run.error_message
 
 
-class TestIngetionService:
+class TestIngestionService:
     class TestGetRawPayloadByIdempotencyKey:
         @pytest.mark.asyncio
         async def test_get_raw_payload_by_idempotency_key(self):
@@ -210,7 +210,6 @@ class TestIngetionService:
             old_run_id = uuid4()
 
             mock_raw = MagicMock(spec=RawMarketPayload)
-            mock_raw.dataset_key = "us_equity"
             mock_raw.source = "bloomberg"
             mock_raw.request_key = "req_123"
             mock_raw.idempotency_key = "idem_456"
@@ -271,7 +270,7 @@ class TestIngetionService:
     class TestIngest:
         @pytest.mark.asyncio
         async def test_ingest_success(self):
-            """Should process ingestion and verify the IngestionRun creation (Merged)"""
+            """Should process ingestion and verify the IngestionRun creation."""
             mock_db = AsyncMock()
             mock_db.add = MagicMock()
             service = IngestionService(mock_db)
