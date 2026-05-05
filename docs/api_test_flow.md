@@ -1,8 +1,8 @@
 # API 測試流程
 
-> **最後更新**: 2026-04-21
+> **最後更新**: 2026-04-24
 
-完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
+完整手動測試流程（本機 Docker DB + FastAPI 服務）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
 
 自動化測試請見 [§8. 自動化測試](#8-自動化測試)。
 
@@ -36,28 +36,35 @@ cp .env.example .env
 > `RAW_RETENTION_ENABLED` 預設為 `false`，raw payload 目前不會因保留期限自動被刪除。
 > `SOURCE_ALLOWLIST_CIDRS` 由生產環境 nginx 用於限制 `/api/v1/source/*`；本機直接跑 app 時不執行 IP 允許名單。
 > 若要測 Admin API，請先設定 `ADMIN_API_KEYS=dev-admin-key`。
+> TODO: 目前 `docker-compose.yml` 未把 `ADMIN_API_KEYS` 傳入 app container；Admin API 手動測試建議用 `uv run python scripts/dev.py up-server` 連本機 DB，或先在 compose 加入對應環境變數映射。
 
-### 0.2 啟動 Docker 服務
+### 0.2 啟動資料庫與服務
 
 ```bash
-docker compose up -d --build
+uv run python scripts/dev.py up-db
+uv run alembic upgrade head
+uv run python scripts/dev.py seed-upsert --truncate
+uv run python scripts/dev.py up-server
 ```
 
-確認所有服務就緒：
+若需要完整 Docker app 容器，可改用：
+
+```bash
+docker compose up -d --build app db
+```
+
+確認服務就緒：
 
 ```bash
 docker compose ps
 ```
 
-預期看到 `findb-app`、`findb-postgres`、`findb-raw-cleanup`、`findb-pgadmin` 皆為 running。
-
-### 0.3 初始化資料種子
+預設預期看到 `findb-postgres` running；若使用 Docker app 容器，會同時看到 `findb-app` running。
+`findb-raw-cleanup` 與 `findb-pgadmin` 屬於 `tools` profile，需另行啟動：
 
 ```bash
-docker compose exec app python /app/scripts/seed_data.py
+docker compose --profile tools up -d pgadmin raw-cleanup
 ```
-
-會寫入 20+ 個 dataset 定義（含 Bloomberg Direct 格式）與加密貨幣/美股/外匯等標的。
 
 ---
 
@@ -301,8 +308,50 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/wtx/direct" \
         "volume": 50000
       }
     ]
+}'
+```
+
+### 3.4e Direct 格式攝取（台股 MultiCharts）
+
+> `/api/v1/source/ingest/twstock/direct` 只接受 JSON，不直接接 raw `.txt` 檔。請先把 MultiCharts 匯出檔轉成單股票 `metadata + data[]` 格式。
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "symbol": "6160",
+      "name": "欣技",
+      "source": "multicharts",
+      "file_name": "6160 1 日.txt",
+      "query_time": "2026-04-30T08:00:00Z"
+    },
+    "data": [
+      {
+        "date": "2024-04-29",
+        "time": "13:30:00",
+        "open": 20.45,
+        "high": 21.50,
+        "low": 20.45,
+        "close": 21.10,
+        "up_volume": 81,
+        "down_volume": 36,
+        "total_volume": 528,
+        "up_ticks": 37,
+        "down_ticks": 19,
+        "total_ticks": 221,
+        "open_interest": 0
+      }
+    ]
   }'
 ```
+
+預期：
+- response `status_code = 200`
+- `dataset_key = tw_equity_multicharts_eod`
+- raw payload 仍保留 `time` 與 `open_interest`
+- canonical / serve EOD 可查到 `up_volume`、`down_volume`、`up_ticks`、`down_ticks`、`total_ticks`
 
 ### 3.5 Direct 格式攝取（HK/China 混合）
 
