@@ -487,6 +487,52 @@ class TestPatchEOD:
         await test_session.refresh(eod)
         assert eod.turnover is None
 
+    @pytest.mark.asyncio
+    async def test_patch_eod_multicharts_fields_update_and_clear(
+        self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
+    ):
+        from sqlalchemy import select
+
+        instrument = await _create_instrument(test_session)
+        eod = await _create_eod(test_session, instrument.instrument_id)
+        eod.up_volume = 81
+        eod.down_volume = 36
+        eod.up_ticks = 37
+        eod.down_ticks = 19
+        eod.total_ticks = 221
+        await test_session.commit()
+
+        response = await client.patch(
+            f"/api/v1/admin/eod/{instrument.instrument_id}/2025-01-02",
+            headers=admin_headers,
+            json={
+                "correction_reason": "Correct TW MultiCharts breakdown fields",
+                "up_volume": 90,
+                "down_volume": 40,
+                "up_ticks": 39,
+                "down_ticks": 20,
+                "total_ticks": None,
+            },
+        )
+        assert response.status_code == 200
+
+        await test_session.refresh(eod)
+        assert eod.up_volume == 90
+        assert eod.down_volume == 40
+        assert eod.up_ticks == 39
+        assert eod.down_ticks == 20
+        assert eod.total_ticks is None
+
+        correction_id = response.json()["correction_id"]
+        result = await test_session.execute(
+            select(CanonicalCorrection).where(CanonicalCorrection.id == UUID(correction_id))
+        )
+        correction = result.scalar_one()
+        assert correction.before_snapshot["up_volume"] == 81
+        assert correction.after_snapshot["up_volume"] == 90
+        assert correction.before_snapshot["total_ticks"] == 221
+        assert correction.after_snapshot["total_ticks"] is None
+
 
 # ── Resolve DQ Issue Tests ────────────────────────────────────────────────────
 

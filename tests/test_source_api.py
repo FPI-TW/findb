@@ -817,6 +817,163 @@ class TestSourceAPI:
         assert run.dataset_key == "macro_bloomberg_observation"
 
     @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_success_deduplicates_and_preserves_raw_payload(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        """Ensure TW stock MultiCharts direct payloads ingest, deduplicate, and persist fields."""
+        payload = {
+            "metadata": {
+                "symbol": "6160",
+                "name": "欣技",
+                "source": "multicharts",
+                "file_name": "6160 1 日.txt",
+                "query_time": "2026-04-30T08:00:00Z",
+            },
+            "data": [
+                {
+                    "<Date>": "2024-04-29",
+                    "<Time>": "13:30:00",
+                    "<Open>": 20.45,
+                    "<High>": 21.50,
+                    "<Low>": 20.45,
+                    "<Close>": 21.10,
+                    "<UpVolume>": 81,
+                    "<DownVolume>": 36,
+                    "<TotalVolume>": 528,
+                    "<UpTicks>": 37,
+                    "<DownTicks>": 19,
+                    "<TotalTicks>": 221,
+                    "<OpenInterest>": 0,
+                }
+            ],
+        }
+
+        first_response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json=payload,
+        )
+        assert first_response.status_code == 200
+        first_data = first_response.json()
+        first_run_id = first_data["run_id"]
+
+        second_response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json=payload,
+        )
+        assert second_response.status_code == 200
+        assert second_response.json()["run_id"] == first_run_id
+
+        run = await test_session.get(IngestionRun, first_run_id)
+        assert run is not None
+        assert run.dataset_key == "tw_equity_multicharts_eod"
+        assert run.status == "completed"
+        assert run.total_records == 1
+        assert run.success_records == 1
+
+        dataset = await test_session.get(DatasetRegistry, "tw_equity_multicharts_eod")
+        assert dataset is not None
+        assert dataset.market == "TW"
+
+        raw_stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == first_run_id)
+        raw_payload = (await test_session.execute(raw_stmt)).scalar_one()
+        assert raw_payload.payload["metadata"]["symbol"] == "6160"
+        assert raw_payload.payload["data"][0]["time"] == "13:30:00"
+        assert raw_payload.payload["data"][0]["open_interest"] == 0
+
+        eod_response = await client.get(
+            "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-29&end_date=2024-04-29"
+        )
+        assert eod_response.status_code == 200
+        eod_payload = eod_response.json()["data"]
+        assert len(eod_payload) == 1
+        assert eod_payload[0]["volume"] == 528
+        assert eod_payload[0]["up_volume"] == 81
+        assert eod_payload[0]["down_volume"] == 36
+        assert eod_payload[0]["up_ticks"] == 37
+        assert eod_payload[0]["down_ticks"] == 19
+        assert eod_payload[0]["total_ticks"] == 221
+        assert "open_interest" not in eod_payload[0]
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_missing_metadata_symbol_returns_400(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Ensure TW stock direct payload requires metadata.symbol."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [
+                    {
+                        "date": "2024-04-29",
+                        "time": "13:30:00",
+                        "open": 20.45,
+                        "high": 21.50,
+                        "low": 20.45,
+                        "close": 21.10,
+                        "up_volume": 81,
+                        "down_volume": 36,
+                        "total_volume": 528,
+                        "up_ticks": 37,
+                        "down_ticks": 19,
+                        "total_ticks": 221,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        assert "metadata.symbol" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_missing_required_row_field_returns_400(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Ensure TW stock direct payload rejects rows with missing required fields."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "6160",
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [
+                    {
+                        "date": "2024-04-29",
+                        "time": "13:30:00",
+                        "open": 20.45,
+                        "high": 21.50,
+                        "low": 20.45,
+                        "close": 21.10,
+                        "up_volume": 81,
+                        "down_volume": 36,
+                        "total_volume": 528,
+                        "up_ticks": 37,
+                        "down_ticks": 19,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        assert "total_ticks" in response.json()["detail"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("endpoint", "dataset_key", "expected_market", "payload"),
         [

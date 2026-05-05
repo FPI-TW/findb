@@ -12,6 +12,7 @@ from app.schemas.source import (
     IngestRequest,
     IngestResponse,
     RunStatusResponse,
+    TWStockDirectIngestPayload,
 )
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "PaginatedResponse",
     "APIResponse",
     "DirectIngestPayload",
+    "TWStockDirectIngestPayload",
     "IngestRequest",
     "IngestResponse",
     "RunStatusResponse",

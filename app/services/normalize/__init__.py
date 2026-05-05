@@ -11,6 +11,7 @@ from app.services.normalize.futures import (
 )
 from app.services.normalize.fx import FXBloombergNormalizer, FXNormalizer
 from app.services.normalize.macro import MacroBloombergNormalizer, MacroNormalizer
+from app.services.normalize.twstock import TWStockMultichartsNormalizer
 from app.services.normalize.types import (
     CorporateActionRecord,
     FuturesContinuousRecord,
@@ -60,6 +61,7 @@ __all__ = [
     "CNIndexNormalizer",
     "HKChinaMixedNormalizer",
     "HKChinaIndexNormalizer",
+    "TWStockMultichartsNormalizer",
     "CorporateActionRecord",
     "MacroObservationRecord",
     "FuturesContractRecord",

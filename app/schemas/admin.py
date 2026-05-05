@@ -27,6 +27,11 @@ class PatchEODRequest(BaseModel):
     low: Optional[Decimal] = None
     close: Optional[Decimal] = None
     volume: Optional[int] = None
+    up_volume: Optional[int] = None
+    down_volume: Optional[int] = None
+    up_ticks: Optional[int] = None
+    down_ticks: Optional[int] = None
+    total_ticks: Optional[int] = None
     turnover: Optional[Decimal] = None
 
 

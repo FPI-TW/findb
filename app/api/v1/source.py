@@ -24,6 +24,7 @@ from app.schemas.source import (
     IngestRequest,
     IngestResponse,
     RunStatusResponse,
+    TWStockDirectIngestPayload,
 )
 from app.services.ingestion import (
     DatasetInactiveError,
@@ -170,6 +171,31 @@ DIRECT_DATASET_DEFAULTS = {
         "is_active": True,
         "config": {"source_format": "bloomberg_macro_direct"},
     },
+    "tw_equity_multicharts_eod": {
+        "name": "台股日K — MultiCharts Direct",
+        "description": "MultiCharts Direct 格式台股每日價格與成交拆分資料",
+        "asset_class": "equity",
+        "market": "TW",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "multicharts_twstock_direct",
+            "data_path": "data",
+            "field_mapping": {
+                "trade_date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "total_volume",
+                "up_volume": "up_volume",
+                "down_volume": "down_volume",
+                "up_ticks": "up_ticks",
+                "down_ticks": "down_ticks",
+                "total_ticks": "total_ticks",
+            },
+        },
+    },
 }
 
 
@@ -194,12 +220,12 @@ def _normalize_source(value: str | None) -> str:
 
 
 def _build_direct_ingest_request(
-    payload: DirectIngestPayload,
+    payload: DirectIngestPayload | TWStockDirectIngestPayload,
     dataset_key: str,
     key_prefix: str,
 ) -> IngestRequest:
     """Convert direct payload format to internal IngestRequest."""
-    raw_payload = payload.model_dump()
+    raw_payload = payload.model_dump(mode="json")
     metadata = raw_payload.get("metadata", {}) or {}
 
     source = _normalize_source(metadata.get("source"))
@@ -322,7 +348,7 @@ async def _ingest_by_market(
 
 
 async def _ingest_direct_payload(
-    payload: DirectIngestPayload,
+    payload: DirectIngestPayload | TWStockDirectIngestPayload,
     dataset_key: str,
     key_prefix: str,
     expected_market: str,
@@ -388,6 +414,14 @@ async def ingest_usstock_direct_data(
         background_tasks=background_tasks,
         db=db,
     )
+
+
+def _validate_twstock_direct_payload(payload: TWStockDirectIngestPayload) -> None:
+    """Apply TW stock direct business validation and surface 400 errors."""
+    try:
+        payload.validate_required_fields()
+    except ValueError as exc:
+        raise PayloadValidationError(str(exc)) from exc
 
 
 @router.post("/ingest/hkchina/direct", response_model=IngestResponse)
@@ -525,6 +559,31 @@ async def ingest_wtx_direct_data(
         dataset_key="wtx_bloomberg_eod",
         key_prefix="direct_wtx",
         expected_market="WTX",
+        background_tasks=background_tasks,
+        db=db,
+    )
+
+
+@router.post("/ingest/twstock/direct", response_model=IngestResponse)
+async def ingest_twstock_direct_data(
+    payload: TWStockDirectIngestPayload,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ingest TW stock MultiCharts direct payload format."""
+    try:
+        _validate_twstock_direct_payload(payload)
+    except PayloadValidationError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    return await _ingest_direct_payload(
+        payload=payload,
+        dataset_key="tw_equity_multicharts_eod",
+        key_prefix="direct_twstock",
+        expected_market="TW",
         background_tasks=background_tasks,
         db=db,
     )

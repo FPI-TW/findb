@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class IngestRequest(BaseModel):
@@ -41,6 +41,121 @@ class DirectIngestPayload(BaseModel):
 
     metadata: dict[str, Any] = Field(default_factory=dict)
     data: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TWStockDirectMetadata(BaseModel):
+    """Metadata for TW MultiCharts direct ingest payloads."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    symbol: Optional[str] = Field(default=None, description="台股代號，例如 6160")
+    name: Optional[str] = Field(default=None, description="股票名稱")
+    source: str = Field(default="multicharts", description="資料來源，預設 multicharts")
+    file_name: Optional[str] = Field(default=None, description="來源檔名，用於追蹤")
+    query_time: Optional[datetime] = Field(default=None, description="匯入查詢時間（UTC）")
+
+
+class TWStockDirectRow(BaseModel):
+    """Single TW MultiCharts direct ingest row."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    date: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("date", "Date", "<Date>"),
+        description="交易日期，YYYY-MM-DD",
+    )
+    time: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("time", "Time", "<Time>"),
+        description="交易時間，例如 13:30:00",
+    )
+    open: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("open", "Open", "<Open>"),
+    )
+    high: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("high", "High", "<High>"),
+    )
+    low: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("low", "Low", "<Low>"),
+    )
+    close: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("close", "Close", "<Close>"),
+    )
+    up_volume: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("up_volume", "UpVolume", "<UpVolume>"),
+    )
+    down_volume: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("down_volume", "DownVolume", "<DownVolume>"),
+    )
+    total_volume: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("total_volume", "TotalVolume", "<TotalVolume>", "volume"),
+    )
+    up_ticks: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("up_ticks", "UpTicks", "<UpTicks>"),
+    )
+    down_ticks: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("down_ticks", "DownTicks", "<DownTicks>"),
+    )
+    total_ticks: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("total_ticks", "TotalTicks", "<TotalTicks>"),
+    )
+    open_interest: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "open_interest",
+            "OpenInterest",
+            "<OpenInterest>",
+        ),
+        description="接受後忽略，不會寫入 canonical",
+    )
+
+
+class TWStockDirectIngestPayload(BaseModel):
+    """TW MultiCharts direct ingest payload."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    metadata: TWStockDirectMetadata = Field(default_factory=TWStockDirectMetadata)
+    data: list[TWStockDirectRow] = Field(default_factory=list)
+
+    def validate_required_fields(self) -> None:
+        """Apply route-level business validation with 400-friendly errors."""
+        if not self.metadata.symbol or not self.metadata.symbol.strip():
+            raise ValueError("metadata.symbol is required")
+
+        required_fields = (
+            "date",
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "up_volume",
+            "down_volume",
+            "total_volume",
+            "up_ticks",
+            "down_ticks",
+            "total_ticks",
+        )
+
+        for index, row in enumerate(self.data):
+            missing_fields = [
+                field_name for field_name in required_fields if getattr(row, field_name) is None
+            ]
+            if missing_fields:
+                joined = ", ".join(missing_fields)
+                raise ValueError(f"data[{index}] missing required fields: {joined}")
 
 
 class IngestResponse(BaseModel):
