@@ -1,7 +1,7 @@
 """add_tw_multicharts_eod_fields
 
 Revision ID: d8b9c6b4d732
-Revises: 13bb20eec054
+Revises: 841728d7045e
 Create Date: 2026-04-30 16:10:00.000000
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d8b9c6b4d732"
-down_revision: Union[str, Sequence[str], None] = "13bb20eec054"
+down_revision: Union[str, Sequence[str], None] = "841728d7045e"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
