@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class IngestRequest(BaseModel):
@@ -43,6 +43,14 @@ class DirectIngestPayload(BaseModel):
     data: list[dict[str, Any]] = Field(default_factory=list)
 
 
+def _normalize_optional_symbol(value: Optional[str]) -> Optional[str]:
+    """Normalize symbol-like inputs so blank strings are treated as missing."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
 class TWStockDirectMetadata(BaseModel):
     """Metadata for TW MultiCharts direct ingest payloads."""
 
@@ -54,6 +62,11 @@ class TWStockDirectMetadata(BaseModel):
     file_name: Optional[str] = Field(default=None, description="來源檔名，用於追蹤")
     query_time: Optional[datetime] = Field(default=None, description="匯入查詢時間（UTC）")
 
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_optional_symbol(value)
+
 
 class TWStockDirectRow(BaseModel):
     """Single TW MultiCharts direct ingest row."""
@@ -64,6 +77,11 @@ class TWStockDirectRow(BaseModel):
         default=None,
         validation_alias=AliasChoices("date", "Date", "<Date>"),
         description="交易日期，YYYY-MM-DD",
+    )
+    symbol: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("symbol", "Symbol", "<Symbol>"),
+        description="台股代號，例如 6160",
     )
     time: Optional[str] = Field(
         default=None,
@@ -120,6 +138,11 @@ class TWStockDirectRow(BaseModel):
         description="接受後忽略，不會寫入 canonical",
     )
 
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_optional_symbol(value)
+
 
 class TWStockDirectIngestPayload(BaseModel):
     """TW MultiCharts direct ingest payload."""
@@ -131,12 +154,13 @@ class TWStockDirectIngestPayload(BaseModel):
 
     def validate_required_fields(self) -> None:
         """Apply route-level business validation with 400-friendly errors."""
-        if not self.metadata.symbol or not self.metadata.symbol.strip():
-            raise ValueError("metadata.symbol is required")
+        metadata_symbol = self.metadata.symbol
+        row_symbols = [row.symbol for row in self.data]
+        if not metadata_symbol and not any(row_symbols):
+            raise ValueError("metadata.symbol or data[].symbol is required")
 
         required_fields = (
             "date",
-            "time",
             "open",
             "high",
             "low",
@@ -153,6 +177,8 @@ class TWStockDirectIngestPayload(BaseModel):
             missing_fields = [
                 field_name for field_name in required_fields if getattr(row, field_name) is None
             ]
+            if not metadata_symbol and not row_symbols[index]:
+                missing_fields.append("symbol")
             if missing_fields:
                 joined = ", ".join(missing_fields)
                 raise ValueError(f"data[{index}] missing required fields: {joined}")

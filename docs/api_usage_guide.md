@@ -367,32 +367,33 @@ Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支�
 
 #### 台股 MultiCharts 直接格式（TWStockDirectIngestPayload）
 
-`/ingest/twstock/direct` 使用台股專用契約，不接受 raw `.txt` 檔直接上傳；請先轉成 JSON。
+`/ingest/twstock/direct` 使用台股專用契約，不直接接收 raw `.txt` / `.csv` 檔上傳；請先轉成 JSON。這個端點同時支援：
+
+1. 舊版單股票格式：`metadata.symbol` + `data[]`
+2. MultiCharts 日線檔列格式：每列自帶 `Symbol`、`Date`、OHLC、成交量拆分與成交筆數拆分，例如 `0052-Day-Trade.csv`
 
 ```json
 {
   "metadata": {
-    "symbol": "6160",
-    "name": "欣技",
+    "name": "富邦科技",
     "source": "multicharts",
-    "file_name": "6160 1 日.txt",
-    "query_time": "2026-04-30T08:00:00Z"
+    "file_name": "0052-Day-Trade.csv",
+    "query_time": "2025-05-05T13:30:00Z"
   },
   "data": [
     {
-      "date": "2024-04-29",
-      "time": "13:30:00",
-      "open": 20.45,
-      "high": 21.5,
-      "low": 20.45,
-      "close": 21.1,
-      "up_volume": 81,
-      "down_volume": 36,
-      "total_volume": 528,
-      "up_ticks": 37,
-      "down_ticks": 19,
-      "total_ticks": 221,
-      "open_interest": 0
+      "Symbol": "0052",
+      "Date": "2025/5/5",
+      "Open": 168.5,
+      "High": 168.5,
+      "Low": 162.75,
+      "Close": 164.9,
+      "UpVolume": 174,
+      "DownVolume": 225,
+      "TotalVolume": 1096,
+      "UpTicks": 46,
+      "DownTicks": 59,
+      "TotalTicks": 306
     }
   ]
 }
@@ -400,18 +401,20 @@ Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支�
 
 | 欄位                            | 類型   | 必填 | 說明 |
 | ------------------------------- | ------ | ---- | ---- |
-| `metadata.symbol`               | string | 是   | 台股代號，單股票請求的正式識別 |
+| `metadata.symbol`               | string | 條件必填 | 若 `data[]` 每列都未提供 `Symbol` / `symbol`，則必填 |
 | `metadata.name`                 | string | 否   | 股票名稱 |
 | `metadata.source`               | string | 否   | 預設 `multicharts` |
 | `metadata.file_name`            | string | 否   | 原始檔名，僅供追蹤 |
-| `data[].date` / `Date` / `<Date>` | string | 是   | 交易日期 |
-| `data[].time` / `Time` / `<Time>` | string | 是   | 交易時間；只保留在 raw payload，不進 canonical |
+| `data[].symbol` / `Symbol` / `<Symbol>` | string | 條件必填 | 若未提供 `metadata.symbol`，則每列都必須提供 |
+| `data[].date` / `Date` / `<Date>` | string | 是   | 交易日期；接受 `YYYY-MM-DD` 與 `YYYY/M/D` |
+| `data[].time` / `Time` / `<Time>` | string | 否   | 交易時間；只保留在 raw payload，不進 canonical |
 | `data[].open` / `high` / `low` / `close` | number | 是 | OHLC |
 | `data[].up_volume` / `down_volume` / `total_volume` | int | 是 | 拆分成交量；`total_volume` 會寫入既有 `volume` |
 | `data[].up_ticks` / `down_ticks` / `total_ticks` | int | 是 | 拆分成交筆數 |
 | `data[].open_interest`          | int    | 否   | 接受後忽略，不寫入 canonical |
 
 > `time` 與 `open_interest` 會隨 raw payload 保留，可透過 Admin raw payload 查詢追蹤。
+> 若來源檔缺少 `UpVolume`、`DownVolume`、`UpTicks`、`DownTicks`、`TotalTicks`，目前仍會拒收。
 
 #### 端點一覽
 

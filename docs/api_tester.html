@@ -1007,9 +1007,11 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <code>ticker</code>、<code>date</code>、<code>open</code>、<code>high</code>、<code>low</code>、
           <code>close</code>、<code>volume</code> 等欄位；也相容巢狀 <code>price</code> / <code>timestamp</code> 格式。<br><br>
           <code>metadata</code> 建議保留 <code>source</code> 與 <code>query_time</code>；<code>category</code> 非必需。<br><br>
-          <code>twstock/direct</code> 只接受 JSON，不直接接 raw txt；需提供 <code>metadata.symbol</code> 與
-          <code>time</code>、<code>up_volume</code>、<code>down_volume</code>、<code>total_volume</code>、
-          <code>up_ticks</code>、<code>down_ticks</code>、<code>total_ticks</code>。<code>open_interest</code> 會被接受但不進 canonical。<br><br>
+          <code>twstock/direct</code> 只接受 JSON，不直接接 raw txt/csv；支援舊版 <code>metadata.symbol + data[]</code>，
+          也支援每列自帶 <code>Symbol</code> 的 MultiCharts 日線格式。若每列都有 <code>Symbol</code>，可省略 <code>metadata.symbol</code>；
+          <code>Date</code> 接受 <code>YYYY-MM-DD</code> 與 <code>YYYY/M/D</code>，<code>time</code> 改為選填。
+          <code>up_volume</code>、<code>down_volume</code>、<code>total_volume</code>、<code>up_ticks</code>、
+          <code>down_ticks</code>、<code>total_ticks</code> 仍為必要欄位。<code>open_interest</code> 會被接受但不進 canonical。<br><br>
           可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>twstock/direct</code> · <code>hkchina/direct</code>（股票+指數整合） · <code>hkchina-index/direct</code>（相容舊流程） · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
         </div>
         <div class="params-section">
@@ -3089,7 +3091,7 @@ function sendRawIngest(btn) {
 const directExamples = {
   crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "XBTUSD BGN Curncy",\n      "date": "2026-03-12",\n      "open": 95550.07,\n      "high": 95825.34,\n      "low": 95119.76,\n      "close": 95709.01,\n      "volume": 18500\n    }\n  ]\n}`,
   usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T16:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2026-03-12",\n      "open": 218.2,\n      "high": 221.8,\n      "low": 217.6,\n      "close": 220.5,\n      "volume": 55000000\n    }\n  ]\n}`,
-  twstock: `{\n  "metadata": {\n    "symbol": "6160",\n    "name": "欣技",\n    "source": "multicharts",\n    "file_name": "6160 1 日.txt",\n    "query_time": "2026-04-30T08:00:00Z"\n  },\n  "data": [\n    {\n      "date": "2024-04-29",\n      "time": "13:30:00",\n      "open": 20.45,\n      "high": 21.50,\n      "low": 20.45,\n      "close": 21.10,\n      "up_volume": 81,\n      "down_volume": 36,\n      "total_volume": 528,\n      "up_ticks": 37,\n      "down_ticks": 19,\n      "total_ticks": 221,\n      "open_interest": 0\n    }\n  ]\n}`,
+  twstock: `{\n  "metadata": {\n    "name": "富邦科技",\n    "source": "multicharts",\n    "file_name": "0052-Day-Trade.csv",\n    "query_time": "2025-05-05T13:30:00Z"\n  },\n  "data": [\n    {\n      "Symbol": "0052",\n      "Date": "2025/5/5",\n      "Open": 168.50,\n      "High": 168.50,\n      "Low": 162.75,\n      "Close": 164.90,\n      "UpVolume": 174,\n      "DownVolume": 225,\n      "TotalVolume": 1096,\n      "UpTicks": 46,\n      "DownTicks": 59,\n      "TotalTicks": 306\n    }\n  ]\n}`,
   hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2026-03-12",\n      "open": 415.0,\n      "high": 425.0,\n      "low": 413.0,\n      "close": 420.0,\n      "volume": 18000000\n    },\n    {\n      "ticker": "SH000911 Index",\n      "date": "2026-03-12",\n      "open": 5915.2,\n      "high": 5968.4,\n      "low": 5901.6,\n      "close": 5950.8,\n      "volume": 0\n    }\n  ]\n}`,
   "hkchina-index": `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "HSI Index",\n      "date": "2026-03-12",\n      "open": 17120.0,\n      "high": 17280.0,\n      "low": 17085.0,\n      "close": 17235.0,\n      "volume": 0\n    },\n    {\n      "ticker": "SH000911 Index",\n      "date": "2026-03-12",\n      "open": 5915.2,\n      "high": 5968.4,\n      "low": 5901.6,\n      "close": 5950.8,\n      "volume": 0\n    }\n  ]\n}`,
   fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2026-03-12",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
