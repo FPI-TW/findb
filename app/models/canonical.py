@@ -76,7 +76,13 @@ class InstrumentIdentifier(Base):
 
     __tablename__ = "instrument_identifiers"
     __table_args__ = (
-        UniqueConstraint("id_type", "id_value", "valid_from", name="uq_identifier"),
+        UniqueConstraint(
+            "id_type",
+            "id_value",
+            "valid_from",
+            name="uq_identifier",
+            postgresql_nulls_not_distinct=True,
+        ),
         Index("idx_ident_inst", "instrument_id"),
         Index("idx_ident_type_value", "id_type", "id_value"),
     )
