@@ -91,8 +91,8 @@ Source API ──▶ Normalize ──▶ Canonical DB
 cp .env.example .env
 
 # 編輯 .env，設定 API Key
-# SOURCE_API_KEYS=your-source-key
-# ADMIN_API_KEYS=your-admin-key
+# SOURCE_API_KEY=your-source-key
+# ADMIN_API_KEY=your-admin-key
 # DEBUG=true
 
 # 啟動 Docker 容器
@@ -164,7 +164,7 @@ X-API-Key: your-admin-key
 | ----------------------- | ----- |
 | 未帶入 `X-API-Key`      | `401` |
 | API Key 無效            | `403` |
-| `ADMIN_API_KEYS` 未配置 | `500` |
+| `ADMIN_API_KEY` 未配置 | `500` |
 
 > **注意**：Admin API 不設 IP 允許名單，金鑰是唯一保護機制，請妥善保管並與 Source/Serve API Key 分開管理。
 
@@ -1628,7 +1628,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=50"
 | ------------------------------------- | ------ | -------------------------------------------- |
 | `"Missing API key"`                   | 401    | 未帶入 X-API-Key                             |
 | `"Invalid API key"`                   | 403    | Admin API Key 不正確                         |
-| `"No admin API keys configured"`      | 500    | 未設定 `ADMIN_API_KEYS` 環境變數             |
+| `"No admin API key configured"`      | 500    | 未設定 `ADMIN_API_KEY` 環境變數             |
 | `"EOD record not found..."`           | 404    | 指定的 instrument_id + trade_date 無日K 記錄 |
 | `"DQ issue ... not found"`            | 404    | 指定的 issue_id 不存在                       |
 | `"Raw payload not found"`             | 404    | 指定的 run_id 找不到 raw payload             |
@@ -2021,11 +2021,11 @@ with httpx.Client() as client:
 
 **可能原因：**
 
-1. **API Key 錯誤** — 確認 `X-API-Key` Header 的值與 `SOURCE_API_KEYS` 環境變數一致
+1. **API Key 錯誤** — 確認 `X-API-Key` Header 的值與 `SOURCE_API_KEY` 環境變數一致
 2. **IP 不在允許名單** — 生產環境由 nginx 回覆 403，請確認你的 IP 在 `SOURCE_ALLOWLIST_CIDRS` 內
-3. **docker-compose.yml 覆蓋了 .env** — `docker-compose.yml` 的 `environment` 區塊會覆蓋 `.env` 的值。預設 compose 內硬編碼 `SOURCE_API_KEYS: dev-source-key`，即使 `.env` 設了其他值也無效
+3. **API Key 未注入 Docker 環境** — 確認 `docker-compose.yml` 的 `SOURCE_API_KEY: ${SOURCE_API_KEY:-dev-source-key}` 有讀到 `.env`，未設定時才會使用 `dev-source-key`
 
-**解法：** 本機測試使用 `dev-source-key`，或修改 `docker-compose.yml` 移除硬編碼值。
+**解法：** 本機測試可使用 `dev-source-key`，或在 `.env` 設定 `SOURCE_API_KEY` 後重啟 app container。
 
 ### Q: 相同的 idempotency_key 送了兩次會怎樣？
 
@@ -2093,7 +2093,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 ### Q: 生產環境需要注意什麼？
 
 1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist
-2. **必須**設定 `ADMIN_API_KEYS`（否則所有 Admin API 端點回傳 500）
+2. **必須**設定 `ADMIN_API_KEY`（否則所有 Admin API 端點回傳 500）
 3. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
 4. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
 5. **建議**使用反向代理（如 nginx）處理 HTTPS
@@ -2111,12 +2111,12 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | 變數                         | 預設值                                                  | 說明                                                       |
 | ---------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- |
 | `DATABASE_URL`               | `postgresql+asyncpg://findb:findb@localhost:5435/findb` | PostgreSQL 連線字串                                        |
-| `SOURCE_API_KEYS`            | （空）                                                  | Source API 金鑰（逗號分隔）                                |
+| `SOURCE_API_KEY`            | （空）                                                  | Source API 金鑰                                             |
 | `SOURCE_ALLOWLIST_CIDRS`     | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | nginx `/api/v1/source/*` IP 允許名單（CIDR，逗號分隔）     |
 | `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For（rate limit client IP 用）        |
 | `SERVE_API_KEYS`             | （空）                                                  | Serve API 金鑰（逗號分隔）                                 |
 | `SERVE_REQUIRE_AUTH`         | `false`                                                 | Serve API 是否需要認證                                     |
-| `ADMIN_API_KEYS`             | （空）                                                  | Admin API 金鑰（逗號分隔），**必須設定**才能使用 Admin API |
+| `ADMIN_API_KEY`             | （空）                                                  | Admin API 金鑰，**必須設定**才能使用 Admin API              |
 | `RATE_LIMIT_REQUESTS`        | `100`                                                   | 限流上限（每 window 內的請求數）                           |
 | `RATE_LIMIT_WINDOW`          | `60`                                                    | 限流時間窗口（秒）                                         |
 | `RAW_RETENTION_ENABLED`      | `false`                                                 | 是否啟用原始資料過期清理                                   |
