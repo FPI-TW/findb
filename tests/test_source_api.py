@@ -1145,6 +1145,148 @@ class TestSourceAPI:
         assert any(error["loc"][-1] == field_name for error in detail)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("override", ["index", "future"])
+    async def test_ingest_twstock_direct_metadata_asset_class_override_routes_to_correct_class(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+        override: str,
+    ):
+        """metadata.asset_class redirects rows away from the default 'equity'."""
+        symbol = f"TXF_{override.upper()}_TEST"
+        payload = {
+            "metadata": {
+                "symbol": symbol,
+                "source": "multicharts",
+                "asset_class": override,
+                "query_time": "2026-05-07T08:00:00Z",
+            },
+            "data": [
+                {
+                    "date": "2026-05-06",
+                    "open": 20000.0,
+                    "high": 20100.0,
+                    "low": 19900.0,
+                    "close": 20050.0,
+                    "up_volume": 100,
+                    "down_volume": 90,
+                    "total_volume": 500,
+                    "up_ticks": 30,
+                    "down_ticks": 25,
+                    "total_ticks": 80,
+                }
+            ],
+        }
+
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+        run_id = response.json()["run_id"]
+
+        run = await test_session.get(IngestionRun, run_id)
+        assert run is not None
+        assert run.status == "completed"
+        assert run.success_records == 1
+
+        from app.models.canonical import Instrument
+
+        inst_stmt = select(Instrument).where(
+            Instrument.market == "TW",
+            Instrument.symbol == symbol,
+        )
+        instrument = (await test_session.execute(inst_stmt)).scalar_one()
+        assert instrument.asset_class == override
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_default_asset_class_remains_equity(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        """When metadata.asset_class is omitted, rows still land as equity."""
+        symbol = "DEFAULT_EQUITY_TEST"
+        payload = {
+            "metadata": {
+                "symbol": symbol,
+                "source": "multicharts",
+                "query_time": "2026-05-07T08:00:00Z",
+            },
+            "data": [
+                {
+                    "date": "2026-05-06",
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "up_volume": 10,
+                    "down_volume": 8,
+                    "total_volume": 50,
+                    "up_ticks": 3,
+                    "down_ticks": 2,
+                    "total_ticks": 8,
+                }
+            ],
+        }
+
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+
+        from app.models.canonical import Instrument
+
+        inst_stmt = select(Instrument).where(
+            Instrument.market == "TW",
+            Instrument.symbol == symbol,
+        )
+        instrument = (await test_session.execute(inst_stmt)).scalar_one()
+        assert instrument.asset_class == "equity"
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_invalid_asset_class_returns_422(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Invalid asset_class values are rejected by Pydantic before reaching the route."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "X",
+                    "source": "multicharts",
+                    "asset_class": "bond",
+                },
+                "data": [
+                    {
+                        "date": "2026-05-06",
+                        "open": 1.0,
+                        "high": 1.0,
+                        "low": 1.0,
+                        "close": 1.0,
+                        "up_volume": 0,
+                        "down_volume": 0,
+                        "total_volume": 0,
+                        "up_ticks": 0,
+                        "down_ticks": 0,
+                        "total_ticks": 0,
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert any("asset_class" in (error["loc"][-1] or "") for error in detail)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("endpoint", "dataset_key", "expected_market", "payload"),
         [

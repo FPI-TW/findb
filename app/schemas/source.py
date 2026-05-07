@@ -49,6 +49,9 @@ def _normalize_optional_symbol(value: Optional[str]) -> Optional[str]:
     return value
 
 
+_TWSTOCK_ALLOWED_ASSET_CLASSES = frozenset({"equity", "index", "future"})
+
+
 class TWStockDirectMetadata(BaseModel):
     """Metadata for TW MultiCharts direct ingest payloads."""
 
@@ -59,11 +62,35 @@ class TWStockDirectMetadata(BaseModel):
     source: str = Field(default="multicharts", description="資料來源，預設 multicharts")
     file_name: Optional[str] = Field(default=None, description="來源檔名，用於追蹤")
     query_time: Optional[datetime] = Field(default=None, description="匯入查詢時間（UTC）")
+    asset_class: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override canonical asset_class for these rows. "
+            "Allowed: equity (default), index, future. Use this to ingest TAIFEX "
+            "index/futures contracts via the same endpoint without "
+            "misclassifying them as equity."
+        ),
+    )
 
     @field_validator("symbol", mode="before")
     @classmethod
     def normalize_symbol(cls, value: Optional[str]) -> Optional[str]:
         return _normalize_optional_symbol(value)
+
+    @field_validator("asset_class", mode="before")
+    @classmethod
+    def normalize_asset_class(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("asset_class must be a string")
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if normalized not in _TWSTOCK_ALLOWED_ASSET_CLASSES:
+            allowed = ", ".join(sorted(_TWSTOCK_ALLOWED_ASSET_CLASSES))
+            raise ValueError(f"asset_class must be one of: {allowed}")
+        return normalized
 
 
 class TWStockDirectRow(BaseModel):
