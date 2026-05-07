@@ -24,7 +24,6 @@ services:
     container_name: findb-app
     environment:
       <<: *app-environment
-      FINDB_BASE_URL: "${FINDB_BASE_URL:?FINDB_BASE_URL must be set in GitHub Actions variables}"
       FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://127.0.0.1:${PORT:?PORT must be set in GitHub Actions variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"

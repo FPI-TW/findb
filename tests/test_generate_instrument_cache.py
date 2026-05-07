@@ -25,13 +25,13 @@ def test_static_cache_base_url_overrides_public_base_url(monkeypatch):
     assert module.BASE_URL == "http://127.0.0.1:8080"
 
 
-def test_static_cache_base_url_falls_back_to_findb_base_url(monkeypatch):
+def test_static_cache_base_url_ignores_removed_findb_base_url(monkeypatch):
     monkeypatch.setenv("FINDB_BASE_URL", "https://findb.example.com/")
     monkeypatch.delenv("FINDB_STATIC_CACHE_BASE_URL", raising=False)
 
     module = load_module()
 
-    assert module.BASE_URL == "https://findb.example.com"
+    assert module.BASE_URL == "http://localhost:8080"
 
 
 def test_build_cache_payload_sorts_and_extracts_metadata():

@@ -910,7 +910,6 @@ git push origin main
 | `RATE_LIMIT_WINDOW`          | `60`                                                                         |
 | `RAW_RETENTION_ENABLED`      | 是否啟用 raw 清理，例如 `false`                                              |
 | `RAW_RETENTION_DAYS`         | `14`                                                                         |
-| `FINDB_BASE_URL`             | 部署後服務 URL                                                              |
 | `FINDB_STATIC_CACHE_BASE_URL` | 靜態快取產生腳本呼叫 Serve API 的 base URL；部署容器內預設 `http://127.0.0.1:8080` |
 | `FINDB_LATEST_PRICE_WORKERS` | 靜態快取查詢最新價格的並行數，例如 `12`                                      |
 
