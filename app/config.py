@@ -24,10 +24,16 @@ class Settings(BaseSettings):
 
     # API
     API_V1_PREFIX: str = "/api/v1"
+    API_V2_PREFIX: str = "/api/v2"
     API_KEY_HEADER: str = "X-API-Key"
 
-    # Source API Key
-    SOURCE_API_KEY: str = ""
+    # Message broker
+    RABBITMQ_URL: str = "amqp://guest:guest@rabbitmq:5672/"
+    RABBITMQ_QUEUE_MAX_MESSAGES: int = 10000  # fallback cap when x-max-length not set
+    RABBITMQ_PRESSURE_THRESHOLD: float = 0.8  # fraction that triggers 429
+
+    # Source API Keys (comma-separated)
+    SOURCE_API_KEYS: str = ""
     SOURCE_TRUST_PROXY_HEADERS: bool = False
 
     # Serve API Keys (comma-separated, optional)

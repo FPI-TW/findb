@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import admin, serve, source
+from app.api.v2 import source as v2_source
 from app.config import get_settings
 from app.models.base import init_db
 
@@ -57,6 +58,18 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include routers
+app.include_router(
+    source.router,
+    prefix=f"{settings.API_V1_PREFIX}/source",
+    tags=["Source API"],
+)
+
+app.include_router(
+    v2_source.router,
+    prefix=f"{settings.API_V2_PREFIX}/source",
+    tags=["Source API"],
+)
+
 app.include_router(
     serve.router,
     prefix=f"{settings.API_V1_PREFIX}/serve",

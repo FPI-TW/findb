@@ -3,15 +3,17 @@ SQLAlchemy base configuration and database connection.
 """
 
 import logging
+import os
 from pathlib import Path
 
 from alembic.config import Config as AlembicConfig
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData, event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 
@@ -39,13 +41,32 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
+# WORKER_MODE=true is set by docker-compose / the Celery entrypoint command.
+# Relying on sys.argv is fragile because base.py is imported at module load time,
+# before Celery always populates argv correctly.
+# NullPool is mandatory for workers: each task calls asyncio.run() which creates a
+# new event loop. asyncpg connections are bound to the event loop they were created
+# on, so a shared pool would accumulate un-closeable connections across event loops,
+# exhausting PostgreSQL's max_connections.
+_is_worker = os.environ.get("WORKER_MODE", "").lower() in ("1", "true", "yes")
+
+if _is_worker:
+    engine_kwargs = {
+        "echo": settings.DEBUG,
+        "poolclass": NullPool,  # one connection per asyncio.run() call, closed on exit
+    }
+else:
+    engine_kwargs = {
+        "echo": settings.DEBUG,
+        "pool_size": settings.DATABASE_POOL_SIZE,
+        "max_overflow": settings.DATABASE_MAX_OVERFLOW,
+        "pool_pre_ping": True,  # detect stale connections before checkout
+        "pool_recycle": 1800,  # recycle connections idle for 30 min (prevents PG timeout)
+    }
+
+
 # Create async engine
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.DEBUG,
-    pool_size=settings.DATABASE_POOL_SIZE,
-    max_overflow=settings.DATABASE_MAX_OVERFLOW,
-)
+engine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
 
 # Session factory
 async_session_maker = async_sessionmaker(
@@ -120,3 +141,9 @@ async def get_session() -> AsyncSession:
     """Get a new database session."""
     async with async_session_maker() as session:
         return session
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def receive_connect(dbapi_connection, connection_record):
+    """確保連線在 fork 後是安全的"""
+    pass  #

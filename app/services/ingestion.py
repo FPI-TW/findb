@@ -256,6 +256,74 @@ async def trigger_normalization(
             logger.exception("Normalization failed for %s (run_id=%s)", dataset_key, run_id)
 
 
+async def trigger_normalization_v2(
+    dataset_key: str,
+    payload: dict,
+    run_id: UUID,
+    session: AsyncSession | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> None:
+    """Trigger normalization for a dataset."""
+    normalizer_cls = NORMALIZER_MAP.get(dataset_key)
+
+    if session is not None:
+        await _execute_normalization(
+            session=session,
+            normalizer_cls=normalizer_cls,
+            dataset_key=dataset_key,
+            payload=payload,
+            run_id=run_id,
+        )
+    else:
+        session_factory = session_factory or async_session_maker
+        async with session_factory() as new_session:
+            await _execute_normalization(
+                session=new_session,
+                normalizer_cls=normalizer_cls,
+                dataset_key=dataset_key,
+                payload=payload,
+                run_id=run_id,
+            )
+
+
+async def _execute_normalization(
+    session: AsyncSession, normalizer_cls: Any, dataset_key: str, payload: dict, run_id: UUID
+) -> None:
+    """Internal functions perform the actual normalization logic."""
+    if not normalizer_cls:
+        run = await session.get(IngestionRun, run_id)
+        if run:
+            run.status = "failed"
+            run.error_message = f"No normalizer configured for {dataset_key}"
+            run.completed_at = utc_now()
+        await session.commit()
+        logger.warning("No normalizer configured for %s", dataset_key)
+        return
+
+    dataset = await session.get(DatasetRegistry, dataset_key)
+    if not dataset:
+        run = await session.get(IngestionRun, run_id)
+        if run:
+            run.status = "failed"
+            run.error_message = f"Dataset {dataset_key} not found"
+            run.completed_at = utc_now()
+        await session.commit()
+        logger.warning("Dataset not found for normalization: %s", dataset_key)
+        return
+
+    normalizer = normalizer_cls(session, dataset.config or {})
+    try:
+        await normalizer.process(payload, run_id)
+    except Exception:
+        logger.exception("Normalization failed for %s (run_id=%s)", dataset_key, run_id)
+        run = await session.get(IngestionRun, run_id)
+        if run:
+            run.status = "failed"
+            run.error_message = "Normalization process failed during execution"
+            run.completed_at = utc_now()
+        await session.commit()
+
+
 class IngestionService:
     """Service for handling data ingestion."""
 
@@ -439,6 +507,145 @@ class IngestionService:
         await self.db.commit()
 
         return run.run_id, run.status, raw_payload.dataset_key, raw_payload.payload
+
+    async def ingest_v2(
+        self,
+        request: IngestRequest,
+        expected_market: str | None = None,
+    ) -> tuple[UUID, str, bool]:
+        """
+        Process an ingestion request for api/v2/source.
+
+        Returns:
+            Tuple of (run_id, status, is_duplicate)
+        """
+        # Validate dataset exists and active
+        dataset = await self.get_dataset(request.dataset_key, include_inactive=True)
+        if not dataset:
+            logger.warning("Ingestion rejected: dataset not found %s", request.dataset_key)
+            raise DatasetNotFoundError(f"Dataset {request.dataset_key} not found")
+        if not dataset.is_active:
+            run = await self.create_ingestion_run(
+                request.dataset_key,
+                source=request.source,
+                request_key=request.request_key,
+                raw_records=0,
+                metadata={
+                    "source": request.source,
+                    "request_key": request.request_key,
+                    "raw_records": 0,
+                },
+            )
+            run.status = "failed"
+            run.error_message = f"Dataset {request.dataset_key} is inactive"
+            run.completed_at = utc_now()
+            await self.db.commit()
+            logger.warning("Ingestion rejected: dataset inactive %s", request.dataset_key)
+            raise DatasetInactiveError(f"Dataset {request.dataset_key} is inactive")
+
+        if expected_market is not None:
+            dataset_market = _normalize_market(dataset.market)
+            requested_market = _normalize_market(expected_market)
+            if dataset_market != requested_market:
+                logger.warning(
+                    (
+                        "Ingestion rejected: dataset market mismatch "
+                        "dataset=%s dataset_market=%s requested_market=%s"
+                    ),
+                    request.dataset_key,
+                    dataset_market,
+                    requested_market,
+                )
+                raise MarketMismatchError(
+                    (
+                        f"Dataset {request.dataset_key} belongs to market "
+                        f"{dataset_market}, not {requested_market}"
+                    )
+                )
+
+        # Check for duplicate request
+        existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)
+        if existing_raw:
+            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+            status = existing_run.status if existing_run else "unknown"
+            logger.info(
+                "Duplicate idempotency_key %s, returning existing run %s",
+                request.idempotency_key,
+                existing_raw.run_id,
+            )
+            return existing_raw.run_id, status, True
+
+        # Validate payload schema
+        try:
+            data_items = self.validate_payload_schema(request.payload, dataset)
+        except PayloadValidationError as exc:
+            run = await self.create_ingestion_run(
+                request.dataset_key,
+                source=request.source,
+                request_key=request.request_key,
+                raw_records=0,
+                metadata={
+                    "source": request.source,
+                    "request_key": request.request_key,
+                    "raw_records": 0,
+                },
+            )
+            run.status = "failed"
+            run.error_message = str(exc)
+            run.completed_at = utc_now()
+            await self.db.commit()
+            logger.warning("Ingestion rejected: payload invalid %s", exc)
+            raise
+        raw_records = len(data_items)
+
+        metadata = {
+            "source": request.source,
+            "request_key": request.request_key,
+            "raw_records": raw_records,
+        }
+
+        # Create ingestion run
+        run = await self.create_ingestion_run(
+            request.dataset_key,
+            source=request.source,
+            request_key=request.request_key,
+            raw_records=raw_records,
+            metadata=metadata,
+        )
+
+        try:
+            # Store raw payload
+            await self.store_raw_payload(request, run.run_id)
+
+            # Commit transaction
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)
+            if existing_raw:
+                existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+                status = existing_run.status if existing_run else "unknown"
+                logger.info(
+                    "Idempotency conflict on commit for %s, returning existing run %s",
+                    request.idempotency_key,
+                    existing_raw.run_id,
+                )
+                return existing_raw.run_id, status, True
+            raise
+
+        logger.info(
+            "Ingestion run created: run_id=%s dataset=%s source=%s raw_records=%s request_key=%s",
+            run.run_id,
+            request.dataset_key,
+            request.source,
+            raw_records,
+            request.request_key,
+        )
+        await trigger_normalization_v2(
+            request.dataset_key, request.payload, run.run_id, session=self.db
+        )
+
+        return run.run_id, run.status, False
 
     async def ingest(
         self,

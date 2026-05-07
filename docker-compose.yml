@@ -16,7 +16,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-
+  rabbitmq:
+      image: rabbitmq:3-management-alpine
+      container_name: findb-rabbitmq
+      hostname: findb-rabbitmq
+      ports:
+        - "5672:5672"
+        - "15672:15672"
+      volumes:
+        - rabbitmq_data:/var/lib/rabbitmq
+      healthcheck:
+        test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+        interval: 10s
+        timeout: 10s
+        retries: 5
   app:
     build:
       context: .
@@ -24,6 +37,7 @@ services:
     container_name: findb-app
     environment:
       DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       DEBUG: ${DEBUG:-true}
       PORT: ${PORT:-8080}
       SOURCE_API_KEY: ${SOURCE_API_KEY:-dev-source-key}
@@ -36,12 +50,30 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     volumes:
       - ./app:/app/app:ro
       - ./app/static:/app/app/static
       - ./migrations:/app/migrations:ro
       - ./scripts:/app/scripts:ro
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --reload"
+  worker:
+    build: .
+    container_name: findb-worker
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DATABASE_URL=postgresql+asyncpg://findb:findb@db:5432/findb
+      - WORKER_MODE=true
+    command: >
+      celery -A app.core.celery_app worker -Q raw_data_ingest --concurrency=1 -P solo -l info
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
 
   raw-cleanup:
     profiles: ["tools"]
@@ -78,3 +110,4 @@ services:
 volumes:
   postgres_data:
   pgadmin_data:
+  rabbitmq_data:
