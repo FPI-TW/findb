@@ -1045,6 +1045,106 @@ class TestSourceAPI:
         assert response.json()["detail"] == "data[0] missing required fields: total_ticks"
 
     @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_preserves_zero_total_volume(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Ensure zero total volume is persisted as 0 rather than treated as missing."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "6160",
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [
+                    {
+                        "date": "2024-04-30",
+                        "open": 21.10,
+                        "high": 21.10,
+                        "low": 21.10,
+                        "close": 21.10,
+                        "up_volume": 0,
+                        "down_volume": 0,
+                        "total_volume": 0,
+                        "up_ticks": 0,
+                        "down_ticks": 0,
+                        "total_ticks": 0,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+
+        eod_response = await client.get(
+            "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-30&end_date=2024-04-30"
+        )
+        assert eod_response.status_code == 200
+        eod_payload = eod_response.json()["data"]
+        assert len(eod_payload) == 1
+        assert eod_payload[0]["volume"] == 0
+        assert eod_payload[0]["up_volume"] == 0
+        assert eod_payload[0]["down_volume"] == 0
+        assert eod_payload[0]["up_ticks"] == 0
+        assert eod_payload[0]["down_ticks"] == 0
+        assert eod_payload[0]["total_ticks"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "up_volume",
+            "down_volume",
+            "total_volume",
+            "up_ticks",
+            "down_ticks",
+            "total_ticks",
+        ],
+    )
+    async def test_ingest_twstock_direct_rejects_negative_split_fields(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        field_name: str,
+    ):
+        """Ensure TW stock split volume/tick fields cannot be negative."""
+        row = {
+            "date": "2024-04-29",
+            "open": 20.45,
+            "high": 21.50,
+            "low": 20.45,
+            "close": 21.10,
+            "up_volume": 81,
+            "down_volume": 36,
+            "total_volume": 528,
+            "up_ticks": 37,
+            "down_ticks": 19,
+            "total_ticks": 221,
+        }
+        row[field_name] = -1
+
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "6160",
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [row],
+            },
+        )
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert any(error["loc"][-1] == field_name for error in detail)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("endpoint", "dataset_key", "expected_market", "payload"),
         [

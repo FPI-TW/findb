@@ -106,30 +106,37 @@ class TWStockDirectRow(BaseModel):
     )
     up_volume: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices("up_volume", "UpVolume", "<UpVolume>"),
     )
     down_volume: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices("down_volume", "DownVolume", "<DownVolume>"),
     )
     total_volume: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices("total_volume", "TotalVolume", "<TotalVolume>", "volume"),
     )
     up_ticks: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices("up_ticks", "UpTicks", "<UpTicks>"),
     )
     down_ticks: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices("down_ticks", "DownTicks", "<DownTicks>"),
     )
     total_ticks: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices("total_ticks", "TotalTicks", "<TotalTicks>"),
     )
     open_interest: Optional[int] = Field(
         default=None,
+        ge=0,
         validation_alias=AliasChoices(
             "open_interest",
             "OpenInterest",

@@ -38,6 +38,8 @@ class TWStockMultichartsNormalizer(BaseNormalizer):
             if not symbol:
                 continue
 
+            total_volume = item.get("total_volume")
+            volume_value = total_volume if total_volume is not None else item.get("volume")
             record = MappedRecord(
                 symbol=symbol,
                 trade_date=trade_date,
@@ -48,7 +50,7 @@ class TWStockMultichartsNormalizer(BaseNormalizer):
                 high=self._parse_decimal(item.get("high")),
                 low=self._parse_decimal(item.get("low")),
                 close=self._parse_decimal(item.get("close")),
-                volume=self._parse_int(item.get("total_volume") or item.get("volume")),
+                volume=self._parse_int(volume_value),
                 up_volume=self._parse_int(item.get("up_volume")),
                 down_volume=self._parse_int(item.get("down_volume")),
                 up_ticks=self._parse_int(item.get("up_ticks")),
