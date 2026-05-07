@@ -7,7 +7,6 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -106,51 +105,3 @@ async def test_page():
 async def instrument_lookup_page():
     """商品查詢頁面。"""
     return FileResponse(INSTRUMENT_LOOKUP_PAGE_PATH, media_type="text/html")
-
-
-def custom_openapi():
-    """產生繁體中文 API 文件 schema。"""
-    if app.openapi_schema:
-        return app.openapi_schema
-
-    schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        openapi_version=app.openapi_version,
-        summary=app.summary,
-        description=app.description,
-        routes=app.routes,
-        webhooks=app.webhooks.routes,
-        tags=app.openapi_tags,
-        servers=app.servers,
-        terms_of_service=app.terms_of_service,
-        contact=app.contact,
-        license_info=app.license_info,
-        separate_input_output_schemas=app.separate_input_output_schemas,
-        external_docs=app.openapi_external_docs,
-    )
-
-    for path_item in schema.get("paths", {}).values():
-        for operation in path_item.values():
-            if not isinstance(operation, dict):
-                continue
-            operation_description = operation.get("description")
-            if isinstance(operation_description, str):
-                summary = next(
-                    (line.strip() for line in operation_description.splitlines() if line.strip()),
-                    "",
-                )
-                if summary:
-                    operation["summary"] = summary.rstrip("。")
-            for response in operation.get("responses", {}).values():
-                description = response.get("description")
-                if description == "Successful Response":
-                    response["description"] = "成功回應"
-                elif description == "Validation Error":
-                    response["description"] = "驗證錯誤"
-
-    app.openapi_schema = schema
-    return app.openapi_schema
-
-
-app.openapi = custom_openapi  # type: ignore[method-assign]
