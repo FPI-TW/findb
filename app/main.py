@@ -16,6 +16,12 @@ from app.models.base import init_db
 
 settings = get_settings()
 
+OPENAPI_TAGS = [
+    {"name": "Serve API", "description": "Read-only market data query endpoints."},
+    {"name": "Source API", "description": "Authenticated data ingestion endpoints."},
+    {"name": "Admin API", "description": "Authenticated administration endpoints."},
+]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,6 +37,7 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="Financial Database - Normalize and Serve Layer",
+    openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
 
@@ -51,15 +58,15 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include routers
 app.include_router(
-    source.router,
-    prefix=f"{settings.API_V1_PREFIX}/source",
-    tags=["Source API"],
-)
-
-app.include_router(
     serve.router,
     prefix=f"{settings.API_V1_PREFIX}/serve",
     tags=["Serve API"],
+)
+
+app.include_router(
+    source.router,
+    prefix=f"{settings.API_V1_PREFIX}/source",
+    tags=["Source API"],
 )
 
 app.include_router(
