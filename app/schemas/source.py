@@ -1,6 +1,4 @@
-"""
-Source API Pydantic schemas.
-"""
+"""Source API 使用的 Pydantic schema。"""
 
 from datetime import datetime
 from typing import Any, Optional
@@ -10,41 +8,41 @@ from pydantic import BaseModel, Field
 
 
 class IngestRequest(BaseModel):
-    """Request body for data ingestion."""
+    """資料匯入請求內容。"""
 
     dataset_key: str = Field(
         ...,
         min_length=1,
-        description="Dataset identifier (e.g., crypto_eod)",
+        description="資料集識別碼，例如 crypto_eod",
     )
     source: str = Field(
         ...,
         min_length=1,
-        description="Data source (e.g., bloomberg)",
+        description="資料來源，例如 bloomberg",
     )
     request_key: str = Field(
         ...,
         min_length=1,
-        description="Upstream request identifier for tracing",
+        description="上游請求識別碼，用於追蹤資料來源",
     )
     idempotency_key: str = Field(
         ...,
         min_length=1,
-        description="Idempotency key for request deduplication",
+        description="冪等鍵，用於避免重複處理相同請求",
     )
-    payload: dict[str, Any] = Field(..., description="Raw data payload")
-    fetched_at: datetime = Field(..., description="Timestamp when data was fetched")
+    payload: dict[str, Any] = Field(..., description="原始資料內容")
+    fetched_at: datetime = Field(..., description="資料抓取時間")
 
 
 class DirectIngestPayload(BaseModel):
-    """Direct market payload from fetch layer (metadata + data)."""
+    """fetch 層直接送入的市場資料內容，包含 metadata 與 data。"""
 
     metadata: dict[str, Any] = Field(default_factory=dict)
     data: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class IngestResponse(BaseModel):
-    """Response for data ingestion."""
+    """資料匯入回應。"""
 
     success: bool
     run_id: UUID
@@ -53,7 +51,7 @@ class IngestResponse(BaseModel):
 
 
 class RunStatusResponse(BaseModel):
-    """Response for run status query."""
+    """匯入執行狀態查詢回應。"""
 
     run_id: UUID
     dataset_key: str
@@ -67,7 +65,7 @@ class RunStatusResponse(BaseModel):
 
 
 class DatasetInfo(BaseModel):
-    """Dataset information."""
+    """資料集資訊。"""
 
     dataset_key: str
     name: str
@@ -79,7 +77,7 @@ class DatasetInfo(BaseModel):
 
 
 class DatasetListResponse(BaseModel):
-    """Response for dataset listing."""
+    """資料集列表回應。"""
 
     success: bool = True
     data: list[DatasetInfo]

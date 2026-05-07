@@ -1,6 +1,4 @@
-"""
-Serve API Pydantic schemas.
-"""
+"""Serve API 使用的 Pydantic schema。"""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,7 +11,7 @@ from app.schemas.common import PaginatedResponse
 
 
 class InstrumentResponse(BaseModel):
-    """Single instrument response."""
+    """單一商品回應。"""
 
     instrument_id: UUID
     asset_class: str
@@ -32,13 +30,13 @@ class InstrumentResponse(BaseModel):
 
 
 class InstrumentListResponse(PaginatedResponse[InstrumentResponse]):
-    """Paginated instrument list response."""
+    """分頁商品列表回應。"""
 
     pass
 
 
 class EODResponse(BaseModel):
-    """Single EOD data response."""
+    """單一日線資料回應。"""
 
     instrument_id: UUID
     symbol: str
@@ -59,13 +57,13 @@ class EODResponse(BaseModel):
 
 
 class EODListResponse(PaginatedResponse[EODResponse]):
-    """Paginated EOD data response."""
+    """分頁日線資料回應。"""
 
     pass
 
 
 class CorporateActionResponse(BaseModel):
-    """Single corporate action response."""
+    """單一公司行動回應。"""
 
     action_id: UUID
     instrument_id: UUID
@@ -86,13 +84,13 @@ class CorporateActionResponse(BaseModel):
 
 
 class CorporateActionListResponse(PaginatedResponse[CorporateActionResponse]):
-    """Paginated corporate action response."""
+    """分頁公司行動回應。"""
 
     pass
 
 
 class MacroSeriesResponse(BaseModel):
-    """Single macro series response."""
+    """單一總經時間序列回應。"""
 
     series_id: UUID
     name: str
@@ -106,13 +104,13 @@ class MacroSeriesResponse(BaseModel):
 
 
 class MacroSeriesListResponse(PaginatedResponse[MacroSeriesResponse]):
-    """Paginated macro series response."""
+    """分頁總經時間序列回應。"""
 
     pass
 
 
 class MacroObservationResponse(BaseModel):
-    """Single macro observation response."""
+    """單一總經觀測值回應。"""
 
     id: UUID
     series_id: UUID
@@ -125,13 +123,13 @@ class MacroObservationResponse(BaseModel):
 
 
 class MacroObservationListResponse(PaginatedResponse[MacroObservationResponse]):
-    """Paginated macro observation response."""
+    """分頁總經觀測值回應。"""
 
     pass
 
 
 class FuturesContractResponse(BaseModel):
-    """Single futures contract response."""
+    """單一期貨合約回應。"""
 
     contract_id: UUID
     instrument_id: UUID
@@ -148,13 +146,13 @@ class FuturesContractResponse(BaseModel):
 
 
 class FuturesContractListResponse(PaginatedResponse[FuturesContractResponse]):
-    """Paginated futures contract response."""
+    """分頁期貨合約回應。"""
 
     pass
 
 
 class FuturesContinuousResponse(BaseModel):
-    """Single continuous futures EOD response."""
+    """單一連續期貨日線回應。"""
 
     id: UUID
     instrument_id: UUID
@@ -175,13 +173,13 @@ class FuturesContinuousResponse(BaseModel):
 
 
 class FuturesContinuousListResponse(PaginatedResponse[FuturesContinuousResponse]):
-    """Paginated continuous futures response."""
+    """分頁連續期貨回應。"""
 
     pass
 
 
 class CalendarResponse(BaseModel):
-    """Trading calendar response."""
+    """交易日曆回應。"""
 
     market: str
     trade_date: date
@@ -194,6 +192,6 @@ class CalendarResponse(BaseModel):
 
 
 class CalendarListResponse(PaginatedResponse[CalendarResponse]):
-    """Paginated calendar response."""
+    """分頁交易日曆回應。"""
 
     pass

@@ -1,6 +1,6 @@
 """
-Admin API endpoints.
-Provides manual correction and DQ resolution capabilities for the canonical layer.
+Admin API 端點。
+提供 canonical 層資料的人工修正與資料品質問題處理能力。
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -68,7 +68,7 @@ router = APIRouter()
 async def get_instrument_cache(
     api_key: str = Depends(verify_admin_api_key),
 ):
-    """Return the generated static instrument lookup cache."""
+    """回傳已產生的靜態商品查詢快取。"""
     try:
         return read_instrument_cache()
     except InstrumentCacheNotFoundError as exc:
@@ -82,7 +82,7 @@ async def put_instrument_cache(
     body: InstrumentCacheReplaceRequest,
     api_key: str = Depends(verify_admin_api_key),
 ):
-    """Replace instruments.json with a validated and normalized document."""
+    """以已驗證且正規化的文件替換 instruments.json。"""
     try:
         payload = replace_instrument_cache(body.model_dump(mode="json"))
     except InstrumentCacheValidationError as exc:
@@ -103,7 +103,7 @@ async def patch_instrument_cache_item(
     body: InstrumentCacheItemPatchRequest,
     api_key: str = Depends(verify_admin_api_key),
 ):
-    """Patch a single instrument inside the generated instruments.json cache."""
+    """修補產生後 instruments.json 快取中的單一商品。"""
     try:
         item = update_instrument_cache_item(
             instrument_id,
@@ -124,15 +124,15 @@ async def patch_instrument_cache_item(
 
 @router.get("/dq-issues", response_model=DQIssueListResponse)
 async def list_dq_issues_endpoint(
-    resolved: Optional[bool] = Query(None, description="Filter by resolved status"),
-    instrument_id: Optional[UUID] = Query(None, description="Filter by instrument UUID"),
-    severity: Optional[str] = Query(None, description="Filter by severity (warning / error)"),
+    resolved: Optional[bool] = Query(None, description="依是否已解決篩選"),
+    instrument_id: Optional[UUID] = Query(None, description="依商品 UUID 篩選"),
+    severity: Optional[str] = Query(None, description="依嚴重程度篩選：warning / error"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List DQ issues. Filter by resolved status, instrument, or severity."""
+    """列出資料品質問題，可依解決狀態、商品或嚴重程度篩選。"""
     rows, total = await list_dq_issues(db, resolved, instrument_id, severity, page, page_size)
     total_pages = (total + page_size - 1) // page_size if total else 0
     return DQIssueListResponse(
@@ -154,7 +154,7 @@ async def patch_eod(
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Patch OHLCV fields on a MarketDataEOD record. Creates an immutable audit correction row."""
+    """修補 MarketDataEOD 紀錄的 OHLCV 欄位，並建立不可變的修正稽核紀錄。"""
     try:
         correction, eod = await patch_eod_record(db, instrument_id, trade_date, body, api_key)
     except RecordNotFoundError as exc:
@@ -178,7 +178,7 @@ async def resolve_dq_issue_endpoint(
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark a DQ issue as resolved with an audit reason. Creates a correction row."""
+    """以稽核原因將資料品質問題標記為已解決，並建立修正紀錄。"""
     try:
         correction, issue = await resolve_dq_issue(db, issue_id, body, api_key)
     except RecordNotFoundError as exc:
@@ -196,20 +196,20 @@ async def resolve_dq_issue_endpoint(
 
 @router.get("/raw-payloads", response_model=RawPayloadListResponse)
 async def list_raw_payloads(
-    dataset_key: Optional[str] = Query(None, description="Filter by dataset key"),
-    run_id: Optional[UUID] = Query(None, description="Filter by ingestion run UUID"),
+    dataset_key: Optional[str] = Query(None, description="依資料集 key 篩選"),
+    run_id: Optional[UUID] = Query(None, description="依匯入執行 UUID 篩選"),
     date_from: Optional[date] = Query(
-        None, description="Filter created_at >= this date (YYYY-MM-DD, UTC)"
+        None, description="篩選 created_at 大於或等於此日期 (YYYY-MM-DD, UTC)"
     ),
     date_to: Optional[date] = Query(
-        None, description="Filter created_at <= this date (YYYY-MM-DD, UTC)"
+        None, description="篩選 created_at 小於或等於此日期 (YYYY-MM-DD, UTC)"
     ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List raw market payloads, newest first. Optionally filter by dataset_key, run_id, or date range."""
+    """列出原始市場資料，最新資料在前；可依 dataset_key、run_id 或日期區間篩選。"""
     stmt = select(RawMarketPayload)
     count_stmt = select(func.count()).select_from(RawMarketPayload)
 
@@ -261,7 +261,7 @@ async def get_raw_payload_by_run(
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the raw payload for a specific ingestion run."""
+    """取得指定匯入執行的原始資料。"""
     stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == run_id)
     row = (await db.execute(stmt)).scalar_one_or_none()
     if not row:
@@ -271,14 +271,14 @@ async def get_raw_payload_by_run(
 
 @router.get("/corrections", response_model=CorrectionListResponse)
 async def list_corrections_endpoint(
-    table_name: Optional[str] = Query(None, description="Filter by canonical table name"),
-    instrument_id: Optional[UUID] = Query(None, description="Filter by instrument UUID"),
+    table_name: Optional[str] = Query(None, description="依 canonical 資料表名稱篩選"),
+    instrument_id: Optional[UUID] = Query(None, description="依商品 UUID 篩選"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List correction audit records, newest first. Optionally filter by table or instrument."""
+    """列出修正稽核紀錄，最新資料在前；可依資料表或商品篩選。"""
     rows, total = await list_corrections(db, table_name, instrument_id, page, page_size)
     total_pages = (total + page_size - 1) // page_size if total else 0
 
@@ -310,19 +310,19 @@ async def list_corrections_endpoint(
 @router.post("/runs/bulk-rerun", response_model=BulkRerunResponse)
 async def bulk_rerun_runs(
     background_tasks: BackgroundTasks,
-    dataset_key: Optional[str] = Query(None, description="Filter by dataset_key"),
+    dataset_key: Optional[str] = Query(None, description="依 dataset_key 篩選"),
     run_status: Optional[str] = Query(
         "completed",
         alias="status",
-        description="Run status to include: completed / failed / all",
+        description="要包含的執行狀態：completed / failed / all",
     ),
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Rerun normalization for all existing runs matching the given filters.
+    """針對符合篩選條件的既有執行紀錄重新執行正規化。
 
-    Creates a new ingestion run for each match and queues normalization as
-    a background task. Returns immediately with a summary.
+    會為每筆符合條件的紀錄建立新的匯入執行，並將正規化排入背景任務。
+    此端點會立即回傳摘要。
     """
     stmt = select(IngestionRun.run_id)
     if dataset_key:
@@ -383,8 +383,8 @@ async def refresh_instrument_cache(
     api_key: str = Depends(verify_admin_api_key),
 ):
     """
-    Manually refresh the static instrument cache (instruments.json).
-    This long-running task will be processed in the background.
+    手動刷新靜態商品快取 instruments.json。
+    這個長時間執行的任務會在背景處理。
     """
 
     def task_wrapper():

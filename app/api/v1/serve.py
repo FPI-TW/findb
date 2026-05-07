@@ -1,6 +1,6 @@
 """
-Serve API endpoints.
-Provides data access for consumers.
+Serve API 端點。
+提供消費端查詢市場資料。
 """
 
 from datetime import date
@@ -49,16 +49,16 @@ router = APIRouter()
 
 @router.get("/instruments", response_model=InstrumentListResponse)
 async def list_instruments(
-    market: Optional[str] = Query(None, description="Filter by market (e.g., CRYPTO, US)"),
-    asset_class: Optional[str] = Query(None, description="Filter by asset class"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
-    symbol: Optional[str] = Query(None, description="Filter by symbol (exact match)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選，例如 CRYPTO、US"),
+    asset_class: Optional[str] = Query(None, description="依資產類別篩選"),
+    status_filter: Optional[str] = Query(None, alias="status", description="依狀態篩選"),
+    symbol: Optional[str] = Query(None, description="依商品代號精確篩選"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List instruments with optional filtering."""
+    """列出商品，支援選用篩選條件。"""
     latest_trade_date = (
         select(func.max(MarketDataEOD.trade_date))
         .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
@@ -146,7 +146,7 @@ async def get_instrument(
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single instrument by ID."""
+    """依 ID 取得單一商品。"""
     latest_trade_date = (
         select(func.max(MarketDataEOD.trade_date))
         .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
@@ -195,16 +195,16 @@ async def get_instrument(
 
 @router.get("/eod", response_model=EODListResponse)
 async def list_eod_data(
-    market: Optional[str] = Query(None, description="Filter by market"),
-    symbols: Optional[str] = Query(None, description="Comma-separated symbols"),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    symbols: Optional[str] = Query(None, description="以逗號分隔的商品代號"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List EOD data with optional filtering."""
+    """列出日線資料，支援選用篩選條件。"""
     # Build query with join to get instrument info
     query = select(MarketDataEOD, Instrument).join(
         Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id
@@ -281,14 +281,14 @@ async def list_eod_data(
 @router.get("/eod/{instrument_id}", response_model=EODListResponse)
 async def get_instrument_eod(
     instrument_id: UUID,
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get EOD data for a specific instrument."""
+    """取得指定商品的日線資料。"""
     # Check instrument exists
     inst_result = await db.execute(
         select(Instrument).where(Instrument.instrument_id == instrument_id)
@@ -360,17 +360,17 @@ async def get_instrument_eod(
 
 @router.get("/corporate-actions", response_model=CorporateActionListResponse)
 async def list_corporate_actions(
-    market: Optional[str] = Query(None, description="Filter by market"),
-    symbols: Optional[str] = Query(None, description="Comma-separated symbols"),
-    action_type: Optional[str] = Query(None, description="Filter by action type"),
-    start_date: Optional[date] = Query(None, description="Start ex-date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End ex-date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    symbols: Optional[str] = Query(None, description="以逗號分隔的商品代號"),
+    action_type: Optional[str] = Query(None, description="依公司行動類型篩選"),
+    start_date: Optional[date] = Query(None, description="除權息起始日 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="除權息結束日 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List corporate actions with optional filtering."""
+    """列出公司行動，支援選用篩選條件。"""
     query = select(CorporateAction, Instrument).join(
         Instrument, CorporateAction.instrument_id == Instrument.instrument_id
     )
@@ -443,15 +443,15 @@ async def list_corporate_actions(
 @router.get("/corporate-actions/{instrument_id}", response_model=CorporateActionListResponse)
 async def get_instrument_corporate_actions(
     instrument_id: UUID,
-    action_type: Optional[str] = Query(None, description="Filter by action type"),
-    start_date: Optional[date] = Query(None, description="Start ex-date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End ex-date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    action_type: Optional[str] = Query(None, description="依公司行動類型篩選"),
+    start_date: Optional[date] = Query(None, description="除權息起始日 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="除權息結束日 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get corporate actions for a specific instrument."""
+    """取得指定商品的公司行動。"""
     inst_result = await db.execute(
         select(Instrument).where(Instrument.instrument_id == instrument_id)
     )
@@ -523,16 +523,16 @@ async def get_instrument_corporate_actions(
 
 @router.get("/macro/series", response_model=MacroSeriesListResponse)
 async def list_macro_series(
-    market: Optional[str] = Query(None, description="Filter by market"),
-    source: Optional[str] = Query(None, description="Filter by source"),
-    source_code: Optional[str] = Query(None, description="Filter by source code"),
-    name: Optional[str] = Query(None, description="Filter by series name"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    source: Optional[str] = Query(None, description="依資料來源篩選"),
+    source_code: Optional[str] = Query(None, description="依來源代碼篩選"),
+    name: Optional[str] = Query(None, description="依時間序列名稱篩選"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List macro series."""
+    """列出總經時間序列。"""
     query = select(MacroSeries)
     count_query = select(func.count(MacroSeries.series_id))
 
@@ -586,16 +586,16 @@ async def list_macro_series(
 
 @router.get("/macro/observations", response_model=MacroObservationListResponse)
 async def list_macro_observations(
-    market: Optional[str] = Query(None, description="Filter by market"),
-    source_code: Optional[str] = Query(None, description="Filter by source code"),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    source_code: Optional[str] = Query(None, description="依來源代碼篩選"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List macro observations."""
+    """列出總經觀測值。"""
     query = select(MacroObservation, MacroSeries).join(
         MacroSeries, MacroObservation.series_id == MacroSeries.series_id
     )
@@ -657,14 +657,14 @@ async def list_macro_observations(
 @router.get("/macro/observations/{series_id}", response_model=MacroObservationListResponse)
 async def get_macro_observations(
     series_id: UUID,
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get macro observations for a series."""
+    """取得指定總經時間序列的觀測值。"""
     series_result = await db.execute(select(MacroSeries).where(MacroSeries.series_id == series_id))
     series = series_result.scalar_one_or_none()
 
@@ -721,17 +721,17 @@ async def get_macro_observations(
 
 @router.get("/futures/contracts", response_model=FuturesContractListResponse)
 async def list_futures_contracts(
-    market: Optional[str] = Query(None, description="Filter by market"),
-    symbols: Optional[str] = Query(None, description="Comma-separated symbols"),
-    contract_code: Optional[str] = Query(None, description="Filter by contract code"),
-    start_expiry: Optional[date] = Query(None, description="Start expiry date (YYYY-MM-DD)"),
-    end_expiry: Optional[date] = Query(None, description="End expiry date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    symbols: Optional[str] = Query(None, description="以逗號分隔的商品代號"),
+    contract_code: Optional[str] = Query(None, description="依合約代碼篩選"),
+    start_expiry: Optional[date] = Query(None, description="到期日起始日 (YYYY-MM-DD)"),
+    end_expiry: Optional[date] = Query(None, description="到期日結束日 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List futures contracts."""
+    """列出期貨合約。"""
     query = select(FuturesContract, Instrument).join(
         Instrument, FuturesContract.instrument_id == Instrument.instrument_id
     )
@@ -799,16 +799,16 @@ async def list_futures_contracts(
 
 @router.get("/futures/continuous", response_model=FuturesContinuousListResponse)
 async def list_futures_continuous(
-    market: Optional[str] = Query(None, description="Filter by market"),
-    symbols: Optional[str] = Query(None, description="Comma-separated symbols"),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    symbols: Optional[str] = Query(None, description="以逗號分隔的商品代號"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List continuous futures EOD data."""
+    """列出連續期貨日線資料。"""
     query = (
         select(FuturesContinuousEOD, Instrument, RollRule)
         .join(Instrument, FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
@@ -883,14 +883,14 @@ async def list_futures_continuous(
 @router.get("/futures/continuous/{instrument_id}", response_model=FuturesContinuousListResponse)
 async def get_futures_continuous(
     instrument_id: UUID,
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get continuous futures EOD for a specific instrument."""
+    """取得指定商品的連續期貨日線資料。"""
     inst_result = await db.execute(
         select(Instrument).where(Instrument.instrument_id == instrument_id)
     )
@@ -961,16 +961,16 @@ async def get_futures_continuous(
 
 @router.get("/calendar", response_model=CalendarListResponse)
 async def list_calendar(
-    market: str = Query(..., description="Market code (required)"),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
-    is_open: Optional[bool] = Query(None, description="Filter by trading day status"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
+    market: str = Query(..., description="市場代碼，必填"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    is_open: Optional[bool] = Query(None, description="依是否為交易日篩選"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get trading calendar for a market."""
+    """取得指定市場的交易日曆。"""
     # Build query
     query = select(TradingCalendar).where(TradingCalendar.market == market.upper())
     count_query = select(func.count(TradingCalendar.id)).where(
