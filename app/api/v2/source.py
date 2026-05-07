@@ -248,7 +248,11 @@ async def _dispatch_direct_payload(
 @router.post("/ingest/usstock/direct", response_model=IngestQueueResponse)
 async def ingest_usstock_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg US stock direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
@@ -262,7 +266,11 @@ async def ingest_usstock_direct_data(
 @router.post("/ingest/hkchina/direct", response_model=IngestQueueResponse)
 async def ingest_hkchina_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg HK/China mixed direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
@@ -276,7 +284,11 @@ async def ingest_hkchina_direct_data(
 @router.post("/ingest/hkchina-index/direct", response_model=IngestQueueResponse)
 async def ingest_hkchina_index_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg HK/China index direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
@@ -290,7 +302,11 @@ async def ingest_hkchina_index_direct_data(
 @router.post("/ingest/crypto/direct", response_model=IngestQueueResponse)
 async def ingest_crypto_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg crypto direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
@@ -304,7 +320,11 @@ async def ingest_crypto_direct_data(
 @router.post("/ingest/fx/direct", response_model=IngestQueueResponse)
 async def ingest_fx_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg FX direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
@@ -318,7 +338,11 @@ async def ingest_fx_direct_data(
 @router.post("/ingest/macro/direct", response_model=IngestQueueResponse)
 async def ingest_macro_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg macro direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
@@ -332,7 +356,11 @@ async def ingest_macro_direct_data(
 @router.post("/ingest/wtx/direct", response_model=IngestQueueResponse)
 async def ingest_wtx_direct_data(
     payload: DirectIngestPayloadV2,
+<<<<<<< HEAD
     api_key: str = Depends(verify_source_api_key),
+=======
+    # api_key: str = Depends(verify_source_api_key),
+>>>>>>> b9ca809 (feat: api v2 and workers)
 ) -> IngestQueueResponse:
     """Validate Bloomberg WTX futures direct payload and enqueue via Celery."""
     return await _dispatch_direct_payload(
