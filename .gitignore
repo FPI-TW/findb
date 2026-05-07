@@ -3,6 +3,10 @@ __pycache__/
 *$py.class
 *.so
 
+# Bulk ingest script per-file logs (also prod variant)
+.ingest_log/
+.ingest_log_prod/
+
 .env
 .env.*
 !.env.example
