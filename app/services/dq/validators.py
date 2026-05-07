@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CorporateAction, MarketDataEOD
-from app.services.normalize.types import MappedRecord
+from app.services.normalize.types import EODLikeRecord
 
 
 @dataclass
@@ -40,7 +40,7 @@ class DQValidator:
 
     def validate_eod(
         self,
-        record: MappedRecord,
+        record: EODLikeRecord,
         *,
         seen_keys: Optional[set[tuple[str, str, datetime]]] = None,
     ) -> list[DQIssueRecord]:
@@ -87,7 +87,7 @@ class DQValidator:
 
         return issues
 
-    def _check_ohlc_high(self, record: MappedRecord) -> Optional[DQIssueRecord]:
+    def _check_ohlc_high(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
         """Check if high >= max(open, close)."""
         if record.high is None or record.open is None or record.close is None:
             return None
@@ -103,7 +103,7 @@ class DQValidator:
             )
         return None
 
-    def _check_ohlc_low(self, record: MappedRecord) -> Optional[DQIssueRecord]:
+    def _check_ohlc_low(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
         """Check if low <= min(open, close)."""
         if record.low is None or record.open is None or record.close is None:
             return None
@@ -119,7 +119,7 @@ class DQValidator:
             )
         return None
 
-    def _check_volume_positive(self, record: MappedRecord) -> Optional[DQIssueRecord]:
+    def _check_volume_positive(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
         """Check if volume is non-negative."""
         if record.volume is None:
             return None
@@ -134,7 +134,7 @@ class DQValidator:
             )
         return None
 
-    def _check_missing_ohlc(self, record: MappedRecord) -> Optional[DQIssueRecord]:
+    def _check_missing_ohlc(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
         """Check for missing OHLC values."""
         missing = []
         if record.open is None:
@@ -156,7 +156,7 @@ class DQValidator:
             )
         return None
 
-    def _check_abnormal_return(self, record: MappedRecord) -> Optional[DQIssueRecord]:
+    def _check_abnormal_return(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
         """Check for abnormal single-day return (>30%)."""
         if record.open is None or record.close is None or record.open == 0:
             return None
@@ -175,7 +175,7 @@ class DQValidator:
 
     def _check_duplicate_key(
         self,
-        record: MappedRecord,
+        record: EODLikeRecord,
         seen_keys: Optional[set[tuple[str, str, datetime]]],
     ) -> Optional[DQIssueRecord]:
         """Check for duplicate instrument/trade_date within the batch."""
@@ -203,7 +203,7 @@ class DQValidator:
         self,
         db: AsyncSession,
         instrument_id: UUID,
-        record: MappedRecord,
+        record: EODLikeRecord,
     ) -> Optional[DQIssueRecord]:
         """Check price continuity around corporate actions (equity only)."""
         if record.trade_date is None:

@@ -24,6 +24,7 @@ from app.schemas.admin import (
     DQIssueListResponse,
     DQIssueResponse,
     InstrumentCacheDocument,
+    InstrumentCacheItem,
     InstrumentCacheItemPatchRequest,
     InstrumentCacheItemUpdateResponse,
     InstrumentCacheReplaceRequest,
@@ -90,7 +91,7 @@ async def put_instrument_cache(
 
     return InstrumentCacheWriteResponse(
         message="Instrument cache updated successfully",
-        data=payload,
+        data=InstrumentCacheDocument.model_validate(payload),
     )
 
 
@@ -118,7 +119,7 @@ async def patch_instrument_cache_item(
 
     return InstrumentCacheItemUpdateResponse(
         message="Instrument cache item updated successfully",
-        data=item,
+        data=InstrumentCacheItem.model_validate(item),
     )
 
 
@@ -186,10 +187,17 @@ async def resolve_dq_issue_endpoint(
     except AlreadyResolvedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
+    resolved_at = issue.resolved_at
+    if resolved_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="DQ issue resolution did not set resolved_at",
+        )
+
     return ResolveDQIssueResponse(
         correction_id=correction.id,
         issue_id=issue.id,
-        resolved_at=issue.resolved_at,
+        resolved_at=resolved_at,
         message="DQ issue resolved successfully",
     )
 

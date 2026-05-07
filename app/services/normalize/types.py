@@ -5,7 +5,7 @@ Shared type definitions for normalization.
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Protocol
 from uuid import UUID
 
 
@@ -33,6 +33,27 @@ class MappedRecord:
     raw_data: Optional[dict] = None
     identifier_type: Optional[str] = None
     identifier_value: Optional[str] = None
+
+
+class InstrumentResolvableRecord(Protocol):
+    """Record shape that can resolve or create an instrument."""
+
+    symbol: str
+    name: Optional[str]
+    identifier_type: Optional[str]
+    identifier_value: Optional[str]
+
+
+class EODLikeRecord(InstrumentResolvableRecord, Protocol):
+    """Record shape used by EOD data-quality checks."""
+
+    trade_date: datetime
+    open: Optional[Decimal]
+    high: Optional[Decimal]
+    low: Optional[Decimal]
+    close: Optional[Decimal]
+    volume: Optional[int]
+    raw_data: Optional[dict]
 
 
 @dataclass
