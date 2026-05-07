@@ -1,9 +1,3 @@
-# PROJECT KNOWLEDGE BASE
-
-Updated: 2026-04-22
-Commit: 2d283e3
-Branch: main
-
 ## OVERVIEW
 
 FinDB is a FastAPI backend for ingesting market payloads, normalizing into canonical models, and serving read-only query APIs.
