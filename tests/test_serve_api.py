@@ -186,6 +186,66 @@ async def test_get_instrument_eod(client: AsyncClient, test_session):
 
 
 @pytest.mark.asyncio
+async def test_eod_endpoints_return_multicharts_fields(client: AsyncClient, test_session):
+    """Ensure EOD responses include TW MultiCharts-specific fields when present."""
+    instrument_id = uuid7()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="equity",
+        market="TW",
+        symbol="6160",
+        name="欣技",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    eod = MarketDataEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=date(2024, 4, 29),
+        open=Decimal("20.45"),
+        high=Decimal("21.50"),
+        low=Decimal("20.45"),
+        close=Decimal("21.10"),
+        volume=528,
+        up_volume=81,
+        down_volume=36,
+        up_ticks=37,
+        down_ticks=19,
+        total_ticks=221,
+        asof_ts=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([instrument, eod])
+    await test_session.commit()
+
+    list_response = await client.get(
+        "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-29&end_date=2024-04-29"
+    )
+    assert list_response.status_code == 200
+    list_payload = list_response.json()["data"]
+    assert len(list_payload) == 1
+    assert list_payload[0]["up_volume"] == 81
+    assert list_payload[0]["down_volume"] == 36
+    assert list_payload[0]["up_ticks"] == 37
+    assert list_payload[0]["down_ticks"] == 19
+    assert list_payload[0]["total_ticks"] == 221
+
+    detail_response = await client.get(
+        f"/api/v1/serve/eod/{instrument_id}?start_date=2024-04-29&end_date=2024-04-29"
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()["data"]
+    assert len(detail_payload) == 1
+    assert detail_payload[0]["up_volume"] == 81
+    assert detail_payload[0]["down_volume"] == 36
+    assert detail_payload[0]["up_ticks"] == 37
+    assert detail_payload[0]["down_ticks"] == 19
+    assert detail_payload[0]["total_ticks"] == 221
+
+
+@pytest.mark.asyncio
 async def test_list_calendar(client: AsyncClient, test_session):
     """Ensure calendar endpoint returns trading days."""
     calendar = TradingCalendar(

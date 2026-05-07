@@ -24,6 +24,11 @@ class MappedRecord:
     close: Optional[Decimal] = None
     volume: Optional[int] = None
     turnover: Optional[Decimal] = None
+    up_volume: Optional[int] = None
+    down_volume: Optional[int] = None
+    up_ticks: Optional[int] = None
+    down_ticks: Optional[int] = None
+    total_ticks: Optional[int] = None
     source: Optional[str] = None
     raw_data: Optional[dict] = None
     identifier_type: Optional[str] = None

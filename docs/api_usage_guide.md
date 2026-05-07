@@ -73,7 +73,7 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | 區塊          | 現況                                                                                   |
 | ------------- | -------------------------------------------------------------------------------------- |
 | Source API    | 標準 ingest、direct ingest、run status、rerun、dataset list 已可用                     |
-| Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina` 已可用                            |
+| Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina`、`twstock` 已可用                 |
 | Serve API     | instruments、EOD、corporate actions、macro、futures、calendar 已可用                   |
 | Admin API     | DQ issue、EOD patch、corrections、raw payload、bulk rerun、instrument cache 管理已可用 |
 | 區域市場      | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程                   |
@@ -95,14 +95,17 @@ cp .env.example .env
 # ADMIN_API_KEY=your-admin-key
 # DEBUG=true
 
-# 啟動 Docker 容器
-docker compose up -d --build
+# 啟動本機 DB、套用 migration、匯入 seed 包
+uv run python scripts/dev.py up-db
+uv run alembic upgrade head
+uv run python scripts/dev.py seed-upsert --truncate
 
-# 初始化資料集
-docker compose exec app python /app/scripts/seed_data.py
+# 啟動本機 FastAPI 服務
+uv run python scripts/dev.py up-server
 ```
 
 > 生產環境由 nginx 使用 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*`；本機直接跑 FastAPI 時不執行 IP 允許名單。
+> `docker-compose.yml` 目前未把 `ADMIN_API_KEYS` 傳入 app container；若要用 Docker app 容器測 Admin API，需先補上對應環境變數映射，或改用 `uv run python scripts/dev.py up-server` 啟動本機服務。
 
 ### 2. 驗證服務
 
@@ -329,7 +332,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
 
 ### Direct 格式攝取端點
 
-Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
+Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支援台股 MultiCharts 單股票日線 JSON。
 系統會自動推斷 `dataset_key`、`source`、`idempotency_key` 等欄位。
 
 #### 請求體格式（DirectIngestPayload）
@@ -362,6 +365,57 @@ Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
 > Direct ingest 預設以原始扁平格式為主，也相容巢狀 `price` / `timestamp` 格式。
 > `metadata.query_time` 會作為這批資料的抓取時間；`metadata.category` 非必需。
 
+#### 台股 MultiCharts 直接格式（TWStockDirectIngestPayload）
+
+`/ingest/twstock/direct` 使用台股專用契約，不直接接收 raw `.txt` / `.csv` 檔上傳；請先轉成 JSON。這個端點同時支援：
+
+1. 舊版單股票格式：`metadata.symbol` + `data[]`
+2. MultiCharts 日線檔列格式：每列自帶 `Symbol`、`Date`、OHLC、成交量拆分與成交筆數拆分，例如 `0052-Day-Trade.csv`
+
+```json
+{
+  "metadata": {
+    "name": "富邦科技",
+    "source": "multicharts",
+    "file_name": "0052-Day-Trade.csv",
+    "query_time": "2025-05-05T13:30:00Z"
+  },
+  "data": [
+    {
+      "Symbol": "0052",
+      "Date": "2025/5/5",
+      "Open": 168.5,
+      "High": 168.5,
+      "Low": 162.75,
+      "Close": 164.9,
+      "UpVolume": 174,
+      "DownVolume": 225,
+      "TotalVolume": 1096,
+      "UpTicks": 46,
+      "DownTicks": 59,
+      "TotalTicks": 306
+    }
+  ]
+}
+```
+
+| 欄位                            | 類型   | 必填 | 說明 |
+| ------------------------------- | ------ | ---- | ---- |
+| `metadata.symbol`               | string | 條件必填 | 若 `data[]` 每列都未提供 `Symbol` / `symbol`，則必填 |
+| `metadata.name`                 | string | 否   | 股票名稱 |
+| `metadata.source`               | string | 否   | 預設 `multicharts` |
+| `metadata.file_name`            | string | 否   | 原始檔名，僅供追蹤 |
+| `data[].symbol` / `Symbol` / `<Symbol>` | string | 條件必填 | 若未提供 `metadata.symbol`，則每列都必須提供 |
+| `data[].date` / `Date` / `<Date>` | string | 是   | 交易日期；接受 `YYYY-MM-DD` 與 `YYYY/M/D` |
+| `data[].time` / `Time` / `<Time>` | string | 否   | 交易時間；只保留在 raw payload，不進 canonical |
+| `data[].open` / `high` / `low` / `close` | number | 是 | OHLC |
+| `data[].up_volume` / `down_volume` / `total_volume` | int | 是 | 拆分成交量；`total_volume` 會寫入既有 `volume` |
+| `data[].up_ticks` / `down_ticks` / `total_ticks` | int | 是 | 拆分成交筆數 |
+| `data[].open_interest`          | int    | 否   | 接受後忽略，不寫入 canonical |
+
+> `time` 與 `open_interest` 會隨 raw payload 保留，可透過 Admin raw payload 查詢追蹤。
+> 若來源檔缺少 `UpVolume`、`DownVolume`、`UpTicks`、`DownTicks`、`TotalTicks`，目前仍會拒收。
+
 #### 端點一覽
 
 | 方法 | 路徑                           | 對應市場 | 自動 dataset_key              | 說明                                      |
@@ -373,6 +427,7 @@ Direct 格式專為 Bloomberg 直接匯出的 `metadata + data` 結構設計。
 | POST | `/ingest/hkchina/direct`       | GLOBAL   | `hkchina_mixed_eod`           | Bloomberg 港中混合直接格式（股票 + 指數） |
 | POST | `/ingest/hkchina-index/direct` | GLOBAL   | `hkchina_index_eod`           | Bloomberg 港中指數直接格式（相容舊流程）  |
 | POST | `/ingest/macro/direct`         | MACRO    | `macro_bloomberg_observation` | Bloomberg 宏觀直接格式                    |
+| POST | `/ingest/twstock/direct`       | TW       | `tw_equity_multicharts_eod`   | MultiCharts 台股單股票直接格式            |
 
 > `hkchina/direct` 會在同一批 payload 中同時處理港股/中資股票與港中指數，並依 ticker 自動落到 `HK` 或 `CN` 市場。
 > 若上游仍維持舊的純 index 匯出流程，可繼續使用 `hkchina-index/direct`。
@@ -409,6 +464,39 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/usstock/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
   --data-binary "@bloomberg_usstock_20260204_160051_original.json"
+```
+
+```bash
+# 匯入台股 MultiCharts 日線（JSON，不直接接 raw txt）
+curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "symbol": "6160",
+      "name": "欣技",
+      "source": "multicharts",
+      "file_name": "6160 1 日.txt",
+      "query_time": "2026-04-30T08:00:00Z"
+    },
+    "data": [
+      {
+        "date": "2024-04-29",
+        "time": "13:30:00",
+        "open": 20.45,
+        "high": 21.50,
+        "low": 20.45,
+        "close": 21.10,
+        "up_volume": 81,
+        "down_volume": 36,
+        "total_volume": 528,
+        "up_ticks": 37,
+        "down_ticks": 19,
+        "total_ticks": 221,
+        "open_interest": 0
+      }
+    ]
+  }'
 ```
 
 ```bash
@@ -1128,7 +1216,7 @@ Admin API 用於人工修正 Canonical 資料。每次修正都會自動寫入 `
 | 方法  | 路徑                                      | 說明                                    |
 | ----- | ----------------------------------------- | --------------------------------------- |
 | GET   | `/dq-issues`                              | 查詢 DQ issue 清單                      |
-| PATCH | `/eod/{instrument_id}/{trade_date}`       | 修正日K 的 OHLCV 欄位                   |
+| PATCH | `/eod/{instrument_id}/{trade_date}`       | 修正日K 的 EOD 欄位                     |
 | PATCH | `/dq-issues/{issue_id}/resolve`           | 標記 DQ issue 為已解決                  |
 | GET   | `/raw-payloads`                           | 查詢 raw payload 清單                   |
 | GET   | `/raw-payloads/{run_id}`                  | 依 run_id 查詢原始 payload              |
@@ -1274,9 +1362,14 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 | `low`               | Decimal | 否     | 最低價（null 表示清除）          |
 | `close`             | Decimal | 否     | 收盤價（null 表示清除）          |
 | `volume`            | int     | 否     | 成交量（null 表示清除）          |
+| `up_volume`         | int     | 否     | 上漲成交量（null 表示清除）      |
+| `down_volume`       | int     | 否     | 下跌成交量（null 表示清除）      |
+| `up_ticks`          | int     | 否     | 上漲成交筆數（null 表示清除）    |
+| `down_ticks`        | int     | 否     | 下跌成交筆數（null 表示清除）    |
+| `total_ticks`       | int     | 否     | 總成交筆數（null 表示清除）      |
 | `turnover`          | Decimal | 否     | 成交額（null 表示清除）          |
 
-> 至少須提供一個 OHLCV 欄位，且新值必須與現有值不同，否則回傳 `400`。
+> 至少須提供一個 EOD 欄位，且新值必須與現有值不同，否則回傳 `400`。
 
 #### 回應範例（200 OK）
 
@@ -1296,7 +1389,7 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 | 狀態碼 | 說明                                            |
 | ------ | ----------------------------------------------- |
 | `404`  | instrument_id + trade_date 找不到對應的日K 記錄 |
-| `400`  | 未提供任何 OHLCV 欄位，或新值與現有值完全相同   |
+| `400`  | 未提供任何 EOD 欄位，或新值與現有值完全相同     |
 
 #### curl 範例
 

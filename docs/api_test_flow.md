@@ -1,8 +1,8 @@
 # API 測試流程
 
-> **最後更新**: 2026-04-21
+> **最後更新**: 2026-04-24
 
-完整手動測試流程（Docker 環境）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
+完整手動測試流程（本機 Docker DB + FastAPI 服務）。涵蓋服務啟動、資料種子、安全機制驗證、Source API 攝取、Serve API 全端點查詢、Admin API 資料修正，以及端到端煙霧測試。
 
 自動化測試請見 [§8. 自動化測試](#8-自動化測試)。
 
@@ -37,27 +37,33 @@ cp .env.example .env
 > `SOURCE_ALLOWLIST_CIDRS` 由生產環境 nginx 用於限制 `/api/v1/source/*`；本機直接跑 app 時不執行 IP 允許名單。
 > 若要測 Admin API，請先設定 `ADMIN_API_KEY=dev-admin-key`。
 
-### 0.2 啟動 Docker 服務
+### 0.2 啟動資料庫與服務
 
 ```bash
-docker compose up -d --build
+uv run python scripts/dev.py up-db
+uv run alembic upgrade head
+uv run python scripts/dev.py seed-upsert --truncate
+uv run python scripts/dev.py up-server
 ```
 
-確認所有服務就緒：
+若需要完整 Docker app 容器，可改用：
+
+```bash
+docker compose up -d --build app db
+```
+
+確認服務就緒：
 
 ```bash
 docker compose ps
 ```
 
-預期看到 `findb-app`、`findb-postgres`、`findb-raw-cleanup`、`findb-pgadmin` 皆為 running。
-
-### 0.3 初始化資料種子
+預設預期看到 `findb-postgres` running；若使用 Docker app 容器，會同時看到 `findb-app` running。
+`findb-raw-cleanup` 與 `findb-pgadmin` 屬於 `tools` profile，需另行啟動：
 
 ```bash
-docker compose exec app python /app/scripts/seed_data.py
+docker compose --profile tools up -d pgadmin raw-cleanup
 ```
-
-會寫入 20+ 個 dataset 定義（含 Bloomberg Direct 格式）與加密貨幣/美股/外匯等標的。
 
 ---
 
@@ -301,8 +307,51 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/wtx/direct" \
         "volume": 50000
       }
     ]
+}'
+```
+
+### 3.4e Direct 格式攝取（台股 MultiCharts）
+
+> `/api/v1/source/ingest/twstock/direct` 只接受 JSON，不直接接 raw `.txt` 檔。請先把 MultiCharts 匯出檔轉成單股票 `metadata + data[]` 格式。
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
+  -H "X-API-Key: dev-source-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "symbol": "6160",
+      "name": "欣技",
+      "source": "multicharts",
+      "file_name": "6160 1 日.txt",
+      "query_time": "2026-04-30T08:00:00Z"
+    },
+    "data": [
+      {
+        "date": "2024-04-29",
+        "time": "13:30:00",
+        "open": 20.45,
+        "high": 21.50,
+        "low": 20.45,
+        "close": 21.10,
+        "up_volume": 81,
+        "down_volume": 36,
+        "total_volume": 528,
+        "up_ticks": 37,
+        "down_ticks": 19,
+        "total_ticks": 221,
+        "open_interest": 0
+      }
+    ]
   }'
 ```
+
+預期：
+
+- response `status_code = 200`
+- `dataset_key = tw_equity_multicharts_eod`
+- raw payload 仍保留 `time` 與 `open_interest`
+- canonical / serve EOD 可查到 `up_volume`、`down_volume`、`up_ticks`、`down_ticks`、`total_ticks`
 
 ### 3.5 Direct 格式攝取（HK/China 混合）
 
@@ -598,6 +647,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=5"
 所有 Admin API 請求需在 Header 帶入 `X-API-Key: dev-admin-key`。
 
 > 若使用 Docker 環境，需先在 `docker-compose.yml` 或 `.env` 設定 `ADMIN_API_KEY=dev-admin-key`，然後重啟服務：
+>
 > ```bash
 > docker compose restart app
 > ```
@@ -733,6 +783,7 @@ curl "http://localhost:8080/api/v1/admin/dq-issues?instrument_id={instrument_id}
 ```
 
 確認：
+
 - 可依 `resolved`、`severity`、`instrument_id` 篩選
 - 回應包含 `pagination`
 
@@ -753,6 +804,7 @@ curl "http://localhost:8080/api/v1/admin/raw-payloads/{run_id}" \
 ```
 
 確認：
+
 - 清單預設為最新優先
 - `run_id` 查詢可對回先前 Source API ingest 取得的 run
 - 找不到資料時應回傳 `404`
@@ -774,6 +826,7 @@ curl "http://localhost:8080/api/v1/admin/corrections?instrument_id={instrument_i
 ```
 
 確認：
+
 - `corrected_by` 格式為 `xxxx****`（前 4 碼 + 遮罩）
 - `before_snapshot` 與 `after_snapshot` 包含修改前後的欄位值
 - 結果為**最新優先**排序
@@ -791,6 +844,7 @@ curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun?dataset_key=cry
 ```
 
 確認：
+
 - 回應包含 `queued`、`skipped`、`errors`、`new_run_ids`
 - `new_run_ids` 可再用 Source API `/runs/{run_id}` 查狀態
 - `status=all` 時會同時納入 completed 與 failed runs
@@ -820,6 +874,7 @@ curl -X PATCH "http://localhost:8080/api/v1/admin/instrument-cache/items/{instru
 ```
 
 確認：
+
 - `GET` 在快取檔不存在時回傳 `404`
 - `PUT` 會重新正規化並更新 `total` / `markets` / `asset_classes`
 - `PATCH` 只更新單一 instrument，找不到 `instrument_id` 時回傳 `404`
@@ -887,20 +942,20 @@ chmod +x scripts/smoke_test.sh
 
 測試面板提供：
 
-| 功能 | 說明 |
-|------|------|
-| **健康檢查** | 顯示版本、允許名單狀態 |
-| **Datasets 列表** | 查詢所有可用資料集 |
-| **Ingest 攝取** | 選擇市場送入測試 payload |
-| **Run 狀態查詢** | 輸入 run_id 查詢處理進度 |
-| **Rerun 重跑** | 以原始 payload 重新執行正規化 |
-| **Instruments 查詢** | 按市場/資產類別篩選標的 |
-| **EOD 查詢** | 按市場/代碼/日期查詢日K |
-| **Corporate Actions** | 查詢公司行為 |
-| **Macro Observations** | 查詢宏觀觀測值 |
-| **Futures Continuous** | 查詢連續期貨日K |
-| **查詢結果圖表** | EOD / Macro Observations / Futures Continuous 會自動顯示 ECharts 互動圖表 |
-| **一鍵煙霧測試** | 自動跑完 health → datasets → ingest → status → instruments → eod |
+| 功能                   | 說明                                                                      |
+| ---------------------- | ------------------------------------------------------------------------- |
+| **健康檢查**           | 顯示版本、允許名單狀態                                                    |
+| **Datasets 列表**      | 查詢所有可用資料集                                                        |
+| **Ingest 攝取**        | 選擇市場送入測試 payload                                                  |
+| **Run 狀態查詢**       | 輸入 run_id 查詢處理進度                                                  |
+| **Rerun 重跑**         | 以原始 payload 重新執行正規化                                             |
+| **Instruments 查詢**   | 按市場/資產類別篩選標的                                                   |
+| **EOD 查詢**           | 按市場/代碼/日期查詢日K                                                   |
+| **Corporate Actions**  | 查詢公司行為                                                              |
+| **Macro Observations** | 查詢宏觀觀測值                                                            |
+| **Futures Continuous** | 查詢連續期貨日K                                                           |
+| **查詢結果圖表**       | EOD / Macro Observations / Futures Continuous 會自動顯示 ECharts 互動圖表 |
+| **一鍵煙霧測試**       | 自動跑完 health → datasets → ingest → status → instruments → eod          |
 
 ---
 
@@ -921,16 +976,16 @@ docker compose exec app bash -c \
 
 ### 測試涵蓋範圍
 
-| 測試檔案 | 涵蓋範圍 |
-|---------|---------|
-| `test_source_api.py` | 認證、攝取、去重、market mismatch、allowlist、限流、生產環境檢查 |
-| `test_serve_api.py` | instruments、eod、corporate-actions、macro、futures、calendar |
-| `test_normalize.py` | Crypto / Index / Macro / DQ 基本正規化邏輯 |
-| `test_usstock_normalize.py` | US Stock / Global / TW / HK / CN 正規化與區域篩選 |
-| `test_bloomberg_direct_normalize.py` | FX / Crypto / WTX / Macro 的 Bloomberg direct 正規化 |
-| `test_end_to_end.py` | 完整 ingest -> normalize -> serve 流程 |
-| `test_admin_api.py` | Admin 認證、PATCH EOD、Resolve DQ、instrument cache、audit log、分頁與遮罩欄位 |
-| `test_static_pages.py` | `/test` 與 `/instrument-lookup` 靜態頁面可用性、查詢快取路徑驗證 |
+| 測試檔案                             | 涵蓋範圍                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------ |
+| `test_source_api.py`                 | 認證、攝取、去重、market mismatch、allowlist、限流、生產環境檢查               |
+| `test_serve_api.py`                  | instruments、eod、corporate-actions、macro、futures、calendar                  |
+| `test_normalize.py`                  | Crypto / Index / Macro / DQ 基本正規化邏輯                                     |
+| `test_usstock_normalize.py`          | US Stock / Global / TW / HK / CN 正規化與區域篩選                              |
+| `test_bloomberg_direct_normalize.py` | FX / Crypto / WTX / Macro 的 Bloomberg direct 正規化                           |
+| `test_end_to_end.py`                 | 完整 ingest -> normalize -> serve 流程                                         |
+| `test_admin_api.py`                  | Admin 認證、PATCH EOD、Resolve DQ、instrument cache、audit log、分頁與遮罩欄位 |
+| `test_static_pages.py`               | `/test` 與 `/instrument-lookup` 靜態頁面可用性、查詢快取路徑驗證               |
 
 > 測試案例數量會隨功能擴充持續變動，請以實際 `pytest` 收集結果為準。
 
@@ -957,23 +1012,23 @@ uv run pytest --cov=app --cov-report=term-missing
 
 ## 9. 故障排查
 
-| 症狀 | 原因 | 解法 |
-|------|------|------|
-| `Connection refused` | Docker 未啟動 | `docker compose up -d --build`，確認 `docker compose ps` 顯示 healthy |
-| `ForeignKeyViolationError` | 未初始化種子資料 | `docker compose exec app python /app/scripts/seed_data.py` |
-| `401 Missing API key` | 未帶 X-API-Key Header | 加入 `-H "X-API-Key: dev-source-key"` |
-| `403 Invalid API key` | Key 與設定不符 | 確認使用 `dev-source-key`（docker compose 預設值） |
-| `403 Forbidden` | IP 不在 nginx Source API 允許名單 | 調整 `SOURCE_ALLOWLIST_CIDRS` 並重新部署 nginx |
-| `429 Rate limit exceeded` | 請求頻率超過限制 | 等待 60 秒後重試，或調大 `RATE_LIMIT_REQUESTS` |
-| `400 Dataset 'xxx' not found` | dataset_key 不存在 | 先跑 seed，或用 `/datasets` 確認可用的 key |
-| `400 Market mismatch` | payload 的 dataset 市場與端點不符 | 確認 dataset_key 的 market 與端點路徑一致 |
-| `422 Validation Error` | 請求體格式不符 | 檢查 JSON 欄位是否符合 schema（見 [API 使用教學](api_usage_guide.md)） |
-| `.env` 設定不生效 | docker compose 覆蓋 | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效 |
-| `Run status 一直 pending` | 背景任務未執行 | 確認 app 容器正常運行，檢查 `docker compose logs app` |
-| `500 No admin API key configured` | `ADMIN_API_KEY` 未設定 | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEY=your-admin-key`，重啟服務 |
-| `Admin PATCH 回傳 404` | 找不到指定記錄 | 確認 instrument_id 與 trade_date 有對應的日K 資料（先用 Serve API 確認） |
-| `Admin PATCH 回傳 400 No changes` | 提交值與現有值相同 | 確認修正值與 DB 現有值確實不同 |
-| `Admin DQ resolve 回傳 409` | DQ issue 已解決 | 該 issue 已是 resolved 狀態，無需重複標記 |
+| 症狀                              | 原因                              | 解法                                                                            |
+| --------------------------------- | --------------------------------- | ------------------------------------------------------------------------------- |
+| `Connection refused`              | Docker 未啟動                     | `docker compose up -d --build`，確認 `docker compose ps` 顯示 healthy           |
+| `ForeignKeyViolationError`        | 未初始化種子資料                  | `docker compose exec app python /app/scripts/seed_data.py`                      |
+| `401 Missing API key`             | 未帶 X-API-Key Header             | 加入 `-H "X-API-Key: dev-source-key"`                                           |
+| `403 Invalid API key`             | Key 與設定不符                    | 確認使用 `dev-source-key`（docker compose 預設值）                              |
+| `403 Forbidden`                   | IP 不在 nginx Source API 允許名單 | 調整 `SOURCE_ALLOWLIST_CIDRS` 並重新部署 nginx                                  |
+| `429 Rate limit exceeded`         | 請求頻率超過限制                  | 等待 60 秒後重試，或調大 `RATE_LIMIT_REQUESTS`                                  |
+| `400 Dataset 'xxx' not found`     | dataset_key 不存在                | 先跑 seed，或用 `/datasets` 確認可用的 key                                      |
+| `400 Market mismatch`             | payload 的 dataset 市場與端點不符 | 確認 dataset_key 的 market 與端點路徑一致                                       |
+| `422 Validation Error`            | 請求體格式不符                    | 檢查 JSON 欄位是否符合 schema（見 [API 使用教學](api_usage_guide.md)）          |
+| `.env` 設定不生效                 | docker compose 覆蓋               | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效               |
+| `Run status 一直 pending`         | 背景任務未執行                    | 確認 app 容器正常運行，檢查 `docker compose logs app`                           |
+| `500 No admin API key configured` | `ADMIN_API_KEY` 未設定            | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEY=your-admin-key`，重啟服務 |
+| `Admin PATCH 回傳 404`            | 找不到指定記錄                    | 確認 instrument_id 與 trade_date 有對應的日K 資料（先用 Serve API 確認）        |
+| `Admin PATCH 回傳 400 No changes` | 提交值與現有值相同                | 確認修正值與 DB 現有值確實不同                                                  |
+| `Admin DQ resolve 回傳 409`       | DQ issue 已解決                   | 該 issue 已是 resolved 狀態，無需重複標記                                       |
 
 ---
 

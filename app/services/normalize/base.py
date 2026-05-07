@@ -163,6 +163,21 @@ class BaseNormalizer(ABC):
                 low=self._parse_decimal(self._get_nested_value(item, field_mapping.get("low"))),
                 close=self._parse_decimal(self._get_nested_value(item, field_mapping.get("close"))),
                 volume=self._parse_int(self._get_nested_value(item, field_mapping.get("volume"))),
+                up_volume=self._parse_int(
+                    self._get_nested_value(item, field_mapping.get("up_volume"))
+                ),
+                down_volume=self._parse_int(
+                    self._get_nested_value(item, field_mapping.get("down_volume"))
+                ),
+                up_ticks=self._parse_int(
+                    self._get_nested_value(item, field_mapping.get("up_ticks"))
+                ),
+                down_ticks=self._parse_int(
+                    self._get_nested_value(item, field_mapping.get("down_ticks"))
+                ),
+                total_ticks=self._parse_int(
+                    self._get_nested_value(item, field_mapping.get("total_ticks"))
+                ),
                 turnover=self._parse_decimal(
                     self._get_nested_value(item, field_mapping.get("turnover"))
                 ),
@@ -404,6 +419,11 @@ class BaseNormalizer(ABC):
             low=record.low,
             close=record.close,
             volume=record.volume,
+            up_volume=record.up_volume,
+            down_volume=record.down_volume,
+            up_ticks=record.up_ticks,
+            down_ticks=record.down_ticks,
+            total_ticks=record.total_ticks,
             turnover=record.turnover,
             source=record.source,
             asof_ts=utc_now(),
@@ -422,6 +442,11 @@ class BaseNormalizer(ABC):
                 "low": stmt.excluded.low,
                 "close": stmt.excluded.close,
                 "volume": stmt.excluded.volume,
+                "up_volume": stmt.excluded.up_volume,
+                "down_volume": stmt.excluded.down_volume,
+                "up_ticks": stmt.excluded.up_ticks,
+                "down_ticks": stmt.excluded.down_ticks,
+                "total_ticks": stmt.excluded.total_ticks,
                 "turnover": stmt.excluded.turnover,
                 "source": stmt.excluded.source,
                 "asof_ts": stmt.excluded.asof_ts,
@@ -434,6 +459,11 @@ class BaseNormalizer(ABC):
                 | (t.c.low.is_distinct_from(stmt.excluded.low))
                 | (t.c.close.is_distinct_from(stmt.excluded.close))
                 | (t.c.volume.is_distinct_from(stmt.excluded.volume))
+                | (t.c.up_volume.is_distinct_from(stmt.excluded.up_volume))
+                | (t.c.down_volume.is_distinct_from(stmt.excluded.down_volume))
+                | (t.c.up_ticks.is_distinct_from(stmt.excluded.up_ticks))
+                | (t.c.down_ticks.is_distinct_from(stmt.excluded.down_ticks))
+                | (t.c.total_ticks.is_distinct_from(stmt.excluded.total_ticks))
                 | (t.c.turnover.is_distinct_from(stmt.excluded.turnover))
             ),
         )

@@ -817,6 +817,334 @@ class TestSourceAPI:
         assert run.dataset_key == "macro_bloomberg_observation"
 
     @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_success_deduplicates_and_preserves_raw_payload(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        """Ensure TW stock MultiCharts direct payloads ingest, deduplicate, and persist fields."""
+        payload = {
+            "metadata": {
+                "symbol": "6160",
+                "name": "欣技",
+                "source": "multicharts",
+                "file_name": "6160 1 日.txt",
+                "query_time": "2026-04-30T08:00:00Z",
+            },
+            "data": [
+                {
+                    "<Date>": "2024-04-29",
+                    "<Time>": "13:30:00",
+                    "<Open>": 20.45,
+                    "<High>": 21.50,
+                    "<Low>": 20.45,
+                    "<Close>": 21.10,
+                    "<UpVolume>": 81,
+                    "<DownVolume>": 36,
+                    "<TotalVolume>": 528,
+                    "<UpTicks>": 37,
+                    "<DownTicks>": 19,
+                    "<TotalTicks>": 221,
+                    "<OpenInterest>": 0,
+                }
+            ],
+        }
+
+        first_response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json=payload,
+        )
+        assert first_response.status_code == 200
+        first_data = first_response.json()
+        first_run_id = first_data["run_id"]
+
+        second_response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json=payload,
+        )
+        assert second_response.status_code == 200
+        assert second_response.json()["run_id"] == first_run_id
+
+        run = await test_session.get(IngestionRun, first_run_id)
+        assert run is not None
+        assert run.dataset_key == "tw_equity_multicharts_eod"
+        assert run.status == "completed"
+        assert run.total_records == 1
+        assert run.success_records == 1
+
+        dataset = await test_session.get(DatasetRegistry, "tw_equity_multicharts_eod")
+        assert dataset is not None
+        assert dataset.market == "TW"
+
+        raw_stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == first_run_id)
+        raw_payload = (await test_session.execute(raw_stmt)).scalar_one()
+        assert raw_payload.payload["metadata"]["symbol"] == "6160"
+        assert raw_payload.payload["data"][0]["time"] == "13:30:00"
+        assert raw_payload.payload["data"][0]["open_interest"] == 0
+
+        eod_response = await client.get(
+            "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-29&end_date=2024-04-29"
+        )
+        assert eod_response.status_code == 200
+        eod_payload = eod_response.json()["data"]
+        assert len(eod_payload) == 1
+        assert eod_payload[0]["volume"] == 528
+        assert eod_payload[0]["up_volume"] == 81
+        assert eod_payload[0]["down_volume"] == 36
+        assert eod_payload[0]["up_ticks"] == 37
+        assert eod_payload[0]["down_ticks"] == 19
+        assert eod_payload[0]["total_ticks"] == 221
+        assert "open_interest" not in eod_payload[0]
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_multicharts_daily_file_format_success(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        """Ensure TW MultiCharts daily CSV-style rows can be ingested end-to-end."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "name": "富邦科技",
+                    "source": "multicharts",
+                    "file_name": "0052-Day-Trade.csv",
+                    "query_time": "2025-05-05T13:30:00Z",
+                },
+                "data": [
+                    {
+                        "Symbol": "0052",
+                        "Date": "2025/5/5",
+                        "Open": 168.50,
+                        "High": 168.50,
+                        "Low": 162.75,
+                        "Close": 164.90,
+                        "UpVolume": 174,
+                        "DownVolume": 225,
+                        "TotalVolume": 1096,
+                        "UpTicks": 46,
+                        "DownTicks": 59,
+                        "TotalTicks": 306,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+
+        run = await test_session.get(IngestionRun, run_id)
+        assert run is not None
+        assert run.status == "completed"
+        assert run.total_records == 1
+        assert run.success_records == 1
+
+        raw_stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == run_id)
+        raw_payload = (await test_session.execute(raw_stmt)).scalar_one()
+        assert raw_payload.payload["data"][0]["symbol"] == "0052"
+        assert raw_payload.payload["data"][0]["date"] == "2025/5/5"
+
+        eod_response = await client.get(
+            "/api/v1/serve/eod?market=TW&symbols=0052&start_date=2025-05-05&end_date=2025-05-05"
+        )
+
+        assert eod_response.status_code == 200
+        eod_payload = eod_response.json()["data"]
+        assert len(eod_payload) == 1
+        assert eod_payload[0]["symbol"] == "0052"
+        assert eod_payload[0]["name"] == "富邦科技"
+        assert eod_payload[0]["trade_date"] == "2025-05-05"
+        assert eod_payload[0]["open"] == "168.50000000"
+        assert eod_payload[0]["high"] == "168.50000000"
+        assert eod_payload[0]["low"] == "162.75000000"
+        assert eod_payload[0]["close"] == "164.90000000"
+        assert eod_payload[0]["volume"] == 1096
+        assert eod_payload[0]["up_volume"] == 174
+        assert eod_payload[0]["down_volume"] == 225
+        assert eod_payload[0]["up_ticks"] == 46
+        assert eod_payload[0]["down_ticks"] == 59
+        assert eod_payload[0]["total_ticks"] == 306
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_missing_metadata_symbol_returns_400(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Ensure TW stock direct payload requires metadata.symbol."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "source": "multicharts",
+                    "query_time": "2025-05-05T13:30:00Z",
+                },
+                "data": [
+                    {
+                        "Date": "2025/5/5",
+                        "Open": 168.50,
+                        "High": 168.50,
+                        "Low": 162.75,
+                        "Close": 164.90,
+                        "UpVolume": 174,
+                        "DownVolume": 225,
+                        "TotalVolume": 1096,
+                        "UpTicks": 46,
+                        "DownTicks": 59,
+                        "TotalTicks": 306,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "metadata.symbol or data[].symbol is required"
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_missing_required_row_field_returns_400(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Ensure TW stock direct payload rejects rows with missing required fields."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "6160",
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [
+                    {
+                        "date": "2024-04-29",
+                        "time": "13:30:00",
+                        "open": 20.45,
+                        "high": 21.50,
+                        "low": 20.45,
+                        "close": 21.10,
+                        "up_volume": 81,
+                        "down_volume": 36,
+                        "total_volume": 528,
+                        "up_ticks": 37,
+                        "down_ticks": 19,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "data[0] missing required fields: total_ticks"
+
+    @pytest.mark.asyncio
+    async def test_ingest_twstock_direct_preserves_zero_total_volume(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        """Ensure zero total volume is persisted as 0 rather than treated as missing."""
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "6160",
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [
+                    {
+                        "date": "2024-04-30",
+                        "open": 21.10,
+                        "high": 21.10,
+                        "low": 21.10,
+                        "close": 21.10,
+                        "up_volume": 0,
+                        "down_volume": 0,
+                        "total_volume": 0,
+                        "up_ticks": 0,
+                        "down_ticks": 0,
+                        "total_ticks": 0,
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+
+        eod_response = await client.get(
+            "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-30&end_date=2024-04-30"
+        )
+        assert eod_response.status_code == 200
+        eod_payload = eod_response.json()["data"]
+        assert len(eod_payload) == 1
+        assert eod_payload[0]["volume"] == 0
+        assert eod_payload[0]["up_volume"] == 0
+        assert eod_payload[0]["down_volume"] == 0
+        assert eod_payload[0]["up_ticks"] == 0
+        assert eod_payload[0]["down_ticks"] == 0
+        assert eod_payload[0]["total_ticks"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "up_volume",
+            "down_volume",
+            "total_volume",
+            "up_ticks",
+            "down_ticks",
+            "total_ticks",
+        ],
+    )
+    async def test_ingest_twstock_direct_rejects_negative_split_fields(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        field_name: str,
+    ):
+        """Ensure TW stock split volume/tick fields cannot be negative."""
+        row = {
+            "date": "2024-04-29",
+            "open": 20.45,
+            "high": 21.50,
+            "low": 20.45,
+            "close": 21.10,
+            "up_volume": 81,
+            "down_volume": 36,
+            "total_volume": 528,
+            "up_ticks": 37,
+            "down_ticks": 19,
+            "total_ticks": 221,
+        }
+        row[field_name] = -1
+
+        response = await client.post(
+            "/api/v1/source/ingest/twstock/direct",
+            headers=source_headers,
+            json={
+                "metadata": {
+                    "symbol": "6160",
+                    "source": "multicharts",
+                    "query_time": "2026-04-30T08:00:00Z",
+                },
+                "data": [row],
+            },
+        )
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert any(error["loc"][-1] == field_name for error in detail)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("endpoint", "dataset_key", "expected_market", "payload"),
         [

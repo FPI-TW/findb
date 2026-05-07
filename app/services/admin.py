@@ -29,7 +29,19 @@ class AlreadyResolvedError(ValueError):
     """Raised when attempting to resolve an already-resolved DQ issue."""
 
 
-_CORRECTABLE_EOD_FIELDS = {"open", "high", "low", "close", "volume", "turnover"}
+_CORRECTABLE_EOD_FIELDS = {
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "up_volume",
+    "down_volume",
+    "up_ticks",
+    "down_ticks",
+    "total_ticks",
+    "turnover",
+}
 
 
 def _mask_key(key: str) -> str:

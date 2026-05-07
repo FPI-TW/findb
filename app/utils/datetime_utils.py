@@ -32,6 +32,7 @@ def parse_datetime(value: str | datetime) -> datetime:
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
+        "%Y/%m/%d",
     ]
 
     for fmt in formats:
