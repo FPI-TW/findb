@@ -10,7 +10,8 @@ Usage:
     python scripts/generate_instrument_cache.py
 
 Environment variables:
-    FINDB_BASE_URL         Base URL for the FinDB app. Default: http://localhost:8080
+    FINDB_STATIC_CACHE_BASE_URL    Base URL used for static cache generation.
+    FINDB_BASE_URL                 Fallback base URL for the FinDB app.
     FINDB_STATIC_CACHE_SERVE_API_KEY    Optional Serve API key for static cache generation.
 
 Crontab example:
@@ -31,7 +32,11 @@ from typing import Any
 from urllib import error, parse
 from urllib.request import Request, urlopen
 
-BASE_URL = os.getenv("FINDB_BASE_URL", "http://localhost:8080").rstrip("/")
+BASE_URL = (
+    os.getenv("FINDB_STATIC_CACHE_BASE_URL")
+    or os.getenv("FINDB_BASE_URL")
+    or "http://localhost:8080"
+).rstrip("/")
 STATIC_CACHE_SERVE_API_KEY = os.getenv("FINDB_STATIC_CACHE_SERVE_API_KEY", "").strip()
 PAGE_SIZE = 1000
 LATEST_PRICE_WORKERS = int(os.getenv("FINDB_LATEST_PRICE_WORKERS", "12"))
