@@ -1,6 +1,4 @@
-"""
-Common Pydantic schemas used across the application.
-"""
+"""應用程式共用的 Pydantic schema。"""
 
 from typing import Generic, Optional, TypeVar
 
@@ -10,14 +8,14 @@ T = TypeVar("T")
 
 
 class PaginationParams(BaseModel):
-    """Pagination parameters."""
+    """分頁參數。"""
 
-    page: int = Field(default=1, ge=1, description="Page number")
-    page_size: int = Field(default=100, ge=1, le=1000, description="Items per page")
+    page: int = Field(default=1, ge=1, description="頁碼")
+    page_size: int = Field(default=100, ge=1, le=1000, description="每頁筆數")
 
 
 class PaginationInfo(BaseModel):
-    """Pagination metadata."""
+    """分頁中繼資料。"""
 
     page: int
     page_size: int
@@ -26,7 +24,7 @@ class PaginationInfo(BaseModel):
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
-    """Paginated response wrapper."""
+    """分頁回應包裝格式。"""
 
     success: bool = True
     data: list[T]
@@ -34,7 +32,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 
 class APIResponse(BaseModel, Generic[T]):
-    """Standard API response wrapper."""
+    """標準 API 回應包裝格式。"""
 
     success: bool = True
     data: Optional[T] = None

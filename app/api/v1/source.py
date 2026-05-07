@@ -1,6 +1,6 @@
 """
-Source API endpoints.
-Handles data ingestion from fetch layer.
+Source API 端點。
+處理 fetch 層送入的資料匯入請求。
 """
 
 import copy
@@ -329,7 +329,7 @@ async def _ingest_direct_payload(
     background_tasks: BackgroundTasks,
     db: AsyncSession,
 ) -> IngestResponse:
-    """Ingest direct market payload with inferred ingestion fields."""
+    """使用推斷出的匯入欄位匯入直接格式市場資料。"""
     await _ensure_direct_dataset_exists(db, dataset_key)
     request = _build_direct_ingest_request(payload, dataset_key, key_prefix)
     return await _ingest_by_market(
@@ -347,7 +347,7 @@ async def ingest_crypto_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for CRYPTO market."""
+    """匯入 CRYPTO 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -363,7 +363,7 @@ async def ingest_us_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for US market."""
+    """匯入 US 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -379,7 +379,7 @@ async def ingest_usstock_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg US stock direct payload format."""
+    """匯入 Bloomberg 美股直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="us_stock_eod",
@@ -397,7 +397,7 @@ async def ingest_hkchina_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg HK/China stock and index direct payload format."""
+    """匯入 Bloomberg 港股／中國股票與指數直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="hkchina_mixed_eod",
@@ -415,7 +415,7 @@ async def ingest_hkchina_index_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg HK/China index direct payload format."""
+    """匯入 Bloomberg 港股／中國指數直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="hkchina_index_eod",
@@ -433,7 +433,7 @@ async def ingest_fx_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for FX market."""
+    """匯入 FX 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -449,7 +449,7 @@ async def ingest_macro_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for MACRO market."""
+    """匯入 MACRO 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -465,7 +465,7 @@ async def ingest_crypto_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg crypto direct payload format."""
+    """匯入 Bloomberg 加密貨幣直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="crypto_bloomberg_eod",
@@ -483,7 +483,7 @@ async def ingest_fx_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg FX direct payload format."""
+    """匯入 Bloomberg 外匯直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="fx_bloomberg_eod",
@@ -501,7 +501,7 @@ async def ingest_macro_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg macro direct payload format."""
+    """匯入 Bloomberg 總經直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="macro_bloomberg_observation",
@@ -519,7 +519,7 @@ async def ingest_wtx_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest Bloomberg WTX futures direct payload format."""
+    """匯入 Bloomberg WTX 期貨直接格式資料。"""
     return await _ingest_direct_payload(
         payload=payload,
         dataset_key="wtx_bloomberg_eod",
@@ -537,7 +537,7 @@ async def ingest_wtx_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for WTX market."""
+    """匯入 WTX 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -553,7 +553,7 @@ async def ingest_global_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for GLOBAL market."""
+    """匯入 GLOBAL 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -569,7 +569,7 @@ async def ingest_tw_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for TW market."""
+    """匯入 TW 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -585,7 +585,7 @@ async def ingest_hk_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for HK market."""
+    """匯入 HK 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -601,7 +601,7 @@ async def ingest_cn_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest data for CN market."""
+    """匯入 CN 市場資料。"""
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -616,7 +616,7 @@ async def get_run_status(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get ingestion run status."""
+    """取得資料匯入執行狀態。"""
     service = IngestionService(db)
     run = await service.get_run_status(run_id)
 
@@ -646,7 +646,7 @@ async def rerun_from_raw(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Re-run normalization using stored raw payload for a run."""
+    """使用已儲存的原始資料重新執行正規化。"""
     service = IngestionService(db)
 
     try:
@@ -697,7 +697,7 @@ async def list_datasets(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List available datasets."""
+    """列出可用資料集。"""
     service = IngestionService(db)
     datasets = await service.list_datasets()
 

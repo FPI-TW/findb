@@ -1,6 +1,4 @@
-"""
-Admin API Pydantic schemas.
-"""
+"""Admin API 使用的 Pydantic schema。"""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,9 +14,9 @@ from app.schemas.common import PaginatedResponse
 
 class PatchEODRequest(BaseModel):
     """
-    PATCH body for MarketDataEOD correction.
-    Only explicitly provided OHLCV fields are updated.
-    correction_reason is always required.
+    MarketDataEOD 修正請求內容。
+
+    只會更新明確提供的 OHLCV 欄位，且必須提供 correction_reason。
     """
 
     correction_reason: str = Field(..., min_length=1, max_length=2000)
@@ -31,7 +29,7 @@ class PatchEODRequest(BaseModel):
 
 
 class PatchEODResponse(BaseModel):
-    """Response after patching an EOD record."""
+    """日線資料修正後的回應。"""
 
     success: bool = True
     correction_id: UUID
@@ -47,7 +45,7 @@ class PatchEODResponse(BaseModel):
 
 
 class DQIssueResponse(BaseModel):
-    """Single DQ issue record."""
+    """單一資料品質問題紀錄。"""
 
     id: UUID
     run_id: Optional[UUID] = None
@@ -65,19 +63,19 @@ class DQIssueResponse(BaseModel):
 
 
 class DQIssueListResponse(PaginatedResponse[DQIssueResponse]):
-    """Paginated DQ issue list."""
+    """分頁資料品質問題列表。"""
 
     pass
 
 
 class ResolveDQIssueRequest(BaseModel):
-    """PATCH body for resolving a DQ issue."""
+    """資料品質問題標記為已解決的請求內容。"""
 
     correction_reason: str = Field(..., min_length=1, max_length=2000)
 
 
 class ResolveDQIssueResponse(BaseModel):
-    """Response after resolving a DQ issue."""
+    """資料品質問題解決後的回應。"""
 
     success: bool = True
     correction_id: UUID
@@ -92,7 +90,7 @@ class ResolveDQIssueResponse(BaseModel):
 
 
 class CorrectionResponse(BaseModel):
-    """Single correction audit record."""
+    """單一修正稽核紀錄。"""
 
     id: UUID
     table_name: str
@@ -109,7 +107,7 @@ class CorrectionResponse(BaseModel):
 
 
 class CorrectionListResponse(PaginatedResponse[CorrectionResponse]):
-    """Paginated correction list."""
+    """分頁修正稽核列表。"""
 
     pass
 
@@ -118,7 +116,7 @@ class CorrectionListResponse(PaginatedResponse[CorrectionResponse]):
 
 
 class RawPayloadResponse(BaseModel):
-    """Single raw market payload record."""
+    """單一原始市場資料紀錄。"""
 
     idempotency_key: str
     run_id: UUID
@@ -134,13 +132,13 @@ class RawPayloadResponse(BaseModel):
 
 
 class RawPayloadListResponse(PaginatedResponse[RawPayloadResponse]):
-    """Paginated raw payload list."""
+    """分頁原始資料列表。"""
 
     pass
 
 
 class BulkRerunResponse(BaseModel):
-    """Response for bulk rerun operation."""
+    """批次重新執行回應。"""
 
     queued: int
     skipped: int
@@ -153,7 +151,7 @@ class BulkRerunResponse(BaseModel):
 
 
 class InstrumentCacheItem(BaseModel):
-    """Single item in the generated static instrument cache."""
+    """產生後的靜態商品快取單一項目。"""
 
     instrument_id: str = Field(..., min_length=1)
     market: Optional[str] = None
@@ -168,7 +166,7 @@ class InstrumentCacheItem(BaseModel):
 
 
 class InstrumentCacheDocument(BaseModel):
-    """Full generated instruments.json document."""
+    """完整產生後的 instruments.json 文件。"""
 
     generated_at: str
     total: int = Field(..., ge=0)
@@ -178,13 +176,13 @@ class InstrumentCacheDocument(BaseModel):
 
 
 class InstrumentCacheReplaceRequest(InstrumentCacheDocument):
-    """PUT body for replacing the generated instruments.json document."""
+    """替換 instruments.json 文件的請求內容。"""
 
     pass
 
 
 class InstrumentCacheItemPatchRequest(BaseModel):
-    """PATCH body for editing a single cached instrument."""
+    """編輯單一快取商品的請求內容。"""
 
     market: Optional[str] = None
     asset_class: Optional[str] = None
@@ -200,7 +198,7 @@ class InstrumentCacheItemPatchRequest(BaseModel):
 
 
 class InstrumentCacheWriteResponse(BaseModel):
-    """Response after writing instruments.json."""
+    """寫入 instruments.json 後的回應。"""
 
     success: bool = True
     message: str
@@ -208,7 +206,7 @@ class InstrumentCacheWriteResponse(BaseModel):
 
 
 class InstrumentCacheItemUpdateResponse(BaseModel):
-    """Response after updating a single cached instrument."""
+    """更新單一快取商品後的回應。"""
 
     success: bool = True
     message: str

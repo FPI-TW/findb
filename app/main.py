@@ -17,9 +17,9 @@ from app.models.base import init_db
 settings = get_settings()
 
 OPENAPI_TAGS = [
-    {"name": "Serve API", "description": "Read-only market data query endpoints."},
-    {"name": "Source API", "description": "Authenticated data ingestion endpoints."},
-    {"name": "Admin API", "description": "Authenticated administration endpoints."},
+    {"name": "Serve API", "description": "唯讀市場資料查詢端點。"},
+    {"name": "Source API", "description": "需認證的資料寫入與匯入端點。"},
+    {"name": "Admin API", "description": "需認證的系統管理端點。"},
 ]
 
 
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Financial Database - Normalize and Serve Layer",
+    description="金融資料庫 - 正規化與查詢服務層",
     openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
@@ -78,7 +78,7 @@ app.include_router(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """健康檢查端點。"""
     return {
         "status": "healthy",
         "version": settings.APP_VERSION,
@@ -87,7 +87,7 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """根端點。"""
     return {
         "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
@@ -97,11 +97,11 @@ async def root():
 
 @app.get("/test", include_in_schema=False)
 async def test_page():
-    """Test dashboard page."""
+    """測試儀表板頁面。"""
     return FileResponse(TEST_PAGE_PATH, media_type="text/html")
 
 
 @app.get("/instrument-lookup", include_in_schema=False)
 async def instrument_lookup_page():
-    """Instrument lookup page."""
+    """商品查詢頁面。"""
     return FileResponse(INSTRUMENT_LOOKUP_PAGE_PATH, media_type="text/html")
