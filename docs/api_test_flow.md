@@ -31,11 +31,11 @@
 cp .env.example .env
 ```
 
-> `docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法。
-> 若 `.env` 未設定 `SOURCE_API_KEYS`，預設使用 `dev-source-key`。
+> `docker-compose.yml` 使用 `${SOURCE_API_KEY:-dev-source-key}` 語法。
+> 若 `.env` 未設定 `SOURCE_API_KEY`，預設使用 `dev-source-key`。
 > `RAW_RETENTION_ENABLED` 預設為 `false`，raw payload 目前不會因保留期限自動被刪除。
 > `SOURCE_ALLOWLIST_CIDRS` 由生產環境 nginx 用於限制 `/api/v1/source/*`；本機直接跑 app 時不執行 IP 允許名單。
-> 若要測 Admin API，請先設定 `ADMIN_API_KEYS=dev-admin-key`。
+> 若要測 Admin API，請先設定 `ADMIN_API_KEY=dev-admin-key`。
 
 ### 0.2 啟動 Docker 服務
 
@@ -597,7 +597,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=5"
 
 所有 Admin API 請求需在 Header 帶入 `X-API-Key: dev-admin-key`。
 
-> 若使用 Docker 環境，需先在 `docker-compose.yml` 或 `.env` 設定 `ADMIN_API_KEYS=dev-admin-key`，然後重啟服務：
+> 若使用 Docker 環境，需先在 `docker-compose.yml` 或 `.env` 設定 `ADMIN_API_KEY=dev-admin-key`，然後重啟服務：
 > ```bash
 > docker compose restart app
 > ```
@@ -970,7 +970,7 @@ uv run pytest --cov=app --cov-report=term-missing
 | `422 Validation Error` | 請求體格式不符 | 檢查 JSON 欄位是否符合 schema（見 [API 使用教學](api_usage_guide.md)） |
 | `.env` 設定不生效 | docker compose 覆蓋 | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效 |
 | `Run status 一直 pending` | 背景任務未執行 | 確認 app 容器正常運行，檢查 `docker compose logs app` |
-| `500 No admin API keys configured` | `ADMIN_API_KEYS` 未設定 | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEYS=your-admin-key`，重啟服務 |
+| `500 No admin API key configured` | `ADMIN_API_KEY` 未設定 | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEY=your-admin-key`，重啟服務 |
 | `Admin PATCH 回傳 404` | 找不到指定記錄 | 確認 instrument_id 與 trade_date 有對應的日K 資料（先用 Serve API 確認） |
 | `Admin PATCH 回傳 400 No changes` | 提交值與現有值相同 | 確認修正值與 DB 現有值確實不同 |
 | `Admin DQ resolve 回傳 409` | DQ issue 已解決 | 該 issue 已是 resolved 狀態，無需重複標記 |

@@ -107,8 +107,8 @@ uv run pytest
 ## NOTES
 
 - Host DB port is `5435` -> container `5432`; app container uses `db:5432`. Default app port: `8080`.
-- `SOURCE_API_KEYS` must be set for auth-covered tests and ingest endpoints.
-- `ADMIN_API_KEYS` must be set for Admin API endpoints and admin-related tests.
+- `SOURCE_API_KEY` must be set for auth-covered tests and ingest endpoints.
+- `ADMIN_API_KEY` must be set for Admin API endpoints and admin-related tests.
 - Schema evolution is managed by Alembic. Runtime `init_db()` validates Alembic revision and required tables — it does NOT run `create_all()`.
 - All schema changes must go through Alembic revisions (`uv run alembic revision --autogenerate`).
 - Pre-commit hooks: Black formatting on commit, pytest on push.

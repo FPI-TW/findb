@@ -26,10 +26,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
       DEBUG: ${DEBUG:-true}
       PORT: ${PORT:-8080}
-      SOURCE_API_KEYS: ${SOURCE_API_KEYS:-dev-source-key}
+      SOURCE_API_KEY: ${SOURCE_API_KEY:-dev-source-key}
       SERVE_API_KEYS: ${SERVE_API_KEYS:-}
       SERVE_REQUIRE_AUTH: ${SERVE_REQUIRE_AUTH:-false}
-      ADMIN_API_KEYS: ${ADMIN_API_KEYS:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       SOURCE_ALLOWLIST_CIDRS: ${SOURCE_ALLOWLIST_CIDRS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"

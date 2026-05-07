@@ -96,15 +96,15 @@ def source_api_key() -> str:
 
 
 @pytest.fixture(autouse=True)
-def configure_source_api_keys(source_api_key: str):
-    """Ensure Source API keys are configured for tests."""
+def configure_source_api_key(source_api_key: str):
+    """Ensure the Source API key is configured for tests."""
     settings = get_settings()
-    original_keys = settings.SOURCE_API_KEYS
+    original_key = settings.SOURCE_API_KEY
     original_debug = settings.DEBUG
-    settings.SOURCE_API_KEYS = source_api_key
+    settings.SOURCE_API_KEY = source_api_key
     settings.DEBUG = True
     yield
-    settings.SOURCE_API_KEYS = original_keys
+    settings.SOURCE_API_KEY = original_key
     settings.DEBUG = original_debug
 
 
@@ -129,13 +129,13 @@ def admin_api_key() -> str:
 
 
 @pytest.fixture(autouse=True)
-def configure_admin_api_keys(admin_api_key: str):
-    """Ensure Admin API keys are configured for tests."""
+def configure_admin_api_key(admin_api_key: str):
+    """Ensure the Admin API key is configured for tests."""
     settings = get_settings()
-    original_keys = settings.ADMIN_API_KEYS
-    settings.ADMIN_API_KEYS = admin_api_key
+    original_key = settings.ADMIN_API_KEY
+    settings.ADMIN_API_KEY = admin_api_key
     yield
-    settings.ADMIN_API_KEYS = original_keys
+    settings.ADMIN_API_KEY = original_key
 
 
 @pytest.fixture

@@ -26,16 +26,16 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     API_KEY_HEADER: str = "X-API-Key"
 
-    # Source API Keys (comma-separated)
-    SOURCE_API_KEYS: str = ""
+    # Source API Key
+    SOURCE_API_KEY: str = ""
     SOURCE_TRUST_PROXY_HEADERS: bool = False
 
     # Serve API Keys (comma-separated, optional)
     SERVE_API_KEYS: str = ""
     SERVE_REQUIRE_AUTH: bool = False
 
-    # Admin API Keys (comma-separated)
-    ADMIN_API_KEYS: str = ""
+    # Admin API Key
+    ADMIN_API_KEY: str = ""
 
     # Rate Limiting
     RATE_LIMIT_REQUESTS: int = 100
