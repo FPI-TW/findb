@@ -59,7 +59,7 @@ python scripts/generate_instrument_cache.py
 
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
-| `FINDB_BASE_URL` | `http://localhost:8080` | FinDB API base URL |
+| `FINDB_STATIC_CACHE_BASE_URL` | `http://localhost:8080` | 靜態快取產生腳本呼叫 FinDB API 的 base URL |
 | `FINDB_STATIC_CACHE_SERVE_API_KEY` | （空） | 若 Serve API 啟用認證則需設定 |
 
 **邏輯**：
