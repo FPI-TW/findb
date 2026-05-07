@@ -16,11 +16,9 @@ _source_rate_limit_lock = Lock()
 _source_rate_limit_buckets: dict[str, list[float]] = {}
 
 
-def get_source_api_keys() -> list[str]:
-    """Get list of valid source API keys."""
-    if not settings.SOURCE_API_KEYS:
-        return []
-    return [key.strip() for key in settings.SOURCE_API_KEYS.split(",") if key.strip()]
+def get_source_api_key() -> str:
+    """Get the valid source API key."""
+    return settings.SOURCE_API_KEY.strip()
 
 
 def get_serve_api_keys() -> list[str]:
@@ -30,11 +28,9 @@ def get_serve_api_keys() -> list[str]:
     return [key.strip() for key in settings.SERVE_API_KEYS.split(",") if key.strip()]
 
 
-def get_admin_api_keys() -> list[str]:
-    """Get list of valid admin API keys."""
-    if not settings.ADMIN_API_KEYS:
-        return []
-    return [key.strip() for key in settings.ADMIN_API_KEYS.split(",") if key.strip()]
+def get_admin_api_key() -> str:
+    """Get the valid admin API key."""
+    return settings.ADMIN_API_KEY.strip()
 
 
 def _extract_client_ip(request: Request) -> str | None:
@@ -91,12 +87,12 @@ async def verify_source_api_key(
     api_key: str = Security(api_key_header),
 ) -> str:
     """Verify API key for Source API endpoints."""
-    valid_keys = get_source_api_keys()
+    valid_key = get_source_api_key()
 
-    if not valid_keys:
+    if not valid_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No API keys configured",
+            detail="No API key configured",
         )
 
     if not api_key:
@@ -105,7 +101,7 @@ async def verify_source_api_key(
             detail="Missing API key",
         )
 
-    if api_key not in valid_keys:
+    if api_key != valid_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",
@@ -119,12 +115,12 @@ async def verify_source_api_key(
 
 async def verify_admin_api_key(api_key: str = Security(api_key_header)) -> str:
     """Verify API key for Admin API endpoints. Always required — no bypass."""
-    valid_keys = get_admin_api_keys()
+    valid_key = get_admin_api_key()
 
-    if not valid_keys:
+    if not valid_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No admin API keys configured",
+            detail="No admin API key configured",
         )
 
     if not api_key:
@@ -133,7 +129,7 @@ async def verify_admin_api_key(api_key: str = Security(api_key_header)) -> str:
             detail="Missing API key",
         )
 
-    if api_key not in valid_keys:
+    if api_key != valid_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",

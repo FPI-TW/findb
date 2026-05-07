@@ -238,13 +238,13 @@ cp .env.example .env
 編輯 `.env` 設定 API Keys：
 
 ```env
-SOURCE_API_KEYS=your-source-key
+SOURCE_API_KEY=your-source-key
 SERVE_API_KEYS=your-serve-key
-ADMIN_API_KEYS=your-admin-key
+ADMIN_API_KEY=your-admin-key
 SERVE_REQUIRE_AUTH=false
 ```
 
-> **注意**：`docker-compose.yml` 使用 `${SOURCE_API_KEYS:-dev-source-key}` 語法，
+> **注意**：`docker-compose.yml` 使用 `${SOURCE_API_KEY:-dev-source-key}` 語法，
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
 > `SOURCE_ALLOWLIST_CIDRS` 由生產環境 nginx 用於限制 `/api/v1/source/*`；
 > 本機直接跑 app 時不會由 FastAPI 執行 IP 允許名單。
@@ -479,8 +479,8 @@ uv run python scripts/generate_instrument_cache.py
 可用環境變數：
 
 ```bash
-FINDB_BASE_URL=http://localhost:8080
-FINDB_SERVE_API_KEY=your-serve-key
+FINDB_STATIC_CACHE_BASE_URL=http://localhost:8080
+FINDB_STATIC_CACHE_SERVE_API_KEY=your-serve-key
 ```
 
 產生完成後，可透過下列網址開啟查詢頁：
@@ -613,7 +613,7 @@ curl "http://localhost:8080/api/v1/serve/calendar?market=US&start_date=2026-01-0
 
 ### Admin API（資料修正與快取維護）
 
-Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEYS` 中配置的值。
+Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEY` 中配置的值。
 
 | 方法  | 路徑                                                   | 說明                                    |
 | ----- | ------------------------------------------------------ | --------------------------------------- |
@@ -653,9 +653,9 @@ Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEYS` 中配置的值。
 
 | 層級       | 認證                         | Header                         |
 | ---------- | ---------------------------- | ------------------------------ |
-| Source API | **必要**                     | `X-API-Key: {SOURCE_API_KEYS}` |
+| Source API | **必要**                     | `X-API-Key: {SOURCE_API_KEY}` |
 | Serve API  | 可選（`SERVE_REQUIRE_AUTH`） | `X-API-Key: {SERVE_API_KEYS}`  |
-| Admin API  | **必要**                     | `X-API-Key: {ADMIN_API_KEYS}`  |
+| Admin API  | **必要**                     | `X-API-Key: {ADMIN_API_KEY}`  |
 
 ### IP 允許名單
 
@@ -790,7 +790,7 @@ docker compose exec app bash -c \
 ### 測試環境注意事項
 
 - 測試使用 `findb_test` 資料庫（可透過 `TEST_DATABASE_URL` 環境變數覆蓋）
-- `SOURCE_API_KEYS` 必須設定否則認證測試會失敗
+- `SOURCE_API_KEY` 必須設定否則認證測試會失敗
 - 測試會自動建立/銷毀資料表
 - 限流狀態在每個測試後自動重置
 
@@ -886,10 +886,10 @@ git push origin main
 | `EC2_USER`            | `ubuntu`（Ubuntu AMI）或 `ec2-user`                                      |
 | `EC2_SSH_KEY`         | PEM 私鑰完整文字                                                         |
 | `DATABASE_URL`        | RDS / Aurora PostgreSQL 連線字串                                         |
-| `SOURCE_API_KEYS`     | Source API 金鑰（逗號分隔）                                              |
-| `ADMIN_API_KEYS`      | Admin API 金鑰（逗號分隔）                                               |
+| `SOURCE_API_KEY`     | Source API 金鑰                                                          |
+| `ADMIN_API_KEY`      | Admin API 金鑰                                                           |
 | `SERVE_API_KEYS`      | Serve API 金鑰（`SERVE_REQUIRE_AUTH=true` 時必填）                       |
-| `FINDB_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
+| `FINDB_STATIC_CACHE_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
 
 #### GitHub Variables 設定
 
@@ -910,7 +910,7 @@ git push origin main
 | `RATE_LIMIT_WINDOW`          | `60`                                                                         |
 | `RAW_RETENTION_ENABLED`      | 是否啟用 raw 清理，例如 `false`                                              |
 | `RAW_RETENTION_DAYS`         | `14`                                                                         |
-| `FINDB_BASE_URL`             | 部署後服務 URL；若 cache 在 app container 內產生可用 `http://localhost:8080` |
+| `FINDB_STATIC_CACHE_BASE_URL` | 靜態快取產生腳本呼叫 Serve API 的 base URL；部署容器內預設 `http://127.0.0.1:8080` |
 | `FINDB_LATEST_PRICE_WORKERS` | 靜態快取查詢最新價格的並行數，例如 `12`                                      |
 
 #### 日常部署
@@ -933,8 +933,8 @@ git push origin main
 | ---------------------------- | -------------------------------- | -------------------------------------------------------------- |
 | `DATABASE_URL`               | PostgreSQL 連線字串              | `postgresql+asyncpg://findb:findb@localhost:5435/findb`        |
 | `DEBUG`                      | 除錯模式                         | `false`                                                        |
-| `SOURCE_API_KEYS`            | Source API 金鑰（逗號分隔）      | `docker compose` 開發環境預設 `dev-source-key`                 |
-| `ADMIN_API_KEYS`             | Admin API 金鑰（逗號分隔）       | （空）                                                         |
+| `SOURCE_API_KEY`            | Source API 金鑰                  | `docker compose` 開發環境預設 `dev-source-key`                 |
+| `ADMIN_API_KEY`             | Admin API 金鑰                   | （空）                                                         |
 | `SOURCE_ALLOWLIST_CIDRS`     | nginx `/api/v1/source/*` IP 允許名單（CIDR，逗號分隔） | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` |
 | `SOURCE_TRUST_PROXY_HEADERS` | 是否信任 X-Forwarded-For（rate limit client IP 用） | `false`                                                        |
 | `SERVE_API_KEYS`             | Serve API 金鑰（逗號分隔）       | （空）                                                         |

@@ -31,8 +31,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
       TEST_DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
-      SOURCE_API_KEYS: test-source-key
-      ADMIN_API_KEYS: test-admin-key
+      SOURCE_API_KEY: test-source-key
+      ADMIN_API_KEY: test-admin-key
 
     steps:
       - uses: actions/checkout@v4
@@ -100,18 +100,18 @@ jobs:
       DATABASE_MAX_OVERFLOW: ${{ vars.DATABASE_MAX_OVERFLOW }}
       API_V1_PREFIX: ${{ vars.API_V1_PREFIX }}
       API_KEY_HEADER: ${{ vars.API_KEY_HEADER }}
-      SOURCE_API_KEYS: ${{ secrets.SOURCE_API_KEYS }}
+      SOURCE_API_KEY: ${{ secrets.SOURCE_API_KEY }}
       SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
       SOURCE_TRUST_PROXY_HEADERS: ${{ vars.SOURCE_TRUST_PROXY_HEADERS }}
       SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
       SERVE_REQUIRE_AUTH: ${{ vars.SERVE_REQUIRE_AUTH }}
-      ADMIN_API_KEYS: ${{ secrets.ADMIN_API_KEYS }}
+      ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
       RATE_LIMIT_REQUESTS: ${{ vars.RATE_LIMIT_REQUESTS }}
       RATE_LIMIT_WINDOW: ${{ vars.RATE_LIMIT_WINDOW }}
       RAW_RETENTION_ENABLED: ${{ vars.RAW_RETENTION_ENABLED }}
       RAW_RETENTION_DAYS: ${{ vars.RAW_RETENTION_DAYS }}
-      FINDB_BASE_URL: ${{ vars.FINDB_BASE_URL }}
-      FINDB_SERVE_API_KEY: ${{ secrets.FINDB_SERVE_API_KEY }}
+      FINDB_STATIC_CACHE_BASE_URL: ${{ vars.FINDB_STATIC_CACHE_BASE_URL }}
+      FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
       FINDB_LATEST_PRICE_WORKERS: ${{ vars.FINDB_LATEST_PRICE_WORKERS }}
 
     steps:
@@ -121,7 +121,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEYS SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEYS RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_BASE_URL FINDB_LATEST_PRICE_WORKERS; do
+          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEY SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
               missing=1
@@ -131,8 +131,8 @@ jobs:
             echo "::error title=Missing deployment secret::SERVE_API_KEYS must be configured when SERVE_REQUIRE_AUTH=true"
             missing=1
           fi
-          if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -z "${FINDB_SERVE_API_KEY:-}" ]; then
-            echo "::error title=Missing deployment secret::FINDB_SERVE_API_KEY must be configured when SERVE_REQUIRE_AUTH=true"
+          if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -z "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}" ]; then
+            echo "::error title=Missing deployment secret::FINDB_STATIC_CACHE_SERVE_API_KEY must be configured when SERVE_REQUIRE_AUTH=true"
             missing=1
           fi
           exit "$missing"
@@ -184,7 +184,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEYS,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEYS,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_BASE_URL,FINDB_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
           script: |
             set -euo pipefail
             echo "Logging in to GHCR"

@@ -120,8 +120,8 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 
 ## Security
 
-- **Source API**: requires `X-API-Key` header matching `SOURCE_API_KEYS` env var
-- **Admin API**: requires `X-API-Key` header matching `ADMIN_API_KEYS` env var
+- **Source API**: requires `X-API-Key` header matching `SOURCE_API_KEY` env var
+- **Admin API**: requires `X-API-Key` header matching `ADMIN_API_KEY` env var
 - **IP allowlist**: `SOURCE_ALLOWLIST_CIDRS` (CIDR, comma-separated). Optional when `DEBUG=true`; **required when `DEBUG=false`** (app refuses to start without it)
 - **Serve API**: auth optional, controlled by `SERVE_REQUIRE_AUTH`; Serve layer must remain read-only
 - **Rate limiting**: in-process per (API key + client IP); resets on restart
@@ -129,8 +129,8 @@ FinDB is a three-layer financial data pipeline: **Fetch → Normalize → Serve*
 ## Test Environment Notes
 
 - Tests use `findb_test` DB (override via `TEST_DATABASE_URL`)
-- `SOURCE_API_KEYS` must be set for auth tests to pass
-- `ADMIN_API_KEYS` must be set for admin API tests to pass
+- `SOURCE_API_KEY` must be set for auth tests to pass
+- `ADMIN_API_KEY` must be set for admin API tests to pass
 - Tables are auto-created and torn down per test session
 - Rate limit state resets between tests automatically
 - Preferred test runner: `uv run python scripts/dev.py test-db` (auto-creates test DB)
