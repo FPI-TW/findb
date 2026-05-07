@@ -10,22 +10,22 @@ import pytest
 from sqlalchemy import select
 
 from app.models.canonical import (
+    CorporateAction,
     FuturesContinuousEOD,
     Instrument,
     MarketDataEOD,
     TradingCalendar,
-    CorporateAction,
 )
 from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
 from app.services.dq.validators import DQValidator
 from app.services.normalize.base import BaseNormalizer
+from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.services.normalize.crypto import CryptoNormalizer
 from app.services.normalize.crypto_index import CryptoIndexNormalizer
 from app.services.normalize.equity import IndexNormalizer
 from app.services.normalize.futures import FuturesContinuousNormalizer
 from app.services.normalize.macro import MacroNormalizer
 from app.services.normalize.types import MappedRecord
-from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.utils import utc_now, uuid7
 
 

@@ -99,7 +99,7 @@ async def list_instruments(
 
     # Get total count
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     # Apply pagination
     offset = (page - 1) * page_size
@@ -231,7 +231,7 @@ async def list_eod_data(
 
     # Get total count
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     # Apply pagination
     offset = (page - 1) * page_size
@@ -322,7 +322,7 @@ async def get_instrument_eod(
 
     # Get total count
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     # Apply pagination
     offset = (page - 1) * page_size
@@ -406,7 +406,7 @@ async def list_corporate_actions(
         count_query = count_query.where(and_(*filters))
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = (
@@ -491,7 +491,7 @@ async def get_instrument_corporate_actions(
         count_query = count_query.where(and_(*filters))
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(CorporateAction.ex_date.desc())
@@ -561,7 +561,7 @@ async def list_macro_series(
         count_query = count_query.where(and_(*filters))
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(MacroSeries.name)
@@ -628,7 +628,7 @@ async def list_macro_observations(
         count_query = count_query.where(and_(*filters))
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = (
@@ -697,7 +697,7 @@ async def get_macro_observations(
         count_query = count_query.where(MacroObservation.obs_date <= end_date)
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(MacroObservation.obs_date.desc())
@@ -767,7 +767,7 @@ async def list_futures_contracts(
         count_query = count_query.where(and_(*filters))
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = (
@@ -846,7 +846,7 @@ async def list_futures_continuous(
         count_query = count_query.where(and_(*filters))
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = (
@@ -929,7 +929,7 @@ async def get_futures_continuous(
         count_query = count_query.where(FuturesContinuousEOD.trade_date <= end_date)
 
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(FuturesContinuousEOD.trade_date.desc())
@@ -1000,7 +1000,7 @@ async def list_calendar(
 
     # Get total count
     total_result = await db.execute(count_query)
-    total_records = total_result.scalar()
+    total_records = int(total_result.scalar() or 0)
 
     # Apply pagination
     offset = (page - 1) * page_size

@@ -69,7 +69,7 @@ def normalize_instrument(payload: dict[str, Any]) -> dict[str, Any]:
     return {field: payload.get(field) for field in INSTRUMENT_FIELDS}
 
 
-def sort_key(item: dict[str, Any]) -> tuple[str, str, str]:
+def sort_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     """Stable default ordering for the static dataset."""
     market = str(item.get("market") or "")
     symbol = str(item.get("symbol") or "")

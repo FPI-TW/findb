@@ -21,7 +21,7 @@ from app.models.canonical import (
 )
 from app.models.registry import DQIssue, IngestionRun
 from app.services.dq.validators import DQIssueRecord, DQValidator
-from app.services.normalize.types import MappedRecord
+from app.services.normalize.types import InstrumentResolvableRecord, MappedRecord
 from app.utils import utc_now, uuid7
 from app.utils.datetime_utils import ensure_utc, parse_datetime
 
@@ -191,7 +191,7 @@ class BaseNormalizer(ABC):
         return records
 
     @abstractmethod
-    def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+    def map_fields(self, raw_data: dict) -> list[Any]:
         """
         Map raw data fields to canonical format.
         Must be implemented by subclasses.
@@ -324,7 +324,7 @@ class BaseNormalizer(ABC):
         await self.db.flush()
         self._identifier_exists_cache.add(cache_key)
 
-    async def resolve_instrument(self, record: MappedRecord) -> Instrument:
+    async def resolve_instrument(self, record: InstrumentResolvableRecord) -> Instrument:
         """Resolve instrument by identifier mapping or symbol."""
         record_market = str(getattr(record, "market", None) or self.market).upper().strip()
         record_asset_class = getattr(record, "asset_class", None) or self.asset_class
