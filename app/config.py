@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     RABBITMQ_QUEUE_MAX_MESSAGES: int = 10000  # fallback cap when x-max-length not set
     RABBITMQ_PRESSURE_THRESHOLD: float = 0.8  # fraction that triggers 429
 
-    # Source API Keys (comma-separated)
-    SOURCE_API_KEYS: str = ""
+    # Source API Key
+    SOURCE_API_KEY: str = ""
     SOURCE_TRUST_PROXY_HEADERS: bool = False
 
     # Serve API Keys (comma-separated, optional)

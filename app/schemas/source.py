@@ -40,35 +40,6 @@ class IngestMetadata(BaseModel):
     """Data source and when the data got queried"""
     source: str = Field(..., description="Data source name, like 'bloomberg'")
     query_time: datetime = Field(..., description="Data queried time")
-    # 如果還有其他 metadata 欄位可以繼續在此擴充
-
-
-class MarketDataItem(BaseModel):
-    """Single market data"""
-
-    ticker: str = Field(..., description="Stock symbol, like 'HSI Index'")
-    date: str = Field(..., description="Transaction date (YYYY-MM-DD)")
-    open: float = Field(..., description="Opening price")
-    high: float = Field(..., description="Highest price")
-    low: float = Field(..., description="Lowest price")
-    close: float = Field(..., description="Closing price")
-    volume: int = Field(default=0, description="Volume")
-
-
-class DirectIngestPayloadV2(BaseModel):
-    """Direct market payload from fetch layer (metadata + data)."""
-
-    metadata: IngestMetadata
-    data: list[MarketDataItem]
-
-
-class IngestMetadata(BaseModel):
-    """資料來源與查詢時間等元數據"""
-
-    """Data source and when the data got queried"""
-    source: str = Field(..., description="Data source name, like 'bloomberg'")
-    query_time: datetime = Field(..., description="Data queried time")
-    # 如果還有其他 metadata 欄位可以繼續在此擴充
 
 
 class MarketDataItem(BaseModel):
