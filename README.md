@@ -480,7 +480,7 @@ uv run python scripts/generate_instrument_cache.py
 
 ```bash
 FINDB_BASE_URL=http://localhost:8080
-FINDB_SERVE_API_KEY=your-serve-key
+FINDB_STATIC_CACHE_SERVE_API_KEY=your-serve-key
 ```
 
 產生完成後，可透過下列網址開啟查詢頁：
@@ -889,7 +889,7 @@ git push origin main
 | `SOURCE_API_KEY`     | Source API 金鑰                                                          |
 | `ADMIN_API_KEY`      | Admin API 金鑰                                                           |
 | `SERVE_API_KEYS`      | Serve API 金鑰（`SERVE_REQUIRE_AUTH=true` 時必填）                       |
-| `FINDB_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
+| `FINDB_STATIC_CACHE_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
 
 #### GitHub Variables 設定
 

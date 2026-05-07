@@ -11,7 +11,7 @@ Usage:
 
 Environment variables:
     FINDB_BASE_URL         Base URL for the FinDB app. Default: http://localhost:8080
-    FINDB_SERVE_API_KEY    Optional Serve API key when authentication is enabled.
+    FINDB_STATIC_CACHE_SERVE_API_KEY    Optional Serve API key for static cache generation.
 
 Crontab example:
     0 6 * * * cd /app && python scripts/generate_instrument_cache.py
@@ -32,7 +32,7 @@ from urllib import error, parse
 from urllib.request import Request, urlopen
 
 BASE_URL = os.getenv("FINDB_BASE_URL", "http://localhost:8080").rstrip("/")
-SERVE_API_KEY = os.getenv("FINDB_SERVE_API_KEY", "").strip()
+STATIC_CACHE_SERVE_API_KEY = os.getenv("FINDB_STATIC_CACHE_SERVE_API_KEY", "").strip()
 PAGE_SIZE = 1000
 LATEST_PRICE_WORKERS = int(os.getenv("FINDB_LATEST_PRICE_WORKERS", "12"))
 TIMEOUT_SECONDS = 30
@@ -415,14 +415,14 @@ def print_macro_summary(payload: dict[str, Any]) -> None:
 def main() -> int:
     """CLI entry point."""
     try:
-        instruments = collect_instruments(BASE_URL, api_key=SERVE_API_KEY or None)
+        instruments = collect_instruments(BASE_URL, api_key=STATIC_CACHE_SERVE_API_KEY or None)
         instruments = enrich_instruments_with_latest_prices(
             instruments,
             BASE_URL,
-            api_key=SERVE_API_KEY or None,
+            api_key=STATIC_CACHE_SERVE_API_KEY or None,
         )
         payload = build_cache_payload(instruments)
-        macro_series = collect_macro_series(BASE_URL, api_key=SERVE_API_KEY or None)
+        macro_series = collect_macro_series(BASE_URL, api_key=STATIC_CACHE_SERVE_API_KEY or None)
         macro_payload = build_macro_series_payload(macro_series)
 
         write_json_atomic(OUTPUT_PATH, payload)
