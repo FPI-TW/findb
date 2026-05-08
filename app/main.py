@@ -77,12 +77,6 @@ app.include_router(
 )
 
 app.include_router(
-    source.router,
-    prefix=f"{settings.API_V1_PREFIX}/source",
-    tags=["Source API"],
-)
-
-app.include_router(
     admin.router,
     prefix=f"{settings.API_V1_PREFIX}/admin",
     tags=["Admin API"],
