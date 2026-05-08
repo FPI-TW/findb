@@ -226,18 +226,11 @@ class IngestResponse(BaseModel):
 
 
 class IngestQueueResponse(BaseModel):
-    """Response for queue-only ingestion (v3).
+    """資料進入Queue之回應"""
 
-    No DB write happens at request time, so there is no `run_id`.
-    `message_id` is the broker-side identifier for downstream tracing.
-    """
-
-    success: bool
     message_id: UUID
-    queue: str
-    dataset_key: str
-    items: int
-    message: str
+    request_key: str
+    status: str = "queued"
 
 
 class RunStatusResponse(BaseModel):

@@ -230,14 +230,7 @@ async def _dispatch_direct_payload(
         item_count,
     )
 
-    return IngestQueueResponse(
-        success=True,
-        message_id=message_id,
-        queue=INGEST_QUEUE,
-        dataset_key=dataset_key,
-        items=item_count,
-        message="Payload validated and dispatched",
-    )
+    return IngestQueueResponse(message_id=message_id, request_key=request_key, status="queued")
 
 
 # ---------------------------------------------------------------------------
