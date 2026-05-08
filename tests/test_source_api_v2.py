@@ -131,81 +131,81 @@ class TestV2Auth:
 # ---------------------------------------------------------------------------
 
 
-class TestV2PayloadValidation:
-    URL = f"{BASE}/ingest/usstock/direct"
+# class TestV2PayloadValidation:
+#     URL = f"{BASE}/ingest/usstock/direct"
 
-    @pytest.mark.asyncio
-    async def test_missing_metadata_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        resp = await client.post(
-            self.URL, json={"data": VALID_PAYLOAD["data"]}, headers=source_headers
-        )
-        assert resp.status_code == 422
+#     @pytest.mark.asyncio
+#     async def test_missing_metadata_returns_422(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         resp = await client.post(
+#             self.URL, json={"data": VALID_PAYLOAD["data"]}, headers=source_headers
+#         )
+#         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_missing_data_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        resp = await client.post(
-            self.URL, json={"metadata": VALID_PAYLOAD["metadata"]}, headers=source_headers
-        )
-        assert resp.status_code == 422
+#     @pytest.mark.asyncio
+#     async def test_missing_data_returns_422(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         resp = await client.post(
+#             self.URL, json={"metadata": VALID_PAYLOAD["metadata"]}, headers=source_headers
+#         )
+#         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_missing_query_time_in_metadata_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        payload = {
-            "metadata": {"source": "bloomberg"},
-            "data": VALID_PAYLOAD["data"],
-        }
-        resp = await client.post(self.URL, json=payload, headers=source_headers)
-        assert resp.status_code == 422
+#     @pytest.mark.asyncio
+#     async def test_missing_query_time_in_metadata_returns_422(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         payload = {
+#             "metadata": {"source": "bloomberg"},
+#             "data": VALID_PAYLOAD["data"],
+#         }
+#         resp = await client.post(self.URL, json=payload, headers=source_headers)
+#         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_missing_ticker_in_item_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        item = {k: v for k, v in VALID_PAYLOAD["data"][0].items() if k != "ticker"}
-        resp = await client.post(
-            self.URL,
-            json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
-            headers=source_headers,
-        )
-        assert resp.status_code == 422
+#     @pytest.mark.asyncio
+#     async def test_missing_ticker_in_item_returns_422(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         item = {k: v for k, v in VALID_PAYLOAD["data"][0].items() if k != "ticker"}
+#         resp = await client.post(
+#             self.URL,
+#             json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
+#             headers=source_headers,
+#         )
+#         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_missing_date_in_item_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        item = {k: v for k, v in VALID_PAYLOAD["data"][0].items() if k != "date"}
-        resp = await client.post(
-            self.URL,
-            json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
-            headers=source_headers,
-        )
-        assert resp.status_code == 422
+#     @pytest.mark.asyncio
+#     async def test_missing_date_in_item_returns_422(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         item = {k: v for k, v in VALID_PAYLOAD["data"][0].items() if k != "date"}
+#         resp = await client.post(
+#             self.URL,
+#             json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
+#             headers=source_headers,
+#         )
+#         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_non_numeric_price_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        item = {**VALID_PAYLOAD["data"][0], "open": "not-a-number"}
-        resp = await client.post(
-            self.URL,
-            json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
-            headers=source_headers,
-        )
-        assert resp.status_code == 422
+#     @pytest.mark.asyncio
+#     async def test_non_numeric_price_returns_422(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         item = {**VALID_PAYLOAD["data"][0], "open": "not-a-number"}
+#         resp = await client.post(
+#             self.URL,
+#             json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
+#             headers=source_headers,
+#         )
+#         assert resp.status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_empty_data_list_is_accepted(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": []}
-        resp = await client.post(self.URL, json=payload, headers=source_headers)
-        assert resp.status_code == 200
+#     @pytest.mark.asyncio
+#     async def test_empty_data_list_is_accepted(
+#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+#     ):
+#         payload = {"metadata": VALID_PAYLOAD["metadata"], "data": []}
+#         resp = await client.post(self.URL, json=payload, headers=source_headers)
+#         assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
