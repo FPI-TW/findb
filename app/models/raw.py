@@ -3,6 +3,7 @@ Raw Layer database models.
 """
 
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import DateTime, Index, String
@@ -32,6 +33,7 @@ class RawMarketPayload(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     request_key: Mapped[str] = mapped_column(String(100), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    message_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
