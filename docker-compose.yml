@@ -25,6 +25,9 @@ services:
         - "15672:15672"
       volumes:
         - rabbitmq_data:/var/lib/rabbitmq
+        - ./rabbitmq_definitions.json:/etc/rabbitmq/definitions.json:ro
+      environment:
+        - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbitmq_management load_definitions "/etc/rabbitmq/definitions.json"
       healthcheck:
         test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
         interval: 10s

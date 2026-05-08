@@ -1,0 +1,15 @@
+{
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "raw-data-ingest-limit",
+      "pattern": "^raw_data_ingest$",
+      "apply-to": "queues",
+      "definition": {
+        "max-length": 10000,
+        "overflow": "reject-publish"
+      },
+      "priority": 0
+    }
+  ]
+}
