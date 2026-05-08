@@ -427,6 +427,7 @@ class IngestionService:
         request_key: str | None = None,
         raw_records: int = 0,
         metadata: dict | None = None,
+        initial_status: str = "pending",
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -435,7 +436,8 @@ class IngestionService:
             source=source,
             request_key=request_key,
             raw_records=raw_records,
-            status="pending",
+            status=initial_status,
+            started_at=utc_now() if initial_status == "processing" else None,
             metadata_=metadata,
             created_at=utc_now(),
         )
@@ -604,20 +606,21 @@ class IngestionService:
             "raw_records": raw_records,
         }
 
-        # Create ingestion run
+        # Create ingestion run with status="processing" — worker owns the full lifecycle
         run = await self.create_ingestion_run(
             request.dataset_key,
             source=request.source,
             request_key=request.request_key,
             raw_records=raw_records,
             metadata=metadata,
+            initial_status="processing",
         )
 
         try:
             # Store raw payload
             await self.store_raw_payload(request, run.run_id)
 
-            # Commit transaction
+            # Commit run + raw payload before normalization begins
             await self.db.commit()
         except IntegrityError:
             await self.db.rollback()
