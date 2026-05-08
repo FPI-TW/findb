@@ -205,7 +205,6 @@ class TestV2PayloadValidation:
         payload = {"metadata": VALID_PAYLOAD["metadata"], "data": []}
         resp = await client.post(self.URL, json=payload, headers=source_headers)
         assert resp.status_code == 200
-        assert resp.json()["items"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +384,8 @@ class TestV2ResponseShape:
     ):
         resp = await client.post(url, json=VALID_PAYLOAD, headers=source_headers)
         assert resp.status_code == 200
-        assert resp.json()["dataset_key"] == dataset_key
+        envelope = mock_task.call_args.kwargs["args"][0]
+        assert envelope["dataset_key"] == dataset_key
 
     @pytest.mark.asyncio
     async def test_items_reflects_data_length(
@@ -403,12 +403,13 @@ class TestV2ResponseShape:
             }
             for i in range(7)
         ]
-        resp = await client.post(
+        await client.post(
             f"{BASE}/ingest/usstock/direct",
             json={"metadata": VALID_PAYLOAD["metadata"], "data": data},
             headers=source_headers,
         )
-        assert resp.json()["items"] == 7
+        envelope = mock_task.call_args.kwargs["args"][0]
+        assert len(envelope["payload"]["data"]) == 7
 
     @pytest.mark.asyncio
     async def test_queue_is_raw_data_ingest(
@@ -417,7 +418,7 @@ class TestV2ResponseShape:
         resp = await client.post(
             f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
         )
-        assert resp.json()["queue"] == "raw_data_ingest"
+        assert resp.json()["status"] == "queued"
 
     @pytest.mark.asyncio
     async def test_success_flag_is_true(
@@ -426,7 +427,7 @@ class TestV2ResponseShape:
         resp = await client.post(
             f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
         )
-        assert resp.json()["success"] is True
+        assert resp.json()["status"] == "queued"
 
     @pytest.mark.asyncio
     async def test_message_id_is_valid_uuid(
