@@ -3,9 +3,10 @@ __pycache__/
 *$py.class
 *.so
 
-# Bulk ingest script per-file logs (also prod variant)
+# Bulk ingest script per-file logs (history / prod / scheduled-daily)
 .ingest_log/
 .ingest_log_prod/
+.ingest_log_daily/
 
 .env
 .env.*
