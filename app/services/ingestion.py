@@ -3,6 +3,7 @@ Data ingestion service.
 Handles raw data storage and triggers normalization.
 """
 
+import copy
 import logging
 from datetime import timedelta
 from typing import Any, Optional, Protocol
@@ -16,7 +17,7 @@ from app.config import get_settings
 from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
-from app.schemas.source import IngestRequest
+from app.schemas.source import IngestRequest, IngestRequestV2
 from app.services.normalize import (
     BaseNormalizer,
     CNEquityNormalizer,
@@ -93,6 +94,190 @@ NORMALIZER_MAP: dict[str, NormalizerFactory] = {
     "wtx_bloomberg_eod": WTXBloombergNormalizer,
     "macro_bloomberg_observation": MacroBloombergNormalizer,
 }
+
+DIRECT_DATASET_DEFAULTS: dict[str, dict] = {
+    "us_stock_eod": {
+        "name": "美股日K (Bloomberg API)",
+        "description": "Bloomberg API 美國股票每日價格資料",
+        "asset_class": "equity",
+        "market": "US",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_usstock_api",
+            "data_path": "data",
+            "symbol_field": "symbol",
+            "name_field": "name",
+            "source_field": "metadata.source",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "timestamp.query_time",
+                "open": "price.open",
+                "high": "price.high",
+                "low": "price.low",
+                "close": "price.last",
+                "volume": "price.volume",
+            },
+        },
+    },
+    "hkchina_mixed_eod": {
+        "name": "港中股票與指數日K (Bloomberg API)",
+        "description": "Bloomberg API 港股與中國相關股票及指數每日價格資料",
+        "asset_class": "mixed",
+        "market": "GLOBAL",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_hkchina_mixed_api",
+            "data_path": "data",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "volume",
+            },
+        },
+    },
+    "hkchina_stock_eod": {
+        "name": "港中股票日K (Bloomberg API)",
+        "description": "Bloomberg API 港股與中國相關股票每日價格資料",
+        "asset_class": "equity",
+        "market": "GLOBAL",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_hkchina_api",
+            "data_path": "data",
+            "symbol_field": "symbol",
+            "name_field": "name",
+            "source_field": "metadata.source",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "timestamp.query_time",
+                "open": "price.open",
+                "high": "price.high",
+                "low": "price.low",
+                "close": "price.last",
+                "volume": "price.volume",
+            },
+        },
+    },
+    "hkchina_index_eod": {
+        "name": "港中指數日K (Bloomberg API)",
+        "description": "Bloomberg API 港股與中國相關指數每日價格資料",
+        "asset_class": "index",
+        "market": "GLOBAL",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "bloomberg_hkchina_index_api",
+            "data_path": "data",
+            "identifier_field": "ticker",
+            "identifier_type": "bloomberg",
+            "field_mapping": {
+                "trade_date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "volume",
+            },
+        },
+    },
+    "crypto_bloomberg_eod": {
+        "name": "加密貨幣日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式加密貨幣每日價格資料",
+        "asset_class": "crypto",
+        "market": "CRYPTO",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_crypto_direct"},
+    },
+    "fx_bloomberg_eod": {
+        "name": "外匯日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式外匯每日價格資料",
+        "asset_class": "fx",
+        "market": "FX",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_fx_direct"},
+    },
+    "wtx_bloomberg_eod": {
+        "name": "WTX 期貨日K — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式台灣加權指數期貨每日價格資料",
+        "asset_class": "future",
+        "market": "WTX",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_wtx_direct"},
+    },
+    "macro_bloomberg_observation": {
+        "name": "總經觀測值 — Bloomberg Direct",
+        "description": "Bloomberg Direct 格式宏觀經濟指標觀測值",
+        "asset_class": "macro",
+        "market": "MACRO",
+        "frequency": "various",
+        "is_active": True,
+        "config": {"source_format": "bloomberg_macro_direct"},
+    },
+    "tw_equity_multicharts_eod": {
+        "name": "台股日K — MultiCharts Direct",
+        "description": "MultiCharts Direct 格式台股每日價格與成交拆分資料",
+        "asset_class": "equity",
+        "market": "TW",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "multicharts_twstock_direct",
+            "data_path": "data",
+            "field_mapping": {
+                "trade_date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "total_volume",
+                "up_volume": "up_volume",
+                "down_volume": "down_volume",
+                "up_ticks": "up_ticks",
+                "down_ticks": "down_ticks",
+                "total_ticks": "total_ticks",
+            },
+        },
+    },
+}
+
+
+async def ensure_direct_dataset_exists(db: AsyncSession, dataset_key: str) -> None:
+    """Upsert a DatasetRegistry row for built-in direct ingest datasets if missing."""
+    defaults = DIRECT_DATASET_DEFAULTS.get(dataset_key)
+    if defaults is None:
+        return
+    existing = await db.get(DatasetRegistry, dataset_key)
+    if existing is not None:
+        return
+    dataset = DatasetRegistry(
+        dataset_key=dataset_key,
+        name=defaults["name"],
+        description=defaults["description"],
+        asset_class=defaults["asset_class"],
+        market=defaults["market"],
+        frequency=defaults["frequency"],
+        is_active=defaults["is_active"],
+        config=copy.deepcopy(defaults["config"]),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(dataset)
+            await db.flush()
+    except IntegrityError:
+        pass
 
 
 class DatasetNotFoundError(ValueError):
@@ -341,6 +526,26 @@ class IngestionService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_raw_payload_by_message_id(
+        self,
+        message_id: str,
+    ) -> Optional[RawMarketPayload]:
+        """Get raw payload by message_id."""
+        stmt = select(RawMarketPayload).where(
+            RawMarketPayload.message_id == message_id,
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_ingestion_run_by_message_id(
+        self,
+        message_id: str,
+    ) -> Optional[IngestionRun]:
+        """Get ingestion run by message_id."""
+        stmt = select(IngestionRun).where(IngestionRun.message_id == message_id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_dataset(
         self,
         dataset_key: str,
@@ -427,7 +632,6 @@ class IngestionService:
         request_key: str | None = None,
         raw_records: int = 0,
         metadata: dict | None = None,
-        initial_status: str = "pending",
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -436,8 +640,34 @@ class IngestionService:
             source=source,
             request_key=request_key,
             raw_records=raw_records,
-            status=initial_status,
-            started_at=utc_now() if initial_status == "processing" else None,
+            status="pending",
+            metadata_=metadata,
+            created_at=utc_now(),
+        )
+        self.db.add(run)
+        await self.db.flush()
+        return run
+
+    async def create_ingestion_run_v2(
+        self,
+        dataset_key: str,
+        source: str | None = None,
+        request_key: str | None = None,
+        message_id: str | None = None,
+        raw_records: int = 0,
+        metadata: dict | None = None,
+        status: str = "pending",
+    ) -> IngestionRun:
+        """Create a new ingestion run record for v2 path."""
+        run = IngestionRun(
+            run_id=uuid7(),
+            dataset_key=dataset_key,
+            source=source,
+            request_key=request_key,
+            message_id=message_id,
+            raw_records=raw_records,
+            status=status,
+            started_at=utc_now() if status == "processing" else None,
             metadata_=metadata,
             created_at=utc_now(),
         )
@@ -451,7 +681,6 @@ class IngestionService:
         run_id: UUID,
     ) -> RawMarketPayload:
         """Store raw payload in the database."""
-        # Calculate expiration
         fetched_at = ensure_utc(request.fetched_at)
         expire_at = fetched_at + timedelta(days=settings.RAW_RETENTION_DAYS)
 
@@ -460,6 +689,36 @@ class IngestionService:
             source=request.source,
             request_key=request.request_key,
             idempotency_key=request.idempotency_key,
+            payload=request.payload,
+            fetched_at=fetched_at,
+            expire_at=expire_at,
+            run_id=run_id,
+            created_at=utc_now(),
+        )
+
+        self.db.add(raw_payload)
+        await self.db.flush()
+        return raw_payload
+
+    async def store_raw_payload_v2(
+        self,
+        request: IngestRequestV2,
+        run_id: UUID,
+    ) -> RawMarketPayload:
+        """Store raw payload for v2 path."""
+        fetched_at = ensure_utc(request.fetched_at)
+        expire_at = fetched_at + timedelta(days=settings.RAW_RETENTION_DAYS)
+
+        # idempotency_key is the PK (NOT NULL, unique constraint), so it must be populated.
+        # For v2, we write message_id into both fields: idempotency_key keeps the PK unique
+        # constraint that guards against race conditions (IntegrityError fallback in ingest_v2),
+        # while message_id is the dedicated queryable column with clear semantics.
+        raw_payload = RawMarketPayload(
+            dataset_key=request.dataset_key,
+            source=request.source,
+            request_key=request.request_key,
+            idempotency_key=request.message_id,
+            message_id=request.message_id,
             payload=request.payload,
             fetched_at=fetched_at,
             expire_at=expire_at,
@@ -509,146 +768,6 @@ class IngestionService:
         await self.db.commit()
 
         return run.run_id, run.status, raw_payload.dataset_key, raw_payload.payload
-
-    async def ingest_v2(
-        self,
-        request: IngestRequest,
-        expected_market: str | None = None,
-    ) -> tuple[UUID, str, bool]:
-        """
-        Process an ingestion request for api/v2/source.
-
-        Returns:
-            Tuple of (run_id, status, is_duplicate)
-        """
-        # Validate dataset exists and active
-        dataset = await self.get_dataset(request.dataset_key, include_inactive=True)
-        if not dataset:
-            logger.warning("Ingestion rejected: dataset not found %s", request.dataset_key)
-            raise DatasetNotFoundError(f"Dataset {request.dataset_key} not found")
-        if not dataset.is_active:
-            run = await self.create_ingestion_run(
-                request.dataset_key,
-                source=request.source,
-                request_key=request.request_key,
-                raw_records=0,
-                metadata={
-                    "source": request.source,
-                    "request_key": request.request_key,
-                    "raw_records": 0,
-                },
-            )
-            run.status = "failed"
-            run.error_message = f"Dataset {request.dataset_key} is inactive"
-            run.completed_at = utc_now()
-            await self.db.commit()
-            logger.warning("Ingestion rejected: dataset inactive %s", request.dataset_key)
-            raise DatasetInactiveError(f"Dataset {request.dataset_key} is inactive")
-
-        if expected_market is not None:
-            dataset_market = _normalize_market(dataset.market)
-            requested_market = _normalize_market(expected_market)
-            if dataset_market != requested_market:
-                logger.warning(
-                    (
-                        "Ingestion rejected: dataset market mismatch "
-                        "dataset=%s dataset_market=%s requested_market=%s"
-                    ),
-                    request.dataset_key,
-                    dataset_market,
-                    requested_market,
-                )
-                raise MarketMismatchError(
-                    (
-                        f"Dataset {request.dataset_key} belongs to market "
-                        f"{dataset_market}, not {requested_market}"
-                    )
-                )
-
-        # Check for duplicate request
-        existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)
-        if existing_raw:
-            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
-            status = existing_run.status if existing_run else "unknown"
-            logger.info(
-                "Duplicate idempotency_key %s, returning existing run %s",
-                request.idempotency_key,
-                existing_raw.run_id,
-            )
-            return existing_raw.run_id, status, True
-
-        # Validate payload schema
-        try:
-            data_items = self.validate_payload_schema(request.payload, dataset)
-        except PayloadValidationError as exc:
-            run = await self.create_ingestion_run(
-                request.dataset_key,
-                source=request.source,
-                request_key=request.request_key,
-                raw_records=0,
-                metadata={
-                    "source": request.source,
-                    "request_key": request.request_key,
-                    "raw_records": 0,
-                },
-            )
-            run.status = "failed"
-            run.error_message = str(exc)
-            run.completed_at = utc_now()
-            await self.db.commit()
-            logger.warning("Ingestion rejected: payload invalid %s", exc)
-            raise
-        raw_records = len(data_items)
-
-        metadata = {
-            "source": request.source,
-            "request_key": request.request_key,
-            "raw_records": raw_records,
-        }
-
-        # Create ingestion run with status="processing" — worker owns the full lifecycle
-        run = await self.create_ingestion_run(
-            request.dataset_key,
-            source=request.source,
-            request_key=request.request_key,
-            raw_records=raw_records,
-            metadata=metadata,
-            initial_status="processing",
-        )
-
-        try:
-            # Store raw payload
-            await self.store_raw_payload(request, run.run_id)
-
-            # Commit run + raw payload before normalization begins
-            await self.db.commit()
-        except IntegrityError:
-            await self.db.rollback()
-            existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)
-            if existing_raw:
-                existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
-                status = existing_run.status if existing_run else "unknown"
-                logger.info(
-                    "Idempotency conflict on commit for %s, returning existing run %s",
-                    request.idempotency_key,
-                    existing_raw.run_id,
-                )
-                return existing_raw.run_id, status, True
-            raise
-
-        logger.info(
-            "Ingestion run created: run_id=%s dataset=%s source=%s raw_records=%s request_key=%s",
-            run.run_id,
-            request.dataset_key,
-            request.source,
-            raw_records,
-            request.request_key,
-        )
-        await trigger_normalization_v2(
-            request.dataset_key, request.payload, run.run_id, session=self.db
-        )
-
-        return run.run_id, run.status, False
 
     async def ingest(
         self,
@@ -786,6 +905,140 @@ class IngestionService:
 
         # TODO: Trigger normalization (sync or async)
         # For now, we'll leave status as "pending"
+
+        return run.run_id, run.status, False
+
+    async def ingest_v2(
+        self,
+        request: IngestRequestV2,
+        expected_market: str | None = None,
+    ) -> tuple[UUID, str, bool]:
+        """
+        Process an ingestion request for api/v2/source.
+        message_id serves as the idempotency key (stored in RawMarketPayload.idempotency_key).
+
+        Returns:
+            Tuple of (run_id, status, is_duplicate)
+        """
+        # Validate dataset exists and active
+        dataset = await self.get_dataset(request.dataset_key, include_inactive=True)
+        if not dataset:
+            logger.warning("Ingestion rejected: dataset not found %s", request.dataset_key)
+            raise DatasetNotFoundError(f"Dataset {request.dataset_key} not found")
+        if not dataset.is_active:
+            run = await self.create_ingestion_run_v2(
+                request.dataset_key,
+                source=request.source,
+                request_key=request.request_key,
+                message_id=request.message_id,
+                raw_records=0,
+                metadata={"source": request.source, "request_key": request.request_key},
+                status="failed",
+            )
+            run.error_message = f"Dataset {request.dataset_key} is inactive"
+            run.completed_at = utc_now()
+            await self.db.commit()
+            logger.warning("Ingestion rejected: dataset inactive %s", request.dataset_key)
+            raise DatasetInactiveError(f"Dataset {request.dataset_key} is inactive")
+
+        if expected_market is not None:
+            dataset_market = _normalize_market(dataset.market)
+            requested_market = _normalize_market(expected_market)
+            if dataset_market != requested_market:
+                logger.warning(
+                    (
+                        "Ingestion rejected: dataset market mismatch "
+                        "dataset=%s dataset_market=%s requested_market=%s"
+                    ),
+                    request.dataset_key,
+                    dataset_market,
+                    requested_market,
+                )
+                raise MarketMismatchError(
+                    (
+                        f"Dataset {request.dataset_key} belongs to market "
+                        f"{dataset_market}, not {requested_market}"
+                    )
+                )
+
+        # Check for duplicate request via message_id (stored as idempotency_key)
+        existing_raw = await self.get_raw_payload_by_message_id(request.message_id)
+        if existing_raw:
+            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+            status = existing_run.status if existing_run else "unknown"
+            logger.info(
+                "Duplicate message_id %s, returning existing run %s",
+                request.message_id,
+                existing_raw.run_id,
+            )
+            return existing_raw.run_id, status, True
+
+        # Validate payload schema
+        try:
+            data_items = self.validate_payload_schema(request.payload, dataset)
+        except PayloadValidationError as exc:
+            run = await self.create_ingestion_run_v2(
+                request.dataset_key,
+                source=request.source,
+                request_key=request.request_key,
+                message_id=request.message_id,
+                raw_records=0,
+                metadata={"source": request.source, "request_key": request.request_key},
+                status="failed",
+            )
+            run.error_message = str(exc)
+            run.completed_at = utc_now()
+            await self.db.commit()
+            logger.warning("Ingestion rejected: payload invalid %s", exc)
+            raise
+        raw_records = len(data_items)
+
+        # Create ingestion run — worker owns the full lifecycle, starts as "processing"
+        run = await self.create_ingestion_run_v2(
+            request.dataset_key,
+            source=request.source,
+            request_key=request.request_key,
+            message_id=request.message_id,
+            raw_records=raw_records,
+            metadata={
+                "source": request.source,
+                "request_key": request.request_key,
+                "raw_records": raw_records,
+            },
+            status="processing",
+        )
+
+        try:
+            # Store raw payload; message_id is written as idempotency_key (PK)
+            await self.store_raw_payload_v2(request, run.run_id)
+
+            # Commit run + raw payload before normalization begins
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            existing_raw = await self.get_raw_payload_by_message_id(request.message_id)
+            if existing_raw:
+                existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+                status = existing_run.status if existing_run else "unknown"
+                logger.info(
+                    "Idempotency conflict on commit for message_id=%s, returning existing run %s",
+                    request.message_id,
+                    existing_raw.run_id,
+                )
+                return existing_raw.run_id, status, True
+            raise
+
+        logger.info(
+            "Ingestion run created: run_id=%s dataset=%s source=%s raw_records=%s request_key=%s",
+            run.run_id,
+            request.dataset_key,
+            request.source,
+            raw_records,
+            request.request_key,
+        )
+        await trigger_normalization_v2(
+            request.dataset_key, request.payload, run.run_id, session=self.db
+        )
 
         return run.run_id, run.status, False
 
