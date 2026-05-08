@@ -18,10 +18,11 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
+from kombu.exceptions import KombuError
 
 from app.api.deps import verify_source_api_key
 from app.config import get_settings
-from app.schemas.source import DirectIngestPayloadV2, IngestQueueResponse
+from app.schemas.source import DirectIngestPayload, IngestQueueResponse
 from app.utils import utc_now, uuid7
 from app.workers.tasks import process_ingestion_task
 
@@ -178,7 +179,7 @@ def _build_request_key(raw_payload: dict, key_prefix: str) -> str:
 
 
 async def _dispatch_direct_payload(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     dataset_key: str,
     key_prefix: str,
     expected_market: str,
@@ -197,7 +198,6 @@ async def _dispatch_direct_payload(
         "expected_market": expected_market,
         "source": source,
         "request_key": request_key,
-        "idempotency_key": request_key,
         "enqueued_at": utc_now().isoformat(),
         "payload": raw_payload,
     }
@@ -209,9 +209,9 @@ async def _dispatch_direct_payload(
             queue=INGEST_QUEUE,
             task_id=str(message_id),
         )
-    except Exception:
+    except KombuError:
         logger.exception(
-            "Failed to dispatch Celery task queue=%s message_id=%s dataset=%s",
+            "Broker connection error: queue=%s message_id=%s dataset=%s",
             INGEST_QUEUE,
             message_id,
             dataset_key,
@@ -219,6 +219,17 @@ async def _dispatch_direct_payload(
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Message broker unavailable",
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected error dispatching Celery task: queue=%s message_id=%s dataset=%s",
+            INGEST_QUEUE,
+            message_id,
+            dataset_key,
+        )
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to dispatch ingestion task",
         )
 
     item_count = len(raw_payload.get("data") or [])
@@ -238,9 +249,11 @@ async def _dispatch_direct_payload(
 # ---------------------------------------------------------------------------
 
 
+# TODO:
+# 等拿到所有raw data的進入格式，把pydantic模型改成每個目標的專屬payload
 @router.post("/ingest/usstock/direct", response_model=IngestQueueResponse)
 async def ingest_usstock_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg US stock direct payload and enqueue via Celery."""
@@ -254,7 +267,7 @@ async def ingest_usstock_direct_data(
 
 @router.post("/ingest/hkchina/direct", response_model=IngestQueueResponse)
 async def ingest_hkchina_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg HK/China mixed direct payload and enqueue via Celery."""
@@ -268,7 +281,7 @@ async def ingest_hkchina_direct_data(
 
 @router.post("/ingest/hkchina-index/direct", response_model=IngestQueueResponse)
 async def ingest_hkchina_index_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg HK/China index direct payload and enqueue via Celery."""
@@ -282,7 +295,7 @@ async def ingest_hkchina_index_direct_data(
 
 @router.post("/ingest/crypto/direct", response_model=IngestQueueResponse)
 async def ingest_crypto_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg crypto direct payload and enqueue via Celery."""
@@ -296,7 +309,7 @@ async def ingest_crypto_direct_data(
 
 @router.post("/ingest/fx/direct", response_model=IngestQueueResponse)
 async def ingest_fx_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg FX direct payload and enqueue via Celery."""
@@ -310,7 +323,7 @@ async def ingest_fx_direct_data(
 
 @router.post("/ingest/macro/direct", response_model=IngestQueueResponse)
 async def ingest_macro_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg macro direct payload and enqueue via Celery."""
@@ -324,7 +337,7 @@ async def ingest_macro_direct_data(
 
 @router.post("/ingest/wtx/direct", response_model=IngestQueueResponse)
 async def ingest_wtx_direct_data(
-    payload: DirectIngestPayloadV2,
+    payload: DirectIngestPayload,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg WTX futures direct payload and enqueue via Celery."""
