@@ -21,6 +21,7 @@ from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
+from kombu.exceptions import KombuError
 
 import app.api.v2.source as v2_source
 from app.config import get_settings
@@ -239,7 +240,7 @@ class TestV2Dispatch:
     ):
         with patch(
             "app.api.v2.source.process_ingestion_task.apply_async",
-            side_effect=Exception("connection refused"),
+            side_effect=KombuError("connection refused"),
         ):
             resp = await client.post(
                 f"{BASE}/ingest/hkchina/direct",

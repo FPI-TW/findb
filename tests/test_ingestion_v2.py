@@ -4,7 +4,7 @@ What is covered:
 - Happy path: IngestionRun + RawMarketPayload persisted, normalization triggered
 - Dataset validation: not found, inactive (failed run created)
 - Market mismatch: wrong expected_market raises error; case-insensitive match passes
-- Idempotency: duplicate key short-circuits, no second run, normalization not called again
+- Idempotency: duplicate message_id short-circuits, no second run, normalization not called again
 - Payload validation: bad schema creates failed run; empty data list accepted
 - Race condition (IntegrityError path): falls back to existing run
 
@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
-from app.schemas.source import IngestRequest
+from app.schemas.source import IngestRequestV2
 from app.services.ingestion import (
     DatasetInactiveError,
     DatasetNotFoundError,
@@ -78,15 +78,15 @@ def make_request(
     dataset_key: str = DATASET_KEY,
     source: str = "bloomberg",
     request_key: str = "test-req-001",
-    idempotency_key: str = "test-idem-001",
+    message_id: str = "test-msg-001",
     payload: dict | None = None,
     fetched_at: datetime | None = None,
-) -> IngestRequest:
-    return IngestRequest(
+) -> IngestRequestV2:
+    return IngestRequestV2(
         dataset_key=dataset_key,
         source=source,
         request_key=request_key,
-        idempotency_key=idempotency_key,
+        message_id=message_id,
         payload=payload if payload is not None else VALID_PAYLOAD,
         fetched_at=fetched_at or datetime.now(timezone.utc),
     )
@@ -175,8 +175,11 @@ class TestIngestV2HappyPath:
     async def test_ingestion_run_persisted_with_correct_fields(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
+        msg_id = "msg-fields-check"
         svc = IngestionService(test_session)
-        run_id, _, _ = await svc.ingest_v2(make_request(source="bloomberg", request_key="req-abc"))
+        run_id, _, _ = await svc.ingest_v2(
+            make_request(source="bloomberg", request_key="req-abc", message_id=msg_id)
+        )
 
         await test_session.refresh(await test_session.get(IngestionRun, run_id))
         run = await test_session.get(IngestionRun, run_id)
@@ -184,6 +187,7 @@ class TestIngestV2HappyPath:
         assert run.dataset_key == DATASET_KEY
         assert run.source == "bloomberg"
         assert run.request_key == "req-abc"
+        assert run.message_id == msg_id
 
     @pytest.mark.asyncio
     async def test_raw_records_count_matches_payload_data_length(
@@ -204,11 +208,12 @@ class TestIngestV2HappyPath:
     async def test_raw_market_payload_persisted_with_correct_fields(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
-        idem = "idem-persist-raw"
+        msg_id = "msg-persist-raw"
         svc = IngestionService(test_session)
-        run_id, _, _ = await svc.ingest_v2(make_request(idempotency_key=idem))
+        run_id, _, _ = await svc.ingest_v2(make_request(message_id=msg_id))
 
-        stmt = select(RawMarketPayload).where(RawMarketPayload.idempotency_key == idem)
+        # message_id is stored as idempotency_key (PK) in RawMarketPayload
+        stmt = select(RawMarketPayload).where(RawMarketPayload.idempotency_key == msg_id)
         result = await test_session.execute(stmt)
         raw = result.scalar_one_or_none()
 
@@ -277,9 +282,10 @@ class TestIngestV2DatasetValidation:
     async def test_inactive_dataset_creates_failed_run(
         self, test_session: AsyncSession, inactive_dataset, mock_normalize
     ):
+        msg_id = "msg-inactive"
         svc = IngestionService(test_session)
         with pytest.raises(DatasetInactiveError):
-            await svc.ingest_v2(make_request())
+            await svc.ingest_v2(make_request(message_id=msg_id))
 
         result = await test_session.execute(
             select(IngestionRun).where(IngestionRun.dataset_key == DATASET_KEY)
@@ -287,6 +293,7 @@ class TestIngestV2DatasetValidation:
         run = result.scalar_one_or_none()
         assert run is not None
         assert run.status == "failed"
+        assert run.message_id == msg_id
         assert "inactive" in (run.error_message or "").lower()
 
     @pytest.mark.asyncio
@@ -352,8 +359,8 @@ class TestIngestV2Idempotency:
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
         svc = IngestionService(test_session)
-        run_id_1, _, _ = await svc.ingest_v2(make_request(idempotency_key="idem-dup"))
-        run_id_2, _, is_dup = await svc.ingest_v2(make_request(idempotency_key="idem-dup"))
+        run_id_1, _, _ = await svc.ingest_v2(make_request(message_id="msg-dup"))
+        run_id_2, _, is_dup = await svc.ingest_v2(make_request(message_id="msg-dup"))
 
         assert is_dup is True
         assert run_id_2 == run_id_1
@@ -363,8 +370,8 @@ class TestIngestV2Idempotency:
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
         svc = IngestionService(test_session)
-        await svc.ingest_v2(make_request(idempotency_key="idem-single"))
-        await svc.ingest_v2(make_request(idempotency_key="idem-single"))
+        await svc.ingest_v2(make_request(message_id="msg-single"))
+        await svc.ingest_v2(make_request(message_id="msg-single"))
 
         result = await test_session.execute(
             select(IngestionRun).where(IngestionRun.dataset_key == DATASET_KEY)
@@ -376,13 +383,13 @@ class TestIngestV2Idempotency:
     async def test_duplicate_key_does_not_store_second_raw_payload(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
-        idem = "idem-raw-once"
+        msg_id = "msg-raw-once"
         svc = IngestionService(test_session)
-        await svc.ingest_v2(make_request(idempotency_key=idem))
-        await svc.ingest_v2(make_request(idempotency_key=idem))
+        await svc.ingest_v2(make_request(message_id=msg_id))
+        await svc.ingest_v2(make_request(message_id=msg_id))
 
         result = await test_session.execute(
-            select(RawMarketPayload).where(RawMarketPayload.idempotency_key == idem)
+            select(RawMarketPayload).where(RawMarketPayload.idempotency_key == msg_id)
         )
         rows = result.scalars().all()
         assert len(rows) == 1
@@ -392,18 +399,18 @@ class TestIngestV2Idempotency:
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
         svc = IngestionService(test_session)
-        await svc.ingest_v2(make_request(idempotency_key="idem-norm-once"))
-        await svc.ingest_v2(make_request(idempotency_key="idem-norm-once"))
+        await svc.ingest_v2(make_request(message_id="msg-norm-once"))
+        await svc.ingest_v2(make_request(message_id="msg-norm-once"))
 
         assert mock_normalize.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_different_idempotency_keys_create_separate_runs(
+    async def test_different_message_ids_create_separate_runs(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
         svc = IngestionService(test_session)
-        run_id_a, _, _ = await svc.ingest_v2(make_request(idempotency_key="idem-a"))
-        run_id_b, _, _ = await svc.ingest_v2(make_request(idempotency_key="idem-b"))
+        run_id_a, _, _ = await svc.ingest_v2(make_request(message_id="msg-a"))
+        run_id_b, _, _ = await svc.ingest_v2(make_request(message_id="msg-b"))
 
         assert run_id_a != run_id_b
         result = await test_session.execute(
@@ -438,9 +445,10 @@ class TestIngestV2PayloadValidation:
     async def test_invalid_payload_creates_failed_run(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
+        msg_id = "msg-bad-payload"
         svc = IngestionService(test_session)
         with pytest.raises(PayloadValidationError):
-            await svc.ingest_v2(make_request(payload=PAYLOAD_BAD_SCHEMA))
+            await svc.ingest_v2(make_request(payload=PAYLOAD_BAD_SCHEMA, message_id=msg_id))
 
         result = await test_session.execute(
             select(IngestionRun).where(IngestionRun.dataset_key == DATASET_KEY)
@@ -448,6 +456,7 @@ class TestIngestV2PayloadValidation:
         run = result.scalar_one_or_none()
         assert run is not None
         assert run.status == "failed"
+        assert run.message_id == msg_id
         assert run.error_message is not None
 
     @pytest.mark.asyncio
@@ -463,13 +472,13 @@ class TestIngestV2PayloadValidation:
     async def test_invalid_payload_does_not_store_raw_payload(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
-        idem = "idem-bad-payload"
+        msg_id = "msg-bad-no-raw"
         svc = IngestionService(test_session)
         with pytest.raises(PayloadValidationError):
-            await svc.ingest_v2(make_request(payload=PAYLOAD_BAD_SCHEMA, idempotency_key=idem))
+            await svc.ingest_v2(make_request(payload=PAYLOAD_BAD_SCHEMA, message_id=msg_id))
 
         result = await test_session.execute(
-            select(RawMarketPayload).where(RawMarketPayload.idempotency_key == idem)
+            select(RawMarketPayload).where(RawMarketPayload.idempotency_key == msg_id)
         )
         assert result.scalar_one_or_none() is None
 
@@ -484,9 +493,9 @@ class TestIngestV2RaceCondition:
     async def test_integrity_error_on_commit_falls_back_to_existing_run(
         self, test_session: AsyncSession, active_dataset, mock_normalize
     ):
-        """Simulate the race: idempotency check misses, commit hits IntegrityError,
+        """Simulate the race: message_id check misses, commit hits IntegrityError,
         re-check finds the winner's row → returns (existing_run_id, status, True)."""
-        idem = "idem-race"
+        msg_id = "msg-race"
 
         # Seed the "winning" request's rows directly (simulates concurrent write)
         existing_run = IngestionRun(
@@ -494,6 +503,7 @@ class TestIngestV2RaceCondition:
             dataset_key=DATASET_KEY,
             source="bloomberg",
             request_key="winner-req",
+            message_id=msg_id,
             raw_records=1,
             status="completed",
         )
@@ -504,7 +514,8 @@ class TestIngestV2RaceCondition:
             dataset_key=DATASET_KEY,
             source="bloomberg",
             request_key="winner-req",
-            idempotency_key=idem,
+            idempotency_key=msg_id,
+            message_id=msg_id,
             payload=VALID_PAYLOAD,
             fetched_at=datetime.now(timezone.utc),
             expire_at=datetime.now(timezone.utc),
@@ -513,26 +524,26 @@ class TestIngestV2RaceCondition:
         test_session.add(existing_raw)
         await test_session.commit()
 
-        # "Losing" request: first idempotency check returns None (simulates race miss),
+        # "Losing" request: first message_id check returns None (simulates race miss),
         # commit raises IntegrityError, re-check then finds the existing row.
         svc = IngestionService(test_session)
-        original_check = svc.get_raw_payload_by_idempotency_key
+        original_check = svc.get_raw_payload_by_message_id
         call_count = 0
 
-        async def race_check(key: str):
+        async def race_check(mid: str):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return None  # miss → proceeds past idempotency guard
-            return await original_check(key)
+            return await original_check(mid)
 
-        with patch.object(svc, "get_raw_payload_by_idempotency_key", side_effect=race_check):
+        with patch.object(svc, "get_raw_payload_by_message_id", side_effect=race_check):
             with patch.object(
                 svc,
-                "store_raw_payload",
+                "store_raw_payload_v2",
                 side_effect=IntegrityError("unique", {}, Exception()),
             ):
-                run_id, status, is_dup = await svc.ingest_v2(make_request(idempotency_key=idem))
+                run_id, status, is_dup = await svc.ingest_v2(make_request(message_id=msg_id))
 
         assert is_dup is True
         assert run_id == existing_run.run_id
