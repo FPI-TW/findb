@@ -195,7 +195,6 @@ async def _dispatch_direct_payload(
     envelope = {
         "message_id": str(message_id),
         "dataset_key": dataset_key,
-        "expected_market": expected_market,
         "source": source,
         "request_key": request_key,
         "enqueued_at": utc_now().isoformat(),

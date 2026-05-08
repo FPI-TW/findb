@@ -34,31 +34,39 @@ class IngestRequest(BaseModel):
     fetched_at: datetime = Field(..., description="資料抓取時間")
 
 
+class IngestRequestV2(BaseModel):
+    """資料匯入請求內容，v2系列用。"""
+
+    dataset_key: str = Field(
+        ...,
+        min_length=1,
+        description="資料集識別碼，例如 crypto_eod",
+    )
+    source: str = Field(
+        ...,
+        min_length=1,
+        description="資料來源，例如 bloomberg",
+    )
+    request_key: str = Field(
+        ...,
+        min_length=1,
+        description="上游請求識別碼，用於追蹤資料來源",
+    )
+    message_id: str = Field(
+        ...,
+        min_length=1,
+        description="進入queue之前的識別碼，用於避免重複處理相同請求",
+    )
+    payload: dict[str, Any] = Field(..., description="原始資料內容")
+    fetched_at: datetime = Field(..., description="資料抓取時間")
+
+
 class IngestMetadata(BaseModel):
     """資料來源與查詢時間等元數據"""
 
     """Data source and when the data got queried"""
     source: str = Field(..., description="Data source name, like 'bloomberg'")
     query_time: datetime = Field(..., description="Data queried time")
-
-
-class MarketDataItem(BaseModel):
-    """Single market data"""
-
-    ticker: str = Field(..., description="Stock symbol, like 'HSI Index'")
-    date: str = Field(..., description="Transaction date (YYYY-MM-DD)")
-    open: float = Field(..., description="Opening price")
-    high: float = Field(..., description="Highest price")
-    low: float = Field(..., description="Lowest price")
-    close: float = Field(..., description="Closing price")
-    volume: int = Field(default=0, description="Volume")
-
-
-class DirectIngestPayloadV2(BaseModel):
-    """Direct market payload from fetch layer (metadata + data)."""
-
-    metadata: IngestMetadata
-    data: list[MarketDataItem]
 
 
 class DirectIngestPayload(BaseModel):
