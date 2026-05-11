@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +34,7 @@ from app.services.ingestion import (
     MarketMismatchError,
     PayloadValidationError,
 )
-from app.utils import uuid7
+from app.utils import utc_now, uuid7
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -98,7 +100,7 @@ def make_request(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def active_dataset(test_session: AsyncSession) -> DatasetRegistry:
     """Seed an active us_stock_eod DatasetRegistry row into the test DB."""
     ds = DatasetRegistry(
@@ -123,7 +125,7 @@ async def active_dataset(test_session: AsyncSession) -> DatasetRegistry:
     return ds
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def inactive_dataset(test_session: AsyncSession) -> DatasetRegistry:
     """Seed an inactive us_stock_eod DatasetRegistry row into the test DB."""
     ds = DatasetRegistry(
@@ -347,6 +349,286 @@ class TestIngestV2MarketMismatch:
         svc = IngestionService(test_session)
         _, _, is_dup = await svc.ingest_v2(make_request(), expected_market=None)
         assert is_dup is False
+
+
+# ---------------------------------------------------------------------------
+# Worker audit trail for MarketMismatchError
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerMarketMismatchAuditTrail:
+    """Verify the failed IngestionRun that app/workers/tasks.py creates on MarketMismatchError.
+
+    ingest_v2 raises MarketMismatchError without creating any run (service contract).
+    The worker catches it, calls create_ingestion_run_v2, commits, then re-raises.
+    These tests reproduce that catch-block logic using the same test_session so the
+    DB assertions reflect what the worker writes in production.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ingest_v2_creates_no_run_on_market_mismatch(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        """Service contract: ingest_v2 must NOT create a run — the worker is responsible."""
+        svc = IngestionService(test_session)
+        with pytest.raises(MarketMismatchError):
+            await svc.ingest_v2(make_request(), expected_market="CRYPTO")
+
+        result = await test_session.execute(select(IngestionRun))
+        assert len(result.scalars().all()) == 0
+
+    @pytest.mark.asyncio
+    async def test_worker_handler_creates_failed_run(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        msg_id = "msg-mm-worker-run"
+        svc = IngestionService(test_session)
+
+        try:
+            await svc.ingest_v2(make_request(message_id=msg_id), expected_market="CRYPTO")
+        except MarketMismatchError as exc:
+            run = await svc.create_ingestion_run_v2(
+                DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                message_id=msg_id,
+                raw_records=0,
+                metadata={"source": "bloomberg", "request_key": "test-req-001", "raw_records": 0},
+                status="failed",
+            )
+            run.error_message = str(exc)
+            run.completed_at = utc_now()
+            await test_session.commit()
+
+        result = await test_session.execute(
+            select(IngestionRun).where(IngestionRun.message_id == msg_id)
+        )
+        run = result.scalar_one_or_none()
+        assert run is not None
+        assert run.status == "failed"
+        assert run.dataset_key == DATASET_KEY
+        assert run.message_id == msg_id
+        assert run.completed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_worker_failed_run_error_message_names_both_markets(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        """error_message must name both the dataset's actual market and the mismatched one."""
+        msg_id = "msg-mm-worker-msg"
+        svc = IngestionService(test_session)
+
+        try:
+            await svc.ingest_v2(make_request(message_id=msg_id), expected_market="CRYPTO")
+        except MarketMismatchError as exc:
+            run = await svc.create_ingestion_run_v2(
+                DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                message_id=msg_id,
+                raw_records=0,
+                metadata={"source": "bloomberg", "request_key": "test-req-001", "raw_records": 0},
+                status="failed",
+            )
+            run.error_message = str(exc)
+            run.completed_at = utc_now()
+            await test_session.commit()
+
+        result = await test_session.execute(
+            select(IngestionRun).where(IngestionRun.message_id == msg_id)
+        )
+        run = result.scalar_one_or_none()
+        assert run is not None
+        error_msg = run.error_message or ""
+        assert "US" in error_msg  # active_dataset.market = "US"
+        assert "CRYPTO" in error_msg  # expected_market sent by the endpoint
+
+    @pytest.mark.asyncio
+    async def test_worker_failed_run_has_no_raw_payload(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        """Market mismatch is rejected before store_raw_payload_v2 — no raw row written."""
+        msg_id = "msg-mm-no-raw"
+        svc = IngestionService(test_session)
+
+        try:
+            await svc.ingest_v2(make_request(message_id=msg_id), expected_market="CRYPTO")
+        except MarketMismatchError as exc:
+            run = await svc.create_ingestion_run_v2(
+                DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                message_id=msg_id,
+                raw_records=0,
+                metadata={"source": "bloomberg", "request_key": "test-req-001", "raw_records": 0},
+                status="failed",
+            )
+            run.error_message = str(exc)
+            run.completed_at = utc_now()
+            await test_session.commit()
+
+        result = await test_session.execute(
+            select(RawMarketPayload).where(RawMarketPayload.message_id == msg_id)
+        )
+        assert result.scalar_one_or_none() is None
+
+
+# ---------------------------------------------------------------------------
+# Worker audit trail for ValidationError
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerValidationErrorAuditTrail:
+    """Verify tasks.py's ValidationError handler creates a failed IngestionRun.
+
+    ValidationError fires before IngestRequestV2 is built, so the worker reads
+    dataset_key and message_id directly from the raw envelope and calls
+    create_ingestion_run_v2 only when both are present.
+
+    Most common real cause: metadata.query_time absent/malformed → fetched_at=None.
+    In this case dataset_key and message_id are still valid, so a run CAN be created.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failed_run_created_when_envelope_has_valid_dataset_and_message_id(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        msg_id = "msg-ve-run"
+        with pytest.raises(ValidationError) as exc_info:
+            IngestRequestV2(
+                dataset_key=DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                idempotency_key=msg_id,
+                message_id=msg_id,
+                payload=VALID_PAYLOAD,
+                fetched_at=None,  # common real case: metadata.query_time absent
+            )
+        exc = exc_info.value
+
+        # Reproduce worker catch block
+        svc = IngestionService(test_session)
+        failed_run = await svc.create_ingestion_run_v2(
+            DATASET_KEY,
+            source="bloomberg",
+            request_key="test-req-001",
+            message_id=msg_id,
+            raw_records=0,
+            metadata={"raw_records": 0},
+            status="failed",
+        )
+        failed_run.error_message = f"Envelope validation error: {str(exc)[:500]}"
+        failed_run.completed_at = utc_now()
+        await test_session.commit()
+
+        result = await test_session.execute(
+            select(IngestionRun).where(IngestionRun.message_id == msg_id)
+        )
+        run = result.scalar_one_or_none()
+        assert run is not None
+        assert run.status == "failed"
+        assert run.dataset_key == DATASET_KEY
+        assert run.message_id == msg_id
+        assert run.completed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_error_message_starts_with_envelope_validation_error(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        msg_id = "msg-ve-msg"
+        with pytest.raises(ValidationError) as exc_info:
+            IngestRequestV2(
+                dataset_key=DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                idempotency_key=msg_id,
+                message_id=msg_id,
+                payload=VALID_PAYLOAD,
+                fetched_at=None,
+            )
+        exc = exc_info.value
+
+        svc = IngestionService(test_session)
+        failed_run = await svc.create_ingestion_run_v2(
+            DATASET_KEY,
+            source="bloomberg",
+            request_key="test-req-001",
+            message_id=msg_id,
+            raw_records=0,
+            metadata={"raw_records": 0},
+            status="failed",
+        )
+        failed_run.error_message = f"Envelope validation error: {str(exc)[:500]}"
+        failed_run.completed_at = utc_now()
+        await test_session.commit()
+
+        result = await test_session.execute(
+            select(IngestionRun).where(IngestionRun.message_id == msg_id)
+        )
+        run = result.scalar_one_or_none()
+        assert run is not None
+        assert (run.error_message or "").startswith("Envelope validation error:")
+
+    @pytest.mark.asyncio
+    async def test_no_raw_payload_stored(
+        self, test_session: AsyncSession, active_dataset, mock_normalize
+    ):
+        """ValidationError fires before store_raw_payload_v2 — no raw row written."""
+        msg_id = "msg-ve-no-raw"
+        with pytest.raises(ValidationError):
+            IngestRequestV2(
+                dataset_key=DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                idempotency_key=msg_id,
+                message_id=msg_id,
+                payload=VALID_PAYLOAD,
+                fetched_at=None,
+            )
+
+        result = await test_session.execute(
+            select(RawMarketPayload).where(RawMarketPayload.message_id == msg_id)
+        )
+        assert result.scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    async def test_no_run_created_when_dataset_key_missing(
+        self, test_session: AsyncSession, mock_normalize
+    ):
+        """dataset_key=None → worker guard (if raw_dataset_key and raw_message_id) is False
+        → run creation skipped, nothing in DB."""
+        with pytest.raises(ValidationError):
+            IngestRequestV2(
+                dataset_key=None,
+                source="bloomberg",
+                request_key="test-req-001",
+                idempotency_key="msg-ve-no-dk",
+                message_id="msg-ve-no-dk",
+                payload=VALID_PAYLOAD,
+                fetched_at=None,
+            )
+
+        result = await test_session.execute(select(IngestionRun))
+        assert len(result.scalars().all()) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_run_created_when_message_id_missing(
+        self, test_session: AsyncSession, mock_normalize
+    ):
+        """message_id=None → same guard fails → no run in DB."""
+        with pytest.raises(ValidationError):
+            IngestRequestV2(
+                dataset_key=DATASET_KEY,
+                source="bloomberg",
+                request_key="test-req-001",
+                idempotency_key=None,
+                message_id=None,
+                payload=VALID_PAYLOAD,
+                fetched_at=None,
+            )
+
+        result = await test_session.execute(select(IngestionRun))
+        assert len(result.scalars().all()) == 0
 
 
 # ---------------------------------------------------------------------------

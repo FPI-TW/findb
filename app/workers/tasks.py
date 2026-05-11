@@ -14,6 +14,7 @@ from app.services.ingestion import (
     PayloadValidationError,
     ensure_direct_dataset_exists,
 )
+from app.utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +44,87 @@ def process_ingestion_task(self, message_data: dict, expected_market: str):
                     payload=payload_content,
                     fetched_at=metadata.get("query_time"),
                 )
-            except ValidationError as e:
-                logger.error(f"Payload structure invalid for IngestRequestV2: {e}")
+            except ValidationError as exc:
+                logger.error("Envelope validation failed for IngestRequestV2: %s", exc)
+
+                # Best-effort: create a failed run for audit trail.
+                # request doesn't exist yet, so read raw fields from message_data directly.
+                raw_dataset_key = message_data.get("dataset_key")
+                raw_message_id = message_data.get("message_id")
+
+                if raw_dataset_key and raw_message_id:
+                    try:
+                        await ensure_direct_dataset_exists(session, raw_dataset_key)
+                        svc = IngestionService(session)
+                        failed_run = await svc.create_ingestion_run_v2(
+                            raw_dataset_key,
+                            source=message_data.get("source")
+                            or metadata.get("source")
+                            or "unknown",
+                            request_key=message_data.get("request_key"),
+                            message_id=raw_message_id,
+                            raw_records=0,
+                            metadata={"raw_records": 0},
+                            status="failed",
+                        )
+                        failed_run.error_message = f"Envelope validation error: {str(exc)[:500]}"
+                        failed_run.completed_at = utc_now()
+                        await session.commit()
+                    except Exception as create_exc:
+                        logger.error(
+                            "Could not persist failed run for ValidationError "
+                            "(dataset_key=%s message_id=%s): %s",
+                            raw_dataset_key,
+                            raw_message_id,
+                            create_exc,
+                        )
+                else:
+                    logger.error(
+                        "Cannot create failed run: missing dataset_key or message_id in envelope "
+                        "(dataset_key=%r message_id=%r)",
+                        raw_dataset_key,
+                        raw_message_id,
+                    )
                 raise
 
             # 2. Bootstrap dataset registry row if missing (worker owns all DB writes)
             await ensure_direct_dataset_exists(session, request.dataset_key)
 
             # 3. Run service logic
-            # ingest_v2 commits internally; no second commit needed here.
             service = IngestionService(session)
-            await service.ingest_v2(request, expected_market=expected_market)
+            try:
+                await service.ingest_v2(request, expected_market=expected_market)
+            except DatasetNotFoundError:
+                # IngestionRun cannot be created: no DatasetRegistry row exists to satisfy
+                # the FK constraint. Log with enough detail to trace by message_id.
+                logger.error(
+                    "DatasetNotFoundError: dataset_key=%s not in registry "
+                    "(message_id=%s request_key=%s) — no IngestionRun created",
+                    request.dataset_key,
+                    request.message_id,
+                    request.request_key,
+                )
+                raise
+            except MarketMismatchError as exc:
+                # Dataset exists but market tag doesn't match the endpoint.
+                # Create a failed run so the rejection is auditable in the DB.
+                run = await service.create_ingestion_run_v2(
+                    request.dataset_key,
+                    source=request.source,
+                    request_key=request.request_key,
+                    message_id=request.message_id,
+                    raw_records=0,
+                    metadata={
+                        "source": request.source,
+                        "request_key": request.request_key,
+                        "raw_records": 0,
+                    },
+                    status="failed",
+                )
+                run.error_message = str(exc)
+                run.completed_at = utc_now()
+                await session.commit()
+                raise
 
     try:
         asyncio.run(run_task())
