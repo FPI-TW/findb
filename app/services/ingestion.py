@@ -501,6 +501,11 @@ async def _execute_normalization(
         await normalizer.process(payload, run_id)
     except Exception:
         logger.exception("Normalization failed for %s (run_id=%s)", dataset_key, run_id)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.exception("Rollback failed after normalization error (run_id=%s)", run_id)
+            return
         run = await session.get(IngestionRun, run_id)
         if run:
             run.status = "failed"
@@ -932,7 +937,11 @@ class IngestionService:
                 request_key=request.request_key,
                 message_id=request.message_id,
                 raw_records=0,
-                metadata={"source": request.source, "request_key": request.request_key},
+                metadata={
+                    "source": request.source,
+                    "request_key": request.request_key,
+                    "raw_records": 0,
+                },
                 status="failed",
             )
             run.error_message = f"Dataset {request.dataset_key} is inactive"
@@ -983,7 +992,11 @@ class IngestionService:
                 request_key=request.request_key,
                 message_id=request.message_id,
                 raw_records=0,
-                metadata={"source": request.source, "request_key": request.request_key},
+                metadata={
+                    "source": request.source,
+                    "request_key": request.request_key,
+                    "raw_records": 0,
+                },
                 status="failed",
             )
             run.error_message = str(exc)
@@ -1040,6 +1053,7 @@ class IngestionService:
             request.dataset_key, request.payload, run.run_id, session=self.db
         )
 
+        await self.db.refresh(run)
         return run.run_id, run.status, False
 
     async def get_run_status(self, run_id: UUID) -> Optional[IngestionRun]:

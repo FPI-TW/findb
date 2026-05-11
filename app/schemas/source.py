@@ -35,7 +35,7 @@ class IngestRequest(BaseModel):
 
 
 class IngestRequestV2(BaseModel):
-    """資料匯入請求內容，v2系列用。"""
+    """資料匯入請求內容，api v2系列用。"""
 
     dataset_key: str = Field(
         ...,
@@ -52,21 +52,62 @@ class IngestRequestV2(BaseModel):
         min_length=1,
         description="上游請求識別碼，用於追蹤資料來源",
     )
-    message_id: str = Field(
+    idempotency_key: str = Field(
         ...,
         min_length=1,
-        description="進入queue之前的識別碼，用於避免重複處理相同請求",
+        description="冪等鍵，用於避免重複處理相同請求",
+    )
+    message_id: str = Field(
+        ..., min_length=1, description="訊息佇列 (Queue) 中的唯一識別碼，避免重複處理相同請求"
     )
     payload: dict[str, Any] = Field(..., description="原始資料內容")
     fetched_at: datetime = Field(..., description="資料抓取時間")
 
 
-class IngestMetadata(BaseModel):
-    """資料來源與查詢時間等元數據"""
+class OhlcvDataItem(BaseModel):
+    """
+    股票市場數據項（OHLCV 格式）
+    """
 
-    """Data source and when the data got queried"""
-    source: str = Field(..., description="Data source name, like 'bloomberg'")
-    query_time: datetime = Field(..., description="Data queried time")
+    ticker: str = Field(..., description="標的代碼，例如 BTC")
+    date: str = Field(..., description="交易日期 (YYYY-MM-DD)")
+    open: float = Field(..., description="開盤價")
+    high: float = Field(..., description="最高價")
+    low: float = Field(..., description="最低價")
+    close: float = Field(..., description="收盤價")
+    volume: float = Field(default=0, description="成交量")
+
+
+class OhlcvIngestPayload(BaseModel):
+    """資料載體，包含數據列表"""
+
+    data: list[OhlcvDataItem]
+
+
+class IngestEquitieRequest(BaseModel):
+    """最外層的完整請求結構"""
+
+    dataset_key: str = Field(..., min_length=1, description="資料集金鑰，如 crypto_eod")
+    source: str = Field(..., min_length=1, description="來源名稱")
+    request_key: str = Field(..., min_length=1, description="請求唯一識別碼")
+    idempotency_key: str = Field(..., min_length=1, description="冪等鍵，用於避免重複處理相同請求")
+    payload: OhlcvIngestPayload = Field(..., description="實際數據內容")
+    fetched_at: datetime = Field(..., description="抓取時間")
+
+
+class MarketDataItem(BaseModel):
+    """
+    通用型市場數據項。
+    適用於：美股、加密貨幣、台股等具備 OHLCV 結構的資料。
+    """
+
+    ticker: str = Field(..., description="Symbol")
+    date: str = Field(..., description="YYYY-MM-DD")
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int = Field(default=0)
 
 
 class DirectIngestPayload(BaseModel):
