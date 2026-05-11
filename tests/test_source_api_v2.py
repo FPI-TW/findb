@@ -34,6 +34,7 @@ BASE = "/api/v2/source"
 # Shared payload helpers
 # ---------------------------------------------------------------------------
 
+# Payload for DirectIngestPayload endpoints (hkchina-index, crypto, fx, macro, wtx)
 VALID_PAYLOAD = {
     "metadata": {
         "source": "bloomberg",
@@ -52,10 +53,35 @@ VALID_PAYLOAD = {
     ],
 }
 
-# (url, expected dataset_key)
-ALL_ENDPOINTS = [
+# Payload for IngestEquitieRequest endpoints (usstock, hkchina)
+VALID_EQUITIE_PAYLOAD = {
+    "dataset_key": "us_stock_eod",
+    "source": "bloomberg",
+    "request_key": "test-req-001",
+    "idempotency_key": "test-idem-001",
+    "payload": {
+        "data": [
+            {
+                "ticker": "AAPL US Equity",
+                "date": "2026-01-02",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000,
+            }
+        ]
+    },
+    "fetched_at": "2026-01-02T00:00:00Z",
+}
+
+# Endpoints grouped by body schema type
+EQUITIE_ENDPOINTS = [
     (f"{BASE}/ingest/usstock/direct", "us_stock_eod"),
     (f"{BASE}/ingest/hkchina/direct", "hkchina_mixed_eod"),
+]
+
+DIRECT_ENDPOINTS = [
     (f"{BASE}/ingest/hkchina-index/direct", "hkchina_index_eod"),
     (f"{BASE}/ingest/crypto/direct", "crypto_bloomberg_eod"),
     (f"{BASE}/ingest/fx/direct", "fx_bloomberg_eod"),
@@ -63,7 +89,13 @@ ALL_ENDPOINTS = [
     (f"{BASE}/ingest/wtx/direct", "wtx_bloomberg_eod"),
 ]
 
+ALL_ENDPOINTS = EQUITIE_ENDPOINTS + DIRECT_ENDPOINTS
 ALL_URLS = [url for url, _ in ALL_ENDPOINTS]
+
+# Parametrize list pairing each endpoint with its correct payload schema
+ALL_ENDPOINTS_WITH_PAYLOAD = [
+    (url, key, VALID_EQUITIE_PAYLOAD) for url, key in EQUITIE_ENDPOINTS
+] + [(url, key, VALID_PAYLOAD) for url, key in DIRECT_ENDPOINTS]
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -132,63 +164,61 @@ class TestV2Auth:
 
 
 class TestV2PayloadValidation:
-    """Pydantic validation tests for DirectIngestPayload.
+    """Pydantic validation tests for IngestEquitieRequest (usstock/direct endpoint).
 
-    DirectIngestPayload accepts any dict for metadata and any list of dicts for
-    data — both fields are optional with empty defaults.  The only 422-triggering
-    cases at the API layer are wrong *types* for those fields.  Field-level
-    validation (missing ticker, bad price, etc.) happens in the worker, not here.
+    IngestEquitieRequest validates top-level required fields (source, fetched_at, etc.)
+    and item-level fields in payload.data via OhlcvDataItem (ticker, date, numeric prices).
     """
 
     URL = f"{BASE}/ingest/usstock/direct"
 
+    def _item_payload(self, **overrides) -> dict:
+        """Return VALID_EQUITIE_PAYLOAD with one item field overridden."""
+        item = {**VALID_EQUITIE_PAYLOAD["payload"]["data"][0], **overrides}
+        return {**VALID_EQUITIE_PAYLOAD, "payload": {"data": [item]}}
+
     @pytest.mark.asyncio
-    async def test_data_not_list_returns_422(
+    async def test_missing_ticker_in_item_returns_422(
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
-        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": "not-a-list"}
+        item = {
+            k: v for k, v in VALID_EQUITIE_PAYLOAD["payload"]["data"][0].items() if k != "ticker"
+        }
+        payload = {**VALID_EQUITIE_PAYLOAD, "payload": {"data": [item]}}
         resp = await client.post(self.URL, json=payload, headers=source_headers)
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_metadata_not_dict_returns_422(
+    async def test_missing_date_in_item_returns_422(
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
-        payload = {"metadata": "not-a-dict", "data": VALID_PAYLOAD["data"]}
+        item = {k: v for k, v in VALID_EQUITIE_PAYLOAD["payload"]["data"][0].items() if k != "date"}
+        payload = {**VALID_EQUITIE_PAYLOAD, "payload": {"data": [item]}}
         resp = await client.post(self.URL, json=payload, headers=source_headers)
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_data_item_not_dict_returns_422(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": ["not-a-dict"]}
-        resp = await client.post(self.URL, json=payload, headers=source_headers)
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_missing_metadata_is_accepted(
+    async def test_non_numeric_open_returns_422(
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
         resp = await client.post(
-            self.URL, json={"data": VALID_PAYLOAD["data"]}, headers=source_headers
+            self.URL, json=self._item_payload(open="not-a-number"), headers=source_headers
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_missing_data_is_accepted(
+    async def test_missing_fetched_at_returns_422(
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
-        resp = await client.post(
-            self.URL, json={"metadata": VALID_PAYLOAD["metadata"]}, headers=source_headers
-        )
-        assert resp.status_code == 200
+        payload = {k: v for k, v in VALID_EQUITIE_PAYLOAD.items() if k != "fetched_at"}
+        resp = await client.post(self.URL, json=payload, headers=source_headers)
+        assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_empty_data_list_is_accepted(
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
-        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": []}
+        payload = {**VALID_EQUITIE_PAYLOAD, "payload": {"data": []}}
         resp = await client.post(self.URL, json=payload, headers=source_headers)
         assert resp.status_code == 200
 
@@ -204,7 +234,7 @@ class TestV2Dispatch:
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
         resp = await client.post(
-            f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+            f"{BASE}/ingest/usstock/direct", json=VALID_EQUITIE_PAYLOAD, headers=source_headers
         )
         assert resp.status_code == 200
         mock_task.assert_called_once()
@@ -214,7 +244,7 @@ class TestV2Dispatch:
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
         await client.post(
-            f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+            f"{BASE}/ingest/usstock/direct", json=VALID_EQUITIE_PAYLOAD, headers=source_headers
         )
         _, kwargs = mock_task.call_args
         assert kwargs["queue"] == "raw_data_ingest"
@@ -229,7 +259,7 @@ class TestV2Dispatch:
         ):
             resp = await client.post(
                 f"{BASE}/ingest/hkchina/direct",
-                json=VALID_PAYLOAD,
+                json=VALID_EQUITIE_PAYLOAD,
                 headers=source_headers,
             )
         assert resp.status_code == 503
@@ -245,7 +275,7 @@ class TestV2Dispatch:
         ):
             resp = await client.post(
                 f"{BASE}/ingest/hkchina/direct",
-                json=VALID_PAYLOAD,
+                json=VALID_EQUITIE_PAYLOAD,
                 headers=source_headers,
             )
         assert "internal broker detail" not in resp.text
@@ -257,7 +287,10 @@ class TestV2Dispatch:
 
 
 class TestV2PressureGuard:
-    URL = f"{BASE}/ingest/usstock/direct"
+    # Use a DirectIngestPayload endpoint so VALID_PAYLOAD is accepted.
+    # Pressure guard fires before body parsing, so endpoint type doesn't
+    # affect the 429 tests — but the 200/fail-open tests need a valid body.
+    URL = f"{BASE}/ingest/crypto/direct"
 
     @pytest.mark.asyncio
     async def test_high_pressure_returns_429(
@@ -358,7 +391,7 @@ class TestV2PressureGuard:
 
 class TestV2ResponseShape:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("url,dataset_key", ALL_ENDPOINTS)
+    @pytest.mark.parametrize("url,dataset_key,payload", ALL_ENDPOINTS_WITH_PAYLOAD)
     async def test_dataset_key_per_endpoint(
         self,
         client: AsyncClient,
@@ -367,8 +400,9 @@ class TestV2ResponseShape:
         source_headers: dict,
         url: str,
         dataset_key: str,
+        payload: dict,
     ):
-        resp = await client.post(url, json=VALID_PAYLOAD, headers=source_headers)
+        resp = await client.post(url, json=payload, headers=source_headers)
         assert resp.status_code == 200
         envelope = mock_task.call_args.kwargs["args"][0]
         assert envelope["dataset_key"] == dataset_key
@@ -390,7 +424,7 @@ class TestV2ResponseShape:
             for i in range(7)
         ]
         await client.post(
-            f"{BASE}/ingest/usstock/direct",
+            f"{BASE}/ingest/crypto/direct",
             json={"metadata": VALID_PAYLOAD["metadata"], "data": data},
             headers=source_headers,
         )
@@ -402,7 +436,7 @@ class TestV2ResponseShape:
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
         resp = await client.post(
-            f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+            f"{BASE}/ingest/crypto/direct", json=VALID_PAYLOAD, headers=source_headers
         )
         assert resp.json()["status"] == "queued"
 
@@ -411,7 +445,7 @@ class TestV2ResponseShape:
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
         resp = await client.post(
-            f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+            f"{BASE}/ingest/crypto/direct", json=VALID_PAYLOAD, headers=source_headers
         )
         UUID(resp.json()["message_id"])  # raises ValueError if malformed
 
@@ -419,7 +453,7 @@ class TestV2ResponseShape:
     async def test_identical_payloads_produce_same_request_key(
         self, client: AsyncClient, mock_no_pressure, source_headers: dict
     ):
-        """Two identical payloads must generate the same idempotency_key in the envelope."""
+        """Two identical payloads must generate the same request_key in the envelope."""
         captured: list[str] = []
         original = v2_source._build_request_key
 
@@ -431,10 +465,10 @@ class TestV2ResponseShape:
         with patch("app.api.v2.source._build_request_key", side_effect=spy):
             with patch("app.api.v2.source.process_ingestion_task.apply_async"):
                 await client.post(
-                    f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+                    f"{BASE}/ingest/crypto/direct", json=VALID_PAYLOAD, headers=source_headers
                 )
                 await client.post(
-                    f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+                    f"{BASE}/ingest/crypto/direct", json=VALID_PAYLOAD, headers=source_headers
                 )
 
         assert len(captured) == 2
@@ -460,10 +494,10 @@ class TestV2ResponseShape:
         with patch("app.api.v2.source._build_request_key", side_effect=spy):
             with patch("app.api.v2.source.process_ingestion_task.apply_async"):
                 await client.post(
-                    f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
+                    f"{BASE}/ingest/crypto/direct", json=VALID_PAYLOAD, headers=source_headers
                 )
                 await client.post(
-                    f"{BASE}/ingest/usstock/direct", json=payload_b, headers=source_headers
+                    f"{BASE}/ingest/crypto/direct", json=payload_b, headers=source_headers
                 )
 
         assert captured[0] != captured[1]
