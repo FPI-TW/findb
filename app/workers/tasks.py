@@ -38,6 +38,7 @@ def process_ingestion_task(self, message_data: dict, expected_market: str):
                     dataset_key=message_data.get("dataset_key"),
                     source=message_data.get("source") or metadata.get("source") or "unknown",
                     request_key=message_data.get("request_key"),
+                    idempotency_key=message_data.get("message_id"),
                     message_id=message_data.get("message_id"),
                     payload=payload_content,
                     fetched_at=metadata.get("query_time"),
