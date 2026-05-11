@@ -19,10 +19,11 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 from kombu.exceptions import KombuError
+from pydantic import BaseModel
 
 from app.api.deps import verify_source_api_key
 from app.config import get_settings
-from app.schemas.source import DirectIngestPayload, IngestQueueResponse
+from app.schemas.source import DirectIngestPayload, IngestEquitieRequest, IngestQueueResponse
 from app.utils import utc_now, uuid7
 from app.workers.tasks import process_ingestion_task
 
@@ -179,7 +180,7 @@ def _build_request_key(raw_payload: dict, key_prefix: str) -> str:
 
 
 async def _dispatch_direct_payload(
-    payload: DirectIngestPayload,
+    payload: BaseModel,
     dataset_key: str,
     key_prefix: str,
     expected_market: str,
@@ -187,10 +188,25 @@ async def _dispatch_direct_payload(
     await check_rabbitmq_pressure()
 
     message_id = uuid7()
-    raw_payload = payload.model_dump(mode="json")
-    metadata = raw_payload.get("metadata") or {}
-    source = _normalize_source(metadata.get("source"))
-    request_key = _build_request_key(raw_payload, key_prefix)
+    raw = payload.model_dump(mode="json")
+    source_val = raw.get("metadata", {}).get("source") or raw.get("source")
+    source = _normalize_source(source_val)
+    request_key = raw.get("request_key") or _build_request_key(raw, key_prefix)
+
+    # Normalise to the format the worker expects:
+    #   {"metadata": {"source": ..., "query_time": ...}, "data": [...]}
+    # IngestEquitieRequest puts fetched_at at the top level and data inside
+    # payload.data, so we reshape it here rather than burdening the worker.
+    if "fetched_at" in raw:
+        normalised_payload = {
+            "metadata": {
+                "source": source,
+                "query_time": raw["fetched_at"],
+            },
+            "data": (raw.get("payload") or {}).get("data") or [],
+        }
+    else:
+        normalised_payload = raw
 
     envelope = {
         "message_id": str(message_id),
@@ -198,7 +214,7 @@ async def _dispatch_direct_payload(
         "source": source,
         "request_key": request_key,
         "enqueued_at": utc_now().isoformat(),
-        "payload": raw_payload,
+        "payload": normalised_payload,
     }
 
     try:
@@ -230,8 +246,9 @@ async def _dispatch_direct_payload(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to dispatch ingestion task",
         )
+    data_list = raw.get("data") or raw.get("payload", {}).get("data") or []
+    item_count = len(data_list)
 
-    item_count = len(raw_payload.get("data") or [])
     logger.info(
         "Dispatched Celery task: queue=%s message_id=%s dataset=%s items=%s",
         INGEST_QUEUE,
@@ -252,7 +269,7 @@ async def _dispatch_direct_payload(
 # 等拿到所有raw data的進入格式，把pydantic模型改成每個目標的專屬payload
 @router.post("/ingest/usstock/direct", response_model=IngestQueueResponse)
 async def ingest_usstock_direct_data(
-    payload: DirectIngestPayload,
+    payload: IngestEquitieRequest,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg US stock direct payload and enqueue via Celery."""
@@ -266,7 +283,7 @@ async def ingest_usstock_direct_data(
 
 @router.post("/ingest/hkchina/direct", response_model=IngestQueueResponse)
 async def ingest_hkchina_direct_data(
-    payload: DirectIngestPayload,
+    payload: IngestEquitieRequest,
     api_key: str = Depends(verify_source_api_key),
 ) -> IngestQueueResponse:
     """Validate Bloomberg HK/China mixed direct payload and enqueue via Celery."""

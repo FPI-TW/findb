@@ -95,21 +95,6 @@ class IngestEquitieRequest(BaseModel):
     fetched_at: datetime = Field(..., description="抓取時間")
 
 
-class MarketDataItem(BaseModel):
-    """
-    通用型市場數據項。
-    適用於：美股、加密貨幣、台股等具備 OHLCV 結構的資料。
-    """
-
-    ticker: str = Field(..., description="Symbol")
-    date: str = Field(..., description="YYYY-MM-DD")
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int = Field(default=0)
-
-
 class DirectIngestPayload(BaseModel):
     """fetch 層直接送入的市場資料內容，包含 metadata 與 data。"""
 
