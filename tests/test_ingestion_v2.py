@@ -86,6 +86,7 @@ def make_request(
         dataset_key=dataset_key,
         source=source,
         request_key=request_key,
+        idempotency_key=message_id,
         message_id=message_id,
         payload=payload if payload is not None else VALID_PAYLOAD,
         fetched_at=fetched_at or datetime.now(timezone.utc),

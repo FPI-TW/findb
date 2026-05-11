@@ -131,81 +131,66 @@ class TestV2Auth:
 # ---------------------------------------------------------------------------
 
 
-# class TestV2PayloadValidation:
-#     URL = f"{BASE}/ingest/usstock/direct"
+class TestV2PayloadValidation:
+    """Pydantic validation tests for DirectIngestPayload.
 
-#     @pytest.mark.asyncio
-#     async def test_missing_metadata_returns_422(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         resp = await client.post(
-#             self.URL, json={"data": VALID_PAYLOAD["data"]}, headers=source_headers
-#         )
-#         assert resp.status_code == 422
+    DirectIngestPayload accepts any dict for metadata and any list of dicts for
+    data — both fields are optional with empty defaults.  The only 422-triggering
+    cases at the API layer are wrong *types* for those fields.  Field-level
+    validation (missing ticker, bad price, etc.) happens in the worker, not here.
+    """
 
-#     @pytest.mark.asyncio
-#     async def test_missing_data_returns_422(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         resp = await client.post(
-#             self.URL, json={"metadata": VALID_PAYLOAD["metadata"]}, headers=source_headers
-#         )
-#         assert resp.status_code == 422
+    URL = f"{BASE}/ingest/usstock/direct"
 
-#     @pytest.mark.asyncio
-#     async def test_missing_query_time_in_metadata_returns_422(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         payload = {
-#             "metadata": {"source": "bloomberg"},
-#             "data": VALID_PAYLOAD["data"],
-#         }
-#         resp = await client.post(self.URL, json=payload, headers=source_headers)
-#         assert resp.status_code == 422
+    @pytest.mark.asyncio
+    async def test_data_not_list_returns_422(
+        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+    ):
+        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": "not-a-list"}
+        resp = await client.post(self.URL, json=payload, headers=source_headers)
+        assert resp.status_code == 422
 
-#     @pytest.mark.asyncio
-#     async def test_missing_ticker_in_item_returns_422(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         item = {k: v for k, v in VALID_PAYLOAD["data"][0].items() if k != "ticker"}
-#         resp = await client.post(
-#             self.URL,
-#             json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
-#             headers=source_headers,
-#         )
-#         assert resp.status_code == 422
+    @pytest.mark.asyncio
+    async def test_metadata_not_dict_returns_422(
+        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+    ):
+        payload = {"metadata": "not-a-dict", "data": VALID_PAYLOAD["data"]}
+        resp = await client.post(self.URL, json=payload, headers=source_headers)
+        assert resp.status_code == 422
 
-#     @pytest.mark.asyncio
-#     async def test_missing_date_in_item_returns_422(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         item = {k: v for k, v in VALID_PAYLOAD["data"][0].items() if k != "date"}
-#         resp = await client.post(
-#             self.URL,
-#             json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
-#             headers=source_headers,
-#         )
-#         assert resp.status_code == 422
+    @pytest.mark.asyncio
+    async def test_data_item_not_dict_returns_422(
+        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+    ):
+        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": ["not-a-dict"]}
+        resp = await client.post(self.URL, json=payload, headers=source_headers)
+        assert resp.status_code == 422
 
-#     @pytest.mark.asyncio
-#     async def test_non_numeric_price_returns_422(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         item = {**VALID_PAYLOAD["data"][0], "open": "not-a-number"}
-#         resp = await client.post(
-#             self.URL,
-#             json={"metadata": VALID_PAYLOAD["metadata"], "data": [item]},
-#             headers=source_headers,
-#         )
-#         assert resp.status_code == 422
+    @pytest.mark.asyncio
+    async def test_missing_metadata_is_accepted(
+        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+    ):
+        resp = await client.post(
+            self.URL, json={"data": VALID_PAYLOAD["data"]}, headers=source_headers
+        )
+        assert resp.status_code == 200
 
-#     @pytest.mark.asyncio
-#     async def test_empty_data_list_is_accepted(
-#         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-#     ):
-#         payload = {"metadata": VALID_PAYLOAD["metadata"], "data": []}
-#         resp = await client.post(self.URL, json=payload, headers=source_headers)
-#         assert resp.status_code == 200
+    @pytest.mark.asyncio
+    async def test_missing_data_is_accepted(
+        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+    ):
+        resp = await client.post(
+            self.URL, json={"metadata": VALID_PAYLOAD["metadata"]}, headers=source_headers
+        )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_empty_data_list_is_accepted(
+        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
+    ):
+        payload = {"metadata": VALID_PAYLOAD["metadata"], "data": []}
+        resp = await client.post(self.URL, json=payload, headers=source_headers)
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -413,16 +398,7 @@ class TestV2ResponseShape:
         assert len(envelope["payload"]["data"]) == 7
 
     @pytest.mark.asyncio
-    async def test_queue_is_raw_data_ingest(
-        self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
-    ):
-        resp = await client.post(
-            f"{BASE}/ingest/usstock/direct", json=VALID_PAYLOAD, headers=source_headers
-        )
-        assert resp.json()["status"] == "queued"
-
-    @pytest.mark.asyncio
-    async def test_success_flag_is_true(
+    async def test_response_status_is_queued(
         self, client: AsyncClient, mock_no_pressure, mock_task, source_headers: dict
     ):
         resp = await client.post(
@@ -440,7 +416,7 @@ class TestV2ResponseShape:
         UUID(resp.json()["message_id"])  # raises ValueError if malformed
 
     @pytest.mark.asyncio
-    async def test_identical_payloads_produce_same_idempotency_key(
+    async def test_identical_payloads_produce_same_request_key(
         self, client: AsyncClient, mock_no_pressure, source_headers: dict
     ):
         """Two identical payloads must generate the same idempotency_key in the envelope."""
@@ -465,7 +441,7 @@ class TestV2ResponseShape:
         assert captured[0] == captured[1]
 
     @pytest.mark.asyncio
-    async def test_different_payloads_produce_different_idempotency_keys(
+    async def test_different_payloads_produce_different_request_keys(
         self, client: AsyncClient, mock_no_pressure, source_headers: dict
     ):
         captured: list[str] = []
