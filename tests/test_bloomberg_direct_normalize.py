@@ -76,11 +76,12 @@ class TestFXBloombergNormalizer:
         records = self._n().map_fields(payload)
         assert len(records) == 1
 
-    def test_skip_record_without_date(self):
+    def test_record_without_date_has_none_trade_date(self):
         payload = self._payload()
         payload["data"][0]["timestamp"] = {}
         records = self._n().map_fields(payload)
-        assert len(records) == 0
+        assert len(records) == 1
+        assert records[0].trade_date is None
 
     def test_skip_record_without_symbol_or_ticker(self):
         payload = self._payload()
@@ -262,11 +263,12 @@ class TestWTXBloombergNormalizer:
         records = self._n().map_fields(payload)
         assert records[0].close == Decimal("21000.0")
 
-    def test_skip_record_without_date(self):
+    def test_record_without_date_has_none_trade_date(self):
         payload = self._payload()
         payload["data"][0]["timestamp"] = {}
         records = self._n().map_fields(payload)
-        assert len(records) == 0
+        assert len(records) == 1
+        assert records[0].trade_date is None
 
     def test_dataset_key(self):
         assert WTXBloombergNormalizer.dataset_key == "wtx_bloomberg_eod"

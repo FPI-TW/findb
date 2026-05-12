@@ -14,7 +14,7 @@ class MappedRecord:
     """A normalized/mapped record ready for canonical storage."""
 
     symbol: str
-    trade_date: datetime
+    trade_date: Optional[datetime] = None
     market: Optional[str] = None
     asset_class: Optional[str] = None
     name: Optional[str] = None
@@ -47,7 +47,7 @@ class InstrumentResolvableRecord(Protocol):
 class EODLikeRecord(InstrumentResolvableRecord, Protocol):
     """Record shape used by EOD data-quality checks."""
 
-    trade_date: datetime
+    trade_date: Optional[datetime]
     open: Optional[Decimal]
     high: Optional[Decimal]
     low: Optional[Decimal]
@@ -113,7 +113,7 @@ class FuturesContinuousRecord:
     """A normalized continuous futures EOD record."""
 
     symbol: str
-    trade_date: datetime
+    trade_date: Optional[datetime] = None
     name: Optional[str] = None
     open: Optional[Decimal] = None
     high: Optional[Decimal] = None

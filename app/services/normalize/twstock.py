@@ -32,6 +32,7 @@ class TWStockMultichartsNormalizer(BaseNormalizer):
 
             trade_date = self._parse_trade_date(item.get("date"))
             if trade_date is None:
+                records.append(MappedRecord(symbol="", trade_date=None, raw_data=item))
                 continue
 
             symbol = str(item.get("symbol") or base_symbol or "").strip().upper()

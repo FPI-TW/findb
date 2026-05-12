@@ -210,6 +210,7 @@ class USStockNormalizer(BaseNormalizer):
             trade_date_str = self._parse_trade_date_from_item(item)
             trade_date = self._parse_trade_date(trade_date_str)
             if trade_date is None:
+                normalized.append(MappedRecord(symbol="", trade_date=None, raw_data=item))
                 continue
 
             # Extract basic fields
@@ -378,6 +379,7 @@ class HKChinaMixedNormalizer(USStockNormalizer):
             trade_date_str = self._parse_trade_date_from_item(item)
             trade_date = self._parse_trade_date(trade_date_str)
             if trade_date is None:
+                normalized.append(MappedRecord(symbol="", trade_date=None, raw_data=item))
                 continue
 
             ticker = item.get("ticker")
@@ -502,6 +504,7 @@ class GlobalStockNormalizer(USStockNormalizer):
             trade_date_str = self._parse_trade_date_from_item(item)
             trade_date = self._parse_trade_date(trade_date_str)
             if trade_date is None:
+                normalized.append(MappedRecord(symbol="", trade_date=None, raw_data=item))
                 continue
 
             # Extract basic fields

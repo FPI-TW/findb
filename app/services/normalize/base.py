@@ -142,6 +142,7 @@ class BaseNormalizer(ABC):
             trade_date_value = self._get_nested_value(item, field_mapping.get("trade_date"))
             trade_date = self._parse_trade_date(trade_date_value)
             if trade_date is None:
+                records.append(MappedRecord(symbol="", trade_date=None, raw_data=item))
                 continue
 
             identifier_value = self._get_nested_value(item, identifier_field)
@@ -650,6 +651,18 @@ class BaseNormalizer(ABC):
             for record in mapped_records:
                 instrument: Instrument | None = None
                 try:
+                    if record.trade_date is None:
+                        issue = DQIssueRecord(
+                            issue_type="INVALID_TRADE_DATE",
+                            severity="error",
+                            description="Cannot parse trade_date: missing or unrecognized format",
+                            raw_data=record.raw_data,
+                        )
+                        await self.record_dq_issue(issue, run_id)
+                        result.dq_issues.append(issue)
+                        result.failed_records += 1
+                        continue
+
                     # Validate record
                     issues = self.dq_validator.validate_eod(record, seen_keys=seen_keys)
                     blocking_issues = [i for i in issues if i.severity == "error"]
