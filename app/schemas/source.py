@@ -1,6 +1,7 @@
 """Source API 使用的 Pydantic schema。"""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
@@ -64,13 +65,15 @@ class OhlcvDataItem(BaseModel):
     股票市場數據項（OHLCV 格式）
     """
 
-    ticker: str = Field(..., description="標的代碼，例如 BTC")
-    date: str = Field(..., description="交易日期 (YYYY-MM-DD)")
-    open: float = Field(..., description="開盤價")
-    high: float = Field(..., description="最高價")
-    low: float = Field(..., description="最低價")
-    close: float = Field(..., description="收盤價")
-    volume: float = Field(default=0, description="成交量")
+    ticker: str = Field(..., description="標的代碼，例如 AAPL 或 BTC")
+    date: datetime = Field(..., description="交易日期")
+
+    open: Decimal = Field(..., gt=0, max_digits=20, decimal_places=8)
+    high: Decimal = Field(..., gt=0, max_digits=20, decimal_places=8)
+    low: Decimal = Field(..., gt=0, max_digits=20, decimal_places=8)
+    close: Decimal = Field(..., gt=0, max_digits=20, decimal_places=8)
+
+    volume: int = Field(default=0, ge=0, description="成交量")
 
 
 class OhlcvIngestPayload(BaseModel):
