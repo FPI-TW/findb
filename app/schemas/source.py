@@ -52,11 +52,6 @@ class IngestRequestV2(BaseModel):
         min_length=1,
         description="上游請求識別碼，用於追蹤資料來源",
     )
-    idempotency_key: str = Field(
-        ...,
-        min_length=1,
-        description="冪等鍵，用於避免重複處理相同請求",
-    )
     message_id: str = Field(
         ..., min_length=1, description="訊息佇列 (Queue) 中的唯一識別碼，避免重複處理相同請求"
     )
@@ -90,7 +85,6 @@ class IngestEquitieRequest(BaseModel):
     dataset_key: str = Field(..., min_length=1, description="資料集金鑰，如 crypto_eod")
     source: str = Field(..., min_length=1, description="來源名稱")
     request_key: str = Field(..., min_length=1, description="請求唯一識別碼")
-    idempotency_key: str = Field(..., min_length=1, description="冪等鍵，用於避免重複處理相同請求")
     payload: OhlcvIngestPayload = Field(..., description="實際數據內容")
     fetched_at: datetime = Field(..., description="抓取時間")
 

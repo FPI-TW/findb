@@ -58,7 +58,6 @@ VALID_EQUITIE_PAYLOAD = {
     "dataset_key": "us_stock_eod",
     "source": "bloomberg",
     "request_key": "test-req-001",
-    "idempotency_key": "test-idem-001",
     "payload": {
         "data": [
             {
