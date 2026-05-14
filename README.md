@@ -662,14 +662,14 @@ Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEY` 中配置的值。
 
 ### IP 允許名單
 
-Source API 的 IP 允許名單在生產環境由 nginx 執行，透過 `SOURCE_ALLOWLIST_CIDRS` 產生 `/api/v1/source/*` 專用的 nginx `allow` / `deny` 規則。FastAPI 層仍負責 API Key、rate limit 與 ingest 邏輯。
+Source API 的 IP 允許名單在生產環境由 nginx 執行，透過 `SOURCE_ALLOWLIST_CIDRS` 產生 `/api/v1/source/*` 專用的 nginx `allow` / `deny` 規則。產生時會固定允許本機 loopback（`127.0.0.1/32`、`::1/128`），再加上 `SOURCE_ALLOWLIST_CIDRS` 指定的 IP/CIDR。FastAPI 層仍負責 API Key、rate limit 與 ingest 邏輯。
 
 - **生產環境**：`SOURCE_ALLOWLIST_CIDRS` 為**必填**，部署流程會渲染 `source-allowlist.conf`
 - **本機直接跑 app**：不執行 nginx IP 允許名單；需要驗證阻擋行為時，請透過 nginx 或部署環境測試
 
 ```env
-# 允許單一 IP
-SOURCE_ALLOWLIST_CIDRS=203.0.113.50/32
+# 允許單一外部 IP（本機 loopback 會自動允許）
+SOURCE_ALLOWLIST_CIDRS=203.0.113.50
 
 # 允許子網段（逗號分隔）
 SOURCE_ALLOWLIST_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
@@ -906,7 +906,7 @@ git push origin main
 | `DATABASE_MAX_OVERFLOW`      | `10`                                                                         |
 | `API_V1_PREFIX`              | `/api/v1`                                                                    |
 | `API_KEY_HEADER`             | `X-API-Key`                                                                  |
-| `SOURCE_ALLOWLIST_CIDRS`     | nginx Source API 允許名單，例如 `10.0.0.0/8,203.0.113.50/32`                 |
+| `SOURCE_ALLOWLIST_CIDRS`     | nginx Source API 允許名單，例如 `10.0.0.0/8,203.0.113.50/32`；本機 loopback 會自動加入 |
 | `SOURCE_TRUST_PROXY_HEADERS` | 是否信任反向代理 header，例如 `false`                                        |
 | `SERVE_REQUIRE_AUTH`         | Serve API 是否需要認證，例如 `false`                                         |
 | `RATE_LIMIT_REQUESTS`        | `100`                                                                        |

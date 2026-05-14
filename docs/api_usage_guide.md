@@ -2185,7 +2185,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 
 ### Q: 生產環境需要注意什麼？
 
-1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist
+1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist；本機 loopback（`127.0.0.1/32`、`::1/128`）會自動加入
 2. **必須**設定 `ADMIN_API_KEY`（否則所有 Admin API 端點回傳 500）
 3. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
 4. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）

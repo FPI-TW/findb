@@ -6,6 +6,8 @@ import argparse
 import ipaddress
 from pathlib import Path
 
+LOCAL_SOURCE_ALLOWLIST_CIDRS = ("127.0.0.1/32", "::1/128")
+
 
 def parse_cidrs(raw_value: str) -> list[str]:
     cidrs: list[str] = []
@@ -17,13 +19,25 @@ def parse_cidrs(raw_value: str) -> list[str]:
     return cidrs
 
 
+def dedupe_cidrs(cidrs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for cidr in cidrs:
+        if cidr in seen:
+            continue
+        seen.add(cidr)
+        deduped.append(cidr)
+    return deduped
+
+
 def render_source_allowlist(raw_value: str) -> str:
-    cidrs = parse_cidrs(raw_value)
+    cidrs = dedupe_cidrs([*LOCAL_SOURCE_ALLOWLIST_CIDRS, *parse_cidrs(raw_value)])
     if not cidrs:
         raise ValueError("SOURCE_ALLOWLIST_CIDRS must contain at least one CIDR")
 
     lines = [
         "# Generated during deployment from SOURCE_ALLOWLIST_CIDRS.",
+        "# Local loopback CIDRs are always included.",
         "# Only /api/v1/source/* includes this file.",
     ]
     lines.extend(f"allow {cidr};" for cidr in cidrs)
