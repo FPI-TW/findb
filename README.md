@@ -265,6 +265,8 @@ docker compose up -d app
 
 > **注意**：`docker compose down -v` 會刪除本機 Docker volume，包含 PostgreSQL 既有資料。
 > `git lfs pull` 只會把 seed CSV 拉到本機工作目錄；真正匯入 DB 的步驟是 `seed-upsert --truncate`。
+> 本機 `app` container 啟動後會等待 `/health` ready，並自動產生 `/static/data/instruments.json`
+> 與 `/static/data/macro-series.json`。若要關閉，設定 `FINDB_GENERATE_STATIC_CACHE_ON_STARTUP=false`。
 
 ### 2. 開發命令（固定主命令）
 
@@ -470,7 +472,8 @@ curl http://localhost:8080/health
 
 ## 靜態標的與宏觀序列查詢頁
 
-先產生快取檔：
+本機 `docker compose up -d app` 啟動後會自動產生快取檔。若是本機直接跑 server，
+或需要手動刷新，可執行：
 
 ```bash
 uv run python scripts/generate_instrument_cache.py
@@ -486,7 +489,7 @@ FINDB_STATIC_CACHE_SERVE_API_KEY=your-serve-key
 產生完成後，可透過下列網址開啟查詢頁：
 
 ```text
-http://localhost:8080/static/instrument-lookup.html
+http://localhost:8080/instrument-lookup
 ```
 
 排程範例：
@@ -939,6 +942,10 @@ git push origin main
 | `SOURCE_TRUST_PROXY_HEADERS` | 是否信任 X-Forwarded-For（rate limit client IP 用） | `false`                                                        |
 | `SERVE_API_KEYS`             | Serve API 金鑰（逗號分隔）       | （空）                                                         |
 | `SERVE_REQUIRE_AUTH`         | Serve API 是否需要認證           | `false`                                                        |
+| `FINDB_GENERATE_STATIC_CACHE_ON_STARTUP` | 本機 Docker app 啟動後是否自動產生查詢頁 JSON 快取 | `true` |
+| `FINDB_STATIC_CACHE_BASE_URL` | 產生靜態查詢快取時使用的 FindDB API base URL | `http://127.0.0.1:8080` |
+| `FINDB_STATIC_CACHE_SERVE_API_KEY` | 產生靜態查詢快取時使用的 Serve API key | （空） |
+| `FINDB_STATIC_CACHE_STARTUP_ATTEMPTS` | 本機 Docker app 啟動後等待 health ready 的重試次數 | `24` |
 | `RATE_LIMIT_REQUESTS`        | 限流上限（每 window 內的請求數） | `100`                                                          |
 | `RATE_LIMIT_WINDOW`          | 限流時間窗口（秒）               | `60`                                                           |
 | `RAW_RETENTION_ENABLED`      | 是否啟用 Raw 過期清理            | `false`                                                        |

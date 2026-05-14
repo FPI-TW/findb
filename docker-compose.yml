@@ -30,6 +30,11 @@ services:
       SERVE_API_KEYS: ${SERVE_API_KEYS:-}
       SERVE_REQUIRE_AUTH: ${SERVE_REQUIRE_AUTH:-false}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      FINDB_GENERATE_STATIC_CACHE_ON_STARTUP: ${FINDB_GENERATE_STATIC_CACHE_ON_STARTUP:-true}
+      FINDB_STATIC_CACHE_BASE_URL: ${FINDB_STATIC_CACHE_BASE_URL:-}
+      FINDB_STATIC_CACHE_SERVE_API_KEY: ${FINDB_STATIC_CACHE_SERVE_API_KEY:-}
+      FINDB_STATIC_CACHE_STARTUP_ATTEMPTS: ${FINDB_STATIC_CACHE_STARTUP_ATTEMPTS:-24}
+      FINDB_LATEST_PRICE_WORKERS: ${FINDB_LATEST_PRICE_WORKERS:-12}
       SOURCE_ALLOWLIST_CIDRS: ${SOURCE_ALLOWLIST_CIDRS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
@@ -41,7 +46,7 @@ services:
       - ./app/static:/app/app/static
       - ./migrations:/app/migrations:ro
       - ./scripts:/app/scripts:ro
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --reload"
+    command: sh /app/scripts/start_local_app_with_cache.sh
 
   raw-cleanup:
     profiles: ["tools"]
