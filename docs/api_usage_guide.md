@@ -332,7 +332,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
 
 ### Direct 格式攝取端點
 
-Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支援台股 MultiCharts 單股票日線 JSON。
+Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，以及 FinLab 透過 tw-updater 推送的台股 / ETF / WTX 期貨格式。
 系統會自動推斷 `dataset_key`、`source`、`idempotency_key` 等欄位。
 
 #### 請求體格式（DirectIngestPayload）
@@ -365,35 +365,35 @@ Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支�
 > Direct ingest 預設以原始扁平格式為主，也相容巢狀 `price` / `timestamp` 格式。
 > `metadata.query_time` 會作為這批資料的抓取時間；`metadata.category` 非必需。
 
-#### 台股 MultiCharts 直接格式（TWStockDirectIngestPayload）
+#### 台股 / ETF FinLab 直接格式（TWStockDirectIngestPayload）
 
-`/ingest/twstock/direct` 使用台股專用契約，不直接接收 raw `.txt` / `.csv` 檔上傳；請先轉成 JSON。這個端點同時支援：
+`/ingest/twstock/direct` 使用台股專用契約，接收 FinLab tw-updater 推送的 JSON。
+依 `metadata.asset_class` 自動路由：
 
-1. 舊版單股票格式：`metadata.symbol` + `data[]`
-2. MultiCharts 日線檔列格式：每列自帶 `Symbol`、`Date`、OHLC、成交量拆分與成交筆數拆分，例如 `0052-Day-Trade.csv`
+| `metadata.asset_class` | dataset_key | 用途 |
+| --- | --- | --- |
+| 空 / `STOCK` / `equity` / `stock` | `tw_equity_eod` | 台股個股 |
+| `ETF` / `etf` | `tw_etf_eod` | 台股 ETF |
 
 ```json
 {
   "metadata": {
-    "name": "富邦科技",
-    "source": "multicharts",
-    "file_name": "0052-Day-Trade.csv",
-    "query_time": "2025-05-05T13:30:00Z"
+    "name": "台積電",
+    "source": "finlab",
+    "asset_class": "STOCK",
+    "file_name": "finlab_stocks_ohlcv.jsonl",
+    "query_time": "2026-05-14T13:30:00Z"
   },
   "data": [
     {
-      "Symbol": "0052",
-      "Date": "2025/5/5",
-      "Open": 168.5,
-      "High": 168.5,
-      "Low": 162.75,
-      "Close": 164.9,
-      "UpVolume": 174,
-      "DownVolume": 225,
-      "TotalVolume": 1096,
-      "UpTicks": 46,
-      "DownTicks": 59,
-      "TotalTicks": 306
+      "symbol": "2330",
+      "date": "2026-05-14",
+      "open": 2250,
+      "high": 2270,
+      "low": 2230,
+      "close": 2270,
+      "total_volume": 39564699,
+      "total_ticks": 83872
     }
   ]
 }
@@ -401,20 +401,19 @@ Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支�
 
 | 欄位                            | 類型   | 必填 | 說明 |
 | ------------------------------- | ------ | ---- | ---- |
-| `metadata.symbol`               | string | 條件必填 | 若 `data[]` 每列都未提供 `Symbol` / `symbol`，則必填 |
+| `metadata.symbol`               | string | 條件必填 | 若 `data[]` 每列都未提供 `symbol`，則必填 |
 | `metadata.name`                 | string | 否   | 股票名稱 |
-| `metadata.source`               | string | 否   | 預設 `multicharts` |
+| `metadata.source`               | string | 否   | 預設 `finlab` |
+| `metadata.asset_class`          | string | 否   | `STOCK` / `ETF`（大小寫不敏感），決定 dataset_key 路由 |
 | `metadata.file_name`            | string | 否   | 原始檔名，僅供追蹤 |
-| `data[].symbol` / `Symbol` / `<Symbol>` | string | 條件必填 | 若未提供 `metadata.symbol`，則每列都必須提供 |
-| `data[].date` / `Date` / `<Date>` | string | 是   | 交易日期；接受 `YYYY-MM-DD` 與 `YYYY/M/D` |
-| `data[].time` / `Time` / `<Time>` | string | 否   | 交易時間；只保留在 raw payload，不進 canonical |
+| `data[].symbol`                 | string | 條件必填 | 若未提供 `metadata.symbol`，則每列都必須提供 |
+| `data[].date`                   | string | 是   | 交易日期，`YYYY-MM-DD`。FinLab 對停牌/下市個股回傳的是該檔最後交易日，與 `metadata.query_time` 可能不同 |
+| `data[].time`                   | string | 否   | 交易時間；只保留在 raw payload，不進 canonical |
 | `data[].open` / `high` / `low` / `close` | number | 是 | OHLC |
-| `data[].up_volume` / `down_volume` / `total_volume` | int | 是 | 拆分成交量；`total_volume` 會寫入既有 `volume` |
-| `data[].up_ticks` / `down_ticks` / `total_ticks` | int | 是 | 拆分成交筆數 |
-| `data[].open_interest`          | int    | 否   | 接受後忽略，不寫入 canonical |
+| `data[].total_volume` / `volume` | int | 是 | 成交量；接受 `volume` 作為別名 |
+| `data[].total_ticks`            | int | 是 | 成交筆數 |
 
-> `time` 與 `open_interest` 會隨 raw payload 保留，可透過 Admin raw payload 查詢追蹤。
-> 若來源檔缺少 `UpVolume`、`DownVolume`、`UpTicks`、`DownTicks`、`TotalTicks`，目前仍會拒收。
+> 過去 MultiCharts 來源的 `up_volume`、`down_volume`、`up_ticks`、`down_ticks` 已自 DB 與 API 移除；FinLab 來源無此資料。
 
 #### 端點一覽
 
@@ -422,12 +421,12 @@ Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，也支�
 | ---- | ------------------------------ | -------- | ----------------------------- | ----------------------------------------- |
 | POST | `/ingest/crypto/direct`        | CRYPTO   | `crypto_bloomberg_eod`        | Bloomberg 加密貨幣直接格式                |
 | POST | `/ingest/fx/direct`            | FX       | `fx_bloomberg_eod`            | Bloomberg 外匯直接格式                    |
-| POST | `/ingest/wtx/direct`           | WTX      | `wtx_bloomberg_eod`           | Bloomberg WTX 期貨直接格式                |
+| POST | `/ingest/wtx/direct`           | WTX      | `wtx_eod`                     | 台指期 OHLCV；依 `metadata.source` 切換 FinLab / Bloomberg normalizer |
 | POST | `/ingest/usstock/direct`       | US       | `us_stock_eod`                | Bloomberg 美股直接格式                    |
 | POST | `/ingest/hkchina/direct`       | GLOBAL   | `hkchina_mixed_eod`           | Bloomberg 港中混合直接格式（股票 + 指數） |
 | POST | `/ingest/hkchina-index/direct` | GLOBAL   | `hkchina_index_eod`           | Bloomberg 港中指數直接格式（相容舊流程）  |
 | POST | `/ingest/macro/direct`         | MACRO    | `macro_bloomberg_observation` | Bloomberg 宏觀直接格式                    |
-| POST | `/ingest/twstock/direct`       | TW       | `tw_equity_multicharts_eod`   | MultiCharts 台股單股票直接格式            |
+| POST | `/ingest/twstock/direct`       | TW       | `tw_equity_eod` / `tw_etf_eod` | FinLab 台股 / ETF 直接格式（依 `metadata.asset_class` 自動路由） |
 
 > `hkchina/direct` 會在同一批 payload 中同時處理港股/中資股票與港中指數，並依 ticker 自動落到 `HK` 或 `CN` 市場。
 > 若上游仍維持舊的純 index 匯出流程，可繼續使用 `hkchina-index/direct`。
@@ -467,7 +466,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/usstock/direct" \
 ```
 
 ```bash
-# 匯入台股 MultiCharts 日線（JSON，不直接接 raw txt）
+# 匯入台股 FinLab 日線
 curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
@@ -475,25 +474,20 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
     "metadata": {
       "symbol": "6160",
       "name": "欣技",
-      "source": "multicharts",
-      "file_name": "6160 1 日.txt",
-      "query_time": "2026-04-30T08:00:00Z"
+      "source": "finlab",
+      "asset_class": "STOCK",
+      "file_name": "finlab_stocks_ohlcv.jsonl",
+      "query_time": "2026-05-14T08:00:00Z"
     },
     "data": [
       {
-        "date": "2024-04-29",
-        "time": "13:30:00",
+        "date": "2026-05-14",
         "open": 20.45,
         "high": 21.50,
         "low": 20.45,
         "close": 21.10,
-        "up_volume": 81,
-        "down_volume": 36,
         "total_volume": 528,
-        "up_ticks": 37,
-        "down_ticks": 19,
-        "total_ticks": 221,
-        "open_interest": 0
+        "total_ticks": 221
       }
     ]
   }'
@@ -1362,10 +1356,6 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 | `low`               | Decimal | 否     | 最低價（null 表示清除）          |
 | `close`             | Decimal | 否     | 收盤價（null 表示清除）          |
 | `volume`            | int     | 否     | 成交量（null 表示清除）          |
-| `up_volume`         | int     | 否     | 上漲成交量（null 表示清除）      |
-| `down_volume`       | int     | 否     | 下跌成交量（null 表示清除）      |
-| `up_ticks`          | int     | 否     | 上漲成交筆數（null 表示清除）    |
-| `down_ticks`        | int     | 否     | 下跌成交筆數（null 表示清除）    |
 | `total_ticks`       | int     | 否     | 總成交筆數（null 表示清除）      |
 | `turnover`          | Decimal | 否     | 成交額（null 表示清除）          |
 
