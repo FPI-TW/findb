@@ -163,7 +163,7 @@ done
 
 ### 2.5 IP 允許名單測試（選擇性）
 
-生產環境 nginx 會根據 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*`。從非允許 IP 發送請求應收到 nginx 回覆的 403：
+生產環境 nginx 會根據 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*`。產生 allowlist 時會固定允許本機 loopback（`127.0.0.1/32`、`::1/128`），再加上 `SOURCE_ALLOWLIST_CIDRS` 指定的外部 IP/CIDR。從非允許 IP 發送請求應收到 nginx 回覆的 403：
 
 ```json
 { "detail": "Source API client IP not allowlisted" }
