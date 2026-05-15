@@ -269,7 +269,7 @@ class TestWTXBloombergNormalizer:
         assert len(records) == 0
 
     def test_dataset_key(self):
-        assert WTXBloombergNormalizer.dataset_key == "wtx_bloomberg_eod"
+        assert WTXBloombergNormalizer.dataset_key == "wtx_eod"
         assert WTXBloombergNormalizer.market == "WTX"
         assert WTXBloombergNormalizer.asset_class == "future"
 

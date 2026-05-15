@@ -35,10 +35,6 @@ _CORRECTABLE_EOD_FIELDS = {
     "low",
     "close",
     "volume",
-    "up_volume",
-    "down_volume",
-    "up_ticks",
-    "down_ticks",
     "total_ticks",
     "turnover",
 }

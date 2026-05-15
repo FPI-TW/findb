@@ -629,7 +629,7 @@ class WTXBloombergNormalizer(FuturesContinuousNormalizer):
     }
     """
 
-    dataset_key = "wtx_bloomberg_eod"
+    dataset_key = "wtx_eod"
     asset_class = "future"
     market = "WTX"
 

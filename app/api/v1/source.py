@@ -153,14 +153,14 @@ DIRECT_DATASET_DEFAULTS = {
         "is_active": True,
         "config": {"source_format": "bloomberg_fx_direct"},
     },
-    "wtx_bloomberg_eod": {
-        "name": "WTX 期貨日K — Bloomberg Direct",
-        "description": "Bloomberg Direct 格式台灣加權指數期貨每日價格資料",
+    "wtx_eod": {
+        "name": "WTX 期貨日K",
+        "description": "台灣加權指數期貨每日 OHLCV 資料（支援 FinLab 與 Bloomberg 來源）",
         "asset_class": "future",
         "market": "WTX",
         "frequency": "daily",
         "is_active": True,
-        "config": {"source_format": "bloomberg_wtx_direct"},
+        "config": {"source_format": "direct"},
     },
     "macro_bloomberg_observation": {
         "name": "總經觀測值 — Bloomberg Direct",
@@ -171,15 +171,15 @@ DIRECT_DATASET_DEFAULTS = {
         "is_active": True,
         "config": {"source_format": "bloomberg_macro_direct"},
     },
-    "tw_equity_multicharts_eod": {
-        "name": "台股日K — MultiCharts Direct",
-        "description": "MultiCharts Direct 格式台股每日價格與成交拆分資料",
+    "tw_equity_eod": {
+        "name": "台股日K — FinLab Direct",
+        "description": "FinLab Direct 格式台股每日 OHLCV 資料",
         "asset_class": "equity",
         "market": "TW",
         "frequency": "daily",
         "is_active": True,
         "config": {
-            "source_format": "multicharts_twstock_direct",
+            "source_format": "finlab_twstock_direct",
             "data_path": "data",
             "field_mapping": {
                 "trade_date": "date",
@@ -188,15 +188,43 @@ DIRECT_DATASET_DEFAULTS = {
                 "low": "low",
                 "close": "close",
                 "volume": "total_volume",
-                "up_volume": "up_volume",
-                "down_volume": "down_volume",
-                "up_ticks": "up_ticks",
-                "down_ticks": "down_ticks",
+                "total_ticks": "total_ticks",
+            },
+        },
+    },
+    "tw_etf_eod": {
+        "name": "台股 ETF 日K — FinLab Direct",
+        "description": "FinLab Direct 格式台股 ETF 每日 OHLCV 資料",
+        "asset_class": "etf",
+        "market": "TW",
+        "frequency": "daily",
+        "is_active": True,
+        "config": {
+            "source_format": "finlab_twstock_direct",
+            "data_path": "data",
+            "field_mapping": {
+                "trade_date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "total_volume",
                 "total_ticks": "total_ticks",
             },
         },
     },
 }
+
+
+_TWSTOCK_ETF_ASSET_CLASSES = {"etf"}
+
+
+def _resolve_twstock_dataset_key(payload: "TWStockDirectIngestPayload") -> str:
+    """Decide whether a TW direct payload targets the equity or ETF dataset."""
+    asset_class = (payload.metadata.asset_class or "").strip().lower()
+    if asset_class in _TWSTOCK_ETF_ASSET_CLASSES:
+        return "tw_etf_eod"
+    return "tw_equity_eod"
 
 
 def _build_session_factory(db: AsyncSession) -> async_sessionmaker[AsyncSession]:
@@ -211,9 +239,9 @@ def _build_session_factory(db: AsyncSession) -> async_sessionmaker[AsyncSession]
     )
 
 
-def _normalize_source(value: str | None) -> str:
+def _normalize_source(value: str | None, default: str = "bloomberg") -> str:
     """Normalize source label for ingestion records."""
-    source = (value or "bloomberg").strip().lower()
+    source = (value or default).strip().lower()
     if source.startswith("bloomberg"):
         return "bloomberg"
     return source
@@ -223,12 +251,13 @@ def _build_direct_ingest_request(
     payload: DirectIngestPayload | TWStockDirectIngestPayload,
     dataset_key: str,
     key_prefix: str,
+    default_source: str = "bloomberg",
 ) -> IngestRequest:
     """Convert direct payload format to internal IngestRequest."""
     raw_payload = payload.model_dump(mode="json")
     metadata = raw_payload.get("metadata", {}) or {}
 
-    source = _normalize_source(metadata.get("source"))
+    source = _normalize_source(metadata.get("source"), default=default_source)
     query_time = metadata.get("query_time")
     try:
         fetched_at = parse_datetime(str(query_time)) if query_time else utc_now()
@@ -354,10 +383,16 @@ async def _ingest_direct_payload(
     expected_market: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession,
+    default_source: str = "bloomberg",
 ) -> IngestResponse:
     """使用推斷出的匯入欄位匯入直接格式市場資料。"""
     await _ensure_direct_dataset_exists(db, dataset_key)
-    request = _build_direct_ingest_request(payload, dataset_key, key_prefix)
+    request = _build_direct_ingest_request(
+        payload,
+        dataset_key,
+        key_prefix,
+        default_source=default_source,
+    )
     return await _ingest_by_market(
         request=request,
         background_tasks=background_tasks,
@@ -553,10 +588,10 @@ async def ingest_wtx_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """匯入 Bloomberg WTX 期貨直接格式資料。"""
+    """匯入 WTX 期貨直接格式資料（支援 FinLab 與 Bloomberg 來源）。"""
     return await _ingest_direct_payload(
         payload=payload,
-        dataset_key="wtx_bloomberg_eod",
+        dataset_key="wtx_eod",
         key_prefix="direct_wtx",
         expected_market="WTX",
         background_tasks=background_tasks,
@@ -571,7 +606,7 @@ async def ingest_twstock_direct_data(
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ingest TW stock MultiCharts direct payload format."""
+    """匯入 FinLab 台股 / ETF 直接格式資料。依 metadata.asset_class 區分個股 (預設) 與 ETF。"""
     try:
         _validate_twstock_direct_payload(payload)
     except PayloadValidationError as exc:
@@ -579,13 +614,15 @@ async def ingest_twstock_direct_data(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
+    dataset_key = _resolve_twstock_dataset_key(payload)
     return await _ingest_direct_payload(
         payload=payload,
-        dataset_key="tw_equity_multicharts_eod",
+        dataset_key=dataset_key,
         key_prefix="direct_twstock",
         expected_market="TW",
         background_tasks=background_tasks,
         db=db,
+        default_source="finlab",
     )
 
 
