@@ -310,9 +310,9 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/wtx/direct" \
 }'
 ```
 
-### 3.4e Direct 格式攝取（台股 MultiCharts）
+### 3.4e Direct 格式攝取（台股 FinLab / ETF）
 
-> `/api/v1/source/ingest/twstock/direct` 只接受 JSON，不直接接 raw `.txt` 檔。請先把 MultiCharts 匯出檔轉成單股票 `metadata + data[]` 格式。
+> `/api/v1/source/ingest/twstock/direct` 接受 FinLab 直接格式。`metadata.asset_class` 決定路由：`STOCK`（或 `equity`）→ `tw_equity_eod`，`ETF` → `tw_etf_eod`。
 
 ```bash
 curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
@@ -322,25 +322,20 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
     "metadata": {
       "symbol": "6160",
       "name": "欣技",
-      "source": "multicharts",
-      "file_name": "6160 1 日.txt",
-      "query_time": "2026-04-30T08:00:00Z"
+      "source": "finlab",
+      "asset_class": "STOCK",
+      "file_name": "finlab_stocks_ohlcv.jsonl",
+      "query_time": "2026-05-14T08:00:00Z"
     },
     "data": [
       {
-        "date": "2024-04-29",
-        "time": "13:30:00",
+        "date": "2026-05-14",
         "open": 20.45,
         "high": 21.50,
         "low": 20.45,
         "close": 21.10,
-        "up_volume": 81,
-        "down_volume": 36,
         "total_volume": 528,
-        "up_ticks": 37,
-        "down_ticks": 19,
-        "total_ticks": 221,
-        "open_interest": 0
+        "total_ticks": 221
       }
     ]
   }'
@@ -349,9 +344,9 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/twstock/direct" \
 預期：
 
 - response `status_code = 200`
-- `dataset_key = tw_equity_multicharts_eod`
-- raw payload 仍保留 `time` 與 `open_interest`
-- canonical / serve EOD 可查到 `up_volume`、`down_volume`、`up_ticks`、`down_ticks`、`total_ticks`
+- `dataset_key = tw_equity_eod`（ETF 為 `tw_etf_eod`）
+- raw payload 完整保留輸入內容
+- canonical / serve EOD 提供 `volume`、`total_ticks`（不再有上下漲成交量/筆數欄位）
 
 ### 3.5 Direct 格式攝取（HK/China 混合）
 

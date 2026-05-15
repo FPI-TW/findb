@@ -6,14 +6,59 @@ from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
+from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.api.v1.source import _resolve_twstock_dataset_key
 from app.config import get_settings
 from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
+from app.schemas.source import TWStockDirectIngestPayload
 from app.utils import uuid7
 
 settings = get_settings()
+
+
+def _twstock_direct_payload(asset_class: str | None = None) -> dict:
+    metadata = {"symbol": "6160", "source": "finlab"}
+    if asset_class is not None:
+        metadata["asset_class"] = asset_class
+    return {
+        "metadata": metadata,
+        "data": [
+            {
+                "date": "2026-05-15",
+                "open": 20.45,
+                "high": 21.50,
+                "low": 20.45,
+                "close": 21.10,
+                "total_volume": 528,
+                "total_ticks": 221,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("asset_class", "expected_dataset"),
+    [
+        ("STOCK", "tw_equity_eod"),
+        ("equity", "tw_equity_eod"),
+        ("ETF", "tw_etf_eod"),
+    ],
+)
+def test_twstock_direct_asset_class_aliases_route_to_expected_dataset(
+    asset_class: str,
+    expected_dataset: str,
+):
+    payload = TWStockDirectIngestPayload.model_validate(_twstock_direct_payload(asset_class))
+    assert payload.metadata.asset_class in {"equity", "etf"}
+    assert _resolve_twstock_dataset_key(payload) == expected_dataset
+
+
+def test_twstock_direct_asset_class_rejects_unknown_value():
+    with pytest.raises(ValidationError):
+        TWStockDirectIngestPayload.model_validate(_twstock_direct_payload("bond"))
 
 
 class TestSourceAPI:
@@ -823,30 +868,26 @@ class TestSourceAPI:
         source_headers: dict,
         test_session,
     ):
-        """Ensure TW stock MultiCharts direct payloads ingest, deduplicate, and persist fields."""
+        """Ensure TW stock FinLab direct payloads ingest, deduplicate, and persist fields."""
         payload = {
             "metadata": {
                 "symbol": "6160",
                 "name": "欣技",
-                "source": "multicharts",
-                "file_name": "6160 1 日.txt",
+                "source": "finlab",
+                "asset_class": "STOCK",
+                "file_name": "finlab_stocks_ohlcv.jsonl",
                 "query_time": "2026-04-30T08:00:00Z",
             },
             "data": [
                 {
-                    "<Date>": "2024-04-29",
-                    "<Time>": "13:30:00",
-                    "<Open>": 20.45,
-                    "<High>": 21.50,
-                    "<Low>": 20.45,
-                    "<Close>": 21.10,
-                    "<UpVolume>": 81,
-                    "<DownVolume>": 36,
-                    "<TotalVolume>": 528,
-                    "<UpTicks>": 37,
-                    "<DownTicks>": 19,
-                    "<TotalTicks>": 221,
-                    "<OpenInterest>": 0,
+                    "date": "2024-04-29",
+                    "time": "13:30:00",
+                    "open": 20.45,
+                    "high": 21.50,
+                    "low": 20.45,
+                    "close": 21.10,
+                    "total_volume": 528,
+                    "total_ticks": 221,
                 }
             ],
         }
@@ -870,12 +911,12 @@ class TestSourceAPI:
 
         run = await test_session.get(IngestionRun, first_run_id)
         assert run is not None
-        assert run.dataset_key == "tw_equity_multicharts_eod"
+        assert run.dataset_key == "tw_equity_eod"
         assert run.status == "completed"
         assert run.total_records == 1
         assert run.success_records == 1
 
-        dataset = await test_session.get(DatasetRegistry, "tw_equity_multicharts_eod")
+        dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
         assert dataset is not None
         assert dataset.market == "TW"
 
@@ -883,7 +924,6 @@ class TestSourceAPI:
         raw_payload = (await test_session.execute(raw_stmt)).scalar_one()
         assert raw_payload.payload["metadata"]["symbol"] == "6160"
         assert raw_payload.payload["data"][0]["time"] == "13:30:00"
-        assert raw_payload.payload["data"][0]["open_interest"] == 0
 
         eod_response = await client.get(
             "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-29&end_date=2024-04-29"
@@ -892,45 +932,39 @@ class TestSourceAPI:
         eod_payload = eod_response.json()["data"]
         assert len(eod_payload) == 1
         assert eod_payload[0]["volume"] == 528
-        assert eod_payload[0]["up_volume"] == 81
-        assert eod_payload[0]["down_volume"] == 36
-        assert eod_payload[0]["up_ticks"] == 37
-        assert eod_payload[0]["down_ticks"] == 19
         assert eod_payload[0]["total_ticks"] == 221
-        assert "open_interest" not in eod_payload[0]
+        for removed in ("up_volume", "down_volume", "up_ticks", "down_ticks"):
+            assert removed not in eod_payload[0]
 
     @pytest.mark.asyncio
-    async def test_ingest_twstock_direct_multicharts_daily_file_format_success(
+    async def test_ingest_twstock_direct_etf_routes_to_etf_dataset(
         self,
         client: AsyncClient,
         source_headers: dict,
         test_session,
     ):
-        """Ensure TW MultiCharts daily CSV-style rows can be ingested end-to-end."""
+        """Ensure metadata.asset_class=ETF routes the payload to tw_etf_eod."""
         response = await client.post(
             "/api/v1/source/ingest/twstock/direct",
             headers=source_headers,
             json={
                 "metadata": {
                     "name": "富邦科技",
-                    "source": "multicharts",
-                    "file_name": "0052-Day-Trade.csv",
+                    "source": "finlab",
+                    "asset_class": "ETF",
+                    "file_name": "finlab_etfs_ohlcv.jsonl",
                     "query_time": "2025-05-05T13:30:00Z",
                 },
                 "data": [
                     {
-                        "Symbol": "0052",
-                        "Date": "2025/5/5",
-                        "Open": 168.50,
-                        "High": 168.50,
-                        "Low": 162.75,
-                        "Close": 164.90,
-                        "UpVolume": 174,
-                        "DownVolume": 225,
-                        "TotalVolume": 1096,
-                        "UpTicks": 46,
-                        "DownTicks": 59,
-                        "TotalTicks": 306,
+                        "symbol": "0052",
+                        "date": "2025-05-05",
+                        "open": 168.50,
+                        "high": 168.50,
+                        "low": 162.75,
+                        "close": 164.90,
+                        "total_volume": 1096,
+                        "total_ticks": 306,
                     }
                 ],
             },
@@ -941,34 +975,23 @@ class TestSourceAPI:
 
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
+        assert run.dataset_key == "tw_etf_eod"
         assert run.status == "completed"
         assert run.total_records == 1
         assert run.success_records == 1
 
-        raw_stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == run_id)
-        raw_payload = (await test_session.execute(raw_stmt)).scalar_one()
-        assert raw_payload.payload["data"][0]["symbol"] == "0052"
-        assert raw_payload.payload["data"][0]["date"] == "2025/5/5"
+        dataset = await test_session.get(DatasetRegistry, "tw_etf_eod")
+        assert dataset is not None
+        assert dataset.asset_class == "etf"
 
         eod_response = await client.get(
             "/api/v1/serve/eod?market=TW&symbols=0052&start_date=2025-05-05&end_date=2025-05-05"
         )
-
         assert eod_response.status_code == 200
         eod_payload = eod_response.json()["data"]
         assert len(eod_payload) == 1
         assert eod_payload[0]["symbol"] == "0052"
-        assert eod_payload[0]["name"] == "富邦科技"
-        assert eod_payload[0]["trade_date"] == "2025-05-05"
-        assert eod_payload[0]["open"] == "168.50000000"
-        assert eod_payload[0]["high"] == "168.50000000"
-        assert eod_payload[0]["low"] == "162.75000000"
-        assert eod_payload[0]["close"] == "164.90000000"
         assert eod_payload[0]["volume"] == 1096
-        assert eod_payload[0]["up_volume"] == 174
-        assert eod_payload[0]["down_volume"] == 225
-        assert eod_payload[0]["up_ticks"] == 46
-        assert eod_payload[0]["down_ticks"] == 59
         assert eod_payload[0]["total_ticks"] == 306
 
     @pytest.mark.asyncio
@@ -983,22 +1006,18 @@ class TestSourceAPI:
             headers=source_headers,
             json={
                 "metadata": {
-                    "source": "multicharts",
+                    "source": "finlab",
                     "query_time": "2025-05-05T13:30:00Z",
                 },
                 "data": [
                     {
-                        "Date": "2025/5/5",
-                        "Open": 168.50,
-                        "High": 168.50,
-                        "Low": 162.75,
-                        "Close": 164.90,
-                        "UpVolume": 174,
-                        "DownVolume": 225,
-                        "TotalVolume": 1096,
-                        "UpTicks": 46,
-                        "DownTicks": 59,
-                        "TotalTicks": 306,
+                        "date": "2025-05-05",
+                        "open": 168.50,
+                        "high": 168.50,
+                        "low": 162.75,
+                        "close": 164.90,
+                        "total_volume": 1096,
+                        "total_ticks": 306,
                     }
                 ],
             },
@@ -1020,7 +1039,7 @@ class TestSourceAPI:
             json={
                 "metadata": {
                     "symbol": "6160",
-                    "source": "multicharts",
+                    "source": "finlab",
                     "query_time": "2026-04-30T08:00:00Z",
                 },
                 "data": [
@@ -1031,11 +1050,7 @@ class TestSourceAPI:
                         "high": 21.50,
                         "low": 20.45,
                         "close": 21.10,
-                        "up_volume": 81,
-                        "down_volume": 36,
                         "total_volume": 528,
-                        "up_ticks": 37,
-                        "down_ticks": 19,
                     }
                 ],
             },
@@ -1057,7 +1072,7 @@ class TestSourceAPI:
             json={
                 "metadata": {
                     "symbol": "6160",
-                    "source": "multicharts",
+                    "source": "finlab",
                     "query_time": "2026-04-30T08:00:00Z",
                 },
                 "data": [
@@ -1067,11 +1082,7 @@ class TestSourceAPI:
                         "high": 21.10,
                         "low": 21.10,
                         "close": 21.10,
-                        "up_volume": 0,
-                        "down_volume": 0,
                         "total_volume": 0,
-                        "up_ticks": 0,
-                        "down_ticks": 0,
                         "total_ticks": 0,
                     }
                 ],
@@ -1087,21 +1098,13 @@ class TestSourceAPI:
         eod_payload = eod_response.json()["data"]
         assert len(eod_payload) == 1
         assert eod_payload[0]["volume"] == 0
-        assert eod_payload[0]["up_volume"] == 0
-        assert eod_payload[0]["down_volume"] == 0
-        assert eod_payload[0]["up_ticks"] == 0
-        assert eod_payload[0]["down_ticks"] == 0
         assert eod_payload[0]["total_ticks"] == 0
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "field_name",
         [
-            "up_volume",
-            "down_volume",
             "total_volume",
-            "up_ticks",
-            "down_ticks",
             "total_ticks",
         ],
     )
@@ -1111,18 +1114,14 @@ class TestSourceAPI:
         source_headers: dict,
         field_name: str,
     ):
-        """Ensure TW stock split volume/tick fields cannot be negative."""
+        """Ensure TW stock volume/tick fields cannot be negative."""
         row = {
             "date": "2024-04-29",
             "open": 20.45,
             "high": 21.50,
             "low": 20.45,
             "close": 21.10,
-            "up_volume": 81,
-            "down_volume": 36,
             "total_volume": 528,
-            "up_ticks": 37,
-            "down_ticks": 19,
             "total_ticks": 221,
         }
         row[field_name] = -1
@@ -1133,7 +1132,7 @@ class TestSourceAPI:
             json={
                 "metadata": {
                     "symbol": "6160",
-                    "source": "multicharts",
+                    "source": "finlab",
                     "query_time": "2026-04-30T08:00:00Z",
                 },
                 "data": [row],
@@ -1188,7 +1187,7 @@ class TestSourceAPI:
             ),
             (
                 "/api/v1/source/ingest/wtx/direct",
-                "wtx_bloomberg_eod",
+                "wtx_eod",
                 "WTX",
                 {
                     "metadata": {"source": "bloomberg", "query_time": "2026-03-12T08:00:00Z"},

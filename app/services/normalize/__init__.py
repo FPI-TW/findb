@@ -4,6 +4,11 @@ from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.services.normalize.crypto import CryptoBloombergNormalizer, CryptoNormalizer
 from app.services.normalize.crypto_index import CryptoIndexNormalizer
 from app.services.normalize.equity import EquityNormalizer, IndexNormalizer
+from app.services.normalize.finlab import (
+    TWETFFinlabNormalizer,
+    TWStockFinlabNormalizer,
+    WTXFinlabNormalizer,
+)
 from app.services.normalize.futures import (
     FuturesContinuousNormalizer,
     FuturesContractNormalizer,
@@ -11,7 +16,6 @@ from app.services.normalize.futures import (
 )
 from app.services.normalize.fx import FXBloombergNormalizer, FXNormalizer
 from app.services.normalize.macro import MacroBloombergNormalizer, MacroNormalizer
-from app.services.normalize.twstock import TWStockMultichartsNormalizer
 from app.services.normalize.types import (
     CorporateActionRecord,
     FuturesContinuousRecord,
@@ -61,7 +65,9 @@ __all__ = [
     "CNIndexNormalizer",
     "HKChinaMixedNormalizer",
     "HKChinaIndexNormalizer",
-    "TWStockMultichartsNormalizer",
+    "TWStockFinlabNormalizer",
+    "TWETFFinlabNormalizer",
+    "WTXFinlabNormalizer",
     "CorporateActionRecord",
     "MacroObservationRecord",
     "FuturesContractRecord",

@@ -39,11 +39,13 @@ from app.services.normalize import (
     MacroBloombergNormalizer,
     MacroNormalizer,
     TWEquityNormalizer,
+    TWETFFinlabNormalizer,
     TWIndexNormalizer,
-    TWStockMultichartsNormalizer,
+    TWStockFinlabNormalizer,
     USIndexNormalizer,
     USStockNormalizer,
     WTXBloombergNormalizer,
+    WTXFinlabNormalizer,
 )
 from app.utils import utc_now, uuid7
 from app.utils.datetime_utils import ensure_utc
@@ -79,8 +81,9 @@ NORMALIZER_MAP: dict[str, NormalizerFactory] = {
     "global_stock_eod": GlobalStockNormalizer,
     "hkchina_stock_eod": GlobalStockNormalizer,
     "hkchina_mixed_eod": HKChinaMixedNormalizer,
-    "tw_equity_eod": TWEquityNormalizer,
-    "tw_equity_multicharts_eod": TWStockMultichartsNormalizer,
+    "tw_equity_eod": TWStockFinlabNormalizer,
+    "tw_etf_eod": TWETFFinlabNormalizer,
+    "tw_equity_bloomberg_eod": TWEquityNormalizer,
     "hk_equity_eod": HKEquityNormalizer,
     "cn_equity_eod": CNEquityNormalizer,
     "tw_index_eod": TWIndexNormalizer,
@@ -90,9 +93,43 @@ NORMALIZER_MAP: dict[str, NormalizerFactory] = {
     # Bloomberg direct format — other markets
     "fx_bloomberg_eod": FXBloombergNormalizer,
     "crypto_bloomberg_eod": CryptoBloombergNormalizer,
-    "wtx_bloomberg_eod": WTXBloombergNormalizer,
+    # WTX 期貨：依 payload metadata.source 選擇 FinLab 或 Bloomberg normalizer。
+    "wtx_eod": WTXFinlabNormalizer,
     "macro_bloomberg_observation": MacroBloombergNormalizer,
 }
+
+
+_WTX_SOURCE_NORMALIZERS: dict[str, NormalizerFactory] = {
+    "finlab": WTXFinlabNormalizer,
+    "bloomberg": WTXBloombergNormalizer,
+}
+
+
+def _normalize_provider_key(value: Any) -> str | None:
+    """Normalize provider labels used for payload-aware normalizer routing."""
+    if not isinstance(value, str):
+        return None
+    source = value.strip().lower()
+    if not source:
+        return None
+    if source.startswith("bloomberg"):
+        return "bloomberg"
+    return source
+
+
+def _select_normalizer_for_payload(
+    dataset_key: str,
+    payload: dict,
+) -> Optional[NormalizerFactory]:
+    """Resolve normalizer by dataset_key, falling back to payload-aware routing."""
+    if dataset_key == "wtx_eod":
+        source = _get_nested_value(payload, "metadata.source")
+        provider_key = _normalize_provider_key(source)
+        if provider_key is not None:
+            override = _WTX_SOURCE_NORMALIZERS.get(provider_key)
+            if override is not None:
+                return override
+    return NORMALIZER_MAP.get(dataset_key)
 
 
 class DatasetNotFoundError(ValueError):
@@ -223,7 +260,7 @@ async def trigger_normalization(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """Trigger normalization for a dataset in the background."""
-    normalizer_cls = NORMALIZER_MAP.get(dataset_key)
+    normalizer_cls = _select_normalizer_for_payload(dataset_key, payload)
     session_factory = session_factory or async_session_maker
 
     async with session_factory() as session:

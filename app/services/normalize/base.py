@@ -163,18 +163,6 @@ class BaseNormalizer(ABC):
                 low=self._parse_decimal(self._get_nested_value(item, field_mapping.get("low"))),
                 close=self._parse_decimal(self._get_nested_value(item, field_mapping.get("close"))),
                 volume=self._parse_int(self._get_nested_value(item, field_mapping.get("volume"))),
-                up_volume=self._parse_int(
-                    self._get_nested_value(item, field_mapping.get("up_volume"))
-                ),
-                down_volume=self._parse_int(
-                    self._get_nested_value(item, field_mapping.get("down_volume"))
-                ),
-                up_ticks=self._parse_int(
-                    self._get_nested_value(item, field_mapping.get("up_ticks"))
-                ),
-                down_ticks=self._parse_int(
-                    self._get_nested_value(item, field_mapping.get("down_ticks"))
-                ),
                 total_ticks=self._parse_int(
                     self._get_nested_value(item, field_mapping.get("total_ticks"))
                 ),
@@ -384,14 +372,19 @@ class BaseNormalizer(ABC):
             self._trading_day_cache.add(cache_key)
             return
 
-        calendar = TradingCalendar(
-            id=uuid7(),
-            market=calendar_market,
-            trade_date=trade_date_value,
-            is_open=True,
+        # 並行 normalize 多個 chunk 時可能同時嘗試插入相同 (market, trade_date)。
+        # 使用 ON CONFLICT DO NOTHING 避免 UniqueViolation 中斷整個 session。
+        upsert_stmt = (
+            insert(TradingCalendar)
+            .values(
+                id=uuid7(),
+                market=calendar_market,
+                trade_date=trade_date_value,
+                is_open=True,
+            )
+            .on_conflict_do_nothing(constraint="uq_calendar")
         )
-        self.db.add(calendar)
-        await self.db.flush()
+        await self.db.execute(upsert_stmt)
         self._trading_day_cache.add(cache_key)
 
     async def upsert_eod(
@@ -419,10 +412,6 @@ class BaseNormalizer(ABC):
             low=record.low,
             close=record.close,
             volume=record.volume,
-            up_volume=record.up_volume,
-            down_volume=record.down_volume,
-            up_ticks=record.up_ticks,
-            down_ticks=record.down_ticks,
             total_ticks=record.total_ticks,
             turnover=record.turnover,
             source=record.source,
@@ -442,10 +431,6 @@ class BaseNormalizer(ABC):
                 "low": stmt.excluded.low,
                 "close": stmt.excluded.close,
                 "volume": stmt.excluded.volume,
-                "up_volume": stmt.excluded.up_volume,
-                "down_volume": stmt.excluded.down_volume,
-                "up_ticks": stmt.excluded.up_ticks,
-                "down_ticks": stmt.excluded.down_ticks,
                 "total_ticks": stmt.excluded.total_ticks,
                 "turnover": stmt.excluded.turnover,
                 "source": stmt.excluded.source,
@@ -459,10 +444,6 @@ class BaseNormalizer(ABC):
                 | (t.c.low.is_distinct_from(stmt.excluded.low))
                 | (t.c.close.is_distinct_from(stmt.excluded.close))
                 | (t.c.volume.is_distinct_from(stmt.excluded.volume))
-                | (t.c.up_volume.is_distinct_from(stmt.excluded.up_volume))
-                | (t.c.down_volume.is_distinct_from(stmt.excluded.down_volume))
-                | (t.c.up_ticks.is_distinct_from(stmt.excluded.up_ticks))
-                | (t.c.down_ticks.is_distinct_from(stmt.excluded.down_ticks))
                 | (t.c.total_ticks.is_distinct_from(stmt.excluded.total_ticks))
                 | (t.c.turnover.is_distinct_from(stmt.excluded.turnover))
             ),

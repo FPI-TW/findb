@@ -563,7 +563,7 @@ class RegionalEquityNormalizer(GlobalStockNormalizer):
 
 
 class TWEquityNormalizer(RegionalEquityNormalizer):
-    dataset_key = "tw_equity_eod"
+    dataset_key = "tw_equity_bloomberg_eod"
     market = "TW"
 
 

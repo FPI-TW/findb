@@ -49,14 +49,25 @@ def _normalize_optional_symbol(value: Optional[str]) -> Optional[str]:
     return value
 
 
+_TWSTOCK_ASSET_CLASS_ALIASES = {
+    "stock": "equity",
+    "equity": "equity",
+    "etf": "etf",
+}
+
+
 class TWStockDirectMetadata(BaseModel):
-    """Metadata for TW MultiCharts direct ingest payloads."""
+    """Metadata for TW stock direct ingest payloads (FinLab format)."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     symbol: Optional[str] = Field(default=None, description="台股代號，例如 6160")
     name: Optional[str] = Field(default=None, description="股票名稱")
-    source: str = Field(default="multicharts", description="資料來源，預設 multicharts")
+    source: str = Field(default="finlab", description="資料來源，預設 finlab")
+    asset_class: Optional[str] = Field(
+        default=None,
+        description="資產類別，可選 stock/equity/etf；空值預設視為 equity（大小寫不敏感）",
+    )
     file_name: Optional[str] = Field(default=None, description="來源檔名，用於追蹤")
     query_time: Optional[datetime] = Field(default=None, description="匯入查詢時間（UTC）")
 
@@ -65,9 +76,22 @@ class TWStockDirectMetadata(BaseModel):
     def normalize_symbol(cls, value: Optional[str]) -> Optional[str]:
         return _normalize_optional_symbol(value)
 
+    @field_validator("asset_class", mode="before")
+    @classmethod
+    def normalize_asset_class(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        asset_class = str(value).strip().lower()
+        if not asset_class:
+            return None
+        if asset_class not in _TWSTOCK_ASSET_CLASS_ALIASES:
+            allowed = ", ".join(sorted(_TWSTOCK_ASSET_CLASS_ALIASES))
+            raise ValueError(f"asset_class must be one of: {allowed}")
+        return _TWSTOCK_ASSET_CLASS_ALIASES[asset_class]
+
 
 class TWStockDirectRow(BaseModel):
-    """Single TW MultiCharts direct ingest row."""
+    """Single TW stock direct ingest row (FinLab format)."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -102,30 +126,10 @@ class TWStockDirectRow(BaseModel):
         default=None,
         validation_alias=AliasChoices("close", "Close", "<Close>"),
     )
-    up_volume: Optional[int] = Field(
-        default=None,
-        ge=0,
-        validation_alias=AliasChoices("up_volume", "UpVolume", "<UpVolume>"),
-    )
-    down_volume: Optional[int] = Field(
-        default=None,
-        ge=0,
-        validation_alias=AliasChoices("down_volume", "DownVolume", "<DownVolume>"),
-    )
     total_volume: Optional[int] = Field(
         default=None,
         ge=0,
         validation_alias=AliasChoices("total_volume", "TotalVolume", "<TotalVolume>", "volume"),
-    )
-    up_ticks: Optional[int] = Field(
-        default=None,
-        ge=0,
-        validation_alias=AliasChoices("up_ticks", "UpTicks", "<UpTicks>"),
-    )
-    down_ticks: Optional[int] = Field(
-        default=None,
-        ge=0,
-        validation_alias=AliasChoices("down_ticks", "DownTicks", "<DownTicks>"),
     )
     total_ticks: Optional[int] = Field(
         default=None,
@@ -150,7 +154,7 @@ class TWStockDirectRow(BaseModel):
 
 
 class TWStockDirectIngestPayload(BaseModel):
-    """TW MultiCharts direct ingest payload."""
+    """TW stock direct ingest payload (FinLab format)."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -170,11 +174,7 @@ class TWStockDirectIngestPayload(BaseModel):
             "high",
             "low",
             "close",
-            "up_volume",
-            "down_volume",
             "total_volume",
-            "up_ticks",
-            "down_ticks",
             "total_ticks",
         )
 

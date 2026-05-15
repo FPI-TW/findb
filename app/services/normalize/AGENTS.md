@@ -15,7 +15,8 @@ Market-specific normalization layer that maps source payloads to canonical recor
 | Crypto mapping | `crypto.py` | Legacy CryptoNormalizer + CryptoBloombergNormalizer (bloomberg direct, dataset: `crypto_bloomberg_eod`) |
 | Equity and index mapping | `equity.py` + `usstock.py` | US/global stock + regional index handling |
 | FX mapping | `fx.py` | FXBloombergNormalizer (bloomberg direct, dataset: `fx_bloomberg_eod`) |
-| Futures mapping | `futures.py` | Contract + continuous futures logic; WTXBloombergNormalizer (dataset: `wtx_bloomberg_eod`) |
+| Futures mapping | `futures.py` | Contract + continuous futures logic; WTXBloombergNormalizer (dataset: `wtx_eod`, source=`bloomberg`) |
+| FinLab direct | `finlab.py` | TW stocks/ETFs + WTX 近月 from FinLab (datasets: `tw_equity_eod`, `tw_etf_eod`, `wtx_eod`) |
 | Macro mapping | `macro.py` | Series + observation normalization; MacroBloombergNormalizer (dataset: `macro_bloomberg_observation`) |
 | DQ checks | `../dq/validators.py` | Error vs warning behavior |
 

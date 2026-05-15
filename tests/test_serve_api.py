@@ -186,8 +186,8 @@ async def test_get_instrument_eod(client: AsyncClient, test_session):
 
 
 @pytest.mark.asyncio
-async def test_eod_endpoints_return_multicharts_fields(client: AsyncClient, test_session):
-    """Ensure EOD responses include TW MultiCharts-specific fields when present."""
+async def test_eod_endpoints_return_total_ticks(client: AsyncClient, test_session):
+    """Ensure EOD responses include total_ticks when present."""
     instrument_id = uuid7()
     instrument = Instrument(
         instrument_id=instrument_id,
@@ -208,10 +208,6 @@ async def test_eod_endpoints_return_multicharts_fields(client: AsyncClient, test
         low=Decimal("20.45"),
         close=Decimal("21.10"),
         volume=528,
-        up_volume=81,
-        down_volume=36,
-        up_ticks=37,
-        down_ticks=19,
         total_ticks=221,
         asof_ts=utc_now(),
         created_at=utc_now(),
@@ -226,10 +222,6 @@ async def test_eod_endpoints_return_multicharts_fields(client: AsyncClient, test
     assert list_response.status_code == 200
     list_payload = list_response.json()["data"]
     assert len(list_payload) == 1
-    assert list_payload[0]["up_volume"] == 81
-    assert list_payload[0]["down_volume"] == 36
-    assert list_payload[0]["up_ticks"] == 37
-    assert list_payload[0]["down_ticks"] == 19
     assert list_payload[0]["total_ticks"] == 221
 
     detail_response = await client.get(
@@ -238,10 +230,6 @@ async def test_eod_endpoints_return_multicharts_fields(client: AsyncClient, test
     assert detail_response.status_code == 200
     detail_payload = detail_response.json()["data"]
     assert len(detail_payload) == 1
-    assert detail_payload[0]["up_volume"] == 81
-    assert detail_payload[0]["down_volume"] == 36
-    assert detail_payload[0]["up_ticks"] == 37
-    assert detail_payload[0]["down_ticks"] == 19
     assert detail_payload[0]["total_ticks"] == 221
 
 

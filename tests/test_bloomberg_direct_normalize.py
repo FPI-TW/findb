@@ -5,7 +5,9 @@ Tests for Bloomberg direct format normalizers: FX, CRYPTO, WTX, MACRO.
 from decimal import Decimal
 
 from app.services.dq.validators import DQValidator
+from app.services.ingestion import _select_normalizer_for_payload
 from app.services.normalize.crypto import CryptoBloombergNormalizer
+from app.services.normalize.finlab import WTXFinlabNormalizer
 from app.services.normalize.futures import WTXBloombergNormalizer
 from app.services.normalize.fx import FXBloombergNormalizer
 from app.services.normalize.macro import MacroBloombergNormalizer
@@ -269,9 +271,27 @@ class TestWTXBloombergNormalizer:
         assert len(records) == 0
 
     def test_dataset_key(self):
-        assert WTXBloombergNormalizer.dataset_key == "wtx_bloomberg_eod"
+        assert WTXBloombergNormalizer.dataset_key == "wtx_eod"
         assert WTXBloombergNormalizer.market == "WTX"
         assert WTXBloombergNormalizer.asset_class == "future"
+
+    def test_wtx_payload_routing_normalizes_bloomberg_source_labels(self):
+        for source in ("bloomberg", "Bloomberg API", "Bloomberg Direct"):
+            normalizer_cls = _select_normalizer_for_payload(
+                "wtx_eod",
+                {"metadata": {"source": source}},
+            )
+            assert normalizer_cls is WTXBloombergNormalizer
+
+    def test_wtx_payload_routing_keeps_finlab_and_unknown_default(self):
+        assert (
+            _select_normalizer_for_payload("wtx_eod", {"metadata": {"source": "finlab"}})
+            is WTXFinlabNormalizer
+        )
+        assert (
+            _select_normalizer_for_payload("wtx_eod", {"metadata": {"source": "unknown"}})
+            is WTXFinlabNormalizer
+        )
 
 
 # ---------------------------------------------------------------------------
