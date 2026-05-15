@@ -144,14 +144,13 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
 
-    for new_key in (d["dataset_key"] for d in _NEW_DATASETS):
-        bind.execute(
-            sa.text("DELETE FROM dataset_registry WHERE dataset_key = :k"),
-            {"k": new_key},
-        )
-
     for old_key, new_key in reversed(_DATASET_RENAMES):
         _rename_dataset_key(new_key, old_key)
+
+    bind.execute(
+        sa.text("DELETE FROM dataset_registry WHERE dataset_key = :k"),
+        {"k": "tw_etf_eod"},
+    )
 
     op.add_column("market_data_eod", sa.Column("up_volume", sa.BigInteger(), nullable=True))
     op.add_column("market_data_eod", sa.Column("down_volume", sa.BigInteger(), nullable=True))

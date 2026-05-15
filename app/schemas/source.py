@@ -49,6 +49,13 @@ def _normalize_optional_symbol(value: Optional[str]) -> Optional[str]:
     return value
 
 
+_TWSTOCK_ASSET_CLASS_ALIASES = {
+    "stock": "equity",
+    "equity": "equity",
+    "etf": "etf",
+}
+
+
 class TWStockDirectMetadata(BaseModel):
     """Metadata for TW stock direct ingest payloads (FinLab format)."""
 
@@ -68,6 +75,19 @@ class TWStockDirectMetadata(BaseModel):
     @classmethod
     def normalize_symbol(cls, value: Optional[str]) -> Optional[str]:
         return _normalize_optional_symbol(value)
+
+    @field_validator("asset_class", mode="before")
+    @classmethod
+    def normalize_asset_class(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        asset_class = str(value).strip().lower()
+        if not asset_class:
+            return None
+        if asset_class not in _TWSTOCK_ASSET_CLASS_ALIASES:
+            allowed = ", ".join(sorted(_TWSTOCK_ASSET_CLASS_ALIASES))
+            raise ValueError(f"asset_class must be one of: {allowed}")
+        return _TWSTOCK_ASSET_CLASS_ALIASES[asset_class]
 
 
 class TWStockDirectRow(BaseModel):

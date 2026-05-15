@@ -6,14 +6,59 @@ from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
+from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.api.v1.source import _resolve_twstock_dataset_key
 from app.config import get_settings
 from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
+from app.schemas.source import TWStockDirectIngestPayload
 from app.utils import uuid7
 
 settings = get_settings()
+
+
+def _twstock_direct_payload(asset_class: str | None = None) -> dict:
+    metadata = {"symbol": "6160", "source": "finlab"}
+    if asset_class is not None:
+        metadata["asset_class"] = asset_class
+    return {
+        "metadata": metadata,
+        "data": [
+            {
+                "date": "2026-05-15",
+                "open": 20.45,
+                "high": 21.50,
+                "low": 20.45,
+                "close": 21.10,
+                "total_volume": 528,
+                "total_ticks": 221,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("asset_class", "expected_dataset"),
+    [
+        ("STOCK", "tw_equity_eod"),
+        ("equity", "tw_equity_eod"),
+        ("ETF", "tw_etf_eod"),
+    ],
+)
+def test_twstock_direct_asset_class_aliases_route_to_expected_dataset(
+    asset_class: str,
+    expected_dataset: str,
+):
+    payload = TWStockDirectIngestPayload.model_validate(_twstock_direct_payload(asset_class))
+    assert payload.metadata.asset_class in {"equity", "etf"}
+    assert _resolve_twstock_dataset_key(payload) == expected_dataset
+
+
+def test_twstock_direct_asset_class_rejects_unknown_value():
+    with pytest.raises(ValidationError):
+        TWStockDirectIngestPayload.model_validate(_twstock_direct_payload("bond"))
 
 
 class TestSourceAPI:

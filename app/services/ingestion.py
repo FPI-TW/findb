@@ -105,6 +105,18 @@ _WTX_SOURCE_NORMALIZERS: dict[str, NormalizerFactory] = {
 }
 
 
+def _normalize_provider_key(value: Any) -> str | None:
+    """Normalize provider labels used for payload-aware normalizer routing."""
+    if not isinstance(value, str):
+        return None
+    source = value.strip().lower()
+    if not source:
+        return None
+    if source.startswith("bloomberg"):
+        return "bloomberg"
+    return source
+
+
 def _select_normalizer_for_payload(
     dataset_key: str,
     payload: dict,
@@ -112,8 +124,9 @@ def _select_normalizer_for_payload(
     """Resolve normalizer by dataset_key, falling back to payload-aware routing."""
     if dataset_key == "wtx_eod":
         source = _get_nested_value(payload, "metadata.source")
-        if isinstance(source, str):
-            override = _WTX_SOURCE_NORMALIZERS.get(source.strip().lower())
+        provider_key = _normalize_provider_key(source)
+        if provider_key is not None:
+            override = _WTX_SOURCE_NORMALIZERS.get(provider_key)
             if override is not None:
                 return override
     return NORMALIZER_MAP.get(dataset_key)

@@ -20,7 +20,7 @@ def _resolve_asset_class(value: Optional[str], default: str) -> str:
     key = str(value).strip().lower()
     if not key:
         return default
-    return _ASSET_CLASS_ALIAS.get(key, key)
+    return _ASSET_CLASS_ALIAS.get(key, default)
 
 
 class TWStockFinlabNormalizer(BaseNormalizer):
