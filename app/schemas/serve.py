@@ -23,6 +23,7 @@ class InstrumentResponse(BaseModel):
     status: str
     listed_date: Optional[date] = None
     delisted_date: Optional[date] = None
+    first_trade_date: Optional[date] = None
     latest_trade_date: Optional[date] = None
     latest_price: Optional[Decimal] = None
 

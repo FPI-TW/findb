@@ -59,6 +59,19 @@ async def list_instruments(
     db: AsyncSession = Depends(get_db),
 ):
     """列出商品，支援選用篩選條件。"""
+    first_trade_date_eod = (
+        select(func.min(MarketDataEOD.trade_date))
+        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    first_trade_date_futures = (
+        select(func.min(FuturesContinuousEOD.trade_date))
+        .where(FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    first_trade_date = func.least(first_trade_date_eod, first_trade_date_futures)
     latest_trade_date = (
         select(func.max(MarketDataEOD.trade_date))
         .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
@@ -77,6 +90,7 @@ async def list_instruments(
     # Build query
     query = select(
         Instrument,
+        first_trade_date.label("first_trade_date"),
         latest_trade_date.label("latest_trade_date"),
         latest_price.label("latest_price"),
     )
@@ -126,10 +140,11 @@ async def list_instruments(
                 status=inst.status,
                 listed_date=inst.listed_date,
                 delisted_date=inst.delisted_date,
+                first_trade_date=first_trade_date,
                 latest_trade_date=latest_trade_date,
                 latest_price=latest_price,
             )
-            for inst, latest_trade_date, latest_price in rows
+            for inst, first_trade_date, latest_trade_date, latest_price in rows
         ],
         pagination=PaginationInfo(
             page=page,
@@ -147,6 +162,19 @@ async def get_instrument(
     db: AsyncSession = Depends(get_db),
 ):
     """依 ID 取得單一商品。"""
+    first_trade_date_eod = (
+        select(func.min(MarketDataEOD.trade_date))
+        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    first_trade_date_futures = (
+        select(func.min(FuturesContinuousEOD.trade_date))
+        .where(FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    first_trade_date = func.least(first_trade_date_eod, first_trade_date_futures)
     latest_trade_date = (
         select(func.max(MarketDataEOD.trade_date))
         .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
@@ -164,6 +192,7 @@ async def get_instrument(
     result = await db.execute(
         select(
             Instrument,
+            first_trade_date.label("first_trade_date"),
             latest_trade_date.label("latest_trade_date"),
             latest_price.label("latest_price"),
         ).where(Instrument.instrument_id == instrument_id)
@@ -176,7 +205,7 @@ async def get_instrument(
             detail=f"Instrument {instrument_id} not found",
         )
 
-    instrument, latest_trade_date_value, latest_price_value = row
+    instrument, first_trade_date_value, latest_trade_date_value, latest_price_value = row
     return InstrumentResponse(
         instrument_id=instrument.instrument_id,
         asset_class=instrument.asset_class,
@@ -188,6 +217,7 @@ async def get_instrument(
         status=instrument.status,
         listed_date=instrument.listed_date,
         delisted_date=instrument.delisted_date,
+        first_trade_date=first_trade_date_value,
         latest_trade_date=latest_trade_date_value,
         latest_price=latest_price_value,
     )
