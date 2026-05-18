@@ -81,6 +81,7 @@ def test_build_cache_payload_sorts_and_extracts_metadata():
         "short_name": "BTC",
         "currency": "USD",
         "status": "active",
+        "first_trade_date": None,
         "latest_trade_date": "2026-04-09",
         "latest_price": "95709.01000000",
     }
