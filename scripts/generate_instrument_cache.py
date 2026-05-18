@@ -49,6 +49,7 @@ INSTRUMENT_FIELDS = (
     "short_name",
     "currency",
     "status",
+    "first_trade_date",
     "latest_trade_date",
     "latest_price",
 )

@@ -162,6 +162,7 @@ class InstrumentCacheItem(BaseModel):
     short_name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
+    first_trade_date: Optional[date] = None
     latest_trade_date: Optional[date] = None
     latest_price: Optional[Decimal] = None
 
@@ -192,6 +193,7 @@ class InstrumentCacheItemPatchRequest(BaseModel):
     short_name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
+    first_trade_date: Optional[date] = None
     latest_trade_date: Optional[date] = None
     latest_price: Optional[Decimal] = None
 
