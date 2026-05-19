@@ -39,12 +39,13 @@ from app.schemas.admin import (
 from app.schemas.common import PaginationInfo
 from app.services.admin import (
     AlreadyResolvedError,
+    InvalidCorrectionError,
     NoChangesError,
     RecordNotFoundError,
-    _mask_key,
     list_corrections,
     list_dq_issues,
     patch_eod_record,
+    present_correction_actor,
     resolve_dq_issue,
 )
 from app.services.ingestion import (
@@ -161,6 +162,8 @@ async def patch_eod(
     except RecordNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except NoChangesError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except InvalidCorrectionError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     return PatchEODResponse(
@@ -298,7 +301,7 @@ async def list_corrections_endpoint(
                 record_id=c.record_id,
                 instrument_id=c.instrument_id,
                 trade_date=c.trade_date,
-                corrected_by=_mask_key(c.corrected_by),
+                corrected_by=present_correction_actor(c.corrected_by),
                 correction_reason=c.correction_reason,
                 before_snapshot=c.before_snapshot,
                 after_snapshot=c.after_snapshot,

@@ -2,6 +2,7 @@
 Admin service for canonical data corrections.
 """
 
+import hashlib
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
@@ -29,6 +30,10 @@ class AlreadyResolvedError(ValueError):
     """Raised when attempting to resolve an already-resolved DQ issue."""
 
 
+class InvalidCorrectionError(ValueError):
+    """Raised when a correction would violate blocking data-quality rules."""
+
+
 _CORRECTABLE_EOD_FIELDS = {
     "open",
     "high",
@@ -45,6 +50,19 @@ def _mask_key(key: str) -> str:
     if len(key) <= 4:
         return "****"
     return key[:4] + "****"
+
+
+def build_correction_actor(api_key: str) -> str:
+    """Persist a non-reversible identifier instead of the raw admin API key."""
+    digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+    return f"key_fp:{digest}"
+
+
+def present_correction_actor(value: str) -> str:
+    """Show fingerprints as-is while masking legacy raw API keys."""
+    if value.startswith("key_fp:"):
+        return value
+    return _mask_key(value)
 
 
 def _normalize_decimal(value: Decimal) -> str:
@@ -82,6 +100,28 @@ def _values_equal(a: Any, b: Any) -> bool:
         except Exception:
             pass
     return a == b
+
+
+def _validate_blocking_dq_rules(eod: MarketDataEOD) -> None:
+    """Apply blocking EOD DQ rules after patch values are merged."""
+    blocking_messages: list[str] = []
+    if eod.high is not None and eod.open is not None and eod.close is not None:
+        max_oc = max(eod.open, eod.close)
+        if eod.high < max_oc:
+            blocking_messages.append(f"High ({eod.high}) is less than max(open, close) ({max_oc})")
+
+    if eod.low is not None and eod.open is not None and eod.close is not None:
+        min_oc = min(eod.open, eod.close)
+        if eod.low > min_oc:
+            blocking_messages.append(f"Low ({eod.low}) is greater than min(open, close) ({min_oc})")
+
+    if eod.volume is not None and eod.volume < 0:
+        blocking_messages.append(f"Volume ({eod.volume}) is negative")
+
+    if not blocking_messages:
+        return
+
+    raise InvalidCorrectionError("; ".join(blocking_messages))
 
 
 async def patch_eod_record(
@@ -126,6 +166,8 @@ async def patch_eod_record(
             "No changes detected — submitted values are identical to current values"
         )
 
+    _validate_blocking_dq_rules(eod)
+
     after = _snapshot(eod, changed_fields)
 
     correction = CanonicalCorrection(
@@ -134,7 +176,7 @@ async def patch_eod_record(
         record_id=eod.id,
         instrument_id=instrument_id,
         trade_date=trade_date,
-        corrected_by=api_key,
+        corrected_by=build_correction_actor(api_key),
         correction_reason=patch.correction_reason,
         before_snapshot=before,
         after_snapshot=after,
@@ -184,7 +226,7 @@ async def resolve_dq_issue(
         record_id=issue_id,
         instrument_id=issue.instrument_id,
         trade_date=None,
-        corrected_by=api_key,
+        corrected_by=build_correction_actor(api_key),
         correction_reason=request.correction_reason,
         before_snapshot=before,
         after_snapshot=after,

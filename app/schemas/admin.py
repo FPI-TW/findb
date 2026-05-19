@@ -20,13 +20,13 @@ class PatchEODRequest(BaseModel):
     """
 
     correction_reason: str = Field(..., min_length=1, max_length=2000)
-    open: Optional[Decimal] = None
-    high: Optional[Decimal] = None
-    low: Optional[Decimal] = None
-    close: Optional[Decimal] = None
-    volume: Optional[int] = None
-    total_ticks: Optional[int] = None
-    turnover: Optional[Decimal] = None
+    open: Optional[Decimal] = Field(default=None, ge=0)
+    high: Optional[Decimal] = Field(default=None, ge=0)
+    low: Optional[Decimal] = Field(default=None, ge=0)
+    close: Optional[Decimal] = Field(default=None, ge=0)
+    volume: Optional[int] = Field(default=None, ge=0)
+    total_ticks: Optional[int] = Field(default=None, ge=0)
+    turnover: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class PatchEODResponse(BaseModel):

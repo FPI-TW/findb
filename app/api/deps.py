@@ -1,5 +1,6 @@
 """API dependencies including authentication."""
 
+from hmac import compare_digest
 from threading import Lock
 from time import time
 
@@ -101,7 +102,7 @@ async def verify_source_api_key(
             detail="Missing API key",
         )
 
-    if api_key != valid_key:
+    if not compare_digest(api_key, valid_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",
@@ -129,7 +130,7 @@ async def verify_admin_api_key(api_key: str = Security(api_key_header)) -> str:
             detail="Missing API key",
         )
 
-    if api_key != valid_key:
+    if not compare_digest(api_key, valid_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",
@@ -158,7 +159,7 @@ async def verify_serve_api_key(api_key: str = Security(api_key_header)) -> str |
             detail="Missing API key",
         )
 
-    if api_key not in valid_keys:
+    if not any(compare_digest(api_key, valid_key) for valid_key in valid_keys):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",

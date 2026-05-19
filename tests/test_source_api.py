@@ -13,7 +13,7 @@ from app.api.v1.source import _resolve_twstock_dataset_key
 from app.config import get_settings
 from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
-from app.schemas.source import TWStockDirectIngestPayload
+from app.schemas.source import DirectIngestPayload, IngestRequest, TWStockDirectIngestPayload
 from app.utils import uuid7
 
 settings = get_settings()
@@ -59,6 +59,42 @@ def test_twstock_direct_asset_class_aliases_route_to_expected_dataset(
 def test_twstock_direct_asset_class_rejects_unknown_value():
     with pytest.raises(ValidationError):
         TWStockDirectIngestPayload.model_validate(_twstock_direct_payload("bond"))
+
+
+def test_ingest_request_rejects_payload_over_byte_limit():
+    original_limit = settings.SOURCE_MAX_PAYLOAD_BYTES
+    settings.SOURCE_MAX_PAYLOAD_BYTES = 32
+
+    try:
+        with pytest.raises(ValidationError):
+            IngestRequest.model_validate(
+                {
+                    "dataset_key": "crypto_eod",
+                    "source": "bloomberg",
+                    "request_key": "oversized",
+                    "idempotency_key": "oversized",
+                    "payload": {"data": [{"symbol": "BTC", "padding": "x" * 64}]},
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+    finally:
+        settings.SOURCE_MAX_PAYLOAD_BYTES = original_limit
+
+
+def test_direct_ingest_payload_rejects_too_many_rows():
+    original_limit = settings.SOURCE_MAX_DATA_ITEMS
+    settings.SOURCE_MAX_DATA_ITEMS = 1
+
+    try:
+        with pytest.raises(ValidationError):
+            DirectIngestPayload.model_validate(
+                {
+                    "metadata": {"source": "bloomberg"},
+                    "data": [{"date": "2026-01-01"}, {"date": "2026-01-02"}],
+                }
+            )
+    finally:
+        settings.SOURCE_MAX_DATA_ITEMS = original_limit
 
 
 class TestSourceAPI:
@@ -135,6 +171,33 @@ class TestSourceAPI:
         finally:
             settings.RATE_LIMIT_REQUESTS = original_limit
             settings.RATE_LIMIT_WINDOW = original_window
+
+    @pytest.mark.asyncio
+    async def test_ingest_rejects_oversized_request_before_processing(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        original_limit = settings.SOURCE_MAX_PAYLOAD_BYTES
+        settings.SOURCE_MAX_PAYLOAD_BYTES = 128
+
+        try:
+            response = await client.post(
+                "/api/v1/source/ingest/crypto",
+                headers=source_headers,
+                json={
+                    "dataset_key": "crypto_eod",
+                    "source": "bloomberg",
+                    "request_key": "too_large",
+                    "idempotency_key": "too_large",
+                    "payload": {"data": [{"symbol": "BTC", "padding": "x" * 512}]},
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            assert response.status_code == 413
+            assert "128 bytes" in response.json()["detail"]
+        finally:
+            settings.SOURCE_MAX_PAYLOAD_BYTES = original_limit
 
     @pytest.mark.asyncio
     async def test_ingest_unknown_dataset_returns_400(
@@ -404,6 +467,56 @@ class TestSourceAPI:
         assert "raw payload" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
+    async def test_ingest_internal_error_hides_exception_detail(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        async def fake_ingest(*args, **kwargs):
+            raise RuntimeError("database password leaked")
+
+        monkeypatch.setattr("app.api.v1.source.IngestionService.ingest", fake_ingest)
+
+        response = await client.post(
+            "/api/v1/source/ingest/crypto",
+            headers=source_headers,
+            json={
+                "dataset_key": "crypto_eod",
+                "source": "bloomberg",
+                "request_key": "hidden_error",
+                "idempotency_key": "hidden_error",
+                "payload": {"data": []},
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Ingestion failed due to internal server error"
+        assert "password leaked" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_rerun_internal_error_hides_exception_detail(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        async def fake_rerun(*args, **kwargs):
+            raise RuntimeError("raw payload secret")
+
+        monkeypatch.setattr("app.api.v1.source.IngestionService.rerun_from_raw", fake_rerun)
+
+        response = await client.post(
+            f"/api/v1/source/runs/{uuid7()}/rerun",
+            headers=source_headers,
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Rerun failed due to internal server error"
+        assert "raw payload secret" not in response.text
+
+    @pytest.mark.asyncio
     async def test_ingest_invalid_payload_creates_failed_run(
         self,
         client: AsyncClient,
@@ -447,6 +560,50 @@ class TestSourceAPI:
         assert run.source == "bloomberg"
         assert run.raw_records == 0
         assert "required field" in (run.error_message or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_ingest_rejects_payload_with_too_many_rows(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        test_session,
+    ):
+        original_limit = settings.SOURCE_MAX_DATA_ITEMS
+        settings.SOURCE_MAX_DATA_ITEMS = 1
+
+        dataset = DatasetRegistry(
+            dataset_key="crypto_eod",
+            name="Crypto EOD",
+            asset_class="crypto",
+            market="CRYPTO",
+            frequency="daily",
+            is_active=True,
+        )
+        test_session.add(dataset)
+        await test_session.commit()
+
+        try:
+            response = await client.post(
+                "/api/v1/source/ingest/crypto",
+                headers=source_headers,
+                json={
+                    "dataset_key": "crypto_eod",
+                    "source": "bloomberg",
+                    "request_key": "too_many_rows",
+                    "idempotency_key": "too_many_rows",
+                    "payload": {
+                        "data": [
+                            {"date": "2026-01-16"},
+                            {"date": "2026-01-17"},
+                        ]
+                    },
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            assert response.status_code == 422
+            assert "maximum size of 1 items" in response.text
+        finally:
+            settings.SOURCE_MAX_DATA_ITEMS = original_limit
 
     @pytest.mark.asyncio
     async def test_ingest_market_mismatch_returns_400(

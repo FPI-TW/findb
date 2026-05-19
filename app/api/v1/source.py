@@ -6,6 +6,7 @@ Source API 端點。
 import copy
 import hashlib
 import json
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -39,6 +40,7 @@ from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DIRECT_DATASET_DEFAULTS = {
     "us_stock_eod": {
@@ -369,10 +371,15 @@ async def _ingest_by_market(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
-    except Exception as e:
+    except Exception:
+        logger.exception(
+            "Unexpected ingestion error (dataset_key=%s, expected_market=%s)",
+            request.dataset_key,
+            expected_market,
+        )
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ingestion failed: {str(e)}",
+            detail="Ingestion failed due to internal server error",
         )
 
 
@@ -781,10 +788,11 @@ async def rerun_from_raw(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Unexpected rerun error (run_id=%s)", run_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Rerun failed: {str(e)}",
+            detail="Rerun failed due to internal server error",
         )
 
 
