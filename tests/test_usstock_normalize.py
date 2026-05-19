@@ -168,6 +168,69 @@ class TestUSStockNormalizer:
         for record in records:
             assert record.source == "bloomberg"
 
+    def test_map_fields_drops_non_us_ticker_suffix(self, sample_usstock_data):
+        """Tickers carrying a non-US Bloomberg suffix must not be created as US/equity."""
+        db_mock = MagicMock()
+        normalizer = USStockNormalizer(db_mock)
+
+        records = normalizer.map_fields(sample_usstock_data)
+        tickers = {record.identifier_value for record in records}
+
+        assert "6125 TT Equity" not in tickers
+        # AAPL still passes through
+        assert "AAPL US Equity" in tickers
+
+    def test_map_fields_drops_bare_numeric_symbol(self):
+        """A bare 4-/6-digit numeric symbol must not be admitted as US/equity."""
+        payload = {
+            "metadata": {"source": "Bloomberg API"},
+            "data": [
+                {
+                    "symbol": "4938",
+                    "ticker": "4938 Equity",
+                    "name": "PEGATRON CORP",
+                    "price": {"last": 76.5, "open": 76.0, "high": 77.0, "low": 75.5, "volume": 1},
+                    "timestamp": {"query_time": "2026-05-19T08:00:00", "last_update": None},
+                },
+                {
+                    "symbol": "688322",
+                    "ticker": "688322 Equity",
+                    "name": "Some CN STAR co",
+                    "price": {"last": 99.0, "open": 98.0, "high": 100.0, "low": 97.0, "volume": 1},
+                    "timestamp": {"query_time": "2026-05-19T08:00:00", "last_update": None},
+                },
+                {
+                    "symbol": "AAPL",
+                    "ticker": "AAPL US Equity",
+                    "name": "APPLE INC",
+                    "price": {
+                        "last": 200.0,
+                        "open": 199.0,
+                        "high": 201.0,
+                        "low": 198.0,
+                        "volume": 1,
+                    },
+                    "timestamp": {"query_time": "2026-05-19T08:00:00", "last_update": None},
+                },
+            ],
+        }
+        db_mock = MagicMock()
+        normalizer = USStockNormalizer(db_mock)
+
+        records = normalizer.map_fields(payload)
+        symbols = {record.symbol for record in records}
+
+        assert symbols == {"AAPL"}
+
+    def test_is_index_recognises_bare_symbol(self):
+        """Bare base symbols (e.g. plain 'SPX') must still classify as index."""
+        db_mock = MagicMock()
+        normalizer = USStockNormalizer(db_mock)
+
+        assert normalizer._is_index(None, "SPX") is True
+        assert normalizer._is_index("", "VIX") is True
+        assert normalizer._is_index(None, "AAPL") is False
+
 
 class TestUSIndexNormalizer:
     """Tests for USIndexNormalizer."""
