@@ -132,11 +132,23 @@ class USStockNormalizer(BaseNormalizer):
         "BM7T Index",
     }
 
-    def _is_index(self, ticker: str | None) -> bool:
-        """Check if ticker represents an index."""
-        if not ticker:
+    def _is_index(self, ticker: str | None, symbol: str | None = None) -> bool:
+        """Check if ticker or bare symbol represents an index."""
+        if ticker:
+            if ticker in self.INDEX_TICKERS or ticker.upper().endswith(" INDEX"):
+                return True
+        if symbol:
+            bare = symbol.strip().upper()
+            if bare and any(bare == t.split()[0].upper() for t in self.INDEX_TICKERS):
+                return True
+        return False
+
+    def _looks_like_non_us_numeric_symbol(self, symbol: str | None) -> bool:
+        """Numeric symbols (4-digit TW/HK, 6-digit CN) must not be routed into US."""
+        if not symbol:
             return False
-        return ticker in self.INDEX_TICKERS or ticker.upper().endswith(" INDEX")
+        stripped = symbol.strip()
+        return stripped.isdigit() and 3 <= len(stripped) <= 6
 
     def _extract_symbol_from_ticker(self, ticker: str | None) -> str:
         """Extract the leading symbol from a Bloomberg ticker."""
@@ -224,6 +236,22 @@ class USStockNormalizer(BaseNormalizer):
             if not symbol and ticker:
                 symbol = ticker.split()[0].upper()
 
+            # Guards are scoped to strict-US normalizers (USStockNormalizer and its
+            # US-only subclass USIndexNormalizer). Subclasses that span multiple markets
+            # (GlobalStockNormalizer, HKChina*, RegionalIndexNormalizer) use
+            # market="GLOBAL" and resolve markets themselves.
+            if self.market == "US":
+                # `_extract_market_from_ticker` returns self.market as a fallback,
+                # so we only skip when the ticker carries a recognised non-US suffix.
+                ticker_market = self._extract_market_from_ticker(ticker) if ticker else self.market
+                if ticker_market != self.market:
+                    continue
+
+                # TW (4-digit) / HK (4-digit) / CN (6-digit) numeric codes must not be
+                # created under US/equity. Real US tickers are alphabetic.
+                if self._looks_like_non_us_numeric_symbol(symbol):
+                    continue
+
             # Get price data — support both nested {"price": {...}} and flat fields
             price = item.get("price") or {}
             open_price = self._parse_decimal(price.get("open") or item.get("open"))
@@ -244,7 +272,7 @@ class USStockNormalizer(BaseNormalizer):
             record = MappedRecord(
                 symbol=symbol.upper() if symbol else "",
                 trade_date=trade_date,
-                asset_class="index" if self._is_index(ticker) else "equity",
+                asset_class="index" if self._is_index(ticker, symbol) else "equity",
                 name=name,
                 open=open_price,
                 high=high_price,
@@ -280,7 +308,11 @@ class USIndexNormalizer(USStockNormalizer):
         all_records = super().map_fields(raw_data)
 
         # Filter to only include index records
-        return [record for record in all_records if self._is_index(record.identifier_value)]
+        return [
+            record
+            for record in all_records
+            if self._is_index(record.identifier_value, record.symbol)
+        ]
 
 
 class RegionalIndexNormalizer(USIndexNormalizer):
@@ -412,7 +444,7 @@ class HKChinaMixedNormalizer(USStockNormalizer):
                 symbol=str(symbol).upper(),
                 trade_date=trade_date,
                 market=market,
-                asset_class="index" if self._is_index(ticker) else "equity",
+                asset_class="index" if self._is_index(ticker, symbol) else "equity",
                 name=name,
                 open=open_price,
                 high=high_price,
