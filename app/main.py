@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import admin, serve, source
@@ -55,6 +55,31 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.middleware("http")
+async def enforce_source_payload_size(request, call_next):
+    """Short-circuit oversized Source API requests before body parsing."""
+    source_prefix = f"{settings.API_V1_PREFIX}/source"
+    if request.url.path.startswith(source_prefix):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > max(1, int(settings.SOURCE_MAX_PAYLOAD_BYTES)):
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                "Payload exceeds maximum size of "
+                                f"{settings.SOURCE_MAX_PAYLOAD_BYTES} bytes"
+                            )
+                        },
+                    )
+            except ValueError:
+                pass
+
+    return await call_next(request)
+
 
 # Include routers
 app.include_router(

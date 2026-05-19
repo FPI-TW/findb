@@ -19,6 +19,7 @@ from app.models.canonical import Instrument, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.registry import DQIssue
 from app.services import instrument_cache as instrument_cache_service
+from app.services.admin import build_correction_actor
 from app.utils import utc_now, uuid7
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -95,6 +96,9 @@ def _sample_instrument_cache() -> dict:
                 "short_name": "Apple",
                 "currency": "USD",
                 "status": "active",
+                "first_trade_date": "2024-01-03",
+                "latest_trade_date": "2025-01-02",
+                "latest_price": "153.00",
             },
             {
                 "instrument_id": "instrument-hk-0700",
@@ -105,6 +109,9 @@ def _sample_instrument_cache() -> dict:
                 "short_name": "Tencent",
                 "currency": "HKD",
                 "status": "active",
+                "first_trade_date": "2023-06-01",
+                "latest_trade_date": "2025-01-02",
+                "latest_price": "390.50",
             },
         ],
     }
@@ -255,6 +262,7 @@ class TestInstrumentCacheAdmin:
         assert stored["total"] == 2
         assert stored["markets"] == ["HK", "US"]
         assert stored["data"][0]["instrument_id"] == "instrument-hk-0700"
+        assert stored["data"][0]["first_trade_date"] == "2023-06-01"
         assert stored["data"][0]["short_name"] == "Tencent"
 
     @pytest.mark.asyncio
@@ -281,6 +289,7 @@ class TestInstrumentCacheAdmin:
         stored_item = next(
             item for item in stored["data"] if item["instrument_id"] == "instrument-us-aapl"
         )
+        assert stored_item["first_trade_date"] == "2024-01-03"
         assert stored_item["name"] == "Apple Inc."
         assert stored_item["status"] == "inactive"
         assert stored_item["short_name"] == "Apple"
@@ -419,6 +428,25 @@ class TestPatchEOD:
         assert "No changes" in response.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_patch_eod_rejects_invalid_ohlc_relationship(
+        self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
+    ):
+        instrument = await _create_instrument(test_session)
+        eod = await _create_eod(test_session, instrument.instrument_id)
+        await test_session.commit()
+
+        response = await client.patch(
+            f"/api/v1/admin/eod/{instrument.instrument_id}/2025-01-02",
+            headers=admin_headers,
+            json={"correction_reason": "Invalid high", "high": "140.00"},
+        )
+        assert response.status_code == 400
+        assert "less than max" in response.json()["detail"]
+
+        await test_session.refresh(eod)
+        assert eod.high == Decimal("155.00")
+
+    @pytest.mark.asyncio
     async def test_patch_eod_creates_correction_audit_row(
         self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
     ):
@@ -518,6 +546,21 @@ class TestPatchEOD:
         correction = result.scalar_one()
         assert correction.before_snapshot["total_ticks"] == 221
         assert correction.after_snapshot["total_ticks"] is None
+
+    @pytest.mark.asyncio
+    async def test_patch_eod_rejects_negative_volume_at_schema_level(
+        self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
+    ):
+        instrument = await _create_instrument(test_session)
+        await _create_eod(test_session, instrument.instrument_id)
+        await test_session.commit()
+
+        response = await client.patch(
+            f"/api/v1/admin/eod/{instrument.instrument_id}/2025-01-02",
+            headers=admin_headers,
+            json={"correction_reason": "Invalid volume", "volume": -1},
+        )
+        assert response.status_code == 422
 
 
 # ── Resolve DQ Issue Tests ────────────────────────────────────────────────────
@@ -762,7 +805,7 @@ class TestListCorrections:
         assert data["pagination"]["total_pages"] == 2
 
     @pytest.mark.asyncio
-    async def test_list_corrections_corrected_by_is_masked(
+    async def test_list_corrections_corrected_by_uses_fingerprint(
         self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
     ):
         instrument = await _create_instrument(test_session)
@@ -778,7 +821,7 @@ class TestListCorrections:
         response = await client.get("/api/v1/admin/corrections", headers=admin_headers)
         assert response.status_code == 200
         item = response.json()["data"][0]
-        assert item["corrected_by"] == "test****"
+        assert item["corrected_by"] == build_correction_actor("test-admin-key")
         assert "admin-key" not in item["corrected_by"]
 
     @pytest.mark.asyncio

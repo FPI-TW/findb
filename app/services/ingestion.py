@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
 from app.models.registry import DatasetRegistry, IngestionRun
-from app.schemas.source import IngestRequest
+from app.schemas.source import IngestRequest, ensure_data_items_count_within_limit
 from app.services.normalize import (
     BaseNormalizer,
     CNEquityNormalizer,
@@ -340,6 +340,10 @@ class IngestionService:
             return []
         if not all(isinstance(item, dict) for item in data_items):
             raise PayloadValidationError("Payload data items must be objects")
+        try:
+            ensure_data_items_count_within_limit(len(data_items))
+        except ValueError as exc:
+            raise PayloadValidationError(str(exc)) from exc
 
         field_mapping = config.get("field_mapping", {}) or {}
         if "action_type" in field_mapping or dataset.dataset_key.endswith("corporate_actions"):

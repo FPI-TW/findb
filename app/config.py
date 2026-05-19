@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # Source API Key
     SOURCE_API_KEY: str = ""
     SOURCE_TRUST_PROXY_HEADERS: bool = False
+    SOURCE_MAX_PAYLOAD_BYTES: int = 1_000_000
+    SOURCE_MAX_DATA_ITEMS: int = 5_000
 
     # Serve API Keys (comma-separated, optional)
     SERVE_API_KEYS: str = ""
