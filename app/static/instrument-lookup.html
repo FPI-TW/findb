@@ -524,6 +524,14 @@ tbody tr:hover {
   text-underline-offset: 6px;
 }
 
+.page-ellipsis {
+  padding: 4px 6px;
+  color: var(--text-3);
+  font-size: 0.84rem;
+  letter-spacing: 0.1em;
+  user-select: none;
+}
+
 .hidden {
   display: none !important;
 }
@@ -1271,6 +1279,39 @@ tbody tr:hover {
     return button;
   }
 
+  function buildPageList(currentPage, totalPages, sibling = 2) {
+    // Always show the first and last page, plus a `sibling`-sized window around
+    // current. Inserts '…' sentinels where there are gaps. The window is shifted
+    // when current sits near an edge so the visible count stays roughly constant.
+    // Example layouts:
+    //   page 1   of 51 -> 1 2 3 4 5 … 51
+    //   page 25  of 51 -> 1 … 23 24 25 26 27 … 51
+    //   page 51  of 51 -> 1 … 47 48 49 50 51
+    const boundary = 1;
+    const windowSize = sibling * 2 + 1;
+    // Inline when there isn't enough room for both ellipses + boundaries.
+    if (totalPages <= boundary * 2 + windowSize + 2) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+
+    const startPage = Math.max(
+      boundary + 1,
+      Math.min(currentPage - sibling, totalPages - boundary - windowSize + 1),
+    );
+    const endPage = Math.min(
+      totalPages - boundary,
+      Math.max(currentPage + sibling, boundary + windowSize),
+    );
+
+    const result = [];
+    for (let i = 1; i <= boundary; i += 1) result.push(i);
+    if (startPage > boundary + 1) result.push('…');
+    for (let p = startPage; p <= endPage; p += 1) result.push(p);
+    if (endPage < totalPages - boundary) result.push('…');
+    for (let i = totalPages - boundary + 1; i <= totalPages; i += 1) result.push(i);
+    return result;
+  }
+
   function renderPagination() {
     const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
     const fragment = document.createDocumentFragment();
@@ -1282,7 +1323,16 @@ tbody tr:hover {
       })
     );
 
-    for (let page = 1; page <= totalPages; page += 1) {
+    for (const entry of buildPageList(state.currentPage, totalPages)) {
+      if (entry === '…') {
+        const ellipsis = document.createElement('span');
+        ellipsis.className = 'page-ellipsis';
+        ellipsis.textContent = '…';
+        ellipsis.setAttribute('aria-hidden', 'true');
+        fragment.appendChild(ellipsis);
+        continue;
+      }
+      const page = entry;
       fragment.appendChild(
         createPageButton(String(page), false, () => {
           state.currentPage = page;
@@ -1656,8 +1706,8 @@ tbody tr:hover {
         }
       });
 
-      state.currentPage = 1;
-
+      // Don't reset currentPage here — applyFilters() clamps it to the new max,
+      // and URL-restored page numbers must survive the first data load.
       render();
       setMode('ready');
     } catch (error) {
