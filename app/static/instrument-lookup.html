@@ -226,6 +226,115 @@ body::before {
   font-size: 0.84rem;
 }
 
+.clear-button {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.clear-button:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent-soft);
+}
+
+.clear-button:disabled {
+  color: var(--text-3);
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.page-size-select {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  padding: 4px 6px 4px 0;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  outline: none;
+}
+
+.page-size-select:focus {
+  border-bottom-color: var(--accent);
+  color: var(--text-1);
+}
+
+.csv-button {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-2);
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.csv-button:hover {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+}
+
+.csv-button:disabled {
+  color: var(--text-3);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 12px);
+  padding: 10px 18px;
+  background: var(--text-1);
+  color: var(--bg-card);
+  border-radius: 2px;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 100;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.cell-symbol {
+  cursor: pointer;
+  user-select: all;
+}
+
+.cell-symbol:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.is-filtering tbody {
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+
 .table-wrap {
   margin-top: 12px;
   overflow-x: auto;
@@ -239,8 +348,12 @@ table {
 }
 
 thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   padding: 14px 10px;
   border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
   color: var(--text-2);
   font-size: 0.74rem;
   font-weight: 400;
@@ -250,6 +363,7 @@ thead th {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  box-shadow: 0 1px 0 var(--border-light);
 }
 
 .sort-button {
@@ -436,20 +550,87 @@ tbody tr:hover {
     padding-top: 0;
   }
 
+  .pill-row {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pill {
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
   .status-line,
   .footer-row {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  thead th,
-  tbody td {
-    padding-left: 10px;
-    padding-right: 10px;
+  .footer-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 600px) {
+  .table-wrap {
+    overflow-x: visible;
   }
 
-  table {
-    min-width: 760px;
+  table,
+  tbody,
+  tr {
+    display: block;
+    width: 100%;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tbody tr {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-light);
+    background: var(--bg-card);
+  }
+
+  tbody tr:nth-child(even) {
+    background: var(--bg-card);
+  }
+
+  tbody td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    height: auto;
+    padding: 6px 0;
+    border-bottom: 0;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    text-align: right;
+  }
+
+  tbody td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    flex: 0 0 auto;
+  }
+
+  tbody td:empty,
+  tbody td.cell-status:empty {
+    display: none;
+  }
+
+  .cell-price {
+    text-align: right;
   }
 }
 </style>
@@ -499,7 +680,10 @@ tbody tr:hover {
 
       <div class="status-line">
         <div id="result-summary">尚未載入資料</div>
-        <div id="active-filters">預設顯示 active 標的</div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span id="active-filters">預設顯示 active 標的</span>
+          <button type="button" class="clear-button" id="clear-filters" title="清除搜尋與所有 filters">清除</button>
+        </div>
       </div>
 
       <div id="loading-state" class="loading-state">正在整理標的資料，請稍候。</div>
@@ -520,16 +704,33 @@ tbody tr:hover {
         </div>
         <div id="empty-state" class="empty-state hidden">沒有符合條件的標的。</div>
         <div class="footer-row">
-          <div id="count-label">顯示 0 / 共 0 筆</div>
+          <div class="footer-actions">
+            <div id="count-label">顯示 0 / 共 0 筆</div>
+            <label style="display: flex; align-items: center; gap: 6px;">
+              <span style="color: var(--text-3); font-size: 0.78rem; letter-spacing: 0.06em;">每頁</span>
+              <select id="page-size-select" class="page-size-select" aria-label="每頁筆數">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+              </select>
+            </label>
+            <button type="button" class="csv-button" id="csv-export" title="依當前過濾結果匯出 CSV">匯出 CSV</button>
+          </div>
           <div id="pagination" class="pagination"></div>
         </div>
       </div>
     </section>
   </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
 (() => {
-  const PAGE_SIZE = 50;
+  const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
+  const DEFAULT_PAGE_SIZE = 50;
+  const SEARCH_DEBOUNCE_MS = 200;
+  const STORAGE_KEY = 'findb.instrument-lookup.prefs.v1';
+  const TOAST_DURATION_MS = 1600;
   const DATASETS = {
     instruments: {
       label: '金融商品',
@@ -599,6 +800,7 @@ tbody tr:hover {
     sortBy: 'market',
     sortDir: 'asc',
     currentPage: 1,
+    pageSize: DEFAULT_PAGE_SIZE,
   };
 
   const elements = {
@@ -623,6 +825,10 @@ tbody tr:hover {
     emptyState: document.getElementById('empty-state'),
     countLabel: document.getElementById('count-label'),
     pagination: document.getElementById('pagination'),
+    clearFilters: document.getElementById('clear-filters'),
+    pageSizeSelect: document.getElementById('page-size-select'),
+    csvExport: document.getElementById('csv-export'),
+    toast: document.getElementById('toast'),
   };
 
   function getDatasetConfig() {
@@ -742,15 +948,15 @@ tbody tr:hover {
 
     state.filtered = sortItems(items);
 
-    const totalPages = Math.max(1, Math.ceil(state.filtered.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
     if (state.currentPage > totalPages) {
       state.currentPage = totalPages;
     }
   }
 
   function getVisibleRows() {
-    const start = (state.currentPage - 1) * PAGE_SIZE;
-    const end = start + PAGE_SIZE;
+    const start = (state.currentPage - 1) * state.pageSize;
+    const end = start + state.pageSize;
     return state.filtered.slice(start, end);
   }
 
@@ -801,8 +1007,8 @@ tbody tr:hover {
       return;
     }
 
-    const start = (state.currentPage - 1) * PAGE_SIZE + 1;
-    const end = Math.min(state.currentPage * PAGE_SIZE, total);
+    const start = (state.currentPage - 1) * state.pageSize + 1;
+    const end = Math.min(state.currentPage * state.pageSize, total);
     elements.resultSummary.textContent = `共找到 ${total.toLocaleString()} 筆符合條件的${config.itemLabel}`;
     elements.countLabel.textContent = `顯示 ${start.toLocaleString()}–${end.toLocaleString()} / 共 ${total.toLocaleString()} 筆`;
   }
@@ -862,6 +1068,11 @@ tbody tr:hover {
           state.sortBy = DATASETS[nextDataset].defaultSort;
           state.sortDir = 'asc';
           state.currentPage = 1;
+          // Restore per-dataset preferences if any were persisted
+          const persisted = readPersistedState();
+          if (persisted && persisted[nextDataset]) {
+            applyDatasetPersistedState(nextDataset, persisted[nextDataset]);
+          }
           elements.searchInput.placeholder = DATASETS[nextDataset].searchPlaceholder;
           render();
         })
@@ -1029,7 +1240,12 @@ tbody tr:hover {
           }
         }
         const classAttribute = classNames.length ? ` class="${classNames.join(' ')}"` : '';
-        return `<td${classAttribute}>${escapeHtml(renderCell(item, column))}</td>`;
+        const dataAttrs = ` data-label="${escapeHtml(column.label)}" data-column="${escapeHtml(column.key)}"`;
+        const value = escapeHtml(renderCell(item, column));
+        const interactive = column.key === 'symbol' && item.symbol
+          ? ` data-copy="${escapeHtml(item.symbol)}" role="button" tabindex="0" title="點擊複製 ${escapeHtml(item.symbol)}"`
+          : '';
+        return `<td${classAttribute}${dataAttrs}${interactive}>${value}</td>`;
       }).join('');
 
       return `
@@ -1056,7 +1272,7 @@ tbody tr:hover {
   }
 
   function renderPagination() {
-    const totalPages = Math.max(1, Math.ceil(state.filtered.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
     const fragment = document.createDocumentFragment();
 
     fragment.appendChild(
@@ -1083,7 +1299,7 @@ tbody tr:hover {
     );
 
     elements.pagination.replaceChildren(fragment);
-    elements.pagination.classList.toggle('hidden', state.filtered.length <= PAGE_SIZE);
+    elements.pagination.classList.toggle('hidden', state.filtered.length <= state.pageSize);
   }
 
   function setMode(mode) {
@@ -1103,6 +1319,313 @@ tbody tr:hover {
     updateHeader();
     updateResultSummary();
     updateActiveFilterSummary();
+    syncFooterControls();
+    syncURL();
+    persistState();
+  }
+
+  function syncFooterControls() {
+    if (elements.pageSizeSelect && elements.pageSizeSelect.value !== String(state.pageSize)) {
+      elements.pageSizeSelect.value = String(state.pageSize);
+    }
+    const hasRows = state.filtered.length > 0;
+    if (elements.csvExport) {
+      elements.csvExport.disabled = !hasRows;
+    }
+    if (elements.clearFilters) {
+      const isDirty = state.searchTerm.trim() !== ''
+        || state.market !== 'ALL'
+        || (state.dataset === 'macro'
+              ? state.frequency !== 'ALL' || state.sourceFilter !== 'ALL'
+              : state.assetClass !== 'ALL' || state.status !== getDefaultStatusFor(state.dataset));
+      elements.clearFilters.disabled = !isDirty;
+    }
+  }
+
+  function getDefaultStatusFor(dataset) {
+    return dataset === 'instruments' ? 'active' : 'ALL';
+  }
+
+  // ---------- URL state sync ----------
+
+  const URL_KEYS = {
+    ds: 'dataset',
+    q: 'searchTerm',
+    m: 'market',
+    ac: 'assetClass',
+    st: 'status',
+    fq: 'frequency',
+    src: 'sourceFilter',
+    sb: 'sortBy',
+    sd: 'sortDir',
+    ps: 'pageSize',
+    p: 'currentPage',
+  };
+
+  let suppressURLSync = false;
+
+  function syncURL() {
+    if (suppressURLSync) return;
+    const params = new URLSearchParams();
+    const defaults = buildDefaults(state.dataset);
+
+    Object.entries(URL_KEYS).forEach(([param, key]) => {
+      const value = state[key];
+      const defaultValue = defaults[key];
+      if (value === undefined || value === null || value === '' || value === defaultValue) {
+        return;
+      }
+      params.set(param, String(value));
+    });
+
+    const newQuery = params.toString();
+    const newSearch = newQuery ? `?${newQuery}` : '';
+    if (newSearch !== window.location.search) {
+      window.history.replaceState(
+        null,
+        '',
+        `${window.location.pathname}${newSearch}${window.location.hash}`,
+      );
+    }
+  }
+
+  function buildDefaults(dataset) {
+    return {
+      dataset: 'instruments',
+      searchTerm: '',
+      market: 'ALL',
+      assetClass: 'ALL',
+      status: getDefaultStatusFor(dataset),
+      frequency: 'ALL',
+      sourceFilter: 'ALL',
+      sortBy: DATASETS[dataset].defaultSort,
+      sortDir: 'asc',
+      pageSize: DEFAULT_PAGE_SIZE,
+      currentPage: 1,
+    };
+  }
+
+  function readURLState() {
+    const params = new URL(window.location.href).searchParams;
+    const result = {};
+    Object.entries(URL_KEYS).forEach(([param, key]) => {
+      if (params.has(param)) {
+        result[key] = params.get(param);
+      }
+    });
+    return result;
+  }
+
+  // ---------- localStorage ----------
+
+  function persistState() {
+    try {
+      const payload = {
+        dataset: state.dataset,
+        pageSize: state.pageSize,
+        instruments: {
+          market: state.dataset === 'instruments' ? state.market : null,
+          assetClass: state.dataset === 'instruments' ? state.assetClass : null,
+          status: state.dataset === 'instruments' ? state.status : null,
+          sortBy: state.dataset === 'instruments' ? state.sortBy : null,
+          sortDir: state.dataset === 'instruments' ? state.sortDir : null,
+        },
+        macro: {
+          market: state.dataset === 'macro' ? state.market : null,
+          frequency: state.dataset === 'macro' ? state.frequency : null,
+          sourceFilter: state.dataset === 'macro' ? state.sourceFilter : null,
+          sortBy: state.dataset === 'macro' ? state.sortBy : null,
+          sortDir: state.dataset === 'macro' ? state.sortDir : null,
+        },
+      };
+      const existing = readPersistedState();
+      const merged = mergePersisted(existing, payload);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    } catch (_) {
+      // localStorage may be disabled; ignore.
+    }
+  }
+
+  function mergePersisted(existing, incoming) {
+    const out = { ...existing, ...incoming };
+    ['instruments', 'macro'].forEach((ds) => {
+      out[ds] = { ...(existing && existing[ds]), ...(incoming[ds] || {}) };
+      Object.keys(out[ds]).forEach((k) => {
+        if (out[ds][k] === null) delete out[ds][k];
+      });
+    });
+    return out;
+  }
+
+  function readPersistedState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyPersistedState(persisted) {
+    if (!persisted) return;
+    if (Number.isFinite(persisted.pageSize) && PAGE_SIZE_OPTIONS.includes(persisted.pageSize)) {
+      state.pageSize = persisted.pageSize;
+    }
+    if (typeof persisted.dataset === 'string' && DATASETS[persisted.dataset]) {
+      state.dataset = persisted.dataset;
+    }
+    applyDatasetPersistedState(state.dataset, persisted[state.dataset]);
+  }
+
+  function applyDatasetPersistedState(dataset, stored) {
+    if (!stored) return;
+    if (typeof stored.market === 'string') state.market = stored.market;
+    if (dataset === 'instruments') {
+      if (typeof stored.assetClass === 'string') state.assetClass = stored.assetClass;
+      if (typeof stored.status === 'string') state.status = stored.status;
+    } else {
+      if (typeof stored.frequency === 'string') state.frequency = stored.frequency;
+      if (typeof stored.sourceFilter === 'string') state.sourceFilter = stored.sourceFilter;
+    }
+    if (typeof stored.sortBy === 'string') state.sortBy = stored.sortBy;
+    if (stored.sortDir === 'asc' || stored.sortDir === 'desc') state.sortDir = stored.sortDir;
+  }
+
+  function applyURLState(urlState) {
+    if (!urlState || Object.keys(urlState).length === 0) return;
+
+    if (typeof urlState.dataset === 'string' && DATASETS[urlState.dataset]) {
+      state.dataset = urlState.dataset;
+    }
+    if (typeof urlState.searchTerm === 'string') state.searchTerm = urlState.searchTerm;
+    if (typeof urlState.market === 'string') state.market = urlState.market;
+    if (typeof urlState.assetClass === 'string') state.assetClass = urlState.assetClass;
+    if (typeof urlState.status === 'string') state.status = urlState.status;
+    if (typeof urlState.frequency === 'string') state.frequency = urlState.frequency;
+    if (typeof urlState.sourceFilter === 'string') state.sourceFilter = urlState.sourceFilter;
+    if (typeof urlState.sortBy === 'string') state.sortBy = urlState.sortBy;
+    if (urlState.sortDir === 'asc' || urlState.sortDir === 'desc') state.sortDir = urlState.sortDir;
+    const ps = Number(urlState.pageSize);
+    if (PAGE_SIZE_OPTIONS.includes(ps)) state.pageSize = ps;
+    const page = Number(urlState.currentPage);
+    if (Number.isFinite(page) && page >= 1) state.currentPage = Math.floor(page);
+  }
+
+  // ---------- clear filters ----------
+
+  function clearFilters() {
+    state.searchTerm = '';
+    state.market = 'ALL';
+    state.assetClass = 'ALL';
+    state.status = getDefaultStatusFor(state.dataset);
+    state.frequency = 'ALL';
+    state.sourceFilter = 'ALL';
+    state.currentPage = 1;
+    elements.searchInput.value = '';
+    render();
+  }
+
+  // ---------- copy + toast ----------
+
+  let toastTimer = null;
+
+  function showToast(message) {
+    if (!elements.toast) return;
+    elements.toast.textContent = message;
+    elements.toast.classList.add('visible');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      elements.toast.classList.remove('visible');
+    }, TOAST_DURATION_MS);
+  }
+
+  async function copyToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {
+      // fall through to legacy path
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function handleSymbolClick(event) {
+    const cell = event.target.closest('td[data-copy]');
+    if (!cell) return;
+    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.type === 'keydown') event.preventDefault();
+    const value = cell.getAttribute('data-copy');
+    copyToClipboard(value).then((ok) => {
+      showToast(ok ? `已複製：${value}` : `複製失敗：${value}`);
+    });
+  }
+
+  // ---------- CSV export ----------
+
+  function escapeCsvCell(value) {
+    if (value === null || value === undefined) return '';
+    const str = String(value);
+    if (/[",\n\r]/.test(str)) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  }
+
+  function exportCSV() {
+    const config = getDatasetConfig();
+    const items = state.filtered;
+    if (!items.length) {
+      showToast('沒有資料可匯出');
+      return;
+    }
+    const header = config.columns.map((c) => c.label);
+    const rows = items.map((item) =>
+      config.columns.map((c) => escapeCsvCell(renderCell(item, c))).join(',')
+    );
+    const csv = [header.join(','), ...rows].join('\n');
+    // BOM for Excel compatibility with CJK chars
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    a.href = url;
+    a.download = `findb-${state.dataset}-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`已匯出 ${items.length.toLocaleString()} 筆`);
+  }
+
+  // ---------- debounced search ----------
+
+  let searchTimer = null;
+  function handleSearchInput(event) {
+    const value = event.target.value;
+    elements.tableSection.classList.add('is-filtering');
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.searchTerm = value;
+      state.currentPage = 1;
+      render();
+      elements.tableSection.classList.remove('is-filtering');
+    }, SEARCH_DEBOUNCE_MS);
   }
 
   async function loadData() {
@@ -1143,17 +1666,52 @@ tbody tr:hover {
     }
   }
 
-  elements.searchInput.addEventListener('input', (event) => {
-    state.searchTerm = event.target.value;
-    state.currentPage = 1;
-    render();
-  });
+  elements.searchInput.addEventListener('input', handleSearchInput);
 
   elements.retryButton.addEventListener('click', () => {
     loadData();
   });
 
+  elements.clearFilters.addEventListener('click', clearFilters);
+
+  elements.pageSizeSelect.addEventListener('change', (event) => {
+    const next = Number(event.target.value);
+    if (!PAGE_SIZE_OPTIONS.includes(next)) return;
+    state.pageSize = next;
+    state.currentPage = 1;
+    render();
+  });
+
+  elements.csvExport.addEventListener('click', exportCSV);
+
+  elements.tableBody.addEventListener('click', handleSymbolClick);
+  elements.tableBody.addEventListener('keydown', handleSymbolClick);
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && document.activeElement !== elements.searchInput) {
+      // ESC outside the search box quickly clears filters
+      if (!elements.clearFilters.disabled) {
+        clearFilters();
+      }
+    }
+  });
+
+  // ---------- init flow: defaults → localStorage → URL ----------
+
+  suppressURLSync = true;
+  applyPersistedState(readPersistedState());
+  applyURLState(readURLState());
+
+  // Make sure derived defaults are correct after dataset override.
+  if (state.dataset !== 'instruments' && state.status === 'active' && !readURLState().status) {
+    state.status = 'ALL';
+  }
+
+  elements.searchInput.value = state.searchTerm;
   elements.searchInput.placeholder = getDatasetConfig().searchPlaceholder;
+  elements.pageSizeSelect.value = String(state.pageSize);
+  suppressURLSync = false;
+
   renderDatasetTabs();
   renderFilters();
   renderTableHead();
