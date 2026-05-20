@@ -4,23 +4,45 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FinDB — 標的與宏觀查詢</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300&family=Noto+Sans+JP:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:           #F5F3EE;
-  --bg-card:      #FDFCFA;
-  --bg-hover:     #F0EDE6;
-  --bg-subtle:    #FAF8F5;
-  --text-1:       #2C2825;
-  --text-2:       #8A847B;
-  --text-3:       #B5AFA6;
-  --accent:       #B84C3A;
-  --accent-soft:  #F5EAE7;
-  --border:       #E2DED6;
-  --border-light: #EDEAE4;
-  --shadow-soft:  rgba(69, 49, 40, 0.05);
+  /* iOS light surfaces */
+  --bg:               #F2F2F7;
+  --bg-card:          #FFFFFF;
+  --bg-hover:         rgba(0, 0, 0, 0.035);
+  --bg-fill:          rgba(118, 118, 128, 0.12);
+  --bg-fill-strong:   rgba(118, 118, 128, 0.2);
+
+  /* iOS label scale */
+  --text-1:           rgba(0, 0, 0, 0.9);
+  --text-2:           rgba(60, 60, 67, 0.6);
+  --text-3:           rgba(60, 60, 67, 0.32);
+
+  /* System blue */
+  --accent:           #007AFF;
+  --accent-hover:     #0066D6;
+  --accent-soft:      rgba(0, 122, 255, 0.12);
+
+  /* Semantic */
+  --success:          #34C759;
+  --success-soft:     rgba(52, 199, 89, 0.16);
+  --success-text:     #1B7F37;
+  --danger:           #FF3B30;
+  --danger-soft:      rgba(255, 59, 48, 0.12);
+  --danger-text:      #B22A1E;
+
+  /* Rules */
+  --border:           rgba(60, 60, 67, 0.18);
+  --border-light:     rgba(60, 60, 67, 0.08);
+
+  /* Shadow */
+  --shadow-card:      0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 32px -10px rgba(0, 0, 0, 0.08);
+
+  /* Radius */
+  --radius-card:      18px;
+  --radius-input:     12px;
+  --radius-btn:       10px;
+  --radius-pill:      980px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -31,102 +53,142 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--text-1);
-  font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', sans-serif;
-  font-weight: 300;
-  background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.62), transparent 36%),
-    linear-gradient(180deg, #F8F6F1 0%, var(--bg) 100%);
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.35;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.26) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.2) 1px, transparent 1px);
-  background-size: 20px 20px, 20px 20px;
-  mix-blend-mode: soft-light;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+               "Inter", "Segoe UI", "Helvetica Neue", "PingFang TC",
+               "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  font-weight: 400;
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg);
 }
 
 .page {
   position: relative;
-  max-width: 960px;
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 48px 24px 72px;
+  padding: 56px 24px 80px;
 }
 
 .page-header {
-  margin-bottom: 32px;
-  padding-bottom: 24px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 28px;
 }
 
 .eyebrow {
-  margin-bottom: 12px;
-  font-size: 0.74rem;
-  letter-spacing: 0.28em;
+  margin-bottom: 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--accent);
 }
 
 .page-title {
   margin: 0;
-  font-family: 'Noto Serif JP', serif;
-  font-weight: 200;
-  font-size: clamp(1.9rem, 3vw, 2.35rem);
-  letter-spacing: 0.15em;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: clamp(1.9rem, 3.2vw, 2.5rem);
+  letter-spacing: -0.022em;
+  color: var(--text-1);
+  line-height: 1.15;
 }
 
-.page-title .accent {
-  color: var(--accent);
-}
+.page-title .accent { color: var(--accent); }
 
 .page-subtitle {
-  margin-top: 8px;
+  margin: 10px 0 0;
   color: var(--text-2);
-  font-size: 0.85rem;
-  line-height: 1.8;
+  font-size: 0.92rem;
+  line-height: 1.5;
 }
 
 .panel {
   background: var(--bg-card);
-  border: 1px solid rgba(226, 222, 214, 0.8);
-  box-shadow: 0 18px 36px var(--shadow-soft);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.sticky-shell {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-top-left-radius: var(--radius-card);
+  border-top-right-radius: var(--radius-card);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.panel > .footer-row {
+  border-bottom-left-radius: var(--radius-card);
+  border-bottom-right-radius: var(--radius-card);
 }
 
 .controls {
-  padding: 24px 24px 20px;
+  padding: 22px 24px 16px;
 }
 
 .dataset-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 24px;
+  position: relative;
+  display: inline-flex;
+  gap: 0;
+  margin-bottom: 20px;
+  padding: 3px;
+  background: var(--bg-fill);
+  border-radius: var(--radius-input);
+}
+
+.dataset-tab-indicator {
+  position: absolute;
+  background: var(--bg-card);
+  border-radius: 9px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(0, 0, 0, 0.04);
+  transition: left 0.28s cubic-bezier(0.32, 0.72, 0, 1),
+              width 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .dataset-tab {
-  border: 1px solid transparent;
-  border-radius: 2px;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 9px;
   background: transparent;
   color: var(--text-2);
-  padding: 8px 16px;
+  padding: 6px 14px;
   font: inherit;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.2s ease;
+  white-space: nowrap;
 }
 
-.dataset-tab:hover {
-  border-color: var(--border);
-  color: var(--text-1);
+.dataset-tab:hover { color: var(--text-1); }
+.dataset-tab.active { color: var(--text-1); }
+
+.dataset-tab-count {
+  display: inline-block;
+  min-width: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(118, 118, 128, 0.18);
+  color: var(--text-2);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
+  text-align: center;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
-.dataset-tab.active {
-  border-color: var(--accent-soft);
+.dataset-tab.active .dataset-tab-count {
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -134,120 +196,117 @@ body::before {
 .search-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 10px 14px;
+  background: var(--bg-fill);
+  border-radius: var(--radius-input);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.search-row:focus-within {
+  background: var(--bg-card);
+  box-shadow: 0 0 0 4px var(--accent-soft), inset 0 0 0 1px var(--accent);
 }
 
 .search-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--text-3);
+  width: 16px;
+  height: 16px;
+  color: var(--text-2);
   flex: 0 0 auto;
 }
 
 .search-input {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   border: 0;
-  border-bottom: 1px solid transparent;
-  padding: 10px 0 8px;
+  padding: 0;
   background: transparent;
   color: var(--text-1);
-  font-size: 1rem;
-  font-family: inherit;
+  font: inherit;
+  font-size: 0.95rem;
   outline: none;
-  transition: border-color 0.2s ease, color 0.2s ease;
 }
 
-.search-input::placeholder {
-  color: var(--text-3);
-}
-
-.search-input:focus {
-  border-color: var(--accent);
-}
+.search-input::placeholder { color: var(--text-3); }
 
 .filters {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .filter-group {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  align-items: center;
+  gap: 14px;
 }
 
 .filter-label {
-  min-width: 54px;
-  padding-top: 6px;
+  min-width: 44px;
   color: var(--text-2);
-  font-size: 0.84rem;
-  font-weight: 400;
-  letter-spacing: 0.08em;
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .pill-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pill {
   border: 0;
-  border-radius: 2px;
-  background: transparent;
+  border-radius: var(--radius-pill);
+  background: var(--bg-fill);
   color: var(--text-2);
-  padding: 6px 16px;
+  padding: 5px 14px;
   font: inherit;
-  font-size: 0.92rem;
+  font-size: 0.85rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .pill:hover {
-  background: var(--bg-hover);
+  background: var(--bg-fill-strong);
   color: var(--text-1);
 }
 
 .pill.active {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--accent);
+  color: #FFFFFF;
 }
+
+.pill.active:hover { background: var(--accent-hover); }
 
 .status-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 18px 24px 0;
+  padding: 14px 24px 16px;
   color: var(--text-2);
-  font-size: 0.84rem;
+  font-size: 0.85rem;
 }
 
 .clear-button {
   border: 0;
   background: transparent;
-  color: var(--text-3);
-  padding: 4px 8px;
+  color: var(--accent);
+  padding: 4px 6px;
   font: inherit;
-  font-size: 0.78rem;
-  letter-spacing: 0.06em;
+  font-size: 0.85rem;
+  font-weight: 500;
   cursor: pointer;
-  border-bottom: 1px dashed transparent;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: color 0.15s ease, opacity 0.15s ease;
 }
 
-.clear-button:hover {
-  color: var(--accent);
-  border-bottom-color: var(--accent-soft);
-}
+.clear-button:hover { color: var(--accent-hover); }
 
 .clear-button:disabled {
   color: var(--text-3);
   cursor: not-allowed;
-  opacity: 0.4;
 }
 
 .footer-actions {
@@ -257,62 +316,62 @@ body::before {
 }
 
 .page-size-select {
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-2);
-  padding: 4px 6px 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-1);
+  padding: 5px 10px;
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   cursor: pointer;
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .page-size-select:focus {
-  border-bottom-color: var(--accent);
-  color: var(--text-1);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .csv-button {
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-2);
-  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bg-fill);
+  color: var(--text-1);
+  padding: 7px 14px;
   font: inherit;
-  font-size: 0.82rem;
-  letter-spacing: 0.04em;
+  font-size: 0.85rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  transition: background 0.15s ease;
 }
 
-.csv-button:hover {
-  color: var(--accent);
-  border-color: var(--accent-soft);
-  background: var(--accent-soft);
-}
+.csv-button:hover { background: var(--bg-fill-strong); }
 
 .csv-button:disabled {
   color: var(--text-3);
-  background: transparent;
   cursor: not-allowed;
-  opacity: 0.5;
 }
 
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 28px;
+  bottom: 32px;
   transform: translate(-50%, 12px);
-  padding: 10px 18px;
-  background: var(--text-1);
-  color: var(--bg-card);
-  border-radius: 2px;
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
+  padding: 11px 20px;
+  background: rgba(28, 28, 30, 0.92);
+  color: #FFFFFF;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.4);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.18s ease, transform 0.18s ease;
-  z-index: 100;
+  z-index: 200;
 }
 
 .toast.visible {
@@ -320,23 +379,341 @@ body::before {
   transform: translate(-50%, 0);
 }
 
+.detail-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 120;
+}
+
+.detail-backdrop.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.detail-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(480px, 100vw);
+  background: var(--bg-card);
+  box-shadow: -16px 0 40px -16px rgba(0, 0, 0, 0.25);
+  transform: translateX(100%);
+  transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.detail-drawer.visible {
+  transform: translateX(0);
+}
+
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.detail-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-symbol {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 0 0 2px;
+  word-break: break-all;
+}
+
+.detail-name {
+  font-size: 0.95rem;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.detail-close {
+  appearance: none;
+  border: 0;
+  background: var(--bg-fill);
+  color: var(--text-1);
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.12s ease;
+}
+
+.detail-close:hover { background: var(--bg-fill-strong); }
+.detail-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 22px 24px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.detail-section { margin-top: 18px; }
+.detail-section:first-child { margin-top: 0; }
+
+.detail-section h3 {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin: 0 0 10px;
+}
+
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.detail-badge {
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  background: var(--bg-fill);
+  border-radius: var(--radius-pill);
+  color: var(--text-1);
+}
+
+.detail-badge.is-status-active { background: var(--success-soft); color: var(--success-text); }
+.detail-badge.is-status-delisted { background: var(--danger-soft); color: var(--danger-text); }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  margin-bottom: 14px;
+}
+
+.detail-grid > dt {
+  font-size: 0.78rem;
+  color: var(--text-2);
+  margin: 0;
+  white-space: nowrap;
+}
+
+.detail-grid > dd {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.detail-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.detail-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--bg-fill);
+  border-radius: var(--radius-input);
+  margin-bottom: 12px;
+}
+
+.detail-summary-figures {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.detail-summary-price {
+  font-size: 1.45rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+  line-height: 1.1;
+}
+
+.detail-summary-delta {
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.detail-summary-delta.is-up { color: var(--success-text); }
+.detail-summary-delta.is-down { color: var(--danger-text); }
+.detail-summary-delta.is-flat { color: var(--text-2); }
+
+.detail-summary-spark {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.detail-summary-spark svg {
+  display: block;
+}
+
+tbody tr.row-active,
+tbody tr.row-active:hover {
+  background: var(--accent-soft);
+}
+
+tbody tr.row-active td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.detail-action-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-1);
+  padding: 7px 14px;
+  border-radius: var(--radius-btn);
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.detail-action-btn:hover { background: var(--bg-fill); }
+.detail-action-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.detail-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+  table-layout: auto;
+}
+
+.detail-table th,
+.detail-table td {
+  height: auto;
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-light);
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.detail-table th:first-child,
+.detail-table td:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+
+.detail-table th:last-child,
+.detail-table td:last-child {
+  padding-right: 0;
+}
+
+.detail-table th {
+  font-size: 0.74rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  text-transform: uppercase;
+}
+
+.detail-table tr:last-child td { border-bottom: 0; }
+
+.detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-skeleton span {
+  display: block;
+  height: 14px;
+  width: 100%;
+  background: linear-gradient(90deg, var(--bg-fill) 0%, var(--bg-fill-strong) 50%, var(--bg-fill) 100%);
+  background-size: 200% 100%;
+  border-radius: 6px;
+  animation: detail-skeleton-shimmer 1.1s linear infinite;
+}
+
+.detail-skeleton span:nth-child(2) { width: 88%; }
+.detail-skeleton span:nth-child(3) { width: 76%; }
+
+@keyframes detail-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.detail-error {
+  font-size: 0.86rem;
+  color: var(--danger-text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--danger-soft);
+  border-radius: var(--radius-input);
+}
+
+.detail-empty {
+  font-size: 0.86rem;
+  color: var(--text-2);
+  padding: 8px 0;
+}
+
+@media (max-width: 640px) {
+  .detail-drawer {
+    width: 100vw;
+    height: 85vh;
+    top: auto;
+    bottom: 0;
+    right: 0;
+    border-top-left-radius: 18px;
+    border-top-right-radius: 18px;
+    transform: translateY(100%);
+  }
+  .detail-drawer.visible { transform: translateY(0); }
+}
+
 .cell-symbol {
   cursor: pointer;
   user-select: all;
 }
 
-.cell-symbol:hover {
-  text-decoration: underline;
-  text-underline-offset: 4px;
-}
+.cell-symbol:hover { color: var(--accent-hover); }
 
 .is-filtering tbody {
-  opacity: 0.55;
+  opacity: 0.5;
   transition: opacity 0.15s ease;
 }
 
 .table-wrap {
-  margin-top: 12px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -351,12 +728,12 @@ thead th {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 14px 8px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 12px;
+  border-bottom: 1px solid var(--border-light);
   background: var(--bg-card);
   color: var(--text-2);
   font-size: 0.72rem;
-  font-weight: 400;
+  font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   text-align: left;
@@ -364,7 +741,6 @@ thead th {
   white-space: normal;
   word-break: keep-all;
   line-height: 1.3;
-  box-shadow: 0 1px 0 var(--border-light);
 }
 
 .sort-button {
@@ -397,7 +773,7 @@ thead th {
   align-items: center;
   justify-content: center;
   color: var(--text-3);
-  opacity: 0.5;
+  opacity: 0.55;
   transition: opacity 0.15s ease, color 0.15s ease;
 }
 
@@ -406,48 +782,66 @@ thead th {
   opacity: 1;
 }
 
-.sort-button.active .sort-indicator {
-  color: var(--accent);
-}
+.sort-button.active { color: var(--text-1); }
+.sort-button.active .sort-indicator { color: var(--accent); }
 
 tbody td {
-  height: 48px;
-  padding: 14px 10px;
+  height: 54px;
+  padding: 14px 12px;
   border-bottom: 1px solid var(--border-light);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
+  color: var(--text-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-tbody tr:nth-child(even) {
-  background: var(--bg-subtle);
+tbody tr {
+  transition: background 0.1s ease;
 }
 
-tbody tr:hover {
-  background: var(--bg-hover);
+tbody tr:hover { background: var(--bg-hover); }
+
+tbody tr.row-clickable { cursor: pointer; }
+tbody tr.row-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
+
+tbody tr:last-child td { border-bottom: 0; }
 
 .cell-symbol {
-  font-family: 'JetBrains Mono', monospace;
-  letter-spacing: 0.05em;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  letter-spacing: -0.005em;
   color: var(--accent);
-  font-weight: 400;
+  font-weight: 500;
 }
 
 .cell-name {
   min-width: 0;
+  color: var(--text-1);
 }
 
 .cell-date,
 .cell-price {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.84rem;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  color: var(--text-2);
 }
 
 .cell-price {
   text-align: right;
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.cell-price .price-ccy {
+  margin-left: 6px;
+  color: var(--text-3);
+  font-size: 0.72rem;
+  font-weight: 400;
 }
 
 .cell-status {
@@ -455,63 +849,170 @@ tbody tr:hover {
   color: var(--text-3);
 }
 
-.cell-status.delisted {
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-fill);
+  color: var(--text-2);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-transform: lowercase;
+}
+
+.status-pill .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex: 0 0 auto;
+}
+
+.status-pill.status-active {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+
+.status-pill.status-active .status-dot { background: var(--success); }
+
+.status-pill.status-delisted {
+  background: var(--danger-soft);
+  color: var(--danger-text);
   text-decoration: line-through;
+  text-decoration-color: rgba(255, 59, 48, 0.5);
+}
+
+.status-pill.status-delisted .status-dot { background: var(--danger); }
+
+mark {
+  background: rgba(255, 204, 0, 0.42);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 3px;
 }
 
 .empty-state,
 .error-state,
 .loading-state {
-  padding: 64px 24px;
+  padding: 56px 24px;
   text-align: center;
   color: var(--text-2);
-  line-height: 1.9;
+  font-size: 0.92rem;
+  line-height: 1.6;
 }
 
 .error-state strong {
   display: block;
-  margin-bottom: 10px;
-  color: var(--accent);
-  font-weight: 400;
+  margin-bottom: 8px;
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 1rem;
 }
 
 .retry-button {
   margin-top: 16px;
   border: 0;
-  background: var(--accent-soft);
-  color: var(--accent);
-  padding: 8px 18px;
+  border-radius: var(--radius-btn);
+  background: var(--accent);
+  color: #FFFFFF;
+  padding: 10px 22px;
   font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
+
+.retry-button:hover { background: var(--accent-hover); }
+
+.skeleton-block {
+  padding: 4px 24px 16px;
+}
+
+.skeleton-row {
+  display: flex;
+  gap: 14px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.skeleton-cell {
+  height: 12px;
+  flex: 1 1 0;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    rgba(120, 120, 128, 0.08) 0%,
+    rgba(120, 120, 128, 0.18) 50%,
+    rgba(120, 120, 128, 0.08) 100%
+  );
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-cell.narrow { flex: 0 0 60px; }
+.skeleton-cell.wide { flex: 2 1 0; }
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.empty-actions {
+  margin-top: 14px;
+}
+
+.empty-cta {
+  border: 0;
+  border-radius: var(--radius-btn);
+  background: var(--bg-fill);
+  color: var(--text-1);
+  padding: 9px 18px;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.empty-cta:hover { background: var(--bg-fill-strong); }
 
 .footer-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 24px 24px;
+  padding: 16px 24px 20px;
   color: var(--text-2);
-  font-size: 0.84rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-light);
 }
 
 .pagination {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px;
 }
 
 .page-button {
   border: 0;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-2);
-  padding: 4px 8px;
+  min-width: 32px;
+  padding: 6px 10px;
   font: inherit;
+  font-size: 0.88rem;
   cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
 }
 
 .page-button:hover:not(:disabled) {
+  background: var(--bg-fill);
   color: var(--text-1);
 }
 
@@ -521,26 +1022,28 @@ tbody tr:hover {
 }
 
 .page-button.current {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 6px;
+  background: var(--accent);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.page-button.current:hover {
+  background: var(--accent-hover);
+  color: #FFFFFF;
 }
 
 .page-ellipsis {
-  padding: 4px 6px;
+  padding: 6px 4px;
   color: var(--text-3);
-  font-size: 0.84rem;
-  letter-spacing: 0.1em;
+  font-size: 0.85rem;
   user-select: none;
 }
 
-.hidden {
-  display: none !important;
-}
+.hidden { display: none !important; }
 
 @media (max-width: 720px) {
   .page {
-    padding: 36px 18px 56px;
+    padding: 32px 16px 60px;
   }
 
   .controls,
@@ -552,13 +1055,11 @@ tbody tr:hover {
 
   .filter-group {
     flex-direction: column;
-    gap: 6px;
+    align-items: flex-start;
+    gap: 8px;
   }
 
-  .filter-label {
-    min-width: 0;
-    padding-top: 0;
-  }
+  .filter-label { min-width: 0; }
 
   .pill-row {
     overflow-x: auto;
@@ -585,31 +1086,21 @@ tbody tr:hover {
 }
 
 @media (max-width: 600px) {
-  .table-wrap {
-    overflow-x: visible;
-  }
+  .table-wrap { overflow-x: visible; padding: 12px 16px 4px; }
 
-  table,
-  tbody,
-  tr {
-    display: block;
-    width: 100%;
-  }
-
-  thead {
-    display: none;
-  }
+  table, tbody, tr { display: block; width: 100%; }
+  thead { display: none; }
 
   tbody tr {
     margin-bottom: 12px;
-    padding: 12px 14px;
+    padding: 14px 16px;
     border: 1px solid var(--border-light);
+    border-radius: 14px;
     background: var(--bg-card);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   }
 
-  tbody tr:nth-child(even) {
-    background: var(--bg-card);
-  }
+  tbody tr:hover { background: var(--bg-card); }
 
   tbody td {
     display: flex;
@@ -629,19 +1120,15 @@ tbody tr:hover {
     content: attr(data-label);
     color: var(--text-3);
     font-size: 0.72rem;
-    letter-spacing: 0.08em;
+    font-weight: 500;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     flex: 0 0 auto;
   }
 
-  tbody td:empty,
-  tbody td.cell-status:empty {
-    display: none;
-  }
+  tbody td:empty { display: none; }
 
-  .cell-price {
-    text-align: right;
-  }
+  .cell-price { text-align: right; }
 }
 </style>
 </head>
@@ -654,49 +1141,104 @@ tbody tr:hover {
     </header>
 
     <section class="panel">
-      <div class="controls">
-        <div class="dataset-tabs" id="dataset-tabs" aria-label="資料集切換"></div>
+      <div class="sticky-shell">
+        <div class="controls">
+          <div class="dataset-tabs" id="dataset-tabs" aria-label="資料集切換"></div>
 
-        <div class="search-row">
-          <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.5"></circle>
-            <path d="M20 20L16.65 16.65" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
-          </svg>
-          <input
-            id="search-input"
-            class="search-input"
-            type="search"
-            placeholder="標的名稱、代碼、宏觀序列…"
-            autocomplete="off"
-            spellcheck="false"
-          >
+          <div class="search-row">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.5"></circle>
+              <path d="M20 20L16.65 16.65" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            </svg>
+            <input
+              id="search-input"
+              class="search-input"
+              type="search"
+              placeholder="標的名稱、代碼、宏觀序列…"
+              autocomplete="off"
+              spellcheck="false"
+            >
+          </div>
+
+          <div class="filters">
+            <div class="filter-group">
+              <div class="filter-label">市場</div>
+              <div class="pill-row" id="market-filters"></div>
+            </div>
+            <div class="filter-group">
+              <div class="filter-label" id="asset-filter-label">類別</div>
+              <div class="pill-row" id="asset-filters"></div>
+            </div>
+            <div class="filter-group">
+              <div class="filter-label" id="status-filter-label">狀態</div>
+              <div class="pill-row" id="status-filters"></div>
+            </div>
+          </div>
         </div>
 
-        <div class="filters">
-          <div class="filter-group">
-            <div class="filter-label">市場</div>
-            <div class="pill-row" id="market-filters"></div>
-          </div>
-          <div class="filter-group">
-            <div class="filter-label" id="asset-filter-label">類別</div>
-            <div class="pill-row" id="asset-filters"></div>
-          </div>
-          <div class="filter-group">
-            <div class="filter-label" id="status-filter-label">狀態</div>
-            <div class="pill-row" id="status-filters"></div>
+        <div class="status-line">
+          <div id="result-summary">尚未載入資料</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="active-filters">預設顯示 active 標的</span>
+            <button type="button" class="clear-button" id="clear-filters" title="清除搜尋與所有 filters">清除</button>
           </div>
         </div>
       </div>
 
-      <div class="status-line">
-        <div id="result-summary">尚未載入資料</div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span id="active-filters">預設顯示 active 標的</span>
-          <button type="button" class="clear-button" id="clear-filters" title="清除搜尋與所有 filters">清除</button>
+      <div id="loading-state" class="loading-state">
+        <div class="skeleton-block" aria-hidden="true">
+          <div class="skeleton-row">
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell wide"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+          </div>
+          <div class="skeleton-row">
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell wide"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+          </div>
+          <div class="skeleton-row">
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell wide"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+          </div>
+          <div class="skeleton-row">
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell wide"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+          </div>
+          <div class="skeleton-row">
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell wide"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell narrow"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+            <div class="skeleton-cell"></div>
+          </div>
         </div>
       </div>
-
-      <div id="loading-state" class="loading-state">正在整理標的資料，請稍候。</div>
       <div id="error-state" class="error-state hidden">
         <strong>無法載入查詢快取</strong>
         <div id="error-message">請確認快取檔案已產生，或稍後再試。</div>
@@ -712,7 +1254,12 @@ tbody tr:hover {
             <tbody id="table-body"></tbody>
           </table>
         </div>
-        <div id="empty-state" class="empty-state hidden">沒有符合條件的標的。</div>
+        <div id="empty-state" class="empty-state hidden">
+          <div id="empty-message">沒有符合條件的標的。</div>
+          <div class="empty-actions">
+            <button type="button" class="empty-cta" id="empty-clear" hidden>清除條件</button>
+          </div>
+        </div>
         <div class="footer-row">
           <div class="footer-actions">
             <div id="count-label">顯示 0 / 共 0 筆</div>
@@ -733,6 +1280,22 @@ tbody tr:hover {
     </section>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <div id="detail-backdrop" class="detail-backdrop" aria-hidden="true"></div>
+  <aside id="detail-drawer" class="detail-drawer" role="dialog" aria-modal="true" aria-labelledby="detail-symbol" aria-hidden="true" tabindex="-1">
+    <header class="detail-header">
+      <div class="detail-header-text">
+        <p id="detail-symbol" class="detail-symbol">—</p>
+        <p id="detail-name" class="detail-name"></p>
+      </div>
+      <button id="detail-close" class="detail-close" type="button" aria-label="關閉詳情">✕</button>
+    </header>
+    <div class="detail-body">
+      <section id="detail-meta" class="detail-section" aria-label="標的資訊"></section>
+      <section id="detail-prices" class="detail-section" aria-label="最近價格"></section>
+      <section id="detail-actions" class="detail-section" aria-label="近期事件"></section>
+    </div>
+  </aside>
 
 <script>
 (() => {
@@ -811,6 +1374,7 @@ tbody tr:hover {
     sortDir: 'asc',
     currentPage: 1,
     pageSize: DEFAULT_PAGE_SIZE,
+    detailId: '',
   };
 
   const elements = {
@@ -839,7 +1403,23 @@ tbody tr:hover {
     pageSizeSelect: document.getElementById('page-size-select'),
     csvExport: document.getElementById('csv-export'),
     toast: document.getElementById('toast'),
+    emptyMessage: document.getElementById('empty-message'),
+    emptyClear: document.getElementById('empty-clear'),
+    detailBackdrop: document.getElementById('detail-backdrop'),
+    detailDrawer: document.getElementById('detail-drawer'),
+    detailClose: document.getElementById('detail-close'),
+    detailSymbol: document.getElementById('detail-symbol'),
+    detailName: document.getElementById('detail-name'),
+    detailMeta: document.getElementById('detail-meta'),
+    detailPrices: document.getElementById('detail-prices'),
+    detailActions: document.getElementById('detail-actions'),
   };
+
+  const HIGHLIGHT_KEYS = new Set([
+    'symbol', 'name', 'short_name', 'instrument_id',
+    'source_code', 'series_id',
+    'market', 'asset_class', 'currency', 'frequency', 'unit', 'source',
+  ]);
 
   function getDatasetConfig() {
     return DATASETS[state.dataset];
@@ -863,7 +1443,9 @@ tbody tr:hover {
   }
 
   function normalizeText(value) {
-    return String(value ?? '').trim().toLowerCase();
+    // NFKC folds fullwidth digits/letters (２３３０ → 2330) and width variants
+    // so CJK users with IME-emitted fullwidth input still match canonical data.
+    return String(value ?? '').normalize('NFKC').trim().toLowerCase();
   }
 
   function compareText(left, right) {
@@ -1067,91 +1649,165 @@ tbody tr:hover {
     elements.activeFilters.textContent = parts.length > 0 ? parts.join(' / ') : `顯示全部${getDatasetConfig().itemLabel}`;
   }
 
-  function createPill(value, label, currentValue, onClick) {
+  function createPill(value, label, currentValue) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `pill${value === currentValue ? ' active' : ''}`;
+    button.dataset.value = value;
     button.textContent = label;
-    button.addEventListener('click', () => onClick(value));
     return button;
   }
 
-  function renderDatasetTabs() {
-    elements.datasetTabs.replaceChildren(
-      ...Object.entries(DATASETS).map(([value, config]) =>
-        createPill(value, config.label, state.dataset, (nextDataset) => {
-          if (state.dataset === nextDataset) {
-            return;
-          }
+  function handleFilterPillClick(event) {
+    const pill = event.target.closest('.pill');
+    if (!pill || !event.currentTarget.contains(pill)) return;
+    const value = pill.dataset.value;
+    if (value === undefined) return;
 
-          state.dataset = nextDataset;
-          state.market = 'ALL';
-          state.assetClass = 'ALL';
-          state.status = nextDataset === 'instruments' ? 'active' : 'ALL';
-          state.frequency = 'ALL';
-          state.sourceFilter = 'ALL';
-          state.sortBy = DATASETS[nextDataset].defaultSort;
-          state.sortDir = 'asc';
-          state.currentPage = 1;
-          // Restore per-dataset preferences if any were persisted
-          const persisted = readPersistedState();
-          if (persisted && persisted[nextDataset]) {
-            applyDatasetPersistedState(nextDataset, persisted[nextDataset]);
-          }
-          elements.searchInput.placeholder = DATASETS[nextDataset].searchPlaceholder;
-          render();
-        })
-      )
-    );
+    const container = event.currentTarget;
+    if (container === elements.marketFilters) {
+      if (state.market === value) return;
+      state.market = value;
+    } else if (container === elements.assetFilters) {
+      if (state.dataset === 'macro') {
+        if (state.frequency === value) return;
+        state.frequency = value;
+      } else {
+        if (state.assetClass === value) return;
+        state.assetClass = value;
+      }
+    } else if (container === elements.statusFilters) {
+      if (state.dataset === 'macro') {
+        if (state.sourceFilter === value) return;
+        state.sourceFilter = value;
+      } else {
+        if (state.status === value) return;
+        state.status = value;
+      }
+    } else {
+      return;
+    }
+    state.currentPage = 1;
+    render();
+  }
 
-    elements.datasetTabs.querySelectorAll('.pill').forEach((button) => {
-      button.classList.add('dataset-tab');
+  function buildDatasetTabs() {
+    // Build buttons once; updateDatasetTabsState() handles active class & counts per render.
+    elements.datasetTabs.replaceChildren();
+
+    const indicator = document.createElement('div');
+    indicator.className = 'dataset-tab-indicator';
+    elements.datasetTabs.appendChild(indicator);
+    elements.datasetTabIndicator = indicator;
+
+    Object.entries(DATASETS).forEach(([value, config]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dataset-tab';
+      btn.dataset.dataset = value;
+      btn.setAttribute('role', 'tab');
+
+      const labelEl = document.createElement('span');
+      labelEl.className = 'dataset-tab-label';
+      labelEl.textContent = config.label;
+
+      const countEl = document.createElement('span');
+      countEl.className = 'dataset-tab-count';
+      countEl.textContent = '—';
+
+      btn.append(labelEl, countEl);
+      btn.addEventListener('click', () => switchDataset(value));
+      elements.datasetTabs.appendChild(btn);
     });
+  }
+
+  function switchDataset(nextDataset) {
+    if (state.dataset === nextDataset) return;
+
+    state.dataset = nextDataset;
+    state.searchTerm = '';
+    state.market = 'ALL';
+    state.assetClass = 'ALL';
+    state.status = getDefaultStatusFor(nextDataset);
+    state.frequency = 'ALL';
+    state.sourceFilter = 'ALL';
+    state.sortBy = DATASETS[nextDataset].defaultSort;
+    state.sortDir = 'asc';
+    state.currentPage = 1;
+
+    const persisted = readPersistedState();
+    if (persisted && persisted[nextDataset]) {
+      applyDatasetPersistedState(nextDataset, persisted[nextDataset]);
+    }
+
+    elements.searchInput.value = '';
+    elements.searchInput.placeholder = DATASETS[nextDataset].searchPlaceholder;
+    render();
+  }
+
+  function updateDatasetTabsState(animate = true) {
+    const tabs = elements.datasetTabs.querySelectorAll('.dataset-tab');
+    tabs.forEach((tab) => {
+      const key = tab.dataset.dataset;
+      const isActive = key === state.dataset;
+      tab.classList.toggle('active', isActive);
+      tab.setAttribute('aria-selected', String(isActive));
+
+      const countEl = tab.querySelector('.dataset-tab-count');
+      if (!countEl) return;
+      const meta = state.metadata[key];
+      if (meta && meta.generatedAt) {
+        countEl.textContent = Number(meta.total || 0).toLocaleString();
+      } else {
+        countEl.textContent = '—';
+      }
+    });
+    positionTabIndicator(animate);
+  }
+
+  function positionTabIndicator(animate = true) {
+    const indicator = elements.datasetTabIndicator;
+    if (!indicator) return;
+    const activeTab = elements.datasetTabs.querySelector('.dataset-tab.active');
+    if (!activeTab) return;
+
+    if (!animate) {
+      indicator.style.transition = 'none';
+      // Force reflow so the transition: none takes effect before we set new values.
+      void indicator.offsetWidth;
+    }
+
+    indicator.style.top = `${activeTab.offsetTop}px`;
+    indicator.style.height = `${activeTab.offsetHeight}px`;
+    indicator.style.left = `${activeTab.offsetLeft}px`;
+    indicator.style.width = `${activeTab.offsetWidth}px`;
+
+    if (!animate) {
+      requestAnimationFrame(() => {
+        indicator.style.transition = '';
+      });
+    }
   }
 
   function renderFilters() {
     const metadata = getDatasetMetadata();
+    const isMacro = state.dataset === 'macro';
+
     elements.marketFilters.replaceChildren(
-      createPill('ALL', '全部', state.market, (value) => {
-        state.market = value;
-        state.currentPage = 1;
-        render();
-      }),
-      ...metadata.markets.map((market) =>
-        createPill(market, market, state.market, (value) => {
-          state.market = value;
-          state.currentPage = 1;
-          render();
-        })
-      )
+      createPill('ALL', '全部', state.market),
+      ...metadata.markets.map((market) => createPill(market, market, state.market))
     );
 
-    elements.assetFilterLabel.textContent = state.dataset === 'macro' ? '頻率' : '類別';
+    const assetCurrent = isMacro ? state.frequency : state.assetClass;
+    const assetValues = isMacro ? metadata.frequencies : metadata.assetClasses;
+    elements.assetFilterLabel.textContent = isMacro ? '頻率' : '類別';
     elements.assetFilters.replaceChildren(
-      createPill('ALL', '全部', state.dataset === 'macro' ? state.frequency : state.assetClass, (value) => {
-        if (state.dataset === 'macro') {
-          state.frequency = value;
-        } else {
-          state.assetClass = value;
-        }
-        state.currentPage = 1;
-        render();
-      }),
-      ...(state.dataset === 'macro' ? metadata.frequencies : metadata.assetClasses).map((value) =>
-        createPill(value, value, state.dataset === 'macro' ? state.frequency : state.assetClass, (nextValue) => {
-          if (state.dataset === 'macro') {
-            state.frequency = nextValue;
-          } else {
-            state.assetClass = nextValue;
-          }
-          state.currentPage = 1;
-          render();
-        })
-      )
+      createPill('ALL', '全部', assetCurrent),
+      ...assetValues.map((value) => createPill(value, value, assetCurrent))
     );
 
-    elements.statusFilterLabel.textContent = state.dataset === 'macro' ? '來源' : '狀態';
-    const statusOptions = state.dataset === 'macro'
+    elements.statusFilterLabel.textContent = isMacro ? '來源' : '狀態';
+    const statusOptions = isMacro
       ? [
           { value: 'ALL', label: '全部' },
           ...metadata.sources.map((source) => ({ value: source, label: source })),
@@ -1161,19 +1817,9 @@ tbody tr:hover {
           { value: 'active', label: 'active' },
           { value: 'delisted', label: 'delisted' },
         ];
-
+    const statusCurrent = isMacro ? state.sourceFilter : state.status;
     elements.statusFilters.replaceChildren(
-      ...statusOptions.map((option) =>
-        createPill(option.value, option.label, state.dataset === 'macro' ? state.sourceFilter : state.status, (value) => {
-          if (state.dataset === 'macro') {
-            state.sourceFilter = value;
-          } else {
-            state.status = value;
-          }
-          state.currentPage = 1;
-          render();
-        })
-      )
+      ...statusOptions.map((option) => createPill(option.value, option.label, statusCurrent))
     );
   }
 
@@ -1234,7 +1880,7 @@ tbody tr:hover {
 
   function renderCell(item, column) {
     if (column.type === 'status') {
-      return item.status === 'delisted' ? 'delisted' : '';
+      return item.status || '';
     }
     if (column.type === 'date') {
       return formatTradeDate(item[column.key]);
@@ -1249,12 +1895,68 @@ tbody tr:hover {
     return item[column.key] || '-';
   }
 
+  function highlightMatch(text, query) {
+    const safe = escapeHtml(text);
+    if (!query) return safe;
+    const lowerText = String(text).toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const idx = lowerText.indexOf(lowerQuery);
+    if (idx === -1) return safe;
+    const before = String(text).slice(0, idx);
+    const match = String(text).slice(idx, idx + query.length);
+    const after = String(text).slice(idx + query.length);
+    return `${escapeHtml(before)}<mark>${escapeHtml(match)}</mark>${escapeHtml(after)}`;
+  }
+
+  function renderStatusHTML(status) {
+    const value = String(status || 'unknown');
+    const safe = escapeHtml(value);
+    return `<span class="status-pill status-${safe}"><span class="status-dot" aria-hidden="true"></span>${safe}</span>`;
+  }
+
+  function renderCellHTML(item, column, query) {
+    if (column.type === 'status') {
+      return renderStatusHTML(item.status);
+    }
+    if (column.type === 'date') {
+      return escapeHtml(formatTradeDate(item[column.key]));
+    }
+    if (column.type === 'number') {
+      const formatted = formatPrice(item[column.key]);
+      if (formatted === '-') return '-';
+      const safe = escapeHtml(formatted);
+      if (column.key === 'latest_price' && item.currency) {
+        return `${safe}<span class="price-ccy">${escapeHtml(item.currency)}</span>`;
+      }
+      return safe;
+    }
+
+    let text;
+    if (column.key === 'name') {
+      text = item.name || item.short_name || '-';
+    } else {
+      text = item[column.key] || '-';
+    }
+
+    if (text === '-' || !HIGHLIGHT_KEYS.has(column.key)) {
+      return escapeHtml(text);
+    }
+    return highlightMatch(text, query);
+  }
+
   function renderTableBody() {
     const rows = getVisibleRows();
     const hasRows = rows.length > 0;
     const columns = getDatasetConfig().columns;
+    const query = normalizeText(state.searchTerm);
+
+    const idKey = state.dataset === 'macro' ? 'series_id' : 'instrument_id';
 
     elements.tableBody.innerHTML = rows.map((item) => {
+      const rowId = item[idKey];
+      const rowAttrs = rowId
+        ? ` class="row-clickable" data-id="${escapeHtml(rowId)}" tabindex="0" role="button" aria-label="查看 ${escapeHtml(item.symbol || item.source_code || item.name || '')} 詳情"`
+        : '';
       const cells = columns.map((column) => {
         const classNames = [];
         if (column.className) {
@@ -1262,28 +1964,44 @@ tbody tr:hover {
         }
         if (column.type === 'status') {
           classNames.push('cell-status');
-          if (item.status === 'delisted') {
-            classNames.push('delisted');
-          }
         }
         const classAttribute = classNames.length ? ` class="${classNames.join(' ')}"` : '';
         const dataAttrs = ` data-label="${escapeHtml(column.label)}" data-column="${escapeHtml(column.key)}"`;
-        const value = escapeHtml(renderCell(item, column));
-        const interactive = column.key === 'symbol' && item.symbol
-          ? ` data-copy="${escapeHtml(item.symbol)}" role="button" tabindex="0" title="點擊複製 ${escapeHtml(item.symbol)}"`
-          : '';
-        return `<td${classAttribute}${dataAttrs}${interactive}>${value}</td>`;
+        const value = renderCellHTML(item, column, query);
+
+        let extraAttrs = '';
+        if (column.key === 'symbol' && item.symbol) {
+          extraAttrs = ` data-copy="${escapeHtml(item.symbol)}" role="button" tabindex="0" title="點擊複製 ${escapeHtml(item.symbol)}"`;
+        } else if (column.key === 'name') {
+          const fullName = item.name || item.short_name;
+          if (fullName) extraAttrs = ` title="${escapeHtml(fullName)}"`;
+        } else if (column.key === 'source_code' && item.source_code) {
+          extraAttrs = ` title="${escapeHtml(item.source_code)}"`;
+        }
+
+        return `<td${classAttribute}${dataAttrs}${extraAttrs}>${value}</td>`;
       }).join('');
 
-      return `
-        <tr>
-          ${cells}
-        </tr>
-      `;
+      return `<tr${rowAttrs}>${cells}</tr>`;
     }).join('');
 
     elements.emptyState.classList.toggle('hidden', hasRows);
-    elements.emptyState.textContent = `沒有符合條件的${getDatasetConfig().itemLabel}。`;
+    if (elements.emptyMessage) {
+      elements.emptyMessage.textContent = `沒有符合條件的${getDatasetConfig().itemLabel}。`;
+    }
+    if (elements.emptyClear) {
+      elements.emptyClear.hidden = !isFiltersDirty();
+    }
+    if (state.detailId) setActiveRow(state.detailId);
+  }
+
+  function isFiltersDirty() {
+    if (state.searchTerm.trim() !== '') return true;
+    if (state.market !== 'ALL') return true;
+    if (state.dataset === 'macro') {
+      return state.frequency !== 'ALL' || state.sourceFilter !== 'ALL';
+    }
+    return state.assetClass !== 'ALL' || state.status !== getDefaultStatusFor(state.dataset);
   }
 
   function createPageButton(label, disabled, onClick, className = '') {
@@ -1378,8 +2096,9 @@ tbody tr:hover {
   }
 
   function render() {
+    flushPendingSearch();
     applyFilters();
-    renderDatasetTabs();
+    updateDatasetTabsState();
     renderFilters();
     renderTableColumns();
     renderTableHead();
@@ -1402,12 +2121,7 @@ tbody tr:hover {
       elements.csvExport.disabled = !hasRows;
     }
     if (elements.clearFilters) {
-      const isDirty = state.searchTerm.trim() !== ''
-        || state.market !== 'ALL'
-        || (state.dataset === 'macro'
-              ? state.frequency !== 'ALL' || state.sourceFilter !== 'ALL'
-              : state.assetClass !== 'ALL' || state.status !== getDefaultStatusFor(state.dataset));
-      elements.clearFilters.disabled = !isDirty;
+      elements.clearFilters.disabled = !isFiltersDirty();
     }
   }
 
@@ -1429,6 +2143,7 @@ tbody tr:hover {
     sd: 'sortDir',
     ps: 'pageSize',
     p: 'currentPage',
+    id: 'detailId',
   };
 
   let suppressURLSync = false;
@@ -1471,6 +2186,7 @@ tbody tr:hover {
       sortDir: 'asc',
       pageSize: DEFAULT_PAGE_SIZE,
       currentPage: 1,
+      detailId: '',
     };
   }
 
@@ -1579,6 +2295,7 @@ tbody tr:hover {
     if (PAGE_SIZE_OPTIONS.includes(ps)) state.pageSize = ps;
     const page = Number(urlState.currentPage);
     if (Number.isFinite(page) && page >= 1) state.currentPage = Math.floor(page);
+    if (typeof urlState.detailId === 'string') state.detailId = urlState.detailId;
   }
 
   // ---------- clear filters ----------
@@ -1639,10 +2356,415 @@ tbody tr:hover {
     if (!cell) return;
     if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
     if (event.type === 'keydown') event.preventDefault();
+    // Stop the bubble so the row-level open-detail handler doesn't fire.
+    event.stopPropagation();
     const value = cell.getAttribute('data-copy');
     copyToClipboard(value).then((ok) => {
       showToast(ok ? `已複製：${value}` : `複製失敗：${value}`);
     });
+  }
+
+  function handleRowActivate(event) {
+    if (event.type === 'keydown') {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      // Only the row itself, not the inner symbol cell (which has its own keydown copy).
+      if (document.activeElement && document.activeElement.matches('td[data-copy]')) return;
+      event.preventDefault();
+    } else {
+      // Clicks inside the symbol copy cell are handled by handleSymbolClick and
+      // stop propagation, so we just need to ignore other interactive descendants.
+      if (event.target.closest('a, button, [data-copy]')) return;
+    }
+    const row = event.target.closest('tr[data-id]');
+    if (!row) return;
+    openDetail(row.dataset.id);
+  }
+
+  // ---------- detail drawer ----------
+
+  let currentDetailToken = 0;
+  let lastFocusedBeforeDetail = null;
+
+  function findItemById(id) {
+    if (!id) return null;
+    const idKey = state.dataset === 'macro' ? 'series_id' : 'instrument_id';
+    return state.source[state.dataset].find((item) => item[idKey] === id) || null;
+  }
+
+  function findItemAcrossDatasets(id) {
+    if (!id) return null;
+    for (const ds of Object.keys(DATASETS)) {
+      const idKey = ds === 'macro' ? 'series_id' : 'instrument_id';
+      const found = (state.source[ds] || []).find((item) => item[idKey] === id);
+      if (found) return { dataset: ds, item: found };
+    }
+    return null;
+  }
+
+  function openDetail(id) {
+    if (!id) return;
+    const found = findItemAcrossDatasets(id);
+    if (!found) {
+      showToast('找不到此標的');
+      state.detailId = '';
+      syncURL();
+      return;
+    }
+    state.detailId = id;
+    if (found.dataset !== state.dataset) {
+      // ID from another dataset — switch tab first so future syncURL writes
+      // resolve under the correct ds context, then re-render the table.
+      switchDataset(found.dataset);
+    }
+    setActiveRow(id);
+    if (!lastFocusedBeforeDetail) {
+      lastFocusedBeforeDetail = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+
+    renderDetailMeta(found.item);
+    elements.detailBackdrop.classList.add('visible');
+    elements.detailBackdrop.setAttribute('aria-hidden', 'false');
+    elements.detailDrawer.classList.add('visible');
+    elements.detailDrawer.setAttribute('aria-hidden', 'false');
+    elements.detailClose.focus();
+
+    const token = ++currentDetailToken;
+    if (state.dataset === 'macro') {
+      elements.detailActions.innerHTML = '';
+      fetchMacroObservations(id, token);
+    } else {
+      fetchDetailPrices(id, token);
+      fetchDetailActions(id, token);
+    }
+
+    syncURL();
+  }
+
+  function closeDetail() {
+    if (!elements.detailDrawer.classList.contains('visible')) return;
+    currentDetailToken += 1; // invalidate any in-flight fetches
+    state.detailId = '';
+    setActiveRow('');
+    elements.detailBackdrop.classList.remove('visible');
+    elements.detailBackdrop.setAttribute('aria-hidden', 'true');
+    elements.detailDrawer.classList.remove('visible');
+    elements.detailDrawer.setAttribute('aria-hidden', 'true');
+    syncURL();
+    if (lastFocusedBeforeDetail && document.body.contains(lastFocusedBeforeDetail)) {
+      lastFocusedBeforeDetail.focus();
+    }
+    lastFocusedBeforeDetail = null;
+  }
+
+  function setActiveRow(id) {
+    const prev = elements.tableBody.querySelector('tr.row-active');
+    if (prev) prev.classList.remove('row-active');
+    if (!id) return;
+    const next = elements.tableBody.querySelector(`tr[data-id="${CSS.escape(id)}"]`);
+    if (next) {
+      next.classList.add('row-active');
+      // Keep the active row in view when navigating via keyboard.
+      next.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    }
+  }
+
+  function navigateDetail(delta) {
+    if (!state.detailId || !Array.isArray(state.filtered) || state.filtered.length === 0) return;
+    const idKey = state.dataset === 'macro' ? 'series_id' : 'instrument_id';
+    const idx = state.filtered.findIndex((item) => item[idKey] === state.detailId);
+    if (idx === -1) return;
+    const nextIdx = idx + delta;
+    if (nextIdx < 0 || nextIdx >= state.filtered.length) return;
+    const nextId = state.filtered[nextIdx][idKey];
+    const nextPage = Math.floor(nextIdx / state.pageSize) + 1;
+    if (nextPage !== state.currentPage) {
+      state.currentPage = nextPage;
+      render();
+    }
+    openDetail(nextId);
+  }
+
+  function renderDetailMeta(item) {
+    const isMacro = state.dataset === 'macro';
+    const idKey = isMacro ? 'series_id' : 'instrument_id';
+    const symbolText = isMacro ? (item.source_code || item.name || item[idKey]) : (item.symbol || item[idKey]);
+    const nameText = isMacro ? (item.name || '') : (item.name || item.short_name || '');
+
+    elements.detailSymbol.textContent = symbolText || '—';
+    elements.detailName.textContent = nameText || '';
+
+    const badges = [];
+    if (item.market) badges.push({ text: item.market });
+    if (isMacro) {
+      if (item.frequency) badges.push({ text: item.frequency });
+      if (item.source) badges.push({ text: item.source });
+    } else {
+      if (item.asset_class) badges.push({ text: item.asset_class });
+      if (item.currency) badges.push({ text: item.currency });
+      if (item.status) badges.push({ text: item.status, cls: `is-status-${item.status}` });
+    }
+
+    const rows = [];
+    if (isMacro) {
+      if (item.unit) rows.push(['單位', item.unit]);
+      if (item.source_code) rows.push(['Source Code', item.source_code]);
+      if (item.frequency) rows.push(['頻率', item.frequency]);
+      if (item.market) rows.push(['市場', item.market]);
+    } else {
+      if (item.first_trade_date) rows.push(['First Trade Date', item.first_trade_date]);
+      if (item.latest_trade_date) rows.push(['Last Trade Date', item.latest_trade_date]);
+      if (item.latest_price !== null && item.latest_price !== undefined) {
+        rows.push(['Last Price', formatPrice(item.latest_price)]);
+      }
+      if (item.currency) rows.push(['Currency', item.currency]);
+    }
+    rows.push([isMacro ? 'Series ID' : 'Instrument ID', item[idKey]]);
+
+    const badgeHTML = badges.length
+      ? `<div class="detail-badges">${badges.map((b) =>
+          `<span class="detail-badge${b.cls ? ' ' + b.cls : ''}">${escapeHtml(b.text)}</span>`
+        ).join('')}</div>`
+      : '';
+
+    const gridHTML = rows.length
+      ? `<dl class="detail-grid">${rows.map(([label, value]) =>
+          `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`
+        ).join('')}</dl>`
+      : '';
+
+    const copySymbolLabel = isMacro ? '複製 Source Code' : '複製 Symbol';
+    const copyIdLabel = isMacro ? '複製 Series ID' : '複製 Instrument ID';
+    const copySymbolValue = isMacro ? (item.source_code || '') : (item.symbol || '');
+
+    const actionsHTML = `
+      <div class="detail-actions-row">
+        ${copySymbolValue ? `<button type="button" class="detail-action-btn" data-copy-target="${escapeHtml(copySymbolValue)}">${copySymbolLabel}</button>` : ''}
+        <button type="button" class="detail-action-btn" data-copy-target="${escapeHtml(item[idKey])}">${copyIdLabel}</button>
+      </div>`;
+
+    elements.detailMeta.innerHTML = badgeHTML + gridHTML + actionsHTML;
+
+    if (isMacro) {
+      elements.detailPrices.innerHTML = renderDetailSectionHeader('最近觀測值') + renderSkeleton();
+    } else {
+      elements.detailPrices.innerHTML = renderDetailSectionHeader('最近 10 筆 EOD') + renderSkeleton();
+      elements.detailActions.innerHTML = renderDetailSectionHeader('近期 Corporate Action') + renderSkeleton();
+    }
+  }
+
+  function renderDetailSectionHeader(title) {
+    return `<h3>${escapeHtml(title)}</h3>`;
+  }
+
+  function renderSkeleton() {
+    return `<div class="detail-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>`;
+  }
+
+  function renderDetailError(message, retryHandlerKey) {
+    return `<div class="detail-error"><span>${escapeHtml(message)}</span><button type="button" class="detail-action-btn" data-retry="${retryHandlerKey}">重試</button></div>`;
+  }
+
+  function renderDetailEmpty(message) {
+    return `<div class="detail-empty">${escapeHtml(message)}</div>`;
+  }
+
+  async function fetchDetailPrices(id, token) {
+    try {
+      const response = await fetch(`/api/v1/serve/eod/${encodeURIComponent(id)}?page_size=10`);
+      if (token !== currentDetailToken) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (token !== currentDetailToken) return;
+      const items = Array.isArray(payload.data) ? payload.data : [];
+      if (items.length === 0) {
+        elements.detailPrices.innerHTML = renderDetailSectionHeader('最近 10 筆 EOD') + renderDetailEmpty('尚無 EOD 紀錄');
+        return;
+      }
+      const rowsHTML = items.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.trade_date || '')}</td>
+          <td>${escapeHtml(formatPrice(row.open))}</td>
+          <td>${escapeHtml(formatPrice(row.high))}</td>
+          <td>${escapeHtml(formatPrice(row.low))}</td>
+          <td>${escapeHtml(formatPrice(row.close))}</td>
+          <td>${escapeHtml(formatInteger(row.volume))}</td>
+        </tr>`).join('');
+      // Serve returns newest first; reverse for left→right time order in sparkline.
+      const closes = items.slice().reverse().map((row) => Number(row.close)).filter((n) => Number.isFinite(n));
+      const summaryHTML = buildPriceSummaryHTML(items[0], items[1], closes);
+      elements.detailPrices.innerHTML =
+        renderDetailSectionHeader('最近 10 筆 EOD') + summaryHTML +
+        `<div class="detail-table-wrap"><table class="detail-table"><thead><tr><th>Date</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr></thead><tbody>${rowsHTML}</tbody></table></div>`;
+    } catch (err) {
+      if (token !== currentDetailToken) return;
+      console.error('fetchDetailPrices failed', err);
+      elements.detailPrices.innerHTML = renderDetailSectionHeader('最近 10 筆 EOD') + renderDetailError('讀取 EOD 失敗', 'prices');
+    }
+  }
+
+  async function fetchDetailActions(id, token) {
+    try {
+      const response = await fetch(`/api/v1/serve/corporate-actions/${encodeURIComponent(id)}?page_size=5`);
+      if (token !== currentDetailToken) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (token !== currentDetailToken) return;
+      const items = Array.isArray(payload.data) ? payload.data : [];
+      if (items.length === 0) {
+        elements.detailActions.innerHTML = renderDetailSectionHeader('近期 Corporate Action') + renderDetailEmpty('最近無 corporate action');
+        return;
+      }
+      const rowsHTML = items.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.ex_date || row.record_date || '')}</td>
+          <td>${escapeHtml(row.action_type || '')}</td>
+          <td>${escapeHtml(row.ratio !== null && row.ratio !== undefined ? formatPrice(row.ratio) : (row.cash_amount !== null && row.cash_amount !== undefined ? `${formatPrice(row.cash_amount)} ${row.currency || ''}`.trim() : ''))}</td>
+        </tr>`).join('');
+      elements.detailActions.innerHTML =
+        renderDetailSectionHeader('近期 Corporate Action') +
+        `<div class="detail-table-wrap"><table class="detail-table"><thead><tr><th>Ex Date</th><th>Type</th><th>Value</th></tr></thead><tbody>${rowsHTML}</tbody></table></div>`;
+    } catch (err) {
+      if (token !== currentDetailToken) return;
+      console.error('fetchDetailActions failed', err);
+      elements.detailActions.innerHTML = renderDetailSectionHeader('近期 Corporate Action') + renderDetailError('讀取事件失敗', 'actions');
+    }
+  }
+
+  async function fetchMacroObservations(id, token) {
+    try {
+      const response = await fetch(`/api/v1/serve/macro/observations/${encodeURIComponent(id)}?page_size=10`);
+      if (token !== currentDetailToken) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (token !== currentDetailToken) return;
+      const items = Array.isArray(payload.data) ? payload.data : [];
+      if (items.length === 0) {
+        elements.detailPrices.innerHTML = renderDetailSectionHeader('最近觀測值') + renderDetailEmpty('尚無觀測資料');
+        return;
+      }
+      const rowsHTML = items.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.obs_date || '')}</td>
+          <td>${escapeHtml(formatPrice(row.value))}</td>
+          <td>${escapeHtml(row.source || '')}</td>
+        </tr>`).join('');
+      elements.detailPrices.innerHTML =
+        renderDetailSectionHeader('最近觀測值') +
+        `<div class="detail-table-wrap"><table class="detail-table"><thead><tr><th>Date</th><th>Value</th><th>Source</th></tr></thead><tbody>${rowsHTML}</tbody></table></div>`;
+    } catch (err) {
+      if (token !== currentDetailToken) return;
+      console.error('fetchMacroObservations failed', err);
+      elements.detailPrices.innerHTML = renderDetailSectionHeader('最近觀測值') + renderDetailError('讀取觀測資料失敗', 'macro');
+    }
+  }
+
+  function buildPriceSummaryHTML(latestRow, prevRow, closes) {
+    if (!latestRow) return '';
+    const latestClose = Number(latestRow.close);
+    if (!Number.isFinite(latestClose)) return '';
+
+    let deltaHTML = '';
+    if (prevRow && Number.isFinite(Number(prevRow.close))) {
+      const prev = Number(prevRow.close);
+      const diff = latestClose - prev;
+      const pct = prev !== 0 ? (diff / prev) * 100 : 0;
+      const cls = diff > 0 ? 'is-up' : (diff < 0 ? 'is-down' : 'is-flat');
+      const arrow = diff > 0 ? '▲' : (diff < 0 ? '▼' : '·');
+      const sign = diff > 0 ? '+' : '';
+      deltaHTML = `<div class="detail-summary-delta ${cls}">${arrow} ${escapeHtml(sign + formatPrice(diff))} (${escapeHtml(sign + pct.toFixed(2))}%)</div>`;
+    }
+
+    const sparkHTML = buildSparklineSVG(closes);
+    return `
+      <div class="detail-summary">
+        <div class="detail-summary-figures">
+          <div class="detail-summary-price">${escapeHtml(formatPrice(latestClose))}</div>
+          ${deltaHTML}
+        </div>
+        <div class="detail-summary-spark" aria-hidden="true">${sparkHTML}</div>
+      </div>`;
+  }
+
+  function buildSparklineSVG(values) {
+    if (!values || values.length < 2) return '';
+    const w = 96;
+    const h = 28;
+    const pad = 2;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    const stepX = (w - pad * 2) / (values.length - 1);
+    const points = values.map((v, i) => {
+      const x = pad + i * stepX;
+      const y = pad + (h - pad * 2) * (1 - (v - min) / range);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    const first = values[0];
+    const last = values[values.length - 1];
+    const stroke = last > first ? 'var(--success)' : (last < first ? 'var(--danger)' : 'var(--text-2)');
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">
+      <polyline fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" points="${points.join(' ')}" />
+    </svg>`;
+  }
+
+  function formatInteger(value) {
+    if (value === null || value === undefined || value === '') return '';
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toLocaleString() : String(value);
+  }
+
+  function handleDrawerKeydown(event) {
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(
+      elements.detailDrawer.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), a[href], input, select, textarea')
+    ).filter((el) => !el.disabled && el.offsetParent !== null);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      elements.detailDrawer.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !elements.detailDrawer.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !elements.detailDrawer.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  function handleDetailClick(event) {
+    const copyBtn = event.target.closest('[data-copy-target]');
+    if (copyBtn) {
+      const value = copyBtn.getAttribute('data-copy-target');
+      copyToClipboard(value).then((ok) => {
+        showToast(ok ? `已複製：${value}` : `複製失敗：${value}`);
+      });
+      return;
+    }
+    const retryBtn = event.target.closest('[data-retry]');
+    if (retryBtn) {
+      const which = retryBtn.getAttribute('data-retry');
+      const id = state.detailId;
+      if (!id) return;
+      const token = ++currentDetailToken;
+      if (which === 'prices') {
+        elements.detailPrices.innerHTML = renderDetailSectionHeader('最近 10 筆 EOD') + renderSkeleton();
+        fetchDetailPrices(id, token);
+      } else if (which === 'actions') {
+        elements.detailActions.innerHTML = renderDetailSectionHeader('近期 Corporate Action') + renderSkeleton();
+        fetchDetailActions(id, token);
+      } else if (which === 'macro') {
+        elements.detailPrices.innerHTML = renderDetailSectionHeader('最近觀測值') + renderSkeleton();
+        fetchMacroObservations(id, token);
+      }
+    }
   }
 
   // ---------- CSV export ----------
@@ -1686,15 +2808,27 @@ tbody tr:hover {
 
   let searchTimer = null;
   function handleSearchInput(event) {
-    const value = event.target.value;
     elements.tableSection.classList.add('is-filtering');
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
-      state.searchTerm = value;
+      searchTimer = null;
+      state.searchTerm = elements.searchInput.value;
       state.currentPage = 1;
       render();
-      elements.tableSection.classList.remove('is-filtering');
     }, SEARCH_DEBOUNCE_MS);
+  }
+
+  function flushPendingSearch() {
+    if (searchTimer) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+      const latest = elements.searchInput.value;
+      if (latest !== state.searchTerm) {
+        state.searchTerm = latest;
+        state.currentPage = 1;
+      }
+    }
+    elements.tableSection.classList.remove('is-filtering');
   }
 
   async function loadData() {
@@ -1703,7 +2837,7 @@ tbody tr:hover {
     try {
       const entries = await Promise.all(
         Object.entries(DATASETS).map(async ([dataset, config]) => {
-          const response = await fetch(config.url, { cache: 'no-store' });
+          const response = await fetch(config.url);
           if (!response.ok) {
             throw new Error(`${config.url} HTTP ${response.status}`);
           }
@@ -1729,6 +2863,12 @@ tbody tr:hover {
       // and URL-restored page numbers must survive the first data load.
       render();
       setMode('ready');
+
+      if (state.detailId) {
+        const pendingId = state.detailId;
+        state.detailId = '';
+        openDetail(pendingId);
+      }
     } catch (error) {
       elements.errorMessage.textContent = `請確認 instruments.json 與 macro-series.json 都已產生。錯誤訊息：${error.message}`;
       setMode('error');
@@ -1737,11 +2877,19 @@ tbody tr:hover {
 
   elements.searchInput.addEventListener('input', handleSearchInput);
 
+  elements.marketFilters.addEventListener('click', handleFilterPillClick);
+  elements.assetFilters.addEventListener('click', handleFilterPillClick);
+  elements.statusFilters.addEventListener('click', handleFilterPillClick);
+
   elements.retryButton.addEventListener('click', () => {
     loadData();
   });
 
   elements.clearFilters.addEventListener('click', clearFilters);
+
+  if (elements.emptyClear) {
+    elements.emptyClear.addEventListener('click', clearFilters);
+  }
 
   elements.pageSizeSelect.addEventListener('change', (event) => {
     const next = Number(event.target.value);
@@ -1755,13 +2903,34 @@ tbody tr:hover {
 
   elements.tableBody.addEventListener('click', handleSymbolClick);
   elements.tableBody.addEventListener('keydown', handleSymbolClick);
+  elements.tableBody.addEventListener('click', handleRowActivate);
+  elements.tableBody.addEventListener('keydown', handleRowActivate);
+
+  elements.detailClose.addEventListener('click', closeDetail);
+  elements.detailBackdrop.addEventListener('click', closeDetail);
+  elements.detailDrawer.addEventListener('click', handleDetailClick);
+  elements.detailDrawer.addEventListener('keydown', handleDrawerKeydown);
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && document.activeElement !== elements.searchInput) {
-      // ESC outside the search box quickly clears filters
+    const drawerOpen = elements.detailDrawer.classList.contains('visible');
+
+    if (event.key === 'Escape') {
+      if (drawerOpen) {
+        closeDetail();
+        return;
+      }
+      if (document.activeElement === elements.searchInput) return;
       if (!elements.clearFilters.disabled) {
         clearFilters();
       }
+      return;
+    }
+
+    if (drawerOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      event.preventDefault();
+      navigateDetail(event.key === 'ArrowDown' ? 1 : -1);
     }
   });
 
@@ -1781,9 +2950,11 @@ tbody tr:hover {
   elements.pageSizeSelect.value = String(state.pageSize);
   suppressURLSync = false;
 
-  renderDatasetTabs();
+  buildDatasetTabs();
   renderFilters();
   renderTableHead();
+  updateDatasetTabsState(false);
+  window.addEventListener('resize', () => positionTabIndicator(false));
   loadData();
 })();
 </script>
