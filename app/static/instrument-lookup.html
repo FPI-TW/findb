@@ -754,6 +754,17 @@ tbody tr:hover {
     return state.filtered.slice(start, end);
   }
 
+  const GENERATED_AT_FORMATTER = new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
   function formatGeneratedAt(raw) {
     if (!raw) {
       return '未知';
@@ -764,7 +775,11 @@ tbody tr:hover {
       return escapeHtml(raw);
     }
 
-    return parsed.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+    const parts = GENERATED_AT_FORMATTER.formatToParts(parsed).reduce((acc, part) => {
+      acc[part.type] = part.value;
+      return acc;
+    }, {});
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} UTC+8`;
   }
 
   function formatTradeDate(value) {
