@@ -1,6 +1,6 @@
 # FinDB 標的查詢頁面 — 技術規格
 
-> **版本**: 1.1 | **日期**: 2026-04-21 | **交付對象**: Codex
+> **版本**: 1.2 | **日期**: 2026-04-24 | **交付對象**: Codex
 
 ---
 
@@ -25,7 +25,8 @@
 │       │                                     │
 │       ▼                                     │
 │  app/static/instrument-lookup.html          │
-│       （載入 JSON → 前端篩選/搜尋）           │
+│       （由 /instrument-lookup 與 /static/*   │
+│        提供頁面/靜態資源）                   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -52,7 +53,7 @@
 **執行方式**：
 
 ```bash
-python scripts/generate_instrument_cache.py
+uv run python scripts/generate_instrument_cache.py
 ```
 
 **環境變數**（皆有預設值）：
@@ -265,7 +266,7 @@ from fastapi.staticfiles import StaticFiles
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 ```
 
-掛載後頁面可透過 `http://localhost:8080/static/instrument-lookup.html` 存取。
+掛載後頁面可透過 `http://localhost:8080/instrument-lookup` 存取；`/static/instrument-lookup.html` 也會保留為靜態檔直連路徑。
 
 若 `static/` mount 已存在，不需重複新增，僅確認路徑正確。
 
