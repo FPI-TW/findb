@@ -351,24 +351,25 @@ thead th {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 14px 10px;
+  padding: 14px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-2);
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 400;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: normal;
+  word-break: keep-all;
+  line-height: 1.3;
   box-shadow: 0 1px 0 var(--border-light);
 }
 
 .sort-button {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 5px;
   max-width: 100%;
   border: 0;
@@ -379,12 +380,13 @@ thead th {
   text-transform: inherit;
   letter-spacing: inherit;
   cursor: pointer;
+  text-align: left;
 }
 
 .sort-label {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: keep-all;
 }
 
 .sort-indicator {
@@ -748,15 +750,15 @@ tbody tr:hover {
       searchPlaceholder: '標的名稱、Symbol、Instrument ID…',
       searchFields: ['symbol', 'name', 'short_name','instrument_id', 'market', 'asset_class', 'currency'],
       columns: [
-        { key: 'market', label: 'Market', sortable: true, width: '7%' },
+        { key: 'market', label: 'Market', sortable: true, width: '9%' },
         { key: 'symbol', label: 'Symbol', sortable: true, className: 'cell-symbol', width: '10%' },
-        { key: 'name', label: 'Name', sortable: true, className: 'cell-name', width: '18%' },
-        { key: 'asset_class', label: 'Asset Class', sortable: true, width: '10%' },
+        { key: 'name', label: 'Name', sortable: true, className: 'cell-name', width: '16%' },
+        { key: 'asset_class', label: 'Asset Class', sortable: true, width: '11%' },
         { key: 'currency', label: 'CCY', sortable: true, width: '6%' },
-        { key: 'first_trade_date', label: 'First Date', sortable: true, type: 'date', className: 'cell-date', width: '12%' },
-        { key: 'latest_trade_date', label: 'Last Date', sortable: true, type: 'date', className: 'cell-date', width: '12%' },
-        { key: 'latest_price', label: 'Last Price', sortable: true, type: 'number', className: 'cell-price', width: '13%' },
-        { key: 'status', label: 'Status', sortable: true, type: 'status', width: '7%' },
+        { key: 'first_trade_date', label: 'First Date', sortable: true, type: 'date', className: 'cell-date', width: '11%' },
+        { key: 'latest_trade_date', label: 'Last Date', sortable: true, type: 'date', className: 'cell-date', width: '11%' },
+        { key: 'latest_price', label: 'Last Price', sortable: true, type: 'number', className: 'cell-price', width: '11%' },
+        { key: 'status', label: 'Status', sortable: true, type: 'status', width: '9%' },
       ],
     },
     macro: {
@@ -1165,6 +1167,7 @@ tbody tr:hover {
 
     getDatasetConfig().columns.forEach((column) => {
       const th = document.createElement('th');
+      th.title = column.label;
       if (!column.sortable) {
         th.textContent = column.label;
         fragment.appendChild(th);
@@ -1174,6 +1177,7 @@ tbody tr:hover {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `sort-button${state.sortBy === column.key ? ' active' : ''}`;
+      button.title = column.label;
       button.addEventListener('click', () => {
         if (state.sortBy === column.key) {
           state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
