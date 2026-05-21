@@ -74,6 +74,9 @@ findb/
 | 開發工作流 | `scripts/dev.py` + `Makefile` | cross-platform local commands |
 | Partial dump tooling | `scripts/partial_dump.py` + `configs/partial_dump.yaml` | export/import partial production data for local dev |
 | Seed upsert | `scripts/seed_upsert.py` | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate |
+| Instrument name backfill | `scripts/backfill_instrument_names.py`（TW）+ `scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；皆為 NULL-only update 可重複執行 |
+| Instrument routing 修正 | `scripts/fix_misrouted_tw_futures.py` + `scripts/cleanup_stale_instruments.py` | 修整舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
+| Backfill 部署手冊 | `docs/instrument_name_backfill_deployment.md` | EC2 + Aurora 環境下執行 backfill / routing 修正的階段步驟、備份與回滾 |
 | 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2 |
 
 ## 子目錄指南

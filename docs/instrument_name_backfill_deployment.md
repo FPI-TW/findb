@@ -25,10 +25,54 @@ routing bug 殘留的錯誤 asset_class 修掉。所有 script 預設 dry-run，
 
 ### 0. 備份 prod DB（強烈建議）
 
+Prod DB 在 AWS Aurora/RDS，EC2 上沒有 postgres 容器；以下二擇一。
+
+**方案 A — RDS/Aurora snapshot（推薦）**
+
 ```bash
-docker exec findb-postgres pg_dump -U findb -d findb \
-  --table=instruments --table=market_data_eod --table=instrument_identifiers \
-  > "$HOME/backups/findb_$(date -u +%Y%m%dT%H%M%SZ).sql"
+# 先查 identifier
+aws rds describe-db-clusters --query 'DBClusters[].DBClusterIdentifier' --output table
+aws rds describe-db-instances --query 'DBInstances[].DBInstanceIdentifier' --output table
+
+# Aurora cluster
+aws rds create-db-cluster-snapshot \
+  --db-cluster-identifier <your-cluster-id> \
+  --db-cluster-snapshot-identifier "findb-pre-backfill-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# 或一般 RDS instance
+aws rds create-db-snapshot \
+  --db-instance-identifier <your-instance-id> \
+  --db-snapshot-identifier "findb-pre-backfill-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+**方案 B — 從 EC2 邏輯備份**
+
+注意三個雷：
+
+1. ``pg_dump`` 版本必須 ``≥`` server。Aurora 目前是 16.x，Ubuntu 22.04
+   預設只有 14.x，要從 PGDG repo 裝 16。
+2. DATABASE_URL 帶 SQLAlchemy 的 ``+asyncpg`` driver suffix，``pg_dump``
+   不認得，要剝掉。
+3. asyncpg 用 ``ssl=require`` query param，libpq 只認 ``sslmode=...``，
+   要替換。
+
+```bash
+# 1) 裝 postgresql-client-16 (PGDG)
+sudo install -d /usr/share/postgresql-common/pgdg
+sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+. /etc/os-release
+sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $VERSION_CODENAME-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+sudo apt-get update && sudo apt-get install -y postgresql-client-16
+
+# 2) 從 findb-app 讀 DATABASE_URL、剝 +asyncpg、把 ssl= 改成 sslmode=
+DB_URL=$(docker exec findb-app printenv DATABASE_URL \
+  | sed -E 's|\+asyncpg||; s/([?&])ssl=/\1sslmode=/')
+
+# 3) 跑 pg_dump（單行避免續行符出包）
+mkdir -p ~/backups
+/usr/lib/postgresql/16/bin/pg_dump "$DB_URL" --table=instruments --table=market_data_eod --table=instrument_identifiers > "$HOME/backups/findb_$(date -u +%Y%m%dT%H%M%SZ).sql"
+ls -lh ~/backups/
 ```
 
 ### 1. TW 名稱與 currency 補上
@@ -134,8 +178,11 @@ ORDER BY market, asset_class, symbol;
 ```sql
 -- 全市場名稱回滾
 UPDATE instruments SET name = NULL, currency = NULL WHERE updated_at >= '<your_start_timestamp>';
-
--- 或從 step 0 的 pg_dump 還原 instruments 表
 ```
+
+或從 step 0 的備份還原 ``instruments`` 表：
+
+- 方案 A 的 RDS snapshot：用 ``aws rds restore-db-cluster-from-snapshot`` 還原到新 cluster，再從新 cluster ``pg_dump --table=instruments``，最後 restore 到 prod。
+- 方案 B 的 pg_dump：``psql "$DB_URL" < ~/backups/findb_<timestamp>.sql``（會 drop & recreate 三張表，請小心其他被同時寫入的資料）。
 
 `fix_misrouted_tw_futures.py` 對 0050 的刪除是不可逆的，必須從 step 0 的備份還原。
