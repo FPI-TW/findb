@@ -25,10 +25,40 @@ routing bug 殘留的錯誤 asset_class 修掉。所有 script 預設 dry-run，
 
 ### 0. 備份 prod DB（強烈建議）
 
+Prod DB 在 AWS Aurora/RDS，EC2 上沒有 postgres 容器；以下二擇一。
+
+**方案 A — RDS/Aurora snapshot（推薦）**
+
 ```bash
-docker exec findb-postgres pg_dump -U findb -d findb \
+# 先查 identifier
+aws rds describe-db-clusters --query 'DBClusters[].DBClusterIdentifier' --output table
+aws rds describe-db-instances --query 'DBInstances[].DBInstanceIdentifier' --output table
+
+# Aurora cluster
+aws rds create-db-cluster-snapshot \
+  --db-cluster-identifier <your-cluster-id> \
+  --db-cluster-snapshot-identifier "findb-pre-backfill-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# 或一般 RDS instance
+aws rds create-db-snapshot \
+  --db-instance-identifier <your-instance-id> \
+  --db-snapshot-identifier "findb-pre-backfill-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+**方案 B — 從 EC2 邏輯備份**
+
+EC2 需要 ``postgresql-client``。DATABASE_URL 從 ``findb-app`` 容器讀取，
+``pg_dump`` 不認得 SQLAlchemy 的 ``+asyncpg`` 後綴，要先剝掉。
+
+```bash
+sudo apt-get update && sudo apt-get install -y postgresql-client
+mkdir -p ~/backups
+
+DB_URL=$(docker exec findb-app printenv DATABASE_URL | sed 's|+asyncpg||')
+pg_dump "$DB_URL" \
   --table=instruments --table=market_data_eod --table=instrument_identifiers \
   > "$HOME/backups/findb_$(date -u +%Y%m%dT%H%M%SZ).sql"
+ls -lh ~/backups/
 ```
 
 ### 1. TW 名稱與 currency 補上
@@ -134,8 +164,11 @@ ORDER BY market, asset_class, symbol;
 ```sql
 -- 全市場名稱回滾
 UPDATE instruments SET name = NULL, currency = NULL WHERE updated_at >= '<your_start_timestamp>';
-
--- 或從 step 0 的 pg_dump 還原 instruments 表
 ```
+
+或從 step 0 的備份還原 ``instruments`` 表：
+
+- 方案 A 的 RDS snapshot：用 ``aws rds restore-db-cluster-from-snapshot`` 還原到新 cluster，再從新 cluster ``pg_dump --table=instruments``，最後 restore 到 prod。
+- 方案 B 的 pg_dump：``psql "$DB_URL" < ~/backups/findb_<timestamp>.sql``（會 drop & recreate 三張表，請小心其他被同時寫入的資料）。
 
 `fix_misrouted_tw_futures.py` 對 0050 的刪除是不可逆的，必須從 step 0 的備份還原。
