@@ -2,10 +2,17 @@
 Backfill TW instrument ``name`` and ``currency`` columns from the TWSE/TPEX
 public ISIN registry.
 
-Source pages (Big5 HTML):
+Source pages (HTML; ``Content-Type: text/html;charset=MS950``):
 
 - https://isin.twse.com.tw/isin/C_public.jsp?strMode=2  (上市 TWSE)
 - https://isin.twse.com.tw/isin/C_public.jsp?strMode=4  (上櫃 TPEX)
+
+The registry uses MS950 (a.k.a. ``cp950``) — Big5 plus Microsoft's user-defined
+area for characters such as ``恒``/``凃``. Decoding the page as plain ``big5``
+silently drops those bytes via ``errors="ignore"`` and the resulting name
+shifts by one byte (e.g. ``00665L`` arrives as ``富邦琤肭磪囓2`` instead of
+``富邦恒生國企正2``). Always decode with the codec advertised in the response
+``Content-Type`` (falling back to ``cp950``).
 
 Each row carries: ``<code>　<name>``, ISIN, listing date, market category,
 industry, CFICode, remark. CFICode prefix maps to our ``asset_class``:
@@ -15,8 +22,11 @@ industry, CFICode, remark. CFICode prefix maps to our ``asset_class``:
 
 Behavior:
 
-- Only updates rows where the target field is currently ``NULL`` — re-running
-  the script is a no-op once names are filled.
+- By default only updates rows where the target field is currently ``NULL`` —
+  re-running the script is a no-op once names are filled.
+- Pass ``--overwrite-existing`` to overwrite ``name`` even when it is already
+  populated (use after fixing the decoder to clean up rows that landed with
+  mojibake before this fix). ``currency`` is still only filled when ``NULL``.
 - Matches DB rows by ``(asset_class, market='TW', symbol)``. CFICode in the
   ISIN registry decides asset_class.
 - ``currency`` is set to ``TWD`` for every matched TW row.
@@ -72,6 +82,15 @@ def _clean(text: str) -> str:
     return WS_RE.sub(" ", TAG_RE.sub("", text)).replace("&nbsp;", " ").strip()
 
 
+_CONTENT_TYPE_CHARSET_RE = re.compile(r"charset\s*=\s*([\w\-]+)", re.IGNORECASE)
+_CHARSET_ALIASES = {
+    # Python ships ``cp950`` (MS950) and ``big5hkscs``; TWSE labels its pages
+    # ``MS950`` which Python only recognises under the ``cp950`` alias.
+    "ms950": "cp950",
+    "big5": "cp950",
+}
+
+
 def _fetch(url: str, *, timeout: int = 300) -> str:
     # TWSE's TLS cert lacks a Subject Key Identifier, which Python's default
     # verifier rejects. The ISIN registry is fully public and read-only, so
@@ -82,7 +101,12 @@ def _fetch(url: str, *, timeout: int = 300) -> str:
     ctx.verify_mode = ssl.CERT_NONE
     req = Request(url, headers={"User-Agent": "findb-backfill/1.0"})
     with urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (fixed URL)
-        return resp.read().decode("big5", errors="ignore")
+        raw = resp.read()
+        content_type = resp.headers.get("Content-Type", "")
+    match = _CONTENT_TYPE_CHARSET_RE.search(content_type)
+    declared = match.group(1).lower() if match else ""
+    encoding = _CHARSET_ALIASES.get(declared, declared) or "cp950"
+    return raw.decode(encoding, errors="replace")
 
 
 def parse_isin_html(html: str) -> list[IsinRow]:
@@ -134,7 +158,7 @@ def build_name_map(rows: Iterable[IsinRow]) -> dict[tuple[str, str], str]:
     return out
 
 
-async def backfill(apply: bool) -> tuple[int, int, int]:
+async def backfill(apply: bool, overwrite_existing: bool = False) -> tuple[int, int, int]:
     """Returns (name_updates, currency_updates, unmatched_symbols)."""
     rows = fetch_all_rows()
     name_map = build_name_map(rows)
@@ -157,7 +181,7 @@ async def backfill(apply: bool) -> tuple[int, int, int]:
         for inst in instruments:
             key = (inst.asset_class, inst.symbol)
             name = name_map.get(key)
-            if name and inst.name is None:
+            if name and (inst.name is None or (overwrite_existing and inst.name != name)):
                 if apply:
                     inst.name = name
                 name_updates += 1
@@ -194,9 +218,19 @@ def main() -> None:
         action="store_true",
         help="Apply updates. Without this flag the script runs as a dry run.",
     )
+    parser.add_argument(
+        "--overwrite-existing",
+        action="store_true",
+        help=(
+            "Overwrite name even when the row already has a non-null name. Use "
+            "after fixing the decoder to clean up rows that landed with mojibake."
+        ),
+    )
     args = parser.parse_args()
 
-    name_updates, currency_updates, unmatched = asyncio.run(backfill(apply=args.apply))
+    name_updates, currency_updates, unmatched = asyncio.run(
+        backfill(apply=args.apply, overwrite_existing=args.overwrite_existing)
+    )
     verb = "applied" if args.apply else "would apply"
     logger.info(
         "%s: name=%d currency=%d unmatched=%d",
