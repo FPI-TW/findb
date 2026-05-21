@@ -170,7 +170,7 @@ INDEX_CURRENCY_BY_MARKET: dict[str, str] = {
 _UNVERIFIED_HOSTS = frozenset({"isin.twse.com.tw"})
 
 
-def _curl(url: str, *, timeout: int = 60) -> bytes:
+def _curl(url: str, *, timeout: int = 300) -> bytes:
     """Fetch ``url`` via stdlib ``urllib``. Used so the script runs inside
     the slim runtime container without depending on a ``curl`` binary.
 

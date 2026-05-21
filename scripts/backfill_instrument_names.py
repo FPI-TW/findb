@@ -72,7 +72,7 @@ def _clean(text: str) -> str:
     return WS_RE.sub(" ", TAG_RE.sub("", text)).replace("&nbsp;", " ").strip()
 
 
-def _fetch(url: str, *, timeout: int = 60) -> str:
+def _fetch(url: str, *, timeout: int = 300) -> str:
     # TWSE's TLS cert lacks a Subject Key Identifier, which Python's default
     # verifier rejects. The ISIN registry is fully public and read-only, so
     # we use an unverified SSL context here rather than depend on a curl
