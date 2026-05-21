@@ -77,6 +77,8 @@ findb/
 | Instrument name backfill | `scripts/backfill_instrument_names.py`（TW）+ `scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；皆為 NULL-only update 可重複執行 |
 | Instrument routing 修正 | `scripts/fix_misrouted_tw_futures.py` + `scripts/cleanup_stale_instruments.py` | 修整舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
 | Backfill 部署手冊 | `docs/instrument_name_backfill_deployment.md` | EC2 + Aurora 環境下執行 backfill / routing 修正的階段步驟、備份與回滾 |
+| Ingestion 流程圖 | `docs/ingestion_workflow.html` | 從 Fetch POST 到 canonical 落地的五大階段視覺化拆解（含 DQ 與維運鉤子） |
+| Cloudflare/nginx allowlist 事故筆記 | `docs/cloudflare-nginx-source-allowlist-incident.md` | 服務在 Cloudflare 後方時，nginx Source allowlist 需信任 `CF-Connecting-IP` 的 root cause 與修正 |
 | 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2 |
 
 ## 子目錄指南

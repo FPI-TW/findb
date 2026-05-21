@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FinDB Ingestion Workflow · 流程拆解</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #fafbfc;
+    --surface: #ffffff;
+    --line: #e5e7eb;
+    --line-strong: #d1d5db;
+    --text: #1f2937;
+    --text-soft: #4b5563;
+    --muted: #6b7280;
+    --muted-2: #9ca3af;
+
+    --c-pre: #3b82f6;     /* blue   ① ② */
+    --c-db:  #8b5cf6;     /* violet ③   */
+    --c-post:#10b981;     /* emerald ④  */
+    --c-ops: #ec4899;     /* pink   ⑤   */
+
+    --ok:    #16a34a;
+    --warn:  #d97706;
+    --err:   #dc2626;
+    --info:  #0284c7;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 56px 28px 96px; }
+
+  /* HERO */
+  header.hero {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 32px 36px;
+    margin-bottom: 36px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--surface);
+    box-shadow: 0 1px 2px rgba(17,24,39,0.04);
+  }
+  .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 600; }
+  h1 { margin: 0; font-size: 32px; letter-spacing: -0.01em; color: #111827; font-weight: 700; }
+  .lede { color: var(--text-soft); font-size: 15px; line-height: 1.7; max-width: 920px; margin: 0; }
+
+  .stage-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 8px; }
+  .pill {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #fafbfc;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .pill .num { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; font-weight: 700; font-size: 12px; color: #fff; }
+  .pill.s1 .num { background: var(--c-pre); }
+  .pill.s2 .num { background: var(--c-pre); }
+  .pill.s3 .num { background: var(--c-db); }
+  .pill.s4 .num { background: var(--c-post); }
+  .pill.s5 .num { background: var(--c-ops); }
+
+  /* SECTIONS */
+  section { margin-top: 36px; }
+  h2 { font-size: 20px; margin: 0 0 14px; color: #111827; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  h2::before {
+    content: ""; display: inline-block; width: 4px; height: 18px; border-radius: 2px;
+    background: var(--c-pre);
+  }
+
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--surface);
+    padding: 22px;
+    box-shadow: 0 1px 2px rgba(17,24,39,0.04);
+  }
+
+  /* MERMAID */
+  .diagram { padding: 18px; overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram .mermaid { display: flex; justify-content: center; }
+
+  /* DECOMPOSITION GRID */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; }
+  .stage {
+    border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px;
+    background: var(--surface);
+    position: relative; overflow: hidden;
+    box-shadow: 0 1px 2px rgba(17,24,39,0.04);
+    transition: box-shadow 0.18s ease, transform 0.18s ease;
+  }
+  .stage:hover { box-shadow: 0 4px 14px rgba(17,24,39,0.06); transform: translateY(-1px); }
+  .stage::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  }
+  .stage.s1::before, .stage.s2::before { background: var(--c-pre); }
+  .stage.s3::before { background: var(--c-db); }
+  .stage.s4::before { background: var(--c-post); }
+  .stage.s5::before { background: var(--c-ops); }
+
+  .stage h3 { margin: 0 0 4px; font-size: 15px; color: #111827; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 600; }
+  .stage h3 .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: var(--muted); font-weight: 500; border: 1px solid var(--line); }
+  .stage .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .stage ul { margin: 0; padding-left: 18px; }
+  .stage li { font-size: 13px; line-height: 1.75; color: var(--text-soft); }
+  .stage li code, td code, p code, footer code, .caveat code {
+    background: #f3f4f6;
+    padding: 1px 6px; border-radius: 5px; font-size: 12px;
+    color: #374151; border: 1px solid #ebeef2;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .stage li b { color: #111827; }
+
+  /* TABLES */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { color: var(--muted); font-weight: 600; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; background: #fafbfc; }
+  tbody tr:hover { background: #fafbfc; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  /* BADGES */
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+  .b-ok   { background: #ecfdf5; color: var(--ok);   border: 1px solid #a7f3d0; }
+  .b-warn { background: #fffbeb; color: var(--warn); border: 1px solid #fde68a; }
+  .b-err  { background: #fef2f2; color: var(--err);  border: 1px solid #fecaca; }
+  .b-info { background: #f0f9ff; color: var(--info); border: 1px solid #bae6fd; }
+
+  /* CAVEATS */
+  .caveats { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .caveat {
+    padding: 16px 18px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: 0 1px 2px rgba(17,24,39,0.04);
+  }
+  .caveat .t { font-weight: 600; margin-bottom: 6px; color: #111827; display: flex; align-items: center; gap: 8px; }
+  .caveat .t .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+  .caveat p { margin: 0; font-size: 13px; color: var(--text-soft); line-height: 1.7; }
+
+  /* FOOTER */
+  footer { margin-top: 48px; color: var(--muted); font-size: 12px; text-align: center; }
+
+  @media (max-width: 800px) {
+    .stage-strip { grid-template-columns: repeat(2, 1fr); }
+    h1 { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <header class="hero">
+      <span class="eyebrow">FinDB · Data Pipeline</span>
+      <h1>Ingestion 工作流程完整拆解</h1>
+      <p class="lede">
+        從 Fetch 端 POST 進來，到資料落地 canonical 表為止 — 此頁拆解整條 ingestion pipeline 的五大階段、每個守門點、DQ 邏輯與後續維運鉤子，做為功能切票與 onboarding 的單一參考。
+      </p>
+      <div class="stage-strip">
+        <div class="pill s1"><div class="num">1</div><div>Source 入口</div></div>
+        <div class="pill s2"><div class="num">2</div><div>進 DB 前驗證</div></div>
+        <div class="pill s3"><div class="num">3</div><div>Raw + Run 落地</div></div>
+        <div class="pill s4"><div class="num">4</div><div>背景正規化</div></div>
+        <div class="pill s5"><div class="num">5</div><div>維運 / 後續</div></div>
+      </div>
+    </header>
+
+    <section>
+      <h2>主流程圖</h2>
+      <div class="card diagram">
+        <pre class="mermaid">
+flowchart TD
+  A["🌐 Fetch Layer<br/>外部抓取程式"]:::fetch
+  A -->|"POST /api/v1/ingest/{market}"| B
+
+  subgraph S1 ["① Source API 入口"]
+    direction TB
+    B["Source Router<br/>app/api/v1/source.py"]:::pre
+    D2{"Direct 端點?"}:::decision
+    D3["_build_direct_ingest_request<br/>SHA256 算 idempotency_key"]:::pre
+    D["Pydantic IngestRequest 驗證"]:::pre
+    B --> D2
+    D2 -->|"是"| D3
+    D2 -->|"否"| D
+    D3 --> D
+  end
+
+  subgraph S2 ["② 進 DB 前 — 守門 + 校驗"]
+    direction TB
+    C1["verify_source_api_key<br/>X-API-Key"]:::pre
+    C2["_enforce_source_allowlist<br/>IP / CIDR 白名單"]:::pre
+    C3["_enforce_source_rate_limit<br/>滑動視窗 per key+IP"]:::pre
+    F1["檢查 dataset_registry<br/>存在 + is_active"]:::pre
+    F2["validate_payload_schema<br/>data_path + 必要欄位"]:::pre
+    G{"idempotency_key<br/>已存在?"}:::decision
+    C1 --> C2 --> C3 --> F1 --> F2 --> G
+  end
+
+  D --> C1
+  H1(["回 existing run_id<br/>不寫入"]):::terminal
+  G -->|"是 重複"| H1
+
+  subgraph S3 ["③ DB 邊界 — Raw + Run 落地"]
+    direction TB
+    I1[("raw.market_payload<br/>JSONB + expire_at")]:::db
+    I2[("ingestion_run<br/>status=pending")]:::db
+    I1 --> I2
+  end
+  G -->|"否 新批次"| I1
+
+  J["BackgroundTasks<br/>trigger_normalization"]:::db
+  R(["HTTP 201<br/>run_id + pending"]):::terminal
+  I2 --> J --> R
+
+  subgraph S4 ["④ 進 DB 後 — 背景正規化"]
+    direction TB
+    K["NORMALIZER_MAP<br/>dataset_key 對應 Class"]:::post
+    L1["map_fields<br/>欄位映射 / symbol 標準化"]:::post
+    L2{"validate_eod<br/>DQ 檢查"}:::decision
+    M1["record_dq_issue<br/>error 跳過"]:::error
+    M2["record_dq_issue<br/>warning 仍寫入"]:::post
+    N1["get_or_create_instrument<br/>instruments + identifier"]:::post
+    N2{"是否下市?"}:::decision
+    N3["標記 / 跳過"]:::post
+    O[("market_data_eod<br/>UPSERT")]:::db
+    P["update_run_status<br/>completed / with_errors"]:::post
+    K --> L1 --> L2
+    L2 -->|"error"| M1
+    L2 -->|"warning"| M2 --> N1
+    L2 -->|"pass"| N1
+    N1 --> N2
+    N2 -->|"是"| N3
+    N2 -->|"否"| O
+    O --> P
+  end
+
+  J -. "async" .-> K
+
+  subgraph S5 ["⑤ 維運 / 後續流程"]
+    direction LR
+    SCLN["cleanup_raw.py<br/>每日 TTL 清 raw"]:::ops
+    SADM1["Admin PATCH /eod<br/>修正 canonical"]:::ops
+    SADM2["Admin 解 dq-issues"]:::ops
+    SRER["POST /runs/:id/rerun"]:::ops
+    SSRV["Serve API<br/>唯讀 canonical"]:::ops
+  end
+
+  I1 -. "14天後" .-> SCLN
+  I1 -. "可取回" .-> SRER
+  M1 -. "產生" .-> SADM2
+  M2 -. "產生" .-> SADM2
+  O  -. "可覆寫" .-> SADM1
+  P  -. "可重跑" .-> SRER
+  O  -. "唯讀" .-> SSRV
+
+  classDef fetch     fill:#f3f4f6,stroke:#9ca3af,stroke-width:1px,color:#1f2937;
+  classDef pre       fill:#eff6ff,stroke:#3b82f6,stroke-width:1.2px,color:#1e3a8a;
+  classDef db        fill:#f5f3ff,stroke:#8b5cf6,stroke-width:1.2px,color:#4c1d95;
+  classDef post      fill:#ecfdf5,stroke:#10b981,stroke-width:1.2px,color:#065f46;
+  classDef ops       fill:#fdf2f8,stroke:#ec4899,stroke-width:1.2px,color:#9d174d;
+  classDef decision  fill:#fffbeb,stroke:#d97706,stroke-width:1.2px,color:#92400e;
+  classDef terminal  fill:#f0fdf4,stroke:#16a34a,stroke-width:1.2px,color:#14532d;
+  classDef error     fill:#fef2f2,stroke:#dc2626,stroke-width:1.2px,color:#7f1d1d;
+        </pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>① Source API 入口</h2>
+      <div class="grid">
+        <div class="stage s1">
+          <h3>路由分派 <span class="tag">app/api/v1/source.py</span></h3>
+          <div class="sub">統一入口、市場守門、Direct vs 通用 schema</div>
+          <ul>
+            <li><b>通用端點</b>：<code>/ingest/{crypto,us,fx,macro,wtx,global,tw,hk,cn}</code></li>
+            <li><b>Direct 端點</b>：<code>/ingest/{usstock,hkchina,macro}/direct</code> — 帶 metadata + data 結構</li>
+            <li><b>市場守門</b>：以 <code>expected_market</code> 對照 <code>dataset.market</code>，防跨市場誤投</li>
+            <li><b>SHA256 idempotency</b>：<code>_build_direct_ingest_request</code> 對 payload 算指紋</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>② 進 DB 前 — 全部守門點</h2>
+      <div class="card" style="padding: 6px 6px;">
+        <table>
+          <thead>
+            <tr><th>守門</th><th>函式 / 檔案</th><th>阻擋條件</th><th>類別</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>API Key</td><td><code>verify_source_api_key</code> · deps.py</td><td>header 缺失或不在 <code>SOURCE_API_KEYS</code></td><td><span class="badge b-err">硬阻擋</span></td></tr>
+            <tr><td>IP 白名單</td><td><code>_enforce_source_allowlist</code></td><td>IP 不在 <code>SOURCE_ALLOWLIST_CIDRS</code>（DEBUG=false 強制）</td><td><span class="badge b-err">硬阻擋</span></td></tr>
+            <tr><td>速率限制</td><td><code>_enforce_source_rate_limit</code></td><td>per (key+IP) 滑動視窗超量</td><td><span class="badge b-err">429</span></td></tr>
+            <tr><td>結構驗證</td><td><code>IngestRequest</code> · schemas/source.py</td><td>缺欄位 / 型別錯</td><td><span class="badge b-err">422</span></td></tr>
+            <tr><td>Dataset 啟用</td><td><code>IngestionService.ingest</code></td><td>不存在或 <code>is_active=false</code></td><td><span class="badge b-err">硬阻擋</span></td></tr>
+            <tr><td>Payload schema</td><td><code>validate_payload_schema</code></td><td><code>data_path</code> 取不到 list 或必要欄位不在任一筆</td><td><span class="badge b-err">硬阻擋</span></td></tr>
+            <tr><td>去重</td><td><code>get_raw_payload_by_idempotency_key</code></td><td>同 key 已存在</td><td><span class="badge b-info">短路返回</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>③ DB 邊界 — Raw + Run 同步落地</h2>
+      <div class="grid">
+        <div class="stage s3">
+          <h3><code>raw.market_payload</code> <span class="tag">JSONB</span></h3>
+          <div class="sub">原始 payload 完整保存 14 天</div>
+          <ul>
+            <li><code>idempotency_key</code> (PK)</li>
+            <li><code>payload</code> JSONB（完整 fetch 內容）</li>
+            <li><code>expire_at = fetched_at + RAW_RETENTION_DAYS</code></li>
+            <li><code>run_id</code> 對應 ingestion_run</li>
+            <li>競態以 <code>IntegrityError</code> 處理</li>
+          </ul>
+        </div>
+        <div class="stage s3">
+          <h3><code>ingestion_run</code> <span class="tag">tracking</span></h3>
+          <div class="sub">每次 ingest 一列，貫穿整個生命週期</div>
+          <ul>
+            <li><code>run_id</code> (UUIDv7)</li>
+            <li><code>status="pending"</code> → processing → completed / completed_with_errors / failed</li>
+            <li><code>raw_records</code> = payload 中 data 筆數</li>
+            <li><code>metadata_</code> 帶 source / request_key / 重跑來源</li>
+          </ul>
+        </div>
+        <div class="stage s3">
+          <h3>HTTP 回應 <span class="tag">201</span></h3>
+          <div class="sub">同步只到此為止，正規化之後才跑</div>
+          <ul>
+            <li><code>success: true</code></li>
+            <li><code>run_id</code> + <code>status="pending"</code></li>
+            <li><b>注意</b>：客戶端拿到 pending ≠ 已進 canonical</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>④ 進 DB 後 — 背景正規化</h2>
+      <div class="grid">
+        <div class="stage s4">
+          <h3>路由分派 <span class="tag">NORMALIZER_MAP</span></h3>
+          <div class="sub">services/ingestion.py · 18 種 dataset</div>
+          <ul>
+            <li><code>us_stock_eod</code> → USStockNormalizer</li>
+            <li><code>us_equity_eod</code> → EquityNormalizer</li>
+            <li><code>crypto_eod</code> → CryptoNormalizer</li>
+            <li><code>macro_observation</code> → MacroNormalizer</li>
+            <li>… 其餘覆蓋 fx / futures / 各市場 equity</li>
+          </ul>
+        </div>
+        <div class="stage s4">
+          <h3>欄位映射 <span class="tag">map_fields</span></h3>
+          <div class="sub">services/normalize/base.py</div>
+          <ul>
+            <li>用 <code>dataset_config.field_mapping</code> 解 dot-path</li>
+            <li>標準化 symbol、trade_date、source</li>
+            <li>產出 <code>MappedRecord</code> list</li>
+          </ul>
+        </div>
+        <div class="stage s4">
+          <h3>DQ 檢查 <span class="tag">validators.py</span></h3>
+          <div class="sub">分阻擋與警告兩級</div>
+          <ul>
+            <li><span class="badge b-err">error</span> OHLC high/low、volume 負值、batch 內重複 → 跳過該筆</li>
+            <li><span class="badge b-warn">warning</span> 缺 OHLC、單日漲跌 &gt; 30% → 仍寫入</li>
+            <li>所有問題寫入 <code>dq_issue</code> 表</li>
+          </ul>
+        </div>
+        <div class="stage s4">
+          <h3>Instrument 解析 <span class="tag">instruments</span></h3>
+          <div class="sub">維度表自動補齊</div>
+          <ul>
+            <li>優先用 <code>identifier_type + identifier_value</code> 對 <code>instrument_identifier</code></li>
+            <li>找不到 → <code>get_or_create_instrument</code></li>
+            <li>下市則跳過 / 警告</li>
+          </ul>
+        </div>
+        <div class="stage s4">
+          <h3>標準寫入 <span class="tag">UPSERT</span></h3>
+          <div class="sub">market_data_eod</div>
+          <ul>
+            <li>衝突鍵：<code>(instrument_id, trade_date)</code></li>
+            <li>ON CONFLICT 更新 OHLC / volume / turnover / asof_ts / run_id</li>
+            <li>這也是 rerun 安全的基礎</li>
+          </ul>
+        </div>
+        <div class="stage s4">
+          <h3>Run 收尾 <span class="tag">update_run_status</span></h3>
+          <div class="sub">最終狀態決定觀測指標</div>
+          <ul>
+            <li><code>total / success / failed_records</code></li>
+            <li><code>completed_at</code></li>
+            <li><span class="badge b-ok">completed</span> · <span class="badge b-warn">completed_with_errors</span> · <span class="badge b-err">failed</span></li>
+            <li>單一 transaction 提交</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>⑤ 維運 / 後續流程</h2>
+      <div class="card" style="padding: 6px 6px;">
+        <table>
+          <thead>
+            <tr><th>元件</th><th>來源</th><th>觸發 / 排程</th><th>作用對象</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Raw TTL 清理</td><td><code>scripts/cleanup_raw.py</code> · 容器 <code>findb-raw-cleanup</code></td><td>每日</td><td><code>raw.market_payload</code> · <code>expire_at &lt; now</code></td></tr>
+            <tr><td>重跑</td><td><code>IngestionService.rerun_from_raw</code></td><td><code>POST /runs/:id/rerun</code></td><td>取原 raw → 建新 run → 跑 normalize</td></tr>
+            <tr><td>人工修正</td><td>Admin API</td><td><code>PATCH /eod/{instrument_id}/{trade_date}</code></td><td>直接覆寫 canonical</td></tr>
+            <tr><td>DQ 結案</td><td>Admin API</td><td><code>GET /dq-issues</code> · <code>PATCH /dq-issues/{id}/resolve</code></td><td><code>dq_issue.resolved</code></td></tr>
+            <tr><td>靜態快取</td><td><code>scripts/generate_instrument_cache.py</code> + Admin <code>/instrument-cache</code></td><td>手動 / 排程</td><td>提供 <code>/instrument-lookup</code></td></tr>
+            <tr><td>Serve 讀取</td><td><code>app/api/v1/serve.py</code></td><td>客戶端查詢</td><td>唯讀 canonical（<b>無快取層</b>）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>關鍵邊界提醒</h2>
+      <div class="caveats">
+        <div class="caveat">
+          <div class="t"><span class="dot"></span>同步只到落 raw</div>
+          <p>Source API 同步部分結束於 <b>raw + run 落地</b>，正規化是 <code>BackgroundTasks</code>，客戶端拿到 <code>pending</code> 不代表已進 canonical。要做完成通知需另建機制。</p>
+        </div>
+        <div class="caveat">
+          <div class="t"><span class="dot"></span>Idempotency 在 raw 層</div>
+          <p>已存在的 idempotency_key 連 raw 都不會重寫，直接回原 <code>run_id</code>。要強制重跑必須用 <code>POST /runs/:id/rerun</code>。</p>
+        </div>
+        <div class="caveat">
+          <div class="t"><span class="dot"></span>DQ error 只擋單筆</div>
+          <p>單筆壞掉不影響整批，run 會標 <code>completed_with_errors</code>。下游不能假設 run 成功 = 全部資料都進來。</p>
+        </div>
+        <div class="caveat">
+          <div class="t"><span class="dot"></span>Upsert 衝突鍵</div>
+          <p>canonical 衝突鍵為 <code>(instrument_id, trade_date)</code>，同一天重送會覆蓋 — 所以 rerun 與人工修正都安全。</p>
+        </div>
+        <div class="caveat">
+          <div class="t"><span class="dot"></span>無下游事件</div>
+          <p>canonical 寫入後 <b>沒有 cache invalidation / webhook / 事件總線</b>，Serve 直接打 DB。要加快取或通知是後續可拆功能點。</p>
+        </div>
+        <div class="caveat">
+          <div class="t"><span class="dot"></span>Raw 14 天保存</div>
+          <p>Rerun 必須在 <code>RAW_RETENTION_DAYS</code> 內進行，過期就無法從 raw 取回原始 payload。</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Generated for FinDB · branch <code>feat/twstock-direct-ingest</code> · 對應原始檔：
+      <code>app/api/v1/source.py</code> · <code>app/services/ingestion.py</code> · <code>app/services/normalize/base.py</code> · <code>app/services/dq/validators.py</code>
+    </footer>
+  </div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      background: '#ffffff',
+      primaryColor: '#ffffff',
+      primaryTextColor: '#1f2937',
+      primaryBorderColor: '#d1d5db',
+      lineColor: '#9ca3af',
+      secondaryColor: '#f9fafb',
+      tertiaryColor: '#ffffff',
+      clusterBkg: '#fafbfc',
+      clusterBorder: '#e5e7eb',
+      titleColor: '#111827',
+      edgeLabelBackground: '#ffffff',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif'
+    },
+    flowchart: {
+      curve: 'basis',
+      htmlLabels: true,
+      padding: 14,
+      nodeSpacing: 40,
+      rankSpacing: 60,
+      useMaxWidth: true
+    }
+  });
+</script>
+</body>
+</html>

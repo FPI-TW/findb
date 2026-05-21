@@ -169,6 +169,8 @@ done
 { "detail": "Source API client IP not allowlisted" }
 ```
 
+> 若服務透過 Cloudflare proxy 進來，需在 nginx 設定 `real_ip_header CF-Connecting-IP` 與 `set_real_ip_from`（Cloudflare IP ranges），allowlist 比對才會用使用者真實 IP 而非 Cloudflare edge IP。完整事故拆解見 `docs/cloudflare-nginx-source-allowlist-incident.md`。
+
 ---
 
 ## 3. Source API 測試

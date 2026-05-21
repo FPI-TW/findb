@@ -64,6 +64,8 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | **Serve API**  | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料             |
 | **Admin API**  | 修正路徑 | 人工修正 Canonical 資料，寫入不可變 audit log |
 
+> 完整的 ingest 內部五階段流程（守門點、Raw + Run 落地、背景正規化、維運鉤子）可參考視覺化頁面 `docs/ingestion_workflow.html`。
+
 ---
 
 ## 目前實作範圍
@@ -2176,6 +2178,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 ### Q: 生產環境需要注意什麼？
 
 1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist；本機 loopback（`127.0.0.1/32`、`::1/128`）會自動加入
+   - 若服務在 Cloudflare 後方，nginx 必須先透過 `real_ip_header CF-Connecting-IP` 還原真實 client IP，否則 allowlist 會用到 Cloudflare edge IP 而誤擋；詳見 `docs/cloudflare-nginx-source-allowlist-incident.md`
 2. **必須**設定 `ADMIN_API_KEY`（否則所有 Admin API 端點回傳 500）
 3. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
 4. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
