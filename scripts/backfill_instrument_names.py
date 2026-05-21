@@ -30,9 +30,10 @@ import argparse
 import asyncio
 import logging
 import re
-import subprocess
+import ssl
 from dataclasses import dataclass
 from typing import Iterable
+from urllib.request import Request, urlopen
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -73,14 +74,15 @@ def _clean(text: str) -> str:
 
 def _fetch(url: str, *, timeout: int = 60) -> str:
     # TWSE's TLS cert lacks a Subject Key Identifier, which Python's default
-    # verifier rejects but curl accepts. Shell out to curl so the script
-    # works without disabling cert verification.
-    proc = subprocess.run(
-        ["curl", "-sS", "--fail", "--max-time", str(timeout), "-A", "findb-backfill/1.0", url],
-        capture_output=True,
-        check=True,
-    )
-    return proc.stdout.decode("big5", errors="ignore")
+    # verifier rejects. The ISIN registry is fully public and read-only, so
+    # we use an unverified SSL context here rather than depend on a curl
+    # binary inside the runtime container.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = Request(url, headers={"User-Agent": "findb-backfill/1.0"})
+    with urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (fixed URL)
+        return resp.read().decode("big5", errors="ignore")
 
 
 def parse_isin_html(html: str) -> list[IsinRow]:

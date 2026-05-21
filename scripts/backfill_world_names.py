@@ -32,11 +32,12 @@ import argparse
 import asyncio
 import logging
 import re
-import subprocess
+import ssl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from io import BytesIO
+from urllib.request import Request, urlopen
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -166,16 +167,29 @@ INDEX_CURRENCY_BY_MARKET: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+_UNVERIFIED_HOSTS = frozenset({"isin.twse.com.tw"})
+
+
 def _curl(url: str, *, timeout: int = 60) -> bytes:
-    """Fetch ``url`` via curl. Used instead of urllib because some sources
-    (TWSE, HKEX) have certs that Python's verifier rejects but curl accepts.
+    """Fetch ``url`` via stdlib ``urllib``. Used so the script runs inside
+    the slim runtime container without depending on a ``curl`` binary.
+
+    NASDAQ Trader, HKEX, and Tencent all serve valid certs and go through
+    the default verifier. The TWSE ISIN registry's cert is missing a
+    Subject Key Identifier and Python rejects it; since the page is fully
+    public and read-only, we use an unverified context for that host only.
     """
-    proc = subprocess.run(
-        ["curl", "-sS", "--fail", "--max-time", str(timeout), "-A", "findb-backfill/1.0", url],
-        capture_output=True,
-        check=True,
-    )
-    return proc.stdout
+    host_match = re.match(r"^https?://([^/]+)", url)
+    host = host_match.group(1).lower() if host_match else ""
+    if host in _UNVERIFIED_HOSTS:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    else:
+        ctx = ssl.create_default_context()
+    req = Request(url, headers={"User-Agent": "findb-backfill/1.0"})
+    with urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (fixed URLs)
+        return resp.read()
 
 
 # ---------------------------------------------------------------------------
