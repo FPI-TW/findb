@@ -47,17 +47,31 @@ aws rds create-db-snapshot \
 
 **方案 B — 從 EC2 邏輯備份**
 
-EC2 需要 ``postgresql-client``。DATABASE_URL 從 ``findb-app`` 容器讀取，
-``pg_dump`` 不認得 SQLAlchemy 的 ``+asyncpg`` 後綴，要先剝掉。
+注意三個雷：
+
+1. ``pg_dump`` 版本必須 ``≥`` server。Aurora 目前是 16.x，Ubuntu 22.04
+   預設只有 14.x，要從 PGDG repo 裝 16。
+2. DATABASE_URL 帶 SQLAlchemy 的 ``+asyncpg`` driver suffix，``pg_dump``
+   不認得，要剝掉。
+3. asyncpg 用 ``ssl=require`` query param，libpq 只認 ``sslmode=...``，
+   要替換。
 
 ```bash
-sudo apt-get update && sudo apt-get install -y postgresql-client
-mkdir -p ~/backups
+# 1) 裝 postgresql-client-16 (PGDG)
+sudo install -d /usr/share/postgresql-common/pgdg
+sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+. /etc/os-release
+sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $VERSION_CODENAME-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+sudo apt-get update && sudo apt-get install -y postgresql-client-16
 
-DB_URL=$(docker exec findb-app printenv DATABASE_URL | sed 's|+asyncpg||')
-pg_dump "$DB_URL" \
-  --table=instruments --table=market_data_eod --table=instrument_identifiers \
-  > "$HOME/backups/findb_$(date -u +%Y%m%dT%H%M%SZ).sql"
+# 2) 從 findb-app 讀 DATABASE_URL、剝 +asyncpg、把 ssl= 改成 sslmode=
+DB_URL=$(docker exec findb-app printenv DATABASE_URL \
+  | sed -E 's|\+asyncpg||; s/([?&])ssl=/\1sslmode=/')
+
+# 3) 跑 pg_dump（單行避免續行符出包）
+mkdir -p ~/backups
+/usr/lib/postgresql/16/bin/pg_dump "$DB_URL" --table=instruments --table=market_data_eod --table=instrument_identifiers > "$HOME/backups/findb_$(date -u +%Y%m%dT%H%M%SZ).sql"
 ls -lh ~/backups/
 ```
 
