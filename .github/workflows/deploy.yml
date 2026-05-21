@@ -145,6 +145,9 @@ jobs:
             --output infra/nginx/source-allowlist.conf
           python scripts/render_nginx_cloudflare_real_ip.py \
             --output infra/nginx/cloudflare-real-ip.conf
+          python scripts/render_nginx_serve_key.py \
+            --keys "${SERVE_API_KEYS:-}" \
+            --output infra/nginx/serve-key.conf
 
       - name: Prepare deploy directories on EC2
         uses: appleboy/ssh-action@v1
@@ -172,7 +175,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf"
+          source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf,infra/nginx/serve-key.conf"
           target: /home/ubuntu/etc/nginx
           strip_components: 2
           overwrite: true
@@ -202,6 +205,10 @@ jobs:
             fi
             if [ ! -f /home/ubuntu/etc/nginx/cloudflare-real-ip.conf ]; then
               echo "::error title=Missing Cloudflare real-IP config::/home/ubuntu/etc/nginx/cloudflare-real-ip.conf not found on target host"
+              exit 1
+            fi
+            if [ ! -f /home/ubuntu/etc/nginx/serve-key.conf ]; then
+              echo "::error title=Missing serve-key config::/home/ubuntu/etc/nginx/serve-key.conf not found on target host"
               exit 1
             fi
             if [ ! -f /home/ubuntu/etc/nginx/ssl/server.crt ]; then

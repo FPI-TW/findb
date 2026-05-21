@@ -40,6 +40,7 @@ services:
         - /home/ubuntu/etc/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
         - /home/ubuntu/etc/nginx/cloudflare-real-ip.conf:/etc/nginx/cloudflare-real-ip.conf:ro
         - /home/ubuntu/etc/nginx/source-allowlist.conf:/etc/nginx/source-allowlist.conf:ro
+        - /home/ubuntu/etc/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro
         - /home/ubuntu/etc/nginx/ssl/server.crt:/etc/nginx/ssl/server.crt:ro
         - /home/ubuntu/etc/nginx/ssl/server.key:/etc/nginx/ssl/server.key:ro
       healthcheck:
