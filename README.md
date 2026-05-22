@@ -185,12 +185,25 @@ findb/
 │
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml          # CI/CD：test → build → deploy
+│       └── deploy.yml          # CI/CD：test → build → render nginx confs → deploy
+│
+├── infra/
+│   └── nginx/                  # 生產 nginx 設定（HTTPS、Source allowlist、Serve key 注入）
+│       ├── nginx.conf
+│       ├── source-allowlist.conf       # deploy 時由 render 腳本產生
+│       ├── cloudflare-real-ip.conf     # deploy 時由 render 腳本產生
+│       └── serve-key.conf              # deploy 時由 render 腳本產生
 │
 ├── scripts/
 │   ├── seed_data.py            # 資料種子腳本
 │   ├── cleanup_raw.py          # Raw 清理腳本
 │   ├── generate_instrument_cache.py  # 產生標的與宏觀序列查詢快取
+│   ├── backfill_instrument_names.py  # TW ISIN 名稱回填（含 MS950/CP950 解碼）
+│   ├── backfill_world_names.py       # US/HK/CN/FX/indices 名稱回填
+│   ├── fix_misrouted_tw_futures.py   # 修正 routing bug 殘留
+│   ├── render_nginx_source_allowlist.py  # 渲染 Source IP allowlist 設定
+│   ├── render_nginx_cloudflare_real_ip.py # 渲染 Cloudflare real-IP 設定
+│   ├── render_nginx_serve_key.py     # 渲染 Serve API key 注入設定
 │   ├── setup_ec2.sh            # EC2 一次性初始化腳本
 │   └── sample_ingest_payload.json
 │
@@ -660,6 +673,11 @@ Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEY` 中配置的值。
 | Serve API  | 可選（`SERVE_REQUIRE_AUTH`） | `X-API-Key: {SERVE_API_KEYS}`  |
 | Admin API  | **必要**                     | `X-API-Key: {ADMIN_API_KEY}`  |
 
+> **生產環境 Serve API key 注入**：`/instrument-lookup` 靜態頁不會把 Serve API key
+> 嵌入瀏覽器，而是由生產 nginx 依 `Referer` 比對後注入 `X-API-Key`（設定來自
+> `scripts/render_nginx_serve_key.py` 在 deploy 時渲染的 `infra/nginx/serve-key.conf`）。
+> 外部呼叫者若自行帶 `X-API-Key`，passthrough 行為不受影響。
+
 ### IP 允許名單
 
 Source API 的 IP 允許名單在生產環境由 nginx 執行，透過 `SOURCE_ALLOWLIST_CIDRS` 產生 `/api/v1/source/*` 專用的 nginx `allow` / `deny` 規則。產生時會固定允許本機 loopback（`127.0.0.1/32`、`::1/128`），再加上 `SOURCE_ALLOWLIST_CIDRS` 指定的 IP/CIDR。FastAPI 層仍負責 API Key、rate limit 與 ingest 邏輯。
@@ -860,7 +878,8 @@ git push origin main
 GitHub Actions
   ├── test     → pytest（postgres service container）
   ├── build    → docker build + push ghcr.io/fpi-tw/findb
-  └── deploy   → SSH → docker compose pull & up
+  └── deploy   → render infra/nginx/*.conf (Source allowlist / Cloudflare real-IP /
+                 Serve key 注入) → scp 到 EC2 → docker compose pull & up → nginx reload
 ```
 
 - **Image Registry**：GitHub Container Registry（ghcr.io）
@@ -891,7 +910,7 @@ git push origin main
 | `DATABASE_URL`        | RDS / Aurora PostgreSQL 連線字串                                         |
 | `SOURCE_API_KEY`     | Source API 金鑰                                                          |
 | `ADMIN_API_KEY`      | Admin API 金鑰                                                           |
-| `SERVE_API_KEYS`      | Serve API 金鑰（`SERVE_REQUIRE_AUTH=true` 時必填）                       |
+| `SERVE_API_KEYS`      | Serve API 金鑰（`SERVE_REQUIRE_AUTH=true` 時必填）。Deploy workflow 會以**第一個** key 渲染 `infra/nginx/serve-key.conf` 注入給 `/instrument-lookup` 同源請求 |
 | `FINDB_STATIC_CACHE_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
 
 #### GitHub Variables 設定

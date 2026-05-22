@@ -171,6 +171,26 @@ done
 
 > 若服務透過 Cloudflare proxy 進來，需在 nginx 設定 `real_ip_header CF-Connecting-IP` 與 `set_real_ip_from`（Cloudflare IP ranges），allowlist 比對才會用使用者真實 IP 而非 Cloudflare edge IP。完整事故拆解見 `docs/cloudflare-nginx-source-allowlist-incident.md`。
 
+### 2.6 Serve API key 注入（生產 nginx）
+
+`/instrument-lookup` 靜態頁不會在瀏覽器端嵌入 Serve API key；生產 nginx 透過
+`infra/nginx/serve-key.conf`（由 `scripts/render_nginx_serve_key.py` 在 deploy 時
+依 `SERVE_API_KEYS` 第一個 key 渲染）以 `Referer` regex 比對後注入 `X-API-Key`。
+驗證方式：
+
+```bash
+# 帶 Referer 從同源頁面打 Serve（生產 nginx 會注入 key）
+curl -i "https://findb.tingfong.com/api/v1/serve/instruments?market=CRYPTO" \
+  -H "Referer: https://findb.tingfong.com/instrument-lookup"
+
+# 不帶 Referer 直打（沿用 caller 提供的 X-API-Key，未帶且 SERVE_REQUIRE_AUTH=true 應 401）
+curl -i "https://findb.tingfong.com/api/v1/serve/instruments?market=CRYPTO"
+```
+
+> 本機開發未跑 nginx，`infra/nginx/serve-key.conf` 為安全 fallback（passthrough
+> caller 提供的 `X-API-Key`），所以本機 `/instrument-lookup` 仍需以 query string 或
+> 其它途徑提供 key。
+
 ---
 
 ## 3. Source API 測試

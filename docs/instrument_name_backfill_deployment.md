@@ -77,6 +77,12 @@ ls -lh ~/backups/
 
 ### 1. TW 名稱與 currency 補上
 
+> **編碼說明（PR #79 後）**：TWSE / TPEX ISIN 頁面宣告為 `text/html;charset=MS950`，
+> Python 對應 codec 為 `cp950`。早期 backfill 使用 `big5` + `errors="ignore"` 會默默丟掉
+> Microsoft 自訂區字元（例如 `恒`、`凃`），名稱會整體後移一個 byte 導致亂碼。
+> 目前 script 會讀 Response `Content-Type` 動態決定 codec，缺省 fallback 為 `cp950`。
+> 跑新版前若 DB 已落地舊版 mojibake 名稱，請改用 `--overwrite-existing`。
+
 ```bash
 # dry-run，確認預估更新筆數
 docker exec findb-app python /app/scripts/backfill_instrument_names.py
@@ -84,9 +90,15 @@ docker exec findb-app python /app/scripts/backfill_instrument_names.py
 # 預期輸出尾巴：would apply: name=2173 currency=2508 unmatched=334
 # unmatched 應該都是 TXF*/期貨代碼 + 0050 重複 + 已下市股票
 
-# 套用
+# 套用（只填入 NULL 名稱，已有名稱不動）
 docker exec findb-app python /app/scripts/backfill_instrument_names.py --apply
+
+# 若 DB 已有舊版 big5 解碼產生的亂碼，需強制覆寫
+docker exec findb-app python /app/scripts/backfill_instrument_names.py --apply --overwrite-existing
 ```
+
+> `--overwrite-existing` 只影響 `name` 欄位；`currency` 仍只在 NULL 時補入。
+> 兩個旗標都是 idempotent，重複執行不會破壞已正確填入的資料。
 
 ### 2. 修正 routing bug 殘留
 

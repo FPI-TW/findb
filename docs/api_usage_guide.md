@@ -157,6 +157,12 @@ Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 X-API-Key: your-serve-key
 ```
 
+> **生產環境 nginx Serve key 注入**：`/instrument-lookup` 等同源靜態頁不會把 Serve API
+> key 嵌入瀏覽器；生產 nginx 會以 `Referer` regex 比對後注入 `X-API-Key`。設定
+> 由 `scripts/render_nginx_serve_key.py` 在 deploy 時根據 `SERVE_API_KEYS` 的
+> **第一個** key 渲染為 `infra/nginx/serve-key.conf`。外部直接呼叫 `/api/v1/serve/*`
+> 的客戶端不受影響，仍需自行帶 `X-API-Key`。
+
 ### Admin API（必要）
 
 所有 Admin API 端點**永遠強制**認證，沒有任何 bypass 或 DEBUG 模式例外：
@@ -180,6 +186,7 @@ X-API-Key: your-admin-key
 | **IP 允許名單** | 生產環境 nginx 使用 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*` |
 | **限流**        | 預設每個 API Key + IP 組合，每 60 秒最多 100 次請求           |
 | **Proxy 支援**  | nginx 會覆寫 `X-Real-IP` 與 `X-Forwarded-For` 為實際來源 IP |
+| **Serve key 注入** | 生產 nginx 對 Referer 匹配 `/instrument-lookup` 的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；外部 caller 仍 passthrough |
 
 ---
 
