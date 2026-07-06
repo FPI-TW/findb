@@ -50,3 +50,12 @@ docs/superpowers/
 .ingest_log_prod/
 datas/
 seed/partial_dump/prod_partial_*/
+
+# Skills
+.agents/*
+.claude/*
+
+# Brag
+brag/*
+brag-output/*
+.playwright-cli/*
