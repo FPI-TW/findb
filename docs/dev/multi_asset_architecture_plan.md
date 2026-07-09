@@ -170,12 +170,19 @@ Phase 2 執行紀錄（2026-07-09）：
 
 前置：無。與 ADR-4 對應。
 
-- [ ] 新增 `api_key` 表：`key_id`、`key_hash`（不存明文）、`owner`、`tier`、`scopes`、`created_at`、`revoked_at`。
-- [ ] `verify_serve_api_key` 改查表（保留 env fallback 過渡期），比對用 hash。
-- [ ] tier 決定 rate limit 與 page size 上限；LLM 流量獨立 tier。
-- [ ] Admin API 增加 key 簽發 / 撤銷 endpoints（沿用 `ADMIN_API_KEY` 保護）。
-- [ ] 用量記錄（per key_id 計數）供審計與異常偵測。
-- [ ] 遷移完成後移除 `SERVE_API_KEYS` env 機制與 nginx serve-key 注入的相容性確認（`infra/nginx/serve-key.conf` 注入的 key 也需入表）。
+- [x] 新增 `api_key` 表：`key_id`、`key_hash`（不存明文）、`owner`、`tier`、`scopes`、`created_at`、`revoked_at`。
+- [x] `verify_serve_api_key` 改查表（保留 env fallback 過渡期），比對用 hash。
+- [x] tier 決定 rate limit 與 page size 上限；LLM 流量獨立 tier。
+- [x] Admin API 增加 key 簽發 / 撤銷 endpoints（沿用 `ADMIN_API_KEY` 保護）。
+- [x] 用量記錄（per key_id 計數）供審計與異常偵測。
+- [x] 遷移完成後移除 `SERVE_API_KEYS` env 機制與 nginx serve-key 注入的相容性確認（`infra/nginx/serve-key.conf` 注入的 key 也需入表）。
+
+Phase 3 執行紀錄（2026-07-09）：
+
+- 新增 `api_key` table，只保存 SHA-256 hash；Admin `POST /api/v1/admin/api-keys` 簽發時只回傳一次明文 key，`GET /api/v1/admin/api-keys` 不暴露 hash。
+- Serve auth 優先查 DB active key，檢查 `serve` scope、per-key rate limit 與 `page_size_limit`，並更新 `usage_count` / `last_used_at`。
+- `SERVE_API_KEYS` env fallback 暫時保留，供 nginx `serve-key.conf` 與既有部署過渡；正式移除前需先把 nginx 注入的 key 透過 Admin endpoint 建入 DB。
+- partial dump 預設排除 `api_key`，避免把 key hash 與用量審計資料帶到本機 seed。
 
 ### Phase 4: Cache 層（隨讀取流量跟上）
 

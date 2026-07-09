@@ -14,7 +14,7 @@ from app.models.canonical import (
 )
 from app.models.correction import CanonicalCorrection
 from app.models.raw import RawMarketPayload
-from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
+from app.models.registry import APIKey, DatasetRegistry, DQIssue, IngestionRun
 
 __all__ = [
     "Base",
@@ -32,5 +32,6 @@ __all__ = [
     "DatasetRegistry",
     "IngestionRun",
     "DQIssue",
+    "APIKey",
     "CanonicalCorrection",
 ]

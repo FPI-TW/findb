@@ -149,7 +149,7 @@ Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 | 設定值          | 行為                                              |
 | --------------- | ------------------------------------------------- |
 | `false`（預設） | 不需要認證，任何人皆可查詢                        |
-| `true`          | 必須帶入 `X-API-Key`，金鑰設定於 `SERVE_API_KEYS` |
+| `true`          | 必須帶入 `X-API-Key`，金鑰優先查 DB `api_key` 表，`SERVE_API_KEYS` 僅作過渡 fallback |
 
 啟用 Serve 認證時，使用方式與 Source API 相同：
 
@@ -157,11 +157,20 @@ Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 X-API-Key: your-serve-key
 ```
 
+Serve API key 由 Admin API 簽發，明文只在建立時回傳一次：
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/admin/api-keys" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"owner":"llm-client","tier":"llm","scopes":["serve"],"rate_limit_requests":100,"rate_limit_window":60,"page_size_limit":1000}'
+```
+
 > **生產環境 nginx Serve key 注入**：`/instrument-lookup` 等同源靜態頁不會把 Serve API
 > key 嵌入瀏覽器；生產 nginx 會以 `Referer` regex 比對後注入 `X-API-Key`。設定
 > 由 `scripts/render_nginx_serve_key.py` 在 deploy 時根據 `SERVE_API_KEYS` 的
-> **第一個** key 渲染為 `infra/nginx/serve-key.conf`。外部直接呼叫 `/api/v1/serve/*`
-> 的客戶端不受影響，仍需自行帶 `X-API-Key`。
+> **第一個** key 渲染為 `infra/nginx/serve-key.conf`。Phase 3 後這是過渡機制：
+> 該 key 也應透過 Admin API 建入 DB，待部署確認後再移除 env fallback。
 
 ### Admin API（必要）
 
@@ -2133,8 +2142,9 @@ with httpx.Client() as client:
 
 ```env
 SERVE_REQUIRE_AUTH=true
-SERVE_API_KEYS=your-serve-key-1,your-serve-key-2
 ```
+
+然後用 Admin API 建立 Serve key。`SERVE_API_KEYS` 仍可作為過渡 fallback；新 consumer 應使用 DB-backed key。
 
 ### Q: 如何查看所有可用的 dataset_key？
 
@@ -2211,7 +2221,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | `SOURCE_API_KEY`            | （空）                                                  | Source API 金鑰                                             |
 | `SOURCE_ALLOWLIST_CIDRS`     | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | nginx `/api/v1/source/*` IP 允許名單（CIDR，逗號分隔）     |
 | `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For（rate limit client IP 用）        |
-| `SERVE_API_KEYS`             | （空）                                                  | Serve API 金鑰（逗號分隔）                                 |
+| `SERVE_API_KEYS`             | （空）                                                  | Serve API env fallback（過渡用；新 key 使用 Admin API 建入 DB） |
 | `SERVE_REQUIRE_AUTH`         | `false`                                                 | Serve API 是否需要認證                                     |
 | `ADMIN_API_KEY`             | （空）                                                  | Admin API 金鑰，**必須設定**才能使用 Admin API              |
 | `RATE_LIMIT_REQUESTS`        | `100`                                                   | 限流上限（每 window 內的請求數）                           |

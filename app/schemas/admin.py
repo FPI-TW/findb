@@ -222,3 +222,42 @@ class InstrumentCacheItemUpdateResponse(BaseModel):
 class CacheTriggerResponse(BaseModel):
     message: str
     status: str
+
+
+# ── API Keys ──────────────────────────────────────────────────────────────────
+
+
+class APIKeyCreateRequest(BaseModel):
+    owner: str = Field(..., min_length=1, max_length=100)
+    tier: str = Field(default="standard", min_length=1, max_length=30)
+    scopes: list[str] = Field(default_factory=lambda: ["serve"])
+    rate_limit_requests: int = Field(default=100, ge=1)
+    rate_limit_window: int = Field(default=60, ge=1)
+    page_size_limit: int = Field(default=1000, ge=1, le=1000)
+
+
+class APIKeyResponse(BaseModel):
+    key_id: UUID
+    owner: str
+    tier: str
+    scopes: list[str]
+    rate_limit_requests: int
+    rate_limit_window: int
+    page_size_limit: int
+    usage_count: int
+    created_at: datetime
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class APIKeyCreateResponse(BaseModel):
+    success: bool = True
+    api_key: str
+    data: APIKeyResponse
+
+
+class APIKeyListResponse(BaseModel):
+    success: bool = True
+    data: list[APIKeyResponse]
