@@ -76,6 +76,9 @@ class Instrument(Base):
         back_populates="instrument"
     )
     stats: Mapped[Optional["InstrumentStats"]] = relationship(back_populates="instrument")
+    etf_details: Mapped[Optional["ETFDetails"]] = relationship(back_populates="instrument")
+    bond_details: Mapped[Optional["BondDetails"]] = relationship(back_populates="instrument")
+    bond_eod: Mapped[list["BondEOD"]] = relationship(back_populates="instrument")
 
 
 class InstrumentStats(Base):
@@ -246,6 +249,85 @@ class CorporateAction(Base):
     )
 
     instrument: Mapped["Instrument"] = relationship(back_populates="corporate_actions")
+
+
+class ETFDetails(Base):
+    """ETF-specific instrument metadata."""
+
+    __tablename__ = "etf_details"
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tracking_index: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    expense_ratio: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(10, 6), nullable=True)
+    issuer: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="etf_details")
+
+
+class BondDetails(Base):
+    """Bond-specific instrument metadata."""
+
+    __tablename__ = "bond_details"
+    __table_args__ = (
+        Index("idx_bond_maturity", "maturity_date"),
+        Index("idx_bond_issuer", "issuer"),
+    )
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    issuer: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    coupon: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(10, 6), nullable=True)
+    maturity_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    rating: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    face_value: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="bond_details")
+
+
+class BondEOD(Base):
+    """Daily bond pricing and yield data."""
+
+    __tablename__ = "bond_eod"
+    __table_args__ = (
+        UniqueConstraint("instrument_id", "trade_date", name="uq_bond_eod"),
+        Index("idx_bond_eod_date", "trade_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id"),
+        nullable=False,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    yield_to_maturity: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    clean_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    dirty_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    duration: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="bond_eod")
 
 
 class MacroSeries(Base):

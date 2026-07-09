@@ -9,6 +9,8 @@ import pytest
 from httpx import AsyncClient
 
 from app.models.canonical import (
+    BondDetails,
+    BondEOD,
     CorporateAction,
     FuturesContinuousEOD,
     FuturesContract,
@@ -438,3 +440,62 @@ async def test_list_futures_contracts_and_continuous(client: AsyncClient, test_s
     assert continuous_payload["success"] is True
     assert len(continuous_payload["data"]) == 1
     assert continuous_payload["data"][0]["roll_rule_name"] == "front-month"
+
+
+@pytest.mark.asyncio
+async def test_list_bonds_and_bond_eod(client: AsyncClient, test_session):
+    instrument_id = uuid7()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="bond",
+        market="US",
+        symbol="US10Y-2026",
+        name="US Treasury 10Y",
+        currency="USD",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    details = BondDetails(
+        instrument_id=instrument_id,
+        issuer="US Treasury",
+        coupon=Decimal("0.045"),
+        maturity_date=date(2036, 2, 15),
+        rating="AA+",
+        face_value=Decimal("1000"),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    eod = BondEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=date(2026, 1, 16),
+        yield_to_maturity=Decimal("0.0412"),
+        clean_price=Decimal("99.25"),
+        dirty_price=Decimal("99.40"),
+        duration=Decimal("8.1"),
+        source="bloomberg",
+        asof_ts=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([instrument, details, eod])
+    await test_session.commit()
+
+    bonds_response = await client.get("/api/v1/serve/bonds?market=US&issuer=Treasury")
+    assert bonds_response.status_code == 200
+    bonds_payload = bonds_response.json()
+    assert bonds_payload["success"] is True
+    assert bonds_payload["data"][0]["symbol"] == "US10Y-2026"
+    assert bonds_payload["data"][0]["issuer"] == "US Treasury"
+    assert bonds_payload["data"][0]["maturity_date"] == "2036-02-15"
+
+    eod_response = await client.get(
+        "/api/v1/serve/bonds/eod?market=US&symbols=US10Y-2026&start_date=2026-01-16"
+    )
+    assert eod_response.status_code == 200
+    eod_payload = eod_response.json()
+    assert eod_payload["success"] is True
+    assert len(eod_payload["data"]) == 1
+    assert eod_payload["data"][0]["yield_to_maturity"] == "0.0412"
+    assert eod_payload["data"][0]["clean_price"] == "99.25"

@@ -180,6 +180,53 @@ class FuturesContinuousListResponse(PaginatedResponse[FuturesContinuousResponse]
     pass
 
 
+class BondResponse(BaseModel):
+    """單一債券商品回應。"""
+
+    instrument_id: UUID
+    symbol: str
+    name: Optional[str] = None
+    market: str
+    currency: Optional[str] = None
+    issuer: Optional[str] = None
+    coupon: Optional[Decimal] = None
+    maturity_date: Optional[date] = None
+    rating: Optional[str] = None
+    face_value: Optional[Decimal] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BondListResponse(PaginatedResponse[BondResponse]):
+    """分頁債券商品回應。"""
+
+    pass
+
+
+class BondEODResponse(BaseModel):
+    """單一債券日資料回應。"""
+
+    id: UUID
+    instrument_id: UUID
+    symbol: str
+    name: Optional[str] = None
+    market: str
+    trade_date: date
+    yield_to_maturity: Optional[Decimal] = None
+    clean_price: Optional[Decimal] = None
+    dirty_price: Optional[Decimal] = None
+    duration: Optional[Decimal] = None
+    source: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BondEODListResponse(PaginatedResponse[BondEODResponse]):
+    """分頁債券日資料回應。"""
+
+    pass
+
+
 class CalendarResponse(BaseModel):
     """交易日曆回應。"""
 

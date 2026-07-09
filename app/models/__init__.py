@@ -1,7 +1,10 @@
 # Database models
 from app.models.base import Base
 from app.models.canonical import (
+    BondDetails,
+    BondEOD,
     CorporateAction,
+    ETFDetails,
     FuturesContinuousEOD,
     FuturesContract,
     Instrument,
@@ -24,6 +27,9 @@ __all__ = [
     "TradingCalendar",
     "MarketDataEOD",
     "CorporateAction",
+    "ETFDetails",
+    "BondDetails",
+    "BondEOD",
     "MacroSeries",
     "MacroObservation",
     "FuturesContract",

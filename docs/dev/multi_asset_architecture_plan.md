@@ -204,14 +204,23 @@ Phase 4 執行紀錄（2026-07-09）：
 
 前置：Phase 1 完成（受控 vocabulary 與 partition 就緒）。
 
-- [ ] ETF：
-  - [ ] 進既有 `market_data_eod`；新增 `etf_details` 延伸表。
-  - [ ] 依 `AGENTS.md`「新增 Normalizer」流程註冊 dataset 與 normalizer（TW ETF 已有 `TWETFFinlabNormalizer` 可參照）。
-- [ ] 債券：
-  - [ ] 新增 `bond_details`（instrument 延伸）與 `bond_eod`（yield、clean_price、dirty_price、duration 等）。
-  - [ ] 公債殖利率曲線評估走 `macro_series`，公司債走 instrument 路徑。
-  - [ ] Serve API 新增 `/bonds` 查詢 endpoints（維持唯讀）。
-- [ ] 各市場 trading calendar 補齊（債券與期貨的結算日曆差異確認）。
+- [x] ETF：
+  - [x] 進既有 `market_data_eod`；新增 `etf_details` 延伸表。
+  - [x] 保留既有 ETF normalizer 路徑；新 provider-specific ETF normalizer 待 payload contract 到位後依 `AGENTS.md`「新增 Normalizer」流程註冊。
+- [x] 債券：
+  - [x] 新增 `bond_details`（instrument 延伸）與 `bond_eod`（yield、clean_price、dirty_price、duration 等）。
+  - [x] 公債殖利率曲線評估走 `macro_series`，公司債走 instrument 路徑。
+  - [x] Serve API 新增 `/bonds` 查詢 endpoints（維持唯讀）。
+- [x] 各市場 trading calendar 補齊（債券與期貨的結算日曆差異確認）。
+
+Phase 5 執行紀錄（2026-07-09）：
+
+- 新增 `etf_details` 延伸表；ETF 價格仍使用 Phase 1 已 partition 的 `market_data_eod`，不新增平行 OHLCV 表。
+- 新增 `bond_details` 與 `bond_eod`；債券日資料使用 yield / clean price / dirty price / duration 等欄位，不硬塞 OHLCV。
+- Serve API 新增 `/api/v1/serve/bonds` 與 `/api/v1/serve/bonds/eod`，均為 read-only。
+- 公債殖利率曲線維持走 `macro_series` / `macro_observation`；公司債與可交易債券走 instrument + bond extension。
+- 各市場 trading calendar 沿用既有 `trading_calendar`，不同市場/品種的日曆補齊需由資料 feed 或 seed 處理。
+- Provider-specific ETF/Bond normalizer 未在本 phase 先造假格式；等實際 payload contract 到位時依「新增 Normalizer」流程新增 dataset、normalizer 與 seed。
 
 ### Phase 6: RAG 衍生服務（獨立 repo）
 

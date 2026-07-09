@@ -76,7 +76,7 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | ------------- | -------------------------------------------------------------------------------------- |
 | Source API    | 標準 ingest、direct ingest、run status、rerun、dataset list 已可用                     |
 | Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina`、`twstock` 已可用                 |
-| Serve API     | instruments、EOD、corporate actions、macro、futures、calendar 已可用                   |
+| Serve API     | instruments、EOD、corporate actions、macro、futures、bonds、calendar 已可用            |
 | Admin API     | DQ issue、EOD patch、corrections、raw payload、bulk rerun、instrument cache 管理已可用 |
 | 區域市場      | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程                   |
 
@@ -1163,6 +1163,43 @@ GET /api/v1/serve/futures/continuous/{instrument_id}
 | `end_date`      | query | date | 否   | 結束日期 |
 | `page`          | query | int  | 否   | 頁碼     |
 | `page_size`     | query | int  | 否   | 每頁筆數 |
+
+---
+
+### 債券
+
+#### 查詢債券清單
+
+```
+GET /api/v1/serve/bonds
+```
+
+| 參數            | 位置  | 類型   | 必填 | 說明                   |
+| --------------- | ----- | ------ | ---- | ---------------------- |
+| `market`        | query | string | 否   | 市場代碼               |
+| `symbols`       | query | string | 否   | 逗號分隔的債券代號     |
+| `issuer`        | query | string | 否   | 發行人模糊查詢         |
+| `maturity_from` | query | date   | 否   | 到期日起始日           |
+| `maturity_to`   | query | date   | 否   | 到期日結束日           |
+| `page`          | query | int    | 否   | 頁碼                   |
+| `page_size`     | query | int    | 否   | 每頁筆數               |
+
+#### 查詢債券日資料
+
+```
+GET /api/v1/serve/bonds/eod
+```
+
+| 參數         | 位置  | 類型   | 必填 | 說明                       |
+| ------------ | ----- | ------ | ---- | -------------------------- |
+| `market`     | query | string | 否   | 市場代碼                   |
+| `symbols`    | query | string | 否   | 逗號分隔的債券代號         |
+| `start_date` | query | date   | 否   | 起始日期                   |
+| `end_date`   | query | date   | 否   | 結束日期                   |
+| `page`       | query | int    | 否   | 頁碼                       |
+| `page_size`  | query | int    | 否   | 每頁筆數                   |
+
+債券日資料使用 `yield_to_maturity`、`clean_price`、`dirty_price`、`duration`，不與 OHLCV 型 EOD 混表。
 
 ---
 
