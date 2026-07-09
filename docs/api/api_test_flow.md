@@ -169,7 +169,7 @@ done
 { "detail": "Source API client IP not allowlisted" }
 ```
 
-> 若服務透過 Cloudflare proxy 進來，需在 nginx 設定 `real_ip_header CF-Connecting-IP` 與 `set_real_ip_from`（Cloudflare IP ranges），allowlist 比對才會用使用者真實 IP 而非 Cloudflare edge IP。完整事故拆解見 `docs/cloudflare-nginx-source-allowlist-incident.md`。
+> 若服務透過 Cloudflare proxy 進來，需在 nginx 設定 `real_ip_header CF-Connecting-IP` 與 `set_real_ip_from`（Cloudflare IP ranges），allowlist 比對才會用使用者真實 IP 而非 Cloudflare edge IP。完整事故拆解見 `cloudflare-nginx-source-allowlist-incident.md`。
 
 ### 2.6 Serve API key 注入（生產 nginx）
 
@@ -955,7 +955,7 @@ chmod +x scripts/smoke_test.sh
 ## 7. 視覺化測試面板
 
 瀏覽器開啟 [http://localhost:8080/test](http://localhost:8080/test)。
-若需要靜態快照版本，可直接開啟 repo 內的 `docs/api_tester.html`。
+測試面板的原始檔為 `app/static/test_page.html`（非明確要求請勿修改）。
 
 測試面板提供：
 
@@ -1039,7 +1039,7 @@ uv run pytest --cov=app --cov-report=term-missing
 | `429 Rate limit exceeded`         | 請求頻率超過限制                  | 等待 60 秒後重試，或調大 `RATE_LIMIT_REQUESTS`                                  |
 | `400 Dataset 'xxx' not found`     | dataset_key 不存在                | 先跑 seed，或用 `/datasets` 確認可用的 key                                      |
 | `400 Market mismatch`             | payload 的 dataset 市場與端點不符 | 確認 dataset_key 的 market 與端點路徑一致                                       |
-| `422 Validation Error`            | 請求體格式不符                    | 檢查 JSON 欄位是否符合 schema（見 [API 使用教學](api_usage_guide.md)）          |
+| `422 Validation Error`            | 請求體格式不符                    | 檢查 JSON 欄位是否符合 schema（見 `api_usage_guide.md`）          |
 | `.env` 設定不生效                 | docker compose 覆蓋               | `docker-compose.yml` 使用 `${VAR:-default}` 語法，`.env` 值會生效               |
 | `Run status 一直 pending`         | 背景任務未執行                    | 確認 app 容器正常運行，檢查 `docker compose logs app`                           |
 | `500 No admin API key configured` | `ADMIN_API_KEY` 未設定            | 在 `.env` 或 `docker-compose.yml` 加入 `ADMIN_API_KEY=your-admin-key`，重啟服務 |
@@ -1051,6 +1051,4 @@ uv run pytest --cov=app --cov-report=term-missing
 
 ## 相關文件
 
-- **[API 使用教學](api_usage_guide.md)** — 完整端點規格、請求/回應格式、Python 範例
-- [技術規格](../plans/spec.md)
-- [產品路線圖](../plans/roadmap.md)
+見 `docs/README.md` 文件索引。

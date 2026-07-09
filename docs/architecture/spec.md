@@ -235,12 +235,10 @@ Fetch Layer
 - normalize 仍由 FastAPI `BackgroundTasks` 觸發，尚未拆成獨立 worker
 - schema lifecycle 仍偏 runtime init，migration 佈署策略仍待補強
 - Serve API 仍以 `offset/limit` 為主，未導入 cursor / keyset pagination
-- 擴展性優化與壓測請參考 [scalability checklist](../docs/scalability_optimization_checklist.md)
+- 擴展性優化與壓測請參考 `scalability_optimization_checklist.md`
 
 ---
 
 ## 八、相關文件
 
-- [路線圖](roadmap.md)
-- [API 使用教學](../docs/api_usage_guide.md)
-- [API 測試流程](../docs/api_test_flow.md)
+見 `docs/README.md` 文件索引。

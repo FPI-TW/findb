@@ -57,31 +57,9 @@ FinDB 是一套可長期維護、逐步擴充的金融資料庫系統，採用�
 
 ## 目前進度
 
-### 已完成
+Source / Normalize / Serve / Admin 四條主路徑已串接完成，涵蓋 `CRYPTO` / `US` / `FX` / `TW` / `HK` / `CN` / `MACRO` / `WTX` 的 ingest（含 Bloomberg direct 格式）與查詢，測試覆蓋主流程與 end-to-end。
 
-- Source / Normalize / Serve / Admin 四條主路徑已串接完成
-- Source API 已支援標準 ingest、run status、rerun、dataset registry 查詢
-- Bloomberg direct ingest 已支援 `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina`
-- Serve API 已支援 instruments、EOD、corporate actions、macro、futures、calendar 查詢
-- Admin API 已支援 DQ issue 查詢/解決、EOD patch、更正紀錄、raw payload 查詢、bulk rerun、instrument cache 維護
-- 測試已涵蓋 Source / Serve / Admin / normalize / direct ingest / end-to-end 主流程
-
-### 目前可用資料範圍
-
-| 類型               | 現況                                                           |
-| ------------------ | -------------------------------------------------------------- |
-| `CRYPTO`           | EOD、指數 EOD、Bloomberg direct ingest                         |
-| `US`               | Equity / Index EOD、corporate actions、Bloomberg direct ingest |
-| `FX`               | EOD、Bloomberg direct ingest                                   |
-| `TW` / `HK` / `CN` | 區域股票與指數正規化已實作，港中 direct ingest 已串接          |
-| `MACRO`            | Observation 與 Bloomberg direct ingest 已實作                  |
-| `WTX`              | Continuous futures 與 Bloomberg direct ingest 已實作           |
-
-### 下一階段重點
-
-- 將 normalize 從 FastAPI `BackgroundTasks` 拆到獨立 worker / queue
-- 補齊 migration、bulk write、索引與大批量效能優化
-- 持續擴充樣本資料、壓測與維運文件
+詳細的已交付項目（`roadmap.md`）、架構演進計劃（`multi_asset_architecture_plan.md`）與效能優化清單（`scalability_optimization_checklist.md`），見 **[docs/README.md](docs/README.md)** 文件索引。
 
 ---
 
@@ -215,15 +193,11 @@ findb/
 │   ├── test_usstock_normalize.py  # 美股/區域正規化測試
 │   └── test_end_to_end.py      # 端到端整合測試
 │
-├── docs/                       # 文件
-│   ├── api_usage_guide.md      # API 使用教學（完整版）
-│   ├── api_test_flow.md        # API 測試流程
-│   └── api_tester.html         # 匯出的靜態 API 測試頁快照
-│
-├── plans/                      # 開發計劃
-│   ├── normalize_serve_development_plan.md
-│   ├── spec.md                 # 技術規格
-│   └── roadmap.md              # 產品路線圖
+├── docs/                       # 文件（分類索引見 docs/README.md）
+│   ├── api/                    # API 使用教學、測試流程
+│   ├── architecture/           # 技術規格、ingestion 流程視覺化、頁面規格
+│   ├── operations/             # migration、backfill 手冊、事故紀錄
+│   └── dev/                    # roadmap、進行中計劃、known issues
 │
 ├── docker-compose.yml          # 本機開發環境
 ├── docker-compose.prod.yml     # 生產環境（AWS EC2）
@@ -515,36 +489,15 @@ http://localhost:8080/instrument-lookup
 
 ## API 文件
 
-> 完整的端點規格、請求/回應格式、Python 範例與常見問題，請參閱
-> **[API 使用教學](docs/api_usage_guide.md)**。
+> 完整的端點規格、請求/回應格式、Python 範例與常見問題，請參閱 `api_usage_guide.md`（見 [docs/README.md](docs/README.md) 索引）。
 
-### Source API（資料攝取）
+| API 群組 | 路徑前綴 | 性質 |
+| ---------- | ------------------ | ------------------------------------------------------------------------- |
+| Source API | `/api/v1/source/*` | 資料攝取：標準/direct ingest、run status、rerun、datasets（**必要** `X-API-Key`） |
+| Serve API  | `/api/v1/serve/*`  | **唯讀**查詢：instruments、EOD、corporate actions、macro、futures、calendar（認證可選，`SERVE_REQUIRE_AUTH`） |
+| Admin API  | `/api/v1/admin/*`  | DQ issue、EOD patch、更正紀錄、raw payload、bulk rerun、instrument cache（**必要** `X-API-Key`） |
 
-需在 Header 帶入 `X-API-Key`。
-
-| 方法 | 路徑                                         | 說明                                      |
-| ---- | -------------------------------------------- | ----------------------------------------- |
-| POST | `/api/v1/source/ingest/crypto`               | 接收 CRYPTO 市場 raw payload              |
-| POST | `/api/v1/source/ingest/us`                   | 接收 US 市場 raw payload                  |
-| POST | `/api/v1/source/ingest/fx`                   | 接收 FX 市場 raw payload                  |
-| POST | `/api/v1/source/ingest/macro`                | 接收 MACRO 市場 raw payload               |
-| POST | `/api/v1/source/ingest/wtx`                  | 接收 WTX 市場 raw payload                 |
-| POST | `/api/v1/source/ingest/global`               | 接收 GLOBAL 市場 raw payload              |
-| POST | `/api/v1/source/ingest/tw`                   | 接收 TW 市場 raw payload                  |
-| POST | `/api/v1/source/ingest/hk`                   | 接收 HK 市場 raw payload                  |
-| POST | `/api/v1/source/ingest/cn`                   | 接收 CN 市場 raw payload                  |
-| POST | `/api/v1/source/ingest/crypto/direct`        | Bloomberg 加密貨幣直接格式                |
-| POST | `/api/v1/source/ingest/fx/direct`            | Bloomberg 外匯直接格式                    |
-| POST | `/api/v1/source/ingest/wtx/direct`           | Bloomberg WTX 期貨直接格式                |
-| POST | `/api/v1/source/ingest/usstock/direct`       | Bloomberg 美股直接格式                    |
-| POST | `/api/v1/source/ingest/hkchina/direct`       | Bloomberg 港中混合直接格式（股票 + 指數） |
-| POST | `/api/v1/source/ingest/hkchina-index/direct` | Bloomberg 港中指數直接格式（相容舊流程）  |
-| POST | `/api/v1/source/ingest/macro/direct`         | Bloomberg 宏觀直接格式                    |
-| GET  | `/api/v1/source/runs/{run_id}`               | 查詢批次狀態                              |
-| POST | `/api/v1/source/runs/{run_id}/rerun`         | 以原始 payload 重新執行正規化             |
-| GET  | `/api/v1/source/datasets`                    | 查詢可用資料集                            |
-
-#### 請求範例
+快速範例：
 
 ```bash
 # 標準格式攝取
@@ -553,113 +506,11 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "Content-Type: application/json" \
   --data-binary "@scripts/sample_ingest_payload.json"
 
-# Direct 格式攝取（US Stock）
-curl -X POST "http://localhost:8080/api/v1/source/ingest/usstock/direct" \
-  -H "X-API-Key: dev-source-key" \
-  -H "Content-Type: application/json" \
-  --data-binary "@bloomberg_usstock.json"
-```
-
-#### 請求格式（標準）
-
-```json
-{
-  "dataset_key": "crypto_eod",
-  "source": "bloomberg",
-  "request_key": "bloomberg_crypto_20260116_144914",
-  "idempotency_key": "bloomberg_crypto_20260116_144914",
-  "payload": {
-    "metadata": { "source": "Bloomberg API" },
-    "data": [ ... ]
-  },
-  "fetched_at": "2026-01-16T14:49:14Z"
-}
-```
-
-#### 請求格式（Direct）
-
-```json
-{
-  "metadata": { "source": "Bloomberg API", "query_time": "2026-02-04T16:00:51" },
-  "data": [ ... ]
-}
-```
-
-### Serve API（資料查詢）
-
-認證可選（由 `SERVE_REQUIRE_AUTH` 控制）。Serve API 為**唯讀**。
-
-| 方法 | 路徑                                               | 說明                                                |
-| ---- | -------------------------------------------------- | --------------------------------------------------- |
-| GET  | `/api/v1/serve/instruments`                        | 查詢標的清單（支援 market/asset_class/symbol 篩選） |
-| GET  | `/api/v1/serve/instruments/{id}`                   | 查詢單一標的                                        |
-| GET  | `/api/v1/serve/eod`                                | 查詢日K 資料（支援 market/symbols/日期範圍篩選）    |
-| GET  | `/api/v1/serve/eod/{instrument_id}`                | 查詢單一標的日K                                     |
-| GET  | `/api/v1/serve/corporate-actions`                  | 查詢公司行為（除權息）                              |
-| GET  | `/api/v1/serve/corporate-actions/{instrument_id}`  | 查詢單一標的公司行為                                |
-| GET  | `/api/v1/serve/macro/series`                       | 查詢宏觀指標序列                                    |
-| GET  | `/api/v1/serve/macro/observations`                 | 查詢宏觀觀測值                                      |
-| GET  | `/api/v1/serve/macro/observations/{series_id}`     | 查詢特定序列觀測值                                  |
-| GET  | `/api/v1/serve/futures/contracts`                  | 查詢期貨合約                                        |
-| GET  | `/api/v1/serve/futures/continuous`                 | 查詢連續期貨日K                                     |
-| GET  | `/api/v1/serve/futures/continuous/{instrument_id}` | 查詢特定標的連續期貨日K                             |
-| GET  | `/api/v1/serve/calendar`                           | 查詢交易日曆（market 必填）                         |
-
-#### 查詢範例
-
-```bash
-# 查詢加密貨幣標的
-curl "http://localhost:8080/api/v1/serve/instruments?market=CRYPTO"
-
-# 查詢 BTC/ETH 日K
+# 查詢日K
 curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
-
-# 查詢美股除權息
-curl "http://localhost:8080/api/v1/serve/corporate-actions?market=US&action_type=dividend"
-
-# 查詢宏觀序列
-curl "http://localhost:8080/api/v1/serve/macro/series?name=CPI"
-
-# 查詢期貨合約
-curl "http://localhost:8080/api/v1/serve/futures/contracts?market=WTX"
-
-# 查詢交易日曆
-curl "http://localhost:8080/api/v1/serve/calendar?market=US&start_date=2026-01-01&end_date=2026-01-31"
 ```
 
-### Admin API（資料修正與快取維護）
-
-Admin API 必須帶 `X-API-Key`，並使用 `ADMIN_API_KEY` 中配置的值。
-
-| 方法  | 路徑                                                   | 說明                                    |
-| ----- | ------------------------------------------------------ | --------------------------------------- |
-| GET   | `/api/v1/admin/dq-issues`                              | 查詢 DQ issue                           |
-| PATCH | `/api/v1/admin/eod/{instrument_id}/{trade_date}`       | 修正 EOD 欄位並寫入 audit log           |
-| PATCH | `/api/v1/admin/dq-issues/{issue_id}/resolve`           | 標記 DQ issue 已解決                    |
-| GET   | `/api/v1/admin/raw-payloads`                           | 查詢 raw payload 清單                   |
-| GET   | `/api/v1/admin/raw-payloads/{run_id}`                  | 查詢指定 run 的 raw payload             |
-| GET   | `/api/v1/admin/corrections`                            | 查詢修正紀錄                            |
-| POST  | `/api/v1/admin/runs/bulk-rerun`                        | 批次重跑既有 runs                       |
-| GET   | `/api/v1/admin/instrument-cache`                       | 讀取 `app/static/data/instruments.json` |
-| PUT   | `/api/v1/admin/instrument-cache`                       | 全量覆蓋 instrument cache               |
-| PATCH | `/api/v1/admin/instrument-cache/items/{instrument_id}` | 更新單一 instrument cache 項目          |
-
-### 分頁
-
-所有列表端點支援分頁，參數統一為 `page`（預設 1）與 `page_size`（預設 100，最大 1000）。
-
-回應包含 `pagination` 物件：
-
-```json
-{
-  "pagination": {
-    "page": 1,
-    "page_size": 100,
-    "total_records": 2500,
-    "total_pages": 25
-  }
-}
-```
+所有列表端點支援分頁：`page`（預設 1）、`page_size`（預設 100，最大 1000），回應含 `pagination` 物件。
 
 ---
 
@@ -837,7 +688,7 @@ uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 
 ## Migration
 
-- 操作流程與 baseline/stamp 策略請見：[docs/migration_workflow.md](docs/migration_workflow.md)
+- 操作流程與 baseline/stamp 策略請見 `migration_workflow.md`（docs 索引）
 - 常用命令：`uv run alembic current`、`uv run alembic revision --autogenerate -m \"...\"`、`uv run alembic upgrade head`
 - 啟動時不再自動 `create_all()`；若資料庫版本未到 `head` 或缺核心表，服務會直接啟動失敗並提示先跑 migration。
 
@@ -985,12 +836,12 @@ git push origin main
 
 ## 相關文件
 
-- **[API 使用教學](docs/api_usage_guide.md)** — 完整端點規格、範例、錯誤代碼
-- [API 測試流程](docs/api_test_flow.md)
-- [API 測試頁快照](docs/api_tester.html)
-- [技術規格](plans/spec.md)
-- [產品路線圖](plans/roadmap.md)
-- [開發計劃](plans/normalize_serve_development_plan.md)
+所有文件由 **[docs/README.md](docs/README.md)** 統一索引，依用途分為：
+
+- `api/` — API 使用教學、測試流程
+- `architecture/` — 技術規格、流程視覺化、頁面規格
+- `operations/` — migration、backfill 手冊、事故紀錄
+- `dev/` — roadmap、進行中計劃、known issues
 
 ---
 

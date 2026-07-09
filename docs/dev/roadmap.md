@@ -143,13 +143,10 @@
 1. 將 normalize 任務搬到獨立 worker / queue，避免 API 與大量寫入互相影響。
 2. 將 bulk upsert、索引與 migration 納入正式優化計畫。
 3. 補齊區域市場、macro、WTX 的樣本資料、種子資料與 smoke test。
-4. 建立壓測基線與可觀測性指標，對應 [scalability checklist](../docs/scalability_optimization_checklist.md)。
+4. 建立壓測基線與可觀測性指標，對應 `scalability_optimization_checklist.md`。
 
 ---
 
 ## 六、相關文件
 
-- [技術規格](spec.md)
-- [Normalize / Serve 開發計劃](normalize_serve_development_plan.md)
-- [API 使用教學](../docs/api_usage_guide.md)
-- [API 測試流程](../docs/api_test_flow.md)
+見 `docs/README.md` 文件索引。

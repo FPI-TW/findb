@@ -25,12 +25,11 @@ findb/
 |  `- static/                # /test、/instrument-lookup、generated data cache
 |- migrations/               # Alembic migration scripts
 |- configs/                  # YAML configs，例如 partial_dump.yaml
-|- docs/                     # API guide、manual test flow、migration workflow
+|- docs/                     # 分類文件：api/、architecture/、operations/、dev/；索引見 docs/README.md
 |- tests/                    # async API/service integration tests 與 unit tests
 |- scripts/                  # dev.py、seed scripts、partial dump、cleanup、cache gen、render nginx confs
 |- infra/nginx/              # 生產環境 nginx 設定（HTTPS、Source allowlist、Serve API key 注入）
 |- seed/                     # local development partial dump data
-|- plans/                    # architecture 與 development plans
 |- docker-compose.yml        # local app + postgres + pgadmin stack
 |- docker-compose.prod.yml   # 生產環境 stack；含 nginx + findb-app
 |- Makefile                  # dev workflow shortcuts，包裝 scripts/dev.py
@@ -78,9 +77,7 @@ findb/
 | Seed upsert | `scripts/seed_upsert.py` | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate |
 | Instrument name backfill | `scripts/backfill_instrument_names.py`（TW）+ `scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；TW backfill 支援 `--overwrite-existing` 清理舊版 Big5 解碼亂碼；皆為可重複執行 |
 | Instrument routing 修正 | `scripts/fix_misrouted_tw_futures.py` + `scripts/cleanup_stale_instruments.py` | 修整舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
-| Backfill 部署手冊 | `docs/instrument_name_backfill_deployment.md` | EC2 + Aurora 環境下執行 backfill / routing 修正的階段步驟、備份與回滾，含 MS950/CP950 編碼修正背景 |
-| Ingestion 流程圖 | `docs/ingestion_workflow.html` | 從 Fetch POST 到 canonical 落地的五大階段視覺化拆解（含 DQ 與維運鉤子） |
-| Cloudflare/nginx allowlist 事故筆記 | `docs/cloudflare-nginx-source-allowlist-incident.md` | 服務在 Cloudflare 後方時，nginx Source allowlist 需信任 `CF-Connecting-IP` 的 root cause 與修正 |
+| 文件（規格、計劃、維運手冊、事故紀錄） | `docs/README.md` | 唯一文件入口，由索引導向 api/、architecture/、operations/、dev/ 各文件；含架構演進計劃（動 schema 或部署拓撲前先讀）、backfill 部署手冊、ingestion 流程圖、事故筆記等 |
 | Nginx 設定樣板 | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf` | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入） |
 | Nginx render 腳本 | `scripts/render_nginx_source_allowlist.py`、`scripts/render_nginx_cloudflare_real_ip.py`、`scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
 | 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2；含 nginx confs 渲染、scp、reload 步驟 |
