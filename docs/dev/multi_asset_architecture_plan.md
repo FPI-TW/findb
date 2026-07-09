@@ -226,9 +226,16 @@ Phase 5 執行紀錄（2026-07-09）：
 
 前置：Phase 3 完成（RAG 服務以自己的 key tier 消費 Serve API）。本 repo 僅承擔資料供應方角色。
 
-- [ ] 界定供應介面：RAG 服務讀 Serve API 或 RDS read replica（量大時後者）。
-- [ ] findb 不新增向量欄位、不引入 embedding 依賴。
-- [ ] 若需要變更 Serve API 以利 RAG 抽取（如 changed-since 增量查詢參數），以一般 feature 流程處理。
+- [x] 界定供應介面：RAG 服務讀 Serve API 或 RDS read replica（量大時後者）。
+- [x] findb 不新增向量欄位、不引入 embedding 依賴。
+- [x] 若需要變更 Serve API 以利 RAG 抽取（如 changed-since 增量查詢參數），以一般 feature 流程處理。
+
+Phase 6 執行紀錄（2026-07-09）：
+
+- 新增 `rag_supply_contract.md`，明確定義 findb 只供應 canonical read path；embedding、vector index、ranking、prompt/chat runtime 屬下游 RAG repo。
+- RAG 預設以 Phase 3 的 DB-backed Serve API key 消費，使用專屬 `rag` tier；大量抽取時改走 RDS read replica 的 read-only credentials。
+- 未在本 repo 新增 pgvector、embedding 依賴或 RAG 寫入路徑。
+- 若未來需要 `updated_since`、bulk export 或額外 projection，按一般 Serve API feature 開發，不把 RAG runtime 合併回 findb。
 
 ---
 
