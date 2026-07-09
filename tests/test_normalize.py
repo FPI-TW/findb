@@ -2,7 +2,7 @@
 Tests for Normalize services.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -627,6 +627,75 @@ async def test_process_upserts_existing_eod_instead_of_failing_duplicate(test_se
     persisted_run = await test_session.get(IngestionRun, run_id)
     assert persisted_run is not None
     assert persisted_run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_eod_stats_latest_date_advances_when_close_is_null(test_session):
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "crypto_eod"
+        asset_class = "crypto"
+        market = "CRYPTO"
+
+        def __init__(self, db, records: list[MappedRecord]):
+            super().__init__(db)
+            self._records = records
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return self._records
+
+    dataset = DatasetRegistry(
+        dataset_key="crypto_eod",
+        name="Crypto EOD",
+        asset_class="crypto",
+        market="CRYPTO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="crypto_eod",
+        status="pending",
+        raw_records=1,
+        created_at=utc_now(),
+    )
+    instrument_id = uuid7()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="crypto",
+        market="CRYPTO",
+        symbol="BTC",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    stats = InstrumentStats(
+        instrument_id=instrument_id,
+        first_trade_date=date(2026, 1, 16),
+        latest_trade_date=date(2026, 1, 16),
+        latest_price=Decimal("100"),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([dataset, run, instrument, stats])
+    await test_session.commit()
+
+    record = MappedRecord(
+        symbol="BTC",
+        trade_date=datetime(2026, 1, 17, tzinfo=timezone.utc),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("99"),
+        close=None,
+        source="bloomberg",
+    )
+    result = await DummyNormalizer(test_session, [record]).process({}, run_id)
+
+    assert result.success_records == 1
+    updated_stats = await test_session.get(InstrumentStats, instrument_id)
+    assert updated_stats is not None
+    assert updated_stats.latest_trade_date == date(2026, 1, 17)
+    assert updated_stats.latest_price is None
 
 
 @pytest.mark.asyncio

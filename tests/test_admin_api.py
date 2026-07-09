@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.main import app
-from app.models.canonical import Instrument, MarketDataEOD
+from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.registry import APIKey, DQIssue
 from app.services import instrument_cache as instrument_cache_service
@@ -210,8 +210,8 @@ class TestAPIKeyAdmin:
             row = await test_session.get(APIKey, UUID(key_id))
             assert row is not None
             await test_session.refresh(row)
-            assert row.usage_count == 1
-            assert row.last_used_at is not None
+            assert row.usage_count == 0
+            assert row.last_used_at is None
 
             too_large_response = await client.get(
                 "/api/v1/serve/instruments?page_size=3",
@@ -254,6 +254,24 @@ class TestAPIKeyAdmin:
                 headers={settings.API_KEY_HEADER: "legacy-key"},
             )
             assert response.status_code == 200
+        finally:
+            settings.SERVE_REQUIRE_AUTH = original_require_auth
+            settings.SERVE_API_KEYS = original_serve_keys
+
+    @pytest.mark.asyncio
+    async def test_serve_api_reports_server_misconfiguration(self, client: AsyncClient):
+        settings = get_settings()
+        original_require_auth = settings.SERVE_REQUIRE_AUTH
+        original_serve_keys = settings.SERVE_API_KEYS
+        settings.SERVE_REQUIRE_AUTH = True
+        settings.SERVE_API_KEYS = ""
+        try:
+            response = await client.get(
+                "/api/v1/serve/instruments",
+                headers={settings.API_KEY_HEADER: "anything"},
+            )
+            assert response.status_code == 500
+            assert "no API keys configured" in response.json()["detail"]
         finally:
             settings.SERVE_REQUIRE_AUTH = original_require_auth
             settings.SERVE_API_KEYS = original_serve_keys
@@ -466,6 +484,11 @@ class TestPatchEOD:
 
         await test_session.refresh(eod)
         assert eod.close == Decimal("152.50")
+
+        stats = await test_session.get(InstrumentStats, instrument.instrument_id)
+        assert stats is not None
+        assert stats.latest_trade_date == date(2025, 1, 2)
+        assert stats.latest_price == Decimal("152.50")
 
     @pytest.mark.asyncio
     async def test_patch_eod_multiple_fields(

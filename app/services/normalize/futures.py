@@ -496,7 +496,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             if isinstance(record.trade_date, datetime)
             else record.trade_date
         )
-        await self.update_instrument_stats(instrument_id, trade_date_value)
+        await self.update_instrument_stats(instrument_id, trade_date_value, update_latest=False)
         self.db.expire_all()
         self._instrument_cache.clear()
         self._identifier_cache.clear()

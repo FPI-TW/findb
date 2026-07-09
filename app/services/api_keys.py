@@ -27,6 +27,11 @@ async def find_active_api_key(db: AsyncSession, api_key: str) -> APIKey | None:
     return row
 
 
+async def has_active_api_keys(db: AsyncSession) -> bool:
+    result = await db.execute(select(APIKey.key_id).where(APIKey.revoked_at.is_(None)).limit(1))
+    return result.scalar_one_or_none() is not None
+
+
 async def create_api_key(
     db: AsyncSession,
     *,

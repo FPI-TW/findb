@@ -121,7 +121,7 @@ docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scrip
 `/static/data/instruments.json` 由 cron 每日 06:00 重生（見 `scripts/generate_instrument_cache.py` 註解），手動補一次：
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/generate_instrument_cache.py
+docker compose -f docker-compose.prod.yml run --rm ingest python /app/scripts/generate_instrument_cache.py
 ```
 
 確認 cache 有新名稱：
@@ -154,7 +154,7 @@ docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scrip
 跑完後再重生 cache：
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/generate_instrument_cache.py
+docker compose -f docker-compose.prod.yml run --rm ingest python /app/scripts/generate_instrument_cache.py
 ```
 
 打開 https://findb.tingfong.com/instrument-lookup 強制重新整理（Ctrl+Shift+R）即可看到所有市場的 NAME。

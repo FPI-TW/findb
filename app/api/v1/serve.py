@@ -8,7 +8,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_serve_api_key
@@ -54,6 +54,25 @@ from app.schemas.serve import (
 router = APIRouter()
 
 
+def _instrument_cursor(instrument: Instrument) -> str:
+    return f"{instrument.symbol}|{instrument.instrument_id}"
+
+
+def _instrument_cursor_filter(cursor: str):
+    parts = cursor.split("|", 1)
+    if len(parts) != 2:
+        return Instrument.symbol > cursor.upper()
+    symbol, instrument_id = parts
+    try:
+        parsed_id = UUID(instrument_id)
+    except ValueError:
+        return Instrument.symbol > cursor.upper()
+    return or_(
+        Instrument.symbol > symbol.upper(),
+        and_(Instrument.symbol == symbol.upper(), Instrument.instrument_id > parsed_id),
+    )
+
+
 @router.get("/instruments", response_model=InstrumentListResponse)
 async def list_instruments(
     market: Optional[str] = Query(None, description="依市場篩選，例如 CRYPTO、US"),
@@ -86,12 +105,13 @@ async def list_instruments(
         filters.append(Instrument.status == status_filter)
     if symbol:
         filters.append(Instrument.symbol == symbol.upper())
-    if cursor:
-        filters.append(Instrument.symbol > cursor.upper())
 
     if filters:
         query = query.where(and_(*filters))
         count_query = count_query.where(and_(*filters))
+
+    if cursor:
+        query = query.where(_instrument_cursor_filter(cursor))
 
     total_records: int | None = None
     total_pages: int | None = None
@@ -100,7 +120,7 @@ async def list_instruments(
         total_records = int(total_result.scalar() or 0)
         total_pages = (total_records + page_size - 1) // page_size
 
-    query = query.order_by(Instrument.symbol).limit(page_size + 1)
+    query = query.order_by(Instrument.symbol, Instrument.instrument_id).limit(page_size + 1)
     if not cursor:
         offset = (page - 1) * page_size
         query = query.offset(offset)
@@ -109,7 +129,7 @@ async def list_instruments(
     rows = result.all()
     next_cursor = None
     if len(rows) > page_size:
-        next_cursor = rows[page_size - 1][0].symbol
+        next_cursor = _instrument_cursor(rows[page_size - 1][0])
         rows = rows[:page_size]
 
     return InstrumentListResponse(

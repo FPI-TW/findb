@@ -11,8 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.dependencies import get_db
 from app.models.registry import APIKey
-from app.services.api_keys import find_active_api_key
-from app.utils import utc_now
+from app.services.api_keys import find_active_api_key, has_active_api_keys
 
 settings = get_settings()
 
@@ -211,13 +210,15 @@ async def verify_serve_api_key(
     db_key = await find_active_api_key(db, api_key)
     if db_key is not None:
         _enforce_serve_api_key_policy(request, db_key)
-        db_key.usage_count += 1
-        db_key.last_used_at = utc_now()
-        await db.commit()
         return str(db_key.key_id)
 
     valid_keys = get_serve_api_keys()
     if not valid_keys:
+        if not await has_active_api_keys(db):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Authentication required but no API keys configured",
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",

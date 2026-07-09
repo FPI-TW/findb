@@ -180,7 +180,7 @@ Phase 2 執行紀錄（2026-07-09）：
 Phase 3 執行紀錄（2026-07-09）：
 
 - 新增 `api_key` table，只保存 SHA-256 hash；Admin `POST /api/v1/admin/api-keys` 簽發時只回傳一次明文 key，`GET /api/v1/admin/api-keys` 不暴露 hash。
-- Serve auth 優先查 DB active key，檢查 `serve` scope、per-key rate limit 與 `page_size_limit`，並更新 `usage_count` / `last_used_at`。
+- Serve auth 優先查 DB active key，檢查 `serve` scope、per-key rate limit 與 `page_size_limit`；不在 Serve GET inline 更新 `usage_count` / `last_used_at`，避免破壞 Serve read-only invariant。用量審計欄位保留，後續應由 access log 或批次任務寫入。
 - `SERVE_API_KEYS` env fallback 暫時保留，供 nginx `serve-key.conf` 與既有部署過渡；正式移除前需先把 nginx 注入的 key 透過 Admin endpoint 建入 DB。
 - partial dump 預設排除 `api_key`，避免把 key hash 與用量審計資料帶到本機 seed。
 
@@ -188,17 +188,17 @@ Phase 3 執行紀錄（2026-07-09）：
 
 前置：Phase 2 完成（serve 角色獨立後才好設 cache 邊界）。
 
-- [x] 第一步（最便宜）：nginx `proxy_cache` 對 serve GET endpoints 做 micro-caching。EOD 為近乎 immutable 資料，date-bounded 查詢可設較長 TTL。
-- [x] cache key 需含 query string 與 API key tier（避免 tier 間互吃 cache 額度差異）。
-- [x] 觀察命中率後再評估 Redis（application-level cache）或 CloudFront。
+- [x] 第一步（最便宜）：評估 nginx `proxy_cache` 對 serve GET endpoints 做 micro-caching；review 後因 auth/revocation 風險撤回 protected Serve API proxy cache。
+- [x] cache key 需含 query string 與 API key tier（避免 tier 間互吃 cache 額度差異）：結論是 nginx 無可信 tier，不能用 client header 或明文 key。
+- [x] 觀察命中率後再評估 Redis（application-level cache）或 CloudFront：延後到 app 可產生可信 cache policy / surrogate key 後再做。
 - [x] 資訊站的固定圖表資料（如大盤走勢）可比照 `app/static/data/` 的 generated cache 模式預產 JSON。
 
 Phase 4 執行紀錄（2026-07-09）：
 
-- 生產 nginx 對 `/api/v1/serve/*` 啟用 `proxy_cache` micro-cache，預設 200 response TTL 30 秒，僅 GET/HEAD 會被快取，並以 `X-Cache-Status` 回應 header 觀察 HIT/MISS/BYPASS。
-- cache key 包含 scheme、method、host、完整 request URI（含 query string）與 cache partition。partition 優先取 `X-FinDB-Key-Tier`；未提供時退回實際 `X-API-Key` / nginx 注入 key，隔離粒度比 tier 更嚴格。
-- Redis / CloudFront 暫不導入；先用 nginx cache 命中率與 serve latency 判斷是否需要更重的 cache 層。
-- 固定圖表資料沿用既有 `app/static/data/` generated cache 模式；本 phase 未新增未被消費的預產資料。
+- 生產 nginx 的 `/api/v1/serve/*` `proxy_cache` 在 review 後撤回：DB-backed key、撤銷、scope 與 rate limit 都在 FastAPI 內驗證，nginx 無法安全地在 cache hit 前重驗，因此 protected Serve API response 不做 proxy cache。
+- cache 重點改回既有 `app/static/data/` generated cache 模式；`findb-serve` 與 `findb-ingest` 透過 shared volume 共用 generated JSON，Admin refresh 在 ingest container 執行時會打 `http://serve:${PORT}` 的 Serve API。
+- Redis / CloudFront 暫不導入；若要對受保護 Serve API 快取，需先讓 app 產生可信 cache policy / surrogate key，不能使用 client header 或明文 API key 做 nginx cache key。
+- 固定圖表資料可沿用 generated cache 模式；本 phase 未新增未被消費的預產資料。
 
 ### Phase 5: 新資產類別導入（債券、ETF）
 

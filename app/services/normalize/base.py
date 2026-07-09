@@ -475,13 +475,14 @@ class BaseNormalizer(ABC):
         instrument_id: UUID,
         trade_date_value: date,
         latest_price: Decimal | None = None,
+        update_latest: bool = True,
     ) -> None:
         """Maintain instrument read stats after canonical time-series writes."""
         now = utc_now()
         stmt = insert(InstrumentStats).values(
             instrument_id=instrument_id,
             first_trade_date=trade_date_value,
-            latest_trade_date=trade_date_value if latest_price is not None else None,
+            latest_trade_date=trade_date_value if update_latest else None,
             latest_price=latest_price,
             updated_at=now,
         )

@@ -4,6 +4,7 @@ Tests for Serve API endpoints.
 
 from datetime import date
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
@@ -105,15 +106,65 @@ async def test_list_instruments_supports_keyset_without_count(
     assert [item["symbol"] for item in first_payload["data"]] == ["AAA", "BBB"]
     assert first_payload["pagination"]["total_records"] is None
     assert first_payload["pagination"]["total_pages"] is None
-    assert first_payload["pagination"]["next_cursor"] == "BBB"
+    assert first_payload["pagination"]["next_cursor"].startswith("BBB|")
 
     second_page = await client.get(
-        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false&cursor=BBB"
+        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false"
+        f"&cursor={first_payload['pagination']['next_cursor']}"
     )
     assert second_page.status_code == 200
     second_payload = second_page.json()
     assert [item["symbol"] for item in second_payload["data"]] == ["CCC"]
     assert second_payload["pagination"]["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_instruments_cursor_handles_duplicate_symbols(client: AsyncClient, test_session):
+    instruments = [
+        Instrument(
+            instrument_id=UUID("11111111-1111-1111-1111-111111111111"),
+            asset_class="equity",
+            market="US",
+            symbol="DUP",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+        Instrument(
+            instrument_id=UUID("22222222-2222-2222-2222-222222222222"),
+            asset_class="equity",
+            market="HK",
+            symbol="DUP",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+        Instrument(
+            instrument_id=UUID("33333333-3333-3333-3333-333333333333"),
+            asset_class="equity",
+            market="US",
+            symbol="ZZZ",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+    ]
+    test_session.add_all(instruments)
+    await test_session.commit()
+
+    first_page = await client.get("/api/v1/serve/instruments?page_size=1")
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert first_payload["data"][0]["symbol"] == "DUP"
+    assert first_payload["pagination"]["total_records"] == 3
+
+    second_page = await client.get(
+        f"/api/v1/serve/instruments?page_size=1&cursor={first_payload['pagination']['next_cursor']}"
+    )
+    assert second_page.status_code == 200
+    second_payload = second_page.json()
+    assert second_payload["data"][0]["symbol"] == "DUP"
+    assert second_payload["pagination"]["total_records"] == 3
 
 
 @pytest.mark.asyncio

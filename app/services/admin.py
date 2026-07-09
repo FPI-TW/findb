@@ -8,10 +8,11 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import MarketDataEOD
+from app.models.canonical import InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.registry import DQIssue
 from app.schemas.admin import PatchEODRequest, ResolveDQIssueRequest
@@ -191,9 +192,47 @@ async def patch_eod_record(
         created_at=utc_now(),
     )
     db.add(correction)
+    await _update_stats_after_eod_patch(db, eod)
     await db.commit()
 
     return correction, eod
+
+
+async def _update_stats_after_eod_patch(db: AsyncSession, eod: MarketDataEOD) -> None:
+    stats = InstrumentStats.__table__
+    now = utc_now()
+    stmt = insert(InstrumentStats).values(
+        instrument_id=eod.instrument_id,
+        first_trade_date=eod.trade_date,
+        latest_trade_date=eod.trade_date,
+        latest_price=eod.close,
+        updated_at=now,
+    )
+    excluded = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["instrument_id"],
+        set_={
+            "first_trade_date": func.least(stats.c.first_trade_date, excluded.first_trade_date),
+            "latest_trade_date": case(
+                (
+                    stats.c.latest_trade_date.is_(None)
+                    | (excluded.latest_trade_date >= stats.c.latest_trade_date),
+                    excluded.latest_trade_date,
+                ),
+                else_=stats.c.latest_trade_date,
+            ),
+            "latest_price": case(
+                (
+                    stats.c.latest_trade_date.is_(None)
+                    | (excluded.latest_trade_date >= stats.c.latest_trade_date),
+                    excluded.latest_price,
+                ),
+                else_=stats.c.latest_price,
+            ),
+            "updated_at": now,
+        },
+    )
+    await db.execute(stmt)
 
 
 async def resolve_dq_issue(
