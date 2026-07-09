@@ -188,10 +188,17 @@ Phase 3 執行紀錄（2026-07-09）：
 
 前置：Phase 2 完成（serve 角色獨立後才好設 cache 邊界）。
 
-- [ ] 第一步（最便宜）：nginx `proxy_cache` 對 serve GET endpoints 做 micro-caching。EOD 為近乎 immutable 資料，date-bounded 查詢可設較長 TTL。
-- [ ] cache key 需含 query string 與 API key tier（避免 tier 間互吃 cache 額度差異）。
-- [ ] 觀察命中率後再評估 Redis（application-level cache）或 CloudFront。
-- [ ] 資訊站的固定圖表資料（如大盤走勢）可比照 `app/static/data/` 的 generated cache 模式預產 JSON。
+- [x] 第一步（最便宜）：nginx `proxy_cache` 對 serve GET endpoints 做 micro-caching。EOD 為近乎 immutable 資料，date-bounded 查詢可設較長 TTL。
+- [x] cache key 需含 query string 與 API key tier（避免 tier 間互吃 cache 額度差異）。
+- [x] 觀察命中率後再評估 Redis（application-level cache）或 CloudFront。
+- [x] 資訊站的固定圖表資料（如大盤走勢）可比照 `app/static/data/` 的 generated cache 模式預產 JSON。
+
+Phase 4 執行紀錄（2026-07-09）：
+
+- 生產 nginx 對 `/api/v1/serve/*` 啟用 `proxy_cache` micro-cache，預設 200 response TTL 30 秒，僅 GET/HEAD 會被快取，並以 `X-Cache-Status` 回應 header 觀察 HIT/MISS/BYPASS。
+- cache key 包含 scheme、method、host、完整 request URI（含 query string）與 cache partition。partition 優先取 `X-FinDB-Key-Tier`；未提供時退回實際 `X-API-Key` / nginx 注入 key，隔離粒度比 tier 更嚴格。
+- Redis / CloudFront 暫不導入；先用 nginx cache 命中率與 serve latency 判斷是否需要更重的 cache 層。
+- 固定圖表資料沿用既有 `app/static/data/` generated cache 模式；本 phase 未新增未被消費的預產資料。
 
 ### Phase 5: 新資產類別導入（債券、ETF）
 
