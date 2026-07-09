@@ -168,7 +168,7 @@ async def patch_eod(
 
     return PatchEODResponse(
         correction_id=correction.id,
-        record_id=eod.id,
+        record_id=correction.record_id,
         instrument_id=eod.instrument_id,
         trade_date=eod.trade_date,
         message="EOD record corrected successfully",

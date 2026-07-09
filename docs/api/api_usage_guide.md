@@ -1383,6 +1383,8 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 }
 ```
 
+`market_data_eod` 的 `record_id` 是由 `instrument_id` 與 `trade_date` 產生的穩定 logical UUID；同一商品同一天的日K修正會指向同一個 `record_id`。
+
 #### 錯誤情境
 
 | 狀態碼 | 說明                                            |
@@ -1549,6 +1551,8 @@ GET /api/v1/admin/corrections
 | `page_size`     | query | int    | 否   | 每頁筆數（預設 100，最大 1000）                   |
 
 回應為**最新優先**排序。
+
+`market_data_eod` correction 的 `record_id` 為穩定 logical UUID；`dq_issue` correction 的 `record_id` 為對應 issue UUID。
 
 #### 回應範例（200 OK）
 

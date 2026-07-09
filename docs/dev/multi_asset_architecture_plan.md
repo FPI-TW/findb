@@ -118,18 +118,28 @@ US + TW + HK + CN 全市場個股 + ETF 約 3 萬檔 × 250 交易日 ≈ **750 
 
 前置：無。對應 checklist Phase 0（先建 baseline 再動 schema）。
 
-- [ ] `asset_class`、`market` 收斂為受控值：
-  - [ ] 新增 lookup tables（`asset_class_def`、`market_def`）或 Postgres enum。
-  - [ ] Alembic migration：先清理既有 drift 資料（盤點 `SELECT DISTINCT asset_class, market FROM instruments`），再加約束。
-  - [ ] normalizer base 增加寫入前驗證，錯誤值直接 fail run 而非落庫。
-- [ ] `market_data_eod` 實體設計修正：
-  - [ ] 主鍵改為 `(instrument_id, trade_date)` 複合 PK，移除 surrogate UUID `id`。
-  - [ ] 刪除與 `uq_eod` 完全重複的 `idx_eod_inst_date`（億級資料時省一整份 B-tree）。
-  - [ ] 確認 Serve API / normalizer 無依賴 `id` 欄位後再遷移。
-- [ ] `market_data_eod` range partition by `trade_date`（按年）：
-  - [ ] 評估 PostgreSQL native partitioning 遷移路徑（新 partitioned table + 資料搬遷 + rename，維護窗口執行）。
-  - [ ] `futures_continuous_eod`、`macro_observation` 視量級決定是否比照（預期量級小一個數量級以上，可延後）。
-- [ ] 產出 migration 演練紀錄（staging 或 partial dump 環境驗證後才上 production，流程比照 `migration_workflow.md`）。
+- [x] `asset_class`、`market` 收斂為受控值：
+  - [x] 新增 lookup tables（`asset_class_def`、`market_def`）或 Postgres enum / CHECK。
+  - [x] Alembic migration：先清理既有 drift 資料（盤點 `SELECT DISTINCT asset_class, market FROM instruments`），再加約束。
+  - [x] normalizer base 增加寫入前驗證；錯誤值以逐筆 DQ issue（`INVALID_VOCABULARY`, severity=error）隔離，不落庫也不 fail 整個 run。
+- [x] `market_data_eod` 實體設計修正：
+  - [x] 主鍵改為 `(instrument_id, trade_date)` 複合 PK，移除 surrogate UUID `id`。
+  - [x] 刪除與 `uq_eod` 完全重複的 `idx_eod_inst_date`（億級資料時省一整份 B-tree）。
+  - [x] 確認 Serve API / normalizer 無依賴 `id` 欄位後再遷移。
+- [x] `market_data_eod` range partition by `trade_date`（按年）：
+  - [x] 評估 PostgreSQL native partitioning 遷移路徑（新 partitioned table + 資料搬遷 + rename，維護窗口執行）。
+  - [x] `futures_continuous_eod`、`macro_observation` 視量級決定是否比照（預期量級小一個數量級以上，可延後）。
+- [x] 產出 migration 演練紀錄（staging 或 partial dump 環境驗證後才上 production，流程比照 `migration_workflow.md`）。
+
+Phase 1 執行紀錄（2026-07-09）：
+
+- 受控 vocabulary 採用 `CHECK` 約束與 shared constants，暫不新增 lookup tables，避免為少量固定值引入 seed / FK 管理成本。
+- `market_data_eod` 改為 PostgreSQL `RANGE (trade_date)` partitioned table，migration 以 `market_data_eod_old` 搬遷到新表；既有年份建立 yearly partitions，另建 default partition 承接未預建年份。
+- `futures_continuous_eod` 與 `macro_observation` 暫不 partition；目前量級預期低於 EOD 主表，待 Phase 0 baseline 或資料量接近瓶頸再處理。
+- `canonical_correction.record_id` 維持 UUID 型別：EOD 修正改用 `instrument_id + trade_date` 導出的穩定 logical UUID（md5），migration 同步改寫歷史紀錄，downgrade 亦以同一導出規則重建 id，round-trip 一致。
+- 年度 partition 由兩層機制維護：ingest 時 `ensure_eod_partition()` 寫入前自動建立、migration 預建未來 5 年 + DEFAULT partition 作為安全網（DEFAULT 累積資料時的處置見 known_issues R7）。
+- macro normalizer 的 vocabulary 驗證為逐筆隔離：`map_fields` 標記 `vocabulary_error`、`process` 轉為 `INVALID_VOCABULARY` DQ issue，單筆格式錯誤（如 `S&P`）不再使整批 run 失敗。
+- 本地驗證：`make test-db` 通過（223 passed, 2 skipped）；臨時 DB `findb_migration_test` 跑 `alembic upgrade head` 與 `alembic downgrade e7f8a9b0c1d2` 通過。
 
 ### Phase 2: Ingest 與 Serve 部署角色分離（導入大量資料前必做）
 

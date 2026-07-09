@@ -6,13 +6,14 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.utils import utc_now, uuid7
+from app.vocabulary import sql_asset_class_check, sql_market_check
 
 
 class DatasetRegistry(Base):
@@ -22,6 +23,16 @@ class DatasetRegistry(Base):
     """
 
     __tablename__ = "dataset_registry"
+    __table_args__ = (
+        CheckConstraint(
+            sql_asset_class_check("asset_class"),
+            name="dataset_registry_asset_class_valid",
+        ),
+        CheckConstraint(
+            sql_market_check("market"),
+            name="dataset_registry_market_valid",
+        ),
+    )
 
     dataset_key: Mapped[str] = mapped_column(String(50), primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)

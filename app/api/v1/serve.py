@@ -239,8 +239,10 @@ async def list_eod_data(
     query = select(MarketDataEOD, Instrument).join(
         Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id
     )
-    count_query = select(func.count(MarketDataEOD.id)).join(
-        Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id
+    count_query = (
+        select(func.count())
+        .select_from(MarketDataEOD)
+        .join(Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id)
     )
 
     # Apply filters
@@ -334,8 +336,10 @@ async def get_instrument_eod(
 
     # Build query
     query = select(MarketDataEOD).where(MarketDataEOD.instrument_id == instrument_id)
-    count_query = select(func.count(MarketDataEOD.id)).where(
-        MarketDataEOD.instrument_id == instrument_id
+    count_query = (
+        select(func.count())
+        .select_from(MarketDataEOD)
+        .where(MarketDataEOD.instrument_id == instrument_id)
     )
 
     # Apply date filters

@@ -214,10 +214,12 @@ async def _load_existing_tables(conn: AsyncConnection, schemas: set[str]) -> set
         return set()
 
     stmt = text("""
-        SELECT table_schema, table_name
-        FROM information_schema.tables
-        WHERE table_type = 'BASE TABLE'
-          AND table_schema IN :schemas
+        SELECT n.nspname AS table_schema, c.relname AS table_name
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'p')
+          AND NOT c.relispartition
+          AND n.nspname IN :schemas
     """).bindparams(bindparam("schemas", expanding=True))
 
     result = await conn.execute(stmt, {"schemas": sorted(schemas)})

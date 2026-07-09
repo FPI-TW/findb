@@ -7,12 +7,14 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models.canonical import (
     CorporateAction,
     FuturesContinuousEOD,
     Instrument,
+    MacroObservation,
+    MacroSeries,
     MarketDataEOD,
     TradingCalendar,
 )
@@ -204,6 +206,65 @@ class TestMacroNormalizer:
         assert record.value == Decimal("5.32")
         assert record.market == "MACRO"
         assert record.source == "bloomberg"
+
+    def test_macro_payload_accepts_unknown_valid_market_code(self):
+        """Unknown but well-formed market codes should not fail the whole mapping batch."""
+
+        class TestNormalizer(MacroNormalizer):
+            def __init__(self):
+                self.dq_validator = DQValidator()
+
+        normalizer = TestNormalizer()
+        records = normalizer.map_fields(
+            {
+                "metadata": {"source": "Bloomberg"},
+                "data": [
+                    {
+                        "source_code": "UKRATE",
+                        "date": "2026-01-16",
+                        "value": 4.5,
+                        "market": "ln",
+                    }
+                ],
+            }
+        )
+
+        assert len(records) == 1
+        assert records[0].market == "LN"
+
+    def test_macro_payload_marks_malformed_market_without_failing_batch(self):
+        """A malformed market must mark that record only, not raise out of map_fields."""
+
+        class TestNormalizer(MacroNormalizer):
+            def __init__(self):
+                self.dq_validator = DQValidator()
+
+        normalizer = TestNormalizer()
+        records = normalizer.map_fields(
+            {
+                "metadata": {"source": "Bloomberg"},
+                "data": [
+                    {
+                        "source_code": "SOFRRATE",
+                        "date": "2026-01-16",
+                        "value": 5.32,
+                        "market": "US",
+                    },
+                    {
+                        "source_code": "BADSERIES",
+                        "date": "2026-01-16",
+                        "value": 1.0,
+                        "market": "S&P",
+                    },
+                ],
+            }
+        )
+
+        assert len(records) == 2
+        assert records[0].market == "US"
+        assert records[0].vocabulary_error is None
+        assert records[1].vocabulary_error is not None
+        assert "S&P" in records[1].vocabulary_error
 
 
 class TestDQValidator:
@@ -397,7 +458,6 @@ async def test_db_duplicate_key_check(test_session):
     test_session.add(instrument)
 
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=trade_date,
         open=Decimal("100"),
@@ -503,7 +563,6 @@ async def test_process_upserts_existing_eod_instead_of_failing_duplicate(test_se
         updated_at=utc_now(),
     )
     existing = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=trade_dt.date(),
         open=Decimal("100"),
@@ -545,6 +604,11 @@ async def test_process_upserts_existing_eod_instead_of_failing_duplicate(test_se
     assert updated.close == Decimal("210")
     assert updated.volume == 3000
     assert updated.run_id == run_id
+
+    partition_exists = await test_session.scalar(
+        text("SELECT to_regclass('market_data_eod_y2026')")
+    )
+    assert partition_exists == "market_data_eod_y2026"
 
     dq_stmt = select(DQIssue).where(
         DQIssue.run_id == run_id,
@@ -650,6 +714,86 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
     persisted_run = await test_session.get(IngestionRun, run_id)
     assert persisted_run is not None
     assert persisted_run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_macro_process_isolates_invalid_market_per_record(test_session):
+    """One malformed market must fail only that record; valid records still persist."""
+    dataset = DatasetRegistry(
+        dataset_key="macro_observation",
+        name="Macro Observation",
+        asset_class="macro",
+        market="MACRO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run_id = uuid7()
+    run = IngestionRun(
+        run_id=run_id,
+        dataset_key="macro_observation",
+        status="pending",
+        raw_records=2,
+        created_at=utc_now(),
+    )
+    test_session.add_all([dataset, run])
+    await test_session.commit()
+
+    payload = {
+        "metadata": {"source": "Bloomberg"},
+        "data": [
+            {
+                "source_code": "SOFRRATE",
+                "date": "2026-01-16",
+                "value": 5.32,
+                "market": "US",
+            },
+            {
+                "source_code": "BADSERIES",
+                "date": "2026-01-16",
+                "value": 1.0,
+                "market": "S&P",
+            },
+        ],
+    }
+
+    normalizer = MacroNormalizer(test_session)
+    result = await normalizer.process(payload, run_id)
+
+    assert result.total_records == 2
+    assert result.success_records == 1
+    assert result.failed_records == 1
+
+    series = (
+        await test_session.execute(select(MacroSeries).where(MacroSeries.source_code == "SOFRRATE"))
+    ).scalar_one()
+    observation = (
+        await test_session.execute(
+            select(MacroObservation).where(MacroObservation.series_id == series.series_id)
+        )
+    ).scalar_one()
+    assert observation.value == Decimal("5.32")
+
+    bad_series = (
+        await test_session.execute(
+            select(MacroSeries).where(MacroSeries.source_code == "BADSERIES")
+        )
+    ).scalar_one_or_none()
+    assert bad_series is None
+
+    dq_issue = (
+        await test_session.execute(
+            select(DQIssue).where(
+                DQIssue.run_id == run_id,
+                DQIssue.issue_type == "INVALID_VOCABULARY",
+            )
+        )
+    ).scalar_one()
+    assert "S&P" in dq_issue.description
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed_with_errors"
 
 
 @pytest.mark.asyncio

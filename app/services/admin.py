@@ -88,6 +88,14 @@ def _snapshot(obj: Any, fields: set[str]) -> dict[str, Any]:
     return result
 
 
+def eod_record_id(instrument_id: UUID, trade_date: date) -> UUID:
+    digest = hashlib.md5(
+        f"market_data_eod:{instrument_id}:{trade_date.isoformat()}".encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()
+    return UUID(digest)
+
+
 def _values_equal(a: Any, b: Any) -> bool:
     """Compare two values with numeric equality for Decimal types."""
     if a is None and b is None:
@@ -173,7 +181,7 @@ async def patch_eod_record(
     correction = CanonicalCorrection(
         id=uuid7(),
         table_name="market_data_eod",
-        record_id=eod.id,
+        record_id=eod_record_id(instrument_id, trade_date),
         instrument_id=instrument_id,
         trade_date=trade_date,
         corrected_by=build_correction_actor(api_key),

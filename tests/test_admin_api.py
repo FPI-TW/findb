@@ -19,7 +19,7 @@ from app.models.canonical import Instrument, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.registry import DQIssue
 from app.services import instrument_cache as instrument_cache_service
-from app.services.admin import build_correction_actor
+from app.services.admin import build_correction_actor, eod_record_id
 from app.utils import utc_now, uuid7
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -42,7 +42,6 @@ async def _create_instrument(session: AsyncSession) -> Instrument:
 
 async def _create_eod(session: AsyncSession, instrument_id: UUID) -> MarketDataEOD:
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2025, 1, 2),
         open=Decimal("150.00"),
@@ -363,6 +362,7 @@ class TestPatchEOD:
         data = response.json()
         assert data["success"] is True
         assert "correction_id" in data
+        assert data["record_id"] == str(eod_record_id(instrument.instrument_id, date(2025, 1, 2)))
         assert data["trade_date"] == "2025-01-02"
 
         await test_session.refresh(eod)
@@ -470,6 +470,7 @@ class TestPatchEOD:
         correction = result.scalar_one_or_none()
         assert correction is not None
         assert correction.table_name == "market_data_eod"
+        assert correction.record_id == eod_record_id(instrument.instrument_id, date(2025, 1, 2))
         assert correction.correction_reason == "Audit trail test"
 
     @pytest.mark.asyncio
@@ -767,7 +768,6 @@ class TestListCorrections:
 
         for i, close_val in enumerate(["152.00", "151.00", "150.50"]):
             eod_i = MarketDataEOD(
-                id=uuid7(),
                 instrument_id=instrument.instrument_id,
                 trade_date=date(2025, 1, 3 + i),
                 open=Decimal("150.00"),
@@ -832,7 +832,6 @@ class TestListCorrections:
         await _create_eod(test_session, instrument.instrument_id)
 
         eod2 = MarketDataEOD(
-            id=uuid7(),
             instrument_id=instrument.instrument_id,
             trade_date=date(2025, 1, 3),
             open=Decimal("150.00"),

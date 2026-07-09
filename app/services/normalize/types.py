@@ -85,6 +85,7 @@ class MacroObservationRecord:
     market: Optional[str] = None
     source: Optional[str] = None
     raw_data: Optional[dict] = None
+    vocabulary_error: Optional[str] = None
 
 
 @dataclass

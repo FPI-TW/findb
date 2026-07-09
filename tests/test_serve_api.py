@@ -37,7 +37,6 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         updated_at=utc_now(),
     )
     stale_eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 15),
         close=Decimal("95700.00"),
@@ -46,7 +45,6 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         updated_at=utc_now(),
     )
     latest_eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 16),
         close=Decimal("95709.01"),
@@ -109,7 +107,6 @@ async def test_list_eod_filters(client: AsyncClient, test_session):
     test_session.add(instrument)
 
     eod_one = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 15),
         open=Decimal("100"),
@@ -121,7 +118,6 @@ async def test_list_eod_filters(client: AsyncClient, test_session):
         updated_at=utc_now(),
     )
     eod_two = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 16),
         open=Decimal("101"),
@@ -162,7 +158,6 @@ async def test_get_instrument_eod(client: AsyncClient, test_session):
     test_session.add(instrument)
 
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 16),
         open=Decimal("10"),
@@ -200,7 +195,6 @@ async def test_eod_endpoints_return_total_ticks(client: AsyncClient, test_sessio
         updated_at=utc_now(),
     )
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2024, 4, 29),
         open=Decimal("20.45"),

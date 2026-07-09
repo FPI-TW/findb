@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from app.services.dq.validators import DQIssueRecord, DQValidator
 from app.services.normalize.types import InstrumentResolvableRecord, MappedRecord
 from app.utils import utc_now, uuid7
 from app.utils.datetime_utils import ensure_utc, parse_datetime
+from app.vocabulary import normalize_asset_class, normalize_market
 
 
 @dataclass
@@ -57,6 +58,7 @@ class BaseNormalizer(ABC):
         self._identifier_cache: dict[tuple[str, str, str, str], Instrument | None] = {}
         self._identifier_exists_cache: set[tuple[str, str]] = set()
         self._trading_day_cache: set[tuple[str, date]] = set()
+        self._eod_partition_cache: set[int] = set()
 
     def _get_nested_value(self, data: dict, path: str | None) -> Any:
         """Get value from nested dict using dot notation."""
@@ -205,8 +207,8 @@ class BaseNormalizer(ABC):
         asset_class: Optional[str] = None,
     ) -> Instrument:
         """Get existing instrument or create new one."""
-        instrument_market = str(market or self.market).upper().strip()
-        effective_asset_class = asset_class or self.asset_class
+        instrument_market = normalize_market(market or self.market)
+        effective_asset_class = normalize_asset_class(asset_class or self.asset_class)
         cache_key = (effective_asset_class, instrument_market, symbol)
         cached = self._instrument_cache.get(cache_key)
         if cached is not None:
@@ -248,8 +250,8 @@ class BaseNormalizer(ABC):
         asset_class: Optional[str] = None,
     ) -> Optional[Instrument]:
         """Resolve instrument using identifier mapping."""
-        instrument_market = str(market or self.market).upper().strip()
-        effective_asset_class = asset_class or self.asset_class
+        instrument_market = normalize_market(market or self.market)
+        effective_asset_class = normalize_asset_class(asset_class or self.asset_class)
         cache_key = (identifier_type, identifier_value, effective_asset_class, instrument_market)
         if cache_key in self._identifier_cache:
             return self._identifier_cache[cache_key]
@@ -314,8 +316,10 @@ class BaseNormalizer(ABC):
 
     async def resolve_instrument(self, record: InstrumentResolvableRecord) -> Instrument:
         """Resolve instrument by identifier mapping or symbol."""
-        record_market = str(getattr(record, "market", None) or self.market).upper().strip()
-        record_asset_class = getattr(record, "asset_class", None) or self.asset_class
+        record_market = normalize_market(getattr(record, "market", None) or self.market)
+        record_asset_class = normalize_asset_class(
+            getattr(record, "asset_class", None) or self.asset_class
+        )
         if record.identifier_type and record.identifier_value:
             instrument = await self.get_instrument_by_identifier(
                 record.identifier_type,
@@ -357,7 +361,7 @@ class BaseNormalizer(ABC):
     ) -> None:
         """Ensure trading calendar entry exists for market/date."""
         trade_date_value = trade_date.date() if isinstance(trade_date, datetime) else trade_date
-        calendar_market = str(market or self.market).upper().strip()
+        calendar_market = normalize_market(market or self.market)
         cache_key = (calendar_market, trade_date_value)
         if cache_key in self._trading_day_cache:
             return
@@ -399,14 +403,16 @@ class BaseNormalizer(ABC):
         Returns:
             True if successful, False otherwise
         """
+        trade_date_value = (
+            record.trade_date.date()
+            if isinstance(record.trade_date, datetime)
+            else record.trade_date
+        )
+        await self.ensure_eod_partition(trade_date_value)
+
         stmt = insert(MarketDataEOD).values(
-            id=uuid7(),
             instrument_id=instrument_id,
-            trade_date=(
-                record.trade_date.date()
-                if isinstance(record.trade_date, datetime)
-                else record.trade_date
-            ),
+            trade_date=trade_date_value,
             open=record.open,
             high=record.high,
             low=record.low,
@@ -424,7 +430,7 @@ class BaseNormalizer(ABC):
         # On conflict, update only when data has actually changed
         t = MarketDataEOD.__table__
         stmt = stmt.on_conflict_do_update(
-            constraint="uq_eod",
+            index_elements=["instrument_id", "trade_date"],
             set_={
                 "open": stmt.excluded.open,
                 "high": stmt.excluded.high,
@@ -458,6 +464,18 @@ class BaseNormalizer(ABC):
         self._identifier_cache.clear()
         return True
 
+    async def ensure_eod_partition(self, trade_date_value: date) -> None:
+        """Create the yearly EOD partition before writes reach the default partition."""
+        year = trade_date_value.year
+        if year in self._eod_partition_cache:
+            return
+        await self.db.execute(text(f"""
+                CREATE TABLE IF NOT EXISTS market_data_eod_y{year}
+                PARTITION OF market_data_eod
+                FOR VALUES FROM ('{year}-01-01') TO ('{year + 1}-01-01')
+                """))
+        self._eod_partition_cache.add(year)
+
     async def check_duplicate_in_db(
         self,
         instrument_id: UUID,
@@ -465,7 +483,7 @@ class BaseNormalizer(ABC):
     ) -> bool:
         """Check if instrument/trade_date already exists in the database."""
         trade_date_value = trade_date.date() if isinstance(trade_date, datetime) else trade_date
-        stmt = select(MarketDataEOD.id).where(
+        stmt = select(MarketDataEOD.instrument_id).where(
             MarketDataEOD.instrument_id == instrument_id,
             MarketDataEOD.trade_date == trade_date_value,
         )

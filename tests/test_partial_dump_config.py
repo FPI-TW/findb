@@ -7,6 +7,8 @@ import yaml
 from pydantic import ValidationError
 
 from app.schemas.partial_dump import load_partial_dump_config
+from scripts.partial_dump import _discover_tables
+from scripts.seed_upsert import _load_existing_tables
 
 
 def _base_config() -> dict:
@@ -197,3 +199,24 @@ def test_missing_source_env_is_rejected(tmp_path: Path, monkeypatch: pytest.Monk
 
     with pytest.raises(ValueError):
         load_partial_dump_config(config_file)
+
+
+@pytest.mark.asyncio
+async def test_partition_children_are_hidden_from_dump_and_seed_table_discovery(
+    test_engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "partial_dump.yaml"
+    _write_yaml(config_file, _base_config())
+    monkeypatch.setenv(
+        "FINDB_REMOTE_DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/db"
+    )
+    config = load_partial_dump_config(config_file)
+
+    async with test_engine.connect() as conn:
+        dump_tables = set(await _discover_tables(conn, config))
+        seed_tables = await _load_existing_tables(conn, {"public"})
+
+    assert ("public", "market_data_eod") in dump_tables
+    assert ("public", "market_data_eod_default") not in dump_tables
+    assert "public.market_data_eod" in seed_tables
+    assert "public.market_data_eod_default" not in seed_tables

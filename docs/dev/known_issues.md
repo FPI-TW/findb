@@ -40,6 +40,12 @@
 - 觀察訊號：該 API 延遲升高、`EXPLAIN ANALYZE` 顯示排序成本高。
 - 建議處置：加適配索引（例：`created_at DESC`）與分頁策略優化。
 
+### [ ] R7（低）`market_data_eod_default` partition 若累積資料會擋住年度 partition 建立
+
+- 風險描述：正常情況下 `ensure_eod_partition()` 會在寫入前建好年度 partition，DEFAULT partition 應恆為空；但若建立失敗或併發 race 讓資料落入 DEFAULT，之後建立該年度 partition 會被 PostgreSQL 拒絕（default 內有衝突列）。
+- 觀察訊號：`SELECT count(*) FROM market_data_eod_default` > 0。
+- 建議處置：發現時於維護窗口 DETACH default → 建立缺少的年度 partition → 搬移資料 → 重新 ATTACH。可將該 count 納入例行巡檢。
+
 ## B. 資料錯誤/缺失可能原因清單
 
 ### C1 被 rate limit 擋下（429）
