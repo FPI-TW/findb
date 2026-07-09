@@ -13,6 +13,7 @@ from app.models.canonical import (
     FuturesContinuousEOD,
     FuturesContract,
     Instrument,
+    InstrumentStats,
     MacroObservation,
     MacroSeries,
     MarketDataEOD,
@@ -52,7 +53,14 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    test_session.add_all([instrument, stale_eod, latest_eod])
+    stats = InstrumentStats(
+        instrument_id=instrument_id,
+        first_trade_date=date(2026, 1, 15),
+        latest_trade_date=date(2026, 1, 16),
+        latest_price=Decimal("95709.01"),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([instrument, stale_eod, latest_eod, stats])
     await test_session.commit()
 
     response = await client.get("/api/v1/serve/instruments?market=CRYPTO")
@@ -63,6 +71,47 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
     assert data["data"][0]["symbol"] == "BTC"
     assert data["data"][0]["latest_trade_date"] == "2026-01-16"
     assert data["data"][0]["latest_price"] == "95709.01000000"
+
+
+@pytest.mark.asyncio
+async def test_list_instruments_supports_keyset_without_count(
+    client: AsyncClient,
+    test_session,
+):
+    """Cursor pagination can skip count for deep instrument scans."""
+    instruments = [
+        Instrument(
+            instrument_id=uuid7(),
+            asset_class="equity",
+            market="US",
+            symbol=symbol,
+            name=symbol,
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        for symbol in ("AAA", "BBB", "CCC")
+    ]
+    test_session.add_all(instruments)
+    await test_session.commit()
+
+    first_page = await client.get(
+        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false"
+    )
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert [item["symbol"] for item in first_payload["data"]] == ["AAA", "BBB"]
+    assert first_payload["pagination"]["total_records"] is None
+    assert first_payload["pagination"]["total_pages"] is None
+    assert first_payload["pagination"]["next_cursor"] == "BBB"
+
+    second_page = await client.get(
+        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false&cursor=BBB"
+    )
+    assert second_page.status_code == 200
+    second_payload = second_page.json()
+    assert [item["symbol"] for item in second_payload["data"]] == ["CCC"]
+    assert second_payload["pagination"]["next_cursor"] is None
 
 
 @pytest.mark.asyncio

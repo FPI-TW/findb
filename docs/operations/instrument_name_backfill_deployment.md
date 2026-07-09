@@ -14,12 +14,14 @@ routing bug 殘留的錯誤 asset_class 修掉。所有 script 預設 dry-run，
 
 ## 前置條件
 
-- script 程式碼必須已部署到 EC2 上的 `findb-app` 容器（透過 main 分支推送 → CI build → 新 image）。確認方法：
+- script 程式碼必須已部署到 EC2（透過 main 分支推送 → CI build → 新 image）。確認方法：
   ```bash
-  docker exec findb-app ls /app/scripts/ | grep -E 'backfill_world_names|fix_misrouted_tw_futures|backfill_instrument_names'
+  docker compose -f docker-compose.prod.yml run --rm raw-cleanup \
+    ls /app/scripts/ | grep -E 'backfill_world_names|fix_misrouted_tw_futures|backfill_instrument_names'
   ```
 - 容器內 `DATABASE_URL` 已指向 prod DB（生產 docker-compose.prod.yml 已設）。
 - 容器內可以外送 HTTPS（curl）：TWSE、NASDAQ Trader、HKEX、Tencent 都需要對外連線。
+- 回填 script 一律以 one-off container 執行，禁止 `docker exec findb-serve` 或 `docker exec findb-ingest`，避免搶 serve/ingest process 資源。
 
 ## 階段 A — TW 與 routing bug 修正
 
@@ -66,7 +68,7 @@ sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresq
 sudo apt-get update && sudo apt-get install -y postgresql-client-16
 
 # 2) 從 findb-app 讀 DATABASE_URL、剝 +asyncpg、把 ssl= 改成 sslmode=
-DB_URL=$(docker exec findb-app printenv DATABASE_URL \
+DB_URL=$(docker exec findb-serve printenv DATABASE_URL \
   | sed -E 's|\+asyncpg||; s/([?&])ssl=/\1sslmode=/')
 
 # 3) 跑 pg_dump（單行避免續行符出包）
@@ -85,16 +87,16 @@ ls -lh ~/backups/
 
 ```bash
 # dry-run，確認預估更新筆數
-docker exec findb-app python /app/scripts/backfill_instrument_names.py
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_instrument_names.py
 
 # 預期輸出尾巴：would apply: name=2173 currency=2508 unmatched=334
 # unmatched 應該都是 TXF*/期貨代碼 + 0050 重複 + 已下市股票
 
 # 套用（只填入 NULL 名稱，已有名稱不動）
-docker exec findb-app python /app/scripts/backfill_instrument_names.py --apply
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_instrument_names.py --apply
 
 # 若 DB 已有舊版 big5 解碼產生的亂碼，需強制覆寫
-docker exec findb-app python /app/scripts/backfill_instrument_names.py --apply --overwrite-existing
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_instrument_names.py --apply --overwrite-existing
 ```
 
 > `--overwrite-existing` 只影響 `name` 欄位；`currency` 仍只在 NULL 時補入。
@@ -103,7 +105,7 @@ docker exec findb-app python /app/scripts/backfill_instrument_names.py --apply -
 ### 2. 修正 routing bug 殘留
 
 ```bash
-docker exec findb-app python /app/scripts/fix_misrouted_tw_futures.py
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/fix_misrouted_tw_futures.py
 
 # 預期輸出：
 #   0050 duplicate: deleting <uuid>
@@ -111,7 +113,7 @@ docker exec findb-app python /app/scripts/fix_misrouted_tw_futures.py
 #   reclassify candidates: 75
 #   dry-run: no changes committed (moved=75)
 
-docker exec findb-app python /app/scripts/fix_misrouted_tw_futures.py --apply
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/fix_misrouted_tw_futures.py --apply
 ```
 
 ### 3. 重生靜態 cache
@@ -119,20 +121,20 @@ docker exec findb-app python /app/scripts/fix_misrouted_tw_futures.py --apply
 `/static/data/instruments.json` 由 cron 每日 06:00 重生（見 `scripts/generate_instrument_cache.py` 註解），手動補一次：
 
 ```bash
-docker exec findb-app python /app/scripts/generate_instrument_cache.py
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/generate_instrument_cache.py
 ```
 
 確認 cache 有新名稱：
 
 ```bash
-docker exec findb-app head -c 800 /app/app/static/data/instruments.json
+docker exec findb-serve head -c 800 /app/app/static/data/instruments.json
 ```
 
 ## 階段 B — US / HK / CN / FX / indices
 
 ```bash
 # 完整 dry-run
-docker exec findb-app python /app/scripts/backfill_world_names.py
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_world_names.py
 
 # 預期摘要（樣本，實際數字以執行為準）：
 #   US/equity    scanned=530   name+=524   currency+=530  unmatched=6
@@ -142,17 +144,17 @@ docker exec findb-app python /app/scripts/backfill_world_names.py
 #   indices      scanned=49    name+=48    currency+=49   unmatched=1   (BM7T 故意未匹配)
 
 # 套用全部市場
-docker exec findb-app python /app/scripts/backfill_world_names.py --apply
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_world_names.py --apply
 
 # 也可以分市場跑：
-docker exec findb-app python /app/scripts/backfill_world_names.py --markets us --apply
-docker exec findb-app python /app/scripts/backfill_world_names.py --markets hk,cn --apply
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_world_names.py --markets us --apply
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/backfill_world_names.py --markets hk,cn --apply
 ```
 
 跑完後再重生 cache：
 
 ```bash
-docker exec findb-app python /app/scripts/generate_instrument_cache.py
+docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scripts/generate_instrument_cache.py
 ```
 
 打開 https://findb.tingfong.com/instrument-lookup 強制重新整理（Ctrl+Shift+R）即可看到所有市場的 NAME。

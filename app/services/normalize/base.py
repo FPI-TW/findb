@@ -9,13 +9,14 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
     Instrument,
     InstrumentIdentifier,
+    InstrumentStats,
     MarketDataEOD,
     TradingCalendar,
 )
@@ -456,6 +457,11 @@ class BaseNormalizer(ABC):
         )
 
         await self.db.execute(stmt)
+        await self.update_instrument_stats(
+            instrument_id,
+            trade_date_value,
+            latest_price=record.close,
+        )
         # Refresh ORM state for follow-up reads while dropping cached Instrument
         # instances that would otherwise become expired and unsafe to reuse in the
         # remaining async batch.
@@ -463,6 +469,57 @@ class BaseNormalizer(ABC):
         self._instrument_cache.clear()
         self._identifier_cache.clear()
         return True
+
+    async def update_instrument_stats(
+        self,
+        instrument_id: UUID,
+        trade_date_value: date,
+        latest_price: Decimal | None = None,
+    ) -> None:
+        """Maintain instrument read stats after canonical time-series writes."""
+        now = utc_now()
+        stmt = insert(InstrumentStats).values(
+            instrument_id=instrument_id,
+            first_trade_date=trade_date_value,
+            latest_trade_date=trade_date_value if latest_price is not None else None,
+            latest_price=latest_price,
+            updated_at=now,
+        )
+        excluded = stmt.excluded
+        stats = InstrumentStats.__table__
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["instrument_id"],
+            set_={
+                "first_trade_date": func.least(
+                    stats.c.first_trade_date,
+                    excluded.first_trade_date,
+                ),
+                "latest_trade_date": case(
+                    (
+                        excluded.latest_trade_date.is_not(None)
+                        & (
+                            stats.c.latest_trade_date.is_(None)
+                            | (excluded.latest_trade_date >= stats.c.latest_trade_date)
+                        ),
+                        excluded.latest_trade_date,
+                    ),
+                    else_=stats.c.latest_trade_date,
+                ),
+                "latest_price": case(
+                    (
+                        excluded.latest_trade_date.is_not(None)
+                        & (
+                            stats.c.latest_trade_date.is_(None)
+                            | (excluded.latest_trade_date >= stats.c.latest_trade_date)
+                        ),
+                        excluded.latest_price,
+                    ),
+                    else_=stats.c.latest_price,
+                ),
+                "updated_at": now,
+            },
+        )
+        await self.db.execute(stmt)
 
     async def ensure_eod_partition(self, trade_date_value: date) -> None:
         """Create the yearly EOD partition before writes reach the default partition."""

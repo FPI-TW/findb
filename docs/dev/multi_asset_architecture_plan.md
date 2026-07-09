@@ -145,17 +145,26 @@ Phase 1 執行紀錄（2026-07-09）：
 
 前置：無，可與 Phase 1 並行。對應 checklist 的 BackgroundTasks 瓶頸項。
 
-- [ ] 現況問題：normalization 以 FastAPI `BackgroundTasks` 跑在 serve 流量同一 process，大量 backfill 會搶 serve 的 event loop 與 DB connection pool。
-- [ ] `docker-compose.prod.yml` 拆兩個 app container（同一 image）：
-  - [ ] `findb-serve`：只掛 serve router（+ static、health），nginx upstream 指向此。
-  - [ ] `findb-ingest`：掛 source / admin router，承接 normalize workload。
-  - [ ] `app/main.py` 以 env（如 `APP_ROLE=serve|ingest|all`）控制 router 掛載；本機開發維持 `all`。
-- [ ] 兩容器各自獨立 DB pool 設定（ingest 寫入 pool 與 serve 讀取 pool 不互搶）。
-- [ ] backfill 腳本執行規範：獨立 container / cron 執行，不進 app container；文件化於 `instrument_name_backfill_deployment.md` 的既有流程。
-- [ ] Serve 讀取熱點修正：
-  - [ ] `list_instruments` 的 4 個 correlated scalar subqueries（first/latest trade date、latest price）物化為 `instrument_stats` 表，由 normalize 完成時更新（或先以 lateral join 改寫過渡）。
-  - [ ] list endpoints 增加 keyset（cursor）pagination；`count(*)` 改為可選參數。
-- [ ] 回測情境的 bulk export 路徑（可延後至需求出現）：產 CSV/Parquet 上 S3 pre-signed URL，取代深分頁 JSON。
+- [x] 現況問題：normalization 以 FastAPI `BackgroundTasks` 跑在 serve 流量同一 process，大量 backfill 會搶 serve 的 event loop 與 DB connection pool。
+- [x] `docker-compose.prod.yml` 拆兩個 app container（同一 image）：
+  - [x] `findb-serve`：只掛 serve router（+ static、health），nginx upstream 指向此。
+  - [x] `findb-ingest`：掛 source / admin router，承接 normalize workload。
+  - [x] `app/main.py` 以 env（如 `APP_ROLE=serve|ingest|all`）控制 router 掛載；本機開發維持 `all`。
+- [x] 兩容器各自獨立 DB pool 設定（ingest 寫入 pool 與 serve 讀取 pool 不互搶）。
+- [x] backfill 腳本執行規範：獨立 container / cron 執行，不進 app container；文件化於 `instrument_name_backfill_deployment.md` 的既有流程。
+- [x] Serve 讀取熱點修正：
+  - [x] `list_instruments` 的 4 個 correlated scalar subqueries（first/latest trade date、latest price）物化為 `instrument_stats` 表，由 normalize 完成時更新（或先以 lateral join 改寫過渡）。
+  - [x] list endpoints 增加 keyset（cursor）pagination；`count(*)` 改為可選參數。
+- [x] 回測情境的 bulk export 路徑（可延後至需求出現）：產 CSV/Parquet 上 S3 pre-signed URL，取代深分頁 JSON。
+
+Phase 2 執行紀錄（2026-07-09）：
+
+- `APP_ROLE=serve|ingest|all` 控制 router 掛載；本機預設 `all`，production compose 拆成 `findb-serve` 與 `findb-ingest`，nginx 將 `/api/v1/serve/*` 與靜態頁導向 serve，`/api/v1/source/*`、`/api/v1/admin/*` 導向 ingest。
+- serve / ingest 使用同一 image 但覆寫不同 `DATABASE_POOL_SIZE` / `DATABASE_MAX_OVERFLOW`，避免 backfill 或 normalize 搶 serve pool。
+- 新增 `instrument_stats`，migration 從既有 `market_data_eod` / `futures_continuous_eod` 回填；EOD normalize 後更新 first/latest trade date 與 latest price，futures continuous normalize 後更新 first trade date。
+- `/api/v1/serve/instruments` 改讀 `instrument_stats`，支援 `cursor` keyset pagination 與 `include_count=false` 跳過 `count(*)`。既有 page/page_size 與 count 預設維持相容。
+- backfill runbook 改為 `docker compose run --rm raw-cleanup ...` one-off container，不再要求進入 app container 執行。
+- Bulk export 暫不實作 endpoint；目前明確標記為需求出現後再做，避免在沒有消費者之前引入 S3/Parquet 維運面。
 
 ### Phase 3: API key 治理（key 外洩處理與消費者區分）
 

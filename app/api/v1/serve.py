@@ -18,6 +18,7 @@ from app.models.canonical import (
     FuturesContinuousEOD,
     FuturesContract,
     Instrument,
+    InstrumentStats,
     MacroObservation,
     MacroSeries,
     MarketDataEOD,
@@ -53,47 +54,20 @@ async def list_instruments(
     asset_class: Optional[str] = Query(None, description="依資產類別篩選"),
     status_filter: Optional[str] = Query(None, alias="status", description="依狀態篩選"),
     symbol: Optional[str] = Query(None, description="依商品代號精確篩選"),
+    cursor: Optional[str] = Query(None, description="Keyset cursor from pagination.next_cursor"),
+    include_count: bool = Query(True, description="是否回傳 total_records / total_pages"),
     page: int = Query(1, ge=1, description="頁碼"),
     page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """列出商品，支援選用篩選條件。"""
-    first_trade_date_eod = (
-        select(func.min(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date_futures = (
-        select(func.min(FuturesContinuousEOD.trade_date))
-        .where(FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date = func.least(first_trade_date_eod, first_trade_date_futures)
-    latest_trade_date = (
-        select(func.max(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    latest_price = (
-        select(MarketDataEOD.close)
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .order_by(MarketDataEOD.trade_date.desc())
-        .limit(1)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-
-    # Build query
     query = select(
         Instrument,
-        first_trade_date.label("first_trade_date"),
-        latest_trade_date.label("latest_trade_date"),
-        latest_price.label("latest_price"),
-    )
+        InstrumentStats.first_trade_date,
+        InstrumentStats.latest_trade_date,
+        InstrumentStats.latest_price,
+    ).outerjoin(InstrumentStats, InstrumentStats.instrument_id == Instrument.instrument_id)
     count_query = select(func.count(Instrument.instrument_id))
 
     # Apply filters
@@ -106,25 +80,31 @@ async def list_instruments(
         filters.append(Instrument.status == status_filter)
     if symbol:
         filters.append(Instrument.symbol == symbol.upper())
+    if cursor:
+        filters.append(Instrument.symbol > cursor.upper())
 
     if filters:
         query = query.where(and_(*filters))
         count_query = count_query.where(and_(*filters))
 
-    # Get total count
-    total_result = await db.execute(count_query)
-    total_records = int(total_result.scalar() or 0)
+    total_records: int | None = None
+    total_pages: int | None = None
+    if include_count:
+        total_result = await db.execute(count_query)
+        total_records = int(total_result.scalar() or 0)
+        total_pages = (total_records + page_size - 1) // page_size
 
-    # Apply pagination
-    offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size).order_by(Instrument.symbol)
+    query = query.order_by(Instrument.symbol).limit(page_size + 1)
+    if not cursor:
+        offset = (page - 1) * page_size
+        query = query.offset(offset)
 
-    # Execute query
     result = await db.execute(query)
     rows = result.all()
-
-    # Calculate total pages
-    total_pages = (total_records + page_size - 1) // page_size
+    next_cursor = None
+    if len(rows) > page_size:
+        next_cursor = rows[page_size - 1][0].symbol
+        rows = rows[:page_size]
 
     return InstrumentListResponse(
         success=True,
@@ -151,6 +131,7 @@ async def list_instruments(
             page_size=page_size,
             total_records=total_records,
             total_pages=total_pages,
+            next_cursor=next_cursor,
         ),
     )
 
@@ -162,40 +143,15 @@ async def get_instrument(
     db: AsyncSession = Depends(get_db),
 ):
     """依 ID 取得單一商品。"""
-    first_trade_date_eod = (
-        select(func.min(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date_futures = (
-        select(func.min(FuturesContinuousEOD.trade_date))
-        .where(FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date = func.least(first_trade_date_eod, first_trade_date_futures)
-    latest_trade_date = (
-        select(func.max(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    latest_price = (
-        select(MarketDataEOD.close)
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .order_by(MarketDataEOD.trade_date.desc())
-        .limit(1)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
     result = await db.execute(
         select(
             Instrument,
-            first_trade_date.label("first_trade_date"),
-            latest_trade_date.label("latest_trade_date"),
-            latest_price.label("latest_price"),
-        ).where(Instrument.instrument_id == instrument_id)
+            InstrumentStats.first_trade_date,
+            InstrumentStats.latest_trade_date,
+            InstrumentStats.latest_price,
+        )
+        .outerjoin(InstrumentStats, InstrumentStats.instrument_id == Instrument.instrument_id)
+        .where(Instrument.instrument_id == instrument_id)
     )
     row = result.one_or_none()
 

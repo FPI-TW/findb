@@ -75,6 +75,25 @@ class Instrument(Base):
     futures_continuous_eod: Mapped[list["FuturesContinuousEOD"]] = relationship(
         back_populates="instrument"
     )
+    stats: Mapped[Optional["InstrumentStats"]] = relationship(back_populates="instrument")
+
+
+class InstrumentStats(Base):
+    """Materialized read stats for instrument list/detail endpoints."""
+
+    __tablename__ = "instrument_stats"
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    first_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    latest_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    latest_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="stats")
 
 
 class InstrumentIdentifier(Base):

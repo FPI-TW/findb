@@ -13,6 +13,7 @@ from app.models.canonical import (
     CorporateAction,
     FuturesContinuousEOD,
     Instrument,
+    InstrumentStats,
     MacroObservation,
     MacroSeries,
     MarketDataEOD,
@@ -605,6 +606,12 @@ async def test_process_upserts_existing_eod_instead_of_failing_duplicate(test_se
     assert updated.volume == 3000
     assert updated.run_id == run_id
 
+    stats = await test_session.get(InstrumentStats, instrument_id)
+    assert stats is not None
+    assert stats.first_trade_date == trade_dt.date()
+    assert stats.latest_trade_date == trade_dt.date()
+    assert stats.latest_price == Decimal("210")
+
     partition_exists = await test_session.scalar(
         text("SELECT to_regclass('market_data_eod_y2026')")
     )
@@ -703,6 +710,12 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
     assert updated.close == Decimal("108")
     assert updated.volume == 1200
     assert updated.run_id == run_id
+
+    stats = await test_session.get(InstrumentStats, instrument_id)
+    assert stats is not None
+    assert stats.first_trade_date == trade_date
+    assert stats.latest_trade_date is None
+    assert stats.latest_price is None
 
     dq_stmt = select(DQIssue).where(
         DQIssue.run_id == run_id,
