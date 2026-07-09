@@ -21,6 +21,7 @@ _source_rate_limit_lock = Lock()
 _source_rate_limit_buckets: dict[str, list[float]] = {}
 _serve_rate_limit_lock = Lock()
 _serve_rate_limit_buckets: dict[str, list[float]] = {}
+DEFAULT_SERVE_PAGE_SIZE = 100
 
 
 def get_source_api_key() -> str:
@@ -182,11 +183,14 @@ def _enforce_serve_api_key_policy(request: Request, key: APIKey) -> None:
             requested_page_size = int(page_size)
         except ValueError:
             requested_page_size = 0
-        if requested_page_size > key.page_size_limit:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"page_size exceeds API key limit of {key.page_size_limit}",
-            )
+    else:
+        requested_page_size = DEFAULT_SERVE_PAGE_SIZE
+
+    if requested_page_size > key.page_size_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"page_size exceeds API key limit of {key.page_size_limit}",
+        )
 
     client_ip = _extract_client_ip(request) or "unknown"
     _enforce_serve_rate_limit(key, client_ip)

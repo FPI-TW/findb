@@ -174,13 +174,14 @@ Phase 2 執行紀錄（2026-07-09）：
 - [x] `verify_serve_api_key` 改查表（保留 env fallback 過渡期），比對用 hash。
 - [x] tier 決定 rate limit 與 page size 上限；LLM 流量獨立 tier。
 - [x] Admin API 增加 key 簽發 / 撤銷 endpoints（沿用 `ADMIN_API_KEY` 保護）。
-- [x] 用量記錄（per key_id 計數）供審計與異常偵測。
+- [ ] 用量記錄（per key_id 計數）供審計與異常偵測。**欄位已備妥但尚未寫入**——inline 累計會破壞 Serve read-only invariant，改由 access log 或批次任務回填（見 known_issues R8）。
 - [x] 遷移完成後移除 `SERVE_API_KEYS` env 機制與 nginx serve-key 注入的相容性確認（`infra/nginx/serve-key.conf` 注入的 key 也需入表）。
 
 Phase 3 執行紀錄（2026-07-09）：
 
 - 新增 `api_key` table，只保存 SHA-256 hash；Admin `POST /api/v1/admin/api-keys` 簽發時只回傳一次明文 key，`GET /api/v1/admin/api-keys` 不暴露 hash。
-- Serve auth 優先查 DB active key，檢查 `serve` scope、per-key rate limit 與 `page_size_limit`；不在 Serve GET inline 更新 `usage_count` / `last_used_at`，避免破壞 Serve read-only invariant。用量審計欄位保留，後續應由 access log 或批次任務寫入。
+- Serve auth 優先查 DB active key，檢查 `serve` scope、per-key rate limit 與 `page_size_limit`；不在 Serve GET inline 更新 `usage_count` / `last_used_at`，避免破壞 Serve read-only invariant。用量審計欄位保留，後續應由 access log 或批次任務寫入（追蹤：known_issues R8）。
+- 用量審計的延後決策背景：Phase 2–6 review 的 finding #9 指出原本每個 Serve GET 都 inline `usage_count += 1` + `commit()`，這會讓 serve 角色無法指向 read replica、DB 寫降級時整條 read path 回 500。移除 inline 寫入是刻意取捨（唯讀不變式 > 即時計數）。
 - `SERVE_API_KEYS` env fallback 暫時保留，供 nginx `serve-key.conf` 與既有部署過渡；正式移除前需先把 nginx 注入的 key 透過 Admin endpoint 建入 DB。
 - partial dump 預設排除 `api_key`，避免把 key hash 與用量審計資料帶到本機 seed。
 

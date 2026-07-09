@@ -46,6 +46,13 @@
 - 觀察訊號：`SELECT count(*) FROM market_data_eod_default` > 0。
 - 建議處置：發現時於維護窗口 DETACH default → 建立缺少的年度 partition → 搬移資料 → 重新 ATTACH。可將該 count 納入例行巡檢。
 
+### [ ] R8（低）`api_key.usage_count` / `last_used_at` 目前恆為初始值，未反映實際用量
+
+- 風險描述：`api_key` 表有 `usage_count`（預設 0）與 `last_used_at`（NULL）欄位，`GET /api/v1/admin/api-keys` 也會回傳，但 Serve auth 路徑刻意不 inline 更新（見下），故兩欄永遠停在簽發時的值。誤把它們當實際用量或「最後使用時間」判斷 key 是否閒置，會得到錯誤結論。
+- 背景：原實作在每個 Serve GET inline `usage_count += 1` + `commit()`，會破壞 Serve read-only invariant——serve 角色無法指向 read replica，DB 寫降級時整條 read path 回 500（Phase 2–6 review finding #9）。移除 inline 寫入是刻意取捨。
+- 觀察訊號：`SELECT usage_count, last_used_at FROM api_key` 全為 `0 / NULL`，即使該 key 已大量呼叫 Serve API。
+- 建議處置：需要用量審計時走非阻塞路徑回填——nginx / app access log 聚合，或獨立批次任務定期 `UPDATE api_key SET usage_count = ..., last_used_at = ...`；不要放回 Serve 同步 commit。對應 `multi_asset_architecture_plan.md` Phase 3 未結項。
+
 ## B. 資料錯誤/缺失可能原因清單
 
 ### C1 被 rate limit 擋下（429）

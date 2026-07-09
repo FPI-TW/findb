@@ -220,6 +220,13 @@ class TestAPIKeyAdmin:
             assert too_large_response.status_code == 400
             assert "page_size exceeds" in too_large_response.json()["detail"]
 
+            default_page_size_response = await client.get(
+                "/api/v1/serve/instruments",
+                headers=serve_headers,
+            )
+            assert default_page_size_response.status_code == 400
+            assert "page_size exceeds" in default_page_size_response.json()["detail"]
+
             second_ok_response = await client.get(
                 "/api/v1/serve/instruments?page_size=2",
                 headers=serve_headers,
