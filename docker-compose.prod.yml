@@ -21,7 +21,7 @@ x-app-environment: &app-environment
 
 services:
   serve:
-    image: ghcr.io/fpi-tw/findb:latest
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
     container_name: findb-serve
     environment:
       <<: *app-environment
@@ -37,7 +37,7 @@ services:
       - findb-static-data:/app/app/static/data
 
   ingest:
-    image: ghcr.io/fpi-tw/findb:latest
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
     container_name: findb-ingest
     environment:
       <<: *app-environment
@@ -77,7 +77,7 @@ services:
       restart: unless-stopped
 
   raw-cleanup:
-    image: ghcr.io/fpi-tw/findb:latest
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
     container_name: findb-raw-cleanup
     environment:
       <<: *app-environment
