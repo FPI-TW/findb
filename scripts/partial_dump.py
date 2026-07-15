@@ -80,10 +80,12 @@ async def _discover_tables(
     include_schemas = set(config.table_discovery.include_schemas)
     exclude_tables = set(config.table_discovery.exclude_tables)
     result = await conn.execute(text("""
-            SELECT table_schema, table_name
-            FROM information_schema.tables
-            WHERE table_type = 'BASE TABLE'
-            ORDER BY table_schema, table_name
+            SELECT n.nspname AS table_schema, c.relname AS table_name
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'p')
+              AND NOT c.relispartition
+            ORDER BY n.nspname, c.relname
             """))
 
     tables: list[tuple[str, str]] = []

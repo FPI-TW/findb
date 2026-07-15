@@ -8,16 +8,19 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_serve_api_key
 from app.dependencies import get_db
 from app.models.canonical import (
+    BondDetails,
+    BondEOD,
     CorporateAction,
     FuturesContinuousEOD,
     FuturesContract,
     Instrument,
+    InstrumentStats,
     MacroObservation,
     MacroSeries,
     MarketDataEOD,
@@ -26,6 +29,10 @@ from app.models.canonical import (
 )
 from app.schemas.common import PaginationInfo
 from app.schemas.serve import (
+    BondEODListResponse,
+    BondEODResponse,
+    BondListResponse,
+    BondResponse,
     CalendarListResponse,
     CalendarResponse,
     CorporateActionListResponse,
@@ -47,53 +54,45 @@ from app.schemas.serve import (
 router = APIRouter()
 
 
+def _instrument_cursor(instrument: Instrument) -> str:
+    return f"{instrument.symbol}|{instrument.instrument_id}"
+
+
+def _instrument_cursor_filter(cursor: str):
+    parts = cursor.split("|", 1)
+    if len(parts) != 2:
+        return Instrument.symbol > cursor.upper()
+    symbol, instrument_id = parts
+    try:
+        parsed_id = UUID(instrument_id)
+    except ValueError:
+        return Instrument.symbol > cursor.upper()
+    return or_(
+        Instrument.symbol > symbol.upper(),
+        and_(Instrument.symbol == symbol.upper(), Instrument.instrument_id > parsed_id),
+    )
+
+
 @router.get("/instruments", response_model=InstrumentListResponse)
 async def list_instruments(
     market: Optional[str] = Query(None, description="依市場篩選，例如 CRYPTO、US"),
     asset_class: Optional[str] = Query(None, description="依資產類別篩選"),
     status_filter: Optional[str] = Query(None, alias="status", description="依狀態篩選"),
     symbol: Optional[str] = Query(None, description="依商品代號精確篩選"),
+    cursor: Optional[str] = Query(None, description="Keyset cursor from pagination.next_cursor"),
+    include_count: bool = Query(True, description="是否回傳 total_records / total_pages"),
     page: int = Query(1, ge=1, description="頁碼"),
     page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """列出商品，支援選用篩選條件。"""
-    first_trade_date_eod = (
-        select(func.min(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date_futures = (
-        select(func.min(FuturesContinuousEOD.trade_date))
-        .where(FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date = func.least(first_trade_date_eod, first_trade_date_futures)
-    latest_trade_date = (
-        select(func.max(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    latest_price = (
-        select(MarketDataEOD.close)
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .order_by(MarketDataEOD.trade_date.desc())
-        .limit(1)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-
-    # Build query
     query = select(
         Instrument,
-        first_trade_date.label("first_trade_date"),
-        latest_trade_date.label("latest_trade_date"),
-        latest_price.label("latest_price"),
-    )
+        InstrumentStats.first_trade_date,
+        InstrumentStats.latest_trade_date,
+        InstrumentStats.latest_price,
+    ).outerjoin(InstrumentStats, InstrumentStats.instrument_id == Instrument.instrument_id)
     count_query = select(func.count(Instrument.instrument_id))
 
     # Apply filters
@@ -111,20 +110,27 @@ async def list_instruments(
         query = query.where(and_(*filters))
         count_query = count_query.where(and_(*filters))
 
-    # Get total count
-    total_result = await db.execute(count_query)
-    total_records = int(total_result.scalar() or 0)
+    if cursor:
+        query = query.where(_instrument_cursor_filter(cursor))
 
-    # Apply pagination
-    offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size).order_by(Instrument.symbol)
+    total_records: int | None = None
+    total_pages: int | None = None
+    if include_count:
+        total_result = await db.execute(count_query)
+        total_records = int(total_result.scalar() or 0)
+        total_pages = (total_records + page_size - 1) // page_size
 
-    # Execute query
+    query = query.order_by(Instrument.symbol, Instrument.instrument_id).limit(page_size + 1)
+    if not cursor:
+        offset = (page - 1) * page_size
+        query = query.offset(offset)
+
     result = await db.execute(query)
     rows = result.all()
-
-    # Calculate total pages
-    total_pages = (total_records + page_size - 1) // page_size
+    next_cursor = None
+    if len(rows) > page_size:
+        next_cursor = _instrument_cursor(rows[page_size - 1][0])
+        rows = rows[:page_size]
 
     return InstrumentListResponse(
         success=True,
@@ -151,6 +157,7 @@ async def list_instruments(
             page_size=page_size,
             total_records=total_records,
             total_pages=total_pages,
+            next_cursor=next_cursor,
         ),
     )
 
@@ -162,40 +169,15 @@ async def get_instrument(
     db: AsyncSession = Depends(get_db),
 ):
     """依 ID 取得單一商品。"""
-    first_trade_date_eod = (
-        select(func.min(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date_futures = (
-        select(func.min(FuturesContinuousEOD.trade_date))
-        .where(FuturesContinuousEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    first_trade_date = func.least(first_trade_date_eod, first_trade_date_futures)
-    latest_trade_date = (
-        select(func.max(MarketDataEOD.trade_date))
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
-    latest_price = (
-        select(MarketDataEOD.close)
-        .where(MarketDataEOD.instrument_id == Instrument.instrument_id)
-        .order_by(MarketDataEOD.trade_date.desc())
-        .limit(1)
-        .correlate(Instrument)
-        .scalar_subquery()
-    )
     result = await db.execute(
         select(
             Instrument,
-            first_trade_date.label("first_trade_date"),
-            latest_trade_date.label("latest_trade_date"),
-            latest_price.label("latest_price"),
-        ).where(Instrument.instrument_id == instrument_id)
+            InstrumentStats.first_trade_date,
+            InstrumentStats.latest_trade_date,
+            InstrumentStats.latest_price,
+        )
+        .outerjoin(InstrumentStats, InstrumentStats.instrument_id == Instrument.instrument_id)
+        .where(Instrument.instrument_id == instrument_id)
     )
     row = result.one_or_none()
 
@@ -239,8 +221,10 @@ async def list_eod_data(
     query = select(MarketDataEOD, Instrument).join(
         Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id
     )
-    count_query = select(func.count(MarketDataEOD.id)).join(
-        Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id
+    count_query = (
+        select(func.count())
+        .select_from(MarketDataEOD)
+        .join(Instrument, MarketDataEOD.instrument_id == Instrument.instrument_id)
     )
 
     # Apply filters
@@ -334,8 +318,10 @@ async def get_instrument_eod(
 
     # Build query
     query = select(MarketDataEOD).where(MarketDataEOD.instrument_id == instrument_id)
-    count_query = select(func.count(MarketDataEOD.id)).where(
-        MarketDataEOD.instrument_id == instrument_id
+    count_query = (
+        select(func.count())
+        .select_from(MarketDataEOD)
+        .where(MarketDataEOD.instrument_id == instrument_id)
     )
 
     # Apply date filters
@@ -981,6 +967,142 @@ async def get_futures_continuous(
                 roll_rule_name=rule.name if rule else None,
             )
             for eod, rule in rows
+        ],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total_records,
+            total_pages=total_pages,
+        ),
+    )
+
+
+@router.get("/bonds", response_model=BondListResponse)
+async def list_bonds(
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    symbols: Optional[str] = Query(None, description="以逗號分隔的商品代號"),
+    issuer: Optional[str] = Query(None, description="依發行人模糊篩選"),
+    maturity_from: Optional[date] = Query(None, description="到期日起始日 (YYYY-MM-DD)"),
+    maturity_to: Optional[date] = Query(None, description="到期日結束日 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
+    _: str = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出債券商品與債券延伸欄位。"""
+    query = select(Instrument, BondDetails).join(
+        BondDetails, BondDetails.instrument_id == Instrument.instrument_id
+    )
+    count_query = select(func.count(Instrument.instrument_id)).join(
+        BondDetails, BondDetails.instrument_id == Instrument.instrument_id
+    )
+
+    filters = [Instrument.asset_class == "bond"]
+    if market:
+        filters.append(Instrument.market == market.upper())
+    if symbols:
+        symbol_list = [s.strip().upper() for s in symbols.split(",")]
+        filters.append(Instrument.symbol.in_(symbol_list))
+    if issuer:
+        filters.append(BondDetails.issuer.ilike(f"%{issuer}%"))
+    if maturity_from:
+        filters.append(BondDetails.maturity_date >= maturity_from)
+    if maturity_to:
+        filters.append(BondDetails.maturity_date <= maturity_to)
+
+    query = query.where(and_(*filters))
+    count_query = count_query.where(and_(*filters))
+
+    total_records = int((await db.execute(count_query)).scalar() or 0)
+    offset = (page - 1) * page_size
+    query = query.offset(offset).limit(page_size).order_by(Instrument.symbol)
+    rows = (await db.execute(query)).all()
+
+    total_pages = (total_records + page_size - 1) // page_size if total_records else 0
+    return BondListResponse(
+        success=True,
+        data=[
+            BondResponse(
+                instrument_id=instrument.instrument_id,
+                symbol=instrument.symbol,
+                name=instrument.name,
+                market=instrument.market,
+                currency=instrument.currency,
+                issuer=details.issuer,
+                coupon=details.coupon,
+                maturity_date=details.maturity_date,
+                rating=details.rating,
+                face_value=details.face_value,
+            )
+            for instrument, details in rows
+        ],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total_records,
+            total_pages=total_pages,
+        ),
+    )
+
+
+@router.get("/bonds/eod", response_model=BondEODListResponse)
+async def list_bond_eod(
+    market: Optional[str] = Query(None, description="依市場篩選"),
+    symbols: Optional[str] = Query(None, description="以逗號分隔的商品代號"),
+    start_date: Optional[date] = Query(None, description="起始日期 (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="結束日期 (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="頁碼"),
+    page_size: int = Query(100, ge=1, le=1000, description="每頁筆數"),
+    _: str = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出債券每日價格與殖利率資料。"""
+    query = select(BondEOD, Instrument).join(
+        Instrument, BondEOD.instrument_id == Instrument.instrument_id
+    )
+    count_query = select(func.count(BondEOD.id)).join(
+        Instrument, BondEOD.instrument_id == Instrument.instrument_id
+    )
+
+    filters = [Instrument.asset_class == "bond"]
+    if market:
+        filters.append(Instrument.market == market.upper())
+    if symbols:
+        symbol_list = [s.strip().upper() for s in symbols.split(",")]
+        filters.append(Instrument.symbol.in_(symbol_list))
+    if start_date:
+        filters.append(BondEOD.trade_date >= start_date)
+    if end_date:
+        filters.append(BondEOD.trade_date <= end_date)
+
+    query = query.where(and_(*filters))
+    count_query = count_query.where(and_(*filters))
+
+    total_records = int((await db.execute(count_query)).scalar() or 0)
+    offset = (page - 1) * page_size
+    query = (
+        query.offset(offset).limit(page_size).order_by(Instrument.symbol, BondEOD.trade_date.desc())
+    )
+    rows = (await db.execute(query)).all()
+
+    total_pages = (total_records + page_size - 1) // page_size if total_records else 0
+    return BondEODListResponse(
+        success=True,
+        data=[
+            BondEODResponse(
+                id=eod.id,
+                instrument_id=instrument.instrument_id,
+                symbol=instrument.symbol,
+                name=instrument.name,
+                market=instrument.market,
+                trade_date=eod.trade_date,
+                yield_to_maturity=eod.yield_to_maturity,
+                clean_price=eod.clean_price,
+                dirty_price=eod.dirty_price,
+                duration=eod.duration,
+                source=eod.source,
+            )
+            for eod, instrument in rows
         ],
         pagination=PaginationInfo(
             page=page,

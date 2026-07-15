@@ -37,7 +37,7 @@
 - [ ] `serve/eod`、`serve/instruments`、`serve/macro/observations` 的查詢延遲
 - [ ] 記錄 PostgreSQL 指標：CPU、memory、WAL、locks、slow query
 - [ ] 記錄 app 指標：單批處理時間、run queue 長度、background task 數量
-- [ ] 產出 baseline 報告並保存到 `docs/` 或 `plans/`
+- [ ] 產出 baseline 報告並保存到 `docs/dev/`
 
 驗收條件：
 - [ ] 可以明確回答目前系統在 `10k`、`100k`、`1M` 各需要多久

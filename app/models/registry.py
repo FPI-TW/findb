@@ -6,13 +6,24 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.utils import utc_now, uuid7
+from app.vocabulary import sql_asset_class_check, sql_market_check
 
 
 class DatasetRegistry(Base):
@@ -22,6 +33,16 @@ class DatasetRegistry(Base):
     """
 
     __tablename__ = "dataset_registry"
+    __table_args__ = (
+        CheckConstraint(
+            sql_asset_class_check("asset_class"),
+            name="dataset_registry_asset_class_valid",
+        ),
+        CheckConstraint(
+            sql_market_check("market"),
+            name="dataset_registry_market_valid",
+        ),
+    )
 
     dataset_key: Mapped[str] = mapped_column(String(50), primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -110,3 +131,27 @@ class DQIssue(Base):
 
     # Relationships
     run: Mapped[Optional["IngestionRun"]] = relationship(back_populates="dq_issues")
+
+
+class APIKey(Base):
+    """Hashed API keys for Serve API consumers."""
+
+    __tablename__ = "api_key"
+    __table_args__ = (
+        UniqueConstraint("key_hash", name="uq_api_key_hash"),
+        Index("idx_api_key_revoked", "revoked_at"),
+        Index("idx_api_key_owner", "owner"),
+    )
+
+    key_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner: Mapped[str] = mapped_column(String(100), nullable=False)
+    tier: Mapped[str] = mapped_column(String(30), nullable=False, default="standard")
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    rate_limit_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    rate_limit_window: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    page_size_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -14,6 +14,7 @@ from app.services.dq.validators import DQIssueRecord
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.types import MacroObservationRecord
 from app.utils import utc_now, uuid7
+from app.vocabulary import normalize_market
 
 
 def _merge_config(default: dict, override: dict | None) -> dict:
@@ -97,12 +98,20 @@ class MacroNormalizer(BaseNormalizer):
         if record.frequency:
             record.frequency = str(record.frequency).lower().strip()
         if record.market:
-            record.market = str(record.market).upper().strip()
+            record.market = normalize_market(record.market)
         else:
-            record.market = self.market
+            record.market = normalize_market(self.market)
         if record.source:
             record.source = str(record.source).lower().strip()
         return record
+
+    def _normalize_record_safe(self, record: MacroObservationRecord) -> MacroObservationRecord:
+        """Normalize vocabulary per record; mark failures so one bad item cannot fail the batch."""
+        try:
+            return self._normalize_record(record)
+        except ValueError as exc:
+            record.vocabulary_error = str(exc)
+            return record
 
     def map_fields(self, raw_data: dict) -> list[MacroObservationRecord]:
         """Map macro payload to canonical format."""
@@ -205,7 +214,7 @@ class MacroNormalizer(BaseNormalizer):
                 source=source,
                 raw_data=item,
             )
-            records.append(self._normalize_record(record))
+            records.append(self._normalize_record_safe(record))
 
         return records
 
@@ -303,6 +312,16 @@ class MacroNormalizer(BaseNormalizer):
             for record in mapped_records:
                 try:
                     issues: list[DQIssueRecord] = []
+
+                    if record.vocabulary_error:
+                        issues.append(
+                            DQIssueRecord(
+                                issue_type="INVALID_VOCABULARY",
+                                severity="error",
+                                description=record.vocabulary_error,
+                                raw_data=record.raw_data,
+                            )
+                        )
 
                     if not record.source_code:
                         issues.append(
@@ -462,6 +481,6 @@ class MacroBloombergNormalizer(MacroNormalizer):
                 source=source,
                 raw_data=item,
             )
-            records.append(self._normalize_record(record))
+            records.append(self._normalize_record_safe(record))
 
         return records

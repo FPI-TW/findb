@@ -17,6 +17,10 @@ from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
 from app.models.registry import IngestionRun
 from app.schemas.admin import (
+    APIKeyCreateRequest,
+    APIKeyCreateResponse,
+    APIKeyListResponse,
+    APIKeyResponse,
     BulkRerunResponse,
     CacheTriggerResponse,
     CorrectionListResponse,
@@ -48,6 +52,7 @@ from app.services.admin import (
     present_correction_actor,
     resolve_dq_issue,
 )
+from app.services.api_keys import create_api_key, list_api_keys, revoke_api_key
 from app.services.ingestion import (
     IngestionService,
     RawPayloadNotFoundError,
@@ -64,6 +69,48 @@ from app.services.instrument_cache import (
 from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
+
+
+@router.post("/api-keys", response_model=APIKeyCreateResponse)
+async def create_api_key_endpoint(
+    body: APIKeyCreateRequest,
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Issue a hashed Serve API key. Plaintext is returned once."""
+    row, plaintext = await create_api_key(
+        db,
+        owner=body.owner,
+        tier=body.tier,
+        scopes=body.scopes,
+        rate_limit_requests=body.rate_limit_requests,
+        rate_limit_window=body.rate_limit_window,
+        page_size_limit=body.page_size_limit,
+    )
+    return APIKeyCreateResponse(api_key=plaintext, data=APIKeyResponse.model_validate(row))
+
+
+@router.get("/api-keys", response_model=APIKeyListResponse)
+async def list_api_keys_endpoint(
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """List API key metadata without hashes or plaintext."""
+    rows = await list_api_keys(db)
+    return APIKeyListResponse(data=[APIKeyResponse.model_validate(row) for row in rows])
+
+
+@router.delete("/api-keys/{key_id}", response_model=APIKeyResponse)
+async def revoke_api_key_endpoint(
+    key_id: UUID,
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke an API key."""
+    row = await revoke_api_key(db, key_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    return APIKeyResponse.model_validate(row)
 
 
 @router.get("/instrument-cache", response_model=InstrumentCacheDocument)
@@ -168,7 +215,7 @@ async def patch_eod(
 
     return PatchEODResponse(
         correction_id=correction.id,
-        record_id=eod.id,
+        record_id=correction.record_id,
         instrument_id=eod.instrument_id,
         trade_date=eod.trade_date,
         message="EOD record corrected successfully",

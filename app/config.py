@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "FinDB"
     APP_VERSION: str = "0.1.0"
+    APP_ROLE: str = "all"
     DEBUG: bool = False
     PORT: int = 8080
 

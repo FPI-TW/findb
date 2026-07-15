@@ -64,7 +64,7 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | **Serve API**  | 讀取路徑 | 唯讀查詢正規化後的 Canonical 資料             |
 | **Admin API**  | 修正路徑 | 人工修正 Canonical 資料，寫入不可變 audit log |
 
-> 完整的 ingest 內部五階段流程（守門點、Raw + Run 落地、背景正規化、維運鉤子）可參考視覺化頁面 `docs/ingestion_workflow.html`。
+> 完整的 ingest 內部五階段流程（守門點、Raw + Run 落地、背景正規化、維運鉤子）可參考視覺化頁面 `ingestion_workflow.html`。
 
 ---
 
@@ -76,11 +76,11 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | ------------- | -------------------------------------------------------------------------------------- |
 | Source API    | 標準 ingest、direct ingest、run status、rerun、dataset list 已可用                     |
 | Direct ingest | `crypto`、`fx`、`wtx`、`macro`、`usstock`、`hkchina`、`twstock` 已可用                 |
-| Serve API     | instruments、EOD、corporate actions、macro、futures、calendar 已可用                   |
+| Serve API     | instruments、EOD、corporate actions、macro、futures、bonds、calendar 已可用            |
 | Admin API     | DQ issue、EOD patch、corrections、raw payload、bulk rerun、instrument cache 管理已可用 |
 | 區域市場      | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程                   |
 
-> 目前 normalize 仍由 FastAPI `BackgroundTasks` 觸發，若要評估大批量 ingest 與部署策略，請一併參考 [scalability checklist](scalability_optimization_checklist.md)。
+> 目前 normalize 仍由 FastAPI `BackgroundTasks` 觸發，若要評估大批量 ingest 與部署策略，請一併參考 `scalability_optimization_checklist.md`。
 
 ---
 
@@ -149,7 +149,7 @@ Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 | 設定值          | 行為                                              |
 | --------------- | ------------------------------------------------- |
 | `false`（預設） | 不需要認證，任何人皆可查詢                        |
-| `true`          | 必須帶入 `X-API-Key`，金鑰設定於 `SERVE_API_KEYS` |
+| `true`          | 必須帶入 `X-API-Key`，金鑰優先查 DB `api_key` 表，`SERVE_API_KEYS` 僅作過渡 fallback |
 
 啟用 Serve 認證時，使用方式與 Source API 相同：
 
@@ -157,11 +157,20 @@ Serve API 的認證由環境變數 `SERVE_REQUIRE_AUTH` 控制：
 X-API-Key: your-serve-key
 ```
 
+Serve API key 由 Admin API 簽發，明文只在建立時回傳一次：
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/admin/api-keys" \
+  -H "X-API-Key: your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"owner":"llm-client","tier":"llm","scopes":["serve"],"rate_limit_requests":100,"rate_limit_window":60,"page_size_limit":1000}'
+```
+
 > **生產環境 nginx Serve key 注入**：`/instrument-lookup` 等同源靜態頁不會把 Serve API
 > key 嵌入瀏覽器；生產 nginx 會以 `Referer` regex 比對後注入 `X-API-Key`。設定
 > 由 `scripts/render_nginx_serve_key.py` 在 deploy 時根據 `SERVE_API_KEYS` 的
-> **第一個** key 渲染為 `infra/nginx/serve-key.conf`。外部直接呼叫 `/api/v1/serve/*`
-> 的客戶端不受影響，仍需自行帶 `X-API-Key`。
+> **第一個** key 渲染為 `infra/nginx/serve-key.conf`。Phase 3 後這是過渡機制：
+> 該 key 也應透過 Admin API 建入 DB，待部署確認後再移除 env fallback。
 
 ### Admin API（必要）
 
@@ -1157,6 +1166,43 @@ GET /api/v1/serve/futures/continuous/{instrument_id}
 
 ---
 
+### 債券
+
+#### 查詢債券清單
+
+```
+GET /api/v1/serve/bonds
+```
+
+| 參數            | 位置  | 類型   | 必填 | 說明                   |
+| --------------- | ----- | ------ | ---- | ---------------------- |
+| `market`        | query | string | 否   | 市場代碼               |
+| `symbols`       | query | string | 否   | 逗號分隔的債券代號     |
+| `issuer`        | query | string | 否   | 發行人模糊查詢         |
+| `maturity_from` | query | date   | 否   | 到期日起始日           |
+| `maturity_to`   | query | date   | 否   | 到期日結束日           |
+| `page`          | query | int    | 否   | 頁碼                   |
+| `page_size`     | query | int    | 否   | 每頁筆數               |
+
+#### 查詢債券日資料
+
+```
+GET /api/v1/serve/bonds/eod
+```
+
+| 參數         | 位置  | 類型   | 必填 | 說明                       |
+| ------------ | ----- | ------ | ---- | -------------------------- |
+| `market`     | query | string | 否   | 市場代碼                   |
+| `symbols`    | query | string | 否   | 逗號分隔的債券代號         |
+| `start_date` | query | date   | 否   | 起始日期                   |
+| `end_date`   | query | date   | 否   | 結束日期                   |
+| `page`       | query | int    | 否   | 頁碼                       |
+| `page_size`  | query | int    | 否   | 每頁筆數                   |
+
+債券日資料使用 `yield_to_maturity`、`clean_price`、`dirty_price`、`duration`，不與 OHLCV 型 EOD 混表。
+
+---
+
 ### 交易日曆
 
 ```
@@ -1383,6 +1429,8 @@ PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}
 }
 ```
 
+`market_data_eod` 的 `record_id` 是由 `instrument_id` 與 `trade_date` 產生的穩定 logical UUID；同一商品同一天的日K修正會指向同一個 `record_id`。
+
 #### 錯誤情境
 
 | 狀態碼 | 說明                                            |
@@ -1549,6 +1597,8 @@ GET /api/v1/admin/corrections
 | `page_size`     | query | int    | 否   | 每頁筆數（預設 100，最大 1000）                   |
 
 回應為**最新優先**排序。
+
+`market_data_eod` correction 的 `record_id` 為穩定 logical UUID；`dq_issue` correction 的 `record_id` 為對應 issue UUID。
 
 #### 回應範例（200 OK）
 
@@ -2129,8 +2179,9 @@ with httpx.Client() as client:
 
 ```env
 SERVE_REQUIRE_AUTH=true
-SERVE_API_KEYS=your-serve-key-1,your-serve-key-2
 ```
+
+然後用 Admin API 建立 Serve key。`SERVE_API_KEYS` 仍可作為過渡 fallback；新 consumer 應使用 DB-backed key。
 
 ### Q: 如何查看所有可用的 dataset_key？
 
@@ -2185,7 +2236,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 ### Q: 生產環境需要注意什麼？
 
 1. **必須**設定 `SOURCE_ALLOWLIST_CIDRS`，部署流程會用它產生 nginx `/api/v1/source/*` allowlist；本機 loopback（`127.0.0.1/32`、`::1/128`）會自動加入
-   - 若服務在 Cloudflare 後方，nginx 必須先透過 `real_ip_header CF-Connecting-IP` 還原真實 client IP，否則 allowlist 會用到 Cloudflare edge IP 而誤擋；詳見 `docs/cloudflare-nginx-source-allowlist-incident.md`
+   - 若服務在 Cloudflare 後方，nginx 必須先透過 `real_ip_header CF-Connecting-IP` 還原真實 client IP，否則 allowlist 會用到 Cloudflare edge IP 而誤擋；詳見 `cloudflare-nginx-source-allowlist-incident.md`
 2. **必須**設定 `ADMIN_API_KEY`（否則所有 Admin API 端點回傳 500）
 3. **建議**啟用 `SERVE_REQUIRE_AUTH=true`
 4. **建議**設定 `CORS allow_origins` 為特定網域（目前預設 `*`）
@@ -2207,7 +2258,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 | `SOURCE_API_KEY`            | （空）                                                  | Source API 金鑰                                             |
 | `SOURCE_ALLOWLIST_CIDRS`     | `127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | nginx `/api/v1/source/*` IP 允許名單（CIDR，逗號分隔）     |
 | `SOURCE_TRUST_PROXY_HEADERS` | `false`                                                 | 是否信任 X-Forwarded-For（rate limit client IP 用）        |
-| `SERVE_API_KEYS`             | （空）                                                  | Serve API 金鑰（逗號分隔）                                 |
+| `SERVE_API_KEYS`             | （空）                                                  | Serve API env fallback（過渡用；新 key 使用 Admin API 建入 DB） |
 | `SERVE_REQUIRE_AUTH`         | `false`                                                 | Serve API 是否需要認證                                     |
 | `ADMIN_API_KEY`             | （空）                                                  | Admin API 金鑰，**必須設定**才能使用 Admin API              |
 | `RATE_LIMIT_REQUESTS`        | `100`                                                   | 限流上限（每 window 內的請求數）                           |

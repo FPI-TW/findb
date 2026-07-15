@@ -15,11 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.main import app
-from app.models.canonical import Instrument, MarketDataEOD
+from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
-from app.models.registry import DQIssue
+from app.models.registry import APIKey, DQIssue
 from app.services import instrument_cache as instrument_cache_service
-from app.services.admin import build_correction_actor
+from app.services.admin import build_correction_actor, eod_record_id
 from app.utils import utc_now, uuid7
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -42,7 +42,6 @@ async def _create_instrument(session: AsyncSession) -> Instrument:
 
 async def _create_eod(session: AsyncSession, instrument_id: UUID) -> MarketDataEOD:
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2025, 1, 2),
         open=Decimal("150.00"),
@@ -159,6 +158,130 @@ class TestAdminAuth:
             json={"correction_reason": "test", "close": "152.00"},
         )
         assert response.status_code == 403
+
+
+class TestAPIKeyAdmin:
+    @pytest.mark.asyncio
+    async def test_api_key_lifecycle_controls_serve_access(
+        self,
+        client: AsyncClient,
+        test_session: AsyncSession,
+        admin_headers: dict,
+    ):
+        settings = get_settings()
+        original_require_auth = settings.SERVE_REQUIRE_AUTH
+        original_serve_keys = settings.SERVE_API_KEYS
+        settings.SERVE_REQUIRE_AUTH = True
+        settings.SERVE_API_KEYS = ""
+        try:
+            create_response = await client.post(
+                "/api/v1/admin/api-keys",
+                headers=admin_headers,
+                json={
+                    "owner": "llm-client",
+                    "tier": "llm",
+                    "scopes": ["serve"],
+                    "rate_limit_requests": 2,
+                    "rate_limit_window": 60,
+                    "page_size_limit": 2,
+                },
+            )
+            assert create_response.status_code == 200
+            created = create_response.json()
+            plaintext_key = created["api_key"]
+            key_id = created["data"]["key_id"]
+            assert plaintext_key.startswith("findb_")
+            assert "key_hash" not in created["data"]
+
+            list_response = await client.get("/api/v1/admin/api-keys", headers=admin_headers)
+            assert list_response.status_code == 200
+            listed = list_response.json()["data"]
+            assert listed[0]["key_id"] == key_id
+            assert "api_key" not in listed[0]
+            assert "key_hash" not in listed[0]
+
+            serve_headers = {settings.API_KEY_HEADER: plaintext_key}
+            ok_response = await client.get(
+                "/api/v1/serve/instruments?page_size=2",
+                headers=serve_headers,
+            )
+            assert ok_response.status_code == 200
+
+            row = await test_session.get(APIKey, UUID(key_id))
+            assert row is not None
+            await test_session.refresh(row)
+            assert row.usage_count == 0
+            assert row.last_used_at is None
+
+            too_large_response = await client.get(
+                "/api/v1/serve/instruments?page_size=3",
+                headers=serve_headers,
+            )
+            assert too_large_response.status_code == 400
+            assert "page_size exceeds" in too_large_response.json()["detail"]
+
+            default_page_size_response = await client.get(
+                "/api/v1/serve/instruments",
+                headers=serve_headers,
+            )
+            assert default_page_size_response.status_code == 400
+            assert "page_size exceeds" in default_page_size_response.json()["detail"]
+
+            second_ok_response = await client.get(
+                "/api/v1/serve/instruments?page_size=2",
+                headers=serve_headers,
+            )
+            assert second_ok_response.status_code == 200
+            limited_response = await client.get(
+                "/api/v1/serve/instruments?page_size=2",
+                headers=serve_headers,
+            )
+            assert limited_response.status_code == 429
+
+            revoke_response = await client.delete(
+                f"/api/v1/admin/api-keys/{key_id}",
+                headers=admin_headers,
+            )
+            assert revoke_response.status_code == 200
+            assert revoke_response.json()["revoked_at"] is not None
+        finally:
+            settings.SERVE_REQUIRE_AUTH = original_require_auth
+            settings.SERVE_API_KEYS = original_serve_keys
+
+    @pytest.mark.asyncio
+    async def test_serve_api_keeps_env_fallback(self, client: AsyncClient):
+        settings = get_settings()
+        original_require_auth = settings.SERVE_REQUIRE_AUTH
+        original_serve_keys = settings.SERVE_API_KEYS
+        settings.SERVE_REQUIRE_AUTH = True
+        settings.SERVE_API_KEYS = "legacy-key"
+        try:
+            response = await client.get(
+                "/api/v1/serve/instruments",
+                headers={settings.API_KEY_HEADER: "legacy-key"},
+            )
+            assert response.status_code == 200
+        finally:
+            settings.SERVE_REQUIRE_AUTH = original_require_auth
+            settings.SERVE_API_KEYS = original_serve_keys
+
+    @pytest.mark.asyncio
+    async def test_serve_api_reports_server_misconfiguration(self, client: AsyncClient):
+        settings = get_settings()
+        original_require_auth = settings.SERVE_REQUIRE_AUTH
+        original_serve_keys = settings.SERVE_API_KEYS
+        settings.SERVE_REQUIRE_AUTH = True
+        settings.SERVE_API_KEYS = ""
+        try:
+            response = await client.get(
+                "/api/v1/serve/instruments",
+                headers={settings.API_KEY_HEADER: "anything"},
+            )
+            assert response.status_code == 500
+            assert "no API keys configured" in response.json()["detail"]
+        finally:
+            settings.SERVE_REQUIRE_AUTH = original_require_auth
+            settings.SERVE_API_KEYS = original_serve_keys
 
     @pytest.mark.asyncio
     async def test_resolve_dq_without_api_key_returns_401(
@@ -363,10 +486,16 @@ class TestPatchEOD:
         data = response.json()
         assert data["success"] is True
         assert "correction_id" in data
+        assert data["record_id"] == str(eod_record_id(instrument.instrument_id, date(2025, 1, 2)))
         assert data["trade_date"] == "2025-01-02"
 
         await test_session.refresh(eod)
         assert eod.close == Decimal("152.50")
+
+        stats = await test_session.get(InstrumentStats, instrument.instrument_id)
+        assert stats is not None
+        assert stats.latest_trade_date == date(2025, 1, 2)
+        assert stats.latest_price == Decimal("152.50")
 
     @pytest.mark.asyncio
     async def test_patch_eod_multiple_fields(
@@ -470,6 +599,7 @@ class TestPatchEOD:
         correction = result.scalar_one_or_none()
         assert correction is not None
         assert correction.table_name == "market_data_eod"
+        assert correction.record_id == eod_record_id(instrument.instrument_id, date(2025, 1, 2))
         assert correction.correction_reason == "Audit trail test"
 
     @pytest.mark.asyncio
@@ -767,7 +897,6 @@ class TestListCorrections:
 
         for i, close_val in enumerate(["152.00", "151.00", "150.50"]):
             eod_i = MarketDataEOD(
-                id=uuid7(),
                 instrument_id=instrument.instrument_id,
                 trade_date=date(2025, 1, 3 + i),
                 open=Decimal("150.00"),
@@ -832,7 +961,6 @@ class TestListCorrections:
         await _create_eod(test_session, instrument.instrument_id)
 
         eod2 = MarketDataEOD(
-            id=uuid7(),
             instrument_id=instrument.instrument_id,
             trade_date=date(2025, 1, 3),
             open=Decimal("150.00"),

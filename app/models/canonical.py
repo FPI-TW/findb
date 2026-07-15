@@ -8,8 +8,10 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -18,6 +20,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.dialects.postgresql import JSONB, NUMERIC
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -25,6 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.utils import utc_now, uuid7
+from app.vocabulary import sql_asset_class_check, sql_market_check
 
 
 class Instrument(Base):
@@ -35,6 +39,11 @@ class Instrument(Base):
 
     __tablename__ = "instruments"
     __table_args__ = (
+        CheckConstraint(
+            sql_asset_class_check("asset_class"),
+            name="instrument_asset_class_valid",
+        ),
+        CheckConstraint(sql_market_check("market"), name="instrument_market_valid"),
         UniqueConstraint("asset_class", "market", "symbol", name="uq_instrument"),
         Index("idx_inst_market", "market"),
         Index("idx_inst_status", "status"),
@@ -66,6 +75,28 @@ class Instrument(Base):
     futures_continuous_eod: Mapped[list["FuturesContinuousEOD"]] = relationship(
         back_populates="instrument"
     )
+    stats: Mapped[Optional["InstrumentStats"]] = relationship(back_populates="instrument")
+    etf_details: Mapped[Optional["ETFDetails"]] = relationship(back_populates="instrument")
+    bond_details: Mapped[Optional["BondDetails"]] = relationship(back_populates="instrument")
+    bond_eod: Mapped[list["BondEOD"]] = relationship(back_populates="instrument")
+
+
+class InstrumentStats(Base):
+    """Materialized read stats for instrument list/detail endpoints."""
+
+    __tablename__ = "instrument_stats"
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    first_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    latest_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    latest_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="stats")
 
 
 class InstrumentIdentifier(Base):
@@ -111,6 +142,7 @@ class TradingCalendar(Base):
 
     __tablename__ = "trading_calendar"
     __table_args__ = (
+        CheckConstraint(sql_market_check("market"), name="calendar_market_valid"),
         UniqueConstraint("market", "trade_date", name="uq_calendar"),
         Index("idx_cal_market_date", "market", "trade_date"),
     )
@@ -132,18 +164,17 @@ class MarketDataEOD(Base):
 
     __tablename__ = "market_data_eod"
     __table_args__ = (
-        UniqueConstraint("instrument_id", "trade_date", name="uq_eod"),
-        Index("idx_eod_inst_date", "instrument_id", "trade_date"),
         Index("idx_eod_date", "trade_date"),
+        {"postgresql_partition_by": "RANGE (trade_date)"},
     )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     instrument_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("instruments.instrument_id"),
+        primary_key=True,
         nullable=False,
     )
-    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True, nullable=False)
     open: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     high: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     low: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
@@ -161,6 +192,25 @@ class MarketDataEOD(Base):
 
     # Relationships
     instrument: Mapped["Instrument"] = relationship(back_populates="eod_data")
+
+
+_CURRENT_YEAR = date.today().year
+for _year in range(_CURRENT_YEAR - 5, _CURRENT_YEAR + 6):
+    event.listen(
+        MarketDataEOD.__table__,
+        "after_create",
+        DDL(f"""
+            CREATE TABLE IF NOT EXISTS market_data_eod_y{_year}
+            PARTITION OF market_data_eod
+            FOR VALUES FROM ('{_year}-01-01') TO ('{_year + 1}-01-01')
+            """),
+    )
+
+event.listen(
+    MarketDataEOD.__table__,
+    "after_create",
+    DDL("CREATE TABLE IF NOT EXISTS market_data_eod_default PARTITION OF market_data_eod DEFAULT"),
+)
 
 
 class CorporateAction(Base):
@@ -201,6 +251,85 @@ class CorporateAction(Base):
     instrument: Mapped["Instrument"] = relationship(back_populates="corporate_actions")
 
 
+class ETFDetails(Base):
+    """ETF-specific instrument metadata."""
+
+    __tablename__ = "etf_details"
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tracking_index: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    expense_ratio: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(10, 6), nullable=True)
+    issuer: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="etf_details")
+
+
+class BondDetails(Base):
+    """Bond-specific instrument metadata."""
+
+    __tablename__ = "bond_details"
+    __table_args__ = (
+        Index("idx_bond_maturity", "maturity_date"),
+        Index("idx_bond_issuer", "issuer"),
+    )
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    issuer: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    coupon: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(10, 6), nullable=True)
+    maturity_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    rating: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    face_value: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="bond_details")
+
+
+class BondEOD(Base):
+    """Daily bond pricing and yield data."""
+
+    __tablename__ = "bond_eod"
+    __table_args__ = (
+        UniqueConstraint("instrument_id", "trade_date", name="uq_bond_eod"),
+        Index("idx_bond_eod_date", "trade_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id"),
+        nullable=False,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    yield_to_maturity: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    clean_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    dirty_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    duration: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="bond_eod")
+
+
 class MacroSeries(Base):
     """
     Macro series metadata.
@@ -208,6 +337,10 @@ class MacroSeries(Base):
 
     __tablename__ = "macro_series"
     __table_args__ = (
+        CheckConstraint(
+            f"market IS NULL OR {sql_market_check('market')}",
+            name="macro_series_market_valid",
+        ),
         UniqueConstraint("source_code", name="uq_macro_series_source_code"),
         Index("idx_macro_market", "market"),
         Index("idx_macro_source_code", "source_code"),

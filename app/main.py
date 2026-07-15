@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.models.base import init_db
 
 settings = get_settings()
+APP_ROLE = settings.APP_ROLE.lower().strip()
 
 OPENAPI_TAGS = [
     {"name": "Serve API", "description": "唯讀市場資料查詢端點。"},
@@ -82,24 +83,27 @@ async def enforce_source_payload_size(request, call_next):
     return await call_next(request)
 
 
-# Include routers
-app.include_router(
-    serve.router,
-    prefix=f"{settings.API_V1_PREFIX}/serve",
-    tags=["Serve API"],
-)
+if APP_ROLE not in {"serve", "ingest", "all"}:
+    raise RuntimeError("APP_ROLE must be one of: serve, ingest, all")
 
-app.include_router(
-    source.router,
-    prefix=f"{settings.API_V1_PREFIX}/source",
-    tags=["Source API"],
-)
+if APP_ROLE in {"serve", "all"}:
+    app.include_router(
+        serve.router,
+        prefix=f"{settings.API_V1_PREFIX}/serve",
+        tags=["Serve API"],
+    )
 
-app.include_router(
-    admin.router,
-    prefix=f"{settings.API_V1_PREFIX}/admin",
-    tags=["Admin API"],
-)
+if APP_ROLE in {"ingest", "all"}:
+    app.include_router(
+        source.router,
+        prefix=f"{settings.API_V1_PREFIX}/source",
+        tags=["Source API"],
+    )
+    app.include_router(
+        admin.router,
+        prefix=f"{settings.API_V1_PREFIX}/admin",
+        tags=["Admin API"],
+    )
 
 
 @app.get("/health")
@@ -117,6 +121,7 @@ async def root():
     return {
         "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "role": APP_ROLE,
         "docs": "/docs",
     }
 

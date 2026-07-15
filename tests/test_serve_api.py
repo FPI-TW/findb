@@ -4,15 +4,19 @@ Tests for Serve API endpoints.
 
 from datetime import date
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
 
 from app.models.canonical import (
+    BondDetails,
+    BondEOD,
     CorporateAction,
     FuturesContinuousEOD,
     FuturesContract,
     Instrument,
+    InstrumentStats,
     MacroObservation,
     MacroSeries,
     MarketDataEOD,
@@ -37,7 +41,6 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         updated_at=utc_now(),
     )
     stale_eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 15),
         close=Decimal("95700.00"),
@@ -46,7 +49,6 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         updated_at=utc_now(),
     )
     latest_eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 16),
         close=Decimal("95709.01"),
@@ -54,7 +56,14 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    test_session.add_all([instrument, stale_eod, latest_eod])
+    stats = InstrumentStats(
+        instrument_id=instrument_id,
+        first_trade_date=date(2026, 1, 15),
+        latest_trade_date=date(2026, 1, 16),
+        latest_price=Decimal("95709.01"),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([instrument, stale_eod, latest_eod, stats])
     await test_session.commit()
 
     response = await client.get("/api/v1/serve/instruments?market=CRYPTO")
@@ -65,6 +74,97 @@ async def test_list_instruments_returns_data(client: AsyncClient, test_session):
     assert data["data"][0]["symbol"] == "BTC"
     assert data["data"][0]["latest_trade_date"] == "2026-01-16"
     assert data["data"][0]["latest_price"] == "95709.01000000"
+
+
+@pytest.mark.asyncio
+async def test_list_instruments_supports_keyset_without_count(
+    client: AsyncClient,
+    test_session,
+):
+    """Cursor pagination can skip count for deep instrument scans."""
+    instruments = [
+        Instrument(
+            instrument_id=uuid7(),
+            asset_class="equity",
+            market="US",
+            symbol=symbol,
+            name=symbol,
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        for symbol in ("AAA", "BBB", "CCC")
+    ]
+    test_session.add_all(instruments)
+    await test_session.commit()
+
+    first_page = await client.get(
+        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false"
+    )
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert [item["symbol"] for item in first_payload["data"]] == ["AAA", "BBB"]
+    assert first_payload["pagination"]["total_records"] is None
+    assert first_payload["pagination"]["total_pages"] is None
+    assert first_payload["pagination"]["next_cursor"].startswith("BBB|")
+
+    second_page = await client.get(
+        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false"
+        f"&cursor={first_payload['pagination']['next_cursor']}"
+    )
+    assert second_page.status_code == 200
+    second_payload = second_page.json()
+    assert [item["symbol"] for item in second_payload["data"]] == ["CCC"]
+    assert second_payload["pagination"]["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_instruments_cursor_handles_duplicate_symbols(client: AsyncClient, test_session):
+    instruments = [
+        Instrument(
+            instrument_id=UUID("11111111-1111-1111-1111-111111111111"),
+            asset_class="equity",
+            market="US",
+            symbol="DUP",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+        Instrument(
+            instrument_id=UUID("22222222-2222-2222-2222-222222222222"),
+            asset_class="equity",
+            market="HK",
+            symbol="DUP",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+        Instrument(
+            instrument_id=UUID("33333333-3333-3333-3333-333333333333"),
+            asset_class="equity",
+            market="US",
+            symbol="ZZZ",
+            status="active",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+    ]
+    test_session.add_all(instruments)
+    await test_session.commit()
+
+    first_page = await client.get("/api/v1/serve/instruments?page_size=1")
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert first_payload["data"][0]["symbol"] == "DUP"
+    assert first_payload["pagination"]["total_records"] == 3
+
+    second_page = await client.get(
+        f"/api/v1/serve/instruments?page_size=1&cursor={first_payload['pagination']['next_cursor']}"
+    )
+    assert second_page.status_code == 200
+    second_payload = second_page.json()
+    assert second_payload["data"][0]["symbol"] == "DUP"
+    assert second_payload["pagination"]["total_records"] == 3
 
 
 @pytest.mark.asyncio
@@ -109,7 +209,6 @@ async def test_list_eod_filters(client: AsyncClient, test_session):
     test_session.add(instrument)
 
     eod_one = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 15),
         open=Decimal("100"),
@@ -121,7 +220,6 @@ async def test_list_eod_filters(client: AsyncClient, test_session):
         updated_at=utc_now(),
     )
     eod_two = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 16),
         open=Decimal("101"),
@@ -162,7 +260,6 @@ async def test_get_instrument_eod(client: AsyncClient, test_session):
     test_session.add(instrument)
 
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2026, 1, 16),
         open=Decimal("10"),
@@ -200,7 +297,6 @@ async def test_eod_endpoints_return_total_ticks(client: AsyncClient, test_sessio
         updated_at=utc_now(),
     )
     eod = MarketDataEOD(
-        id=uuid7(),
         instrument_id=instrument_id,
         trade_date=date(2024, 4, 29),
         open=Decimal("20.45"),
@@ -395,3 +491,62 @@ async def test_list_futures_contracts_and_continuous(client: AsyncClient, test_s
     assert continuous_payload["success"] is True
     assert len(continuous_payload["data"]) == 1
     assert continuous_payload["data"][0]["roll_rule_name"] == "front-month"
+
+
+@pytest.mark.asyncio
+async def test_list_bonds_and_bond_eod(client: AsyncClient, test_session):
+    instrument_id = uuid7()
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="bond",
+        market="US",
+        symbol="US10Y-2026",
+        name="US Treasury 10Y",
+        currency="USD",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    details = BondDetails(
+        instrument_id=instrument_id,
+        issuer="US Treasury",
+        coupon=Decimal("0.045"),
+        maturity_date=date(2036, 2, 15),
+        rating="AA+",
+        face_value=Decimal("1000"),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    eod = BondEOD(
+        id=uuid7(),
+        instrument_id=instrument_id,
+        trade_date=date(2026, 1, 16),
+        yield_to_maturity=Decimal("0.0412"),
+        clean_price=Decimal("99.25"),
+        dirty_price=Decimal("99.40"),
+        duration=Decimal("8.1"),
+        source="bloomberg",
+        asof_ts=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([instrument, details, eod])
+    await test_session.commit()
+
+    bonds_response = await client.get("/api/v1/serve/bonds?market=US&issuer=Treasury")
+    assert bonds_response.status_code == 200
+    bonds_payload = bonds_response.json()
+    assert bonds_payload["success"] is True
+    assert bonds_payload["data"][0]["symbol"] == "US10Y-2026"
+    assert bonds_payload["data"][0]["issuer"] == "US Treasury"
+    assert bonds_payload["data"][0]["maturity_date"] == "2036-02-15"
+
+    eod_response = await client.get(
+        "/api/v1/serve/bonds/eod?market=US&symbols=US10Y-2026&start_date=2026-01-16"
+    )
+    assert eod_response.status_code == 200
+    eod_payload = eod_response.json()
+    assert eod_payload["success"] is True
+    assert len(eod_payload["data"]) == 1
+    assert eod_payload["data"][0]["yield_to_maturity"] == "0.0412"
+    assert eod_payload["data"][0]["clean_price"] == "99.25"

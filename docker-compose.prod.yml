@@ -1,6 +1,7 @@
 x-app-environment: &app-environment
   APP_NAME: "${APP_NAME:?APP_NAME must be set in GitHub Actions variables}"
   APP_VERSION: "${APP_VERSION:?APP_VERSION must be set in GitHub Actions variables}"
+  APP_ROLE: "${APP_ROLE:-all}"
   DEBUG: "${DEBUG:?DEBUG must be set in GitHub Actions variables}"
   PORT: "${PORT:?PORT must be set in GitHub Actions variables}"
   DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in GitHub Actions secrets}"
@@ -19,16 +20,37 @@ x-app-environment: &app-environment
   RAW_RETENTION_DAYS: "${RAW_RETENTION_DAYS:?RAW_RETENTION_DAYS must be set in GitHub Actions variables}"
 
 services:
-  app:
-    image: ghcr.io/fpi-tw/findb:latest
-    container_name: findb-app
+  serve:
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    container_name: findb-serve
     environment:
       <<: *app-environment
+      APP_ROLE: "serve"
+      DATABASE_POOL_SIZE: "${SERVE_DATABASE_POOL_SIZE:-5}"
+      DATABASE_MAX_OVERFLOW: "${SERVE_DATABASE_MAX_OVERFLOW:-10}"
       FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://127.0.0.1:${PORT:?PORT must be set in GitHub Actions variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
     restart: unless-stopped
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
+    volumes:
+      - findb-static-data:/app/app/static/data
+
+  ingest:
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    container_name: findb-ingest
+    environment:
+      <<: *app-environment
+      APP_ROLE: "ingest"
+      DATABASE_POOL_SIZE: "${INGEST_DATABASE_POOL_SIZE:-3}"
+      DATABASE_MAX_OVERFLOW: "${INGEST_DATABASE_MAX_OVERFLOW:-5}"
+      FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://serve:${PORT:?PORT must be set in GitHub Actions variables}}"
+      FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
+      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
+    restart: unless-stopped
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 1"
+    volumes:
+      - findb-static-data:/app/app/static/data
 
   nginx:
       image: nginx:alpine
@@ -50,13 +72,17 @@ services:
         retries: 4
         start_period: 60s
       depends_on:
-        - app
+        - serve
+        - ingest
       restart: unless-stopped
 
   raw-cleanup:
-    image: ghcr.io/fpi-tw/findb:latest
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
     container_name: findb-raw-cleanup
     environment:
       <<: *app-environment
     restart: unless-stopped
     command: sh -c "while true; do python /app/scripts/cleanup_raw.py; sleep 86400; done"
+
+volumes:
+  findb-static-data:
