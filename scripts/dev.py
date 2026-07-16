@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
 DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb_test"
 
 
@@ -42,9 +43,56 @@ def _docker_compose_cmd() -> list[str]:
     raise RuntimeError("Docker Compose not found. Install Docker Desktop or docker compose plugin.")
 
 
+def _local_env() -> dict[str, str]:
+    """Return safe local defaults shared by host commands and Compose."""
+    env = os.environ.copy()
+    env.setdefault("DATABASE_URL", DEFAULT_DATABASE_URL)
+    env.setdefault("SOURCE_API_KEY", "dev-source-key")
+    env.setdefault("ADMIN_API_KEY", "dev-admin-key")
+    return env
+
+
+def _start_dependencies(
+    compose: Sequence[str],
+    services: Sequence[str],
+    env: dict[str, str],
+) -> int:
+    return _run([*compose, "up", "-d", "--wait", *services], env=env)
+
+
+def _apply_migrations(env: dict[str, str]) -> int:
+    return _run(["uv", "run", "alembic", "upgrade", "head"], env=env)
+
+
+def _seed_data(env: dict[str, str]) -> int:
+    return _run(["uv", "run", "python", "-m", "scripts.seed_data"], env=env)
+
+
 def cmd_up_db(_args: argparse.Namespace) -> int:
     compose = _docker_compose_cmd()
-    return _run([*compose, "up", "-d", "db"])
+    return _start_dependencies(compose, ["db"], _local_env())
+
+
+def cmd_up_rabbit(_args: argparse.Namespace) -> int:
+    compose = _docker_compose_cmd()
+    return _start_dependencies(compose, ["rabbitmq"], _local_env())
+
+
+def cmd_migrate(_args: argparse.Namespace) -> int:
+    compose = _docker_compose_cmd()
+    env = _local_env()
+    start_code = _start_dependencies(compose, ["db"], env)
+    return start_code if start_code != 0 else _apply_migrations(env)
+
+
+def cmd_seed_data(_args: argparse.Namespace) -> int:
+    compose = _docker_compose_cmd()
+    env = _local_env()
+    start_code = _start_dependencies(compose, ["db"], env)
+    if start_code != 0:
+        return start_code
+    migrate_code = _apply_migrations(env)
+    return migrate_code if migrate_code != 0 else _seed_data(env)
 
 
 def cmd_up_server(args: argparse.Namespace) -> int:
@@ -64,9 +112,69 @@ def cmd_up_server(args: argparse.Namespace) -> int:
     return _run(cmd)
 
 
-def cmd_up(_args: argparse.Namespace) -> int:
+def cmd_up_app(_args: argparse.Namespace) -> int:
     compose = _docker_compose_cmd()
-    return _run([*compose, "up", "-d", "--build", "app", "db"])
+    env = _local_env()
+    start_code = _start_dependencies(compose, ["db"], env)
+    if start_code != 0:
+        return start_code
+    migrate_code = _apply_migrations(env)
+    if migrate_code != 0:
+        return migrate_code
+    seed_code = _seed_data(env)
+    if seed_code != 0:
+        return seed_code
+    return _run([*compose, "up", "-d", "--build", "--wait", "app"], env=env)
+
+
+def cmd_up(_args: argparse.Namespace) -> int:
+    """Start a complete local durable-ingestion stack."""
+    compose = _docker_compose_cmd()
+    env = _local_env()
+    start_code = _start_dependencies(compose, ["db", "rabbitmq"], env)
+    if start_code != 0:
+        return start_code
+    migrate_code = _apply_migrations(env)
+    if migrate_code != 0:
+        return migrate_code
+    seed_code = _seed_data(env)
+    if seed_code != 0:
+        return seed_code
+    return _run(
+        [
+            *compose,
+            "--profile",
+            "queue",
+            "up",
+            "-d",
+            "--build",
+            "--wait",
+            "app",
+            "dispatcher",
+            "worker",
+        ],
+        env=env,
+    )
+
+
+def cmd_queue_status(_args: argparse.Namespace) -> int:
+    compose = _docker_compose_cmd()
+    return _run([*compose, "--profile", "queue", "ps"], env=_local_env())
+
+
+def cmd_queue_logs(args: argparse.Namespace) -> int:
+    compose = _docker_compose_cmd()
+    cmd = [
+        *compose,
+        "--profile",
+        "queue",
+        "logs",
+        f"--tail={args.tail}",
+    ]
+    if args.follow:
+        cmd.append("--follow")
+    cmd.extend(["rabbitmq", "dispatcher", "worker"])
+    return _run(cmd, env=_local_env())
 
 
 def cmd_test_db(_args: argparse.Namespace) -> int:
@@ -124,6 +232,12 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("up-db", help="Start database container only")
+    subparsers.add_parser("up-rabbit", help="Start RabbitMQ container only")
+    subparsers.add_parser("migrate", help="Start database and apply Alembic migrations")
+    subparsers.add_parser(
+        "seed-data",
+        help="Apply migrations and seed the local dataset registry",
+    )
 
     up_server = subparsers.add_parser("up-server", help="Start FastAPI server locally")
     up_server.add_argument("--host", default="0.0.0.0", help="Bind host")
@@ -135,7 +249,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable auto reload (default: true)",
     )
 
-    subparsers.add_parser("up", help="Start app and db containers")
+    subparsers.add_parser("up-app", help="Start app and database without queue workers")
+    subparsers.add_parser(
+        "up",
+        help="Start the complete DB, RabbitMQ, app, dispatcher, and worker stack",
+    )
+    subparsers.add_parser("queue-status", help="Show queue service status")
+    queue_logs = subparsers.add_parser(
+        "queue-logs",
+        help="Show RabbitMQ, dispatcher, and worker logs",
+    )
+    queue_logs.add_argument("--tail", type=int, default=200, help="Number of log lines")
+    queue_logs.add_argument("--follow", action="store_true", help="Follow log output")
     subparsers.add_parser("test-db", help="Run pytest after ensuring db container is up")
     subparsers.add_parser("down", help="Stop development containers")
 
@@ -214,8 +339,14 @@ def main() -> int:
 
     handlers = {
         "up-db": cmd_up_db,
+        "up-rabbit": cmd_up_rabbit,
+        "migrate": cmd_migrate,
+        "seed-data": cmd_seed_data,
         "up-server": cmd_up_server,
+        "up-app": cmd_up_app,
         "up": cmd_up,
+        "queue-status": cmd_queue_status,
+        "queue-logs": cmd_queue_logs,
         "test-db": cmd_test_db,
         "down": cmd_down,
         "partial-dump-validate": cmd_partial_dump_validate,

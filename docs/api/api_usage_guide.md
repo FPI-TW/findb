@@ -80,7 +80,7 @@ Source API ──▶ Normalize ──▶ Canonical DB
 | Admin API     | DQ issue、EOD patch、corrections、raw payload、bulk rerun、instrument cache 管理已可用 |
 | 區域市場      | `TW` / `HK` / `CN` 的 equity / index normalizer 已實作並串接到主流程                   |
 
-> 目前 normalize 仍由 FastAPI `BackgroundTasks` 觸發，若要評估大批量 ingest 與部署策略，請一併參考 `scalability_optimization_checklist.md`。
+> Source API 會先把 raw、run、job 與 outbox 原子提交，再回 `202 Accepted`。RabbitMQ 暫時中斷時仍可接受請求，dispatcher 會在恢復後補送。
 
 ---
 
@@ -282,11 +282,10 @@ http://localhost:8080
 | --------- | ------ | ------------------------------------------------------- |
 | `success` | bool   | 是否成功                                                |
 | `run_id`  | UUID   | 攝取批次 ID，可用於查詢處理狀態                         |
-| `status`  | string | 批次狀態（`pending`、`running`、`completed`、`failed`） |
+| `status`  | string | 批次狀態（`queued`、`processing`、`retrying`、`completed`、`completed_with_errors`、`failed`） |
 | `message` | string | 說明訊息                                                |
 
-> **去重機制**：若 `idempotency_key` 已存在，不會重新處理，回應 message 為
-> `"Duplicate idempotency_key, returning existing run"`。
+> 成功 durable commit 的 ingest 與 rerun 回 `202 Accepted`。相同 provider、dataset 與 `idempotency_key` 搭配相同 payload 會回既有 run；同 key 不同 payload 回 `409 Conflict`。
 
 #### 端點一覽
 
@@ -352,6 +351,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
 
 Direct 格式支援 Bloomberg 直接匯出的 `metadata + data` 結構，以及 FinLab 透過 tw-updater 推送的台股 / ETF / WTX 期貨格式。
 系統會自動推斷 `dataset_key`、`source`、`idempotency_key` 等欄位。
+Direct endpoint 可傳 `Idempotency-Key` header；未傳時才以內容 hash 產生 key。
 
 #### 請求體格式（DirectIngestPayload）
 

@@ -261,6 +261,10 @@ class RunStatusResponse(BaseModel):
     success_records: int = 0
     failed_records: int = 0
     error_message: Optional[str] = None
+    failure_code: Optional[str] = None
+    attempt_count: int = 0
+    max_attempts: int = 5
+    next_retry_at: Optional[datetime] = None
 
 
 class DatasetInfo(BaseModel):

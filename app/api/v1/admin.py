@@ -9,11 +9,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_admin_api_key
 from app.dependencies import get_db
-from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
 from app.models.registry import IngestionRun
 from app.schemas.admin import (
@@ -35,10 +35,15 @@ from app.schemas.admin import (
     InstrumentCacheWriteResponse,
     PatchEODRequest,
     PatchEODResponse,
+    QueueHealthResponse,
     RawPayloadListResponse,
     RawPayloadResponse,
     ResolveDQIssueRequest,
     ResolveDQIssueResponse,
+    SourceClientCreateRequest,
+    SourceClientCreateResponse,
+    SourceClientListResponse,
+    SourceClientResponse,
 )
 from app.schemas.common import PaginationInfo
 from app.services.admin import (
@@ -53,11 +58,7 @@ from app.services.admin import (
     resolve_dq_issue,
 )
 from app.services.api_keys import create_api_key, list_api_keys, revoke_api_key
-from app.services.ingestion import (
-    IngestionService,
-    RawPayloadNotFoundError,
-    trigger_normalization,
-)
+from app.services.ingestion import IngestionService, RawPayloadNotFoundError
 from app.services.instrument_cache import (
     InstrumentCacheItemNotFoundError,
     InstrumentCacheNotFoundError,
@@ -66,9 +67,70 @@ from app.services.instrument_cache import (
     replace_instrument_cache,
     update_instrument_cache_item,
 )
+from app.services.normalization_queue import queue_health
+from app.services.source_clients import (
+    create_source_client,
+    list_source_clients,
+    revoke_source_client,
+)
 from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
+
+
+@router.post("/source-clients", response_model=SourceClientCreateResponse)
+async def create_source_client_endpoint(
+    body: SourceClientCreateRequest,
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a provider identity; the plaintext key is returned once."""
+    try:
+        row, plaintext = await create_source_client(
+            db,
+            name=body.name,
+            source_name=body.source_name,
+            allowed_datasets=body.allowed_datasets,
+            rate_limit_requests=body.rate_limit_requests,
+            rate_limit_window=body.rate_limit_window,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Source client conflicts with an existing key")
+    return SourceClientCreateResponse(
+        api_key=plaintext,
+        data=SourceClientResponse.model_validate(row),
+    )
+
+
+@router.get("/source-clients", response_model=SourceClientListResponse)
+async def list_source_clients_endpoint(
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_source_clients(db)
+    return SourceClientListResponse(data=[SourceClientResponse.model_validate(row) for row in rows])
+
+
+@router.delete("/source-clients/{client_id}", response_model=SourceClientResponse)
+async def revoke_source_client_endpoint(
+    client_id: UUID,
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await revoke_source_client(db, client_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Source client not found")
+    return SourceClientResponse.model_validate(row)
+
+
+@router.get("/queue/health", response_model=QueueHealthResponse)
+async def queue_health_endpoint(
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return DB-authoritative delivery and worker health."""
+    return QueueHealthResponse(**await queue_health(db))
 
 
 @router.post("/api-keys", response_model=APIKeyCreateResponse)
@@ -367,7 +429,6 @@ async def list_corrections_endpoint(
 
 @router.post("/runs/bulk-rerun", response_model=BulkRerunResponse)
 async def bulk_rerun_runs(
-    background_tasks: BackgroundTasks,
     dataset_key: Optional[str] = Query(None, description="依 dataset_key 篩選"),
     run_status: Optional[str] = Query(
         "completed",
@@ -379,7 +440,7 @@ async def bulk_rerun_runs(
 ):
     """針對符合篩選條件的既有執行紀錄重新執行正規化。
 
-    會為每筆符合條件的紀錄建立新的匯入執行，並將正規化排入背景任務。
+    會為每筆符合條件的紀錄建立新的匯入執行、job 與 outbox event。
     此端點會立即回傳摘要。
     """
     stmt = select(IngestionRun.run_id)
@@ -392,15 +453,6 @@ async def bulk_rerun_runs(
     result = await db.execute(stmt)
     run_ids = [row[0] for row in result.all()]
 
-    if db.bind is None:
-        session_factory = async_session_maker
-    else:
-        session_factory = async_sessionmaker(
-            bind=db.bind,
-            class_=AsyncSession,
-            expire_on_commit=False,
-        )
-
     service = IngestionService(db)
     queued = 0
     skipped = 0
@@ -410,10 +462,7 @@ async def bulk_rerun_runs(
 
     for run_id in run_ids:
         try:
-            new_run_id, _, dk, payload = await service.rerun_from_raw(run_id)
-            background_tasks.add_task(
-                trigger_normalization, dk, payload, new_run_id, session_factory
-            )
+            new_run_id, _, _, _ = await service.rerun_from_raw(run_id)
             new_run_ids.append(str(new_run_id))
             queued += 1
         except RawPayloadNotFoundError:

@@ -9,14 +9,13 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from fastapi import status as http_status
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
-from app.models.base import async_session_maker
 from app.models.registry import DatasetRegistry
 from app.schemas.source import (
     DatasetInfo,
@@ -30,11 +29,12 @@ from app.schemas.source import (
 from app.services.ingestion import (
     DatasetInactiveError,
     DatasetNotFoundError,
+    IdempotencyPayloadMismatchError,
     IngestionService,
     MarketMismatchError,
     PayloadValidationError,
     RawPayloadNotFoundError,
-    trigger_normalization,
+    SourceIdentityMismatchError,
 )
 from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
@@ -229,18 +229,6 @@ def _resolve_twstock_dataset_key(payload: "TWStockDirectIngestPayload") -> str:
     return "tw_equity_eod"
 
 
-def _build_session_factory(db: AsyncSession) -> async_sessionmaker[AsyncSession]:
-    """Build session factory for background tasks."""
-    if db.bind is None:
-        return async_session_maker
-
-    return async_sessionmaker(
-        bind=db.bind,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-
-
 def _normalize_source(value: str | None, default: str = "bloomberg") -> str:
     """Normalize source label for ingestion records."""
     source = (value or default).strip().lower()
@@ -254,6 +242,7 @@ def _build_direct_ingest_request(
     dataset_key: str,
     key_prefix: str,
     default_source: str = "bloomberg",
+    idempotency_key: str | None = None,
 ) -> IngestRequest:
     """Convert direct payload format to internal IngestRequest."""
     raw_payload = payload.model_dump(mode="json")
@@ -275,7 +264,7 @@ def _build_direct_ingest_request(
         dataset_key=dataset_key,
         source=source,
         request_key=request_key,
-        idempotency_key=request_key,
+        idempotency_key=idempotency_key or request_key,
         payload=raw_payload,
         fetched_at=fetched_at,
     )
@@ -332,15 +321,6 @@ async def _ingest_by_market(
             request,
             expected_market=expected_market,
         )
-        session_factory = _build_session_factory(db)
-        if not is_duplicate:
-            background_tasks.add_task(
-                trigger_normalization,
-                request.dataset_key,
-                request.payload,
-                run_id,
-                session_factory,
-            )
         return IngestResponse(
             success=True,
             run_id=run_id,
@@ -371,6 +351,23 @@ async def _ingest_by_market(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+    except IdempotencyPayloadMismatchError as e:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except SourceIdentityMismatchError as e:
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+    except (OperationalError, DBAPIError):
+        logger.exception("Database unavailable while accepting ingestion")
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion is temporarily unavailable",
+            headers={"Retry-After": "30"},
+        )
     except Exception:
         logger.exception(
             "Unexpected ingestion error (dataset_key=%s, expected_market=%s)",
@@ -391,6 +388,7 @@ async def _ingest_direct_payload(
     background_tasks: BackgroundTasks,
     db: AsyncSession,
     default_source: str = "bloomberg",
+    idempotency_key: str | None = None,
 ) -> IngestResponse:
     """使用推斷出的匯入欄位匯入直接格式市場資料。"""
     await _ensure_direct_dataset_exists(db, dataset_key)
@@ -399,6 +397,7 @@ async def _ingest_direct_payload(
         dataset_key,
         key_prefix,
         default_source=default_source,
+        idempotency_key=idempotency_key,
     )
     return await _ingest_by_market(
         request=request,
@@ -408,7 +407,7 @@ async def _ingest_direct_payload(
     )
 
 
-@router.post("/ingest/crypto", response_model=IngestResponse)
+@router.post("/ingest/crypto", response_model=IngestResponse, status_code=202)
 async def ingest_crypto_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -424,7 +423,7 @@ async def ingest_crypto_data(
     )
 
 
-@router.post("/ingest/us", response_model=IngestResponse)
+@router.post("/ingest/us", response_model=IngestResponse, status_code=202)
 async def ingest_us_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -440,10 +439,11 @@ async def ingest_us_data(
     )
 
 
-@router.post("/ingest/usstock/direct", response_model=IngestResponse)
+@router.post("/ingest/usstock/direct", response_model=IngestResponse, status_code=202)
 async def ingest_usstock_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -455,6 +455,7 @@ async def ingest_usstock_direct_data(
         expected_market="US",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -466,10 +467,11 @@ def _validate_twstock_direct_payload(payload: TWStockDirectIngestPayload) -> Non
         raise PayloadValidationError(str(exc)) from exc
 
 
-@router.post("/ingest/hkchina/direct", response_model=IngestResponse)
+@router.post("/ingest/hkchina/direct", response_model=IngestResponse, status_code=202)
 async def ingest_hkchina_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -481,13 +483,15 @@ async def ingest_hkchina_direct_data(
         expected_market="GLOBAL",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/hkchina-index/direct", response_model=IngestResponse)
+@router.post("/ingest/hkchina-index/direct", response_model=IngestResponse, status_code=202)
 async def ingest_hkchina_index_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -499,10 +503,11 @@ async def ingest_hkchina_index_direct_data(
         expected_market="GLOBAL",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/fx", response_model=IngestResponse)
+@router.post("/ingest/fx", response_model=IngestResponse, status_code=202)
 async def ingest_fx_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -518,7 +523,7 @@ async def ingest_fx_data(
     )
 
 
-@router.post("/ingest/macro", response_model=IngestResponse)
+@router.post("/ingest/macro", response_model=IngestResponse, status_code=202)
 async def ingest_macro_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -534,10 +539,11 @@ async def ingest_macro_data(
     )
 
 
-@router.post("/ingest/crypto/direct", response_model=IngestResponse)
+@router.post("/ingest/crypto/direct", response_model=IngestResponse, status_code=202)
 async def ingest_crypto_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -549,13 +555,15 @@ async def ingest_crypto_direct_data(
         expected_market="CRYPTO",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/fx/direct", response_model=IngestResponse)
+@router.post("/ingest/fx/direct", response_model=IngestResponse, status_code=202)
 async def ingest_fx_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -567,13 +575,15 @@ async def ingest_fx_direct_data(
         expected_market="FX",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/macro/direct", response_model=IngestResponse)
+@router.post("/ingest/macro/direct", response_model=IngestResponse, status_code=202)
 async def ingest_macro_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -585,13 +595,15 @@ async def ingest_macro_direct_data(
         expected_market="MACRO",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/wtx/direct", response_model=IngestResponse)
+@router.post("/ingest/wtx/direct", response_model=IngestResponse, status_code=202)
 async def ingest_wtx_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -603,13 +615,15 @@ async def ingest_wtx_direct_data(
         expected_market="WTX",
         background_tasks=background_tasks,
         db=db,
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/twstock/direct", response_model=IngestResponse)
+@router.post("/ingest/twstock/direct", response_model=IngestResponse, status_code=202)
 async def ingest_twstock_direct_data(
     payload: TWStockDirectIngestPayload,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -630,10 +644,11 @@ async def ingest_twstock_direct_data(
         background_tasks=background_tasks,
         db=db,
         default_source="finlab",
+        idempotency_key=idempotency_key,
     )
 
 
-@router.post("/ingest/wtx", response_model=IngestResponse)
+@router.post("/ingest/wtx", response_model=IngestResponse, status_code=202)
 async def ingest_wtx_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -649,7 +664,7 @@ async def ingest_wtx_data(
     )
 
 
-@router.post("/ingest/global", response_model=IngestResponse)
+@router.post("/ingest/global", response_model=IngestResponse, status_code=202)
 async def ingest_global_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -665,7 +680,7 @@ async def ingest_global_data(
     )
 
 
-@router.post("/ingest/tw", response_model=IngestResponse)
+@router.post("/ingest/tw", response_model=IngestResponse, status_code=202)
 async def ingest_tw_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -681,7 +696,7 @@ async def ingest_tw_data(
     )
 
 
-@router.post("/ingest/hk", response_model=IngestResponse)
+@router.post("/ingest/hk", response_model=IngestResponse, status_code=202)
 async def ingest_hk_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -697,7 +712,7 @@ async def ingest_hk_data(
     )
 
 
-@router.post("/ingest/cn", response_model=IngestResponse)
+@router.post("/ingest/cn", response_model=IngestResponse, status_code=202)
 async def ingest_cn_data(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
@@ -739,10 +754,14 @@ async def get_run_status(
         success_records=run.success_records,
         failed_records=run.failed_records,
         error_message=run.error_message,
+        failure_code=run.failure_code,
+        attempt_count=run.attempt_count,
+        max_attempts=run.max_attempts,
+        next_retry_at=run.next_retry_at,
     )
 
 
-@router.post("/runs/{run_id}/rerun", response_model=IngestResponse)
+@router.post("/runs/{run_id}/rerun", response_model=IngestResponse, status_code=202)
 async def rerun_from_raw(
     run_id: UUID,
     background_tasks: BackgroundTasks,
@@ -753,20 +772,12 @@ async def rerun_from_raw(
     service = IngestionService(db)
 
     try:
-        new_run_id, run_status, dataset_key, payload = await service.rerun_from_raw(run_id)
-        session_factory = _build_session_factory(db)
-        background_tasks.add_task(
-            trigger_normalization,
-            dataset_key,
-            payload,
-            new_run_id,
-            session_factory,
-        )
+        new_run_id, run_status, _, _ = await service.rerun_from_raw(run_id)
         return IngestResponse(
             success=True,
             run_id=new_run_id,
             status=run_status,
-            message=f"Rerun queued from raw payload {run_id}",
+            message=f"Rerun durably queued from raw payload {run_id}",
         )
     except RawPayloadNotFoundError as e:
         raise HTTPException(
@@ -787,6 +798,13 @@ async def rerun_from_raw(
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=str(e),
+        )
+    except (OperationalError, DBAPIError):
+        logger.exception("Database unavailable while accepting rerun")
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion is temporarily unavailable",
+            headers={"Retry-After": "30"},
         )
     except Exception:
         logger.exception("Unexpected rerun error (run_id=%s)", run_id)

@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     Time,
@@ -183,6 +184,10 @@ class MarketDataEOD(Base):
     total_ticks: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     turnover: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -241,6 +246,10 @@ class CorporateAction(Base):
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -382,6 +391,10 @@ class MacroObservation(Base):
     obs_date: Mapped[date] = mapped_column(Date, nullable=False)
     value: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -437,6 +450,10 @@ class FuturesContract(Base):
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -477,6 +494,10 @@ class FuturesContinuousEOD(Base):
     volume: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     turnover: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

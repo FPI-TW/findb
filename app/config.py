@@ -33,6 +33,22 @@ class Settings(BaseSettings):
     SOURCE_MAX_PAYLOAD_BYTES: int = 1_000_000
     SOURCE_MAX_DATA_ITEMS: int = 5_000
 
+    # Durable normalization queue
+    CELERY_BROKER_URL: str = "amqp://findb:findb@localhost:5672/%2Ffindb"
+    NORMALIZATION_EXCHANGE: str = "findb.ingestion.v1"
+    NORMALIZATION_QUEUE: str = "findb.normalize.v1"
+    NORMALIZATION_DLQ: str = "findb.normalize.dlq.v1"
+    NORMALIZATION_MAX_ATTEMPTS: int = 5
+    NORMALIZATION_RETRY_BASE_SECONDS: int = 30
+    NORMALIZATION_RETRY_MAX_SECONDS: int = 900
+    NORMALIZATION_TASK_SOFT_TIME_LIMIT: int = 1_800
+    NORMALIZATION_TASK_TIME_LIMIT: int = 2_100
+    NORMALIZATION_LEASE_SECONDS: int = 2_400
+    OUTBOX_POLL_SECONDS: float = 1.0
+    OUTBOX_BATCH_SIZE: int = 100
+    OUTBOX_CLAIM_SECONDS: int = 60
+    OUTBOX_RECONCILE_SECONDS: int = 30
+
     # Serve API Keys (comma-separated, optional)
     SERVE_API_KEYS: str = ""
     SERVE_REQUIRE_AUTH: bool = False

@@ -261,8 +261,14 @@ docker compose up -d app
 
 ```bash
 uv run python scripts/dev.py up-db
+uv run python scripts/dev.py up-rabbit
+uv run python scripts/dev.py migrate
+uv run python scripts/dev.py seed-data
 uv run python scripts/dev.py up-server
+uv run python scripts/dev.py up-app
 uv run python scripts/dev.py up
+uv run python scripts/dev.py queue-status
+uv run python scripts/dev.py queue-logs
 uv run python scripts/dev.py test-db
 uv run python scripts/dev.py down
 uv run python scripts/dev.py partial-dump-validate
@@ -277,8 +283,14 @@ uv run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/<seed_
 ```bash
 # macOS / Linux
 make up-db
+make up-rabbit
+make migrate
+make seed-data
 make up-server
+make up-app
 make up
+make queue-status
+make queue-logs
 make test-db
 make down
 make partial-dump-validate
@@ -315,8 +327,15 @@ uv run python scripts/dev.py up-server
 ```
 
 ```bash
-# 同時啟動 app image + db image（兩容器）
+# 完整啟動 DB、RabbitMQ、app、dispatcher 與 worker；自動 migrate + seed
 uv run python scripts/dev.py up
+
+# 只啟動 app + DB，不啟動 queue workers
+uv run python scripts/dev.py up-app
+
+# 查看 queue services
+uv run python scripts/dev.py queue-status
+uv run python scripts/dev.py queue-logs
 
 # 初始化資料（以 /seed 內 seed 包匯入可重現資料）
 uv run python scripts/dev.py seed-upsert

@@ -256,7 +256,7 @@ class TestIngestionService:
 
             assert isinstance(run, IngestionRun)
             assert run.dataset_key == test_key
-            assert run.status == "pending"
+            assert run.status == "queued"
             assert run.metadata_ == test_metadata
             assert run.run_id is not None
 
@@ -268,6 +268,7 @@ class TestIngestionService:
         async def test_rerun_from_raw_success(self):
             """Should successfully create a new run using existing raw payload data"""
             mock_db = AsyncMock()
+            mock_db.add = MagicMock()
             service = IngestionService(mock_db)
             old_run_id = uuid4()
 
@@ -289,13 +290,13 @@ class TestIngestionService:
 
             new_run = MagicMock(spec=IngestionRun)
             new_run.run_id = uuid4()
-            new_run.status = "pending"
+            new_run.status = "queued"
             service.create_ingestion_run = AsyncMock(return_value=new_run)
 
             new_id, status, d_key, payload = await service.rerun_from_raw(old_run_id)
 
             assert new_id == new_run.run_id
-            assert status == "pending"
+            assert status == "queued"
             assert d_key == "us_equity_eod"
             assert payload == mock_raw.payload
 
@@ -357,7 +358,7 @@ class TestIngestionService:
 
             run_id, status, is_duplicate = await service.ingest(request)
 
-            assert status == "pending"
+            assert status == "queued"
             assert is_duplicate is False
             assert run_id is not None
 
@@ -369,7 +370,7 @@ class TestIngestionService:
 
             assert added_run is not None, "應該要有一個 IngestionRun 被加入資料庫"
             assert added_run.dataset_key == "us_equity_eod"
-            assert added_run.status == "pending"
+            assert added_run.status == "queued"
             assert added_run.source == "bloomberg"
 
             added_raw = next(
@@ -378,7 +379,7 @@ class TestIngestionService:
             assert added_raw is not None
 
             mock_db.commit.assert_awaited_once()
-            assert mock_db.flush.await_count == 2
+            assert mock_db.flush.await_count == 4
 
         @pytest.mark.asyncio
         async def test_ingest_dataset_not_found(self):
@@ -412,6 +413,8 @@ class TestIngestionService:
 
             existing_raw = MagicMock()
             existing_raw.run_id = uuid4()
+            existing_raw.payload_sha256 = None
+            existing_raw.payload = {"data": [{"trade_date": "2026-04-28"}]}
             service.get_raw_payload_by_idempotency_key = AsyncMock(return_value=existing_raw)
 
             existing_run = MagicMock()
@@ -565,6 +568,8 @@ class TestIngestionService:
 
             existing_raw = MagicMock()
             existing_raw.run_id = uuid4()
+            existing_raw.payload_sha256 = None
+            existing_raw.payload = {"data": [{"date": "2026-04-28", "price": 100}]}
             service.get_raw_payload_by_idempotency_key = AsyncMock(side_effect=[None, existing_raw])
 
             mock_db.commit.side_effect = IntegrityError("duplicate key", params={}, orig=None)

@@ -36,6 +36,7 @@ services:
       FINDB_STATIC_CACHE_STARTUP_ATTEMPTS: ${FINDB_STATIC_CACHE_STARTUP_ATTEMPTS:-24}
       FINDB_LATEST_PRICE_WORKERS: ${FINDB_LATEST_PRICE_WORKERS:-12}
       SOURCE_ALLOWLIST_CIDRS: ${SOURCE_ALLOWLIST_CIDRS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      CELERY_BROKER_URL: amqp://findb:findb@rabbitmq:5672/%2Ffindb
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     depends_on:
@@ -47,6 +48,65 @@ services:
       - ./migrations:/app/migrations:ro
       - ./scripts:/app/scripts:ro
     command: sh /app/scripts/start_local_app_with_cache.sh
+
+  rabbitmq:
+    image: "rabbitmq:4.2-management@sha256:a29528adc5fa512cdadf60204e3336602ee400f8e026f5637b281959d2d51426"
+    container_name: findb-rabbitmq
+    hostname: findb-rabbitmq
+    environment:
+      RABBITMQ_NODENAME: rabbit@findb-rabbitmq
+      RABBITMQ_DEFAULT_USER: findb
+      RABBITMQ_DEFAULT_PASS: findb
+      RABBITMQ_DEFAULT_VHOST: /findb
+      RABBITMQ_ERLANG_COOKIE: local-development-cookie
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit vm_memory_high_watermark 0.60 disk_free_limit 2147483648"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  dispatcher:
+    profiles: ["queue"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: findb-dispatcher
+    environment:
+      DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
+      CELERY_BROKER_URL: amqp://findb:findb@rabbitmq:5672/%2Ffindb
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+      - ./scripts:/app/scripts:ro
+    command: python /app/scripts/dispatch_outbox.py
+    restart: unless-stopped
+
+  worker:
+    profiles: ["queue"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: findb-worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
+      CELERY_BROKER_URL: amqp://findb:findb@rabbitmq:5672/%2Ffindb
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+    command: celery -A app.task_queue:celery_app worker --loglevel=INFO --queues=findb.normalize.v1 --pool=prefork --concurrency=2
+    restart: unless-stopped
 
   raw-cleanup:
     profiles: ["tools"]
@@ -82,4 +142,5 @@ services:
 
 volumes:
   postgres_data:
+  rabbitmq_data:
   pgadmin_data:

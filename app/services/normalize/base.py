@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
@@ -117,6 +118,40 @@ class BaseNormalizer(ABC):
             source = self._get_nested_value(raw_data, "metadata.source")
         return source
 
+    def _source_control_values(self, source: str | None) -> tuple[int, datetime]:
+        """Resolve deterministic source precedence and provider fetch time."""
+        normalized_source = (source or "").strip().lower()
+        precedence = self.dataset_config.get("source_precedence", [])
+        if isinstance(precedence, dict):
+            priority = int(precedence.get(normalized_source, 1000))
+        elif isinstance(precedence, list):
+            normalized = [str(item).strip().lower() for item in precedence]
+            priority = (
+                normalized.index(normalized_source) if normalized_source in normalized else 1000
+            )
+        else:
+            priority = 1000
+
+        fetched_at = self.dataset_config.get("_ingest_fetched_at")
+        if isinstance(fetched_at, datetime):
+            return priority, ensure_utc(fetched_at)
+        if fetched_at:
+            try:
+                return priority, ensure_utc(parse_datetime(str(fetched_at)))
+            except ValueError:
+                pass
+        return priority, utc_now()
+
+    @staticmethod
+    def _incoming_source_wins(table, excluded):
+        return (excluded.source_priority < table.c.source_priority) | (
+            (excluded.source_priority == table.c.source_priority)
+            & (
+                table.c.source_fetched_at.is_(None)
+                | (excluded.source_fetched_at >= table.c.source_fetched_at)
+            )
+        )
+
     def map_fields_from_config(
         self,
         raw_data: dict,
@@ -215,31 +250,28 @@ class BaseNormalizer(ABC):
         if cached is not None:
             return cached
 
-        stmt = select(Instrument).where(
-            Instrument.asset_class == effective_asset_class,
-            Instrument.market == instrument_market,
-            Instrument.symbol == symbol,
-        )
-        result = await self.db.execute(stmt)
-        instrument = result.scalar_one_or_none()
-
-        if instrument:
-            self._instrument_cache[cache_key] = instrument
-            return instrument
-
-        # Create new instrument
-        instrument = Instrument(
+        now = utc_now()
+        insert_stmt = insert(Instrument).values(
             instrument_id=uuid7(),
             asset_class=effective_asset_class,
             market=instrument_market,
             symbol=symbol,
             name=name,
             status="active",
-            created_at=utc_now(),
-            updated_at=utc_now(),
+            created_at=now,
+            updated_at=now,
         )
-        self.db.add(instrument)
-        await self.db.flush()
+        stmt = insert_stmt.on_conflict_do_update(
+            constraint="uq_instrument",
+            set_={
+                "name": func.coalesce(Instrument.name, insert_stmt.excluded.name),
+                "updated_at": now,
+            },
+        ).returning(Instrument.instrument_id)
+        instrument_id = (await self.db.execute(stmt)).scalar_one()
+        instrument = await self.db.get(Instrument, instrument_id)
+        if instrument is None:
+            raise RuntimeError("Instrument upsert did not return a persisted row")
         self._instrument_cache[cache_key] = instrument
         return instrument
 
@@ -293,17 +325,7 @@ class BaseNormalizer(ABC):
         if cache_key in self._identifier_exists_cache:
             return
 
-        stmt = select(InstrumentIdentifier).where(
-            InstrumentIdentifier.id_type == identifier_type,
-            InstrumentIdentifier.id_value == identifier_value,
-        )
-        result = await self.db.execute(stmt)
-        existing = result.scalar_one_or_none()
-        if existing:
-            self._identifier_exists_cache.add(cache_key)
-            return
-
-        identifier = InstrumentIdentifier(
+        stmt = insert(InstrumentIdentifier).values(
             id=uuid7(),
             instrument_id=instrument_id,
             id_type=identifier_type,
@@ -311,8 +333,8 @@ class BaseNormalizer(ABC):
             source="normalize",
             created_at=utc_now(),
         )
-        self.db.add(identifier)
-        await self.db.flush()
+        stmt = stmt.on_conflict_do_nothing(constraint="uq_identifier")
+        await self.db.execute(stmt)
         self._identifier_exists_cache.add(cache_key)
 
     async def resolve_instrument(self, record: InstrumentResolvableRecord) -> Instrument:
@@ -410,6 +432,7 @@ class BaseNormalizer(ABC):
             else record.trade_date
         )
         await self.ensure_eod_partition(trade_date_value)
+        source_priority, source_fetched_at = self._source_control_values(record.source)
 
         stmt = insert(MarketDataEOD).values(
             instrument_id=instrument_id,
@@ -422,6 +445,8 @@ class BaseNormalizer(ABC):
             total_ticks=record.total_ticks,
             turnover=record.turnover,
             source=record.source,
+            source_priority=source_priority,
+            source_fetched_at=source_fetched_at,
             asof_ts=utc_now(),
             run_id=run_id,
             created_at=utc_now(),
@@ -441,19 +466,13 @@ class BaseNormalizer(ABC):
                 "total_ticks": stmt.excluded.total_ticks,
                 "turnover": stmt.excluded.turnover,
                 "source": stmt.excluded.source,
+                "source_priority": stmt.excluded.source_priority,
+                "source_fetched_at": stmt.excluded.source_fetched_at,
                 "asof_ts": stmt.excluded.asof_ts,
                 "run_id": stmt.excluded.run_id,
                 "updated_at": stmt.excluded.updated_at,
             },
-            where=(
-                (t.c.open.is_distinct_from(stmt.excluded.open))
-                | (t.c.high.is_distinct_from(stmt.excluded.high))
-                | (t.c.low.is_distinct_from(stmt.excluded.low))
-                | (t.c.close.is_distinct_from(stmt.excluded.close))
-                | (t.c.volume.is_distinct_from(stmt.excluded.volume))
-                | (t.c.total_ticks.is_distinct_from(stmt.excluded.total_ticks))
-                | (t.c.turnover.is_distinct_from(stmt.excluded.turnover))
-            ),
+            where=self._incoming_source_wins(t, stmt.excluded),
         )
 
         await self.db.execute(stmt)
@@ -680,7 +699,9 @@ class BaseNormalizer(ABC):
             return f"Processing error: {joined_samples}"
         return f"{len(processing_errors)} processing errors. Samples: {joined_samples}"
 
-    async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
+    async def process(
+        self, raw_payload: dict, run_id: UUID, *, commit: bool = True
+    ) -> NormalizeResult:
         """
         Main processing method.
 
@@ -779,6 +800,8 @@ class BaseNormalizer(ABC):
                     await self.upsert_eod(instrument.instrument_id, record, run_id)
                     result.success_records += 1
 
+                except SQLAlchemyError:
+                    raise
                 except Exception as e:
                     result.failed_records += 1
                     issue = self._build_processing_error_issue(record, e)
@@ -804,11 +827,11 @@ class BaseNormalizer(ABC):
                 error_summary,
             )
 
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
 
-        except Exception as e:
-            result.error_message = str(e)
-            await self.update_run_status(run_id, "failed", 0, 0, 0, str(e))
-            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         return result

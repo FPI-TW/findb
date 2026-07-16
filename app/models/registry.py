@@ -61,6 +61,29 @@ class DatasetRegistry(Base):
     ingestion_runs: Mapped[list["IngestionRun"]] = relationship(back_populates="dataset")
 
 
+class SourceClient(Base):
+    """Authenticated data-provider identity for Source API ingestion."""
+
+    __tablename__ = "source_client"
+    __table_args__ = (
+        UniqueConstraint("key_hash", name="uq_source_client_key_hash"),
+        Index("idx_source_client_revoked", "revoked_at"),
+    )
+
+    client_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    allowed_datasets: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
+    rate_limit_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    rate_limit_window: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class IngestionRun(Base):
     """
     Ingestion batch run tracking.
@@ -80,6 +103,16 @@ class IngestionRun(Base):
         nullable=False,
     )
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_client_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("source_client.client_id"),
+        nullable=True,
+    )
+    raw_payload_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("raw.market_payload.raw_payload_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     request_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     raw_records: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="pending")
@@ -89,12 +122,97 @@ class IngestionRun(Base):
     success_records: Mapped[int] = mapped_column(Integer, default=0)
     failed_records: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     # Relationships
     dataset: Mapped["DatasetRegistry"] = relationship(back_populates="ingestion_runs")
     dq_issues: Mapped[list["DQIssue"]] = relationship(back_populates="run")
+
+
+class NormalizationJob(Base):
+    """Durable normalization control state; RabbitMQ is only the delivery layer."""
+
+    __tablename__ = "normalization_job"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_normalization_job_run"),
+        Index("idx_normalization_job_state_available", "status", "available_at"),
+        Index("idx_normalization_job_dataset", "dataset_key"),
+    )
+
+    job_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    run_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
+    delivery_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, default=uuid7)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NormalizationOutbox(Base):
+    """Transactional outbox event for publishing a normalization task."""
+
+    __tablename__ = "normalization_outbox"
+    __table_args__ = (
+        Index("idx_normalization_outbox_pending", "status", "available_at"),
+        Index("idx_normalization_outbox_run", "run_id"),
+    )
+
+    outbox_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    job_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("normalization_job.job_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    delivery_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, default="normalize_run")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    claim_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class NormalizationWorkerHeartbeat(Base):
+    """Last-seen state for an independently running normalization worker."""
+
+    __tablename__ = "normalization_worker_heartbeat"
+
+    worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    current_run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class DQIssue(Base):

@@ -6,12 +6,14 @@ from time import time
 
 from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.dependencies import get_db
 from app.models.registry import APIKey
 from app.services.api_keys import find_active_api_key, has_active_api_keys
+from app.services.source_clients import find_active_source_client
 
 settings = get_settings()
 
@@ -64,10 +66,16 @@ def _get_source_client_ip(request: Request) -> str:
     return client_ip
 
 
-def _enforce_source_rate_limit(api_key: str, client_ip: str) -> None:
-    limit = max(1, int(settings.RATE_LIMIT_REQUESTS))
-    window_seconds = max(1, int(settings.RATE_LIMIT_WINDOW))
-    bucket_key = f"{api_key}:{client_ip}"
+def _enforce_source_rate_limit(
+    bucket_identity: str,
+    client_ip: str,
+    *,
+    limit: int | None = None,
+    window_seconds: int | None = None,
+) -> None:
+    limit = max(1, int(limit or settings.RATE_LIMIT_REQUESTS))
+    window_seconds = max(1, int(window_seconds or settings.RATE_LIMIT_WINDOW))
+    bucket_key = f"{bucket_identity}:{client_ip}"
     now = time()
     threshold = now - window_seconds
 
@@ -79,6 +87,7 @@ def _enforce_source_rate_limit(api_key: str, client_ip: str) -> None:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Rate limit exceeded",
+                headers={"Retry-After": str(window_seconds)},
             )
 
         bucket.append(now)
@@ -116,15 +125,10 @@ def reset_source_rate_limit_state() -> None:
 async def verify_source_api_key(
     request: Request,
     api_key: str = Security(api_key_header),
+    db: AsyncSession = Depends(get_db),
 ) -> str:
     """Verify API key for Source API endpoints."""
     valid_key = get_source_api_key()
-
-    if not valid_key:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No API key configured",
-        )
 
     if not api_key:
         raise HTTPException(
@@ -132,14 +136,37 @@ async def verify_source_api_key(
             detail="Missing API key",
         )
 
-    if not compare_digest(api_key, valid_key):
+    try:
+        source_client = await find_active_source_client(db, api_key)
+    except DBAPIError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion is temporarily unavailable",
+            headers={"Retry-After": "30"},
+        )
+    is_legacy_key = bool(valid_key) and compare_digest(api_key, valid_key)
+    if source_client is None and not is_legacy_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",
         )
 
     client_ip = _get_source_client_ip(request)
-    _enforce_source_rate_limit(api_key, client_ip)
+    if source_client is not None:
+        db.info["source_client_id"] = source_client.client_id
+        db.info["source_name"] = source_client.source_name
+        db.info["allowed_datasets"] = source_client.allowed_datasets
+        _enforce_source_rate_limit(
+            str(source_client.client_id),
+            client_ip,
+            limit=source_client.rate_limit_requests,
+            window_seconds=source_client.rate_limit_window,
+        )
+    else:
+        db.info["source_client_id"] = None
+        db.info["source_name"] = None
+        db.info["allowed_datasets"] = None
+        _enforce_source_rate_limit(api_key, client_ip)
 
     return api_key
 

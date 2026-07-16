@@ -2,18 +2,18 @@
 End-to-end test: Source -> Normalize -> Serve.
 """
 
-import asyncio
 from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
 
 from app.models.canonical import MarketDataEOD
-from app.models.registry import DatasetRegistry, IngestionRun
+from app.models.registry import DatasetRegistry, IngestionRun, NormalizationJob
+from app.services.normalization_queue import execute_normalization
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session):
+async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session, test_engine):
     """Ingest raw payload and verify Serve API returns normalized data."""
     dataset = DatasetRegistry(
         dataset_key="crypto_eod",
@@ -68,15 +68,21 @@ async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session):
         headers={"X-API-Key": "test-source-key"},
         json=payload,
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     run_id = response.json()["run_id"]
 
-    # Wait for background normalization
-    for _ in range(20):
-        run = await test_session.get(IngestionRun, run_id)
-        if run and run.status in {"completed", "completed_with_errors", "failed"}:
-            break
-        await asyncio.sleep(0.05)
+    job = await test_session.scalar(
+        NormalizationJob.__table__.select()
+        .where(NormalizationJob.run_id == run_id)
+        .with_only_columns(NormalizationJob.delivery_id)
+    )
+    assert job is not None
+    await execute_normalization(
+        run_id,
+        job,
+        database_url=test_engine.url.render_as_string(hide_password=False),
+    )
+    test_session.expire_all()
 
     run = await test_session.get(IngestionRun, run_id)
     assert run is not None
