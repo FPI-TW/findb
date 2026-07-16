@@ -13,6 +13,8 @@ from typing import Sequence
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
 DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb_test"
+DEPENDENCY_SERVICES = ("db", "rabbitmq")
+RUNTIME_SERVICES = ("app", "dispatcher", "worker")
 
 
 def _run(cmd: Sequence[str], env: dict[str, str] | None = None) -> int:
@@ -58,6 +60,28 @@ def _start_dependencies(
     env: dict[str, str],
 ) -> int:
     return _run([*compose, "up", "-d", "--wait", *services], env=env)
+
+
+def _start_runtime(
+    compose: Sequence[str],
+    env: dict[str, str],
+    *,
+    build: bool,
+) -> int:
+    image_option = "--build" if build else "--no-build"
+    return _run(
+        [
+            *compose,
+            "--profile",
+            "queue",
+            "up",
+            "-d",
+            image_option,
+            "--wait",
+            *RUNTIME_SERVICES,
+        ],
+        env=env,
+    )
 
 
 def _apply_migrations(env: dict[str, str]) -> int:
@@ -131,7 +155,7 @@ def cmd_up(_args: argparse.Namespace) -> int:
     """Start a complete local durable-ingestion stack."""
     compose = _docker_compose_cmd()
     env = _local_env()
-    start_code = _start_dependencies(compose, ["db", "rabbitmq"], env)
+    start_code = _start_dependencies(compose, DEPENDENCY_SERVICES, env)
     if start_code != 0:
         return start_code
     migrate_code = _apply_migrations(env)
@@ -140,20 +164,40 @@ def cmd_up(_args: argparse.Namespace) -> int:
     seed_code = _seed_data(env)
     if seed_code != 0:
         return seed_code
-    return _run(
-        [
-            *compose,
-            "--profile",
-            "queue",
-            "up",
-            "-d",
-            "--build",
-            "--wait",
-            "app",
-            "dispatcher",
-            "worker",
-        ],
+    return _start_runtime(compose, env, build=True)
+
+
+def cmd_start(_args: argparse.Namespace) -> int:
+    """Start the complete stack from existing images after Docker restarts."""
+    compose = _docker_compose_cmd()
+    env = _local_env()
+    start_code = _start_dependencies(compose, DEPENDENCY_SERVICES, env)
+    return start_code if start_code != 0 else _start_runtime(compose, env, build=False)
+
+
+def cmd_restart(_args: argparse.Namespace) -> int:
+    """Stop and start every core container in dependency order."""
+    compose = _docker_compose_cmd()
+    env = _local_env()
+    stop_runtime_code = _run(
+        [*compose, "--profile", "queue", "stop", *RUNTIME_SERVICES],
         env=env,
+    )
+    if stop_runtime_code != 0:
+        return stop_runtime_code
+    stop_dependency_code = _run([*compose, "stop", *DEPENDENCY_SERVICES], env=env)
+    if stop_dependency_code != 0:
+        return stop_dependency_code
+    start_code = _start_dependencies(compose, DEPENDENCY_SERVICES, env)
+    return start_code if start_code != 0 else _start_runtime(compose, env, build=False)
+
+
+def cmd_build(_args: argparse.Namespace) -> int:
+    """Build images shared by the app, dispatcher, and worker."""
+    compose = _docker_compose_cmd()
+    return _run(
+        [*compose, "--profile", "queue", "build", *RUNTIME_SERVICES],
+        env=_local_env(),
     )
 
 
@@ -193,7 +237,7 @@ def cmd_test_db(_args: argparse.Namespace) -> int:
 
 def cmd_down(_args: argparse.Namespace) -> int:
     compose = _docker_compose_cmd()
-    return _run([*compose, "down"])
+    return _run([*compose, "--profile", "queue", "down"])
 
 
 def cmd_partial_dump_validate(args: argparse.Namespace) -> int:
@@ -252,7 +296,19 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("up-app", help="Start app and database without queue workers")
     subparsers.add_parser(
         "up",
-        help="Start the complete DB, RabbitMQ, app, dispatcher, and worker stack",
+        help="Migrate, seed, build, and start the complete local stack",
+    )
+    subparsers.add_parser(
+        "start",
+        help="Start the complete stack from existing images without migration",
+    )
+    subparsers.add_parser(
+        "restart",
+        help="Stop and start every core container without rebuilding",
+    )
+    subparsers.add_parser(
+        "build",
+        help="Build app, dispatcher, and worker images without starting them",
     )
     subparsers.add_parser("queue-status", help="Show queue service status")
     queue_logs = subparsers.add_parser(
@@ -345,6 +401,9 @@ def main() -> int:
         "up-server": cmd_up_server,
         "up-app": cmd_up_app,
         "up": cmd_up,
+        "start": cmd_start,
+        "restart": cmd_restart,
+        "build": cmd_build,
         "queue-status": cmd_queue_status,
         "queue-logs": cmd_queue_logs,
         "test-db": cmd_test_db,

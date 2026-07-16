@@ -8,6 +8,9 @@ from scripts import dev
 def test_up_starts_complete_durable_ingestion_stack(monkeypatch):
     calls: list[tuple[list[str], dict[str, str] | None]] = []
 
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("SOURCE_API_KEY", raising=False)
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
     monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
 
     def fake_run(cmd, env=None):
@@ -56,6 +59,118 @@ def test_up_stops_before_migration_when_dependency_start_fails(monkeypatch):
 
     assert dev.cmd_up(argparse.Namespace()) == 9
     assert calls == [["docker", "compose", "up", "-d", "--wait", "db", "rabbitmq"]]
+
+
+def test_start_uses_existing_images_in_dependency_order(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
+    monkeypatch.setattr(
+        dev,
+        "_run",
+        lambda cmd, env=None: calls.append(list(cmd)) or 0,
+    )
+
+    result = dev.cmd_start(argparse.Namespace())
+
+    assert result == 0
+    assert calls == [
+        ["docker", "compose", "up", "-d", "--wait", "db", "rabbitmq"],
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "queue",
+            "up",
+            "-d",
+            "--no-build",
+            "--wait",
+            "app",
+            "dispatcher",
+            "worker",
+        ],
+    ]
+
+
+def test_restart_stops_and_starts_every_container_in_dependency_order(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
+    monkeypatch.setattr(
+        dev,
+        "_run",
+        lambda cmd, env=None: calls.append(list(cmd)) or 0,
+    )
+
+    result = dev.cmd_restart(argparse.Namespace())
+
+    assert result == 0
+    assert calls == [
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "queue",
+            "stop",
+            "app",
+            "dispatcher",
+            "worker",
+        ],
+        ["docker", "compose", "stop", "db", "rabbitmq"],
+        ["docker", "compose", "up", "-d", "--wait", "db", "rabbitmq"],
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "queue",
+            "up",
+            "-d",
+            "--no-build",
+            "--wait",
+            "app",
+            "dispatcher",
+            "worker",
+        ],
+    ]
+
+
+def test_build_builds_every_runtime_image(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
+    monkeypatch.setattr(
+        dev,
+        "_run",
+        lambda cmd, env=None: calls.append(list(cmd)) or 0,
+    )
+
+    result = dev.cmd_build(argparse.Namespace())
+
+    assert result == 0
+    assert calls == [
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "queue",
+            "build",
+            "app",
+            "dispatcher",
+            "worker",
+        ]
+    ]
+
+
+def test_down_includes_queue_profile(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
+    monkeypatch.setattr(
+        dev,
+        "_run",
+        lambda cmd, env=None: calls.append(list(cmd)) or 0,
+    )
+
+    result = dev.cmd_down(argparse.Namespace())
+
+    assert result == 0
+    assert calls == [["docker", "compose", "--profile", "queue", "down"]]
 
 
 def test_queue_logs_supports_tail_and_follow(monkeypatch):

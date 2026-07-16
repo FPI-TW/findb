@@ -153,7 +153,7 @@ findb/
 - `tests/conftest.py` 會在需要時建立 `findb_test` database。
 - 測試資料表由 function-scope fixture 建立與清理。
 - 測試 fixture 會設定 `SOURCE_API_KEY=test-source-key`、`ADMIN_API_KEY=test-admin-key`、`DEBUG=true`。
-- Preferred test runner 是 `uv run python scripts/dev.py test-db` 或 `make test-db`，會先確保 DB container 已啟動。
+- Preferred test runner 是 `uv run python scripts/dev.py test-db` 或 `make test`，會先確保 DB container 已啟動。
 
 ## 常用命令
 
@@ -162,29 +162,24 @@ findb/
 uv sync
 
 # local development
-make up-db
-make up-server
-make up
+make up        # migrate + seed + build + 完整啟動
+make start     # Docker daemon 重啟後，以既有 images 完整啟動
+make restart   # 完整停止並重啟核心 containers
 make down
 
-# 手動啟動
-docker compose up -d db
-uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
-
-# Docker full stack
-docker compose up -d --build
-docker compose exec app python /app/scripts/seed_data.py
-docker compose down
+# iteration
+make build
+make migrate
+make seed
+make up-server
+make up-db
 
 # seed local DB from partial dump
-make seed-upsert
-make seed-upsert-truncate
+uv run python scripts/dev.py seed-upsert
+uv run python scripts/dev.py seed-upsert --truncate
 
 # quality
 make format
-make lint
-make type-check
 make check
 
 # direct quality commands
