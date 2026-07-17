@@ -880,6 +880,54 @@ async def test_macro_process_isolates_invalid_market_per_record(test_session):
 
 
 @pytest.mark.asyncio
+async def test_macro_ingest_without_name_preserves_curated_series_name(test_session):
+    dataset = DatasetRegistry(
+        dataset_key="macro_observation",
+        name="Macro Observation",
+        asset_class="macro",
+        market="MACRO",
+        frequency="daily",
+        is_active=True,
+        config={},
+    )
+    run = IngestionRun(
+        dataset_key="macro_observation",
+        status="pending",
+        raw_records=1,
+        created_at=utc_now(),
+    )
+    series = MacroSeries(
+        series_id=uuid7(),
+        name="US CPI YoY",
+        source_code="CPIYOY Index",
+        source="bloomberg",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all((dataset, run, series))
+    await test_session.commit()
+
+    result = await MacroNormalizer(test_session).process(
+        {
+            "metadata": {"source": "bloomberg"},
+            "data": [
+                {
+                    "source_code": "CPIYOY Index",
+                    "date": "2026-01-16",
+                    "value": 3.1,
+                    "market": "US",
+                }
+            ],
+        },
+        run.run_id,
+    )
+
+    await test_session.refresh(series)
+    assert result.success_records == 1
+    assert series.name == "US CPI YoY"
+
+
+@pytest.mark.asyncio
 async def test_completed_with_errors_sets_completed_at(test_session):
     """Run status should set completed_at for completed_with_errors."""
 

@@ -135,7 +135,7 @@ class FuturesContractNormalizer(BaseNormalizer):
         instrument_id: UUID,
         record: FuturesContractRecord,
         run_id: UUID,
-    ) -> None:
+    ) -> bool:
         """Upsert futures contract metadata."""
         source_priority, source_fetched_at = self._source_control_values(record.source)
         stmt = insert(FuturesContract).values(
@@ -170,7 +170,8 @@ class FuturesContractNormalizer(BaseNormalizer):
             },
             where=self._incoming_source_wins(FuturesContract.__table__, stmt.excluded),
         )
-        await self.db.execute(stmt)
+        returning_stmt = stmt.returning(FuturesContract.contract_id)
+        return (await self.db.execute(returning_stmt)).scalar_one_or_none() is not None
 
     async def process(
         self, raw_payload: dict, run_id: UUID, *, commit: bool = True
@@ -241,12 +242,16 @@ class FuturesContractNormalizer(BaseNormalizer):
                         continue
                     seen_keys.add(key)
 
-                    await self.upsert_contract(instrument.instrument_id, record, run_id)
-                    result.success_records += 1
+                    applied = await self.upsert_contract(instrument.instrument_id, record, run_id)
+                    if applied:
+                        result.success_records += 1
+                    else:
+                        result.precedence_rejected_records += 1
                 finally:
                     processed_records += 1
                     await self._maybe_flush(processed_records)
 
+            await self.record_precedence_rejection_summary(result, run_id)
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
                 run_id,
@@ -458,7 +463,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
         record: FuturesContinuousRecord,
         run_id: UUID,
         roll_rule_id: UUID | None,
-    ) -> None:
+    ) -> bool:
         """Upsert continuous futures EOD record."""
         source_priority, source_fetched_at = self._source_control_values(record.source)
         stmt = insert(FuturesContinuousEOD).values(
@@ -505,17 +510,20 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             where=self._incoming_source_wins(FuturesContinuousEOD.__table__, stmt.excluded),
         )
 
-        await self.db.execute(stmt)
+        returning_stmt = stmt.returning(FuturesContinuousEOD.id)
+        applied = (await self.db.execute(returning_stmt)).scalar_one_or_none() is not None
         trade_date_value = (
             record.trade_date.date()
             if isinstance(record.trade_date, datetime)
             else record.trade_date
         )
-        await self.update_instrument_stats(instrument_id, trade_date_value, update_latest=False)
+        if applied:
+            await self.update_instrument_stats(instrument_id, trade_date_value, update_latest=False)
         self.db.expire_all()
         self._instrument_cache.clear()
         self._identifier_cache.clear()
         self._roll_rule_cache.clear()
+        return applied
 
     async def process(
         self, raw_payload: dict, run_id: UUID, *, commit: bool = True
@@ -590,13 +598,16 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                         )
                         result.dq_issues.append(issue)
 
-                    await self.upsert_continuous_eod(
+                    applied = await self.upsert_continuous_eod(
                         instrument.instrument_id,
                         record,
                         run_id,
                         roll_rule_id,
                     )
-                    result.success_records += 1
+                    if applied:
+                        result.success_records += 1
+                    else:
+                        result.precedence_rejected_records += 1
 
                 except SQLAlchemyError:
                     raise
@@ -614,6 +625,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                     processed_records += 1
                     await self._maybe_flush(processed_records)
 
+            await self.record_precedence_rejection_summary(result, run_id)
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
                 run_id,

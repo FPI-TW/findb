@@ -319,8 +319,14 @@ class CorporateActionNormalizer(BaseNormalizer):
                         ),
                     )
 
-                    await self.db.execute(upsert_stmt)
-                    result.success_records += 1
+                    returning_stmt = upsert_stmt.returning(CorporateAction.action_id)
+                    applied = (
+                        await self.db.execute(returning_stmt)
+                    ).scalar_one_or_none() is not None
+                    if applied:
+                        result.success_records += 1
+                    else:
+                        result.precedence_rejected_records += 1
 
                 except SQLAlchemyError:
                     raise
@@ -339,6 +345,7 @@ class CorporateActionNormalizer(BaseNormalizer):
                     processed_records += 1
                     await self._maybe_flush(processed_records)
 
+            await self.record_precedence_rejection_summary(result, run_id)
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
                 run_id, status, result.total_records, result.success_records, result.failed_records

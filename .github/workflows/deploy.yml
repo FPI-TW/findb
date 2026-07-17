@@ -288,6 +288,19 @@ jobs:
 
             echo "Checking RabbitMQ and version-controlled queue topology"
             docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
+            expected_consumer_timeout="$(
+              docker compose -f docker-compose.prod.yml config --format json | \
+                python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["rabbitmq-policy"]["environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"])'
+            )"
+            actual_consumer_timeout="$(
+              docker compose -f docker-compose.prod.yml exec -T rabbitmq \
+                rabbitmqctl list_policies -p /findb --formatter json | \
+                python3 -c 'import json, sys; policies=json.load(sys.stdin); policy=next((item for item in policies if item["name"] == "findb-normalization-consumer-timeout"), None); definition=json.loads(policy["definition"]) if policy else {}; print(definition.get("consumer-timeout", ""))'
+            )"
+            if [ "$actual_consumer_timeout" != "$expected_consumer_timeout" ]; then
+              echo "RabbitMQ consumer timeout policy mismatch: expected ${expected_consumer_timeout}, got ${actual_consumer_timeout:-missing}"
+              exit 1
+            fi
             topology_ready=0
             for attempt in $(seq 1 24); do
               queue_state="$(docker compose -f docker-compose.prod.yml exec -T rabbitmq \

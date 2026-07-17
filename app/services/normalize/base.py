@@ -37,6 +37,7 @@ class NormalizeResult:
     total_records: int = 0
     success_records: int = 0
     failed_records: int = 0
+    precedence_rejected_records: int = 0
     dq_issues: list[DQIssueRecord] = field(default_factory=list)
     error_message: Optional[str] = None
 
@@ -475,19 +476,21 @@ class BaseNormalizer(ABC):
             where=self._incoming_source_wins(t, stmt.excluded),
         )
 
-        await self.db.execute(stmt)
-        await self.update_instrument_stats(
-            instrument_id,
-            trade_date_value,
-            latest_price=record.close,
-        )
+        returning_stmt = stmt.returning(MarketDataEOD.instrument_id)
+        applied = (await self.db.execute(returning_stmt)).scalar_one_or_none() is not None
+        if applied:
+            await self.update_instrument_stats(
+                instrument_id,
+                trade_date_value,
+                latest_price=record.close,
+            )
         # Refresh ORM state for follow-up reads while dropping cached Instrument
         # instances that would otherwise become expired and unsafe to reuse in the
         # remaining async batch.
         self.db.expire_all()
         self._instrument_cache.clear()
         self._identifier_cache.clear()
-        return True
+        return applied
 
     async def update_instrument_stats(
         self,
@@ -631,6 +634,27 @@ class BaseNormalizer(ABC):
             created_at=utc_now(),
         )
         self.db.add(dq_issue)
+
+    async def record_precedence_rejection_summary(
+        self,
+        result: NormalizeResult,
+        run_id: UUID,
+    ) -> None:
+        """Persist one warning when source precedence skips canonical writes."""
+        count = result.precedence_rejected_records
+        if count == 0:
+            return
+        issue = DQIssueRecord(
+            issue_type="SOURCE_PRECEDENCE_REJECTED",
+            severity="warning",
+            description=(
+                f"Source precedence rejected {count} canonical "
+                f"{'write' if count == 1 else 'writes'}"
+            ),
+            raw_data={"rejected_records": count},
+        )
+        await self.record_dq_issue(issue, run_id)
+        result.dq_issues.append(issue)
 
     async def update_run_status(
         self,
@@ -797,8 +821,11 @@ class BaseNormalizer(ABC):
                         result.dq_issues.append(issue)
 
                     # Upsert EOD data
-                    await self.upsert_eod(instrument.instrument_id, record, run_id)
-                    result.success_records += 1
+                    applied = await self.upsert_eod(instrument.instrument_id, record, run_id)
+                    if applied:
+                        result.success_records += 1
+                    else:
+                        result.precedence_rejected_records += 1
 
                 except SQLAlchemyError:
                     raise
@@ -814,6 +841,8 @@ class BaseNormalizer(ABC):
                 finally:
                     processed_records += 1
                     await self._maybe_flush(processed_records)
+
+            await self.record_precedence_rejection_summary(result, run_id)
 
             # Update final status
             status = "completed" if result.failed_records == 0 else "completed_with_errors"

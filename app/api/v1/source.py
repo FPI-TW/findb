@@ -391,7 +391,15 @@ async def _ingest_direct_payload(
     idempotency_key: str | None = None,
 ) -> IngestResponse:
     """使用推斷出的匯入欄位匯入直接格式市場資料。"""
-    await _ensure_direct_dataset_exists(db, dataset_key)
+    try:
+        await _ensure_direct_dataset_exists(db, dataset_key)
+    except (OperationalError, DBAPIError):
+        logger.exception("Database unavailable while preparing direct ingestion")
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion is temporarily unavailable",
+            headers={"Retry-After": "30"},
+        )
     request = _build_direct_ingest_request(
         payload,
         dataset_key,
@@ -443,7 +451,7 @@ async def ingest_us_data(
 async def ingest_usstock_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -471,7 +479,7 @@ def _validate_twstock_direct_payload(payload: TWStockDirectIngestPayload) -> Non
 async def ingest_hkchina_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -491,7 +499,7 @@ async def ingest_hkchina_direct_data(
 async def ingest_hkchina_index_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -543,7 +551,7 @@ async def ingest_macro_data(
 async def ingest_crypto_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -563,7 +571,7 @@ async def ingest_crypto_direct_data(
 async def ingest_fx_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -583,7 +591,7 @@ async def ingest_fx_direct_data(
 async def ingest_macro_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -603,7 +611,7 @@ async def ingest_macro_direct_data(
 async def ingest_wtx_direct_data(
     payload: DirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -623,7 +631,7 @@ async def ingest_wtx_direct_data(
 async def ingest_twstock_direct_data(
     payload: TWStockDirectIngestPayload,
     background_tasks: BackgroundTasks,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=100),
     api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ):

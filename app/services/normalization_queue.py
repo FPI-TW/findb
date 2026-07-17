@@ -62,18 +62,24 @@ async def reconcile_nonterminal_jobs(session: AsyncSession) -> int:
     for job in jobs:
         if job.status == "processing":
             job.status = "queued"
-            job.delivery_id = uuid7()
             job.lease_expires_at = None
-        has_active_delivery = bool(
-            await session.scalar(
-                select(func.count(NormalizationOutbox.outbox_id)).where(
-                    NormalizationOutbox.job_id == job.job_id,
-                    NormalizationOutbox.status.in_(("pending", "publishing")),
-                )
+        active_result = await session.execute(
+            select(NormalizationOutbox).where(
+                NormalizationOutbox.job_id == job.job_id,
+                NormalizationOutbox.status.in_(("pending", "publishing")),
             )
         )
-        if has_active_delivery:
+        active_deliveries = list(active_result.scalars().all())
+        if active_deliveries:
+            # Preserve the delivery generation that is already waiting to be
+            # published. Rotating only the job id would make every active
+            # outbox row stale and strand the run until lease reconciliation.
+            for delivery in active_deliveries:
+                delivery.delivery_id = job.delivery_id
+                delivery.updated_at = now
+            job.updated_at = now
             continue
+        job.delivery_id = uuid7()
         session.add(
             NormalizationOutbox(
                 outbox_id=uuid7(),

@@ -44,21 +44,25 @@ class IngestRequest(BaseModel):
     dataset_key: str = Field(
         ...,
         min_length=1,
+        max_length=50,
         description="資料集識別碼，例如 crypto_eod",
     )
     source: str = Field(
         ...,
         min_length=1,
+        max_length=50,
         description="資料來源，例如 bloomberg",
     )
     request_key: str = Field(
         ...,
         min_length=1,
+        max_length=100,
         description="上游請求識別碼，用於追蹤資料來源",
     )
     idempotency_key: str = Field(
         ...,
         min_length=1,
+        max_length=100,
         description="冪等鍵，用於避免重複處理相同請求",
     )
     payload: dict[str, Any] = Field(..., description="原始資料內容")

@@ -11,15 +11,17 @@ from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.main import app
 from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
-from app.models.registry import APIKey, DQIssue
+from app.models.registry import APIKey, DatasetRegistry, DQIssue, IngestionRun
 from app.services import instrument_cache as instrument_cache_service
 from app.services.admin import build_correction_actor, eod_record_id
+from app.services.ingestion import IngestionService
 from app.utils import utc_now, uuid7
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -991,6 +993,76 @@ class TestListCorrections:
         assert len(items) == 2
         assert items[0]["correction_reason"] == "Second"
         assert items[1]["correction_reason"] == "First"
+
+
+# ── Bulk rerun Tests ──────────────────────────────────────────────────────────────────
+
+
+class TestBulkRerun:
+    @pytest.mark.asyncio
+    async def test_bulk_rerun_limit_is_bounded(
+        self,
+        client: AsyncClient,
+        admin_headers: dict,
+    ):
+        response = await client.post(
+            "/api/v1/admin/runs/bulk-rerun?limit=1001",
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_bulk_rerun_rolls_back_failed_item_before_continuing(
+        self,
+        client: AsyncClient,
+        test_session: AsyncSession,
+        admin_headers: dict,
+        monkeypatch,
+    ):
+        dataset = DatasetRegistry(
+            dataset_key="crypto_eod",
+            name="Crypto EOD",
+            asset_class="crypto",
+            market="CRYPTO",
+            frequency="daily",
+            is_active=True,
+            config={},
+        )
+        runs = [
+            IngestionRun(
+                dataset_key="crypto_eod",
+                status="completed",
+                completed_at=utc_now(),
+                created_at=utc_now(),
+            )
+            for _ in range(2)
+        ]
+        test_session.add_all((dataset, *runs))
+        await test_session.commit()
+        calls = 0
+
+        async def fail_once_then_succeed(self, run_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await self.db.execute(text("SELECT 1 / 0"))
+            return uuid7(), "queued", "crypto_eod", {}
+
+        monkeypatch.setattr(
+            IngestionService,
+            "rerun_from_raw",
+            fail_once_then_succeed,
+        )
+
+        response = await client.post(
+            "/api/v1/admin/runs/bulk-rerun?dataset_key=crypto_eod&limit=2",
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["queued"] == 1
+        assert response.json()["errors"] == 1
 
 
 # ── Refresh instrument cache Tests ────────────────────────────────────────────────────

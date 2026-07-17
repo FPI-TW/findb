@@ -1662,6 +1662,7 @@ POST /api/v1/admin/runs/bulk-rerun
 | ------------- | ----- | ------ | ---- | --------------------------------------------------- |
 | `dataset_key` | query | string | 否   | 只重跑特定 dataset                                  |
 | `status`      | query | string | 否   | 篩選 `completed`、`failed`、`all`，預設 `completed` |
+| `limit`       | query | int    | 否   | 單次排入上限，預設 100，範圍 1–1000                 |
 
 回應範例：
 
@@ -1681,7 +1682,7 @@ POST /api/v1/admin/runs/bulk-rerun
 ```
 
 ```bash
-# 重跑所有 completed runs
+# 重跑最早的 100 個 completed runs
 curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun" \
   -H "X-API-Key: your-admin-key"
 
@@ -1690,7 +1691,7 @@ curl -X POST "http://localhost:8080/api/v1/admin/runs/bulk-rerun?dataset_key=cry
   -H "X-API-Key: your-admin-key"
 ```
 
-> `bulk-rerun` 會為每個符合條件的 run 建立新的 `ingestion_run`，並重新排入 normalize，不會覆寫舊的 run 記錄。
+> `bulk-rerun` 會為符合條件且未超過 `limit` 的 run 建立新的 `ingestion_run`，並重新排入 normalize，不會覆寫舊的 run 記錄。大量重跑應分批執行並指定 dataset。
 
 ---
 

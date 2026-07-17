@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.api.v1.source import _resolve_twstock_dataset_key
 from app.config import get_settings
@@ -96,6 +97,20 @@ def test_ingest_request_rejects_payload_over_byte_limit():
         settings.SOURCE_MAX_PAYLOAD_BYTES = original_limit
 
 
+def test_ingest_request_rejects_overlong_idempotency_key():
+    with pytest.raises(ValidationError):
+        IngestRequest.model_validate(
+            {
+                "dataset_key": "crypto_eod",
+                "source": "bloomberg",
+                "request_key": "bounded-key",
+                "idempotency_key": "x" * 101,
+                "payload": {"data": []},
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+
 def test_direct_ingest_payload_rejects_too_many_rows():
     original_limit = settings.SOURCE_MAX_DATA_ITEMS
     settings.SOURCE_MAX_DATA_ITEMS = 1
@@ -114,6 +129,46 @@ def test_direct_ingest_payload_rejects_too_many_rows():
 
 class TestSourceAPI:
     """Tests for Source API."""
+
+    @pytest.mark.asyncio
+    async def test_direct_ingest_rejects_overlong_idempotency_header(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+    ):
+        response = await client.post(
+            "/api/v1/source/ingest/crypto/direct",
+            headers={**source_headers, "Idempotency-Key": "x" * 101},
+            json={
+                "metadata": {"source": "bloomberg"},
+                "data": [{"date": "2026-01-01", "symbol": "BTCUSD", "close": 1}],
+            },
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_direct_ingest_registry_db_failure_returns_503(
+        self,
+        client: AsyncClient,
+        source_headers: dict,
+        monkeypatch,
+    ):
+        async def fail_registry_lookup(*args, **kwargs):
+            raise OperationalError("SELECT", {}, RuntimeError("database unavailable"))
+
+        monkeypatch.setattr(
+            "app.api.v1.source._ensure_direct_dataset_exists",
+            fail_registry_lookup,
+        )
+        response = await client.post(
+            "/api/v1/source/ingest/crypto/direct",
+            headers=source_headers,
+            json={"metadata": {"source": "bloomberg"}, "data": []},
+        )
+
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "30"
 
     @pytest.mark.asyncio
     async def test_ingest_without_api_key(self, client: AsyncClient):

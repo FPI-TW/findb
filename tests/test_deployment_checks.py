@@ -1,7 +1,27 @@
 """Tests for production deployment gates."""
 
+from pathlib import Path
+
+import yaml
+
 from scripts.check_queue_health import validate_queue_health
 from scripts.predeploy_db_check import validate_predeploy_state
+
+
+def test_rabbitmq_consumer_timeout_has_one_source_and_is_verified() -> None:
+    compose = yaml.safe_load(Path("docker-compose.prod.yml").read_text(encoding="utf-8"))
+    expected = compose["x-normalization-consumer-timeout"]
+
+    assert compose["x-app-environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"] == expected
+    assert (
+        compose["services"]["rabbitmq-policy"]["environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"]
+        == expected
+    )
+
+    deploy = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    assert "expected_consumer_timeout" in deploy
+    assert "actual_consumer_timeout" in deploy
+    assert "RabbitMQ consumer timeout policy mismatch" in deploy
 
 
 def test_predeploy_database_state_accepts_safe_capacity() -> None:
