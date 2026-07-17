@@ -16,7 +16,7 @@ Production secrets 必須設定 `CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、
 
 若 RabbitMQ data directory 已初始化，修改 `RABBITMQ_DEFAULT_USER` 或 `RABBITMQ_DEFAULT_PASS` 不會更新既有 broker user。部署前必須以 worker 的 Celery ping 實際驗證 credentials；`CELERY_BROKER_URL` 中的密碼若含特殊字元必須 URL encode。
 
-Normalization queue 以 `x-consumer-timeout=3600000`（60 分鐘）宣告，必須高於 Celery hard time limit（預設 35 分鐘）與正常 graceful shutdown 所需時間。修改 task time limit 時必須同步調高 `NORMALIZATION_CONSUMER_TIMEOUT_MS`，避免 RabbitMQ 在 late ack 前關閉 consumer channel 並重投遞。
+Normalization queue 透過 `findb-normalization-consumer-timeout` RabbitMQ policy 設定 `consumer-timeout=3600000`（60 分鐘），必須高於 Celery hard time limit（預設 35 分鐘）與正常 graceful shutdown 所需時間。Compose 會先以一次性 `rabbitmq-policy` service 套用 policy，再啟動 dispatcher 與 worker；timeout 不放在 client queue arguments，避免日後調整時因 queue property 不等價而收到 `PRECONDITION_FAILED`。修改 task time limit 時必須同步調高 policy service 的 `NORMALIZATION_CONSUMER_TIMEOUT_MS`。
 
 ## Production Go/No-Go
 
@@ -37,6 +37,7 @@ Deploy workflow 會停止所有 DB writer、套 migration、啟動 RabbitMQ/disp
 
 ```bash
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
+docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmqctl list_policies -p /findb
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmqctl list_queues -p /findb name messages durable arguments
 docker compose -f docker-compose.prod.yml exec -T worker celery -A app.task_queue inspect ping --timeout=10
 docker compose -f docker-compose.prod.yml exec -T ingest python /app/scripts/check_queue_health.py

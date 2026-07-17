@@ -93,6 +93,27 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  rabbitmq-policy:
+    image: "rabbitmq:4.2-management@sha256:a29528adc5fa512cdadf60204e3336602ee400f8e026f5637b281959d2d51426"
+    container_name: findb-rabbitmq-policy
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in GitHub Actions secrets}"
+      NORMALIZATION_CONSUMER_TIMEOUT_MS: "3600000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    command:
+      - sh
+      - -euc
+      - >-
+        rabbitmqctl --node rabbit@findb-rabbitmq set_policy
+        --vhost /findb
+        findb-normalization-consumer-timeout
+        '^findb[.]normalize[.]v1$$'
+        "{\"consumer-timeout\":$${NORMALIZATION_CONSUMER_TIMEOUT_MS}}"
+        --apply-to classic_queues
+    restart: "no"
+
   dispatcher:
     image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
     container_name: findb-dispatcher
@@ -100,8 +121,8 @@ services:
       <<: *app-environment
     command: python /app/scripts/dispatch_outbox.py
     depends_on:
-      rabbitmq:
-        condition: service_healthy
+      rabbitmq-policy:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   worker:
@@ -111,8 +132,8 @@ services:
       <<: *app-environment
     command: celery -A app.task_queue:celery_app worker --loglevel=INFO --queues=findb.normalize.v1 --pool=prefork --concurrency=2
     depends_on:
-      rabbitmq:
-        condition: service_healthy
+      rabbitmq-policy:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [

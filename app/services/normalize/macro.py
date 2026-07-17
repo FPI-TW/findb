@@ -381,10 +381,13 @@ class MacroNormalizer(BaseNormalizer):
                     applied = await self.upsert_observation(series.series_id, record, run_id)
                     if applied:
                         result.success_records += 1
+                    else:
+                        result.precedence_rejected_records += 1
                 finally:
                     processed_records += 1
                     await self._maybe_flush(processed_records)
 
+            await self.record_precedence_rejection_summary(result, run_id)
             status = "completed" if result.failed_records == 0 else "completed_with_errors"
             await self.update_run_status(
                 run_id,

@@ -288,6 +288,9 @@ jobs:
 
             echo "Checking RabbitMQ and version-controlled queue topology"
             docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
+            docker compose -f docker-compose.prod.yml exec -T rabbitmq \
+              rabbitmqctl list_policies -p /findb | \
+              grep -Fq "findb-normalization-consumer-timeout"
             topology_ready=0
             for attempt in $(seq 1 24); do
               queue_state="$(docker compose -f docker-compose.prod.yml exec -T rabbitmq \

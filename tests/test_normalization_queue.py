@@ -18,6 +18,7 @@ from app.models.canonical import InstrumentStats, MarketDataEOD
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
+    DQIssue,
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
@@ -44,9 +45,7 @@ class _PrecedenceNormalizer(BaseNormalizer):
 
 def test_queue_consumer_timeout_exceeds_task_hard_limit():
     settings = get_settings()
-    assert normalization_queue.queue_arguments["x-consumer-timeout"] == (
-        settings.NORMALIZATION_CONSUMER_TIMEOUT_MS
-    )
+    assert "x-consumer-timeout" not in normalization_queue.queue_arguments
     assert settings.NORMALIZATION_CONSUMER_TIMEOUT_MS > (
         settings.NORMALIZATION_TASK_TIME_LIMIT * 1000
     )
@@ -541,6 +540,18 @@ async def test_source_precedence_is_independent_of_worker_completion_order(test_
     assert int(row.close or 0) == 100
     assert row.source == "preferred"
     assert fallback_result.success_records == 0
+    assert fallback_result.failed_records == 0
+    assert fallback_result.precedence_rejected_records == 1
+    warning = (
+        await test_session.execute(
+            select(DQIssue).where(
+                DQIssue.run_id == run_ids[1],
+                DQIssue.issue_type == "SOURCE_PRECEDENCE_REJECTED",
+            )
+        )
+    ).scalar_one()
+    assert warning.severity == "warning"
+    assert warning.raw_data == {"rejected_records": 1}
     stats = await test_session.get(InstrumentStats, row.instrument_id)
     assert stats is not None
     assert int(stats.latest_price or 0) == 100
@@ -628,7 +639,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         dataset_key="crypto_eod",
         raw_payload_id=legacy_raw.raw_payload_id,
         status="completed",
-        completed_at=now - timedelta(days=15),
+        completed_at=None,
         created_at=now - timedelta(days=30),
     )
     legacy_raw_id = legacy_raw.raw_payload_id
