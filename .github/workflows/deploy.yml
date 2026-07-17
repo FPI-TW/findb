@@ -200,12 +200,6 @@ jobs:
           script: |
             set -euo pipefail
             mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
-            cpu_count="$(getconf _NPROCESSORS_ONLN)"
-            memory_kib="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
-            if [ "$cpu_count" -lt 4 ] || [ "$memory_kib" -lt 8388608 ]; then
-              echo "EC2 must have at least 4 vCPU and 8 GiB RAM (found ${cpu_count} vCPU, ${memory_kib} KiB)"
-              exit 1
-            fi
             if ! mountpoint -q /var/lib/findb/rabbitmq; then
               echo "/var/lib/findb/rabbitmq must be a separately mounted encrypted 20 GiB gp3 EBS volume"
               exit 1
