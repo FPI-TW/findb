@@ -23,6 +23,7 @@
 | 文件 | 說明 |
 | --- | --- |
 | [migration_workflow.md](operations/migration_workflow.md) | Alembic 遷移工作流程：baseline/stamp 策略、啟動版本檢查。 |
+| [rabbitmq_ingestion_runbook.md](operations/rabbitmq_ingestion_runbook.md) | EC2 RabbitMQ EBS、secrets、部署、broker 全毀恢復、監控與 rollback 手冊。 |
 | [instrument_name_backfill_deployment.md](operations/instrument_name_backfill_deployment.md) | EC2 + Aurora 環境執行 instrument 名稱回填與 routing 修正的部署手冊（含備份與回滾）。 |
 | [cloudflare-nginx-source-allowlist-incident.md](operations/cloudflare-nginx-source-allowlist-incident.md) | 事故根因分析：Cloudflare 後方 nginx Source allowlist 需信任 `CF-Connecting-IP`。 |
 

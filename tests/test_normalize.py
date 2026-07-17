@@ -7,7 +7,8 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
 
 from app.models.canonical import (
     CorporateAction,
@@ -1092,6 +1093,61 @@ async def test_process_persists_processing_errors(test_session):
 
 
 @pytest.mark.asyncio
+async def test_process_escalates_database_errors_for_run_retry(test_session):
+    """Database failures must reach the worker instead of becoming record DQ errors."""
+
+    class DummyNormalizer(BaseNormalizer):
+        dataset_key = "crypto_eod"
+        asset_class = "crypto"
+        market = "CRYPTO"
+
+        def map_fields(self, raw_data: dict) -> list[MappedRecord]:
+            return [
+                MappedRecord(
+                    symbol="BTC",
+                    trade_date=datetime(2026, 2, 9, tzinfo=timezone.utc),
+                    close=Decimal("108"),
+                    source="bloomberg",
+                )
+            ]
+
+        async def upsert_eod(self, instrument_id, record, run_id):
+            raise OperationalError("INSERT", {}, RuntimeError("database unavailable"))
+
+    test_session.add_all(
+        [
+            DatasetRegistry(
+                dataset_key="crypto_eod",
+                name="Crypto EOD",
+                asset_class="crypto",
+                market="CRYPTO",
+                frequency="daily",
+                is_active=True,
+                config={},
+            ),
+            IngestionRun(
+                run_id=(run_id := uuid7()),
+                dataset_key="crypto_eod",
+                status="pending",
+                created_at=utc_now(),
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    with pytest.raises(OperationalError, match="database unavailable"):
+        await DummyNormalizer(test_session).process({}, run_id)
+
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.status == "pending"
+    issue_count = await test_session.scalar(
+        select(func.count()).select_from(DQIssue).where(DQIssue.run_id == run_id)
+    )
+    assert issue_count == 0
+
+
+@pytest.mark.asyncio
 class TestCorporateActionNormalizer:
     """Test for Corporate Action Normalizer"""
 
@@ -1264,8 +1320,8 @@ class TestCorporateActionNormalizer:
     @pytest.mark.asyncio
     async def test_process_outer_exception_rollback(self, test_session):
         """
-        Test that a critical error outside the record loop triggers a rollback
-        and sets the run status to 'failed'.
+        Test that a critical error outside the record loop rolls back and reaches
+        the worker coordinator, which owns retry/failure state.
         """
         # Arrange
         await self.setup_test_data(test_session)
@@ -1282,14 +1338,13 @@ class TestCorporateActionNormalizer:
             "map_fields",
             side_effect=ValueError("Critical System Failure"),
         ):
-            result = await normalizer.process({"some": "data"}, run_id)
-
-        assert result.error_message == "Critical System Failure"
+            with pytest.raises(ValueError, match="Critical System Failure"):
+                await normalizer.process({"some": "data"}, run_id)
 
         test_session.expire_all()
         persisted_run = await test_session.get(IngestionRun, run_id)
-        assert persisted_run.status == "failed"
-        assert "Critical System Failure" in persisted_run.error_message
+        assert persisted_run.status == "pending"
+        assert persisted_run.error_message is None
 
     @pytest.mark.parametrize(
         "payload_data, expected_issue_type, expected_trade_date",

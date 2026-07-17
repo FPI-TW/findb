@@ -12,11 +12,26 @@ from sqlalchemy import select
 from app.api.v1.source import _resolve_twstock_dataset_key
 from app.config import get_settings
 from app.models.raw import RawMarketPayload
-from app.models.registry import DatasetRegistry, IngestionRun
+from app.models.registry import DatasetRegistry, IngestionRun, NormalizationJob
 from app.schemas.source import DirectIngestPayload, IngestRequest, TWStockDirectIngestPayload
+from app.services.normalization_queue import execute_normalization
 from app.utils import uuid7
 
 settings = get_settings()
+
+
+async def _execute_queued_run(test_session, test_engine, run_id) -> None:
+    job = (
+        await test_session.execute(
+            select(NormalizationJob).where(NormalizationJob.run_id == run_id)
+        )
+    ).scalar_one()
+    await execute_normalization(
+        run_id,
+        job.delivery_id,
+        database_url=test_engine.url.render_as_string(hide_password=False),
+    )
+    test_session.expire_all()
 
 
 def _twstock_direct_payload(asset_class: str | None = None) -> dict:
@@ -303,7 +318,7 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = response.json()
         assert data["success"] is True
         run_id = data["run_id"]
@@ -368,7 +383,7 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert first.status_code == 200
+        assert first.status_code == 202
         first_payload = first.json()
         first_run_id = first_payload["run_id"]
 
@@ -377,7 +392,7 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert second.status_code == 200
+        assert second.status_code == 202
         second_payload = second.json()
         assert second_payload["success"] is True
         assert second_payload["run_id"] == first_run_id
@@ -431,7 +446,7 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert ingest_response.status_code == 200
+        assert ingest_response.status_code == 202
         ingest_data = ingest_response.json()
         original_run_id = ingest_data["run_id"]
 
@@ -439,7 +454,7 @@ class TestSourceAPI:
             f"/api/v1/source/runs/{original_run_id}/rerun",
             headers=source_headers,
         )
-        assert rerun_response.status_code == 200
+        assert rerun_response.status_code == 202
         rerun_data = rerun_response.json()
         new_run_id = rerun_data["run_id"]
         assert new_run_id != original_run_id
@@ -694,7 +709,7 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert first_response.status_code == 200
+        assert first_response.status_code == 202
         first_data = first_response.json()
         first_run_id = first_data["run_id"]
 
@@ -703,7 +718,7 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert second_response.status_code == 200
+        assert second_response.status_code == 202
         second_data = second_response.json()
         assert second_data["run_id"] == first_run_id
 
@@ -717,6 +732,7 @@ class TestSourceAPI:
         client: AsyncClient,
         source_headers: dict,
         test_session,
+        test_engine,
     ):
         """Ensure HK/China mixed direct payload persists both equities and indices."""
         response = await client.post(
@@ -751,8 +767,9 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         run_id = response.json()["run_id"]
+        await _execute_queued_run(test_session, test_engine, run_id)
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
         assert run.dataset_key == "hkchina_mixed_eod"
@@ -782,6 +799,7 @@ class TestSourceAPI:
         client: AsyncClient,
         source_headers: dict,
         test_session,
+        test_engine,
     ):
         """Ensure HK/China index direct payloads infer market and persist as regional indices."""
         response = await client.post(
@@ -816,8 +834,9 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         run_id = response.json()["run_id"]
+        await _execute_queued_run(test_session, test_engine, run_id)
 
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
@@ -923,7 +942,7 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         run_id = response.json()["run_id"]
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
@@ -1011,7 +1030,7 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = response.json()
         run_id = data["run_id"]
         run = await test_session.get(IngestionRun, run_id)
@@ -1024,6 +1043,7 @@ class TestSourceAPI:
         client: AsyncClient,
         source_headers: dict,
         test_session,
+        test_engine,
     ):
         """Ensure TW stock FinLab direct payloads ingest, deduplicate, and persist fields."""
         payload = {
@@ -1054,7 +1074,7 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert first_response.status_code == 200
+        assert first_response.status_code == 202
         first_data = first_response.json()
         first_run_id = first_data["run_id"]
 
@@ -1063,8 +1083,9 @@ class TestSourceAPI:
             headers=source_headers,
             json=payload,
         )
-        assert second_response.status_code == 200
+        assert second_response.status_code == 202
         assert second_response.json()["run_id"] == first_run_id
+        await _execute_queued_run(test_session, test_engine, first_run_id)
 
         run = await test_session.get(IngestionRun, first_run_id)
         assert run is not None
@@ -1099,6 +1120,7 @@ class TestSourceAPI:
         client: AsyncClient,
         source_headers: dict,
         test_session,
+        test_engine,
     ):
         """Ensure metadata.asset_class=ETF routes the payload to tw_etf_eod."""
         response = await client.post(
@@ -1127,8 +1149,9 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         run_id = response.json()["run_id"]
+        await _execute_queued_run(test_session, test_engine, run_id)
 
         run = await test_session.get(IngestionRun, run_id)
         assert run is not None
@@ -1221,6 +1244,8 @@ class TestSourceAPI:
         self,
         client: AsyncClient,
         source_headers: dict,
+        test_session,
+        test_engine,
     ):
         """Ensure zero total volume is persisted as 0 rather than treated as missing."""
         response = await client.post(
@@ -1246,7 +1271,12 @@ class TestSourceAPI:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
+        await _execute_queued_run(
+            test_session,
+            test_engine,
+            response.json()["run_id"],
+        )
 
         eod_response = await client.get(
             "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-30&end_date=2024-04-30"
@@ -1396,7 +1426,7 @@ class TestSourceAPI:
             json=payload,
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
 
         dataset = await test_session.get(DatasetRegistry, dataset_key)
         assert dataset is not None

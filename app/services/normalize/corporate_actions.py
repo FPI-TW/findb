@@ -7,6 +7,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.canonical import CorporateAction
 from app.services.dq.validators import DQIssueRecord
@@ -191,7 +192,9 @@ class CorporateActionNormalizer(BaseNormalizer):
 
         return records
 
-    async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
+    async def process(
+        self, raw_payload: dict, run_id: UUID, *, commit: bool = True
+    ) -> NormalizeResult:
         """
         Process corporate action payload and upsert into canonical storage.
         Optimized with PostgreSQL ON CONFLICT to prevent race conditions.
@@ -274,6 +277,7 @@ class CorporateActionNormalizer(BaseNormalizer):
                     seen_keys.add(key)
 
                     now = utc_now()
+                    source_priority, source_fetched_at = self._source_control_values(record.source)
                     insert_stmt = insert(CorporateAction).values(
                         action_id=uuid7(),
                         instrument_id=instrument.instrument_id,
@@ -286,6 +290,8 @@ class CorporateActionNormalizer(BaseNormalizer):
                         currency=record.currency,
                         extra=record.extra,
                         source=record.source,
+                        source_priority=source_priority,
+                        source_fetched_at=source_fetched_at,
                         asof_ts=now,
                         run_id=run_id,
                         created_at=now,
@@ -302,15 +308,22 @@ class CorporateActionNormalizer(BaseNormalizer):
                             "currency": insert_stmt.excluded.currency,
                             "extra": insert_stmt.excluded.extra,
                             "source": insert_stmt.excluded.source,
+                            "source_priority": insert_stmt.excluded.source_priority,
+                            "source_fetched_at": insert_stmt.excluded.source_fetched_at,
                             "asof_ts": insert_stmt.excluded.asof_ts,
                             "run_id": insert_stmt.excluded.run_id,
                             "updated_at": now,
                         },
+                        where=self._incoming_source_wins(
+                            CorporateAction.__table__, insert_stmt.excluded
+                        ),
                     )
 
                     await self.db.execute(upsert_stmt)
                     result.success_records += 1
 
+                except SQLAlchemyError:
+                    raise
                 except Exception as e:
                     result.failed_records += 1
                     await self.record_dq_issue(
@@ -330,12 +343,11 @@ class CorporateActionNormalizer(BaseNormalizer):
             await self.update_run_status(
                 run_id, status, result.total_records, result.success_records, result.failed_records
             )
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
 
-        except Exception as e:
+        except Exception:
             await self.db.rollback()
-            result.error_message = str(e)
-            await self.update_run_status(run_id, "failed", 0, 0, 0, str(e))
-            await self.db.commit()
+            raise
 
         return result

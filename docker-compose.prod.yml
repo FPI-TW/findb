@@ -18,6 +18,21 @@ x-app-environment: &app-environment
   RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:?RATE_LIMIT_WINDOW must be set in GitHub Actions variables}"
   RAW_RETENTION_ENABLED: "${RAW_RETENTION_ENABLED:?RAW_RETENTION_ENABLED must be set in GitHub Actions variables}"
   RAW_RETENTION_DAYS: "${RAW_RETENTION_DAYS:?RAW_RETENTION_DAYS must be set in GitHub Actions variables}"
+  CELERY_BROKER_URL: "${CELERY_BROKER_URL:?CELERY_BROKER_URL must be set in GitHub Actions secrets}"
+  NORMALIZATION_EXCHANGE: "findb.ingestion.v1"
+  NORMALIZATION_QUEUE: "findb.normalize.v1"
+  NORMALIZATION_DLQ: "findb.normalize.dlq.v1"
+
+x-app-healthcheck: &app-healthcheck
+  test:
+    [
+      "CMD-SHELL",
+      "python -c 'import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(\"http://127.0.0.1:\"+port+\"/health\", timeout=5)'",
+    ]
+  interval: 15s
+  timeout: 5s
+  retries: 8
+  start_period: 30s
 
 services:
   serve:
@@ -32,6 +47,7 @@ services:
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
     volumes:
       - findb-static-data:/app/app/static/data
@@ -48,9 +64,65 @@ services:
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 1"
     volumes:
       - findb-static-data:/app/app/static/data
+
+  rabbitmq:
+    image: "rabbitmq:4.2-management@sha256:a29528adc5fa512cdadf60204e3336602ee400f8e026f5637b281959d2d51426"
+    container_name: findb-rabbitmq
+    hostname: findb-rabbitmq
+    environment:
+      RABBITMQ_NODENAME: "rabbit@findb-rabbitmq"
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?RabbitMQ user must be set in GitHub Actions secrets}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?RabbitMQ password must be set in GitHub Actions secrets}"
+      RABBITMQ_DEFAULT_VHOST: "/findb"
+      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in GitHub Actions secrets}"
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit vm_memory_high_watermark 0.60 disk_free_limit 2147483648"
+    volumes:
+      - /var/lib/findb/rabbitmq:/var/lib/rabbitmq
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  dispatcher:
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    container_name: findb-dispatcher
+    environment:
+      <<: *app-environment
+    command: python /app/scripts/dispatch_outbox.py
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    container_name: findb-worker
+    environment:
+      <<: *app-environment
+    command: celery -A app.task_queue:celery_app worker --loglevel=INFO --queues=findb.normalize.v1 --pool=prefork --concurrency=2
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A app.task_queue inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q pong",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    restart: unless-stopped
 
   nginx:
       image: nginx:alpine

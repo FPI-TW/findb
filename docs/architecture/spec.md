@@ -1,6 +1,6 @@
 # FinDB 技術規格與目前實作快照
 
-> **最後更新**: 2026-04-08
+> **最後更新**: 2026-07-15
 
 本文件保留 FinDB 的核心技術規格，並補上目前程式實際已落地的能力，避免規格與實作脫節。
 
@@ -23,13 +23,14 @@
 
 ## 二、系統架構
 
-FinDB 採用 `Fetch -> Source -> Normalize -> Serve/Admin` 的分層方式。
+FinDB 採用 `Fetch -> Source -> durable queue -> Normalize -> Serve/Admin` 的分層方式。
 
 ```text
 Fetch Layer
   -> Source API
-  -> Raw Layer + ingestion_run
-  -> Normalize
+  -> Raw Layer + ingestion_run + normalization_job + outbox (同一 DB transaction)
+  -> Outbox Dispatcher -> RabbitMQ -> Celery Worker
+  -> Normalize (canonical + DQ + terminal state 同一 DB transaction)
   -> Canonical Layer
   -> Serve API / Admin API
 ```
@@ -45,8 +46,8 @@ Fetch Layer
 - 驗證 API Key、allowlist、rate limit
 - 檢查 dataset / market / payload 基本結構
 - 寫入 `raw.market_payload`
-- 建立 `ingestion_run`
-- 以 background task 觸發 normalize
+- 建立 `ingestion_run`、`normalization_job` 與 transactional outbox
+- DB commit 成功後回 `202 Accepted`；RabbitMQ 中斷不影響 durable accept
 - 支援 `run status`、`rerun`、`dataset list`
 
 ### Normalize Layer
@@ -55,6 +56,8 @@ Fetch Layer
 - 將來源 payload mapping 為 canonical records
 - upsert instrument、identifier、calendar、EOD、macro、futures、corporate action
 - 執行 DQ 檢查並寫入 `dq_issue`
+- Celery late ack；同 dataset 以 PostgreSQL advisory lock 串行，不同 dataset 最多並行 2 個
+- RabbitMQ 只保存 delivery，raw/job/outbox 的 durable truth 位於 PostgreSQL
 
 ### Serve Layer
 
@@ -140,11 +143,13 @@ Fetch Layer
 
 - 支援 WTX 期貨合約、連續期貨 EOD 與 roll rule 資料結構
 
-### correction / dq_issue / ingestion_run
+### correction / dq_issue / ingestion_run / normalization_job / normalization_outbox
 
 - `dq_issue`：記錄資料品質問題與 resolve 狀態
 - `correction`：記錄人工修正前後快照
 - `ingestion_run`：記錄每次 ingest / rerun 的處理狀態
+- `normalization_job`：記錄 execution attempt、retry、lease 與 terminal state
+- `normalization_outbox`：以 publisher lease、confirm 與無上限 backoff 保證任務可補送
 
 ---
 
@@ -210,6 +215,8 @@ Fetch Layer
 - `GET /api/v1/admin/raw-payloads/{run_id}`
 - `GET /api/v1/admin/corrections`
 - `POST /api/v1/admin/runs/bulk-rerun`
+- `POST/GET/DELETE /api/v1/admin/source-clients`
+- `GET /api/v1/admin/queue/health`
 
 ---
 

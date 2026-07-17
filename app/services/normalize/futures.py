@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.canonical import FuturesContinuousEOD, FuturesContract, RollRule
 from app.services.dq.validators import DQIssueRecord
@@ -136,6 +137,7 @@ class FuturesContractNormalizer(BaseNormalizer):
         run_id: UUID,
     ) -> None:
         """Upsert futures contract metadata."""
+        source_priority, source_fetched_at = self._source_control_values(record.source)
         stmt = insert(FuturesContract).values(
             contract_id=uuid7(),
             instrument_id=instrument_id,
@@ -145,6 +147,8 @@ class FuturesContractNormalizer(BaseNormalizer):
             currency=record.currency,
             extra=record.extra,
             source=record.source,
+            source_priority=source_priority,
+            source_fetched_at=source_fetched_at,
             asof_ts=utc_now(),
             run_id=run_id,
             created_at=utc_now(),
@@ -158,14 +162,19 @@ class FuturesContractNormalizer(BaseNormalizer):
                 "currency": stmt.excluded.currency,
                 "extra": stmt.excluded.extra,
                 "source": stmt.excluded.source,
+                "source_priority": stmt.excluded.source_priority,
+                "source_fetched_at": stmt.excluded.source_fetched_at,
                 "asof_ts": stmt.excluded.asof_ts,
                 "run_id": stmt.excluded.run_id,
                 "updated_at": stmt.excluded.updated_at,
             },
+            where=self._incoming_source_wins(FuturesContract.__table__, stmt.excluded),
         )
         await self.db.execute(stmt)
 
-    async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
+    async def process(
+        self, raw_payload: dict, run_id: UUID, *, commit: bool = True
+    ) -> NormalizeResult:
         """Process futures contract payload and upsert into canonical storage."""
         result = NormalizeResult(run_id=run_id)
 
@@ -246,12 +255,12 @@ class FuturesContractNormalizer(BaseNormalizer):
                 result.success_records,
                 result.failed_records,
             )
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
 
-        except Exception as e:
-            result.error_message = str(e)
-            await self.update_run_status(run_id, "failed", 0, 0, 0, str(e))
-            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         return result
 
@@ -451,6 +460,7 @@ class FuturesContinuousNormalizer(BaseNormalizer):
         roll_rule_id: UUID | None,
     ) -> None:
         """Upsert continuous futures EOD record."""
+        source_priority, source_fetched_at = self._source_control_values(record.source)
         stmt = insert(FuturesContinuousEOD).values(
             id=uuid7(),
             instrument_id=instrument_id,
@@ -467,6 +477,8 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             volume=record.volume,
             turnover=record.turnover,
             source=record.source,
+            source_priority=source_priority,
+            source_fetched_at=source_fetched_at,
             asof_ts=utc_now(),
             run_id=run_id,
             created_at=utc_now(),
@@ -484,10 +496,13 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                 "volume": stmt.excluded.volume,
                 "turnover": stmt.excluded.turnover,
                 "source": stmt.excluded.source,
+                "source_priority": stmt.excluded.source_priority,
+                "source_fetched_at": stmt.excluded.source_fetched_at,
                 "asof_ts": stmt.excluded.asof_ts,
                 "run_id": stmt.excluded.run_id,
                 "updated_at": stmt.excluded.updated_at,
             },
+            where=self._incoming_source_wins(FuturesContinuousEOD.__table__, stmt.excluded),
         )
 
         await self.db.execute(stmt)
@@ -502,7 +517,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
         self._identifier_cache.clear()
         self._roll_rule_cache.clear()
 
-    async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
+    async def process(
+        self, raw_payload: dict, run_id: UUID, *, commit: bool = True
+    ) -> NormalizeResult:
         """Process futures continuous payload and upsert into canonical storage."""
         result = NormalizeResult(run_id=run_id)
 
@@ -581,6 +598,8 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                     )
                     result.success_records += 1
 
+                except SQLAlchemyError:
+                    raise
                 except Exception as e:
                     result.failed_records += 1
                     result.dq_issues.append(
@@ -603,12 +622,12 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                 result.success_records,
                 result.failed_records,
             )
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
 
-        except Exception as e:
-            result.error_message = str(e)
-            await self.update_run_status(run_id, "failed", 0, 0, 0, str(e))
-            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         return result
 

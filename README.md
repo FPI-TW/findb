@@ -261,8 +261,17 @@ docker compose up -d app
 
 ```bash
 uv run python scripts/dev.py up-db
+uv run python scripts/dev.py up-rabbit
+uv run python scripts/dev.py migrate
+uv run python scripts/dev.py seed-data
 uv run python scripts/dev.py up-server
+uv run python scripts/dev.py up-app
 uv run python scripts/dev.py up
+uv run python scripts/dev.py start
+uv run python scripts/dev.py restart
+uv run python scripts/dev.py build
+uv run python scripts/dev.py queue-status
+uv run python scripts/dev.py queue-logs
 uv run python scripts/dev.py test-db
 uv run python scripts/dev.py down
 uv run python scripts/dev.py partial-dump-validate
@@ -276,15 +285,20 @@ uv run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/<seed_
 
 ```bash
 # macOS / Linux
-make up-db
-make up-server
 make up
-make test-db
+make start
+make restart
+make build
+make migrate
+make seed
+make up-server
+make up-db
 make down
-make partial-dump-validate
-make partial-dump-run
-make seed-upsert
-make seed-upsert-truncate
+make status
+make logs
+make test
+make format
+make check
 ```
 
 ```powershell
@@ -292,6 +306,11 @@ make seed-upsert-truncate
 .\scripts\dev.ps1 up-db
 .\scripts\dev.ps1 up-server
 .\scripts\dev.ps1 up
+.\scripts\dev.ps1 start
+.\scripts\dev.ps1 restart
+.\scripts\dev.ps1 build
+.\scripts\dev.ps1 migrate
+.\scripts\dev.ps1 seed-data
 .\scripts\dev.ps1 test-db
 .\scripts\dev.ps1 down
 .\scripts\dev.ps1 partial-dump-validate
@@ -315,8 +334,21 @@ uv run python scripts/dev.py up-server
 ```
 
 ```bash
-# 同時啟動 app image + db image（兩容器）
+# 完整啟動 DB、RabbitMQ、app、dispatcher 與 worker；自動 migrate + seed
 uv run python scripts/dev.py up
+
+# Docker Desktop / Docker daemon 更新或重啟後，以既有 image 完整啟動
+uv run python scripts/dev.py start
+
+# 完整停止並依賴順序重啟全部核心 containers
+uv run python scripts/dev.py restart
+
+# 只啟動 app + DB，不啟動 queue workers
+uv run python scripts/dev.py up-app
+
+# 查看 queue services
+uv run python scripts/dev.py queue-status
+uv run python scripts/dev.py queue-logs
 
 # 初始化資料（以 /seed 內 seed 包匯入可重現資料）
 uv run python scripts/dev.py seed-upsert
@@ -324,6 +356,19 @@ uv run python scripts/dev.py seed-upsert
 # 跑包含 DB 的測試
 uv run python scripts/dev.py test-db
 ```
+
+日常建議直接使用 Makefile：
+
+| 情境 | 指令 | 行為 |
+| --- | --- | --- |
+| 首次啟動、拉取程式更新 | `make up` | 啟動 DB/RabbitMQ，migrate、seed、build，再啟動 app/dispatcher/worker |
+| Docker 更新或 daemon 重啟 | `make start` | 使用既有 images 完整啟動，不 migrate、不 build |
+| 完整重啟 containers | `make restart` | 依安全順序停止並重啟全部核心 containers，不 build |
+| Dockerfile 或 dependencies 變更 | `make build` | 只重建 app/dispatcher/worker images |
+| 新增或拉取 migration | `make migrate` | 啟動 DB 並執行 `alembic upgrade head` |
+| dataset registry seed 變更 | `make seed` | migrate 後執行可重複的 registry seed |
+
+`make up`、`make start`、`make restart` 的核心服務範圍皆為 DB、RabbitMQ、app、dispatcher 與 worker。`pgadmin`、`raw-cleanup` 是 tools profile，不包含在日常完整 stack。
 
 可選工具服務（不預設啟動）：
 

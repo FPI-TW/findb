@@ -147,6 +147,10 @@ jobs:
       FINDB_STATIC_CACHE_BASE_URL: ${{ vars.FINDB_STATIC_CACHE_BASE_URL }}
       FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
       FINDB_LATEST_PRICE_WORKERS: ${{ vars.FINDB_LATEST_PRICE_WORKERS }}
+      CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
+      RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
+      RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
+      RABBITMQ_ERLANG_COOKIE: ${{ secrets.RABBITMQ_ERLANG_COOKIE }}
 
     steps:
       - uses: actions/checkout@v7
@@ -155,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEY SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS; do
+          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEY SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
               missing=1
@@ -196,6 +200,22 @@ jobs:
           script: |
             set -euo pipefail
             mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
+            cpu_count="$(getconf _NPROCESSORS_ONLN)"
+            memory_kib="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+            if [ "$cpu_count" -lt 4 ] || [ "$memory_kib" -lt 8388608 ]; then
+              echo "EC2 must have at least 4 vCPU and 8 GiB RAM (found ${cpu_count} vCPU, ${memory_kib} KiB)"
+              exit 1
+            fi
+            if ! mountpoint -q /var/lib/findb/rabbitmq; then
+              echo "/var/lib/findb/rabbitmq must be a separately mounted encrypted 20 GiB gp3 EBS volume"
+              exit 1
+            fi
+            rabbitmq_disk_kib="$(df --output=size /var/lib/findb/rabbitmq | tail -1 | tr -d ' ')"
+            if [ "$rabbitmq_disk_kib" -lt 20000000 ]; then
+              echo "RabbitMQ EBS volume is smaller than 20 GiB"
+              exit 1
+            fi
+            sudo chown -R 999:999 /var/lib/findb/rabbitmq
 
       - name: Sync deploy artifacts to EC2
         uses: appleboy/scp-action@v1
@@ -225,7 +245,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE
           script: |
             set -euo pipefail
             echo "Logging in to GHCR"
@@ -249,13 +269,53 @@ jobs:
             fi
             docker compose -f docker-compose.prod.yml pull
 
+            echo "Checking production database before migration"
+            docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
+              python /app/scripts/predeploy_db_check.py
+
+            echo "Pausing every database writer before schema migration"
+            docker compose -f docker-compose.prod.yml stop \
+              ingest dispatcher worker raw-cleanup 2>/dev/null || true
+
             echo "Running Alembic migrations"
             docker compose -f docker-compose.prod.yml run --rm --no-deps ingest sh -euc '
               uv run alembic upgrade head
               uv run alembic current
             '
 
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml up -d \
+              --remove-orphans --wait --wait-timeout 180
+
+            echo "Checking RabbitMQ and version-controlled queue topology"
+            docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
+            topology_ready=0
+            for attempt in $(seq 1 24); do
+              queue_state="$(docker compose -f docker-compose.prod.yml exec -T rabbitmq \
+                rabbitmqctl list_queues -p /findb name durable arguments 2>/dev/null || true)"
+              if echo "$queue_state" | grep -Fq "findb.normalize.v1" \
+                && echo "$queue_state" | grep -Fq "findb.normalize.dlq.v1"; then
+                echo "$queue_state"
+                topology_ready=1
+                break
+              fi
+              echo "RabbitMQ topology not ready (attempt ${attempt}/24); waiting 5s..."
+              sleep 5
+            done
+            if [ "$topology_ready" -ne 1 ]; then
+              echo "RabbitMQ queue topology was not declared"
+              docker compose -f docker-compose.prod.yml logs --tail=200 rabbitmq dispatcher worker
+              exit 1
+            fi
+
+            echo "Checking dispatcher and Celery worker"
+            for service in dispatcher worker; do
+              if ! docker compose -f docker-compose.prod.yml ps --status running --services | grep -qx "$service"; then
+                docker compose -f docker-compose.prod.yml logs --tail=200 "$service"
+                exit 1
+              fi
+            done
+            docker compose -f docker-compose.prod.yml exec -T worker \
+              celery -A app.task_queue inspect ping --timeout=10
 
             echo "Waiting for app readiness"
             for service in serve ingest; do
@@ -276,6 +336,11 @@ jobs:
                 exit 1
               fi
             done
+
+            echo "Waiting for DB-authoritative queue health"
+            docker compose -f docker-compose.prod.yml exec -T ingest \
+              python /app/scripts/check_queue_health.py \
+              --attempts 24 --interval 5 --maximum-heartbeat-age 90
 
             echo "Restarting nginx proxy"
             docker compose -f docker-compose.prod.yml restart nginx

@@ -139,7 +139,7 @@ Phase 1 執行紀錄（2026-07-09）：
 - `canonical_correction.record_id` 維持 UUID 型別：EOD 修正改用 `instrument_id + trade_date` 導出的穩定 logical UUID（md5），migration 同步改寫歷史紀錄，downgrade 亦以同一導出規則重建 id，round-trip 一致。
 - 年度 partition 由兩層機制維護：ingest 時 `ensure_eod_partition()` 寫入前自動建立、migration 預建未來 5 年 + DEFAULT partition 作為安全網（DEFAULT 累積資料時的處置見 known_issues R7）。
 - macro normalizer 的 vocabulary 驗證為逐筆隔離：`map_fields` 標記 `vocabulary_error`、`process` 轉為 `INVALID_VOCABULARY` DQ issue，單筆格式錯誤（如 `S&P`）不再使整批 run 失敗。
-- 本地驗證：`make test-db` 通過（223 passed, 2 skipped）；臨時 DB `findb_migration_test` 跑 `alembic upgrade head` 與 `alembic downgrade e7f8a9b0c1d2` 通過。
+- 本地驗證：`make test` 通過（223 passed, 2 skipped）；臨時 DB `findb_migration_test` 跑 `alembic upgrade head` 與 `alembic downgrade e7f8a9b0c1d2` 通過。
 
 ### Phase 2: Ingest 與 Serve 部署角色分離（導入大量資料前必做）
 
@@ -253,6 +253,6 @@ Phase 6 執行紀錄（2026-07-09）：
 
 ## 驗收原則
 
-- 每個 Phase 的 schema 變更一律走 Alembic，先在 partial dump 環境演練（`make seed-upsert` + `migration_workflow.md` 流程）。
+- 每個 Phase 的 schema 變更一律走 Alembic，先在 partial dump 環境演練（`uv run python scripts/dev.py seed-upsert` + `migration_workflow.md` 流程）。
 - Phase 1、2 完成後，以 `scalability_optimization_checklist.md` Phase 0 的壓測基線重新量測，確認無回歸。
 - Serve API 在所有 Phase 中維持唯讀，不因任何新需求破例。

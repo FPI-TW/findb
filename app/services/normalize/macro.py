@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models.canonical import MacroObservation, MacroSeries
@@ -224,33 +224,8 @@ class MacroNormalizer(BaseNormalizer):
         if cached is not None:
             return cached
 
-        stmt = select(MacroSeries).where(MacroSeries.source_code == record.source_code)
-        result = await self.db.execute(stmt)
-        series = result.scalar_one_or_none()
-
-        if series:
-            updated = False
-            if record.name and series.name != record.name:
-                series.name = record.name
-                updated = True
-            if record.unit and series.unit != record.unit:
-                series.unit = record.unit
-                updated = True
-            if record.frequency and series.frequency != record.frequency:
-                series.frequency = record.frequency
-                updated = True
-            if record.market and series.market != record.market:
-                series.market = record.market
-                updated = True
-            if record.source and series.source != record.source:
-                series.source = record.source
-                updated = True
-            if updated:
-                series.updated_at = utc_now()
-            self._series_cache[record.source_code] = series
-            return series
-
-        series = MacroSeries(
+        now = utc_now()
+        insert_stmt = insert(MacroSeries).values(
             series_id=uuid7(),
             name=record.name or record.source_code,
             unit=record.unit,
@@ -258,11 +233,24 @@ class MacroNormalizer(BaseNormalizer):
             market=record.market,
             source_code=record.source_code,
             source=record.source,
-            created_at=utc_now(),
-            updated_at=utc_now(),
+            created_at=now,
+            updated_at=now,
         )
-        self.db.add(series)
-        await self.db.flush()
+        stmt = insert_stmt.on_conflict_do_update(
+            constraint="uq_macro_series_source_code",
+            set_={
+                "name": insert_stmt.excluded.name,
+                "unit": func.coalesce(insert_stmt.excluded.unit, MacroSeries.unit),
+                "frequency": func.coalesce(insert_stmt.excluded.frequency, MacroSeries.frequency),
+                "market": func.coalesce(insert_stmt.excluded.market, MacroSeries.market),
+                "source": func.coalesce(insert_stmt.excluded.source, MacroSeries.source),
+                "updated_at": now,
+            },
+        ).returning(MacroSeries.series_id)
+        series_id = (await self.db.execute(stmt)).scalar_one()
+        series = await self.db.get(MacroSeries, series_id)
+        if series is None:
+            raise RuntimeError("Macro series upsert did not return a persisted row")
         self._series_cache[record.source_code] = series
         return series
 
@@ -273,12 +261,15 @@ class MacroNormalizer(BaseNormalizer):
         run_id: UUID,
     ) -> None:
         """Upsert macro observation."""
+        source_priority, source_fetched_at = self._source_control_values(record.source)
         stmt = insert(MacroObservation).values(
             id=uuid7(),
             series_id=series_id,
             obs_date=record.obs_date,
             value=record.value,
             source=record.source,
+            source_priority=source_priority,
+            source_fetched_at=source_fetched_at,
             asof_ts=utc_now(),
             run_id=run_id,
             created_at=utc_now(),
@@ -289,14 +280,19 @@ class MacroNormalizer(BaseNormalizer):
             set_={
                 "value": stmt.excluded.value,
                 "source": stmt.excluded.source,
+                "source_priority": stmt.excluded.source_priority,
+                "source_fetched_at": stmt.excluded.source_fetched_at,
                 "asof_ts": stmt.excluded.asof_ts,
                 "run_id": stmt.excluded.run_id,
                 "updated_at": stmt.excluded.updated_at,
             },
+            where=self._incoming_source_wins(MacroObservation.__table__, stmt.excluded),
         )
         await self.db.execute(stmt)
 
-    async def process(self, raw_payload: dict, run_id: UUID) -> NormalizeResult:
+    async def process(
+        self, raw_payload: dict, run_id: UUID, *, commit: bool = True
+    ) -> NormalizeResult:
         """Process macro payload and upsert into canonical storage."""
         result = NormalizeResult(run_id=run_id)
 
@@ -393,12 +389,12 @@ class MacroNormalizer(BaseNormalizer):
                 result.success_records,
                 result.failed_records,
             )
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
 
-        except Exception as e:
-            result.error_message = str(e)
-            await self.update_run_status(run_id, "failed", 0, 0, 0, str(e))
-            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         return result
 

@@ -148,6 +148,52 @@ class BulkRerunResponse(BaseModel):
     error_details: list[str]
 
 
+class SourceClientCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    source_name: str = Field(..., min_length=1, max_length=50)
+    allowed_datasets: Optional[list[str]] = None
+    rate_limit_requests: int = Field(default=100, ge=1)
+    rate_limit_window: int = Field(default=60, ge=1)
+
+
+class SourceClientResponse(BaseModel):
+    client_id: UUID
+    name: str
+    source_name: str
+    allowed_datasets: Optional[list[str]] = None
+    rate_limit_requests: int
+    rate_limit_window: int
+    created_at: datetime
+    updated_at: datetime
+    revoked_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SourceClientCreateResponse(BaseModel):
+    success: bool = True
+    api_key: str
+    data: SourceClientResponse
+
+
+class SourceClientListResponse(BaseModel):
+    success: bool = True
+    data: list[SourceClientResponse]
+
+
+class QueueHealthResponse(BaseModel):
+    counts: dict[str, int]
+    oldest_queued_at: Optional[datetime] = None
+    oldest_queued_age_seconds: Optional[float] = None
+    unpublished_outbox: int
+    oldest_unpublished_outbox_at: Optional[datetime] = None
+    oldest_unpublished_outbox_age_seconds: Optional[float] = None
+    expired_leases: int
+    retry_exhausted: int
+    last_worker_heartbeat_at: Optional[datetime] = None
+    worker_heartbeat_age_seconds: Optional[float] = None
+
+
 # ── Instrument Cache ──────────────────────────────────────────────────────────
 
 

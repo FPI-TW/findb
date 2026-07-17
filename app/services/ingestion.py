@@ -3,6 +3,8 @@ Data ingestion service.
 Handles raw data storage and triggers normalization.
 """
 
+import hashlib
+import json
 import logging
 from datetime import timedelta
 from typing import Any, Optional, Protocol
@@ -15,7 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
-from app.models.registry import DatasetRegistry, IngestionRun
+from app.models.registry import (
+    DatasetRegistry,
+    IngestionRun,
+    NormalizationJob,
+    NormalizationOutbox,
+)
 from app.schemas.source import IngestRequest, ensure_data_items_count_within_limit
 from app.services.normalize import (
     BaseNormalizer,
@@ -152,6 +159,14 @@ class MarketMismatchError(ValueError):
     """Raised when dataset market does not match ingest API market."""
 
 
+class IdempotencyPayloadMismatchError(ValueError):
+    """Raised when an idempotency key is reused for different content."""
+
+
+class SourceIdentityMismatchError(ValueError):
+    """Raised when a credential-bound source does not match the request."""
+
+
 def _normalize_market(market: str) -> str:
     """Normalize market code for comparisons."""
     return market.strip().upper()
@@ -209,6 +224,18 @@ def _format_normalization_error(exc: Exception) -> str:
     if len(message) > _NORMALIZATION_ERROR_MESSAGE_LIMIT:
         return f"{message[: _NORMALIZATION_ERROR_MESSAGE_LIMIT - 3]}..."
     return message
+
+
+def payload_sha256(payload: dict) -> str:
+    """Return a stable digest for idempotency content comparison."""
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 async def _mark_unhandled_normalization_failure(
@@ -298,15 +325,25 @@ class IngestionService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        session_info = db.info if isinstance(db.info, dict) else {}
+        self.ownership_enforced = "source_client_id" in session_info
+        self.source_client_id: UUID | None = session_info.get("source_client_id")
+        self.bound_source: str | None = session_info.get("source_name")
+        self.allowed_datasets: list[str] | None = session_info.get("allowed_datasets")
 
     async def get_raw_payload_by_idempotency_key(
         self,
         idempotency_key: str,
+        dataset_key: str | None = None,
     ) -> Optional[RawMarketPayload]:
-        """Get raw payload by idempotency key."""
-        stmt = select(RawMarketPayload).where(
-            RawMarketPayload.idempotency_key == idempotency_key,
-        )
+        """Get raw payload in the authenticated provider idempotency scope."""
+        stmt = select(RawMarketPayload).where(RawMarketPayload.idempotency_key == idempotency_key)
+        if self.source_client_id is None:
+            stmt = stmt.where(RawMarketPayload.source_client_id.is_(None))
+        else:
+            stmt = stmt.where(RawMarketPayload.source_client_id == self.source_client_id)
+        if dataset_key is not None:
+            stmt = stmt.where(RawMarketPayload.dataset_key == dataset_key)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -400,15 +437,21 @@ class IngestionService:
         request_key: str | None = None,
         raw_records: int = 0,
         metadata: dict | None = None,
+        run_id: UUID | None = None,
+        raw_payload_id: UUID | None = None,
+        status: str = "queued",
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
-            run_id=uuid7(),
+            run_id=run_id or uuid7(),
             dataset_key=dataset_key,
             source=source,
+            source_client_id=self.source_client_id,
+            raw_payload_id=raw_payload_id,
             request_key=request_key,
             raw_records=raw_records,
-            status="pending",
+            status=status,
+            max_attempts=settings.NORMALIZATION_MAX_ATTEMPTS,
             metadata_=metadata,
             created_at=utc_now(),
         )
@@ -422,20 +465,23 @@ class IngestionService:
         run_id: UUID,
     ) -> RawMarketPayload:
         """Store raw payload in the database."""
-        # Calculate expiration
         fetched_at = ensure_utc(request.fetched_at)
-        expire_at = fetched_at + timedelta(days=settings.RAW_RETENTION_DAYS)
+        accepted_at = utc_now()
+        expire_at = accepted_at + timedelta(days=settings.RAW_RETENTION_DAYS)
 
         raw_payload = RawMarketPayload(
+            raw_payload_id=uuid7(),
+            source_client_id=self.source_client_id,
             dataset_key=request.dataset_key,
             source=request.source,
             request_key=request.request_key,
             idempotency_key=request.idempotency_key,
+            payload_sha256=payload_sha256(request.payload),
             payload=request.payload,
             fetched_at=fetched_at,
             expire_at=expire_at,
             run_id=run_id,
-            created_at=utc_now(),
+            created_at=accepted_at,
         )
 
         self.db.add(raw_payload)
@@ -444,9 +490,61 @@ class IngestionService:
 
     async def get_raw_payload_by_run(self, run_id: UUID) -> Optional[RawMarketPayload]:
         """Get raw payload by ingestion run id."""
+        run = await self.db.get(IngestionRun, run_id)
+        if run and self.ownership_enforced and run.source_client_id != self.source_client_id:
+            return None
+        if run and run.raw_payload_id:
+            raw = await self.db.get(RawMarketPayload, run.raw_payload_id)
+            if raw is not None:
+                return raw
         stmt = select(RawMarketPayload).where(RawMarketPayload.run_id == run_id)
+        if self.ownership_enforced:
+            if self.source_client_id is None:
+                stmt = stmt.where(RawMarketPayload.source_client_id.is_(None))
+            else:
+                stmt = stmt.where(RawMarketPayload.source_client_id == self.source_client_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def create_normalization_job(
+        self,
+        run: IngestionRun,
+        *,
+        available_at=None,
+    ) -> NormalizationJob:
+        """Create a durable job and its transactional outbox event."""
+        now = utc_now()
+        delivery_id = uuid7()
+        job = NormalizationJob(
+            job_id=uuid7(),
+            run_id=run.run_id,
+            dataset_key=run.dataset_key,
+            status="queued",
+            delivery_id=delivery_id,
+            attempt_count=0,
+            max_attempts=settings.NORMALIZATION_MAX_ATTEMPTS,
+            available_at=available_at or now,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(job)
+        await self.db.flush()
+        self.db.add(
+            NormalizationOutbox(
+                outbox_id=uuid7(),
+                job_id=job.job_id,
+                run_id=run.run_id,
+                delivery_id=delivery_id,
+                event_type="normalize_run",
+                status="pending",
+                available_at=available_at or now,
+                publish_attempts=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await self.db.flush()
+        return job
 
     async def rerun_from_raw(self, run_id: UUID) -> tuple[UUID, str, str, dict]:
         """Create a new ingestion run from a stored raw payload."""
@@ -476,7 +574,9 @@ class IngestionService:
             request_key=raw_payload.request_key,
             raw_records=raw_records,
             metadata=metadata,
+            raw_payload_id=raw_payload.raw_payload_id,
         )
+        await self.create_normalization_job(run)
         await self.db.commit()
 
         return run.run_id, run.status, raw_payload.dataset_key, raw_payload.payload
@@ -492,6 +592,15 @@ class IngestionService:
         Returns:
             Tuple of (run_id, status, is_duplicate)
         """
+        if self.bound_source is not None and request.source.strip().lower() != self.bound_source:
+            raise SourceIdentityMismatchError(
+                f"Credential is bound to source {self.bound_source}, not {request.source}"
+            )
+        if self.allowed_datasets is not None and request.dataset_key not in self.allowed_datasets:
+            raise DatasetNotFoundError(
+                f"Dataset {request.dataset_key} is not allowed for this source client"
+            )
+
         # Validate dataset exists and active
         dataset = await self.get_dataset(request.dataset_key, include_inactive=True)
         if not dataset:
@@ -508,6 +617,7 @@ class IngestionService:
                     "request_key": request.request_key,
                     "raw_records": 0,
                 },
+                status="failed",
             )
             run.status = "failed"
             run.error_message = f"Dataset {request.dataset_key} is inactive"
@@ -537,8 +647,17 @@ class IngestionService:
                 )
 
         # Check for duplicate request
-        existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)
+        request_payload_sha256 = payload_sha256(request.payload)
+        existing_raw = await self.get_raw_payload_by_idempotency_key(
+            request.idempotency_key,
+            request.dataset_key,
+        )
         if existing_raw:
+            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
+            if existing_digest != request_payload_sha256:
+                raise IdempotencyPayloadMismatchError(
+                    "idempotency_key is already associated with a different payload"
+                )
             existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
             status = existing_run.status if existing_run else "unknown"
             logger.info(
@@ -562,6 +681,7 @@ class IngestionService:
                     "request_key": request.request_key,
                     "raw_records": 0,
                 },
+                status="failed",
             )
             run.status = "failed"
             run.error_message = str(exc)
@@ -577,25 +697,34 @@ class IngestionService:
             "raw_records": raw_records,
         }
 
-        # Create ingestion run
-        run = await self.create_ingestion_run(
-            request.dataset_key,
-            source=request.source,
-            request_key=request.request_key,
-            raw_records=raw_records,
-            metadata=metadata,
-        )
-
         try:
-            # Store raw payload
-            await self.store_raw_payload(request, run.run_id)
-
-            # Commit transaction
+            run_id = uuid7()
+            raw_payload = await self.store_raw_payload(request, run_id)
+            run = await self.create_ingestion_run(
+                request.dataset_key,
+                source=request.source,
+                request_key=request.request_key,
+                raw_records=raw_records,
+                metadata=metadata,
+                run_id=run_id,
+                raw_payload_id=raw_payload.raw_payload_id,
+            )
+            await self.create_normalization_job(run)
             await self.db.commit()
         except IntegrityError:
             await self.db.rollback()
-            existing_raw = await self.get_raw_payload_by_idempotency_key(request.idempotency_key)
+            existing_raw = await self.get_raw_payload_by_idempotency_key(
+                request.idempotency_key,
+                request.dataset_key,
+            )
             if existing_raw:
+                existing_digest = existing_raw.payload_sha256 or payload_sha256(
+                    existing_raw.payload
+                )
+                if existing_digest != request_payload_sha256:
+                    raise IdempotencyPayloadMismatchError(
+                        "idempotency_key is already associated with a different payload"
+                    )
                 existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
                 status = existing_run.status if existing_run else "unknown"
                 logger.info(
@@ -615,19 +744,23 @@ class IngestionService:
             request.request_key,
         )
 
-        # TODO: Trigger normalization (sync or async)
-        # For now, we'll leave status as "pending"
-
         return run.run_id, run.status, False
 
     async def get_run_status(self, run_id: UUID) -> Optional[IngestionRun]:
         """Get ingestion run status."""
         stmt = select(IngestionRun).where(IngestionRun.run_id == run_id)
+        if self.ownership_enforced:
+            if self.source_client_id is None:
+                stmt = stmt.where(IngestionRun.source_client_id.is_(None))
+            else:
+                stmt = stmt.where(IngestionRun.source_client_id == self.source_client_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def list_datasets(self) -> list[DatasetRegistry]:
         """List all active datasets."""
         stmt = select(DatasetRegistry).where(DatasetRegistry.is_active.is_(True))
+        if self.allowed_datasets is not None:
+            stmt = stmt.where(DatasetRegistry.dataset_key.in_(self.allowed_datasets))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
