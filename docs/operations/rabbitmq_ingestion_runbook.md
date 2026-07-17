@@ -4,11 +4,9 @@
 
 RabbitMQ 是單節點、可重建的 delivery layer，不是 durable truth，也不提供 EC2/node failure HA。已接受工作的唯一真相是 Aurora/RDS 的 `raw.market_payload`、`ingestion_run`、`normalization_job` 與 `normalization_outbox`。API 僅在四者同一 transaction commit 後回 `202`。
 
-## EC2 與 EBS 前置條件
+## EC2 前置條件
 
-- 建立 20 GiB encrypted gp3 EBS，設定 `DeleteOnTermination=false`。
-- 格式化後以 filesystem UUID 寫入 `/etc/fstab`，掛載點固定為 `/var/lib/findb/rabbitmq`。
-- 執行 `findmnt /var/lib/findb/rabbitmq`、`lsblk -f`、`df -h /var/lib/findb/rabbitmq` 驗證；RabbitMQ container UID/GID 999 必須可寫。
+- Deploy workflow 會建立 `/var/lib/findb/rabbitmq` 並設定 RabbitMQ container UID/GID 999 可寫；資料會保留於 EC2 host filesystem，請由磁碟監控與備份政策管理容量及復原需求。
 - 5672/15672 不建立 EC2 security-group ingress，也不在 Compose 映射 host port。
 
 Production secrets 必須設定 `CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE`。URL 使用 vhost `/findb`；若以 URI 表示，slash 必須正確 percent-encode 或使用已驗證可連線的完整 secret。

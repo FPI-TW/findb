@@ -199,16 +199,8 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -euo pipefail
+            sudo mkdir -p /var/lib/findb/rabbitmq
             mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
-            if ! mountpoint -q /var/lib/findb/rabbitmq; then
-              echo "/var/lib/findb/rabbitmq must be a separately mounted encrypted 20 GiB gp3 EBS volume"
-              exit 1
-            fi
-            rabbitmq_disk_kib="$(df --output=size /var/lib/findb/rabbitmq | tail -1 | tr -d ' ')"
-            if [ "$rabbitmq_disk_kib" -lt 20000000 ]; then
-              echo "RabbitMQ EBS volume is smaller than 20 GiB"
-              exit 1
-            fi
             sudo chown -R 999:999 /var/lib/findb/rabbitmq
 
       - name: Sync deploy artifacts to EC2
