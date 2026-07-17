@@ -20,7 +20,7 @@ Normalization queue 透過 `findb-normalization-consumer-timeout` RabbitMQ polic
 部署前必須全部成立：
 
 - RDS snapshot 與 point-in-time recovery 已確認，且 production clone 已成功跑到 Alembic head。
-- `python /app/scripts/predeploy_db_check.py` 通過：沒有重複 raw `run_id`、超過五分鐘的 transaction，並保留至少 80 個 DB connection slots。
+- `python /app/scripts/predeploy_db_check.py` 通過：沒有重複 raw `run_id`、超過五分鐘的 transaction，並在扣除 PostgreSQL reserved slots 後保留至少 10 個一般 client connection slots；可用 `PREDEPLOY_MIN_DB_CONNECTION_HEADROOM` 調高門檻。
 - data-provider 已暫停排程，或已確認 timeout、429、502、503、504 會使用相同 `Idempotency-Key` 重試。
 - 第一次 durable queue 部署維持 `RAW_RETENTION_ENABLED=false`；待 backlog、reconciliation 與監控穩定後才開啟。
 - CloudWatch Agent、container monitor 與 queue-health custom metrics 已存在；沒有監控時不得恢復無人值守的 provider 流量。

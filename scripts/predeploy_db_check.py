@@ -12,6 +12,18 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+DEFAULT_MINIMUM_CONNECTION_HEADROOM = 10
+
+
+def calculate_connection_headroom(
+    *,
+    max_connections: int,
+    current_connections: int,
+    reserved_connection_slots: int,
+) -> int:
+    """Return slots available to ordinary client connections."""
+    return max(0, max_connections - reserved_connection_slots - current_connections)
+
 
 async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
     """Collect migration risk indicators without changing database state."""
@@ -44,10 +56,18 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
             max_connections = int(
                 await connection.scalar(text("SELECT current_setting('max_connections')::int")) or 0
             )
+            reserved_connection_slots = int(await connection.scalar(text("""
+                        SELECT
+                            current_setting('superuser_reserved_connections')::int
+                            + COALESCE(
+                                NULLIF(current_setting('reserved_connections', true), '')::int,
+                                0
+                            )
+                        """)) or 0)
             current_connections = int(await connection.scalar(text("""
                         SELECT count(*)
                         FROM pg_stat_activity
-                        WHERE datname = current_database()
+                        WHERE backend_type = 'client backend'
                         """)) or 0)
             long_transactions = int(await connection.scalar(text("""
                         SELECT count(*)
@@ -68,8 +88,13 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
         "pending_or_processing_with_raw": int(pending_counts.with_raw or 0),
         "pending_or_processing_missing_raw": int(pending_counts.missing_raw or 0),
         "max_connections": max_connections,
+        "reserved_connection_slots": reserved_connection_slots,
         "current_connections": current_connections,
-        "connection_headroom": max_connections - current_connections,
+        "connection_headroom": calculate_connection_headroom(
+            max_connections=max_connections,
+            current_connections=current_connections,
+            reserved_connection_slots=reserved_connection_slots,
+        ),
         "long_transactions_over_5m": long_transactions,
     }
 
@@ -97,8 +122,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--minimum-connection-headroom",
         type=int,
-        default=int(os.getenv("PREDEPLOY_MIN_DB_CONNECTION_HEADROOM", "80")),
-        help="Required free database connection slots (default: 80)",
+        default=int(
+            os.getenv(
+                "PREDEPLOY_MIN_DB_CONNECTION_HEADROOM",
+                str(DEFAULT_MINIMUM_CONNECTION_HEADROOM),
+            )
+        ),
+        help=(
+            "Required free ordinary database connection slots "
+            f"(default: {DEFAULT_MINIMUM_CONNECTION_HEADROOM})"
+        ),
     )
     return parser
 
