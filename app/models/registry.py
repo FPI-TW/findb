@@ -94,6 +94,7 @@ class IngestionRun(Base):
     __table_args__ = (
         Index("idx_run_dataset", "dataset_key"),
         Index("idx_run_status", "status"),
+        Index("idx_run_raw_payload", "raw_payload_id"),
     )
 
     run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
