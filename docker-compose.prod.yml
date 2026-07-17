@@ -1,3 +1,5 @@
+x-normalization-consumer-timeout: &normalization-consumer-timeout "3600000"
+
 x-app-environment: &app-environment
   APP_NAME: "${APP_NAME:?APP_NAME must be set in GitHub Actions variables}"
   APP_VERSION: "${APP_VERSION:?APP_VERSION must be set in GitHub Actions variables}"
@@ -22,7 +24,7 @@ x-app-environment: &app-environment
   NORMALIZATION_EXCHANGE: "findb.ingestion.v1"
   NORMALIZATION_QUEUE: "findb.normalize.v1"
   NORMALIZATION_DLQ: "findb.normalize.dlq.v1"
-  NORMALIZATION_CONSUMER_TIMEOUT_MS: "3600000"
+  NORMALIZATION_CONSUMER_TIMEOUT_MS: *normalization-consumer-timeout
 
 x-app-healthcheck: &app-healthcheck
   test:
@@ -98,7 +100,7 @@ services:
     container_name: findb-rabbitmq-policy
     environment:
       RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in GitHub Actions secrets}"
-      NORMALIZATION_CONSUMER_TIMEOUT_MS: "3600000"
+      NORMALIZATION_CONSUMER_TIMEOUT_MS: *normalization-consumer-timeout
     depends_on:
       rabbitmq:
         condition: service_healthy
