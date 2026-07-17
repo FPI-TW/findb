@@ -6,7 +6,6 @@ RabbitMQ 是單節點、可重建的 delivery layer，不是 durable truth，也
 
 ## EC2 與 EBS 前置條件
 
-- Instance 至少 4 vCPU、8 GiB RAM；deploy workflow 會硬性檢查。
 - 建立 20 GiB encrypted gp3 EBS，設定 `DeleteOnTermination=false`。
 - 格式化後以 filesystem UUID 寫入 `/etc/fstab`，掛載點固定為 `/var/lib/findb/rabbitmq`。
 - 執行 `findmnt /var/lib/findb/rabbitmq`、`lsblk -f`、`df -h /var/lib/findb/rabbitmq` 驗證；RabbitMQ container UID/GID 999 必須可寫。
