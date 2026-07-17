@@ -319,8 +319,12 @@ class CorporateActionNormalizer(BaseNormalizer):
                         ),
                     )
 
-                    await self.db.execute(upsert_stmt)
-                    result.success_records += 1
+                    returning_stmt = upsert_stmt.returning(CorporateAction.action_id)
+                    applied = (
+                        await self.db.execute(returning_stmt)
+                    ).scalar_one_or_none() is not None
+                    if applied:
+                        result.success_records += 1
 
                 except SQLAlchemyError:
                     raise

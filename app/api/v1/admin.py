@@ -435,6 +435,12 @@ async def bulk_rerun_runs(
         alias="status",
         description="要包含的執行狀態：completed / failed / all",
     ),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="單次最多排入的 run 數量，避免無界重跑全部歷史資料",
+    ),
     api_key: str = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -448,7 +454,7 @@ async def bulk_rerun_runs(
         stmt = stmt.where(IngestionRun.dataset_key == dataset_key)
     if run_status and run_status != "all":
         stmt = stmt.where(IngestionRun.status == run_status)
-    stmt = stmt.order_by(IngestionRun.created_at)
+    stmt = stmt.order_by(IngestionRun.created_at).limit(limit)
 
     result = await db.execute(stmt)
     run_ids = [row[0] for row in result.all()]
@@ -466,8 +472,10 @@ async def bulk_rerun_runs(
             new_run_ids.append(str(new_run_id))
             queued += 1
         except RawPayloadNotFoundError:
+            await db.rollback()
             skipped += 1
         except Exception as e:
+            await db.rollback()
             errors += 1
             error_details.append(f"{run_id}: {e}")
 

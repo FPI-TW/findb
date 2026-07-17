@@ -16,6 +16,8 @@ Production secrets 必須設定 `CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、
 
 若 RabbitMQ data directory 已初始化，修改 `RABBITMQ_DEFAULT_USER` 或 `RABBITMQ_DEFAULT_PASS` 不會更新既有 broker user。部署前必須以 worker 的 Celery ping 實際驗證 credentials；`CELERY_BROKER_URL` 中的密碼若含特殊字元必須 URL encode。
 
+Normalization queue 以 `x-consumer-timeout=3600000`（60 分鐘）宣告，必須高於 Celery hard time limit（預設 35 分鐘）與正常 graceful shutdown 所需時間。修改 task time limit 時必須同步調高 `NORMALIZATION_CONSUMER_TIMEOUT_MS`，避免 RabbitMQ 在 late ack 前關閉 consumer channel 並重投遞。
+
 ## Production Go/No-Go
 
 部署前必須全部成立：

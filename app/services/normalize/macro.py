@@ -239,7 +239,9 @@ class MacroNormalizer(BaseNormalizer):
         stmt = insert_stmt.on_conflict_do_update(
             constraint="uq_macro_series_source_code",
             set_={
-                "name": insert_stmt.excluded.name,
+                # The insert fallback keeps name non-null for a new series, but
+                # an omitted provider name must not erase a curated existing name.
+                "name": insert_stmt.excluded.name if record.name else MacroSeries.name,
                 "unit": func.coalesce(insert_stmt.excluded.unit, MacroSeries.unit),
                 "frequency": func.coalesce(insert_stmt.excluded.frequency, MacroSeries.frequency),
                 "market": func.coalesce(insert_stmt.excluded.market, MacroSeries.market),
@@ -259,7 +261,7 @@ class MacroNormalizer(BaseNormalizer):
         series_id: UUID,
         record: MacroObservationRecord,
         run_id: UUID,
-    ) -> None:
+    ) -> bool:
         """Upsert macro observation."""
         source_priority, source_fetched_at = self._source_control_values(record.source)
         stmt = insert(MacroObservation).values(
@@ -288,7 +290,8 @@ class MacroNormalizer(BaseNormalizer):
             },
             where=self._incoming_source_wins(MacroObservation.__table__, stmt.excluded),
         )
-        await self.db.execute(stmt)
+        returning_stmt = stmt.returning(MacroObservation.id)
+        return (await self.db.execute(returning_stmt)).scalar_one_or_none() is not None
 
     async def process(
         self, raw_payload: dict, run_id: UUID, *, commit: bool = True
@@ -375,8 +378,9 @@ class MacroNormalizer(BaseNormalizer):
                         await self.record_dq_issue(issue, run_id)
                         result.dq_issues.append(issue)
 
-                    await self.upsert_observation(series.series_id, record, run_id)
-                    result.success_records += 1
+                    applied = await self.upsert_observation(series.series_id, record, run_id)
+                    if applied:
+                        result.success_records += 1
                 finally:
                     processed_records += 1
                     await self._maybe_flush(processed_records)

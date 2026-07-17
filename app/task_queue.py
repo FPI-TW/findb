@@ -21,6 +21,7 @@ normalization_queue = Queue(
         "x-queue-type": "classic",
         "x-max-length": 100_000,
         "x-overflow": "reject-publish",
+        "x-consumer-timeout": settings.NORMALIZATION_CONSUMER_TIMEOUT_MS,
         "x-dead-letter-exchange": settings.NORMALIZATION_EXCHANGE,
         "x-dead-letter-routing-key": "dead",
     },

@@ -2,8 +2,10 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from celery.exceptions import Retry
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -12,7 +14,7 @@ from app.api.deps import reset_source_rate_limit_state
 from app.config import get_settings
 from app.dependencies import get_db
 from app.main import app
-from app.models.canonical import MarketDataEOD
+from app.models.canonical import InstrumentStats, MarketDataEOD
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
@@ -25,7 +27,9 @@ from app.services.normalization_queue import (
     reconcile_stale_jobs,
 )
 from app.services.normalize.base import BaseNormalizer
+from app.task_queue import normalization_queue
 from app.utils import utc_now, uuid7
+from app.workers.tasks import normalize_run
 from scripts.cleanup_raw import cleanup_expired_raw
 
 
@@ -36,6 +40,31 @@ class _PrecedenceNormalizer(BaseNormalizer):
 
     def map_fields(self, raw_data: dict):
         return self.map_fields_from_config(raw_data)
+
+
+def test_queue_consumer_timeout_exceeds_task_hard_limit():
+    settings = get_settings()
+    assert normalization_queue.queue_arguments["x-consumer-timeout"] == (
+        settings.NORMALIZATION_CONSUMER_TIMEOUT_MS
+    )
+    assert settings.NORMALIZATION_CONSUMER_TIMEOUT_MS > (
+        settings.NORMALIZATION_TASK_TIME_LIMIT * 1000
+    )
+
+
+def test_worker_infrastructure_failure_uses_delayed_retry():
+    with (
+        patch(
+            "app.workers.tasks.execute_normalization",
+            new=AsyncMock(side_effect=RuntimeError("database unavailable")),
+        ),
+        patch.object(normalize_run, "retry", side_effect=Retry("delayed")) as retry,
+        pytest.raises(Retry) as raised,
+    ):
+        normalize_run.run(str(uuid7()), str(uuid7()))
+
+    assert str(raised.value) == "delayed"
+    assert retry.call_args.kwargs["countdown"] == (get_settings().NORMALIZATION_RETRY_BASE_SECONDS)
 
 
 async def _seed_crypto_dataset(session) -> None:
@@ -354,6 +383,42 @@ async def test_reconciliation_resets_expired_processing_lease(
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_preserves_delivery_id_when_active_outbox_exists(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_crypto_dataset(test_session)
+    response = await client.post(
+        "/api/v1/source/ingest/crypto",
+        headers=source_headers,
+        json=_request("expired-active-delivery"),
+    )
+    run_id = response.json()["run_id"]
+    job = (
+        await test_session.execute(
+            select(NormalizationJob).where(NormalizationJob.run_id == run_id)
+        )
+    ).scalar_one()
+    delivery_id = job.delivery_id
+    job.status = "processing"
+    job.lease_expires_at = utc_now() - timedelta(seconds=1)
+    await test_session.commit()
+
+    assert await reconcile_nonterminal_jobs(test_session) == 0
+    await test_session.refresh(job)
+    outbox = (
+        await test_session.execute(
+            select(NormalizationOutbox).where(NormalizationOutbox.run_id == run_id)
+        )
+    ).scalar_one()
+
+    assert job.status == "queued"
+    assert job.delivery_id == delivery_id
+    assert outbox.delivery_id == delivery_id
+
+
+@pytest.mark.asyncio
 async def test_stale_published_delivery_is_recreated(test_session):
     await _seed_crypto_dataset(test_session)
     now = utc_now()
@@ -449,12 +514,12 @@ async def test_source_precedence_is_independent_of_worker_completion_order(test_
         },
     }
 
-    async def normalize(run_id, source: str, close: int, fetched_at: datetime) -> None:
+    async def normalize(run_id, source: str, close: int, fetched_at: datetime):
         normalizer = _PrecedenceNormalizer(
             test_session,
             {**base_config, "_ingest_fetched_at": fetched_at},
         )
-        await normalizer.process(
+        return await normalizer.process(
             {
                 "data": [
                     {
@@ -469,10 +534,16 @@ async def test_source_precedence_is_independent_of_worker_completion_order(test_
         )
 
     await normalize(run_ids[0], "preferred", 100, datetime(2026, 7, 15, tzinfo=timezone.utc))
-    await normalize(run_ids[1], "fallback", 999, datetime(2026, 7, 16, tzinfo=timezone.utc))
+    fallback_result = await normalize(
+        run_ids[1], "fallback", 999, datetime(2026, 7, 16, tzinfo=timezone.utc)
+    )
     row = (await test_session.execute(select(MarketDataEOD))).scalar_one()
     assert int(row.close or 0) == 100
     assert row.source == "preferred"
+    assert fallback_result.success_records == 0
+    stats = await test_session.get(InstrumentStats, row.instrument_id)
+    assert stats is not None
+    assert int(stats.latest_price or 0) == 100
 
     await normalize(run_ids[2], "preferred", 101, datetime(2026, 7, 17, tzinfo=timezone.utc))
     test_session.expire_all()
@@ -508,6 +579,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
             dataset_key="crypto_eod",
             raw_payload_id=raw.raw_payload_id,
             status=status,
+            completed_at=(now - timedelta(days=15) if status == "completed" else None),
             created_at=now - timedelta(days=30),
         )
         job = NormalizationJob(
@@ -537,6 +609,30 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     deletable_id = await add_work("terminal-published", "completed", "published")
     queued_id = await add_work("queued-pending", "queued", "pending")
     unpublished_id = await add_work("terminal-pending", "completed", "pending")
+    legacy_run_id = uuid7()
+    legacy_raw = RawMarketPayload(
+        raw_payload_id=uuid7(),
+        dataset_key="crypto_eod",
+        source="bloomberg",
+        request_key="legacy-terminal",
+        idempotency_key="legacy-terminal",
+        payload_sha256="b" * 64,
+        payload={"data": []},
+        fetched_at=now - timedelta(days=30),
+        expire_at=now - timedelta(days=16),
+        run_id=legacy_run_id,
+        created_at=now - timedelta(days=30),
+    )
+    legacy_run = IngestionRun(
+        run_id=legacy_run_id,
+        dataset_key="crypto_eod",
+        raw_payload_id=legacy_raw.raw_payload_id,
+        status="completed",
+        completed_at=now - timedelta(days=15),
+        created_at=now - timedelta(days=30),
+    )
+    legacy_raw_id = legacy_raw.raw_payload_id
+    test_session.add_all((legacy_raw, legacy_run))
     await test_session.commit()
 
     deleted = await cleanup_expired_raw(
@@ -545,7 +641,8 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     )
     test_session.expire_all()
 
-    assert deleted == 1
+    assert deleted == 2
     assert await test_session.get(RawMarketPayload, deletable_id) is None
     assert await test_session.get(RawMarketPayload, queued_id) is not None
     assert await test_session.get(RawMarketPayload, unpublished_id) is not None
+    assert await test_session.get(RawMarketPayload, legacy_raw_id) is None

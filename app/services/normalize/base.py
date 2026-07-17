@@ -475,19 +475,21 @@ class BaseNormalizer(ABC):
             where=self._incoming_source_wins(t, stmt.excluded),
         )
 
-        await self.db.execute(stmt)
-        await self.update_instrument_stats(
-            instrument_id,
-            trade_date_value,
-            latest_price=record.close,
-        )
+        returning_stmt = stmt.returning(MarketDataEOD.instrument_id)
+        applied = (await self.db.execute(returning_stmt)).scalar_one_or_none() is not None
+        if applied:
+            await self.update_instrument_stats(
+                instrument_id,
+                trade_date_value,
+                latest_price=record.close,
+            )
         # Refresh ORM state for follow-up reads while dropping cached Instrument
         # instances that would otherwise become expired and unsafe to reuse in the
         # remaining async batch.
         self.db.expire_all()
         self._instrument_cache.clear()
         self._identifier_cache.clear()
-        return True
+        return applied
 
     async def update_instrument_stats(
         self,
@@ -797,8 +799,9 @@ class BaseNormalizer(ABC):
                         result.dq_issues.append(issue)
 
                     # Upsert EOD data
-                    await self.upsert_eod(instrument.instrument_id, record, run_id)
-                    result.success_records += 1
+                    applied = await self.upsert_eod(instrument.instrument_id, record, run_id)
+                    if applied:
+                        result.success_records += 1
 
                 except SQLAlchemyError:
                     raise

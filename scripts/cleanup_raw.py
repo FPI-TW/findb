@@ -38,13 +38,17 @@ async def cleanup_expired_raw(
     async with async_session() as session:
         try:
             cutoff = utc_now() - timedelta(days=settings.RAW_RETENTION_DAYS)
-            terminal_job = exists(
-                select(NormalizationJob.job_id)
-                .join(IngestionRun, IngestionRun.run_id == NormalizationJob.run_id)
-                .where(
+            terminal_run = exists(
+                select(IngestionRun.run_id).where(
                     IngestionRun.raw_payload_id == RawMarketPayload.raw_payload_id,
-                    NormalizationJob.status.in_(("completed", "completed_with_errors", "failed")),
-                    NormalizationJob.completed_at < cutoff,
+                    IngestionRun.status.in_(("completed", "completed_with_errors", "failed")),
+                    IngestionRun.completed_at < cutoff,
+                )
+            )
+            nonterminal_run = exists(
+                select(IngestionRun.run_id).where(
+                    IngestionRun.raw_payload_id == RawMarketPayload.raw_payload_id,
+                    IngestionRun.status.not_in(("completed", "completed_with_errors", "failed")),
                 )
             )
             nonterminal_job = exists(
@@ -57,13 +61,11 @@ async def cleanup_expired_raw(
                     ),
                 )
             )
-            recently_terminal_job = exists(
-                select(NormalizationJob.job_id)
-                .join(IngestionRun, IngestionRun.run_id == NormalizationJob.run_id)
-                .where(
+            recently_terminal_run = exists(
+                select(IngestionRun.run_id).where(
                     IngestionRun.raw_payload_id == RawMarketPayload.raw_payload_id,
-                    NormalizationJob.status.in_(("completed", "completed_with_errors", "failed")),
-                    NormalizationJob.completed_at >= cutoff,
+                    IngestionRun.status.in_(("completed", "completed_with_errors", "failed")),
+                    IngestionRun.completed_at >= cutoff,
                 )
             )
             unpublished_delivery = exists(
@@ -75,9 +77,11 @@ async def cleanup_expired_raw(
                 )
             )
             stmt = delete(RawMarketPayload).where(
-                terminal_job,
+                RawMarketPayload.expire_at < utc_now(),
+                terminal_run,
+                ~nonterminal_run,
                 ~nonterminal_job,
-                ~recently_terminal_job,
+                ~recently_terminal_run,
                 ~unpublished_delivery,
             )
             result = await session.execute(stmt)
