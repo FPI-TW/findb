@@ -5,7 +5,11 @@ from pathlib import Path
 import yaml
 
 from scripts.check_queue_health import validate_queue_health
-from scripts.predeploy_db_check import validate_predeploy_state
+from scripts.predeploy_db_check import (
+    DEFAULT_MINIMUM_CONNECTION_HEADROOM,
+    calculate_connection_headroom,
+    validate_predeploy_state,
+)
 
 
 def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
@@ -34,6 +38,26 @@ def test_rabbitmq_consumer_timeout_has_one_source_and_is_verified() -> None:
     assert "expected_consumer_timeout" in deploy
     assert "actual_consumer_timeout" in deploy
     assert "RabbitMQ consumer timeout policy mismatch" in deploy
+
+
+def test_connection_headroom_excludes_reserved_slots_and_all_clients() -> None:
+    assert DEFAULT_MINIMUM_CONNECTION_HEADROOM == 10
+    assert (
+        calculate_connection_headroom(
+            max_connections=80,
+            current_connections=13,
+            reserved_connection_slots=3,
+        )
+        == 64
+    )
+    assert (
+        calculate_connection_headroom(
+            max_connections=10,
+            current_connections=9,
+            reserved_connection_slots=3,
+        )
+        == 0
+    )
 
 
 def test_predeploy_database_state_accepts_safe_capacity() -> None:
