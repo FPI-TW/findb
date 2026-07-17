@@ -23,6 +23,17 @@ x-app-environment: &app-environment
   NORMALIZATION_QUEUE: "findb.normalize.v1"
   NORMALIZATION_DLQ: "findb.normalize.dlq.v1"
 
+x-app-healthcheck: &app-healthcheck
+  test:
+    [
+      "CMD-SHELL",
+      "python -c 'import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(\"http://127.0.0.1:\"+port+\"/health\", timeout=5)'",
+    ]
+  interval: 15s
+  timeout: 5s
+  retries: 8
+  start_period: 30s
+
 services:
   serve:
     image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
@@ -36,6 +47,7 @@ services:
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
     volumes:
       - findb-static-data:/app/app/static/data
@@ -52,6 +64,7 @@ services:
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 1"
     volumes:
       - findb-static-data:/app/app/static/data
@@ -99,6 +112,16 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A app.task_queue inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q pong",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
     restart: unless-stopped
 
   nginx:

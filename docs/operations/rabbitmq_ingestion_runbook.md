@@ -14,17 +14,40 @@ RabbitMQ 是單節點、可重建的 delivery layer，不是 durable truth，也
 
 Production secrets 必須設定 `CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE`。URL 使用 vhost `/findb`；若以 URI 表示，slash 必須正確 percent-encode 或使用已驗證可連線的完整 secret。
 
+若 RabbitMQ data directory 已初始化，修改 `RABBITMQ_DEFAULT_USER` 或 `RABBITMQ_DEFAULT_PASS` 不會更新既有 broker user。部署前必須以 worker 的 Celery ping 實際驗證 credentials；`CELERY_BROKER_URL` 中的密碼若含特殊字元必須 URL encode。
+
+## Production Go/No-Go
+
+部署前必須全部成立：
+
+- RDS snapshot 與 point-in-time recovery 已確認，且 production clone 已成功跑到 Alembic head。
+- `python /app/scripts/predeploy_db_check.py` 通過：沒有重複 raw `run_id`、超過五分鐘的 transaction，並保留至少 80 個 DB connection slots。
+- data-provider 已暫停排程，或已確認 timeout、429、502、503、504 會使用相同 `Idempotency-Key` 重試。
+- 第一次 durable queue 部署維持 `RAW_RETENTION_ENABLED=false`；待 backlog、reconciliation 與監控穩定後才開啟。
+- CloudWatch Agent、container monitor 與 queue-health custom metrics 已存在；沒有監控時不得恢復無人值守的 provider 流量。
+- 已接受本次 schema 是 forward-only：舊 image 的 `init_db()` 會因 Alembic head 不一致而拒絕啟動，不能作為完整 rollback image。
+
+部署期間 workflow 會先執行 read-only DB preflight，再停止 `ingest`、`dispatcher`、`worker`、`raw-cleanup`，最後才套 migration。若 DB preflight 失敗，既有服務不會被停止。
+
 ## 部署與 smoke test
 
-Deploy workflow 會停止舊 ingest、套 migration、啟動 RabbitMQ/dispatcher/worker/ingest，再檢查 broker 與 container。部署後執行：
+Deploy workflow 會停止所有 DB writer、套 migration、啟動 RabbitMQ/dispatcher/worker/ingest，並驗證 app health、queue topology、Celery ping、worker heartbeat 及 expired lease。部署後仍應人工執行：
 
 ```bash
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmqctl list_queues -p /findb name messages durable arguments
+docker compose -f docker-compose.prod.yml exec -T worker celery -A app.task_queue inspect ping --timeout=10
+docker compose -f docker-compose.prod.yml exec -T ingest python /app/scripts/check_queue_health.py
 docker compose -f docker-compose.prod.yml ps
 ```
 
 送一筆帶固定 idempotency key 的 smoke payload，確認 response 為 202；以 run endpoint 確認最後進入 terminal state。重啟 RabbitMQ 與 kill worker child 後用同 key 重送，run 不應重複，canonical 結果不應增加重複列。
+
+### Source client 切換
+
+第一次 deployment 可暫時保留 legacy `SOURCE_API_KEY`，但 provider-specific identity 必須透過 `POST /api/v1/admin/source-clients` 建立。建立時固定 `source_name`、`allowed_datasets` 與 quota；plaintext key 只回傳一次，交付 provider 並完成 smoke test 後，才安排撤換 legacy key。
+
+恢復 provider 流量前確認 Admin queue health：worker heartbeat 小於 90 秒、expired lease 為 0、unpublished outbox 與 queued oldest age 沒有持續上升。若歷史 pending run 在 migration 後產生 backlog，先等待它下降再解除 provider pause。
 
 ## Broker volume 全毀恢復
 
@@ -45,4 +68,6 @@ EC2/CloudWatch Agent 必須涵蓋 CPU、memory、root disk 與 RabbitMQ EBS free
 
 ## Rollback
 
-不 downgrade schema、不刪除 raw/job/outbox。停止 dispatcher 與 worker即可安全暫停；回退 application image後仍保留所有 durable work。舊版 ingest 不得在 durable migration 後重新開放 provider 流量，除非確認它相容新的 raw primary key 與 202/outbox 契約。
+不 downgrade schema、不刪除 raw/job/outbox。發現問題時先暫停 provider，並停止 `ingest`、`dispatcher`、`worker`、`raw-cleanup`；這會保留所有已接受工作，serve 若健康可繼續提供 canonical data。
+
+本次 migration 後不能直接回退到 migration 前 image：舊 image 內的 Alembic head 不同，`init_db()` 會拒絕啟動，而且舊 ingest 不會填入新的 raw primary key。只有包含目前 migration chain、並經過新 schema 測試的 image 才可作為 rollback image；否則採 forward fix。部署前應記錄本次 image SHA，失敗時保留它供診斷，不執行 schema downgrade 或刪除 outbox/raw。

@@ -269,8 +269,13 @@ jobs:
             fi
             docker compose -f docker-compose.prod.yml pull
 
-            echo "Pausing the legacy ingestion path before schema migration"
-            docker compose -f docker-compose.prod.yml stop ingest dispatcher worker 2>/dev/null || true
+            echo "Checking production database before migration"
+            docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
+              python /app/scripts/predeploy_db_check.py
+
+            echo "Pausing every database writer before schema migration"
+            docker compose -f docker-compose.prod.yml stop \
+              ingest dispatcher worker raw-cleanup 2>/dev/null || true
 
             echo "Running Alembic migrations"
             docker compose -f docker-compose.prod.yml run --rm --no-deps ingest sh -euc '
@@ -278,16 +283,39 @@ jobs:
               uv run alembic current
             '
 
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml up -d \
+              --remove-orphans --wait --wait-timeout 180
 
-            echo "Checking RabbitMQ, dispatcher, and worker"
+            echo "Checking RabbitMQ and version-controlled queue topology"
             docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
+            topology_ready=0
+            for attempt in $(seq 1 24); do
+              queue_state="$(docker compose -f docker-compose.prod.yml exec -T rabbitmq \
+                rabbitmqctl list_queues -p /findb name durable arguments 2>/dev/null || true)"
+              if echo "$queue_state" | grep -Fq "findb.normalize.v1" \
+                && echo "$queue_state" | grep -Fq "findb.normalize.dlq.v1"; then
+                echo "$queue_state"
+                topology_ready=1
+                break
+              fi
+              echo "RabbitMQ topology not ready (attempt ${attempt}/24); waiting 5s..."
+              sleep 5
+            done
+            if [ "$topology_ready" -ne 1 ]; then
+              echo "RabbitMQ queue topology was not declared"
+              docker compose -f docker-compose.prod.yml logs --tail=200 rabbitmq dispatcher worker
+              exit 1
+            fi
+
+            echo "Checking dispatcher and Celery worker"
             for service in dispatcher worker; do
               if ! docker compose -f docker-compose.prod.yml ps --status running --services | grep -qx "$service"; then
                 docker compose -f docker-compose.prod.yml logs --tail=200 "$service"
                 exit 1
               fi
             done
+            docker compose -f docker-compose.prod.yml exec -T worker \
+              celery -A app.task_queue inspect ping --timeout=10
 
             echo "Waiting for app readiness"
             for service in serve ingest; do
@@ -308,6 +336,11 @@ jobs:
                 exit 1
               fi
             done
+
+            echo "Waiting for DB-authoritative queue health"
+            docker compose -f docker-compose.prod.yml exec -T ingest \
+              python /app/scripts/check_queue_health.py \
+              --attempts 24 --interval 5 --maximum-heartbeat-age 90
 
             echo "Restarting nginx proxy"
             docker compose -f docker-compose.prod.yml restart nginx
