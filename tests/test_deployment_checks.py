@@ -8,12 +8,16 @@ from scripts.check_queue_health import validate_queue_health
 from scripts.predeploy_db_check import validate_predeploy_state
 
 
-def test_deploy_does_not_gate_on_ec2_cpu_or_memory() -> None:
+def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
     deploy = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
 
     assert "_NPROCESSORS_ONLN" not in deploy
     assert "/proc/meminfo" not in deploy
     assert "EC2 must have at least" not in deploy
+    assert "mountpoint -q /var/lib/findb/rabbitmq" not in deploy
+    assert "rabbitmq_disk_kib" not in deploy
+    assert "RabbitMQ EBS volume is smaller" not in deploy
+    assert "sudo mkdir -p /var/lib/findb/rabbitmq" in deploy
 
 
 def test_rabbitmq_consumer_timeout_has_one_source_and_is_verified() -> None:
