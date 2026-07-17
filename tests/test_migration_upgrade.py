@@ -26,12 +26,17 @@ SOURCE_CONTROL_TABLES = (
 )
 
 
-async def _run_alembic(database_url: str, revision: str) -> None:
+async def _run_alembic(
+    database_url: str,
+    revision: str,
+    *,
+    command: str = "upgrade",
+) -> None:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     await asyncio.to_thread(
         subprocess.run,
-        [sys.executable, "-m", "alembic", "upgrade", revision],
+        [sys.executable, "-m", "alembic", command, revision],
         cwd=PROJECT_ROOT,
         env=env,
         check=True,
@@ -41,7 +46,7 @@ async def _run_alembic(database_url: str, revision: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_upgrade_from_early_f7_repairs_source_control_columns() -> None:
+async def test_upgrade_from_early_f7_repairs_schema() -> None:
     base_url = make_url(BASE_DATABASE_URL)
     database_name = f"findb_migration_{uuid4().hex[:12]}"
     database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
@@ -80,7 +85,26 @@ async def test_upgrade_from_early_f7_repairs_source_control_columns() -> None:
                     """),
                 {"table_names": list(SOURCE_CONTROL_TABLES)},
             )
+            cleanup_index_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'ingestion_run'
+                      AND indexname = 'idx_run_raw_payload'
+                    """))
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
+        assert cleanup_index_count == 1
+
+        await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
+        async with target_engine.connect() as connection:
+            cleanup_index_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'ingestion_run'
+                      AND indexname = 'idx_run_raw_payload'
+                    """))
+        assert cleanup_index_count == 0
     finally:
         if target_engine is not None:
             await target_engine.dispose()
