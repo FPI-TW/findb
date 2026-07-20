@@ -35,6 +35,16 @@ def test_deploy_uses_ordered_health_checks_with_failure_diagnostics() -> None:
     assert "docker compose -f docker-compose.prod.yml ps -a" in deploy
 
 
+def test_deploy_retries_celery_worker_readiness() -> None:
+    deploy = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+
+    assert "worker_ready=0" in deploy
+    assert "for attempt in $(seq 1 24)" in deploy
+    assert "Celery worker not ready (attempt ${attempt}/24); waiting 5s..." in deploy
+    assert "Celery worker did not become ready in time" in deploy
+    assert 'if [ "$worker_ready" -ne 1 ]' in deploy
+
+
 def test_rabbitmq_consumer_timeout_has_one_source_and_is_verified() -> None:
     compose = yaml.safe_load(Path("docker-compose.prod.yml").read_text(encoding="utf-8"))
     expected = compose["x-normalization-consumer-timeout"]

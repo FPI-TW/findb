@@ -342,8 +342,20 @@ jobs:
                 exit 1
               fi
             done
-            if ! docker compose -f docker-compose.prod.yml exec -T worker \
-              celery -A app.task_queue inspect ping --timeout=10; then
+            worker_ready=0
+            for attempt in $(seq 1 24); do
+              if docker compose -f docker-compose.prod.yml exec -T worker \
+                celery -A app.task_queue inspect ping --timeout=10 >/dev/null 2>&1; then
+                echo "Celery worker is ready"
+                worker_ready=1
+                break
+              fi
+              echo "Celery worker not ready (attempt ${attempt}/24); waiting 5s..."
+              sleep 5
+            done
+
+            if [ "$worker_ready" -ne 1 ]; then
+              echo "Celery worker did not become ready in time"
               diagnose_services worker
               exit 1
             fi
