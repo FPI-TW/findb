@@ -239,6 +239,30 @@ jobs:
 
             echo "Deploying image tag: ${IMAGE_TAG}"
             cd /opt/findb
+
+            diagnose_services() {
+              echo "Container status at deployment failure"
+              docker compose -f docker-compose.prod.yml ps -a || true
+              for service in "$@"; do
+                container_id="$(
+                  docker compose -f docker-compose.prod.yml ps -aq "$service" 2>/dev/null | head -n 1 || true
+                )"
+                if [ -z "$container_id" ]; then
+                  echo "Service ${service}: no container found"
+                  continue
+                fi
+                echo "Runtime state for ${service} (${container_id})"
+                docker inspect --format \
+                  'status={{.State.Status}} running={{.State.Running}} restarting={{.State.Restarting}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{json .State.Error}}' \
+                  "$container_id" || true
+                echo "Health history for ${service} (${container_id})"
+                docker inspect --format \
+                  '{{if .State.Health}}{{json .State.Health}}{{else}}not-configured{{end}}' \
+                  "$container_id" || true
+              done
+              docker compose -f docker-compose.prod.yml logs --tail=200 "$@" || true
+            }
+
             for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
               if [ ! -f "/home/ubuntu/etc/nginx/${conf}" ]; then
                 echo "::error title=Missing nginx config::/home/ubuntu/etc/nginx/${conf} not found on target host"
@@ -269,11 +293,16 @@ jobs:
               uv run alembic current
             '
 
-            docker compose -f docker-compose.prod.yml up -d \
-              --remove-orphans --wait --wait-timeout 180
+            if ! docker compose -f docker-compose.prod.yml up -d --remove-orphans; then
+              diagnose_services rabbitmq rabbitmq-policy dispatcher worker serve ingest nginx raw-cleanup
+              exit 1
+            fi
 
             echo "Checking RabbitMQ and version-controlled queue topology"
-            docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
+            if ! docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping; then
+              diagnose_services rabbitmq rabbitmq-policy
+              exit 1
+            fi
             expected_consumer_timeout="$(
               docker compose -f docker-compose.prod.yml config --format json | \
                 python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["rabbitmq-policy"]["environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"])'
@@ -302,19 +331,22 @@ jobs:
             done
             if [ "$topology_ready" -ne 1 ]; then
               echo "RabbitMQ queue topology was not declared"
-              docker compose -f docker-compose.prod.yml logs --tail=200 rabbitmq dispatcher worker
+              diagnose_services rabbitmq rabbitmq-policy dispatcher worker
               exit 1
             fi
 
             echo "Checking dispatcher and Celery worker"
             for service in dispatcher worker; do
               if ! docker compose -f docker-compose.prod.yml ps --status running --services | grep -qx "$service"; then
-                docker compose -f docker-compose.prod.yml logs --tail=200 "$service"
+                diagnose_services "$service"
                 exit 1
               fi
             done
-            docker compose -f docker-compose.prod.yml exec -T worker \
-              celery -A app.task_queue inspect ping --timeout=10
+            if ! docker compose -f docker-compose.prod.yml exec -T worker \
+              celery -A app.task_queue inspect ping --timeout=10; then
+              diagnose_services worker
+              exit 1
+            fi
 
             echo "Waiting for app readiness"
             for service in serve ingest; do
@@ -331,15 +363,18 @@ jobs:
 
               if [ "$ready" -ne 1 ]; then
                 echo "Service ${service} did not become ready in time; recent logs:"
-                docker compose -f docker-compose.prod.yml logs --tail=200 "$service"
+                diagnose_services "$service"
                 exit 1
               fi
             done
 
             echo "Waiting for DB-authoritative queue health"
-            docker compose -f docker-compose.prod.yml exec -T ingest \
+            if ! docker compose -f docker-compose.prod.yml exec -T ingest \
               python /app/scripts/check_queue_health.py \
-              --attempts 24 --interval 5 --maximum-heartbeat-age 90
+              --attempts 24 --interval 5 --maximum-heartbeat-age 90; then
+              diagnose_services ingest dispatcher worker
+              exit 1
+            fi
 
             echo "Restarting nginx proxy"
             docker compose -f docker-compose.prod.yml restart nginx
@@ -359,7 +394,7 @@ jobs:
 
             if [ "$proxy_ready" -ne 1 ]; then
               echo "::error title=Nginx proxy check failed::Nginx did not report healthy in time. Check TLS cert mounts and upstream app routing."
-              docker compose -f docker-compose.prod.yml logs --tail=200 nginx
+              diagnose_services nginx serve ingest
               exit 1
             fi
 
@@ -373,7 +408,7 @@ jobs:
               exit 1
             '; then
               echo "Cache generation failed; recent serve logs:"
-              docker compose -f docker-compose.prod.yml logs --tail=200 serve
+              diagnose_services serve
               exit 1
             fi
 
@@ -383,7 +418,7 @@ jobs:
                 python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"
               '; then
                 echo "Post-deploy health check failed for ${service}"
-                docker compose -f docker-compose.prod.yml logs --tail=200 "$service"
+                diagnose_services "$service"
                 exit 1
               fi
             done
