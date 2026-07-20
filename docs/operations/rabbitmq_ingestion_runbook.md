@@ -30,7 +30,7 @@ Normalization queue 透過 `findb-normalization-consumer-timeout` RabbitMQ polic
 
 ## 部署與 smoke test
 
-Deploy workflow 會停止所有 DB writer、套 migration、啟動 RabbitMQ/dispatcher/worker/ingest，並驗證 app health、queue topology、Celery ping、worker heartbeat 及 expired lease。部署後仍應人工執行：
+Deploy workflow 會停止所有 DB writer、套 migration、啟動 RabbitMQ/dispatcher/worker/ingest，再依序驗證 queue topology、Celery ping、app health、worker heartbeat、expired lease 與 nginx health。啟動階段不使用全域 Compose health barrier，避免單一服務逾時時遮蔽根因；任何階段失敗都會輸出 Compose 狀態、container exit/OOM 狀態、healthcheck history 與最近 logs。部署後仍應人工執行：
 
 ```bash
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping

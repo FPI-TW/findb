@@ -24,6 +24,17 @@ def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
     assert "sudo mkdir -p /var/lib/findb/rabbitmq" in deploy
 
 
+def test_deploy_uses_ordered_health_checks_with_failure_diagnostics() -> None:
+    deploy = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+
+    assert "--wait --wait-timeout" not in deploy
+    assert "up -d --remove-orphans" in deploy
+    assert "diagnose_services()" in deploy
+    assert ".State.OOMKilled" in deploy
+    assert "{{json .State.Health}}" in deploy
+    assert "docker compose -f docker-compose.prod.yml ps -a" in deploy
+
+
 def test_rabbitmq_consumer_timeout_has_one_source_and_is_verified() -> None:
     compose = yaml.safe_load(Path("docker-compose.prod.yml").read_text(encoding="utf-8"))
     expected = compose["x-normalization-consumer-timeout"]
