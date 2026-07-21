@@ -1,41 +1,15 @@
 """Source API 使用的 Pydantic schema。"""
 
-import json
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.config import get_settings
-
-
-def _current_source_max_payload_bytes() -> int:
-    settings = get_settings()
-    return max(1, int(settings.SOURCE_MAX_PAYLOAD_BYTES))
-
-
-def _current_source_max_data_items() -> int:
-    settings = get_settings()
-    return max(1, int(settings.SOURCE_MAX_DATA_ITEMS))
-
-
-def _payload_size_bytes(payload: Any) -> int:
-    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
-    return len(serialized.encode("utf-8"))
-
-
-def ensure_payload_size_within_limit(payload: Any) -> None:
-    max_bytes = _current_source_max_payload_bytes()
-    size_bytes = _payload_size_bytes(payload)
-    if size_bytes > max_bytes:
-        raise ValueError(f"Payload exceeds maximum size of {max_bytes} bytes")
-
-
-def ensure_data_items_count_within_limit(item_count: int) -> None:
-    max_items = _current_source_max_data_items()
-    if item_count > max_items:
-        raise ValueError(f"Payload data list exceeds maximum size of {max_items} items")
+from app.schemas.payload_limits import (
+    ensure_data_items_count_within_limit,
+    ensure_payload_size_within_limit,
+)
 
 
 class IngestRequest(BaseModel):

@@ -60,10 +60,11 @@
 
 ### dataset_key 與 normalizer 路由
 
-- 新來源 payload 格式與既有 dataset 相同 → 直接共用既有 `dataset_key`，零改動。
-- 格式不同 → 二擇一：
-  1. 開新 `dataset_key` + 新 normalizer（依 `AGENTS.md`「新增 Normalizer」五步流程）。
-  2. 共用 `dataset_key`，依 payload `metadata.source` 路由到不同 normalizer——既有範例為 `wtx_eod`（`app/services/ingestion.py` 的 `_WTX_SOURCE_NORMALIZERS`）。同一 dataset 有兩種來源格式時優先採用此模式。
+- `dataset_key` 代表 provider-neutral 的邏輯資料流；provider 不得出現在新 dataset key。
+- payload 格式由 `schema_id` + `schema_version` 表示，provider 身分由 envelope 的 `source` 表示，三者不得互相代替。
+- 所有 fetch-layer client 必須先把 provider 原始格式轉成 FinDB ingress contract；Source API 與新 normalizer 不解析 provider-specific 欄位。
+- Schema 依資料形狀或商品語意分化，必要時允許市場變體，但不得依 provider 分化。首批 contract 與完整遷移策略定義於 `unified_ingress_contract_plan.md`。
+- 既有 provider-specific dataset、direct endpoint 與 WTX payload-aware routing 只作為相容路徑；待 fetch clients 完成遷移及 legacy raw payload 不再需要 rerun 後移除。
 
 ### 來源衝突（precedence）
 
@@ -207,7 +208,7 @@ Phase 4 執行紀錄（2026-07-09）：
 
 - [x] ETF：
   - [x] 進既有 `market_data_eod`；新增 `etf_details` 延伸表。
-  - [x] 保留既有 ETF normalizer 路徑；新 provider-specific ETF normalizer 待 payload contract 到位後依 `AGENTS.md`「新增 Normalizer」流程註冊。
+  - [x] 保留既有 ETF normalizer 相容路徑；新來源需先轉為統一 ingress contract，不再新增 provider-specific ETF normalizer。
 - [x] 債券：
   - [x] 新增 `bond_details`（instrument 延伸）與 `bond_eod`（yield、clean_price、dirty_price、duration 等）。
   - [x] 公債殖利率曲線評估走 `macro_series`，公司債走 instrument 路徑。
