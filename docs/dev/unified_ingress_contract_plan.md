@@ -2,10 +2,18 @@
 
 ## 狀態
 
-- 狀態：規劃中
+- 狀態：實作中
 - 決策日期：2026-07-21
 - 適用範圍：所有向 Source API 發送市場資料的 fetch-layer client
 - 首批 contract：`market_eod.v1`、`futures_continuous_eod.v1`
+
+實作進度：
+
+- [x] Typed contracts、contract registry 與 dataset audit declaration。
+- [x] Durable `ingestion_attempt`、schema lineage 與 canonical `POST /api/v1/source/ingest`。
+- [x] Provider-neutral market EOD / futures continuous normalizer routing。
+- [ ] Fetch client shadow migration 與 production feed 切換。
+- [ ] Batch completeness/freshness policy 強制執行與 delivery-missing monitor。
 
 ## 目標
 

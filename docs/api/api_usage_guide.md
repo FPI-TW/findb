@@ -238,7 +238,112 @@ http://localhost:8080
 **前綴**: `/api/v1/source`
 **認證**: 必要（`X-API-Key`）
 
-### 標準攝取端點
+### Versioned canonical ingest（新格式）
+
+所有新 fetch client 使用單一入口：
+
+```
+POST /api/v1/source/ingest
+```
+
+Fetch layer 必須先把 Bloomberg、FinLab 等 provider 原始欄位轉為 FinDB contract。目前支援：
+
+Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標；呼叫 canonical endpoint 時仍會完整強制驗證 schema id/version 與所有欄位。
+
+| `schema_id` | `schema_version` | 用途 |
+| --- | --- | --- |
+| `market_eod` | `1` | 股票、ETF、指數、crypto、FX 日 OHLCV |
+| `futures_continuous_eod` | `1` | 期貨連續序列日 OHLCV |
+
+請求範例：
+
+```json
+{
+  "dataset_key": "tw_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "finlab",
+  "request_key": "finlab_tw_equity_eod_20260721_01",
+  "idempotency_key": "finlab_tw_equity_eod_20260721",
+  "fetched_at": "2026-07-21T08:00:00Z",
+  "payload": {
+    "batch": {
+      "data_date": "2026-07-21",
+      "delivery_mode": "full_snapshot",
+      "declared_record_count": 1
+    },
+    "data": [
+      {
+        "symbol": "2330",
+        "source_symbol": "2330 TT Equity",
+        "trade_date": "2026-07-21",
+        "name": "台積電",
+        "currency": "TWD",
+        "open": "1000",
+        "high": "1020",
+        "low": "995",
+        "close": "1015",
+        "volume": 32100000
+      }
+    ]
+  }
+}
+```
+
+成功回 `202 Accepted`：
+
+```json
+{
+  "success": true,
+  "attempt_id": "019f8abc-0000-7000-8000-000000000001",
+  "run_id": "019f8abc-0000-7000-8000-000000000002",
+  "status": "queued",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "message": "Data received, processing queued"
+}
+```
+
+每次通過 API key 認證與 rate-limit gate 的呼叫都會建立獨立 `attempt_id`。重送相同 idempotency key 與內容時會建立 `duplicate` attempt，但回傳原有 `run_id`；相同 key 搭配不同 source、schema/version 或 payload 時回 `409`。缺少／無效 API key 或被 rate limit 的請求在 endpoint 前即被拒絕，因此不建立 attempt。
+
+拒絕回應具有固定格式：
+
+```json
+{
+  "success": false,
+  "attempt_id": "019f8abc-0000-7000-8000-000000000003",
+  "error": {
+    "code": "INGRESS_SCHEMA_INVALID",
+    "message": "payload.data.0.close: Field required"
+  }
+}
+```
+
+常見錯誤碼：
+
+| HTTP | code | 說明 |
+| --- | --- | --- |
+| 400 | `DATASET_NOT_FOUND` | dataset 不存在 |
+| 403 | `DATASET_ACCESS_DENIED` | source client 無權傳送 dataset |
+| 403 | `SOURCE_IDENTITY_MISMATCH` | credential 綁定 provider 與 request source 不符 |
+| 409 | `DATASET_INACTIVE` | dataset 已停用 |
+| 409 | `DATASET_CONTRACT_NOT_CONFIGURED` | dataset 尚未宣告 versioned contract |
+| 409 | `IDEMPOTENCY_PAYLOAD_MISMATCH` | idempotency key 已對應其他內容 |
+| 422 | `INGRESS_SCHEMA_UNSUPPORTED` | schema id/version 未註冊 |
+| 422 | `INGRESS_SCHEMA_INVALID` | JSON 或欄位不符合 contract |
+| 422 | `INGRESS_SCHEMA_NOT_ALLOWED` | dataset 不接受指定 contract |
+
+`futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。
+
+#### 查詢 attempt
+
+```
+GET /api/v1/source/attempts/{attempt_id}
+```
+
+只允許建立該 attempt 的 source client 查詢。Legacy `SOURCE_API_KEY` 只能查詢 legacy ownership scope（`source_client_id IS NULL`）的 attempt。
+
+### 舊版標準攝取端點（相容路徑）
 
 標準格式使用 `IngestRequest` 請求體，適用於 Fetch Layer 傳入的完整 payload。
 
@@ -718,7 +823,11 @@ GET /api/v1/source/datasets
       "asset_class": "crypto",
       "market": "CRYPTO",
       "frequency": "daily",
-      "is_active": true
+      "is_active": true,
+      "schema_id": null,
+      "accepted_schema_versions": [],
+      "current_schema_version": null,
+      "schema_enforcement": null
     },
     {
       "dataset_key": "us_stock_eod",
@@ -727,7 +836,11 @@ GET /api/v1/source/datasets
       "asset_class": "equity",
       "market": "US",
       "frequency": "daily",
-      "is_active": true
+      "is_active": true,
+      "schema_id": null,
+      "accepted_schema_versions": [],
+      "current_schema_version": null,
+      "schema_enforcement": null
     }
   ]
 }

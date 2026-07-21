@@ -63,6 +63,19 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         await _run_alembic(database_url, "f7a8b9c0d1e2")
         target_engine = create_async_engine(database_url)
         async with target_engine.begin() as connection:
+            await connection.execute(text("""
+                INSERT INTO dataset_registry (
+                    dataset_key, name, asset_class, market, frequency,
+                    is_active, config, created_at, updated_at
+                )
+                VALUES (
+                    'tw_equity_eod', 'TW Equity', 'equity', 'TW', 'daily',
+                    true, '{"source_format":"legacy","custom":"preserve"}'::jsonb,
+                    now(), now()
+                )
+                ON CONFLICT (dataset_key) DO UPDATE
+                SET config = EXCLUDED.config
+                """))
             for table_name in SOURCE_CONTROL_TABLES:
                 await connection.execute(
                     text(
@@ -92,8 +105,30 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                       AND tablename = 'ingestion_run'
                       AND indexname = 'idx_run_raw_payload'
                     """))
+            attempt_table = await connection.scalar(
+                text("SELECT to_regclass('public.ingestion_attempt')")
+            )
+            lineage_column_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE (table_schema, table_name) IN (
+                        ('public', 'ingestion_run'),
+                        ('raw', 'market_payload')
+                    )
+                      AND column_name IN ('schema_id', 'schema_version')
+                    """))
+            contract_config = await connection.scalar(text("""
+                    SELECT config
+                    FROM dataset_registry
+                    WHERE dataset_key = 'tw_equity_eod'
+                    """))
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
+        assert attempt_table == "ingestion_attempt"
+        assert lineage_column_count == 4
+        assert contract_config["schema_id"] == "market_eod"
+        assert contract_config["schema_enforcement"] == "audit"
+        assert contract_config["custom"] == "preserve"
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
         async with target_engine.connect() as connection:
@@ -104,7 +139,28 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                       AND tablename = 'ingestion_run'
                       AND indexname = 'idx_run_raw_payload'
                     """))
+            attempt_table = await connection.scalar(
+                text("SELECT to_regclass('public.ingestion_attempt')")
+            )
+            lineage_column_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE (table_schema, table_name) IN (
+                        ('public', 'ingestion_run'),
+                        ('raw', 'market_payload')
+                    )
+                      AND column_name IN ('schema_id', 'schema_version')
+                    """))
+            contract_config = await connection.scalar(text("""
+                    SELECT config
+                    FROM dataset_registry
+                    WHERE dataset_key = 'tw_equity_eod'
+                    """))
         assert cleanup_index_count == 0
+        assert attempt_table is None
+        assert lineage_column_count == 0
+        assert contract_config["schema_id"] == "market_eod"
+        assert contract_config["custom"] == "preserve"
     finally:
         if target_engine is not None:
             await target_engine.dispose()

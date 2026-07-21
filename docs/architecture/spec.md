@@ -1,6 +1,6 @@
 # FinDB 技術規格與目前實作快照
 
-> **最後更新**: 2026-07-15
+> **最後更新**: 2026-07-21
 
 本文件保留 FinDB 的核心技術規格，並補上目前程式實際已落地的能力，避免規格與實作脫節。
 
@@ -28,6 +28,7 @@ FinDB 採用 `Fetch -> Source -> durable queue -> Normalize -> Serve/Admin` 的�
 ```text
 Fetch Layer
   -> Source API
+  -> ingestion_attempt (canonical endpoint audit)
   -> Raw Layer + ingestion_run + normalization_job + outbox (同一 DB transaction)
   -> Outbox Dispatcher -> RabbitMQ -> Celery Worker
   -> Normalize (canonical + DQ + terminal state 同一 DB transaction)
@@ -38,12 +39,14 @@ Fetch Layer
 ### Fetch Layer
 
 - 執行於外部設備或外部服務
-- 只負責抓取與轉送 raw payload
+- 抓取 provider payload；新 feed 必須先轉成 versioned ingress contract 再送入 Source API
 - 不應長期落地保存資料
 
 ### Source API
 
 - 驗證 API Key、allowlist、rate limit
+- 新版 `POST /ingest` 依 `schema_id + schema_version` 驗證 provider-neutral contract
+- 每筆通過 auth/rate-limit gate 的新版請求先持久化 `ingestion_attempt`，拒絕時回傳可查詢的 `attempt_id`
 - 檢查 dataset / market / payload 基本結構
 - 寫入 `raw.market_payload`
 - 建立 `ingestion_run`、`normalization_job` 與 transactional outbox
@@ -52,7 +55,7 @@ Fetch Layer
 
 ### Normalize Layer
 
-- 依 dataset key 選擇 normalizer
+- Legacy payload 依 dataset key 選擇 normalizer；versioned payload 依 schema id 選擇 provider-neutral normalizer
 - 將來源 payload mapping 為 canonical records
 - upsert instrument、identifier、calendar、EOD、macro、futures、corporate action
 - 執行 DQ 檢查並寫入 `dq_issue`
@@ -143,10 +146,11 @@ Fetch Layer
 
 - 支援 WTX 期貨合約、連續期貨 EOD 與 roll rule 資料結構
 
-### correction / dq_issue / ingestion_run / normalization_job / normalization_outbox
+### correction / dq_issue / ingestion_attempt / ingestion_run / normalization_job / normalization_outbox
 
 - `dq_issue`：記錄資料品質問題與 resolve 狀態
 - `correction`：記錄人工修正前後快照
+- `ingestion_attempt`：記錄 canonical ingest 的 received/accepted/duplicate/rejected 與固定 failure code
 - `ingestion_run`：記錄每次 ingest / rerun 的處理狀態
 - `normalization_job`：記錄 execution attempt、retry、lease 與 terminal state
 - `normalization_outbox`：以 publisher lease、confirm 與無上限 backoff 保證任務可補送
@@ -189,8 +193,10 @@ Fetch Layer
 
 ### Source API
 
+- `POST /api/v1/source/ingest`（versioned canonical contract）
 - `POST /api/v1/source/ingest/{market}`
 - `POST /api/v1/source/ingest/*/direct`
+- `GET /api/v1/source/attempts/{attempt_id}`
 - `GET /api/v1/source/runs/{run_id}`
 - `POST /api/v1/source/runs/{run_id}/rerun`
 - `GET /api/v1/source/datasets`

@@ -1,5 +1,9 @@
 # Normalize services
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
+from app.services.normalize.contracts import (
+    FuturesContinuousEODContractNormalizer,
+    MarketEODContractNormalizer,
+)
 from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.services.normalize.crypto import CryptoBloombergNormalizer, CryptoNormalizer
 from app.services.normalize.crypto_index import CryptoIndexNormalizer
@@ -53,6 +57,8 @@ __all__ = [
     "MacroBloombergNormalizer",
     "FuturesContractNormalizer",
     "FuturesContinuousNormalizer",
+    "MarketEODContractNormalizer",
+    "FuturesContinuousEODContractNormalizer",
     "WTXBloombergNormalizer",
     "USStockNormalizer",
     "USIndexNormalizer",

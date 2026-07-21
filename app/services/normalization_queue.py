@@ -453,12 +453,17 @@ async def execute_normalization(
                         raise PermanentNormalizationError("DATASET_NOT_FOUND")
                     if not dataset.is_active:
                         raise PermanentNormalizationError("DATASET_INACTIVE")
-                    normalizer_cls = _select_normalizer_for_payload(run.dataset_key, raw.payload)
+                    normalizer_cls = _select_normalizer_for_payload(
+                        run.dataset_key,
+                        raw.payload,
+                        schema_id=raw.schema_id,
+                    )
                     if normalizer_cls is None:
                         raise PermanentNormalizationError("NORMALIZER_NOT_CONFIGURED")
 
                     normalizer_config = dict(dataset.config or {})
                     normalizer_config["_ingest_fetched_at"] = raw.fetched_at
+                    normalizer_config["_ingest_source"] = raw.source
                     normalizer = normalizer_cls(session, normalizer_config)
                     result = await normalizer.process(raw.payload, run_id, commit=False)
                     now = utc_now()

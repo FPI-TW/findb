@@ -18,6 +18,7 @@ class MappedRecord:
     market: Optional[str] = None
     asset_class: Optional[str] = None
     name: Optional[str] = None
+    currency: Optional[str] = None
     open: Optional[Decimal] = None
     high: Optional[Decimal] = None
     low: Optional[Decimal] = None
@@ -112,6 +113,7 @@ class FuturesContinuousRecord:
     symbol: str
     trade_date: datetime
     name: Optional[str] = None
+    currency: Optional[str] = None
     open: Optional[Decimal] = None
     high: Optional[Decimal] = None
     low: Optional[Decimal] = None
