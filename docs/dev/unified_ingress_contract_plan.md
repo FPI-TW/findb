@@ -196,6 +196,29 @@ Schema-level validation：
 
 此 schema 不接受 Bloomberg nested `price`/`timestamp` 或 FinLab `<Open>` 等別名；fetch adapter 必須先轉成上述欄位。
 
+## Fetch Adapter 範例
+
+Provider-specific mapping 只存在 fetch layer。以下示意 Bloomberg EOD row 如何轉成 `market_eod.v1`；Source API 不包含這段判斷：
+
+```python
+def bloomberg_to_market_eod(row: dict) -> dict:
+    ticker = row["ticker"]
+    return {
+        "symbol": canonical_symbol(ticker),
+        "source_symbol": ticker,
+        "trade_date": row["timestamp"]["query_time"][:10],
+        "name": row.get("name"),
+        "currency": row.get("currency"),
+        "open": row["price"].get("open"),
+        "high": row["price"].get("high"),
+        "low": row["price"].get("low"),
+        "close": row["price"]["last"],
+        "volume": row["price"].get("volume"),
+    }
+```
+
+FinLab adapter 產生完全相同的輸出欄位，只在 fetch repo 內讀取 `date`、`total_volume` 等 FinLab 欄位。Adapter 必須有 fixture-based contract tests，證明 provider payload 轉換後可通過 FinDB 公開的 schema model 或對應 JSON Schema。
+
 ## Dataset Registry Contract
 
 每個可接收新格式的 dataset 必須宣告：

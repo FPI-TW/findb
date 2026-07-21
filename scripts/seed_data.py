@@ -105,6 +105,21 @@ DATASETS = [
         "frequency": "daily",
         "is_active": True,
         "config": {
+            "schema_id": "market_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "schema_enforcement": "audit",
+            "defaults": {
+                "market": "TW",
+                "asset_class": "equity",
+                "currency": "TWD",
+            },
+            "delivery_expectation": {
+                "delivery_mode": "full_snapshot",
+                "freshness_hours": 36,
+                "minimum_record_count": 2100,
+                "maximum_count_drop_ratio": 0.1,
+            },
             "source_format": "finlab_twstock_direct",
             "data_path": "data",
             "field_mapping": {
@@ -127,6 +142,21 @@ DATASETS = [
         "frequency": "daily",
         "is_active": True,
         "config": {
+            "schema_id": "market_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "schema_enforcement": "audit",
+            "defaults": {
+                "market": "TW",
+                "asset_class": "etf",
+                "currency": "TWD",
+            },
+            "delivery_expectation": {
+                "delivery_mode": "full_snapshot",
+                "freshness_hours": 36,
+                "minimum_record_count": 190,
+                "maximum_count_drop_ratio": 0.1,
+            },
             "source_format": "finlab_twstock_direct",
             "data_path": "data",
             "field_mapping": {
@@ -377,6 +407,21 @@ DATASETS = [
         "frequency": "daily",
         "is_active": True,
         "config": {
+            "schema_id": "futures_continuous_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "schema_enforcement": "audit",
+            "defaults": {
+                "market": "WTX",
+                "asset_class": "future",
+                "currency": "TWD",
+            },
+            "delivery_expectation": {
+                "delivery_mode": "full_snapshot",
+                "freshness_hours": 36,
+                "minimum_record_count": 1,
+                "maximum_count_drop_ratio": 0.5,
+            },
             "data_path": "data",
             "symbol_field": "symbol",
             "name_field": "name",
@@ -583,7 +628,24 @@ DATASETS = [
         "market": "WTX",
         "frequency": "daily",
         "is_active": True,
-        "config": {"source_format": "direct"},
+        "config": {
+            "schema_id": "futures_continuous_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "schema_enforcement": "audit",
+            "defaults": {
+                "market": "WTX",
+                "asset_class": "future",
+                "currency": "TWD",
+            },
+            "delivery_expectation": {
+                "delivery_mode": "full_snapshot",
+                "freshness_hours": 36,
+                "minimum_record_count": 1,
+                "maximum_count_drop_ratio": 0.5,
+            },
+            "source_format": "direct",
+        },
     },
     {
         "dataset_key": "macro_bloomberg_observation",
