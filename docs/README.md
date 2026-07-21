@@ -33,6 +33,7 @@
 | --- | --- |
 | [roadmap.md](dev/roadmap.md) | 進度摘要：已交付 / 進行中 / 下一步。 |
 | [multi_asset_architecture_plan.md](dev/multi_asset_architecture_plan.md) | 多資產擴展架構計劃：ADR、schema 設計原則、多來源 ingest 規範、Phase 1-6 執行計劃。 |
+| [unified_ingress_contract_plan.md](dev/unified_ingress_contract_plan.md) | 統一 ingress contract 計劃：provider-neutral dataset/schema/source 邊界、首批 EOD/期貨格式與遷移策略。 |
 | [scalability_optimization_checklist.md](dev/scalability_optimization_checklist.md) | 大批量處理效能優化檢查清單（Phase 0-6），與架構計劃互補：此文件管吞吐與延遲，架構計劃管設計決策。 |
 | [partial_dump_plan.md](dev/partial_dump_plan.md) | Partial dump 功能計劃與 `partial_dump.yaml` 欄位規格。 |
 | [known_issues.md](dev/known_issues.md) | 架構風險清單與資料缺失排查手冊（含各項修復狀態）。 |

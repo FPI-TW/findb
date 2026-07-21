@@ -1,0 +1,318 @@
+# 統一 Ingress Contract 計劃
+
+## 狀態
+
+- 狀態：規劃中
+- 決策日期：2026-07-21
+- 適用範圍：所有向 Source API 發送市場資料的 fetch-layer client
+- 首批 contract：`market_eod.v1`、`futures_continuous_eod.v1`
+
+## 目標
+
+FinDB 定義 provider-neutral、可版本化的 ingress contract。Bloomberg、FinLab 與未來新增的 fetch client 必須先在 fetch layer 將 provider 原始欄位轉為 contract，再送入 Source API。
+
+這項改造要達成：
+
+1. 同一邏輯 dataset 不因 provider 不同而分裂。
+2. normalizer 不再解析 Bloomberg、FinLab 等 provider-specific 欄位。
+3. 格式錯誤在 Source API boundary 被拒絕並留下可查詢的失敗紀錄。
+4. 每次 delivery 帶有足夠的批次描述，讓系統能判斷筆數驟降、過期資料與不完整 snapshot。
+5. contract 可以逐版本演進，既有 raw payload 在遷移期間仍可 rerun。
+
+非目標：
+
+- 不要求所有商品共用一個通用 row schema。
+- 不在本階段改動 canonical tables 或 Serve API。
+- 不要求 FinDB 保存 provider 未轉換前的原始檔；需要保存時由 fetch layer 使用自己的 object storage，並傳入 `source_raw_ref` 與 checksum。
+
+## 核心識別
+
+三種識別必須分離：
+
+| 欄位 | 定義 | 範例 |
+| --- | --- | --- |
+| `dataset_key` | FinDB 內的邏輯資料流與資料治理單位 | `tw_equity_eod` |
+| `schema_id` + `schema_version` | payload 的欄位與語意契約 | `market_eod` + `1` |
+| `source` | 實際供應資料的 provider | `finlab`、`bloomberg` |
+
+Feed 不另建 provider-specific dataset。需要在人或監控介面表示特定 feed 時，使用 `{source}:{dataset_key}`，例如 `finlab:tw_equity_eod`。
+
+### Dataset 命名
+
+新 dataset key 使用 `{market}_{instrument_family}_{data_kind}`，全部為 lowercase snake case：
+
+- `tw_equity_eod`
+- `tw_etf_eod`
+- `us_equity_eod`
+- `hk_equity_eod`
+- `cn_equity_eod`
+- `wtx_futures_continuous_eod`
+- `macro_observation`
+
+provider 不得出現在新 dataset key。既有 provider-specific key 在相容期保留為 inactive/legacy alias，不立即改寫歷史 `ingestion_run`。
+
+### Schema 分化原則
+
+Schema 優先依資料形狀分化，其次才是商品特有語意，最後才是市場特例：
+
+1. 股票、ETF、指數、crypto、FX 若都是日 OHLCV，使用 `market_eod.v1`。
+2. 期貨連續資料若有轉倉規則，使用 `futures_continuous_eod.v1`。
+3. 只有共同 schema 無法清楚表達市場規則時，才增加如 `market_eod.tw.v1` 的變體。
+4. provider 差異只能在 fetch adapter 解決，不能產生 `*.bloomberg.*` 或 `*.finlab.*` schema。
+
+## 通用請求 Envelope
+
+所有新格式由單一 canonical ingest path 接收；實際 endpoint 名稱在實作切片決定。請求格式如下：
+
+```json
+{
+  "dataset_key": "tw_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "finlab",
+  "request_key": "finlab_tw_equity_eod_20260721_01",
+  "idempotency_key": "finlab_tw_equity_eod_20260721",
+  "fetched_at": "2026-07-21T08:00:00Z",
+  "payload": {
+    "batch": {},
+    "data": []
+  }
+}
+```
+
+Envelope 規則：
+
+- `dataset_key`、`schema_id`、`schema_version`、`source`、`request_key`、`idempotency_key`、`fetched_at` 必填。
+- `source` 使用穩定 lowercase provider name，只能出現在 envelope；`payload.batch` 與 row 不重複傳遞。
+- `schema_id` 使用 lowercase snake case；`schema_version` 為正整數。
+- `fetched_at` 必須是 UTC-aware ISO 8601 timestamp。
+- 同一 source client、dataset 與 idempotency key 的語意維持現況：相同內容回既有 run，不同內容回 `409`。
+- `payload` 必須先通過指定 schema 的強型別驗證，不能再用 `dict[str, Any]` 作為實際資料契約。
+
+## 通用 Batch Contract
+
+每一種 schema 都共用以下 batch 欄位：
+
+| 欄位 | 型別 | 必填 | 說明 |
+| --- | --- | --- | --- |
+| `data_date` | date | 是 | 本批資料代表的主要業務日期 |
+| `delivery_mode` | enum | 是 | `full_snapshot`、`incremental`、`backfill` |
+| `declared_record_count` | integer >= 0 | 是 | fetch layer 宣告的 `data` 筆數 |
+| `coverage_start_date` | date | 條件式 | 批次含多個業務日期時必填 |
+| `coverage_end_date` | date | 條件式 | 批次含多個業務日期時必填，且不得早於 start |
+| `source_raw_ref` | string | 否 | provider 原始檔/object storage 參照，不得含存取憑證 |
+| `source_raw_sha256` | 64-char hex | 否 | provider 原始內容 checksum |
+| `sequence` | integer >= 1 | 否 | 同一資料日分批傳送時的順序 |
+| `sequence_count` | integer >= 1 | 否 | 同一資料日預期總批數 |
+
+共同驗證：
+
+- `declared_record_count` 必須等於 `len(data)`，不相等時回 `422`。
+- `sequence` 與 `sequence_count` 必須同時提供，且 `sequence <= sequence_count`。
+- `full_snapshot` 表示 `data_date` 當天完整的 dataset universe；只傳異動或部分 symbol 必須使用 `incremental`。
+- `data` 含有 `data_date` 以外的業務日期時，必須提供 coverage start/end，且其值必須涵蓋實際 row 日期範圍。
+- `full_snapshot` 不允許缺少 dataset 設定要求的 coverage；缺少時拒絕或建立 warning 由 dataset policy 決定。
+- `backfill` 可以包含多個業務日期；`data_date` 必須等於 coverage end date，實際日期仍以 row 為準。
+
+## `market_eod.v1`
+
+適用股票、ETF、指數、crypto 與 FX 的日 OHLCV。
+
+### Dataset context
+
+`market`、`asset_class` 與預設 `currency` 由 `dataset_registry` 決定，不在每列重複。單一 dataset 不應混合市場或 asset class；既有 `hkchina_mixed_eod` 必須在 fetch layer 拆成 HK/CN 與 equity/index 對應的 deliveries。
+
+### Row contract
+
+| 欄位 | 型別 | 必填 | 規則 |
+| --- | --- | --- | --- |
+| `symbol` | string | 是 | FinDB 使用的穩定 symbol，trim 後不可為空 |
+| `source_symbol` | string | 否 | provider 原始識別碼，例如 Bloomberg ticker |
+| `trade_date` | date | 是 | 該筆 OHLCV 的交易日 |
+| `name` | string | 否 | 不提供時不得覆寫既有 canonical name |
+| `currency` | ISO-like uppercase string | 條件式 | dataset 無預設 currency 時必填 |
+| `open` | decimal | 否 | 不得為負數 |
+| `high` | decimal | 否 | 不得為負數 |
+| `low` | decimal | 否 | 不得為負數 |
+| `close` | decimal | 是 | 不得為負數 |
+| `volume` | integer | 否 | 不得為負數 |
+| `turnover` | decimal | 否 | 不得為負數 |
+| `total_ticks` | integer | 否 | 不得為負數 |
+
+Schema-level validation：
+
+- `(symbol, trade_date)` 在單一 delivery 中不得重複；重複回 `422`，不留給 normalizer 靜默去重。
+- `high` 存在時不得低於存在的 `open`、`low`、`close`。
+- `low` 存在時不得高於存在的 `open`、`high`、`close`。
+- 缺少 OHLC 但有 close 的情況可以通過 schema，交由 DQ policy 決定 warning/error，避免某些合法資料源無法輸入。
+- `source_symbol` 只用於 identifier lineage，不作為 provider-specific parsing 的入口。
+
+範例：
+
+```json
+{
+  "batch": {
+    "data_date": "2026-07-21",
+    "delivery_mode": "full_snapshot",
+    "declared_record_count": 1
+  },
+  "data": [
+    {
+      "symbol": "2330",
+      "source_symbol": "2330 TT Equity",
+      "trade_date": "2026-07-21",
+      "name": "台積電",
+      "currency": "TWD",
+      "open": "1000.0",
+      "high": "1020.0",
+      "low": "995.0",
+      "close": "1015.0",
+      "volume": 32100000,
+      "turnover": "32480000000"
+    }
+  ]
+}
+```
+
+## `futures_continuous_eod.v1`
+
+適用連續期貨日資料。dataset context 提供 `market=WTX`、`asset_class=future` 與預設 currency。
+
+### Row contract
+
+| 欄位 | 型別 | 必填 | 規則 |
+| --- | --- | --- | --- |
+| `symbol` | string | 是 | 連續序列的穩定 symbol |
+| `source_symbol` | string | 否 | provider 原始識別碼 |
+| `trade_date` | date | 是 | 交易日 |
+| `name` | string | 否 | 不提供時不得覆寫既有名稱 |
+| `open`、`high`、`low`、`close` | decimal | 同 `market_eod.v1` | 相同 OHLC 規則 |
+| `volume` | integer | 否 | 不得為負數 |
+| `turnover` | decimal | 否 | 不得為負數 |
+| `open_interest` | integer | 否 | 不得為負數 |
+| `active_contract_code` | string | 否 | 該日實際採用的期貨契約 |
+| `roll_rule` | string | 是 | 穩定的轉倉規則 key，例如 `front_month` |
+| `roll_adjustment` | decimal | 否 | 若序列有價格調整，記錄該日調整量 |
+
+此 schema 不接受 Bloomberg nested `price`/`timestamp` 或 FinLab `<Open>` 等別名；fetch adapter 必須先轉成上述欄位。
+
+## Dataset Registry Contract
+
+每個可接收新格式的 dataset 必須宣告：
+
+```json
+{
+  "schema_id": "market_eod",
+  "accepted_schema_versions": [1],
+  "current_schema_version": 1,
+  "defaults": {
+    "market": "TW",
+    "asset_class": "equity",
+    "currency": "TWD"
+  },
+  "delivery_expectation": {
+    "delivery_mode": "full_snapshot",
+    "freshness_hours": 36,
+    "minimum_record_count": 2100,
+    "maximum_count_drop_ratio": 0.1
+  }
+}
+```
+
+第一版可以先存在 `dataset_registry.config`，但進入強制執行前應評估把 `schema_id` 與 current version 升為明確欄位，避免關鍵契約只存在 JSONB。
+
+## 驗證與失敗紀錄
+
+Source API 依下列順序處理：
+
+1. 認證 source client，解析 envelope。
+2. 建立 ingestion attempt，讓後續所有拒絕都有追蹤識別。
+3. 驗證 dataset existence、active、ownership 與 market context。
+4. 驗證 dataset 接受的 schema id/version。
+5. 以對應 Pydantic model 驗證 batch 與 rows。
+6. 計算 batch completeness/freshness policy。
+7. 寫入 standardized raw payload、ingestion run、job 與 outbox。
+
+格式或授權失敗不得建立 normalization job，但必須留下 attempt 狀態、公開錯誤碼與 bounded error message。至少需要以下錯誤碼：
+
+- `INGRESS_SCHEMA_UNSUPPORTED`
+- `INGRESS_SCHEMA_INVALID`
+- `DECLARED_RECORD_COUNT_MISMATCH`
+- `DUPLICATE_DELIVERY_KEY`
+- `BATCH_RECORD_COUNT_DROP`
+- `STALE_PAYLOAD`
+- `LATEST_DATE_MISSING`
+- `DATASET_DELIVERY_MISSING`
+
+`BATCH_RECORD_COUNT_DROP` 等完整度檢查應支援 dataset-specific `reject` 或 `warn` policy。Warning 必須建立彙總 DQ issue，不逐 row 灌入大量 issue。
+
+## Versioning
+
+- 新增 optional 欄位且不改變既有語意，可以留在同一 major contract version。
+- 新增必填欄位、改名、改變 null/數值語意，必須新增 `schema_version`。
+- Source API 可在過渡期同時接受 N 與 N+1，但 dataset 必須指定 current version。
+- Fetch client 必須明確送版本，不由伺服器猜測。
+- Raw payload 與 ingestion run 必須保存 schema id/version，確保 rerun 使用原版本。
+- 版本 adapter 只能將舊標準 contract 升級到新標準 contract；不得重新引入 provider-specific parsing。
+
+## 遷移策略
+
+### Phase 0：盤點與 contract fixtures
+
+- 蒐集目前實際使用中的 FinLab/Bloomberg payload fixtures。
+- 為每個現有 feed 建立 provider payload → ingress contract 的 mapping 表。
+- 定稿 decimal、timezone、symbol 與 currency 語意。
+
+### Phase 1：新增 contract validation
+
+- 新增 typed envelope、schema registry 與首批 Pydantic models。
+- 新增 canonical ingest endpoint；舊 endpoints 行為不變。
+- 新增 attempt-level failure audit 與 schema/version lineage。
+
+### Phase 2：Fetch client shadow migration
+
+- 先遷移 `tw_equity_eod`、`tw_etf_eod`，再遷移 WTX。
+- Fetch client 在測試環境同時產生舊格式與新格式，比對 record count、natural keys、數值與 DQ 結果。
+- Production 每個 feed 個別切換，不一次切換全部來源。
+
+### Phase 3：Normalizer consolidation
+
+- 新格式改由 `MarketEODNormalizer` 與 `FuturesContinuousEODNormalizer` 處理。
+- `NORMALIZER_MAP` 對新格式依 schema/data shape 路由，不依 provider 路由。
+- 移除 WTX 依 `metadata.source` 選 normalizer 的新請求路徑。
+
+### Phase 4：Legacy freeze
+
+- `/direct` endpoints 標記 deprecated，禁止新增 client。
+- 舊 provider-specific dataset 設為 inactive/legacy alias。
+- 舊 normalizer 僅供既有 raw payload rerun，不接受新 ingest。
+
+### Phase 5：Legacy removal
+
+- 確認 legacy raw payload 已超出 retention 或已轉存。
+- 移除 direct endpoints、provider-specific normalizers 與 provider-specific dataset seed。
+- 歷史 ingestion run 保留原 dataset/schema lineage，不強制改寫。
+
+## 首批驗收條件
+
+`market_eod.v1` 與 `futures_continuous_eod.v1` 進入 production 前必須符合：
+
+- 同一 contract 可接受至少兩個不同 provider 經 fetch adapter 產生的 payload。
+- FinDB 程式碼不查詢 `metadata.source` 來選 normalizer。
+- Provider alias/nested field 不出現在新 normalizer。
+- Invalid row、重複 natural key、錯誤 count 與 unsupported version 都有固定 4xx 與失敗紀錄。
+- 相同 idempotency key 的語意與現況相容。
+- 新舊路徑 shadow comparison 的 canonical natural keys 與數值一致。
+- Full snapshot 少量或過期時，會拒絕或建立可觀測 warning。
+- 舊 raw payload rerun 在相容期仍可成功。
+
+## 建議實作切片
+
+第一個 PR 僅建立 contract foundation，不切 production feed：
+
+1. 新增 schema id/version 與 typed `market_eod.v1`、`futures_continuous_eod.v1` models。
+2. 新增 contract registry/dispatcher 與單元測試。
+3. Dataset config 加入 schema 宣告，但先以 audit-only 模式驗證。
+4. 文件加入 fetch adapter 範例與錯誤回應。
+
+第二個 PR 再處理 durable failure attempt 與 canonical endpoint；第三個 PR 從 TW feed 開始 shadow migration。這樣可以把 contract correctness、持久化改造與實際 feed 切換分開驗證與 rollback。
