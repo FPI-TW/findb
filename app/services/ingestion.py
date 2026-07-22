@@ -26,7 +26,10 @@ from app.models.registry import (
 from app.schemas.ingress import IngressRequestV1
 from app.schemas.source import IngestRequest, ensure_data_items_count_within_limit
 from app.services.ingestion_attempts import IngestionAttemptService
-from app.services.ingress_contracts import parse_dataset_contract_declaration
+from app.services.ingress_contracts import (
+    parse_dataset_contract_declaration,
+    validate_dataset_contract_scope,
+)
 from app.services.normalize import (
     BaseNormalizer,
     CNEquityNormalizer,
@@ -116,9 +119,9 @@ _WTX_SOURCE_NORMALIZERS: dict[str, NormalizerFactory] = {
     "bloomberg": WTXBloombergNormalizer,
 }
 
-CONTRACT_NORMALIZER_MAP: dict[str, NormalizerFactory] = {
-    "market_eod": MarketEODContractNormalizer,
-    "futures_continuous_eod": FuturesContinuousEODContractNormalizer,
+CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
+    ("market_eod", 1): MarketEODContractNormalizer,
+    ("futures_continuous_eod", 1): FuturesContinuousEODContractNormalizer,
 }
 
 
@@ -138,10 +141,13 @@ def _select_normalizer_for_payload(
     dataset_key: str,
     payload: dict,
     schema_id: str | None = None,
+    schema_version: int | None = None,
 ) -> Optional[NormalizerFactory]:
     """Resolve normalizer by dataset_key, falling back to payload-aware routing."""
     if schema_id is not None:
-        return CONTRACT_NORMALIZER_MAP.get(schema_id)
+        if schema_version is None:
+            return None
+        return CONTRACT_NORMALIZER_MAP.get((schema_id, schema_version))
     if dataset_key == "wtx_eod":
         source = _get_nested_value(payload, "metadata.source")
         provider_key = _normalize_provider_key(source)
@@ -805,7 +811,19 @@ class IngestionService:
         if not dataset.is_active:
             raise DatasetInactiveError(f"Dataset {request.dataset_key} is inactive")
 
-        declaration = parse_dataset_contract_declaration(dataset.config)
+        try:
+            declaration = parse_dataset_contract_declaration(dataset.config)
+            if declaration is not None:
+                validate_dataset_contract_scope(
+                    declaration,
+                    market=dataset.market,
+                    asset_class=dataset.asset_class,
+                )
+        except ValueError as exc:
+            raise DatasetContractNotConfiguredError(
+                f"Dataset {request.dataset_key} has an invalid ingress contract declaration: "
+                f"{exc}"
+            ) from exc
         if declaration is None:
             raise DatasetContractNotConfiguredError(
                 f"Dataset {request.dataset_key} has no ingress contract declaration"

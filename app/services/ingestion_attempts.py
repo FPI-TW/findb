@@ -2,15 +2,19 @@
 
 import hashlib
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any, Optional
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.registry import IngestionAttempt
 from app.utils import utc_now, uuid7
 
 _ERROR_MESSAGE_LIMIT = 1_000
+_STALE_ATTEMPT_MESSAGE = "Request processing did not reach a terminal state"
 
 
 def _bounded_string(value: Any, limit: int) -> str | None:
@@ -119,3 +123,36 @@ class IngestionAttemptService:
         if self.ownership_enforced and attempt.source_client_id != self.source_client_id:
             return None
         return attempt
+
+
+async def reconcile_stale_ingestion_attempts(
+    db: AsyncSession,
+    *,
+    stale_seconds: int | None = None,
+) -> int:
+    """Terminalize orphaned ``received`` attempts left by interrupted requests."""
+    threshold_seconds = (
+        get_settings().INGESTION_ATTEMPT_STALE_SECONDS if stale_seconds is None else stale_seconds
+    )
+    if threshold_seconds < 1:
+        raise ValueError("stale_seconds must be positive")
+    now = utc_now()
+    result = await db.execute(
+        select(IngestionAttempt)
+        .where(
+            IngestionAttempt.status == "received",
+            IngestionAttempt.created_at < now - timedelta(seconds=threshold_seconds),
+        )
+        .order_by(IngestionAttempt.created_at)
+        .with_for_update(skip_locked=True)
+    )
+    attempts = list(result.scalars().all())
+    for attempt in attempts:
+        attempt.status = "aborted"
+        attempt.http_status = None
+        attempt.failure_code = "ATTEMPT_INTERRUPTED"
+        attempt.error_message = _STALE_ATTEMPT_MESSAGE
+        attempt.completed_at = now
+        attempt.updated_at = now
+    await db.commit()
+    return len(attempts)

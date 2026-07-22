@@ -7,6 +7,7 @@ import time
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.services.ingestion_attempts import reconcile_stale_ingestion_attempts
 from app.services.normalization_queue import (
     claim_outbox_batch,
     mark_outbox_publish_failure,
@@ -34,6 +35,10 @@ async def run_dispatcher() -> None:
         async with session_factory() as session:
             replayed = await reconcile_nonterminal_jobs(session)
             logger.info("Reconciled %s non-terminal normalization jobs", replayed)
+        async with session_factory() as session:
+            aborted = await reconcile_stale_ingestion_attempts(session)
+            if aborted:
+                logger.warning("Marked %s stale ingestion attempts aborted", aborted)
 
         broker_was_unavailable = False
         last_reconciliation = time.monotonic()
@@ -60,6 +65,13 @@ async def run_dispatcher() -> None:
                                     "Repaired %s stale normalization deliveries",
                                     repaired,
                                 )
+                async with session_factory() as session:
+                    aborted = await reconcile_stale_ingestion_attempts(session)
+                    if aborted:
+                        logger.warning(
+                            "Marked %s stale ingestion attempts aborted",
+                            aborted,
+                        )
                 last_reconciliation = time.monotonic()
 
             async with session_factory() as session:

@@ -107,7 +107,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint(
-            "status IN ('received', 'accepted', 'duplicate', 'rejected')",
+            "status IN ('received', 'accepted', 'duplicate', 'rejected', 'aborted')",
             name="ck_ingestion_attempt_ingestion_attempt_status_valid",
         ),
         sa.ForeignKeyConstraint(
@@ -149,7 +149,25 @@ def upgrade() -> None:
         connection.execute(
             sa.text("""
                 UPDATE dataset_registry
-                SET config = COALESCE(config, '{}'::jsonb) || CAST(:contract_config AS jsonb),
+                SET config =
+                    CAST(:contract_config AS jsonb)
+                    || COALESCE(config, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'defaults',
+                        CAST(:contract_config AS jsonb)->'defaults'
+                        || CASE
+                            WHEN jsonb_typeof(config->'defaults') = 'object'
+                            THEN config->'defaults'
+                            ELSE '{}'::jsonb
+                        END,
+                        'delivery_expectation',
+                        CAST(:contract_config AS jsonb)->'delivery_expectation'
+                        || CASE
+                            WHEN jsonb_typeof(config->'delivery_expectation') = 'object'
+                            THEN config->'delivery_expectation'
+                            ELSE '{}'::jsonb
+                        END
+                    ),
                     updated_at = now()
                 WHERE dataset_key = :dataset_key
                 """),

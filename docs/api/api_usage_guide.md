@@ -248,7 +248,7 @@ POST /api/v1/source/ingest
 
 Fetch layer 必須先把 Bloomberg、FinLab 等 provider 原始欄位轉為 FinDB contract。目前支援：
 
-Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標；呼叫 canonical endpoint 時仍會完整強制驗證 schema id/version 與所有欄位。
+Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標；呼叫 canonical endpoint 時仍會完整強制驗證 schema id/version 與所有欄位。Contract 的 `defaults.market` 與 `defaults.asset_class` 為必填，且必須分別等於 dataset registry 的 `market` 與 `asset_class`，避免資料被寫入錯誤 canonical scope。
 
 | `schema_id` | `schema_version` | 用途 |
 | --- | --- | --- |
@@ -306,6 +306,8 @@ Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標�
 
 每次通過 API key 認證與 rate-limit gate 的呼叫都會建立獨立 `attempt_id`。重送相同 idempotency key 與內容時會建立 `duplicate` attempt，但回傳原有 `run_id`；相同 key 搭配不同 source、schema/version 或 payload 時回 `409`。缺少／無效 API key 或被 rate limit 的請求在 endpoint 前即被拒絕，因此不建立 attempt。
 
+若資料庫在 attempt 建立前不可用，`503 DATABASE_UNAVAILABLE` 仍使用相同 error envelope，但 `attempt_id` 為 `null`。若 process 在 attempt 建立後、完成處理前中斷，dispatcher 會在 `INGESTION_ATTEMPT_STALE_SECONDS`（預設 300 秒）後將殘留的 `received` attempt 回收為 `aborted`，failure code 為 `ATTEMPT_INTERRUPTED`。
+
 拒絕回應具有固定格式：
 
 ```json
@@ -332,6 +334,7 @@ Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標�
 | 422 | `INGRESS_SCHEMA_UNSUPPORTED` | schema id/version 未註冊 |
 | 422 | `INGRESS_SCHEMA_INVALID` | JSON 或欄位不符合 contract |
 | 422 | `INGRESS_SCHEMA_NOT_ALLOWED` | dataset 不接受指定 contract |
+| 503 | `DATABASE_UNAVAILABLE` | 資料庫暫時不可用；建立 attempt 前失敗時 `attempt_id=null` |
 
 `futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。
 

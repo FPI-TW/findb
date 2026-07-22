@@ -21,6 +21,10 @@ from app.models.registry import (
     NormalizationWorkerHeartbeat,
 )
 from app.services.ingestion import _select_normalizer_for_payload
+from app.services.ingress_contracts import (
+    parse_dataset_contract_declaration,
+    validate_dataset_contract_scope,
+)
 from app.task_queue import celery_app
 from app.utils import utc_now, uuid7
 
@@ -457,11 +461,30 @@ async def execute_normalization(
                         run.dataset_key,
                         raw.payload,
                         schema_id=raw.schema_id,
+                        schema_version=raw.schema_version,
                     )
                     if normalizer_cls is None:
                         raise PermanentNormalizationError("NORMALIZER_NOT_CONFIGURED")
 
                     normalizer_config = dict(dataset.config or {})
+                    if raw.schema_id is not None:
+                        try:
+                            declaration = parse_dataset_contract_declaration(dataset.config)
+                            if declaration is None:
+                                raise ValueError("missing contract declaration")
+                            validate_dataset_contract_scope(
+                                declaration,
+                                market=dataset.market,
+                                asset_class=dataset.asset_class,
+                            )
+                        except ValueError as exc:
+                            logger.error(
+                                "Invalid dataset contract configuration for %s: %s",
+                                dataset.dataset_key,
+                                exc,
+                            )
+                            raise PermanentNormalizationError("DATASET_CONTRACT_INVALID") from exc
+                        normalizer_config["defaults"] = declaration.defaults.model_dump()
                     normalizer_config["_ingest_fetched_at"] = raw.fetched_at
                     normalizer_config["_ingest_source"] = raw.source
                     normalizer = normalizer_cls(session, normalizer_config)

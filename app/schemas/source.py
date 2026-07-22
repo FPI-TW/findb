@@ -247,10 +247,10 @@ class IngressErrorDetail(BaseModel):
 
 
 class IngressErrorResponse(BaseModel):
-    """Rejected canonical ingest response with durable attempt lineage."""
+    """Canonical ingest error; lineage is absent if attempt persistence failed."""
 
     success: Literal[False] = False
-    attempt_id: UUID
+    attempt_id: Optional[UUID] = None
     error: IngressErrorDetail
 
 

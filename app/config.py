@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     OUTBOX_BATCH_SIZE: int = 100
     OUTBOX_CLAIM_SECONDS: int = 60
     OUTBOX_RECONCILE_SECONDS: int = 30
+    INGESTION_ATTEMPT_STALE_SECONDS: int = 300
 
     # Serve API Keys (comma-separated, optional)
     SERVE_API_KEYS: str = ""

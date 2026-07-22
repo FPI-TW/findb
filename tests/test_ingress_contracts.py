@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.schemas.ingress import FuturesContinuousEODIngressRequest, MarketEODIngressRequest
+from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     DatasetContractDeclaration,
     UnsupportedIngressContractError,
@@ -15,6 +16,7 @@ from app.services.ingress_contracts import (
     supported_contracts,
     validate_ingress_request,
 )
+from app.services.normalize import MarketEODContractNormalizer
 from scripts.seed_data import DATASETS
 
 
@@ -246,6 +248,7 @@ def test_dataset_contract_declaration_defaults_to_audit_mode():
             "schema_id": "market_eod",
             "accepted_schema_versions": [1],
             "current_schema_version": 1,
+            "defaults": {"market": "TW", "asset_class": "equity"},
         }
     )
 
@@ -259,6 +262,7 @@ def test_dataset_contract_declaration_requires_current_version_to_be_accepted():
                 "schema_id": "market_eod",
                 "accepted_schema_versions": [1],
                 "current_schema_version": 2,
+                "defaults": {"market": "TW", "asset_class": "equity"},
             }
         )
 
@@ -270,12 +274,42 @@ def test_dataset_contract_declaration_rejects_unregistered_contract():
                 "schema_id": "unknown",
                 "accepted_schema_versions": [1],
                 "current_schema_version": 1,
+                "defaults": {"market": "TW", "asset_class": "equity"},
             }
         )
 
 
 def test_legacy_dataset_config_has_no_contract_declaration():
     assert parse_dataset_contract_declaration({"source_format": "legacy"}) is None
+
+
+def test_contract_normalizer_routing_requires_schema_id_and_version():
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_eod",
+            {},
+            schema_id="market_eod",
+            schema_version=1,
+        )
+        is MarketEODContractNormalizer
+    )
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_eod",
+            {},
+            schema_id="market_eod",
+            schema_version=2,
+        )
+        is None
+    )
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_eod",
+            {},
+            schema_id="market_eod",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

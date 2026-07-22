@@ -90,7 +90,7 @@ class IngestionAttempt(Base):
     __tablename__ = "ingestion_attempt"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('received', 'accepted', 'duplicate', 'rejected')",
+            "status IN ('received', 'accepted', 'duplicate', 'rejected', 'aborted')",
             name="ingestion_attempt_status_valid",
         ),
         Index("idx_ingestion_attempt_status_created", "status", "created_at"),

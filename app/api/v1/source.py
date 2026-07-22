@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 def _ingress_error_response(
-    attempt_id: UUID,
+    attempt_id: UUID | None,
     *,
     status_code: int,
     code: str,
@@ -469,9 +469,11 @@ async def ingest_canonical_contract(
         result = await accept_canonical_ingest(db, raw_body)
     except (OperationalError, DBAPIError):
         logger.exception("Database unavailable while creating ingestion attempt")
-        raise HTTPException(
+        return _ingress_error_response(
+            None,
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Ingestion is temporarily unavailable",
+            code="DATABASE_UNAVAILABLE",
+            message="Ingestion is temporarily unavailable",
             headers={"Retry-After": "30"},
         )
     except CanonicalIngestRejectionError as exc:

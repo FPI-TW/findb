@@ -8,9 +8,9 @@ from app.services.normalize.types import FuturesContinuousRecord, MappedRecord
 
 
 def _contract_context(config: dict) -> tuple[str, str, str | None, str | None]:
-    defaults = config.get("defaults") or {}
-    market = str(defaults.get("market") or "").strip().upper()
-    asset_class = str(defaults.get("asset_class") or "").strip().lower()
+    defaults = config["defaults"]
+    market = str(defaults["market"]).strip().upper()
+    asset_class = str(defaults["asset_class"]).strip().lower()
     currency_value = defaults.get("currency")
     currency = str(currency_value).strip().upper() if currency_value else None
     source_value = config.get("_ingest_source")
@@ -37,10 +37,8 @@ class MarketEODContractNormalizer(BaseNormalizer):
     def __init__(self, db, dataset_config: dict | None = None):
         super().__init__(db, dataset_config)
         market, asset_class, _, _ = _contract_context(self.dataset_config)
-        if market:
-            self.market = market
-        if asset_class:
-            self.asset_class = asset_class
+        self.market = market
+        self.asset_class = asset_class
 
     def map_fields(self, raw_data: dict) -> list[MappedRecord]:
         data_items = raw_data.get("data", [])
@@ -65,8 +63,8 @@ class MarketEODContractNormalizer(BaseNormalizer):
                 MappedRecord(
                     symbol=symbol,
                     trade_date=trade_date,
-                    market=market or self.market,
-                    asset_class=asset_class or self.asset_class,
+                    market=market,
+                    asset_class=asset_class,
                     name=item.get("name"),
                     currency=currency,
                     open=self._parse_decimal(item.get("open")),
@@ -95,10 +93,8 @@ class FuturesContinuousEODContractNormalizer(FuturesContinuousNormalizer):
     def __init__(self, db, dataset_config: dict | None = None):
         super().__init__(db, dataset_config)
         market, asset_class, _, _ = _contract_context(self.dataset_config)
-        if market:
-            self.market = market
-        if asset_class:
-            self.asset_class = asset_class
+        self.market = market
+        self.asset_class = asset_class
 
     def map_fields(self, raw_data: dict) -> list[FuturesContinuousRecord]:
         data_items = raw_data.get("data", [])

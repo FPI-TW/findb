@@ -70,7 +70,13 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                 )
                 VALUES (
                     'tw_equity_eod', 'TW Equity', 'equity', 'TW', 'daily',
-                    true, '{"source_format":"legacy","custom":"preserve"}'::jsonb,
+                    true, '{
+                        "source_format":"legacy",
+                        "custom":"preserve",
+                        "schema_id":"production_contract",
+                        "accepted_schema_versions":[99],
+                        "defaults":{"market":"US"}
+                    }'::jsonb,
                     now(), now()
                 )
                 ON CONFLICT (dataset_key) DO UPDATE
@@ -126,8 +132,14 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
         assert lineage_column_count == 4
-        assert contract_config["schema_id"] == "market_eod"
+        assert contract_config["schema_id"] == "production_contract"
+        assert contract_config["accepted_schema_versions"] == [99]
         assert contract_config["schema_enforcement"] == "audit"
+        assert contract_config["defaults"] == {
+            "market": "US",
+            "asset_class": "equity",
+            "currency": "TWD",
+        }
         assert contract_config["custom"] == "preserve"
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
@@ -159,7 +171,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert cleanup_index_count == 0
         assert attempt_table is None
         assert lineage_column_count == 0
-        assert contract_config["schema_id"] == "market_eod"
+        assert contract_config["schema_id"] == "production_contract"
         assert contract_config["custom"] == "preserve"
     finally:
         if target_engine is not None:

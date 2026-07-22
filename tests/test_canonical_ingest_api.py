@@ -1,5 +1,6 @@
 """Integration tests for canonical ingest attempts and versioned contracts."""
 
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -16,8 +17,10 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
 )
+from app.services.ingestion_attempts import reconcile_stale_ingestion_attempts
 from app.services.normalization_queue import execute_normalization
 from app.services.source_clients import create_source_client
+from app.utils import utc_now, uuid7
 
 
 def _dataset_config() -> dict:
@@ -325,6 +328,33 @@ async def test_canonical_raw_rerun_preserves_schema_lineage_and_routing(
 
 
 @pytest.mark.asyncio
+async def test_worker_routes_using_persisted_schema_version(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    test_engine,
+):
+    await _seed_dataset(test_session)
+    accepted = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+    run_id = UUID(accepted.json()["run_id"])
+    run = await test_session.get(IngestionRun, run_id)
+    raw = await test_session.get(RawMarketPayload, run.raw_payload_id)
+    raw.schema_version = 2
+    await test_session.commit()
+
+    await _execute_run(test_session, test_engine, run_id)
+
+    await test_session.refresh(run)
+    assert run.status == "failed"
+    assert run.failure_code == "NORMALIZER_NOT_CONFIGURED"
+    assert await test_session.scalar(select(func.count()).select_from(MarketDataEOD)) == 0
+
+
+@pytest.mark.asyncio
 async def test_schema_invalid_request_is_durably_rejected(
     client: AsyncClient,
     source_headers: dict,
@@ -415,6 +445,37 @@ async def test_dataset_without_contract_is_rejected_and_recorded(
     assert body["error"]["code"] == "DATASET_CONTRACT_NOT_CONFIGURED"
     attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
     assert attempt.status == "rejected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config_update",
+    [
+        {"defaults": None},
+        {"defaults": {"market": "US", "asset_class": "equity", "currency": "TWD"}},
+        {"defaults": {"market": "TW", "asset_class": "etf", "currency": "TWD"}},
+    ],
+)
+async def test_invalid_or_conflicting_contract_scope_is_rejected_before_queueing(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    config_update: dict,
+):
+    config = _dataset_config()
+    config.update(config_update)
+    await _seed_dataset(test_session, config=config)
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "DATASET_CONTRACT_NOT_CONFIGURED"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(NormalizationJob)) == 0
 
 
 @pytest.mark.asyncio
@@ -642,4 +703,37 @@ async def test_database_failure_before_attempt_returns_retryable_503(
 
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "30"
-    assert response.json()["detail"] == "Ingestion is temporarily unavailable"
+    assert response.json() == {
+        "success": False,
+        "attempt_id": None,
+        "error": {
+            "code": "DATABASE_UNAVAILABLE",
+            "message": "Ingestion is temporarily unavailable",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stale_received_attempts_are_reconciled_as_aborted(test_session):
+    stale = IngestionAttempt(
+        attempt_id=uuid7(),
+        status="received",
+        created_at=utc_now() - timedelta(minutes=10),
+        updated_at=utc_now() - timedelta(minutes=10),
+    )
+    recent = IngestionAttempt(
+        attempt_id=uuid7(),
+        status="received",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([stale, recent])
+    await test_session.commit()
+
+    assert await reconcile_stale_ingestion_attempts(test_session, stale_seconds=300) == 1
+    await test_session.refresh(stale)
+    await test_session.refresh(recent)
+    assert stale.status == "aborted"
+    assert stale.failure_code == "ATTEMPT_INTERRUPTED"
+    assert stale.completed_at is not None
+    assert recent.status == "received"

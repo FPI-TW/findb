@@ -252,6 +252,8 @@ FinLab adapter 產生完全相同的輸出欄位，只在 fetch repo 內讀取 `
 
 第一版可以先存在 `dataset_registry.config`，但進入強制執行前應評估把 `schema_id` 與 current version 升為明確欄位，避免關鍵契約只存在 JSONB。
 
+`defaults.market` 與 `defaults.asset_class` 必須存在、符合 canonical vocabulary，且與 `dataset_registry.market/asset_class` 一致；schema normalizer 不得使用通用 market 或 asset class fallback。Normalizer routing 使用完整 `(schema_id, schema_version)` key，不能只以 schema id 猜測版本。
+
 ## 驗證與失敗紀錄
 
 Source API 依下列順序處理：
