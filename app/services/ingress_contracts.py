@@ -329,7 +329,6 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "phase": "before_field_validation",
             "paths": [
                 "dataset_key",
-                "schema_id",
                 "source",
                 "request_key",
                 "idempotency_key",
@@ -343,6 +342,22 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
         "artifact_kind": "versioned_request_body_shape_and_semantics",
         "necessary_for_api_acceptance": True,
         "sufficient_for_api_acceptance": False,
+        "dispatch_discriminators": [
+            {
+                "path": "schema_id",
+                "type": "string",
+                "matching": "exact",
+                "normalization": "none_before_dispatch",
+                "expected": schema_id,
+            },
+            {
+                "path": "schema_version",
+                "type": "integer_non_boolean",
+                "matching": "exact",
+                "normalization": "none_before_dispatch",
+                "expected": schema_version,
+            },
+        ],
         "covers": [
             {
                 "id": "request_body.json_parsing",
@@ -387,9 +402,17 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 "attempt_semantics": "not_created",
             },
             {
-                "id": "rate_limit.source_client",
+                "id": "rate_limit.credential_or_client_ip",
                 "stage": "before_attempt_dependency",
                 "http_statuses": [429],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+                "actors": ["source_client_or_legacy_credential", "client_ip"],
+            },
+            {
+                "id": "request.client_ip.available",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [403],
                 "public_codes": [],
                 "attempt_semantics": "not_created",
             },

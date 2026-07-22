@@ -207,9 +207,11 @@ acceptance contract。
 動態 data/byte limits。每筆 rule 都提供穩定 `id`、`scope`、`parameters`、`error_code` 與
 `context_dependencies`。Fetch fixture tests 必須同時跑 JSON Schema 與 semantic rules；
 `runtime_setting` dependency 由測試環境注入有效 limit，`dataset_context` dependency 由 dataset
-declaration 提供。`x-findb-transformations` 列出 trim 等 pre-validation normalization；
+declaration 提供。`x-findb-transformations` 列出 model validation 前的 trim normalization；
+`schema_id` 與 integer `schema_version` 則由 pre-model registry exact dispatch，不做 trim/coercion，
+並記錄於 `dispatch_discriminators`；
 `x-findb-contract-scope` 明示 `sufficient_for_api_acceptance=false`，並列出認證/DB credential
-lookup、rate limit、source/dataset authorization、dataset registry/declaration/version、idempotency
+lookup、credential/client-IP rate limit、client-IP availability、source/dataset authorization、dataset registry/declaration/version、idempotency
 與 infrastructure 等額外 acceptance boundaries。通過 body schema/rules 是必要而非充分條件；
 動態狀態不得假裝成 JSON Schema constraint，HTTP 細節以 API 使用指南的錯誤表與 endpoint
 說明為準。Canonical `POST /ingest`

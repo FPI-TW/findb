@@ -905,6 +905,31 @@ async def test_unbounded_schema_version_does_not_break_attempt_persistence(
 
 
 @pytest.mark.asyncio
+async def test_whitespace_schema_id_is_exact_dispatch_and_durably_unsupported(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    value = _canonical_request()
+    value["schema_id"] = " market_eod "
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "INGRESS_SCHEMA_UNSUPPORTED"
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == "INGRESS_SCHEMA_UNSUPPORTED"
+    assert attempt.schema_id == "market_eod"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+
+
+@pytest.mark.asyncio
 async def test_attempt_status_endpoint_returns_rejection(
     client: AsyncClient,
     source_headers: dict,

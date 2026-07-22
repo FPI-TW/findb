@@ -276,12 +276,15 @@ timezone-aware `fetched_at`、batch sequence/coverage 關聯、backfill 日期�
 count、delivery natural-key uniqueness、動態大小限制與 currency resolution。`context_dependencies`
 為空的規則只依 request；`kind=runtime_setting` 需要測試環境注入
 `SOURCE_MAX_DATA_ITEMS`／`SOURCE_MAX_PAYLOAD_BYTES`，`kind=dataset_context` 則需要對應 dataset
-的 `defaults.currency`。`x-findb-transformations` 則明確列出 Pydantic 在驗證前執行的字串
-trim paths。
+的 `defaults.currency`。`x-findb-transformations` 則明確列出 model validation 前執行的字串
+trim paths。`schema_id` 與 `schema_version` 是 pre-model registry dispatch discriminators，不在
+trim paths；`x-findb-contract-scope.dispatch_discriminators` 將其標示為 exact、無 dispatch 前
+normalization。Fetch adapter 不得為這兩個欄位加空白或用字串代替 integer version。
 
 `x-findb-contract-scope` 以 `covers` 與 `additional_acceptance_boundaries` 說明範圍；其中
 `sufficient_for_api_acceptance=false`。通過 JSON Schema、transformations 與 semantic rules 是
-API 接受請求的必要條件，但不是充分條件。認證與 credential DB lookup、rate limit、source
+API 接受請求的必要條件，但不是充分條件。認證與 credential DB lookup、credential/client-IP
+rate limit、client-IP availability、source
 binding、dataset allowlist/existence/active/declaration/scope/accepted version、idempotency collision
 及 infrastructure state 仍由動態 application boundaries 決定，不應嘗試編碼成 JSON Schema。
 各 boundary 已有的 HTTP status、固定 code 與 attempt semantics 會出現在 scope extension；完整

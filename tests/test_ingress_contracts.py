@@ -353,13 +353,13 @@ def test_registry_dispatches_explicit_contract_version():
             "market_eod",
             "MarketEODIngressRequest",
             "market.currency.row_or_dataset_default",
-            "aa54ea979bf2631bf997bd902fd1444bc1d3a8eb2ddc1ca89ad0542890ed973b",
+            "9b48d9aebf3d3d1f7e619d0a1fea4c86b72e0e046e58122dfa9ac359796781de",
         ),
         (
             "futures_continuous_eod",
             "FuturesContinuousEODIngressRequest",
             "futures.currency.dataset_default_required",
-            "69a72e82b2d79f1569e8e18c09ecc0edf91bf1bb5c21fe559a55d64533c1a949",
+            "8d48f044b57bd529c9940e4373d76683159717f20e61df773a9a33c6f9daa3bd",
         ),
     ],
 )
@@ -444,7 +444,8 @@ def test_registry_publishes_versioned_deterministic_json_schema(
     assert set(boundaries) == {
         "authentication.api_key",
         "authentication.database_lookup",
-        "rate_limit.source_client",
+        "rate_limit.credential_or_client_ip",
+        "request.client_ip.available",
         "credential.source_binding",
         "credential.dataset_allowlist",
         "dataset.existence",
@@ -456,6 +457,10 @@ def test_registry_publishes_versioned_deterministic_json_schema(
         "infrastructure.database_or_internal_failure",
     }
     assert boundaries["authentication.api_key"]["attempt_semantics"] == "not_created"
+    assert boundaries["rate_limit.credential_or_client_ip"]["actors"] == [
+        "source_client_or_legacy_credential",
+        "client_ip",
+    ]
     assert boundaries["dataset.existence"]["public_codes"] == ["DATASET_NOT_FOUND"]
     assert (
         boundaries["infrastructure.database_or_internal_failure"]["attempt_semantics"]
@@ -466,7 +471,6 @@ def test_registry_publishes_versioned_deterministic_json_schema(
     transformed_paths = set(transformations[0]["paths"])
     assert {
         "dataset_key",
-        "schema_id",
         "source",
         "request_key",
         "idempotency_key",
@@ -476,6 +480,24 @@ def test_registry_publishes_versioned_deterministic_json_schema(
         "payload.data[*].source_symbol",
         "payload.data[*].name",
     } <= transformed_paths
+    assert "schema_id" not in transformed_paths
+    assert "schema_version" not in transformed_paths
+    assert scope["dispatch_discriminators"] == [
+        {
+            "path": "schema_id",
+            "type": "string",
+            "matching": "exact",
+            "normalization": "none_before_dispatch",
+            "expected": schema_id,
+        },
+        {
+            "path": "schema_version",
+            "type": "integer_non_boolean",
+            "matching": "exact",
+            "normalization": "none_before_dispatch",
+            "expected": 1,
+        },
+    ]
     expected_specific_path = (
         "payload.data[*].currency" if schema_id == "market_eod" else "payload.data[*].roll_rule"
     )
@@ -508,6 +530,14 @@ def test_contract_normalizes_declared_string_whitespace_before_validation():
     assert request.request_key == "request-key"
     assert request.payload.batch.source_raw_ref == "s3://bucket/raw.json"
     assert request.payload.data[0].symbol == "2330"
+
+
+def test_contract_registry_does_not_normalize_dispatch_discriminators():
+    value = _market_eod_request()
+    value["schema_id"] = " market_eod "
+
+    with pytest.raises(UnsupportedIngressContractError, match=r" market_eod \.v1"):
+        validate_ingress_request(value)
 
 
 def test_registry_does_not_guess_unknown_or_missing_versions():
