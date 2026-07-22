@@ -84,6 +84,55 @@ class SourceClient(Base):
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class IngestionAttempt(Base):
+    """Durable audit record for every authenticated canonical ingest attempt."""
+
+    __tablename__ = "ingestion_attempt"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('received', 'accepted', 'duplicate', 'rejected', 'aborted')",
+            name="ingestion_attempt_status_valid",
+        ),
+        Index("idx_ingestion_attempt_status_created", "status", "created_at"),
+        Index("idx_ingestion_attempt_dataset_created", "dataset_key", "created_at"),
+        Index("idx_ingestion_attempt_client_created", "source_client_id", "created_at"),
+        Index(
+            "idx_ingestion_attempt_idempotency",
+            "source_client_id",
+            "dataset_key",
+            "idempotency_key",
+        ),
+    )
+
+    attempt_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    source_client_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("source_client.client_id"),
+        nullable=True,
+    )
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    dataset_key: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    schema_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    schema_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    request_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    request_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="received")
+    http_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class IngestionRun(Base):
     """
     Ingestion batch run tracking.
@@ -115,6 +164,8 @@ class IngestionRun(Base):
         nullable=True,
     )
     request_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    schema_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    schema_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     raw_records: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="pending")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

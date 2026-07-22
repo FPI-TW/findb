@@ -7,6 +7,7 @@ import time
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.services.ingestion_attempts import reconcile_stale_ingestion_attempts
 from app.services.normalization_queue import (
     claim_outbox_batch,
     mark_outbox_publish_failure,
@@ -22,6 +23,25 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+async def reconcile_stale_attempts_safely(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> int:
+    """Isolate attempt-audit maintenance failures from outbox dispatch."""
+    try:
+        async with session_factory() as session:
+            try:
+                aborted = await reconcile_stale_ingestion_attempts(session)
+            except Exception:
+                await session.rollback()
+                raise
+    except Exception:
+        logger.exception("Failed to reconcile stale ingestion attempts")
+        return 0
+    if aborted:
+        logger.warning("Marked %s stale ingestion attempts aborted", aborted)
+    return aborted
+
+
 async def run_dispatcher() -> None:
     engine = create_async_engine(settings.DATABASE_URL)
     session_factory = async_sessionmaker(
@@ -34,6 +54,7 @@ async def run_dispatcher() -> None:
         async with session_factory() as session:
             replayed = await reconcile_nonterminal_jobs(session)
             logger.info("Reconciled %s non-terminal normalization jobs", replayed)
+        await reconcile_stale_attempts_safely(session_factory)
 
         broker_was_unavailable = False
         last_reconciliation = time.monotonic()
@@ -60,6 +81,7 @@ async def run_dispatcher() -> None:
                                     "Repaired %s stale normalization deliveries",
                                     repaired,
                                 )
+                await reconcile_stale_attempts_safely(session_factory)
                 last_reconciliation = time.monotonic()
 
             async with session_factory() as session:

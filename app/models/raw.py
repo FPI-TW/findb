@@ -5,7 +5,7 @@ Raw Layer database models.
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -47,6 +47,8 @@ class RawMarketPayload(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     request_key: Mapped[str] = mapped_column(String(100), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    schema_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

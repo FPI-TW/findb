@@ -120,6 +120,7 @@ class CryptoNormalizer(BaseNormalizer):
         self,
         symbol: str,
         name: Optional[str] = None,
+        currency: Optional[str] = None,
         market: Optional[str] = None,
         asset_class: Optional[str] = None,
     ):
@@ -129,7 +130,11 @@ class CryptoNormalizer(BaseNormalizer):
             name = self.NAME_MAP.get(symbol)
 
         return await super().get_or_create_instrument(
-            symbol, name, market=market, asset_class=asset_class
+            symbol,
+            name,
+            currency=currency,
+            market=market,
+            asset_class=asset_class,
         )
 
 

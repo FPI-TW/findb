@@ -17,9 +17,12 @@ from app.schemas.serve import (
     InstrumentResponse,
 )
 from app.schemas.source import (
+    CanonicalIngestResponse,
     DirectIngestPayload,
+    IngestionAttemptResponse,
     IngestRequest,
     IngestResponse,
+    IngressErrorResponse,
     RunStatusResponse,
     TWStockDirectIngestPayload,
 )
@@ -35,6 +38,9 @@ __all__ = [
     "FuturesContinuousEODRow",
     "FuturesContinuousEODPayload",
     "FuturesContinuousEODIngressRequest",
+    "CanonicalIngestResponse",
+    "IngressErrorResponse",
+    "IngestionAttemptResponse",
     "DirectIngestPayload",
     "TWStockDirectIngestPayload",
     "IngestRequest",

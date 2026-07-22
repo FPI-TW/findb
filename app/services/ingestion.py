@@ -23,7 +23,13 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
 )
+from app.schemas.ingress import IngressRequestV1
 from app.schemas.source import IngestRequest, ensure_data_items_count_within_limit
+from app.services.ingestion_attempts import IngestionAttemptService
+from app.services.ingress_contracts import (
+    parse_dataset_contract_declaration,
+    validate_dataset_contract_scope,
+)
 from app.services.normalize import (
     BaseNormalizer,
     CNEquityNormalizer,
@@ -33,6 +39,7 @@ from app.services.normalize import (
     CryptoIndexNormalizer,
     CryptoNormalizer,
     EquityNormalizer,
+    FuturesContinuousEODContractNormalizer,
     FuturesContinuousNormalizer,
     FuturesContractNormalizer,
     FXBloombergNormalizer,
@@ -45,6 +52,7 @@ from app.services.normalize import (
     IndexNormalizer,
     MacroBloombergNormalizer,
     MacroNormalizer,
+    MarketEODContractNormalizer,
     TWEquityNormalizer,
     TWETFFinlabNormalizer,
     TWIndexNormalizer,
@@ -111,6 +119,11 @@ _WTX_SOURCE_NORMALIZERS: dict[str, NormalizerFactory] = {
     "bloomberg": WTXBloombergNormalizer,
 }
 
+CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
+    ("market_eod", 1): MarketEODContractNormalizer,
+    ("futures_continuous_eod", 1): FuturesContinuousEODContractNormalizer,
+}
+
 
 def _normalize_provider_key(value: Any) -> str | None:
     """Normalize provider labels used for payload-aware normalizer routing."""
@@ -127,8 +140,14 @@ def _normalize_provider_key(value: Any) -> str | None:
 def _select_normalizer_for_payload(
     dataset_key: str,
     payload: dict,
+    schema_id: str | None = None,
+    schema_version: int | None = None,
 ) -> Optional[NormalizerFactory]:
     """Resolve normalizer by dataset_key, falling back to payload-aware routing."""
+    if schema_id is not None:
+        if schema_version is None:
+            return None
+        return CONTRACT_NORMALIZER_MAP.get((schema_id, schema_version))
     if dataset_key == "wtx_eod":
         source = _get_nested_value(payload, "metadata.source")
         provider_key = _normalize_provider_key(source)
@@ -165,6 +184,18 @@ class IdempotencyPayloadMismatchError(ValueError):
 
 class SourceIdentityMismatchError(ValueError):
     """Raised when a credential-bound source does not match the request."""
+
+
+class DatasetAccessDeniedError(ValueError):
+    """Raised when a source client cannot ingest the requested dataset."""
+
+
+class DatasetContractNotConfiguredError(ValueError):
+    """Raised when a dataset has no versioned ingress declaration."""
+
+
+class IngressSchemaNotAllowedError(ValueError):
+    """Raised when a dataset does not accept the requested contract."""
 
 
 def _normalize_market(market: str) -> str:
@@ -440,6 +471,8 @@ class IngestionService:
         run_id: UUID | None = None,
         raw_payload_id: UUID | None = None,
         status: str = "queued",
+        schema_id: str | None = None,
+        schema_version: int | None = None,
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -449,6 +482,8 @@ class IngestionService:
             source_client_id=self.source_client_id,
             raw_payload_id=raw_payload_id,
             request_key=request_key,
+            schema_id=schema_id,
+            schema_version=schema_version,
             raw_records=raw_records,
             status=status,
             max_attempts=settings.NORMALIZATION_MAX_ATTEMPTS,
@@ -463,6 +498,9 @@ class IngestionService:
         self,
         request: IngestRequest,
         run_id: UUID,
+        *,
+        schema_id: str | None = None,
+        schema_version: int | None = None,
     ) -> RawMarketPayload:
         """Store raw payload in the database."""
         fetched_at = ensure_utc(request.fetched_at)
@@ -476,6 +514,8 @@ class IngestionService:
             source=request.source,
             request_key=request.request_key,
             idempotency_key=request.idempotency_key,
+            schema_id=schema_id,
+            schema_version=schema_version,
             payload_sha256=payload_sha256(request.payload),
             payload=request.payload,
             fetched_at=fetched_at,
@@ -564,6 +604,8 @@ class IngestionService:
             "source": raw_payload.source,
             "request_key": raw_payload.request_key,
             "raw_records": raw_records,
+            "schema_id": raw_payload.schema_id,
+            "schema_version": raw_payload.schema_version,
             "rerun_from_run_id": str(run_id),
             "rerun_from_idempotency_key": raw_payload.idempotency_key,
         }
@@ -575,6 +617,8 @@ class IngestionService:
             raw_records=raw_records,
             metadata=metadata,
             raw_payload_id=raw_payload.raw_payload_id,
+            schema_id=raw_payload.schema_id,
+            schema_version=raw_payload.schema_version,
         )
         await self.create_normalization_job(run)
         await self.db.commit()
@@ -744,6 +788,158 @@ class IngestionService:
             request.request_key,
         )
 
+        return run.run_id, run.status, False
+
+    async def ingest_contract(
+        self,
+        request: IngressRequestV1,
+        attempt_id: UUID,
+    ) -> tuple[UUID, str, bool]:
+        """Persist a validated canonical contract and enqueue schema-based normalization."""
+        if self.bound_source is not None and request.source != self.bound_source:
+            raise SourceIdentityMismatchError(
+                f"Credential is bound to source {self.bound_source}, not {request.source}"
+            )
+        if self.allowed_datasets is not None and request.dataset_key not in self.allowed_datasets:
+            raise DatasetAccessDeniedError(
+                f"Source client is not allowed to ingest dataset {request.dataset_key}"
+            )
+
+        dataset = await self.get_dataset(request.dataset_key, include_inactive=True)
+        if dataset is None:
+            raise DatasetNotFoundError(f"Dataset {request.dataset_key} not found")
+        if not dataset.is_active:
+            raise DatasetInactiveError(f"Dataset {request.dataset_key} is inactive")
+
+        try:
+            declaration = parse_dataset_contract_declaration(dataset.config)
+            if declaration is not None:
+                validate_dataset_contract_scope(
+                    declaration,
+                    market=dataset.market,
+                    asset_class=dataset.asset_class,
+                )
+        except ValueError as exc:
+            raise DatasetContractNotConfiguredError(
+                f"Dataset {request.dataset_key} has an invalid ingress contract declaration: "
+                f"{exc}"
+            ) from exc
+        if declaration is None:
+            raise DatasetContractNotConfiguredError(
+                f"Dataset {request.dataset_key} has no ingress contract declaration"
+            )
+        if (
+            declaration.schema_id != request.schema_id
+            or request.schema_version not in declaration.accepted_schema_versions
+        ):
+            raise IngressSchemaNotAllowedError(
+                f"Dataset {request.dataset_key} does not accept "
+                f"{request.schema_id}.v{request.schema_version}"
+            )
+
+        canonical_payload = request.payload.model_dump(mode="json")
+        request_payload_sha256 = payload_sha256(canonical_payload)
+        existing_raw = await self.get_raw_payload_by_idempotency_key(
+            request.idempotency_key,
+            request.dataset_key,
+        )
+        attempt_service = IngestionAttemptService(self.db)
+        if existing_raw is not None:
+            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
+            if (
+                existing_digest != request_payload_sha256
+                or existing_raw.source != request.source
+                or existing_raw.schema_id != request.schema_id
+                or existing_raw.schema_version != request.schema_version
+            ):
+                raise IdempotencyPayloadMismatchError(
+                    "idempotency_key is already associated with different contract content"
+                )
+            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+            status = existing_run.status if existing_run else "unknown"
+            await attempt_service.mark_accepted(
+                attempt_id,
+                existing_raw.run_id,
+                duplicate=True,
+            )
+            await self.db.commit()
+            return existing_raw.run_id, status, True
+
+        raw_records = len(request.payload.data)
+        metadata = {
+            "source": request.source,
+            "request_key": request.request_key,
+            "raw_records": raw_records,
+            "schema_id": request.schema_id,
+            "schema_version": request.schema_version,
+        }
+        legacy_request = IngestRequest(
+            dataset_key=request.dataset_key,
+            source=request.source,
+            request_key=request.request_key,
+            idempotency_key=request.idempotency_key,
+            payload=canonical_payload,
+            fetched_at=request.fetched_at,
+        )
+
+        try:
+            run_id = uuid7()
+            raw_payload = await self.store_raw_payload(
+                legacy_request,
+                run_id,
+                schema_id=request.schema_id,
+                schema_version=request.schema_version,
+            )
+            run = await self.create_ingestion_run(
+                request.dataset_key,
+                source=request.source,
+                request_key=request.request_key,
+                raw_records=raw_records,
+                metadata=metadata,
+                run_id=run_id,
+                raw_payload_id=raw_payload.raw_payload_id,
+                schema_id=request.schema_id,
+                schema_version=request.schema_version,
+            )
+            await self.create_normalization_job(run)
+            await attempt_service.mark_accepted(attempt_id, run_id)
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            existing_raw = await self.get_raw_payload_by_idempotency_key(
+                request.idempotency_key,
+                request.dataset_key,
+            )
+            if existing_raw is None:
+                raise
+            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
+            if (
+                existing_digest != request_payload_sha256
+                or existing_raw.source != request.source
+                or existing_raw.schema_id != request.schema_id
+                or existing_raw.schema_version != request.schema_version
+            ):
+                raise IdempotencyPayloadMismatchError(
+                    "idempotency_key is already associated with different contract content"
+                )
+            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+            status = existing_run.status if existing_run else "unknown"
+            await attempt_service.mark_accepted(
+                attempt_id,
+                existing_raw.run_id,
+                duplicate=True,
+            )
+            await self.db.commit()
+            return existing_raw.run_id, status, True
+
+        logger.info(
+            "Canonical ingestion accepted: attempt_id=%s run_id=%s dataset=%s contract=%s.v%s",
+            attempt_id,
+            run.run_id,
+            request.dataset_key,
+            request.schema_id,
+            request.schema_version,
+        )
         return run.run_id, run.status, False
 
     async def get_run_status(self, run_id: UUID) -> Optional[IngestionRun]:

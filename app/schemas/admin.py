@@ -123,6 +123,8 @@ class RawPayloadResponse(BaseModel):
     run_id: UUID
     dataset_key: str
     source: str
+    schema_id: Optional[str] = None
+    schema_version: Optional[int] = None
     request_key: str
     payload: Any
     fetched_at: datetime

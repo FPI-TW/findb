@@ -2,10 +2,18 @@
 
 ## 狀態
 
-- 狀態：規劃中
+- 狀態：實作中
 - 決策日期：2026-07-21
 - 適用範圍：所有向 Source API 發送市場資料的 fetch-layer client
 - 首批 contract：`market_eod.v1`、`futures_continuous_eod.v1`
+
+實作進度：
+
+- [x] Typed contracts、contract registry 與 dataset audit declaration。
+- [x] Durable `ingestion_attempt`、schema lineage 與 canonical `POST /api/v1/source/ingest`。
+- [x] Provider-neutral market EOD / futures continuous normalizer routing。
+- [ ] Fetch client shadow migration 與 production feed 切換。
+- [ ] Batch completeness/freshness policy 強制執行與 delivery-missing monitor。
 
 ## 目標
 
@@ -243,6 +251,8 @@ FinLab adapter 產生完全相同的輸出欄位，只在 fetch repo 內讀取 `
 ```
 
 第一版可以先存在 `dataset_registry.config`，但進入強制執行前應評估把 `schema_id` 與 current version 升為明確欄位，避免關鍵契約只存在 JSONB。
+
+`defaults.market` 與 `defaults.asset_class` 必須存在、符合 canonical vocabulary，且與 `dataset_registry.market/asset_class` 一致；schema normalizer 不得使用通用 market 或 asset class fallback。Normalizer routing 使用完整 `(schema_id, schema_version)` key，不能只以 schema id 猜測版本。
 
 ## 驗證與失敗紀錄
 

@@ -6,8 +6,9 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.schemas.ingress import FuturesContinuousEODIngressRequest, MarketEODIngressRequest
+from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     DatasetContractDeclaration,
     UnsupportedIngressContractError,
@@ -15,6 +16,7 @@ from app.services.ingress_contracts import (
     supported_contracts,
     validate_ingress_request,
 )
+from app.services.normalize import MarketEODContractNormalizer
 from scripts.seed_data import DATASETS
 
 
@@ -93,6 +95,57 @@ def test_market_eod_v1_accepts_provider_neutral_payload():
     assert request.fetched_at.hour == 8
     assert request.payload.data[0].close == Decimal("1015.0")
     assert request.payload.data[0].source_symbol == "2330 TT Equity"
+
+
+@pytest.mark.parametrize("currency", ["USDT", "USDC"])
+def test_currency_rule_accepts_uppercase_alphanumeric_for_rows_and_defaults(
+    currency: str,
+):
+    value = _market_eod_request()
+    value["payload"]["data"][0]["currency"] = currency
+    request = MarketEODIngressRequest.model_validate(value)
+    declaration = DatasetContractDeclaration.model_validate(
+        {
+            "schema_id": "market_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "defaults": {
+                "market": "TW",
+                "asset_class": "equity",
+                "currency": currency,
+            },
+        }
+    )
+
+    assert request.payload.data[0].currency == currency
+    assert declaration.defaults.currency == currency
+
+
+def test_currency_rule_rejects_non_alphanumeric_for_rows_and_defaults():
+    value = _market_eod_request()
+    value["payload"]["data"][0]["currency"] = "$$$"
+    with pytest.raises(ValidationError):
+        MarketEODIngressRequest.model_validate(value)
+    with pytest.raises(ValidationError):
+        DatasetContractDeclaration.model_validate(
+            {
+                "schema_id": "market_eod",
+                "accepted_schema_versions": [1],
+                "current_schema_version": 1,
+                "defaults": {
+                    "market": "TW",
+                    "asset_class": "equity",
+                    "currency": "$$$",
+                },
+            }
+        )
+
+
+def test_ingestion_attempt_reconciliation_settings_must_be_positive():
+    with pytest.raises(ValidationError):
+        Settings(INGESTION_ATTEMPT_STALE_SECONDS=0)
+    with pytest.raises(ValidationError):
+        Settings(INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE=0)
 
 
 @pytest.mark.parametrize("field", ["schema_id", "schema_version"])
@@ -246,6 +299,7 @@ def test_dataset_contract_declaration_defaults_to_audit_mode():
             "schema_id": "market_eod",
             "accepted_schema_versions": [1],
             "current_schema_version": 1,
+            "defaults": {"market": "TW", "asset_class": "equity"},
         }
     )
 
@@ -259,6 +313,7 @@ def test_dataset_contract_declaration_requires_current_version_to_be_accepted():
                 "schema_id": "market_eod",
                 "accepted_schema_versions": [1],
                 "current_schema_version": 2,
+                "defaults": {"market": "TW", "asset_class": "equity"},
             }
         )
 
@@ -270,12 +325,42 @@ def test_dataset_contract_declaration_rejects_unregistered_contract():
                 "schema_id": "unknown",
                 "accepted_schema_versions": [1],
                 "current_schema_version": 1,
+                "defaults": {"market": "TW", "asset_class": "equity"},
             }
         )
 
 
 def test_legacy_dataset_config_has_no_contract_declaration():
     assert parse_dataset_contract_declaration({"source_format": "legacy"}) is None
+
+
+def test_contract_normalizer_routing_requires_schema_id_and_version():
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_eod",
+            {},
+            schema_id="market_eod",
+            schema_version=1,
+        )
+        is MarketEODContractNormalizer
+    )
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_eod",
+            {},
+            schema_id="market_eod",
+            schema_version=2,
+        )
+        is None
+    )
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_eod",
+            {},
+            schema_id="market_eod",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,7 @@
 """Source API 使用的 Pydantic schema。"""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -227,11 +227,61 @@ class IngestResponse(BaseModel):
     message: str
 
 
+class CanonicalIngestResponse(BaseModel):
+    """Accepted response for the versioned canonical ingest endpoint."""
+
+    success: Literal[True] = True
+    attempt_id: UUID
+    run_id: UUID
+    status: str
+    schema_id: str
+    schema_version: int
+    message: str
+
+
+class IngressErrorDetail(BaseModel):
+    """Stable machine-readable canonical ingest error."""
+
+    code: str
+    message: str
+
+
+class IngressErrorResponse(BaseModel):
+    """Canonical ingest error; lineage is absent if attempt persistence failed."""
+
+    success: Literal[False] = False
+    attempt_id: Optional[UUID] = None
+    error: IngressErrorDetail
+
+
+class IngestionAttemptResponse(BaseModel):
+    """Source-client-scoped canonical ingestion attempt status."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    attempt_id: UUID
+    run_id: Optional[UUID] = None
+    dataset_key: Optional[str] = None
+    source: Optional[str] = None
+    schema_id: Optional[str] = None
+    schema_version: Optional[int] = None
+    request_key: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    status: str
+    http_status: Optional[int] = None
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
 class RunStatusResponse(BaseModel):
     """匯入執行狀態查詢回應。"""
 
     run_id: UUID
     dataset_key: str
+    schema_id: Optional[str] = None
+    schema_version: Optional[int] = None
     status: str
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -255,6 +305,10 @@ class DatasetInfo(BaseModel):
     market: str
     frequency: str
     is_active: bool
+    schema_id: Optional[str] = None
+    accepted_schema_versions: list[int] = Field(default_factory=list)
+    current_schema_version: Optional[int] = None
+    schema_enforcement: Optional[str] = None
 
 
 class DatasetListResponse(BaseModel):

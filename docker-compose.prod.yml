@@ -25,6 +25,8 @@ x-app-environment: &app-environment
   NORMALIZATION_QUEUE: "findb.normalize.v1"
   NORMALIZATION_DLQ: "findb.normalize.dlq.v1"
   NORMALIZATION_CONSUMER_TIMEOUT_MS: *normalization-consumer-timeout
+  INGESTION_ATTEMPT_STALE_SECONDS: "${INGESTION_ATTEMPT_STALE_SECONDS:-300}"
+  INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE: "${INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE:-100}"
 
 x-app-healthcheck: &app-healthcheck
   test:

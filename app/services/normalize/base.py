@@ -240,6 +240,7 @@ class BaseNormalizer(ABC):
         self,
         symbol: str,
         name: Optional[str] = None,
+        currency: Optional[str] = None,
         market: Optional[str] = None,
         asset_class: Optional[str] = None,
     ) -> Instrument:
@@ -258,6 +259,7 @@ class BaseNormalizer(ABC):
             market=instrument_market,
             symbol=symbol,
             name=name,
+            currency=currency,
             status="active",
             created_at=now,
             updated_at=now,
@@ -266,6 +268,7 @@ class BaseNormalizer(ABC):
             constraint="uq_instrument",
             set_={
                 "name": func.coalesce(Instrument.name, insert_stmt.excluded.name),
+                "currency": func.coalesce(Instrument.currency, insert_stmt.excluded.currency),
                 "updated_at": now,
             },
         ).returning(Instrument.instrument_id)
@@ -358,6 +361,7 @@ class BaseNormalizer(ABC):
         instrument = await self.get_or_create_instrument(
             symbol=symbol,
             name=record.name,
+            currency=getattr(record, "currency", None),
             market=record_market,
             asset_class=record_asset_class,
         )

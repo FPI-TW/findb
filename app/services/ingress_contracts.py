@@ -4,13 +4,15 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from app.schemas.ingress import (
+    CurrencyCode,
     FuturesContinuousEODIngressRequest,
     IngressRequestV1,
     MarketEODIngressRequest,
 )
+from app.vocabulary import normalize_asset_class, normalize_market
 
 ContractKey = tuple[str, int]
 ContractModel = type[MarketEODIngressRequest] | type[FuturesContinuousEODIngressRequest]
@@ -28,6 +30,26 @@ class UnsupportedIngressContractError(ValueError):
     """Raised when the requested schema id/version is not registered."""
 
 
+class DatasetContractDefaults(BaseModel):
+    """Canonical scope required by schema-based normalizers."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    market: str
+    asset_class: str
+    currency: CurrencyCode | None = None
+
+    @field_validator("market")
+    @classmethod
+    def normalize_declared_market(cls, value: str) -> str:
+        return normalize_market(value)
+
+    @field_validator("asset_class")
+    @classmethod
+    def normalize_declared_asset_class(cls, value: str) -> str:
+        return normalize_asset_class(value)
+
+
 class DatasetContractDeclaration(BaseModel):
     """Typed projection of contract-related ``dataset_registry.config`` fields."""
 
@@ -37,6 +59,7 @@ class DatasetContractDeclaration(BaseModel):
     accepted_schema_versions: list[PositiveStrictInt] = Field(min_length=1)
     current_schema_version: PositiveStrictInt
     schema_enforcement: Literal["audit", "enforce"] = "audit"
+    defaults: DatasetContractDefaults
 
     @model_validator(mode="after")
     def validate_versions(self) -> "DatasetContractDeclaration":
@@ -88,3 +111,20 @@ def parse_dataset_contract_declaration(
     for version in declaration.accepted_schema_versions:
         get_contract_model(declaration.schema_id, version)
     return declaration
+
+
+def validate_dataset_contract_scope(
+    declaration: DatasetContractDeclaration,
+    *,
+    market: str,
+    asset_class: str,
+) -> None:
+    """Reject registry/config scope conflicts before any canonical write is queued."""
+    registry_market = normalize_market(market)
+    registry_asset_class = normalize_asset_class(asset_class)
+    if declaration.defaults.market != registry_market:
+        raise ValueError("Dataset contract defaults.market does not match dataset_registry.market")
+    if declaration.defaults.asset_class != registry_asset_class:
+        raise ValueError(
+            "Dataset contract defaults.asset_class does not match " "dataset_registry.asset_class"
+        )

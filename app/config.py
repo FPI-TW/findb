@@ -4,6 +4,7 @@ Application configuration management.
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +50,8 @@ class Settings(BaseSettings):
     OUTBOX_BATCH_SIZE: int = 100
     OUTBOX_CLAIM_SECONDS: int = 60
     OUTBOX_RECONCILE_SECONDS: int = 30
+    INGESTION_ATTEMPT_STALE_SECONDS: int = Field(default=300, gt=0)
+    INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE: int = Field(default=100, gt=0, le=1_000)
 
     # Serve API Keys (comma-separated, optional)
     SERVE_API_KEYS: str = ""

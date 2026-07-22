@@ -14,6 +14,10 @@ from app.schemas.payload_limits import (
 
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
+CurrencyCode = Annotated[
+    str,
+    Field(min_length=3, max_length=10, pattern=r"^[A-Z0-9]+$"),
+]
 
 
 class DeliveryMode(str, Enum):
@@ -107,7 +111,7 @@ class MarketEODRow(_OHLCRow):
     source_symbol: Optional[str] = Field(default=None, min_length=1, max_length=100)
     trade_date: date
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    currency: Optional[str] = Field(default=None, pattern=r"^[A-Z][A-Z0-9]{2,9}$")
+    currency: Optional[CurrencyCode] = None
     volume: Optional[NonNegativeInt] = None
     turnover: Optional[NonNegativeDecimal] = None
     total_ticks: Optional[NonNegativeInt] = None

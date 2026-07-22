@@ -9,8 +9,9 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi import status as http_status
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,13 +19,21 @@ from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
 from app.models.registry import DatasetRegistry
 from app.schemas.source import (
+    CanonicalIngestResponse,
     DatasetInfo,
     DatasetListResponse,
     DirectIngestPayload,
+    IngestionAttemptResponse,
     IngestRequest,
     IngestResponse,
+    IngressErrorDetail,
+    IngressErrorResponse,
     RunStatusResponse,
     TWStockDirectIngestPayload,
+)
+from app.services.canonical_ingestion import (
+    CanonicalIngestRejectionError,
+    accept_canonical_ingest,
 )
 from app.services.ingestion import (
     DatasetInactiveError,
@@ -36,11 +45,32 @@ from app.services.ingestion import (
     RawPayloadNotFoundError,
     SourceIdentityMismatchError,
 )
+from app.services.ingestion_attempts import IngestionAttemptService
 from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _ingress_error_response(
+    attempt_id: UUID | None,
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    body = IngressErrorResponse(
+        attempt_id=attempt_id,
+        error=IngressErrorDetail(code=code, message=message),
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=body.model_dump(mode="json"),
+        headers=headers,
+    )
+
 
 DIRECT_DATASET_DEFAULTS = {
     "us_stock_eod": {
@@ -415,6 +445,76 @@ async def _ingest_direct_payload(
     )
 
 
+@router.post(
+    "/ingest",
+    response_model=CanonicalIngestResponse,
+    status_code=http_status.HTTP_202_ACCEPTED,
+    responses={
+        400: {"model": IngressErrorResponse},
+        403: {"model": IngressErrorResponse},
+        409: {"model": IngressErrorResponse},
+        422: {"model": IngressErrorResponse},
+        500: {"model": IngressErrorResponse},
+        503: {"model": IngressErrorResponse},
+    },
+)
+async def ingest_canonical_contract(
+    request: Request,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept a provider-neutral, explicitly versioned ingress contract."""
+    raw_body = await request.body()
+    try:
+        result = await accept_canonical_ingest(db, raw_body)
+    except (OperationalError, DBAPIError):
+        logger.exception("Database unavailable while creating ingestion attempt")
+        return _ingress_error_response(
+            None,
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="DATABASE_UNAVAILABLE",
+            message="Ingestion is temporarily unavailable",
+            headers={"Retry-After": "30"},
+        )
+    except CanonicalIngestRejectionError as exc:
+        return _ingress_error_response(
+            exc.attempt_id,
+            status_code=exc.status_code,
+            code=exc.code,
+            message=exc.message,
+            headers=exc.headers,
+        )
+
+    return CanonicalIngestResponse(
+        attempt_id=result.attempt_id,
+        run_id=result.run_id,
+        status=result.run_status,
+        schema_id=result.request.schema_id,
+        schema_version=result.request.schema_version,
+        message=(
+            "Duplicate idempotency_key, returning existing run"
+            if result.is_duplicate
+            else "Data received, processing queued"
+        ),
+    )
+
+
+@router.get("/attempts/{attempt_id}", response_model=IngestionAttemptResponse)
+async def get_ingestion_attempt(
+    attempt_id: UUID,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return one canonical ingestion attempt in the caller's ownership scope."""
+    attempt = await IngestionAttemptService(db).get(attempt_id)
+    if attempt is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=f"Ingestion attempt {attempt_id} not found",
+        )
+    return IngestionAttemptResponse.model_validate(attempt)
+
+
 @router.post("/ingest/crypto", response_model=IngestResponse, status_code=202)
 async def ingest_crypto_data(
     request: IngestRequest,
@@ -755,6 +855,8 @@ async def get_run_status(
     return RunStatusResponse(
         run_id=run.run_id,
         dataset_key=run.dataset_key,
+        schema_id=run.schema_id,
+        schema_version=run.schema_version,
         status=run.status,
         started_at=run.started_at,
         completed_at=run.completed_at,
@@ -842,6 +944,10 @@ async def list_datasets(
                 market=ds.market,
                 frequency=ds.frequency,
                 is_active=ds.is_active,
+                schema_id=(ds.config or {}).get("schema_id"),
+                accepted_schema_versions=(ds.config or {}).get("accepted_schema_versions", []),
+                current_schema_version=(ds.config or {}).get("current_schema_version"),
+                schema_enforcement=(ds.config or {}).get("schema_enforcement"),
             )
             for ds in datasets
         ],
