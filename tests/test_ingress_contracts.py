@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.config import Settings, get_settings
 from app.schemas.ingress import FuturesContinuousEODIngressRequest, MarketEODIngressRequest
+from app.services.canonical_ingestion import _select_validation_error
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     DatasetContractDeclaration,
@@ -241,6 +242,60 @@ def test_backfill_coverage_accepts_multiple_dates():
     assert len(request.payload.data) == 2
 
 
+@pytest.mark.parametrize(
+    ("batch_update", "message"),
+    [
+        ({"sequence": 1}, "sequence and sequence_count must be provided together"),
+        (
+            {"sequence": 2, "sequence_count": 1},
+            "sequence must be less than or equal to sequence_count",
+        ),
+        (
+            {"coverage_start_date": "2026-07-21"},
+            "coverage_start_date and coverage_end_date must be provided together",
+        ),
+        (
+            {
+                "coverage_start_date": "2026-07-22",
+                "coverage_end_date": "2026-07-21",
+            },
+            "coverage_start_date must not be after coverage_end_date",
+        ),
+        (
+            {
+                "delivery_mode": "backfill",
+                "coverage_start_date": "2026-07-20",
+                "coverage_end_date": "2026-07-20",
+            },
+            "backfill data_date must equal coverage_end_date",
+        ),
+    ],
+)
+def test_batch_semantic_relationships_are_enforced(
+    batch_update: dict,
+    message: str,
+):
+    value = _market_eod_request()
+    value["payload"]["batch"].update(batch_update)
+
+    with pytest.raises(ValidationError, match=message):
+        MarketEODIngressRequest.model_validate(value)
+
+
+def test_coverage_must_contain_every_row_date():
+    value = _market_eod_request()
+    value["payload"]["data"][0]["trade_date"] = "2026-07-19"
+    value["payload"]["batch"].update(
+        {
+            "coverage_start_date": "2026-07-20",
+            "coverage_end_date": "2026-07-21",
+        }
+    )
+
+    with pytest.raises(ValidationError, match="coverage dates must include every row trade_date"):
+        MarketEODIngressRequest.model_validate(value)
+
+
 def test_contract_payload_obeys_configured_item_limit():
     settings = get_settings()
     original_limit = settings.SOURCE_MAX_DATA_ITEMS
@@ -254,6 +309,18 @@ def test_contract_payload_obeys_configured_item_limit():
             MarketEODIngressRequest.model_validate(value)
     finally:
         settings.SOURCE_MAX_DATA_ITEMS = original_limit
+
+
+def test_contract_payload_obeys_configured_serialized_byte_limit():
+    settings = get_settings()
+    original_limit = settings.SOURCE_MAX_PAYLOAD_BYTES
+    settings.SOURCE_MAX_PAYLOAD_BYTES = 1
+
+    try:
+        with pytest.raises(ValidationError, match="maximum size of 1 bytes"):
+            MarketEODIngressRequest.model_validate(_market_eod_request())
+    finally:
+        settings.SOURCE_MAX_PAYLOAD_BYTES = original_limit
 
 
 def test_futures_continuous_eod_v1_accepts_contract_fields():
@@ -280,23 +347,26 @@ def test_registry_dispatches_explicit_contract_version():
 
 
 @pytest.mark.parametrize(
-    ("schema_id", "title", "expected_sha256"),
+    ("schema_id", "title", "schema_specific_rule", "expected_sha256"),
     [
         (
             "market_eod",
             "MarketEODIngressRequest",
-            "adf1ea6a7a279294d38d5fff00c726981a5c5c0838bcf638c0abfc67c9a5f85f",
+            "market.currency.row_or_dataset_default",
+            "5f43eb5a08f5356cdb39afbc383822b45d52374d308ab3bfa30704916e710805",
         ),
         (
             "futures_continuous_eod",
             "FuturesContinuousEODIngressRequest",
-            "97f7fffb8a9cd4c14aa3b4967c5488d2997b6de5599adfc63a3ce77fcee9cd02",
+            "futures.currency.dataset_default_required",
+            "326058bb6982c9f863500e70722cbdd2d6f21e4f4f63a6124793a0020eb0c902",
         ),
     ],
 )
 def test_registry_publishes_versioned_deterministic_json_schema(
     schema_id: str,
     title: str,
+    schema_specific_rule: str,
     expected_sha256: str,
 ):
     first = get_contract_json_schema(schema_id, 1)
@@ -313,10 +383,60 @@ def test_registry_publishes_versioned_deterministic_json_schema(
     assert first["$defs"]
     assert first["properties"]["schema_id"]["const"] == schema_id
     assert first["properties"]["schema_version"]["const"] == 1
-    assert first["x-findb-semantic-rules"][0]["error_code"] == ("DECLARED_RECORD_COUNT_MISMATCH")
-    assert first["x-findb-semantic-rules"][1]["fields"] == ["symbol", "trade_date"]
+    rules = first["x-findb-semantic-rules"]
+    rule_ids = {rule["id"] for rule in rules}
+    assert rule_ids == {
+        "envelope.fetched_at.timezone_aware",
+        "batch.sequence.co_presence",
+        "batch.sequence.order",
+        "batch.coverage.co_presence",
+        "batch.coverage.order",
+        "batch.backfill.data_date_equals_coverage_end",
+        "row.ohlc.high_bound",
+        "row.ohlc.low_bound",
+        "payload.coverage.contains_row_dates",
+        "payload.declared_record_count.matches_data",
+        "payload.delivery_key.unique",
+        "payload.data.max_items",
+        "payload.serialized.max_bytes",
+        "request.body.max_bytes",
+        schema_specific_rule,
+    }
+    for rule in rules:
+        assert set(rule) >= {
+            "id",
+            "scope",
+            "description",
+            "parameters",
+            "context_dependencies",
+            "error_code",
+        }
+    by_id = {rule["id"]: rule for rule in rules}
+    assert by_id["payload.delivery_key.unique"]["parameters"]["fields"] == [
+        "symbol",
+        "trade_date",
+    ]
+    assert by_id["payload.data.max_items"]["context_dependencies"] == [
+        {"kind": "runtime_setting", "name": "SOURCE_MAX_DATA_ITEMS"}
+    ]
+    assert by_id[schema_specific_rule]["context_dependencies"] == [
+        {"kind": "dataset_context", "path": "defaults.currency"}
+    ]
     canonical_json = json.dumps(first, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(canonical_json).hexdigest() == expected_sha256
+
+
+def test_validation_error_priority_selects_one_structured_error_for_code_and_message():
+    errors = [
+        {"type": "duplicate_delivery_key", "loc": ("payload",)},
+        {"type": "declared_record_count_mismatch", "loc": ("payload",)},
+        {"type": "string_pattern_mismatch", "loc": ("source",)},
+    ]
+
+    code, selected = _select_validation_error(errors)
+
+    assert code == "DECLARED_RECORD_COUNT_MISMATCH"
+    assert selected is errors[1]
 
 
 def test_registry_does_not_guess_unknown_or_missing_versions():

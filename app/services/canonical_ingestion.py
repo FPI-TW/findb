@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn
 from uuid import UUID
@@ -66,25 +67,33 @@ class CanonicalIngestRejectionError(RuntimeError):
         self.headers = headers
 
 
-def _validation_message(exc: ValidationError) -> str:
+_VALIDATION_ERROR_PRIORITY = (
+    ("declared_record_count_mismatch", "DECLARED_RECORD_COUNT_MISMATCH"),
+    ("duplicate_delivery_key", "DUPLICATE_DELIVERY_KEY"),
+)
+
+
+def _select_validation_error(
+    errors: Sequence[Mapping[str, Any]],
+) -> tuple[str, Mapping[str, Any] | None]:
+    """Select one error deterministically so its code and message stay aligned."""
+    for error_type, code in _VALIDATION_ERROR_PRIORITY:
+        for error in errors:
+            if error.get("type") == error_type:
+                return code, error
+    return "INGRESS_SCHEMA_INVALID", errors[0] if errors else None
+
+
+def _validation_rejection(exc: ValidationError) -> tuple[str, str]:
+    """Return the stable code/message pair for one selected structured error."""
     errors = exc.errors(include_input=False)
-    if not errors:
-        return "Ingress request does not match the declared schema"
-    first = errors[0]
-    location = ".".join(str(part) for part in first.get("loc", ())) or "request"
-    message = str(first.get("msg") or "invalid value")
+    code, selected = _select_validation_error(errors)
+    if selected is None:
+        return code, "Ingress request does not match the declared schema"
+    location = ".".join(str(part) for part in selected.get("loc", ())) or "request"
+    message = str(selected.get("msg") or "invalid value")
     suffix = f" ({len(errors)} validation errors)" if len(errors) > 1 else ""
-    return f"{location}: {message}{suffix}"[:1_000]
-
-
-def _validation_code(exc: ValidationError) -> str:
-    """Map structured contract validation types to stable public codes."""
-    error_types = {str(error.get("type")) for error in exc.errors(include_input=False)}
-    if "declared_record_count_mismatch" in error_types:
-        return "DECLARED_RECORD_COUNT_MISMATCH"
-    if "duplicate_delivery_key" in error_types:
-        return "DUPLICATE_DELIVERY_KEY"
-    return "INGRESS_SCHEMA_INVALID"
+    return code, f"{location}: {message}{suffix}"[:1_000]
 
 
 async def _reject(
@@ -188,12 +197,13 @@ async def accept_canonical_ingest(
             message=str(exc),
         )
     except ValidationError as exc:
+        code, message = _validation_rejection(exc)
         await _reject(
             attempt_service,
             attempt_id,
             status_code=422,
-            code=_validation_code(exc),
-            message=_validation_message(exc),
+            code=code,
+            message=message,
         )
 
     ingestion_service = IngestionService(db)

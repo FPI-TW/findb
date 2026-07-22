@@ -264,7 +264,7 @@ async def test_versioned_contract_schema_endpoint_is_machine_readable(
     assert schema["properties"]["schema_id"]["const"] == schema_id
     assert (
         any(
-            rule["rule"] == "currency_from_row_or_dataset_default"
+            rule["id"] == "market.currency.row_or_dataset_default"
             for rule in schema["x-findb-semantic-rules"]
         )
         is has_currency_rule
@@ -609,6 +609,95 @@ async def test_semantic_validation_uses_stable_codes_and_durable_attempts(
     assert len(attempt.error_message) <= 1_000
     assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
     assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_code", "expected_message"),
+    [
+        (
+            "count",
+            "DECLARED_RECORD_COUNT_MISMATCH",
+            "declared_record_count must equal",
+        ),
+        (
+            "duplicate",
+            "DUPLICATE_DELIVERY_KEY",
+            "duplicate (symbol, trade_date)",
+        ),
+    ],
+)
+async def test_special_validation_code_and_message_select_the_same_error(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    mutation: str,
+    expected_code: str,
+    expected_message: str,
+):
+    value = _canonical_request()
+    value["source"] = "Invalid Source"
+    if mutation == "count":
+        value["payload"]["batch"]["declared_record_count"] = 2
+    else:
+        value["payload"]["data"].append(dict(value["payload"]["data"][0]))
+        value["payload"]["batch"]["declared_record_count"] = 2
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == expected_code
+    assert expected_message in body["error"]["message"]
+    assert "String should match pattern" not in body["error"]["message"]
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == expected_code
+    assert attempt.error_message == body["error"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    [
+        ("sequence", "sequence and sequence_count must be provided together"),
+        ("ohlc", "high must not be below"),
+        ("coverage", "coverage dates are required"),
+    ],
+)
+async def test_representative_semantic_rules_are_enforced_after_attempt_creation(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    mutation: str,
+    expected_message: str,
+):
+    value = _canonical_request()
+    if mutation == "sequence":
+        value["payload"]["batch"]["sequence"] = 1
+    elif mutation == "ohlc":
+        value["payload"]["data"][0]["high"] = "900"
+    else:
+        value["payload"]["data"][0]["trade_date"] = "2026-07-20"
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "INGRESS_SCHEMA_INVALID"
+    assert expected_message in body["error"]["message"]
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == "INGRESS_SCHEMA_INVALID"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
 
 
 @pytest.mark.asyncio

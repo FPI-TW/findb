@@ -269,7 +269,17 @@ X-API-Key: <SOURCE_API_KEY>
 `urn:findb:ingress-contract:{schema_id}:v{schema_version}`；已發布版本的 schema 不會原地改變
 不相容語意，breaking change 必須新增 version。`x-findb-semantic-rules` 列出 JSON Schema
 無法單獨表達的跨欄位／跨列規則，adapter fixture tests 除了執行 JSON Schema validator，
-也必須驗證這些規則。
+也必須依每筆 rule 的穩定 `id`、`scope`、`parameters` 驗證這些規則。這些 rules 包含
+timezone-aware `fetched_at`、batch sequence/coverage 關聯、backfill 日期、OHLC bounds、coverage 包含 row 日期、declared
+count、delivery natural-key uniqueness、動態大小限制與 currency resolution。`context_dependencies`
+為空的規則只依 request；`kind=runtime_setting` 需要測試環境注入
+`SOURCE_MAX_DATA_ITEMS`／`SOURCE_MAX_PAYLOAD_BYTES`，`kind=dataset_context` 則需要對應 dataset
+的 `defaults.currency`。因此回傳的是「JSON Schema + semantic rules」完整契約，不應把純 JSON
+Schema validator 的成功視為 server 一定接受。
+
+`request.body.max_bytes` 是 middleware 的 pre-attempt transport gate：已知 Content-Length 超限時
+回一般 `413 detail`，不建立 attempt。`payload.serialized.max_bytes` 則描述進入 contract validation
+後對 compact JSON payload 的同一動態 byte limit。
 
 Canonical ingest endpoint 刻意保留 raw request body handling，不讓 FastAPI/Pydantic 在 route
 boundary 預先拒絕資料；因此通過認證與 rate-limit gate 後，即使 JSON 或 contract 無效，仍會先建立

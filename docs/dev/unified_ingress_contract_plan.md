@@ -201,9 +201,17 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 目前發布 `market_eod.v1` 與 `futures_continuous_eod.v1` 的 Draft 2020-12 JSON Schema。
 回應具有固定 URN `$id` 與 `x-findb-contract`；`x-findb-semantic-rules` 描述 JSON Schema
 本身無法表達的 declared count、delivery natural-key uniqueness 與 dataset-aware currency
-規則。Fetch fixture tests 必須同時跑 JSON Schema 與 semantic rules。Canonical `POST /ingest`
+規則，以及 timezone-aware `fetched_at`、sequence/coverage 關聯、backfill 日期、OHLC bounds、coverage row-date 範圍與
+動態 data/byte limits。每筆 rule 都提供穩定 `id`、`scope`、`parameters`、`error_code` 與
+`context_dependencies`。Fetch fixture tests 必須同時跑 JSON Schema 與 semantic rules；
+`runtime_setting` dependency 由測試環境注入有效 limit，`dataset_context` dependency 由 dataset
+declaration 提供，不能把純 JSON Schema 驗證成功誤解為 server 一定接受。Canonical `POST /ingest`
 不把 typed model 放到 FastAPI handler 參數，避免 framework validation 在 durable attempt 建立前
 拒絕 request。
+
+`request.body.max_bytes` 是已知 Content-Length 時在 attempt 前執行的 middleware gate；其 `413`
+不使用 canonical error envelope，也沒有 attempt。其餘 contract semantic rules 在 durable attempt
+建立後驗證並記錄固定 failure code。
 
 ## `futures_continuous_eod.v1`
 
