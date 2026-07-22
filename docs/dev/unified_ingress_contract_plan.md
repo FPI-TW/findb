@@ -12,6 +12,8 @@
 - [x] Typed contracts、contract registry 與 dataset audit declaration。
 - [x] Durable `ingestion_attempt`、schema lineage 與 canonical `POST /api/v1/source/ingest`。
 - [x] Provider-neutral market EOD / futures continuous normalizer routing。
+- [x] 發布 versioned JSON Schema、固定 semantic validation codes 與 dataset-aware currency 規則。
+- [ ] 真實 FinLab/Bloomberg fixtures、mapping 表與欄位語意最終盤點。
 - [ ] Fetch client shadow migration 與 production feed 切換。
 - [ ] Batch completeness/freshness policy 強制執行與 delivery-missing monitor。
 
@@ -115,7 +117,8 @@ Envelope 規則：
 
 共同驗證：
 
-- `declared_record_count` 必須等於 `len(data)`，不相等時回 `422`。
+- `declared_record_count` 必須等於 `len(data)`，不相等時回
+  `422 DECLARED_RECORD_COUNT_MISMATCH`。
 - `sequence` 與 `sequence_count` 必須同時提供，且 `sequence <= sequence_count`。
 - `full_snapshot` 表示 `data_date` 當天完整的 dataset universe；只傳異動或部分 symbol 必須使用 `incremental`。
 - `data` 含有 `data_date` 以外的業務日期時，必須提供 coverage start/end，且其值必須涵蓋實際 row 日期範圍。
@@ -128,7 +131,10 @@ Envelope 規則：
 
 ### Dataset context
 
-`market`、`asset_class` 與預設 `currency` 由 `dataset_registry` 決定，不在每列重複。單一 dataset 不應混合市場或 asset class；既有 `hkchina_mixed_eod` 必須在 fetch layer 拆成 HK/CN 與 equity/index 對應的 deliveries。
+`market`、`asset_class` 與預設 `currency` 由 `dataset_registry` 決定，不在每列重複。若
+dataset 未設定預設 currency，`market_eod.v1` 每一列都必須提供 currency，任一列缺少即回
+`422 CURRENCY_REQUIRED`，且不建立 raw/run/job。單一 dataset 不應混合市場或 asset class；
+既有 `hkchina_mixed_eod` 必須在 fetch layer 拆成 HK/CN 與 equity/index 對應的 deliveries。
 
 ### Row contract
 
@@ -149,7 +155,9 @@ Envelope 規則：
 
 Schema-level validation：
 
-- `(symbol, trade_date)` 在單一 delivery 中不得重複；重複回 `422`，不留給 normalizer 靜默去重。
+- `(symbol, trade_date)` 是單一 delivery 內的 natural key；不得重複，重複回
+  `422 DUPLICATE_DELIVERY_KEY`。此規則與 envelope 的 `request_key`、`idempotency_key`
+  無關，不留給 normalizer 靜默去重。
 - `high` 存在時不得低於存在的 `open`、`low`、`close`。
 - `low` 存在時不得高於存在的 `open`、`high`、`close`。
 - 缺少 OHLC 但有 close 的情況可以通過 schema，交由 DQ policy 決定 warning/error，避免某些合法資料源無法輸入。
@@ -182,9 +190,25 @@ Schema-level validation：
 }
 ```
 
+## Machine-readable contract 發布
+
+Fetch adapter 以 Source API key 讀取 immutable version endpoint：
+
+```text
+GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
+```
+
+目前發布 `market_eod.v1` 與 `futures_continuous_eod.v1` 的 Draft 2020-12 JSON Schema。
+回應具有固定 URN `$id` 與 `x-findb-contract`；`x-findb-semantic-rules` 描述 JSON Schema
+本身無法表達的 declared count、delivery natural-key uniqueness 與 dataset-aware currency
+規則。Fetch fixture tests 必須同時跑 JSON Schema 與 semantic rules。Canonical `POST /ingest`
+不把 typed model 放到 FastAPI handler 參數，避免 framework validation 在 durable attempt 建立前
+拒絕 request。
+
 ## `futures_continuous_eod.v1`
 
-適用連續期貨日資料。dataset context 提供 `market=WTX`、`asset_class=future` 與預設 currency。
+適用連續期貨日資料。dataset context 必須提供 `market=WTX`、`asset_class=future` 與預設
+currency；期貨 row 不另帶 currency，缺少 dataset default 時回 `422 CURRENCY_REQUIRED`。
 
 ### Row contract
 
@@ -298,9 +322,13 @@ Source API 依下列順序處理：
 
 ### Phase 1：新增 contract validation
 
-- 新增 typed envelope、schema registry 與首批 Pydantic models。
-- 新增 canonical ingest endpoint；舊 endpoints 行為不變。
-- 新增 attempt-level failure audit 與 schema/version lineage。
+- [x] 新增 typed envelope、schema registry 與首批 Pydantic models。
+- [x] 新增 canonical ingest endpoint；舊 endpoints 行為不變。
+- [x] 新增 attempt-level failure audit 與 schema/version lineage。
+- [x] 發布 versioned JSON Schema，補固定 semantic error codes 與 currency 跨模型規則。
+
+Phase 1 的 FinDB boundary 已完成；Phase 0 的真實 provider fixtures/mapping，以及 Phase 2 的
+fetch adapter shadow migration 仍未完成，因此尚不能宣告 production feed cutover。
 
 ### Phase 2：Fetch client shadow migration
 
@@ -339,13 +367,9 @@ Source API 依下列順序處理：
 - Full snapshot 少量或過期時，會拒絕或建立可觀測 warning。
 - 舊 raw payload rerun 在相容期仍可成功。
 
-## 建議實作切片
+## 下一個實作切片
 
-第一個 PR 僅建立 contract foundation，不切 production feed：
-
-1. 新增 schema id/version 與 typed `market_eod.v1`、`futures_continuous_eod.v1` models。
-2. 新增 contract registry/dispatcher 與單元測試。
-3. Dataset config 加入 schema 宣告，但先以 audit-only 模式驗證。
-4. 文件加入 fetch adapter 範例與錯誤回應。
-
-第二個 PR 再處理 durable failure attempt 與 canonical endpoint；第三個 PR 從 TW feed 開始 shadow migration。這樣可以把 contract correctness、持久化改造與實際 feed 切換分開驗證與 rollback。
+下一個 PR 處理 typed delivery policy：count-drop、freshness、latest-date 與彙總 DQ warning；
+delivery-missing scheduler/alert 可在同一階段或緊接的維運 PR 完成。Fetch repo 同時補真實
+FinLab/Bloomberg fixtures、TW equity/ETF adapters 與 shadow comparison。Phase 2 驗收完成前，
+不切 production feed，也不開始 Phase 4 legacy freeze。

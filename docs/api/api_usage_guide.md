@@ -255,6 +255,26 @@ Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標�
 | `market_eod` | `1` | 股票、ETF、指數、crypto、FX 日 OHLCV |
 | `futures_continuous_eod` | `1` | 期貨連續序列日 OHLCV |
 
+#### Machine-readable contract
+
+Fetch adapter 測試可用相同 Source API key 讀取指定版本的 Draft 2020-12 JSON Schema：
+
+```http
+GET /api/v1/source/contracts/market_eod/versions/1
+X-API-Key: <SOURCE_API_KEY>
+```
+
+另一個已發布版本為
+`/api/v1/source/contracts/futures_continuous_eod/versions/1`。回應的 `$id` 固定為
+`urn:findb:ingress-contract:{schema_id}:v{schema_version}`；已發布版本的 schema 不會原地改變
+不相容語意，breaking change 必須新增 version。`x-findb-semantic-rules` 列出 JSON Schema
+無法單獨表達的跨欄位／跨列規則，adapter fixture tests 除了執行 JSON Schema validator，
+也必須驗證這些規則。
+
+Canonical ingest endpoint 刻意保留 raw request body handling，不讓 FastAPI/Pydantic 在 route
+boundary 預先拒絕資料；因此通過認證與 rate-limit gate 後，即使 JSON 或 contract 無效，仍會先建立
+durable `ingestion_attempt`。
+
 請求範例：
 
 ```json
@@ -334,6 +354,9 @@ Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標�
 | 422 | `INGRESS_SCHEMA_UNSUPPORTED` | schema id/version 未註冊 |
 | 422 | `INGRESS_SCHEMA_INVALID` | JSON 或欄位不符合 contract |
 | 422 | `INGRESS_SCHEMA_NOT_ALLOWED` | dataset 不接受指定 contract |
+| 422 | `DECLARED_RECORD_COUNT_MISMATCH` | `payload.batch.declared_record_count` 不等於 `len(payload.data)` |
+| 422 | `DUPLICATE_DELIVERY_KEY` | 同一 delivery 內出現重複的 `(symbol, trade_date)`；與 request/idempotency key 無關 |
+| 422 | `CURRENCY_REQUIRED` | market row 與 dataset default 都無 currency，或 futures dataset 未提供 default currency |
 | 503 | `DATABASE_UNAVAILABLE` | 資料庫暫時不可用；建立 attempt 前失敗時 `attempt_id=null` |
 
 `futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。

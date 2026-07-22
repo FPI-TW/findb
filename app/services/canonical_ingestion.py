@@ -27,6 +27,7 @@ from app.services.ingestion_attempts import (
     IngestionAttemptService,
 )
 from app.services.ingress_contracts import (
+    CurrencyRequiredError,
     UnsupportedIngressContractError,
     validate_ingress_request,
 )
@@ -74,6 +75,16 @@ def _validation_message(exc: ValidationError) -> str:
     message = str(first.get("msg") or "invalid value")
     suffix = f" ({len(errors)} validation errors)" if len(errors) > 1 else ""
     return f"{location}: {message}{suffix}"[:1_000]
+
+
+def _validation_code(exc: ValidationError) -> str:
+    """Map structured contract validation types to stable public codes."""
+    error_types = {str(error.get("type")) for error in exc.errors(include_input=False)}
+    if "declared_record_count_mismatch" in error_types:
+        return "DECLARED_RECORD_COUNT_MISMATCH"
+    if "duplicate_delivery_key" in error_types:
+        return "DUPLICATE_DELIVERY_KEY"
+    return "INGRESS_SCHEMA_INVALID"
 
 
 async def _reject(
@@ -181,7 +192,7 @@ async def accept_canonical_ingest(
             attempt_service,
             attempt_id,
             status_code=422,
-            code="INGRESS_SCHEMA_INVALID",
+            code=_validation_code(exc),
             message=_validation_message(exc),
         )
 
@@ -237,6 +248,14 @@ async def accept_canonical_ingest(
             attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_NOT_ALLOWED",
+            message=str(exc),
+        )
+    except CurrencyRequiredError as exc:
+        await _reject(
+            attempt_service,
+            attempt_id,
+            status_code=422,
+            code="CURRENCY_REQUIRED",
             message=str(exc),
         )
     except IdempotencyPayloadMismatchError as exc:

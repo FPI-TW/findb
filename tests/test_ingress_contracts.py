@@ -1,5 +1,7 @@
 """Tests for provider-neutral, versioned ingress contracts."""
 
+import hashlib
+import json
 from datetime import timezone
 from decimal import Decimal
 
@@ -12,6 +14,7 @@ from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     DatasetContractDeclaration,
     UnsupportedIngressContractError,
+    get_contract_json_schema,
     parse_dataset_contract_declaration,
     supported_contracts,
     validate_ingress_request,
@@ -177,8 +180,10 @@ def test_market_eod_rejects_declared_record_count_mismatch():
     value = _market_eod_request()
     value["payload"]["batch"]["declared_record_count"] = 2
 
-    with pytest.raises(ValidationError, match="declared_record_count"):
+    with pytest.raises(ValidationError, match="declared_record_count") as caught:
         MarketEODIngressRequest.model_validate(value)
+
+    assert caught.value.errors(include_input=False)[0]["type"] == ("declared_record_count_mismatch")
 
 
 def test_market_eod_rejects_duplicate_natural_key():
@@ -186,8 +191,10 @@ def test_market_eod_rejects_duplicate_natural_key():
     value["payload"]["data"].append(dict(value["payload"]["data"][0]))
     value["payload"]["batch"]["declared_record_count"] = 2
 
-    with pytest.raises(ValidationError, match=r"duplicate \(symbol, trade_date\)"):
+    with pytest.raises(ValidationError, match=r"duplicate \(symbol, trade_date\)") as caught:
         MarketEODIngressRequest.model_validate(value)
+
+    assert caught.value.errors(include_input=False)[0]["type"] == "duplicate_delivery_key"
 
 
 @pytest.mark.parametrize(
@@ -270,6 +277,46 @@ def test_registry_dispatches_explicit_contract_version():
 
     assert isinstance(request, MarketEODIngressRequest)
     assert supported_contracts() == (("futures_continuous_eod", 1), ("market_eod", 1))
+
+
+@pytest.mark.parametrize(
+    ("schema_id", "title", "expected_sha256"),
+    [
+        (
+            "market_eod",
+            "MarketEODIngressRequest",
+            "adf1ea6a7a279294d38d5fff00c726981a5c5c0838bcf638c0abfc67c9a5f85f",
+        ),
+        (
+            "futures_continuous_eod",
+            "FuturesContinuousEODIngressRequest",
+            "97f7fffb8a9cd4c14aa3b4967c5488d2997b6de5599adfc63a3ce77fcee9cd02",
+        ),
+    ],
+)
+def test_registry_publishes_versioned_deterministic_json_schema(
+    schema_id: str,
+    title: str,
+    expected_sha256: str,
+):
+    first = get_contract_json_schema(schema_id, 1)
+    second = get_contract_json_schema(schema_id, 1)
+
+    assert first == second
+    assert first["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert first["$id"] == f"urn:findb:ingress-contract:{schema_id}:v1"
+    assert first["title"] == title
+    assert first["x-findb-contract"] == {
+        "schema_id": schema_id,
+        "schema_version": 1,
+    }
+    assert first["$defs"]
+    assert first["properties"]["schema_id"]["const"] == schema_id
+    assert first["properties"]["schema_version"]["const"] == 1
+    assert first["x-findb-semantic-rules"][0]["error_code"] == ("DECLARED_RECORD_COUNT_MISMATCH")
+    assert first["x-findb-semantic-rules"][1]["fields"] == ["symbol", "trade_date"]
+    canonical_json = json.dumps(first, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(canonical_json).hexdigest() == expected_sha256
 
 
 def test_registry_does_not_guess_unknown_or_missing_versions():

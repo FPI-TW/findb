@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import logging
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -46,11 +47,31 @@ from app.services.ingestion import (
     SourceIdentityMismatchError,
 )
 from app.services.ingestion_attempts import IngestionAttemptService
+from app.services.ingress_contracts import (
+    UnsupportedIngressContractError,
+    get_contract_json_schema,
+)
 from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/contracts/{schema_id}/versions/{schema_version}")
+async def get_ingress_contract_schema(
+    schema_id: str,
+    schema_version: int,
+    _api_key: str = Depends(verify_source_api_key),
+) -> dict[str, Any]:
+    """Publish one immutable, machine-readable ingress JSON Schema."""
+    try:
+        return get_contract_json_schema(schema_id, schema_version)
+    except UnsupportedIngressContractError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
 
 
 def _ingress_error_response(

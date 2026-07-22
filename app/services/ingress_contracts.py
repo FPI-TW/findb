@@ -30,6 +30,10 @@ class UnsupportedIngressContractError(ValueError):
     """Raised when the requested schema id/version is not registered."""
 
 
+class CurrencyRequiredError(ValueError):
+    """Raised when neither dataset context nor market rows provide currency."""
+
+
 class DatasetContractDefaults(BaseModel):
     """Canonical scope required by schema-based normalizers."""
 
@@ -87,6 +91,40 @@ def get_contract_model(schema_id: str, schema_version: int) -> ContractModel:
         ) from exc
 
 
+def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, Any]:
+    """Return the deterministic, version-addressed JSON Schema for a contract."""
+    model = get_contract_model(schema_id, schema_version)
+    schema = model.model_json_schema(mode="validation")
+    semantic_rules: list[dict[str, Any]] = [
+        {
+            "rule": "declared_record_count_matches_data",
+            "error_code": "DECLARED_RECORD_COUNT_MISMATCH",
+        },
+        {
+            "rule": "unique_delivery_key",
+            "fields": ["symbol", "trade_date"],
+            "error_code": "DUPLICATE_DELIVERY_KEY",
+        },
+    ]
+    if schema_id == "market_eod":
+        semantic_rules.append(
+            {
+                "rule": "currency_from_row_or_dataset_default",
+                "error_code": "CURRENCY_REQUIRED",
+            }
+        )
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"urn:findb:ingress-contract:{schema_id}:v{schema_version}",
+        "x-findb-contract": {
+            "schema_id": schema_id,
+            "schema_version": schema_version,
+        },
+        "x-findb-semantic-rules": semantic_rules,
+        **schema,
+    }
+
+
 def validate_ingress_request(value: Mapping[str, Any]) -> IngressRequestV1:
     """Dispatch and validate a raw request without guessing its schema version."""
     schema_id = value.get("schema_id")
@@ -127,4 +165,24 @@ def validate_dataset_contract_scope(
     if declaration.defaults.asset_class != registry_asset_class:
         raise ValueError(
             "Dataset contract defaults.asset_class does not match " "dataset_registry.asset_class"
+        )
+
+
+def validate_request_currency(
+    declaration: DatasetContractDeclaration,
+    request: IngressRequestV1,
+) -> None:
+    """Apply dataset-dependent currency requirements before persistence."""
+    if declaration.defaults.currency is not None:
+        return
+    if isinstance(request, MarketEODIngressRequest) and any(
+        row.currency is None for row in request.payload.data
+    ):
+        raise CurrencyRequiredError(
+            "currency is required for every market_eod row when the dataset has no "
+            "default currency"
+        )
+    if isinstance(request, FuturesContinuousEODIngressRequest):
+        raise CurrencyRequiredError(
+            "dataset default currency is required for futures_continuous_eod"
         )
