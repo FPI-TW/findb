@@ -21,7 +21,10 @@ from app.services.ingestion import (
     IngressSchemaNotAllowedError,
     SourceIdentityMismatchError,
 )
-from app.services.ingestion_attempts import IngestionAttemptService
+from app.services.ingestion_attempts import (
+    IngestionAttemptClaimError,
+    IngestionAttemptService,
+)
 from app.services.ingress_contracts import (
     UnsupportedIngressContractError,
     validate_ingress_request,
@@ -81,12 +84,18 @@ async def _reject(
     message: str,
     headers: dict[str, str] | None = None,
 ) -> NoReturn:
-    await service.reject(
-        attempt_id,
-        http_status=status_code,
-        failure_code=code,
-        error_message=message,
-    )
+    try:
+        await service.reject(
+            attempt_id,
+            http_status=status_code,
+            failure_code=code,
+            error_message=message,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist rejection for ingestion attempt %s",
+            attempt_id,
+        )
     raise CanonicalIngestRejectionError(
         attempt_id=attempt_id,
         status_code=status_code,
@@ -109,7 +118,16 @@ async def accept_canonical_ingest(
         json_valid = False
 
     attempt_service = IngestionAttemptService(db)
-    attempt = await attempt_service.begin(body, raw_body)
+    try:
+        attempt = await attempt_service.begin(body, raw_body)
+    except IngestionAttemptClaimError as exc:
+        raise CanonicalIngestRejectionError(
+            attempt_id=exc.attempt_id,
+            status_code=503,
+            code="DATABASE_UNAVAILABLE",
+            message="Ingestion is temporarily unavailable",
+            headers={"Retry-After": "30"},
+        ) from exc
     attempt_id = attempt.attempt_id
 
     if not json_valid:
@@ -211,28 +229,24 @@ async def accept_canonical_ingest(
             message=str(exc),
         )
     except (OperationalError, DBAPIError):
-        await db.rollback()
-        message = "Ingestion is temporarily unavailable"
         try:
-            await _reject(
-                attempt_service,
-                attempt_id,
-                status_code=503,
-                code="DATABASE_UNAVAILABLE",
-                message=message,
-                headers={"Retry-After": "30"},
-            )
-        except (OperationalError, DBAPIError):
-            logger.exception("Database unavailable while updating ingestion attempt")
-            raise CanonicalIngestRejectionError(
-                attempt_id=attempt_id,
-                status_code=503,
-                code="DATABASE_UNAVAILABLE",
-                message=message,
-                headers={"Retry-After": "30"},
-            )
+            await db.rollback()
+        except Exception:
+            logger.exception("Database rollback failed for ingestion attempt %s", attempt_id)
+        message = "Ingestion is temporarily unavailable"
+        await _reject(
+            attempt_service,
+            attempt_id,
+            status_code=503,
+            code="DATABASE_UNAVAILABLE",
+            message=message,
+            headers={"Retry-After": "30"},
+        )
     except Exception:
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            logger.exception("Database rollback failed for ingestion attempt %s", attempt_id)
         logger.exception("Unexpected canonical ingestion failure attempt_id=%s", attempt_id)
         await _reject(
             attempt_service,

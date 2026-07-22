@@ -17,6 +17,14 @@ _ERROR_MESSAGE_LIMIT = 1_000
 _STALE_ATTEMPT_MESSAGE = "Request processing did not reach a terminal state"
 
 
+class IngestionAttemptClaimError(RuntimeError):
+    """Raised after durable persistence when the live row claim cannot be acquired."""
+
+    def __init__(self, attempt_id: UUID):
+        super().__init__(f"Failed to claim persisted ingestion attempt {attempt_id}")
+        self.attempt_id = attempt_id
+
+
 def _bounded_string(value: Any, limit: int) -> str | None:
     if not isinstance(value, str):
         return None
@@ -68,16 +76,24 @@ class IngestionAttemptService:
             updated_at=now,
             **_request_fields(body),
         )
+        persisted_attempt_id = attempt.attempt_id
         self.db.add(attempt)
         await self.db.commit()
-        claimed = await self.db.scalar(
-            select(IngestionAttempt)
-            .where(IngestionAttempt.attempt_id == attempt.attempt_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+        try:
+            claimed = await self.db.scalar(
+                select(IngestionAttempt)
+                .where(IngestionAttempt.attempt_id == persisted_attempt_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        except Exception as exc:
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            raise IngestionAttemptClaimError(persisted_attempt_id) from exc
         if claimed is None:
-            raise RuntimeError(f"Ingestion attempt {attempt.attempt_id} disappeared after commit")
+            raise IngestionAttemptClaimError(persisted_attempt_id)
         return claimed
 
     async def reject(
@@ -89,13 +105,16 @@ class IngestionAttemptService:
         error_message: str,
     ) -> IngestionAttempt:
         """Mark an attempt rejected and commit the terminal audit state."""
-        attempt = await self.db.get(IngestionAttempt, attempt_id, with_for_update=True)
+        attempt = await self.db.scalar(
+            select(IngestionAttempt)
+            .where(IngestionAttempt.attempt_id == attempt_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if attempt is None:
             raise RuntimeError(f"Ingestion attempt {attempt_id} not found")
         if attempt.status != "received":
-            raise RuntimeError(
-                f"Ingestion attempt {attempt_id} is already terminal ({attempt.status})"
-            )
+            return attempt
         now = utc_now()
         attempt.status = "rejected"
         attempt.http_status = http_status
@@ -114,7 +133,12 @@ class IngestionAttemptService:
         duplicate: bool = False,
     ) -> IngestionAttempt:
         """Stage terminal success; the caller owns the surrounding commit."""
-        attempt = await self.db.get(IngestionAttempt, attempt_id, with_for_update=True)
+        attempt = await self.db.scalar(
+            select(IngestionAttempt)
+            .where(IngestionAttempt.attempt_id == attempt_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if attempt is None:
             raise RuntimeError(f"Ingestion attempt {attempt_id} not found")
         if attempt.status != "received":

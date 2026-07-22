@@ -18,7 +18,10 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
 )
-from app.services.ingestion_attempts import reconcile_stale_ingestion_attempts
+from app.services.ingestion_attempts import (
+    IngestionAttemptService,
+    reconcile_stale_ingestion_attempts,
+)
 from app.services.normalization_queue import execute_normalization
 from app.services.source_clients import create_source_client
 from app.utils import utc_now, uuid7
@@ -712,6 +715,103 @@ async def test_database_failure_before_attempt_returns_retryable_503(
             "message": "Ingestion is temporarily unavailable",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_claim_failure_after_commit_returns_persisted_attempt_id(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    monkeypatch,
+):
+    async def fail_claim(*args, **kwargs):
+        raise OperationalError("SELECT FOR UPDATE", {}, RuntimeError("claim failed"))
+
+    monkeypatch.setattr(test_session, "scalar", fail_claim)
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DATABASE_UNAVAILABLE"
+    assert response.json()["attempt_id"] is not None
+    attempt = await test_session.get(
+        IngestionAttempt,
+        UUID(response.json()["attempt_id"]),
+    )
+    assert attempt is not None
+    assert attempt.status == "received"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_status", "expected_code"),
+    [
+        ("database", 503, "DATABASE_UNAVAILABLE"),
+        ("internal", 500, "INTERNAL_ERROR"),
+    ],
+)
+async def test_reconciler_winning_after_rollback_preserves_stable_error_envelope(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    test_engine,
+    monkeypatch,
+    failure_kind: str,
+    expected_status: int,
+    expected_code: str,
+):
+    await _seed_dataset(test_session)
+    session_factory = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    original_reject = IngestionAttemptService.reject
+
+    async def fail_ingest(*args, **kwargs):
+        if failure_kind == "database":
+            raise OperationalError("INSERT", {}, RuntimeError("database unavailable"))
+        raise RuntimeError("internal failure")
+
+    async def abort_before_reject(self, attempt_id, **kwargs):
+        async with session_factory() as other_session:
+            attempt = await other_session.get(
+                IngestionAttempt,
+                attempt_id,
+                with_for_update=True,
+            )
+            assert attempt is not None
+            attempt.status = "aborted"
+            attempt.failure_code = "ATTEMPT_INTERRUPTED"
+            attempt.error_message = "Request processing did not reach a terminal state"
+            attempt.completed_at = utc_now()
+            attempt.updated_at = utc_now()
+            await other_session.commit()
+        return await original_reject(self, attempt_id, **kwargs)
+
+    monkeypatch.setattr(
+        "app.services.canonical_ingestion.IngestionService.ingest_contract",
+        fail_ingest,
+    )
+    monkeypatch.setattr(IngestionAttemptService, "reject", abort_before_reject)
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["code"] == expected_code
+    attempt_id = UUID(response.json()["attempt_id"])
+    attempt = await test_session.get(IngestionAttempt, attempt_id)
+    await test_session.refresh(attempt)
+    assert attempt.status == "aborted"
+    assert attempt.failure_code == "ATTEMPT_INTERRUPTED"
 
 
 @pytest.mark.asyncio
