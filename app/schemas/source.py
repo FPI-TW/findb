@@ -167,7 +167,7 @@ class TWStockDirectRow(BaseModel):
             "OpenInterest",
             "<OpenInterest>",
         ),
-        description="接受後忽略，不會寫入 canonical",
+        description="未平倉量；標準化後寫入連續期貨 canonical 資料",
     )
 
     @field_validator("symbol", mode="before")

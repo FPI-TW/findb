@@ -143,6 +143,13 @@ class WTXFinlabNormalizer(FuturesContinuousNormalizer):
                 close=self._parse_decimal(item.get("close")),
                 volume=self._parse_int(item.get("volume")),
                 turnover=self._parse_decimal(item.get("turnover")),
+                open_interest=self._parse_int(item.get("open_interest")),
+                active_contract_code=(
+                    str(item["active_contract_code"]).strip()
+                    if item.get("active_contract_code")
+                    else None
+                ),
+                roll_adjustment=self._parse_decimal(item.get("roll_adjustment")),
                 source=source,
                 raw_data=item,
                 identifier_type=None,

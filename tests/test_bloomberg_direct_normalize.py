@@ -243,6 +243,22 @@ class TestWTXBloombergNormalizer:
         assert r.roll_rule_description is None
         assert r.roll_rule_config is None
 
+    def test_maps_only_explicit_contract_fields(self):
+        payload = self._payload(
+            open_interest=12345,
+            active_contract_code="TXF202603",
+            roll_adjustment="1.75",
+        )
+        record = self._n().map_fields(payload)[0]
+        assert record.open_interest == 12345
+        assert record.active_contract_code == "TXF202603"
+        assert record.roll_adjustment == Decimal("1.75")
+
+        implicit = self._n().map_fields(self._payload())[0]
+        assert implicit.active_contract_code is None
+        assert implicit.open_interest is None
+        assert implicit.roll_adjustment is None
+
     def test_symbol_derived_from_ticker(self):
         payload = self._payload()
         del payload["data"][0]["symbol"]
@@ -292,6 +308,34 @@ class TestWTXBloombergNormalizer:
             _select_normalizer_for_payload("wtx_eod", {"metadata": {"source": "unknown"}})
             is WTXFinlabNormalizer
         )
+
+
+class TestWTXFinlabNormalizer:
+    def _n(self):
+        return _make_normalizer(WTXFinlabNormalizer)
+
+    def test_maps_explicit_fields_without_deriving_active_contract(self):
+        payload = {
+            "metadata": {"source": "finlab", "symbol": "WTX"},
+            "data": [
+                {
+                    "date": "2026-03-12",
+                    "contract_month": "202603",
+                    "close": 21000,
+                    "open_interest": 45678,
+                    "roll_adjustment": "2.25",
+                }
+            ],
+        }
+        record = self._n().map_fields(payload)[0]
+        assert record.open_interest == 45678
+        assert record.roll_adjustment == Decimal("2.25")
+        assert record.active_contract_code is None
+        assert record.roll_rule_name == "202603"
+
+        payload["data"][0]["active_contract_code"] = "TXF202603"
+        explicit = self._n().map_fields(payload)[0]
+        assert explicit.active_contract_code == "TXF202603"
 
 
 # ---------------------------------------------------------------------------

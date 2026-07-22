@@ -145,6 +145,9 @@ Fetch Layer
 ### futures_contract / futures_continuous_eod / roll_rule
 
 - 支援 WTX 期貨合約、連續期貨 EOD 與 roll rule 資料結構
+- `futures_continuous_eod` 明確保存 nullable `open_interest`、`active_contract_code` 與
+  `roll_adjustment`；legacy 來源僅映射明確提供的值，不從 ticker 或 contract month 推導。
+- 欄位 migration 不猜測歷史值；需補全時 rerun retained `wtx_eod` raw payload。
 
 ### correction / dq_issue / ingestion_attempt / ingestion_run / normalization_job / normalization_outbox
 

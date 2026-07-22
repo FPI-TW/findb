@@ -184,6 +184,15 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         'idx_missing_delivery_dataset_source'
                       )
                     """))
+            futures_contract_field_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'futures_continuous_eod'
+                      AND column_name IN (
+                        'open_interest', 'active_contract_code', 'roll_adjustment'
+                      )
+                    """))
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -201,6 +210,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert baseline_index_count == 1
         assert missing_alert_table == "missing_delivery_alert"
         assert missing_alert_index_count == 2
+        assert futures_contract_field_count == 3
         expectation = contract_config["delivery_expectation"]
         assert expectation["freshness_hours"] == 72
         assert expectation["minimum_record_count"] == 1777
@@ -219,6 +229,15 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
         async with target_engine.connect() as connection:
+            futures_contract_field_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'futures_continuous_eod'
+                      AND column_name IN (
+                        'open_interest', 'active_contract_code', 'roll_adjustment'
+                      )
+                    """))
             cleanup_index_count = await connection.scalar(text("""
                     SELECT count(*)
                     FROM pg_indexes
@@ -229,6 +248,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
             attempt_table = await connection.scalar(
                 text("SELECT to_regclass('public.ingestion_attempt')")
             )
+            assert futures_contract_field_count == 0
             lineage_column_count = await connection.scalar(text("""
                     SELECT count(*)
                     FROM information_schema.columns

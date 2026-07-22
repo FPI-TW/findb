@@ -56,7 +56,7 @@ Feed 不另建 provider-specific dataset。需要在人或監控介面表示特�
 - `us_equity_eod`
 - `hk_equity_eod`
 - `cn_equity_eod`
-- `wtx_futures_continuous_eod`
+- `wtx_eod`
 - `macro_observation`
 
 provider 不得出現在新 dataset key。既有 provider-specific key 在相容期保留為 inactive/legacy alias，不立即改寫歷史 `ingestion_run`。
@@ -244,6 +244,10 @@ currency；期貨 row 不另帶 currency，缺少 dataset default 時回 `422 CU
 | `roll_adjustment` | decimal | 否 | 若序列有價格調整，記錄該日調整量 |
 
 此 schema 不接受 Bloomberg nested `price`/`timestamp` 或 FinLab `<Open>` 等別名；fetch adapter 必須先轉成上述欄位。
+
+`open_interest`、`active_contract_code` 與 `roll_adjustment` 會以 nullable explicit columns
+寫入 `futures_continuous_eod`，並由 Serve API 回傳；schema version 維持 v1。Migration 不會
+推測歷史值，部署後如需補值，可 rerun 仍在 retention 期限內且含明確欄位的 `wtx_eod` raw payload。
 
 ## Fetch Adapter 範例
 

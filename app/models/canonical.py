@@ -493,6 +493,9 @@ class FuturesContinuousEOD(Base):
     close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     volume: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     turnover: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
+    open_interest: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    active_contract_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    roll_adjustment: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(

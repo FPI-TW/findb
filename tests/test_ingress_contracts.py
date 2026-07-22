@@ -20,7 +20,10 @@ from app.services.ingress_contracts import (
     supported_contracts,
     validate_ingress_request,
 )
-from app.services.normalize import MarketEODContractNormalizer
+from app.services.normalize import (
+    FuturesContinuousEODContractNormalizer,
+    MarketEODContractNormalizer,
+)
 from scripts.seed_data import DATASETS
 
 
@@ -86,6 +89,7 @@ def _futures_request() -> dict:
                     "open_interest": 120_000,
                     "active_contract_code": "TXF202607",
                     "roll_rule": "front_month",
+                    "roll_adjustment": "1.75",
                 }
             ],
         },
@@ -629,6 +633,23 @@ def test_contract_normalizer_routing_requires_schema_id_and_version():
         )
         is None
     )
+
+
+def test_futures_contract_normalizer_maps_optional_canonical_fields():
+    request = FuturesContinuousEODIngressRequest.model_validate(_futures_request())
+    normalizer = FuturesContinuousEODContractNormalizer(
+        None,
+        {
+            "defaults": {"market": "WTX", "asset_class": "future", "currency": "TWD"},
+            "_ingest_source": "bloomberg",
+        },
+    )
+
+    record = normalizer.map_fields(request.payload.model_dump(mode="json"))[0]
+
+    assert record.open_interest == 120_000
+    assert record.active_contract_code == "TXF202607"
+    assert record.roll_adjustment == Decimal("1.75")
 
 
 @pytest.mark.parametrize(

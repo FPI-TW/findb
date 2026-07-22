@@ -127,6 +127,7 @@ def _futures_request() -> dict:
                     "open_interest": 120_000,
                     "active_contract_code": "TXF202607",
                     "roll_rule": "front_month",
+                    "roll_adjustment": "12.5",
                 }
             ],
         },
@@ -421,8 +422,45 @@ async def test_canonical_futures_contract_routes_by_schema_not_provider_payload(
     assert instrument.market == "WTX"
     assert instrument.currency == "TWD"
     assert str(eod.close) == "23150.00000000"
+    assert eod.open_interest == 120_000
+    assert eod.active_contract_code == "TXF202607"
+    assert str(eod.roll_adjustment) == "12.50000000"
     assert eod.source == "bloomberg"
     assert run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_canonical_futures_raw_rerun_preserves_optional_contract_fields(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    test_engine,
+):
+    await _seed_futures_dataset(test_session)
+    accepted = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_futures_request(),
+    )
+    original_run_id = UUID(accepted.json()["run_id"])
+    await _execute_run(test_session, test_engine, original_run_id)
+
+    rerun = await client.post(
+        f"/api/v1/source/runs/{original_run_id}/rerun",
+        headers=source_headers,
+    )
+    assert rerun.status_code == 202
+    rerun_id = UUID(rerun.json()["run_id"])
+    await _execute_run(test_session, test_engine, rerun_id)
+
+    eod = (await test_session.execute(select(FuturesContinuousEOD))).scalar_one()
+    rerun_row = await test_session.get(IngestionRun, rerun_id)
+    assert eod.open_interest == 120_000
+    assert eod.active_contract_code == "TXF202607"
+    assert str(eod.roll_adjustment) == "12.50000000"
+    assert eod.run_id == rerun_id
+    assert rerun_row is not None
+    assert rerun_row.status == "completed"
 
 
 @pytest.mark.asyncio
