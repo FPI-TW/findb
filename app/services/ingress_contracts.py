@@ -92,7 +92,7 @@ def get_contract_model(schema_id: str, schema_version: int) -> ContractModel:
 
 
 def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, Any]:
-    """Return the deterministic, version-addressed JSON Schema for a contract."""
+    """Return the deterministic request-body shape and semantic contract."""
     model = get_contract_model(schema_id, schema_version)
     schema = model.model_json_schema(mode="validation")
     semantic_rules: list[dict[str, Any]] = [
@@ -304,6 +304,160 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 "error_code": "CURRENCY_REQUIRED",
             }
         )
+    row_string_paths = (
+        [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].name",
+            "payload.data[*].currency",
+        ]
+        if schema_id == "market_eod"
+        else [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].name",
+            "payload.data[*].active_contract_code",
+            "payload.data[*].roll_rule",
+        ]
+    )
+    transformations = [
+        {
+            "id": "normalization.strings.strip_whitespace",
+            "scope": "request_body",
+            "description": "leading and trailing whitespace is stripped before validation",
+            "operation": "strip_leading_trailing_whitespace",
+            "phase": "before_field_validation",
+            "paths": [
+                "dataset_key",
+                "schema_id",
+                "source",
+                "request_key",
+                "idempotency_key",
+                "payload.batch.source_raw_ref",
+                "payload.batch.source_raw_sha256",
+                *row_string_paths,
+            ],
+        }
+    ]
+    contract_scope = {
+        "artifact_kind": "versioned_request_body_shape_and_semantics",
+        "necessary_for_api_acceptance": True,
+        "sufficient_for_api_acceptance": False,
+        "covers": [
+            {
+                "id": "request_body.json_parsing",
+                "stage": "body_parsing",
+            },
+            {
+                "id": "request_body.shape",
+                "stage": "json_schema_validation",
+            },
+            {
+                "id": "request_body.normalization",
+                "stage": "body_normalization",
+                "extension": "x-findb-transformations",
+            },
+            {
+                "id": "request_body.semantics",
+                "stage": "body_semantic_validation",
+                "extension": "x-findb-semantic-rules",
+            },
+        ],
+        "excludes": [
+            "authentication_and_database_credential_lookup",
+            "rate_limiting",
+            "credential_source_and_dataset_authorization",
+            "dataset_registry_state_and_contract_declaration",
+            "idempotency_state",
+            "infrastructure_availability",
+        ],
+        "additional_acceptance_boundaries": [
+            {
+                "id": "authentication.api_key",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [401, 403],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+            },
+            {
+                "id": "authentication.database_lookup",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [503],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+            },
+            {
+                "id": "rate_limit.source_client",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [429],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+            },
+            {
+                "id": "credential.source_binding",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [403],
+                "public_codes": ["SOURCE_IDENTITY_MISMATCH"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "credential.dataset_allowlist",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [403],
+                "public_codes": ["DATASET_ACCESS_DENIED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.existence",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [400],
+                "public_codes": ["DATASET_NOT_FOUND"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.active",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [409],
+                "public_codes": ["DATASET_INACTIVE"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.contract_declaration",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [409],
+                "public_codes": ["DATASET_CONTRACT_NOT_CONFIGURED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.contract_scope",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [409],
+                "public_codes": ["DATASET_CONTRACT_NOT_CONFIGURED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.accepted_contract_version",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [422],
+                "public_codes": ["INGRESS_SCHEMA_NOT_ALLOWED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "idempotency.collision",
+                "stage": "after_attempt_persistence_validation",
+                "http_statuses": [409],
+                "public_codes": ["IDEMPOTENCY_PAYLOAD_MISMATCH"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "infrastructure.database_or_internal_failure",
+                "stage": "multiple",
+                "http_statuses": [500, 503],
+                "public_codes": ["DATABASE_UNAVAILABLE", "INTERNAL_ERROR"],
+                "attempt_semantics": "depends_on_failure_stage",
+            },
+        ],
+    }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": f"urn:findb:ingress-contract:{schema_id}:v{schema_version}",
@@ -311,6 +465,8 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "schema_id": schema_id,
             "schema_version": schema_version,
         },
+        "x-findb-contract-scope": contract_scope,
+        "x-findb-transformations": transformations,
         "x-findb-semantic-rules": semantic_rules,
         **schema,
     }

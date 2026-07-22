@@ -262,6 +262,9 @@ async def test_versioned_contract_schema_endpoint_is_machine_readable(
     assert schema["$id"] == f"urn:findb:ingress-contract:{schema_id}:v1"
     assert schema["title"] == expected_title
     assert schema["properties"]["schema_id"]["const"] == schema_id
+    assert schema["x-findb-contract-scope"]["sufficient_for_api_acceptance"] is False
+    assert schema["x-findb-contract-scope"]["additional_acceptance_boundaries"]
+    assert schema["x-findb-transformations"][0]["id"] == ("normalization.strings.strip_whitespace")
     assert (
         any(
             rule["id"] == "market.currency.row_or_dataset_default"

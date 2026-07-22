@@ -353,13 +353,13 @@ def test_registry_dispatches_explicit_contract_version():
             "market_eod",
             "MarketEODIngressRequest",
             "market.currency.row_or_dataset_default",
-            "5f43eb5a08f5356cdb39afbc383822b45d52374d308ab3bfa30704916e710805",
+            "aa54ea979bf2631bf997bd902fd1444bc1d3a8eb2ddc1ca89ad0542890ed973b",
         ),
         (
             "futures_continuous_eod",
             "FuturesContinuousEODIngressRequest",
             "futures.currency.dataset_default_required",
-            "326058bb6982c9f863500e70722cbdd2d6f21e4f4f63a6124793a0020eb0c902",
+            "69a72e82b2d79f1569e8e18c09ecc0edf91bf1bb5c21fe559a55d64533c1a949",
         ),
     ],
 )
@@ -422,6 +422,64 @@ def test_registry_publishes_versioned_deterministic_json_schema(
     assert by_id[schema_specific_rule]["context_dependencies"] == [
         {"kind": "dataset_context", "path": "defaults.currency"}
     ]
+    scope = first["x-findb-contract-scope"]
+    assert scope["artifact_kind"] == "versioned_request_body_shape_and_semantics"
+    assert scope["necessary_for_api_acceptance"] is True
+    assert scope["sufficient_for_api_acceptance"] is False
+    assert {item["id"] for item in scope["covers"]} == {
+        "request_body.json_parsing",
+        "request_body.shape",
+        "request_body.normalization",
+        "request_body.semantics",
+    }
+    assert set(scope["excludes"]) == {
+        "authentication_and_database_credential_lookup",
+        "rate_limiting",
+        "credential_source_and_dataset_authorization",
+        "dataset_registry_state_and_contract_declaration",
+        "idempotency_state",
+        "infrastructure_availability",
+    }
+    boundaries = {item["id"]: item for item in scope["additional_acceptance_boundaries"]}
+    assert set(boundaries) == {
+        "authentication.api_key",
+        "authentication.database_lookup",
+        "rate_limit.source_client",
+        "credential.source_binding",
+        "credential.dataset_allowlist",
+        "dataset.existence",
+        "dataset.active",
+        "dataset.contract_declaration",
+        "dataset.contract_scope",
+        "dataset.accepted_contract_version",
+        "idempotency.collision",
+        "infrastructure.database_or_internal_failure",
+    }
+    assert boundaries["authentication.api_key"]["attempt_semantics"] == "not_created"
+    assert boundaries["dataset.existence"]["public_codes"] == ["DATASET_NOT_FOUND"]
+    assert (
+        boundaries["infrastructure.database_or_internal_failure"]["attempt_semantics"]
+        == "depends_on_failure_stage"
+    )
+    transformations = first["x-findb-transformations"]
+    assert [item["id"] for item in transformations] == ["normalization.strings.strip_whitespace"]
+    transformed_paths = set(transformations[0]["paths"])
+    assert {
+        "dataset_key",
+        "schema_id",
+        "source",
+        "request_key",
+        "idempotency_key",
+        "payload.batch.source_raw_ref",
+        "payload.batch.source_raw_sha256",
+        "payload.data[*].symbol",
+        "payload.data[*].source_symbol",
+        "payload.data[*].name",
+    } <= transformed_paths
+    expected_specific_path = (
+        "payload.data[*].currency" if schema_id == "market_eod" else "payload.data[*].roll_rule"
+    )
+    assert expected_specific_path in transformed_paths
     canonical_json = json.dumps(first, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(canonical_json).hexdigest() == expected_sha256
 
@@ -437,6 +495,19 @@ def test_validation_error_priority_selects_one_structured_error_for_code_and_mes
 
     assert code == "DECLARED_RECORD_COUNT_MISMATCH"
     assert selected is errors[1]
+
+
+def test_contract_normalizes_declared_string_whitespace_before_validation():
+    value = _market_eod_request()
+    value["request_key"] = "  request-key  "
+    value["payload"]["batch"]["source_raw_ref"] = "  s3://bucket/raw.json  "
+    value["payload"]["data"][0]["symbol"] = "  2330  "
+
+    request = MarketEODIngressRequest.model_validate(value)
+
+    assert request.request_key == "request-key"
+    assert request.payload.batch.source_raw_ref == "s3://bucket/raw.json"
+    assert request.payload.data[0].symbol == "2330"
 
 
 def test_registry_does_not_guess_unknown_or_missing_versions():

@@ -190,7 +190,7 @@ Schema-level validation：
 }
 ```
 
-## Machine-readable contract 發布
+## Machine-readable request-body contract 發布
 
 Fetch adapter 以 Source API key 讀取 immutable version endpoint：
 
@@ -199,13 +199,20 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 ```
 
 目前發布 `market_eod.v1` 與 `futures_continuous_eod.v1` 的 Draft 2020-12 JSON Schema。
+Artifact 僅描述 versioned request-body shape、normalization 與 body semantics，不是完整 API
+acceptance contract。
 回應具有固定 URN `$id` 與 `x-findb-contract`；`x-findb-semantic-rules` 描述 JSON Schema
 本身無法表達的 declared count、delivery natural-key uniqueness 與 dataset-aware currency
 規則，以及 timezone-aware `fetched_at`、sequence/coverage 關聯、backfill 日期、OHLC bounds、coverage row-date 範圍與
 動態 data/byte limits。每筆 rule 都提供穩定 `id`、`scope`、`parameters`、`error_code` 與
 `context_dependencies`。Fetch fixture tests 必須同時跑 JSON Schema 與 semantic rules；
 `runtime_setting` dependency 由測試環境注入有效 limit，`dataset_context` dependency 由 dataset
-declaration 提供，不能把純 JSON Schema 驗證成功誤解為 server 一定接受。Canonical `POST /ingest`
+declaration 提供。`x-findb-transformations` 列出 trim 等 pre-validation normalization；
+`x-findb-contract-scope` 明示 `sufficient_for_api_acceptance=false`，並列出認證/DB credential
+lookup、rate limit、source/dataset authorization、dataset registry/declaration/version、idempotency
+與 infrastructure 等額外 acceptance boundaries。通過 body schema/rules 是必要而非充分條件；
+動態狀態不得假裝成 JSON Schema constraint，HTTP 細節以 API 使用指南的錯誤表與 endpoint
+說明為準。Canonical `POST /ingest`
 不把 typed model 放到 FastAPI handler 參數，避免 framework validation 在 durable attempt 建立前
 拒絕 request。
 
