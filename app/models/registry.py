@@ -214,7 +214,7 @@ class MissingDeliveryAlert(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('open', 'resolved')",
-            name="missing_delivery_alert_status_valid",
+            name="status_valid",
         ),
         UniqueConstraint(
             "dataset_key",

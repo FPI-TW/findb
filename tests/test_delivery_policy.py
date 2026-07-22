@@ -170,7 +170,7 @@ async def test_dataset_seed_preserves_existing_operator_config(
             **dataset.config["delivery_expectation"],
             "missing_delivery": {
                 "action": "warn",
-                "expected_sources": ["operator-feed"],
+                "expected_sources": ["operator_feed"],
             },
         },
     }
@@ -179,7 +179,7 @@ async def test_dataset_seed_preserves_existing_operator_config(
     await test_session.refresh(dataset)
     assert dataset.config["delivery_expectation"]["missing_delivery"] == {
         "action": "warn",
-        "expected_sources": ["operator-feed"],
+        "expected_sources": ["operator_feed"],
     }
 
 

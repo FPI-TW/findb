@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from contextlib import suppress
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -50,10 +51,17 @@ async def scan_missing_deliveries_safely(
     try:
         async with session_factory() as session:
             try:
-                result = await scan_missing_deliveries(session)
-            except Exception:
-                await session.rollback()
+                async with asyncio.timeout(settings.DELIVERY_MONITOR_TIMEOUT_SECONDS):
+                    result = await scan_missing_deliveries(session)
+            except BaseException:
+                await asyncio.shield(session.rollback())
                 raise
+    except TimeoutError:
+        logger.error(
+            "Missing dataset delivery scan timed out after %s seconds",
+            settings.DELIVERY_MONITOR_TIMEOUT_SECONDS,
+        )
+        return
     except Exception:
         logger.exception("Failed to scan missing dataset deliveries")
         return
@@ -68,6 +76,15 @@ async def scan_missing_deliveries_safely(
         )
 
 
+async def delivery_monitor_loop(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Run monitor scans independently and serially with one immediate startup scan."""
+    while True:
+        await scan_missing_deliveries_safely(session_factory)
+        await asyncio.sleep(settings.DELIVERY_MONITOR_SECONDS)
+
+
 async def run_dispatcher() -> None:
     engine = create_async_engine(settings.DATABASE_URL)
     session_factory = async_sessionmaker(
@@ -75,21 +92,21 @@ async def run_dispatcher() -> None:
         class_=AsyncSession,
         expire_on_commit=False,
     )
+    monitor_task: asyncio.Task[None] | None = None
     try:
         await asyncio.to_thread(declare_topology)
         async with session_factory() as session:
             replayed = await reconcile_nonterminal_jobs(session)
             logger.info("Reconciled %s non-terminal normalization jobs", replayed)
         await reconcile_stale_attempts_safely(session_factory)
-        await scan_missing_deliveries_safely(session_factory)
+        monitor_task = asyncio.create_task(
+            delivery_monitor_loop(session_factory),
+            name="delivery-monitor",
+        )
 
         broker_was_unavailable = False
         last_reconciliation = time.monotonic()
-        last_delivery_monitor = time.monotonic()
         while True:
-            if time.monotonic() - last_delivery_monitor >= settings.DELIVERY_MONITOR_SECONDS:
-                await scan_missing_deliveries_safely(session_factory)
-                last_delivery_monitor = time.monotonic()
             if time.monotonic() - last_reconciliation >= settings.OUTBOX_RECONCILE_SECONDS:
                 try:
                     await asyncio.to_thread(declare_topology)
@@ -140,6 +157,10 @@ async def run_dispatcher() -> None:
                         )
                         broker_was_unavailable = False
     finally:
+        if monitor_task is not None:
+            monitor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await monitor_task
         await engine.dispose()
 
 

@@ -93,7 +93,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                                 "operator_note": "preserve",
                                 "missing_delivery": {
                                     "action": "warn",
-                                    "expected_sources": ["operator-feed"],
+                                    "expected_sources": ["operator_feed"],
                                 },
                             },
                         }
@@ -210,7 +210,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert expectation["latest_date"]["timezone"] == "Asia/Taipei"
         assert expectation["missing_delivery"] == {
             "action": "warn",
-            "expected_sources": ["operator-feed"],
+            "expected_sources": ["operator_feed"],
         }
         assert default_monitor_config == {
             "action": "disabled",

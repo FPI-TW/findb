@@ -28,3 +28,4 @@ def test_missing_delivery_alert_has_identity_and_health_indexes() -> None:
     assert "idx_missing_delivery_status_detected" in index_names
     assert "idx_missing_delivery_dataset_source" in index_names
     assert "uq_missing_delivery_identity_date" in constraint_names
+    assert "ck_missing_delivery_alert_status_valid" in constraint_names

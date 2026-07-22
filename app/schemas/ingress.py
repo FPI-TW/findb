@@ -12,6 +12,7 @@ from app.schemas.payload_limits import (
     ensure_data_items_count_within_limit,
     ensure_payload_size_within_limit,
 )
+from app.vocabulary import SOURCE_NAME_PATTERN
 
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
@@ -210,7 +211,7 @@ class _IngressRequest(BaseModel):
     dataset_key: str = Field(min_length=1, max_length=50, pattern=r"^[a-z0-9_]+$")
     schema_id: str = Field(min_length=1, max_length=50, pattern=r"^[a-z0-9_]+$")
     schema_version: int = Field(ge=1)
-    source: str = Field(min_length=1, max_length=50, pattern=r"^[a-z0-9_]+$")
+    source: str = Field(min_length=1, max_length=50, pattern=SOURCE_NAME_PATTERN)
     request_key: str = Field(min_length=1, max_length=100)
     idempotency_key: str = Field(min_length=1, max_length=100)
     fetched_at: datetime

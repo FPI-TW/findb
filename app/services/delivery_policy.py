@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from statistics import median
@@ -11,13 +12,15 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import TradingCalendar
 from app.models.registry import IngestionRun
 from app.schemas.ingress import DeliveryMode, IngressRequestV1
+from app.services.feed_scope import lock_feed_scope
 from app.utils import utc_now
+from app.vocabulary import SOURCE_NAME_PATTERN
 
 Ratio = Annotated[float, Field(ge=0, lt=1)]
 PolicyCode = Literal[
@@ -95,19 +98,17 @@ class MissingDeliveryPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     action: Literal["disabled", "warn"] = "disabled"
-    expected_sources: list[str] = Field(default_factory=list, max_length=32)
+    expected_sources: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+    )
 
     @field_validator("expected_sources")
     @classmethod
     def normalize_sources(cls, values: list[str]) -> list[str]:
-        normalized = [value.strip().lower() for value in values]
+        normalized = [value.strip() for value in values]
         if any(
-            not value
-            or len(value) > 50
-            or not value[0].isalnum()
-            or any(
-                character not in "abcdefghijklmnopqrstuvwxyz0123456789._-" for character in value
-            )
+            not value or len(value) > 50 or re.fullmatch(SOURCE_NAME_PATTERN, value) is None
             for value in normalized
         ):
             raise ValueError("expected_sources must contain stable lowercase provider names")
@@ -212,18 +213,13 @@ async def lock_delivery_policy_scope(
     request: IngressRequestV1,
 ) -> None:
     """Serialize duplicate recheck, baseline evaluation, and delivery creation."""
-    scope = ":".join(
-        (
-            "delivery-policy",
-            request.dataset_key,
-            request.source,
-            request.schema_id,
-            str(request.schema_version),
-        )
-    )
-    await db.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
-        {"scope": scope},
+    await lock_feed_scope(
+        db,
+        dataset_key=request.dataset_key,
+        source=request.source,
+        schema_id=request.schema_id,
+        schema_version=request.schema_version,
+        wait=True,
     )
 
 

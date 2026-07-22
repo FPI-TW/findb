@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.canonical import TradingCalendar
 from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
-from app.services.delivery_monitor import scan_missing_deliveries
+from app.services.delivery_monitor import resolve_missing_delivery_for_run, scan_missing_deliveries
 from app.services.delivery_policy import (
     DeliveryExpectation,
     LatestDatePolicy,
     resolve_expected_data_date,
 )
+from app.services.feed_scope import lock_feed_scope
 
 NOW = datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc)
 
@@ -68,7 +69,7 @@ async def _seed_dataset(session, *, active: bool = True, config: dict | None = N
 def test_missing_delivery_config_is_opt_in_and_validated() -> None:
     assert DeliveryExpectation.model_validate({}).missing_delivery.action == "disabled"
     parsed = DeliveryExpectation.model_validate(
-        {"missing_delivery": {"action": "warn", "expected_sources": ["FinLab"]}}
+        {"missing_delivery": {"action": "warn", "expected_sources": ["finlab"]}}
     )
     assert parsed.missing_delivery.expected_sources == ["finlab"]
     with pytest.raises(ValidationError):
@@ -79,6 +80,16 @@ def test_missing_delivery_config_is_opt_in_and_validated() -> None:
         DeliveryExpectation.model_validate(
             {"missing_delivery": {"action": "reject", "expected_sources": ["finlab"]}}
         )
+    for invalid_source in ("FinLab", "fin-lab", "fin.lab"):
+        with pytest.raises(ValidationError):
+            DeliveryExpectation.model_validate(
+                {
+                    "missing_delivery": {
+                        "action": "warn",
+                        "expected_sources": [invalid_source],
+                    }
+                }
+            )
 
 
 @pytest.mark.asyncio
@@ -173,6 +184,7 @@ async def test_presence_requires_exact_non_rerun_full_snapshot_identity(test_ses
         ("finlab", 2, date(2026, 7, 22), "full_snapshot", False),
         ("finlab", 1, date(2026, 7, 21), "full_snapshot", False),
         ("finlab", 1, date(2026, 7, 22), "incremental", False),
+        ("finlab", 1, date(2026, 7, 22), "backfill", False),
         ("finlab", 1, date(2026, 7, 22), "full_snapshot", True),
     ]:
         test_session.add(
@@ -210,12 +222,35 @@ async def test_disabled_inactive_and_calendar_unavailable_do_not_alert(test_sess
     result = await scan_missing_deliveries(test_session, now=NOW)
     assert result.created_or_refreshed == 0
 
+    test_session.add(
+        MissingDeliveryAlert(
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            expected_data_date=date(2026, 7, 21),
+            status="open",
+            first_detected_at=NOW,
+            last_detected_at=NOW,
+        )
+    )
+    await test_session.commit()
+    await scan_missing_deliveries(test_session, now=NOW)
+    assert (
+        await test_session.scalar(select(func.count()).where(MissingDeliveryAlert.status == "open"))
+        == 1
+    )
+
     dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
     assert dataset is not None
     dataset.config = _config(sources=["finlab"])
     dataset.is_active = False
     await test_session.commit()
     assert (await scan_missing_deliveries(test_session, now=NOW)).created_or_refreshed == 0
+    assert (
+        await test_session.scalar(select(func.count()).where(MissingDeliveryAlert.status == "open"))
+        == 1
+    )
 
     dataset.is_active = True
     await test_session.delete((await test_session.execute(select(TradingCalendar))).scalar_one())
@@ -249,6 +284,39 @@ async def test_admin_list_filters_paginates_and_health_summarizes(
     assert health.json()["missing_deliveries"] == 1
     assert health.json()["oldest_missing_delivery_at"] == NOW.isoformat().replace("+00:00", "Z")
 
+    test_session.add(
+        MissingDeliveryAlert(
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            expected_data_date=date(2026, 7, 21),
+            status="open",
+            first_detected_at=NOW,
+            last_detected_at=NOW,
+        )
+    )
+    await test_session.commit()
+    first_page = await client.get(
+        "/api/v1/admin/missing-deliveries",
+        params={"page": 1, "page_size": 1},
+        headers=admin_headers,
+    )
+    second_page = await client.get(
+        "/api/v1/admin/missing-deliveries",
+        params={"page": 2, "page_size": 1},
+        headers=admin_headers,
+    )
+    assert first_page.json()["pagination"] == {
+        "page": 1,
+        "page_size": 1,
+        "total_records": 2,
+        "total_pages": 2,
+        "next_cursor": None,
+    }
+    assert len(first_page.json()["data"]) == len(second_page.json()["data"]) == 1
+    assert first_page.json()["data"][0]["alert_id"] != second_page.json()["data"][0]["alert_id"]
+
 
 @pytest.mark.asyncio
 async def test_concurrent_scans_cannot_create_duplicate_alerts(test_engine) -> None:
@@ -263,3 +331,120 @@ async def test_concurrent_scans_cannot_create_duplicate_alerts(test_engine) -> N
     await asyncio.gather(scan(), scan())
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(MissingDeliveryAlert)) == 1
+
+
+async def _accept_full_snapshot(session_factory) -> None:
+    async with session_factory() as session:
+        await lock_feed_scope(
+            session,
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            wait=True,
+        )
+        session.add(
+            IngestionRun(
+                dataset_key="tw_equity_eod",
+                source="finlab",
+                schema_id="market_eod",
+                schema_version=1,
+                batch_data_date=date(2026, 7, 22),
+                delivery_mode="full_snapshot",
+                is_rerun=False,
+                status="pending",
+            )
+        )
+        await session.flush()
+        await resolve_missing_delivery_for_run(
+            session,
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            data_date=date(2026, 7, 22),
+            resolved_at=NOW,
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_scan_first_then_ingest_resolves_without_false_open(test_engine, monkeypatch) -> None:
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        await _seed_dataset(session)
+
+    scan_holds_lock = asyncio.Event()
+    release_scan = asyncio.Event()
+    original_resolver = resolve_expected_data_date
+
+    async def paused_resolver(db, policy, now):
+        scan_holds_lock.set()
+        await release_scan.wait()
+        return await original_resolver(db, policy, now)
+
+    monkeypatch.setattr("app.services.delivery_monitor.resolve_expected_data_date", paused_resolver)
+    async with session_factory() as scan_session:
+        scan_task = asyncio.create_task(scan_missing_deliveries(scan_session, now=NOW))
+        await asyncio.wait_for(scan_holds_lock.wait(), timeout=2)
+        ingest_task = asyncio.create_task(_accept_full_snapshot(session_factory))
+        await asyncio.sleep(0.05)
+        assert not ingest_task.done()
+        release_scan.set()
+        await asyncio.gather(scan_task, ingest_task)
+
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(func.count()).where(MissingDeliveryAlert.status == "open"))
+            == 0
+        )
+
+
+@pytest.mark.asyncio
+async def test_ingest_first_makes_concurrent_scan_skip_then_no_false_open(test_engine) -> None:
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        await _seed_dataset(session)
+
+    ingest_holds_lock = asyncio.Event()
+    release_ingest = asyncio.Event()
+
+    async def paused_ingest() -> None:
+        async with session_factory() as session:
+            await lock_feed_scope(
+                session,
+                dataset_key="tw_equity_eod",
+                source="finlab",
+                schema_id="market_eod",
+                schema_version=1,
+                wait=True,
+            )
+            ingest_holds_lock.set()
+            await release_ingest.wait()
+            session.add(
+                IngestionRun(
+                    dataset_key="tw_equity_eod",
+                    source="finlab",
+                    schema_id="market_eod",
+                    schema_version=1,
+                    batch_data_date=date(2026, 7, 22),
+                    delivery_mode="full_snapshot",
+                    is_rerun=False,
+                    status="pending",
+                )
+            )
+            await session.commit()
+
+    ingest_task = asyncio.create_task(paused_ingest())
+    await asyncio.wait_for(ingest_holds_lock.wait(), timeout=2)
+    async with session_factory() as scan_session:
+        result = await scan_missing_deliveries(scan_session, now=NOW)
+    assert result.skipped_locked is True
+    release_ingest.set()
+    await ingest_task
+
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(func.count()).where(MissingDeliveryAlert.status == "open"))
+            == 0
+        )

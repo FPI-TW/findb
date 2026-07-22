@@ -413,7 +413,9 @@ GET /api/v1/admin/missing-deliveries?status=open&dataset_key=tw_equity_eod&sourc
 `expected_sources`。Identity 為 source、dataset、schema id/version；符合預期 data date 的非 rerun
 full snapshot run 即視為 delivered，即使 normalization 最後失敗也算已送達。Late run 會自動 resolve；
 calendar unavailable 不建立 false alert。`GET /api/v1/admin/queue/health` 同時回傳 open count、oldest
-open timestamp 與 age。外部通知不在 API 內，由監控系統依 health 指標觸發。
+open timestamp 與 age。來源名稱與 canonical ingress 一樣只接受 `^[a-z0-9_]+$`。Monitor 在獨立
+background task 以 shared per-feed transaction lock 執行；掃描 timeout 會 rollback，不阻塞 outbox。
+外部通知不在 API 內，由監控系統依 health 指標觸發。
 
 `futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。
 

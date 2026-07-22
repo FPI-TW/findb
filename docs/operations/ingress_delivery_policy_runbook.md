@@ -39,9 +39,12 @@ Feed cutover 後，在 dataset 的 `delivery_expectation` 加入：
 }
 ```
 
-來源名稱必須是 stable lowercase，identity 為 `source + dataset_key + schema_id/version`，feed 名稱
+來源名稱必須符合 canonical ingress 的 `^[a-z0-9_]+$`，identity 為
+`source + dataset_key + schema_id/version`，feed 名稱
 顯示為 `{source}:{dataset_key}`。Dispatcher 啟動時掃描一次，之後每
-`DELIVERY_MONITOR_SECONDS`（預設 60 秒）掃描。它重用同步 policy 的 timezone、calendar、session
+`DELIVERY_MONITOR_SECONDS`（預設 60 秒）掃描。Monitor 在獨立 background task 與 DB session
+執行，不阻塞 outbox claim/publish；單次掃描由 `DELIVERY_MONITOR_TIMEOUT_SECONDS`（預設 30 秒）
+取消並 rollback。它重用同步 policy 的 timezone、calendar、session
 close/fallback close 與 grace resolver；calendar 不覆蓋評估日或尚無已關閉 open session 時，只記
 bounded diagnostic，不猜 weekday、不建立 alert。
 
@@ -49,6 +52,9 @@ bounded diagnostic，不猜 weekday、不建立 alert。
 normalization completed 或 policy pass；policy reject 因沒有 run，仍會被視為 missing。重複掃描只
 更新同一 alert 的 `last_detected_at`，late delivery 會自動將其改為 `resolved`。停用 policy 或 dataset
 不會假裝資料已送達，既有 open alerts 保留供人工稽核，只有實際 late run 會自動 resolve。
+Monitor 對每個 feed 使用非阻塞 transaction advisory lock 與短 transaction；ingress acceptance
+使用相同 feed lock，並在建立 run 的同一 transaction 主動 resolve exact alert，避免 ingest commit
+後殘留 false-open 視窗。Monitor 不會在一個 transaction 累積多個 feed locks。
 
 使用 `GET /api/v1/admin/missing-deliveries` 依 status、dataset、source 查詢；queue health 的
 `missing_deliveries` 與 oldest 欄位可供外部監控。Slack、email、PagerDuty 等通知不在本功能內，應由
