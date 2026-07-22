@@ -7,7 +7,7 @@ from typing import Any, NoReturn
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError, PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.ingress import IngressRequestV1
@@ -23,6 +23,7 @@ from app.services.ingestion import (
 )
 from app.services.ingestion_attempts import (
     IngestionAttemptClaimError,
+    IngestionAttemptClaimInternalError,
     IngestionAttemptService,
 )
 from app.services.ingress_contracts import (
@@ -91,11 +92,22 @@ async def _reject(
             failure_code=code,
             error_message=message,
         )
-    except Exception:
+    except (DBAPIError, PendingRollbackError):
         logger.exception(
-            "Failed to persist rejection for ingestion attempt %s",
+            "Database unavailable while persisting rejection for ingestion attempt %s",
             attempt_id,
         )
+    except Exception as exc:
+        logger.exception(
+            "Unexpected rejection audit failure for ingestion attempt %s",
+            attempt_id,
+        )
+        raise CanonicalIngestRejectionError(
+            attempt_id=attempt_id,
+            status_code=500,
+            code="INTERNAL_ERROR",
+            message="Ingestion failed due to an internal server error",
+        ) from exc
     raise CanonicalIngestRejectionError(
         attempt_id=attempt_id,
         status_code=status_code,
@@ -127,6 +139,13 @@ async def accept_canonical_ingest(
             code="DATABASE_UNAVAILABLE",
             message="Ingestion is temporarily unavailable",
             headers={"Retry-After": "30"},
+        ) from exc
+    except IngestionAttemptClaimInternalError as exc:
+        raise CanonicalIngestRejectionError(
+            attempt_id=exc.attempt_id,
+            status_code=500,
+            code="INTERNAL_ERROR",
+            message="Ingestion failed due to an internal server error",
         ) from exc
     attempt_id = attempt.attempt_id
 

@@ -747,6 +747,73 @@ async def test_claim_failure_after_commit_returns_persisted_attempt_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("claim_failure", ["exception", "missing"])
+async def test_non_database_claim_failure_returns_internal_error_with_attempt_id(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    monkeypatch,
+    claim_failure: str,
+):
+    async def fail_claim(*args, **kwargs):
+        if claim_failure == "exception":
+            raise RuntimeError("claim invariant failed")
+        return None
+
+    monkeypatch.setattr(test_session, "scalar", fail_claim)
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert response.json()["attempt_id"] is not None
+    assert "Retry-After" not in response.headers
+    attempt = await test_session.get(
+        IngestionAttempt,
+        UUID(response.json()["attempt_id"]),
+    )
+    assert attempt is not None
+    assert attempt.status == "received"
+
+
+@pytest.mark.asyncio
+async def test_non_database_rejection_audit_failure_returns_internal_error(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    monkeypatch,
+):
+    value = _canonical_request()
+    value["schema_version"] = 2
+
+    async def fail_reject(*args, **kwargs):
+        raise RuntimeError("audit programming failure")
+
+    monkeypatch.setattr(IngestionAttemptService, "reject", fail_reject)
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert response.json()["attempt_id"] is not None
+    assert "Retry-After" not in response.headers
+    attempt = await test_session.get(
+        IngestionAttempt,
+        UUID(response.json()["attempt_id"]),
+    )
+    assert attempt is not None
+    assert attempt.status == "received"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure_kind", "expected_status", "expected_code"),
     [

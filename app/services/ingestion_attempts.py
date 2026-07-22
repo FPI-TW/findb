@@ -7,6 +7,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -18,10 +19,18 @@ _STALE_ATTEMPT_MESSAGE = "Request processing did not reach a terminal state"
 
 
 class IngestionAttemptClaimError(RuntimeError):
-    """Raised after durable persistence when the live row claim cannot be acquired."""
+    """Retryable DB failure after persistence while acquiring the live row claim."""
 
     def __init__(self, attempt_id: UUID):
         super().__init__(f"Failed to claim persisted ingestion attempt {attempt_id}")
+        self.attempt_id = attempt_id
+
+
+class IngestionAttemptClaimInternalError(RuntimeError):
+    """Non-retryable claim invariant/programming failure after durable persistence."""
+
+    def __init__(self, attempt_id: UUID):
+        super().__init__(f"Persisted ingestion attempt {attempt_id} could not be claimed")
         self.attempt_id = attempt_id
 
 
@@ -86,14 +95,24 @@ class IngestionAttemptService:
                 .with_for_update()
                 .execution_options(populate_existing=True)
             )
-        except Exception as exc:
+        except (DBAPIError, PendingRollbackError) as exc:
             try:
                 await self.db.rollback()
             except Exception:
                 pass
             raise IngestionAttemptClaimError(persisted_attempt_id) from exc
+        except Exception as exc:
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            raise IngestionAttemptClaimInternalError(persisted_attempt_id) from exc
         if claimed is None:
-            raise IngestionAttemptClaimError(persisted_attempt_id)
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
+            raise IngestionAttemptClaimInternalError(persisted_attempt_id)
         return claimed
 
     async def reject(

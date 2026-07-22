@@ -306,7 +306,7 @@ Dataset config 的 `schema_enforcement="audit"` 是 legacy feed 的遷移旗標�
 
 每次通過 API key 認證與 rate-limit gate 的呼叫都會建立獨立 `attempt_id`。重送相同 idempotency key 與內容時會建立 `duplicate` attempt，但回傳原有 `run_id`；相同 key 搭配不同 source、schema/version 或 payload 時回 `409`。缺少／無效 API key 或被 rate limit 的請求在 endpoint 前即被拒絕，因此不建立 attempt。
 
-若資料庫在 attempt 建立前不可用，`503 DATABASE_UNAVAILABLE` 仍使用相同 error envelope，但 `attempt_id` 為 `null`；若 attempt 已 commit、後續 claim 才失敗，503 會帶回已持久化的 `attempt_id`。Request 在處理期間會持有 attempt row claim，dispatcher 使用 `FOR UPDATE SKIP LOCKED`，因此不會回收仍活躍的 request；process 中斷會由 PostgreSQL 自動釋放 claim，dispatcher 再於 `INGESTION_ATTEMPT_STALE_SECONDS`（預設 300 秒）後分批將殘留的 `received` attempt 回收為 `aborted`，failure code 為 `ATTEMPT_INTERRUPTED`。每批上限由 `INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE`（預設 100）控制，維護失敗只記錄 log，不會停止 outbox dispatch。
+若資料庫在 attempt 建立前不可用，`503 DATABASE_UNAVAILABLE` 仍使用相同 error envelope，但 `attempt_id` 為 `null`；若 attempt 已 commit、後續 claim 才因資料庫／交易狀態失敗，503 會帶回已持久化的 `attempt_id`。非 DB 的 claim invariant 或程式錯誤回 `500 INTERNAL_ERROR`、不帶 `Retry-After`，但同樣保留該 attempt_id。Request 在處理期間會持有 attempt row claim，dispatcher 使用 `FOR UPDATE SKIP LOCKED`，因此不會回收仍活躍的 request；process 中斷會由 PostgreSQL 自動釋放 claim，dispatcher 再於 `INGESTION_ATTEMPT_STALE_SECONDS`（預設 300 秒）後分批將殘留的 `received` attempt 回收為 `aborted`，failure code 為 `ATTEMPT_INTERRUPTED`。每批上限由 `INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE`（預設 100）控制，維護失敗只記錄 log，不會停止 outbox dispatch。
 
 拒絕回應具有固定格式：
 
