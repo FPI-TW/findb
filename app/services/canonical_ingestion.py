@@ -12,6 +12,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError, PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.ingress import IngressRequestV1
+from app.services.delivery_policy import DeliveryPolicyRejectedError
 from app.services.ingestion import (
     DatasetAccessDeniedError,
     DatasetContractNotConfiguredError,
@@ -104,6 +105,7 @@ async def _reject(
     code: str,
     message: str,
     headers: dict[str, str] | None = None,
+    details: dict[str, Any] | None = None,
 ) -> NoReturn:
     try:
         await service.reject(
@@ -111,6 +113,7 @@ async def _reject(
             http_status=status_code,
             failure_code=code,
             error_message=message,
+            failure_details=details,
         )
     except (DBAPIError, PendingRollbackError):
         logger.exception(
@@ -267,6 +270,16 @@ async def accept_canonical_ingest(
             status_code=422,
             code="CURRENCY_REQUIRED",
             message=str(exc),
+        )
+    except DeliveryPolicyRejectedError as exc:
+        code = exc.result.primary_code or "BATCH_RECORD_COUNT_DROP"
+        await _reject(
+            attempt_service,
+            attempt_id,
+            status_code=422,
+            code=code,
+            message="Delivery rejected by dataset completeness policy",
+            details=exc.result.bounded_details(),
         )
     except IdempotencyPayloadMismatchError as exc:
         await _reject(

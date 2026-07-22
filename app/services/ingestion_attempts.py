@@ -122,6 +122,7 @@ class IngestionAttemptService:
         http_status: int,
         failure_code: str,
         error_message: str,
+        failure_details: dict[str, Any] | None = None,
     ) -> IngestionAttempt:
         """Mark an attempt rejected and commit the terminal audit state."""
         attempt = await self.db.scalar(
@@ -139,6 +140,7 @@ class IngestionAttemptService:
         attempt.http_status = http_status
         attempt.failure_code = failure_code[:50]
         attempt.error_message = error_message[:_ERROR_MESSAGE_LIMIT]
+        attempt.failure_details = failure_details
         attempt.completed_at = now
         attempt.updated_at = now
         await self.db.commit()
@@ -150,6 +152,7 @@ class IngestionAttemptService:
         run_id: UUID,
         *,
         duplicate: bool = False,
+        details: dict[str, Any] | None = None,
     ) -> IngestionAttempt:
         """Stage terminal success; the caller owns the surrounding commit."""
         attempt = await self.db.scalar(
@@ -169,6 +172,7 @@ class IngestionAttemptService:
         attempt.http_status = 202
         attempt.failure_code = None
         attempt.error_message = None
+        attempt.failure_details = details
         attempt.run_id = run_id
         attempt.completed_at = now
         attempt.updated_at = now

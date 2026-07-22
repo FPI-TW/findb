@@ -7,6 +7,7 @@ def test_ingestion_run_indexes_raw_payload_cleanup_lookup() -> None:
     index_names = {index.name for index in IngestionRun.__table__.indexes}
 
     assert "idx_run_raw_payload" in index_names
+    assert "idx_run_delivery_policy_baseline" in index_names
 
 
 def test_ingestion_attempt_has_operational_lookup_indexes() -> None:

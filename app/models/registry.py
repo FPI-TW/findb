@@ -2,13 +2,14 @@
 System registry and tracking models.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -126,6 +127,7 @@ class IngestionAttempt(Base):
     http_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    failure_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -144,6 +146,18 @@ class IngestionRun(Base):
         Index("idx_run_dataset", "dataset_key"),
         Index("idx_run_status", "status"),
         Index("idx_run_raw_payload", "raw_payload_id"),
+        Index(
+            "idx_run_delivery_policy_baseline",
+            "dataset_key",
+            "source",
+            "schema_id",
+            "schema_version",
+            "status",
+            "policy_outcome",
+            "delivery_mode",
+            "is_rerun",
+            "batch_data_date",
+        ),
     )
 
     run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
@@ -166,6 +180,11 @@ class IngestionRun(Base):
     request_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     schema_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     schema_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    batch_data_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    delivery_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    policy_outcome: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    policy_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    is_rerun: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     raw_records: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="pending")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

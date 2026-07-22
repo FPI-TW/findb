@@ -271,6 +271,7 @@ class IngestionAttemptResponse(BaseModel):
     http_status: Optional[int] = None
     failure_code: Optional[str] = None
     error_message: Optional[str] = None
+    failure_details: Optional[dict[str, Any]] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
 

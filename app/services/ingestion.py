@@ -6,11 +6,11 @@ Handles raw data storage and triggers normalization.
 import hashlib
 import json
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Optional, Protocol
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,12 +19,18 @@ from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
+    DQIssue,
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
 )
 from app.schemas.ingress import IngressRequestV1
 from app.schemas.source import IngestRequest, ensure_data_items_count_within_limit
+from app.services.delivery_policy import (
+    DeliveryPolicyRejectedError,
+    evaluate_delivery_policy,
+    lock_delivery_policy_scope,
+)
 from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
@@ -270,6 +276,22 @@ def payload_sha256(payload: dict) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+async def lock_ingestion_idempotency_scope(
+    db: AsyncSession,
+    *,
+    source_client_id: UUID | None,
+    dataset_key: str,
+    idempotency_key: str,
+) -> None:
+    """Lock the exact PostgreSQL unique scope before canonical policy locks."""
+    client_scope = f"uuid:{source_client_id}" if source_client_id is not None else "legacy:null"
+    scope = ":".join(("canonical-idempotency", client_scope, dataset_key, idempotency_key))
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+        {"scope": scope},
+    )
+
+
 async def _mark_unhandled_normalization_failure(
     session: AsyncSession,
     run_id: UUID,
@@ -379,6 +401,34 @@ class IngestionService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _accept_existing_contract_delivery(
+        self,
+        existing_raw: RawMarketPayload,
+        request: IngressRequestV1,
+        request_payload_sha256: str,
+        attempt_id: UUID,
+    ) -> tuple[UUID, str, bool]:
+        """Validate and return one exact idempotent canonical delivery."""
+        existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
+        if (
+            existing_digest != request_payload_sha256
+            or existing_raw.source != request.source
+            or existing_raw.schema_id != request.schema_id
+            or existing_raw.schema_version != request.schema_version
+        ):
+            raise IdempotencyPayloadMismatchError(
+                "idempotency_key is already associated with different contract content"
+            )
+        existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+        status = existing_run.status if existing_run else "unknown"
+        await IngestionAttemptService(self.db).mark_accepted(
+            attempt_id,
+            existing_raw.run_id,
+            duplicate=True,
+        )
+        await self.db.commit()
+        return existing_raw.run_id, status, True
+
     async def get_dataset(
         self,
         dataset_key: str,
@@ -474,6 +524,11 @@ class IngestionService:
         status: str = "queued",
         schema_id: str | None = None,
         schema_version: int | None = None,
+        batch_data_date: date | None = None,
+        delivery_mode: str | None = None,
+        policy_outcome: str | None = None,
+        policy_details: dict | None = None,
+        is_rerun: bool = False,
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -485,6 +540,11 @@ class IngestionService:
             request_key=request_key,
             schema_id=schema_id,
             schema_version=schema_version,
+            batch_data_date=batch_data_date,
+            delivery_mode=delivery_mode,
+            policy_outcome=policy_outcome,
+            policy_details=policy_details,
+            is_rerun=is_rerun,
             raw_records=raw_records,
             status=status,
             max_attempts=settings.NORMALIZATION_MAX_ATTEMPTS,
@@ -620,6 +680,7 @@ class IngestionService:
             raw_payload_id=raw_payload.raw_payload_id,
             schema_id=raw_payload.schema_id,
             schema_version=raw_payload.schema_version,
+            is_rerun=True,
         )
         await self.create_normalization_job(run)
         await self.db.commit()
@@ -846,27 +907,46 @@ class IngestionService:
             request.idempotency_key,
             request.dataset_key,
         )
-        attempt_service = IngestionAttemptService(self.db)
         if existing_raw is not None:
-            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
-            if (
-                existing_digest != request_payload_sha256
-                or existing_raw.source != request.source
-                or existing_raw.schema_id != request.schema_id
-                or existing_raw.schema_version != request.schema_version
-            ):
-                raise IdempotencyPayloadMismatchError(
-                    "idempotency_key is already associated with different contract content"
-                )
-            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
-            status = existing_run.status if existing_run else "unknown"
-            await attempt_service.mark_accepted(
+            return await self._accept_existing_contract_delivery(
+                existing_raw,
+                request,
+                request_payload_sha256,
                 attempt_id,
-                existing_raw.run_id,
-                duplicate=True,
             )
-            await self.db.commit()
-            return existing_raw.run_id, status, True
+
+        # Fixed global lock ordering: the exact DB unique scope is acquired and
+        # rechecked before the broader delivery-policy scope. Both transaction
+        # locks remain held until accept/reject commit, so no third recheck is
+        # needed after the policy lock. The evaluator never acquires locks.
+        await lock_ingestion_idempotency_scope(
+            self.db,
+            source_client_id=self.source_client_id,
+            dataset_key=request.dataset_key,
+            idempotency_key=request.idempotency_key,
+        )
+        existing_raw = await self.get_raw_payload_by_idempotency_key(
+            request.idempotency_key,
+            request.dataset_key,
+        )
+        if existing_raw is not None:
+            return await self._accept_existing_contract_delivery(
+                existing_raw,
+                request,
+                request_payload_sha256,
+                attempt_id,
+            )
+
+        await lock_delivery_policy_scope(self.db, request)
+
+        policy_result = await evaluate_delivery_policy(
+            self.db,
+            request,
+            declaration.delivery_expectation,
+        )
+        policy_details = policy_result.bounded_details()
+        if policy_result.outcome == "reject":
+            raise DeliveryPolicyRejectedError(policy_result)
 
         raw_records = len(request.payload.data)
         metadata = {
@@ -875,6 +955,7 @@ class IngestionService:
             "raw_records": raw_records,
             "schema_id": request.schema_id,
             "schema_version": request.schema_version,
+            "delivery_policy": policy_details,
         }
         legacy_request = IngestRequest(
             dataset_key=request.dataset_key,
@@ -903,9 +984,30 @@ class IngestionService:
                 raw_payload_id=raw_payload.raw_payload_id,
                 schema_id=request.schema_id,
                 schema_version=request.schema_version,
+                batch_data_date=request.payload.batch.data_date,
+                delivery_mode=request.payload.batch.delivery_mode.value,
+                policy_outcome=policy_result.outcome,
+                policy_details=policy_details,
             )
+            if policy_result.outcome == "warn":
+                self.db.add(
+                    DQIssue(
+                        id=uuid7(),
+                        run_id=run.run_id,
+                        issue_type="INGRESS_DELIVERY_POLICY_WARNING",
+                        severity="warning",
+                        description=("Canonical delivery accepted with aggregate policy warnings"),
+                        raw_data=policy_details,
+                        resolved=False,
+                        created_at=utc_now(),
+                    )
+                )
             await self.create_normalization_job(run)
-            await attempt_service.mark_accepted(attempt_id, run_id)
+            await IngestionAttemptService(self.db).mark_accepted(
+                attempt_id,
+                run_id,
+                details=policy_details if policy_result.outcome == "warn" else None,
+            )
             await self.db.commit()
         except IntegrityError:
             await self.db.rollback()
@@ -915,25 +1017,12 @@ class IngestionService:
             )
             if existing_raw is None:
                 raise
-            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
-            if (
-                existing_digest != request_payload_sha256
-                or existing_raw.source != request.source
-                or existing_raw.schema_id != request.schema_id
-                or existing_raw.schema_version != request.schema_version
-            ):
-                raise IdempotencyPayloadMismatchError(
-                    "idempotency_key is already associated with different contract content"
-                )
-            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
-            status = existing_run.status if existing_run else "unknown"
-            await attempt_service.mark_accepted(
+            return await self._accept_existing_contract_delivery(
+                existing_raw,
+                request,
+                request_payload_sha256,
                 attempt_id,
-                existing_raw.run_id,
-                duplicate=True,
             )
-            await self.db.commit()
-            return existing_raw.run_id, status, True
 
         logger.info(
             "Canonical ingestion accepted: attempt_id=%s run_id=%s dataset=%s contract=%s.v%s",

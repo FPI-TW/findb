@@ -5,8 +5,8 @@ Script to seed initial dataset registry and crypto instruments.
 import asyncio
 import logging
 
-from sqlalchemy import text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import cast, func, text
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
@@ -116,9 +116,29 @@ DATASETS = [
             },
             "delivery_expectation": {
                 "delivery_mode": "full_snapshot",
-                "freshness_hours": 36,
-                "minimum_record_count": 2100,
-                "maximum_count_drop_ratio": 0.1,
+                "baseline": {
+                    "strategy": "rolling_median",
+                    "scope": "dataset_source_schema",
+                    "window_size": 7,
+                    "minimum_history": 3,
+                },
+                "record_count": {
+                    "minimum_record_count": 2100,
+                    "maximum_count_drop_ratio": 0.1,
+                    "action": "warn",
+                },
+                "freshness": {
+                    "maximum_fetch_age_hours": 36,
+                    "allowed_clock_skew_minutes": 5,
+                    "action": "warn",
+                },
+                "latest_date": {
+                    "calendar_market": "TW",
+                    "timezone": "Asia/Taipei",
+                    "market_close_time": "13:30:00",
+                    "availability_grace_minutes": 120,
+                    "action": "warn",
+                },
             },
             "source_format": "finlab_twstock_direct",
             "data_path": "data",
@@ -153,9 +173,29 @@ DATASETS = [
             },
             "delivery_expectation": {
                 "delivery_mode": "full_snapshot",
-                "freshness_hours": 36,
-                "minimum_record_count": 190,
-                "maximum_count_drop_ratio": 0.1,
+                "baseline": {
+                    "strategy": "rolling_median",
+                    "scope": "dataset_source_schema",
+                    "window_size": 7,
+                    "minimum_history": 3,
+                },
+                "record_count": {
+                    "minimum_record_count": 190,
+                    "maximum_count_drop_ratio": 0.1,
+                    "action": "warn",
+                },
+                "freshness": {
+                    "maximum_fetch_age_hours": 36,
+                    "allowed_clock_skew_minutes": 5,
+                    "action": "warn",
+                },
+                "latest_date": {
+                    "calendar_market": "TW",
+                    "timezone": "Asia/Taipei",
+                    "market_close_time": "13:30:00",
+                    "availability_grace_minutes": 120,
+                    "action": "warn",
+                },
             },
             "source_format": "finlab_twstock_direct",
             "data_path": "data",
@@ -418,9 +458,29 @@ DATASETS = [
             },
             "delivery_expectation": {
                 "delivery_mode": "full_snapshot",
-                "freshness_hours": 36,
-                "minimum_record_count": 1,
-                "maximum_count_drop_ratio": 0.5,
+                "baseline": {
+                    "strategy": "rolling_median",
+                    "scope": "dataset_source_schema",
+                    "window_size": 7,
+                    "minimum_history": 3,
+                },
+                "record_count": {
+                    "minimum_record_count": 1,
+                    "maximum_count_drop_ratio": 0.5,
+                    "action": "warn",
+                },
+                "freshness": {
+                    "maximum_fetch_age_hours": 36,
+                    "allowed_clock_skew_minutes": 5,
+                    "action": "warn",
+                },
+                "latest_date": {
+                    "calendar_market": "WTX",
+                    "timezone": "Asia/Taipei",
+                    "market_close_time": "13:45:00",
+                    "availability_grace_minutes": 120,
+                    "action": "warn",
+                },
             },
             "data_path": "data",
             "symbol_field": "symbol",
@@ -640,9 +700,29 @@ DATASETS = [
             },
             "delivery_expectation": {
                 "delivery_mode": "full_snapshot",
-                "freshness_hours": 36,
-                "minimum_record_count": 1,
-                "maximum_count_drop_ratio": 0.5,
+                "baseline": {
+                    "strategy": "rolling_median",
+                    "scope": "dataset_source_schema",
+                    "window_size": 7,
+                    "minimum_history": 3,
+                },
+                "record_count": {
+                    "minimum_record_count": 1,
+                    "maximum_count_drop_ratio": 0.5,
+                    "action": "warn",
+                },
+                "freshness": {
+                    "maximum_fetch_age_hours": 36,
+                    "allowed_clock_skew_minutes": 5,
+                    "action": "warn",
+                },
+                "latest_date": {
+                    "calendar_market": "WTX",
+                    "timezone": "Asia/Taipei",
+                    "market_close_time": "13:45:00",
+                    "availability_grace_minutes": 120,
+                    "action": "warn",
+                },
             },
             "source_format": "direct",
         },
@@ -719,7 +799,12 @@ async def seed_datasets(session: AsyncSession):
                 set_={
                     "name": ds["name"],
                     "description": ds["description"],
-                    "config": ds["config"],
+                    # Seed defaults fill missing top-level keys, while operator-owned
+                    # production config always wins. Alembic handles nested policy
+                    # evolution without destructive seed overwrites.
+                    "config": cast(ds["config"], JSONB).op("||")(
+                        func.coalesce(DatasetRegistry.config, cast({}, JSONB))
+                    ),
                     "is_active": ds["is_active"],
                     "updated_at": utc_now(),
                 },

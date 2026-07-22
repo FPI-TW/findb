@@ -349,6 +349,18 @@ durable `ingestion_attempt`。
 
 每次通過 API key 認證與 rate-limit gate 的呼叫都會建立獨立 `attempt_id`。重送相同 idempotency key 與內容時會建立 `duplicate` attempt，但回傳原有 `run_id`；相同 key 搭配不同 source、schema/version 或 payload 時回 `409`。缺少／無效 API key 或被 rate limit 的請求在 endpoint 前即被拒絕，因此不建立 attempt。
 
+Canonical delivery 會依 dataset 的 typed `delivery_expectation` 同步檢查批次筆數、`fetched_at`
+與預期最新交易日。規則可分別設為 `disabled`、`warn` 或 `reject`：warning 仍建立 raw、run、
+job 與 outbox，但同一 run 只建立一筆彙總 DQ issue；reject 只留下 attempt 與 bounded
+`failure_details`，不保存完整 row payload。`full_snapshot` 執行三類檢查，`incremental` 只檢查
+freshness，`backfill` 全部略過。相同內容的 idempotent retry 會先回傳既有 run，不會因時間經過
+而被新的 freshness policy 拒絕。
+
+相對筆數門檻採同 dataset/source/schema id/version 最近 7 個不同資料日的合格
+`completed` full snapshot 中位數，至少 3 筆才啟用；warning、rerun、incremental、backfill 與
+非 `completed` run 不進基準。實際門檻是固定最低筆數與
+`ceil(median × (1 - maximum_count_drop_ratio))` 的較高者。
+
 若資料庫在 attempt 建立前不可用，`503 DATABASE_UNAVAILABLE` 仍使用相同 error envelope，但 `attempt_id` 為 `null`；若 attempt 已 commit、後續 claim 才因資料庫／交易狀態失敗，503 會帶回已持久化的 `attempt_id`。非 DB 的 claim invariant 或程式錯誤回 `500 INTERNAL_ERROR`、不帶 `Retry-After`，但同樣保留該 attempt_id。Request 在處理期間會持有 attempt row claim，dispatcher 使用 `FOR UPDATE SKIP LOCKED`，因此不會回收仍活躍的 request；process 中斷會由 PostgreSQL 自動釋放 claim，dispatcher 再於 `INGESTION_ATTEMPT_STALE_SECONDS`（預設 300 秒）後分批將殘留的 `received` attempt 回收為 `aborted`，failure code 為 `ATTEMPT_INTERRUPTED`。每批上限由 `INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE`（預設 100）控制，維護失敗只記錄 log，不會停止 outbox dispatch。
 
 拒絕回應具有固定格式：
@@ -380,7 +392,15 @@ durable `ingestion_attempt`。
 | 422 | `DECLARED_RECORD_COUNT_MISMATCH` | `payload.batch.declared_record_count` 不等於 `len(payload.data)` |
 | 422 | `DUPLICATE_DELIVERY_KEY` | 同一 delivery 內出現重複的 `(symbol, trade_date)`；與 request/idempotency key 無關 |
 | 422 | `CURRENCY_REQUIRED` | market row 與 dataset default 都無 currency，或 futures dataset 未提供 default currency |
+| 422 | `BATCH_RECORD_COUNT_DROP` | full snapshot 低於固定最低值或 rolling median 相對門檻 |
+| 422 | `STALE_PAYLOAD` | `fetched_at` 過舊或超過允許的未來 clock skew |
+| 422 | `LATEST_DATE_MISSING` | full snapshot 沒有包含 calendar resolver 預期的最新交易日 |
 | 503 | `DATABASE_UNAVAILABLE` | 資料庫暫時不可用；建立 attempt 前失敗時 `attempt_id=null` |
+
+交易日曆缺少評估日或找不到已超過 close＋grace 的 open session 時，不使用 weekday 猜測，
+而是一律接受為 warning `CALENDAR_UNAVAILABLE`；即使 latest-date action 是 `reject` 也不會因
+calendar 基礎資料不足拒絕 delivery。Attempt 查詢的 `failure_details` 會提供 violations、observed、
+expected、baseline run IDs/counts 與有效門檻，不包含原始 rows 或憑證。
 
 `futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。
 
