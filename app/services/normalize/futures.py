@@ -24,7 +24,9 @@ def _merge_config(default: dict, override: dict | None) -> dict:
 
     merged = {**default, **override}
     if "field_mapping" in override:
-        merged["field_mapping"] = override["field_mapping"]
+        default_mapping = default.get("field_mapping", {}) or {}
+        override_mapping = override.get("field_mapping", {}) or {}
+        merged["field_mapping"] = {**default_mapping, **override_mapping}
     return merged
 
 

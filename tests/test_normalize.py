@@ -809,8 +809,17 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
 
 
 @pytest.mark.asyncio
-async def test_futures_continuous_lower_precedence_does_not_overwrite_contract_fields(
+@pytest.mark.parametrize(
+    ("incoming_source", "incoming_fetched_at"),
+    [
+        pytest.param("secondary", "2026-02-10T09:00:00Z", id="lower-source-precedence"),
+        pytest.param("primary", "2026-02-10T07:00:00Z", id="same-source-older-fetched-at"),
+    ],
+)
+async def test_futures_continuous_precedence_rejection_preserves_contract_fields(
     test_session,
+    incoming_source,
+    incoming_fetched_at,
 ):
     instrument_id = uuid7()
     existing_run_id = uuid7()
@@ -847,7 +856,7 @@ async def test_futures_continuous_lower_precedence_does_not_overwrite_contract_f
         test_session,
         {
             "source_precedence": ["primary", "secondary"],
-            "_ingest_fetched_at": "2026-02-10T09:00:00Z",
+            "_ingest_fetched_at": incoming_fetched_at,
         },
     )
     applied = await normalizer.upsert_continuous_eod(
@@ -859,7 +868,7 @@ async def test_futures_continuous_lower_precedence_does_not_overwrite_contract_f
             open_interest=1000,
             active_contract_code="TXF202603",
             roll_adjustment=Decimal("9"),
-            source="secondary",
+            source=incoming_source,
         ),
         incoming_run_id,
         None,
