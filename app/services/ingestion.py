@@ -29,6 +29,7 @@ from app.schemas.source import IngestRequest, ensure_data_items_count_within_lim
 from app.services.delivery_policy import (
     DeliveryPolicyRejectedError,
     evaluate_delivery_policy,
+    lock_delivery_policy_scope,
 )
 from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
@@ -383,6 +384,34 @@ class IngestionService:
             stmt = stmt.where(RawMarketPayload.dataset_key == dataset_key)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def _accept_existing_contract_delivery(
+        self,
+        existing_raw: RawMarketPayload,
+        request: IngressRequestV1,
+        request_payload_sha256: str,
+        attempt_id: UUID,
+    ) -> tuple[UUID, str, bool]:
+        """Validate and return one exact idempotent canonical delivery."""
+        existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
+        if (
+            existing_digest != request_payload_sha256
+            or existing_raw.source != request.source
+            or existing_raw.schema_id != request.schema_id
+            or existing_raw.schema_version != request.schema_version
+        ):
+            raise IdempotencyPayloadMismatchError(
+                "idempotency_key is already associated with different contract content"
+            )
+        existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+        status = existing_run.status if existing_run else "unknown"
+        await IngestionAttemptService(self.db).mark_accepted(
+            attempt_id,
+            existing_raw.run_id,
+            duplicate=True,
+        )
+        await self.db.commit()
+        return existing_raw.run_id, status, True
 
     async def get_dataset(
         self,
@@ -862,27 +891,29 @@ class IngestionService:
             request.idempotency_key,
             request.dataset_key,
         )
-        attempt_service = IngestionAttemptService(self.db)
         if existing_raw is not None:
-            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
-            if (
-                existing_digest != request_payload_sha256
-                or existing_raw.source != request.source
-                or existing_raw.schema_id != request.schema_id
-                or existing_raw.schema_version != request.schema_version
-            ):
-                raise IdempotencyPayloadMismatchError(
-                    "idempotency_key is already associated with different contract content"
-                )
-            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
-            status = existing_run.status if existing_run else "unknown"
-            await attempt_service.mark_accepted(
+            return await self._accept_existing_contract_delivery(
+                existing_raw,
+                request,
+                request_payload_sha256,
                 attempt_id,
-                existing_raw.run_id,
-                duplicate=True,
             )
-            await self.db.commit()
-            return existing_raw.run_id, status, True
+
+        # Fixed lock ordering: an optimistic duplicate lookup is followed by the
+        # scope lock and a mandatory recheck before any time/baseline-dependent
+        # policy. The evaluator itself never acquires locks.
+        await lock_delivery_policy_scope(self.db, request)
+        existing_raw = await self.get_raw_payload_by_idempotency_key(
+            request.idempotency_key,
+            request.dataset_key,
+        )
+        if existing_raw is not None:
+            return await self._accept_existing_contract_delivery(
+                existing_raw,
+                request,
+                request_payload_sha256,
+                attempt_id,
+            )
 
         policy_result = await evaluate_delivery_policy(
             self.db,
@@ -948,7 +979,7 @@ class IngestionService:
                     )
                 )
             await self.create_normalization_job(run)
-            await attempt_service.mark_accepted(
+            await IngestionAttemptService(self.db).mark_accepted(
                 attempt_id,
                 run_id,
                 details=policy_details if policy_result.outcome == "warn" else None,
@@ -962,25 +993,12 @@ class IngestionService:
             )
             if existing_raw is None:
                 raise
-            existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
-            if (
-                existing_digest != request_payload_sha256
-                or existing_raw.source != request.source
-                or existing_raw.schema_id != request.schema_id
-                or existing_raw.schema_version != request.schema_version
-            ):
-                raise IdempotencyPayloadMismatchError(
-                    "idempotency_key is already associated with different contract content"
-                )
-            existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
-            status = existing_run.status if existing_run else "unknown"
-            await attempt_service.mark_accepted(
+            return await self._accept_existing_contract_delivery(
+                existing_raw,
+                request,
+                request_payload_sha256,
                 attempt_id,
-                existing_raw.run_id,
-                duplicate=True,
             )
-            await self.db.commit()
-            return existing_raw.run_id, status, True
 
         logger.info(
             "Canonical ingestion accepted: attempt_id=%s run_id=%s dataset=%s contract=%s.v%s",

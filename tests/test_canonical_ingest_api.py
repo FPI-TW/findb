@@ -21,6 +21,11 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
 )
+from app.services.delivery_policy import (
+    DeliveryPolicyResult,
+    evaluate_delivery_policy,
+    lock_delivery_policy_scope,
+)
 from app.services.ingestion import IngestionService
 from app.services.ingestion_attempts import (
     IngestionAttemptService,
@@ -1506,3 +1511,79 @@ async def test_concurrent_exact_deliveries_create_one_run_without_duplicate_warn
     assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 1
     assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 1
     assert await test_session.scalar(select(func.count()).select_from(DQIssue)) == 0
+
+
+@pytest.mark.asyncio
+async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy(
+    test_session: AsyncSession,
+    test_engine,
+    monkeypatch,
+) -> None:
+    """A lock waiter must see the winner before evaluating changed policy state."""
+    await _seed_dataset(
+        test_session,
+        config=_policy_config(count_action="warn", minimum=1),
+    )
+    request_body = _canonical_request(idempotency_key="lock-waiter-policy-bypass")
+    request = validate_ingress_request(request_body)
+    session_factory = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with session_factory() as first_session, session_factory() as second_session:
+        first_attempt = await IngestionAttemptService(first_session).begin(
+            request_body, json.dumps(request_body).encode()
+        )
+        second_attempt = await IngestionAttemptService(second_session).begin(
+            request_body, json.dumps(request_body).encode()
+        )
+        await lock_delivery_policy_scope(first_session, request)
+
+        second_reached_scope_lock = asyncio.Event()
+        second_policy_calls = 0
+
+        async def observed_scope_lock(db, contract_request):
+            if db is second_session:
+                second_reached_scope_lock.set()
+            await lock_delivery_policy_scope(db, contract_request)
+
+        async def reject_changed_policy_for_waiter(db, contract_request, expectation):
+            nonlocal second_policy_calls
+            if db is second_session:
+                second_policy_calls += 1
+                return DeliveryPolicyResult(
+                    outcome="reject",
+                    primary_code="BATCH_RECORD_COUNT_DROP",
+                    baseline_status="active",
+                    evaluated_at=utc_now(),
+                )
+            return await evaluate_delivery_policy(db, contract_request, expectation)
+
+        monkeypatch.setattr(
+            "app.services.ingestion.lock_delivery_policy_scope",
+            observed_scope_lock,
+        )
+        monkeypatch.setattr(
+            "app.services.ingestion.evaluate_delivery_policy",
+            reject_changed_policy_for_waiter,
+        )
+
+        second_task = asyncio.create_task(
+            IngestionService(second_session).ingest_contract(
+                request,
+                second_attempt.attempt_id,
+            )
+        )
+        await asyncio.wait_for(second_reached_scope_lock.wait(), timeout=2)
+
+        first_result = await IngestionService(first_session).ingest_contract(
+            request,
+            first_attempt.attempt_id,
+        )
+        second_result = await asyncio.wait_for(second_task, timeout=2)
+
+    assert first_result[2] is False
+    assert second_result == (first_result[0], first_result[1], True)
+    assert second_policy_calls == 0

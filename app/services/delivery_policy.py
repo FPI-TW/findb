@@ -173,7 +173,11 @@ def parse_delivery_expectation(config: dict | None) -> DeliveryExpectation | Non
     return DeliveryExpectation.model_validate(raw)
 
 
-async def _lock_scope(db: AsyncSession, request: IngressRequestV1) -> None:
+async def lock_delivery_policy_scope(
+    db: AsyncSession,
+    request: IngressRequestV1,
+) -> None:
+    """Serialize duplicate recheck, baseline evaluation, and delivery creation."""
     scope = ":".join(
         (
             request.dataset_key,
@@ -286,7 +290,6 @@ async def evaluate_delivery_policy(
             evaluated_at=evaluated_at,
         )
 
-    await _lock_scope(db, request)
     violations: list[PolicyViolation] = []
     baseline_status: Literal["disabled", "cold_start", "active", "not_applicable"] = (
         "not_applicable"
