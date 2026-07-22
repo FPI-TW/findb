@@ -4,7 +4,7 @@ Admin API 端點。
 """
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -33,6 +33,8 @@ from app.schemas.admin import (
     InstrumentCacheItemUpdateResponse,
     InstrumentCacheReplaceRequest,
     InstrumentCacheWriteResponse,
+    MissingDeliveryAlertListResponse,
+    MissingDeliveryAlertResponse,
     PatchEODRequest,
     PatchEODResponse,
     QueueHealthResponse,
@@ -58,6 +60,7 @@ from app.services.admin import (
     resolve_dq_issue,
 )
 from app.services.api_keys import create_api_key, list_api_keys, revoke_api_key
+from app.services.delivery_monitor import list_missing_delivery_alerts
 from app.services.ingestion import IngestionService, RawPayloadNotFoundError
 from app.services.instrument_cache import (
     InstrumentCacheItemNotFoundError,
@@ -131,6 +134,36 @@ async def queue_health_endpoint(
 ):
     """Return DB-authoritative delivery and worker health."""
     return QueueHealthResponse(**await queue_health(db))
+
+
+@router.get("/missing-deliveries", response_model=MissingDeliveryAlertListResponse)
+async def list_missing_deliveries_endpoint(
+    alert_status: Optional[Literal["open", "resolved"]] = Query(None, alias="status"),
+    dataset_key: Optional[str] = Query(None, min_length=1, max_length=50),
+    source: Optional[str] = Query(None, min_length=1, max_length=50),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    api_key: str = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """List durable missing-delivery alerts without mutating their state."""
+    rows, total = await list_missing_delivery_alerts(
+        db,
+        status=alert_status,
+        dataset_key=dataset_key,
+        source=source,
+        page=page,
+        page_size=page_size,
+    )
+    return MissingDeliveryAlertListResponse(
+        data=[MissingDeliveryAlertResponse.model_validate(row) for row in rows],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total,
+            total_pages=(total + page_size - 1) // page_size if total else 0,
+        ),
+    )
 
 
 @router.post("/api-keys", response_model=APIKeyCreateResponse)

@@ -91,6 +91,10 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                                 "minimum_record_count": 1777,
                                 "maximum_count_drop_ratio": 0.2,
                                 "operator_note": "preserve",
+                                "missing_delivery": {
+                                    "action": "warn",
+                                    "expected_sources": ["operator-feed"],
+                                },
                             },
                         }
                     )
@@ -142,6 +146,11 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                     FROM dataset_registry
                     WHERE dataset_key = 'tw_equity_eod'
                     """))
+            default_monitor_config = await connection.scalar(text("""
+                    SELECT config->'delivery_expectation'->'missing_delivery'
+                    FROM dataset_registry
+                    WHERE dataset_key = 'tw_etf_eod'
+                    """))
             delivery_column_count = await connection.scalar(text("""
                     SELECT count(*)
                     FROM information_schema.columns
@@ -162,6 +171,19 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                       AND tablename = 'ingestion_run'
                       AND indexname = 'idx_run_delivery_policy_baseline'
                     """))
+            missing_alert_table = await connection.scalar(
+                text("SELECT to_regclass('public.missing_delivery_alert')")
+            )
+            missing_alert_index_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'missing_delivery_alert'
+                      AND indexname IN (
+                        'idx_missing_delivery_status_detected',
+                        'idx_missing_delivery_dataset_source'
+                      )
+                    """))
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -177,6 +199,8 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert contract_config["custom"] == "preserve"
         assert delivery_column_count == 6
         assert baseline_index_count == 1
+        assert missing_alert_table == "missing_delivery_alert"
+        assert missing_alert_index_count == 2
         expectation = contract_config["delivery_expectation"]
         assert expectation["freshness_hours"] == 72
         assert expectation["minimum_record_count"] == 1777
@@ -184,6 +208,14 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert expectation["operator_note"] == "preserve"
         assert expectation["record_count"]["action"] == "warn"
         assert expectation["latest_date"]["timezone"] == "Asia/Taipei"
+        assert expectation["missing_delivery"] == {
+            "action": "warn",
+            "expected_sources": ["operator-feed"],
+        }
+        assert default_monitor_config == {
+            "action": "disabled",
+            "expected_sources": [],
+        }
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
         async with target_engine.connect() as connection:
@@ -224,12 +256,16 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         ))
                       )
                     """))
+            missing_alert_table = await connection.scalar(
+                text("SELECT to_regclass('public.missing_delivery_alert')")
+            )
         assert cleanup_index_count == 0
         assert attempt_table is None
         assert lineage_column_count == 0
         assert contract_config["schema_id"] == "production_contract"
         assert contract_config["custom"] == "preserve"
         assert delivery_column_count == 0
+        assert missing_alert_table is None
         assert contract_config["delivery_expectation"]["operator_note"] == "preserve"
     finally:
         if target_engine is not None:

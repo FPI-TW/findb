@@ -1,7 +1,8 @@
 # Ingress Delivery Policy 維運手冊
 
-Canonical ingest 的 `delivery_expectation` 是同步 guardrail；目前四個首批 dataset 在 migration 與
-seed 中一律使用 `warn`，完成 shadow 校準前不得直接切為 production `reject`。
+Canonical ingest 的 `delivery_expectation` 是同步 guardrail。同步規則目前四個首批 dataset 在
+migration 與 seed 中使用 `warn`；完全未送達監控則一律預設 `disabled`，完成 feed cutover 前
+不得啟用，避免對尚未遷移的來源誤報。
 
 ## 上線前校準
 
@@ -27,7 +28,28 @@ seed 中一律使用 `warn`，完成 shadow 校準前不得直接切為 producti
 已有 accepted run 時才會直接回原 run；曾被 policy reject 的新 delivery 沒有 raw/run，修正設定後
 可用原 idempotency key 再送。
 
-## 尚未涵蓋
+## 完全未送達監控
 
-此同步 policy 無法發現完全沒有 request 到達的 dataset。`DATASET_DELIVERY_MISSING` scheduler／alert
-是下一個獨立 PR，不應以本功能取代外部 feed heartbeat。
+Feed cutover 後，在 dataset 的 `delivery_expectation` 加入：
+
+```json
+"missing_delivery": {
+  "action": "warn",
+  "expected_sources": ["finlab"]
+}
+```
+
+來源名稱必須是 stable lowercase，identity 為 `source + dataset_key + schema_id/version`，feed 名稱
+顯示為 `{source}:{dataset_key}`。Dispatcher 啟動時掃描一次，之後每
+`DELIVERY_MONITOR_SECONDS`（預設 60 秒）掃描。它重用同步 policy 的 timezone、calendar、session
+close/fallback close 與 grace resolver；calendar 不覆蓋評估日或尚無已關閉 open session 時，只記
+bounded diagnostic，不猜 weekday、不建立 alert。
+
+任一相同 identity/date、`full_snapshot`、非 rerun 的 `ingestion_run` 都視為已送達，不要求
+normalization completed 或 policy pass；policy reject 因沒有 run，仍會被視為 missing。重複掃描只
+更新同一 alert 的 `last_detected_at`，late delivery 會自動將其改為 `resolved`。停用 policy 或 dataset
+不會假裝資料已送達，既有 open alerts 保留供人工稽核，只有實際 late run 會自動 resolve。
+
+使用 `GET /api/v1/admin/missing-deliveries` 依 status、dataset、source 查詢；queue health 的
+`missing_deliveries` 與 oldest 欄位可供外部監控。Slack、email、PagerDuty 等通知不在本功能內，應由
+外部監控讀取 Admin health 指標後發送。

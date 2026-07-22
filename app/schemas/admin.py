@@ -194,6 +194,29 @@ class QueueHealthResponse(BaseModel):
     retry_exhausted: int
     last_worker_heartbeat_at: Optional[datetime] = None
     worker_heartbeat_age_seconds: Optional[float] = None
+    missing_deliveries: int
+    oldest_missing_delivery_at: Optional[datetime] = None
+    oldest_missing_delivery_age_seconds: Optional[float] = None
+
+
+class MissingDeliveryAlertResponse(BaseModel):
+    alert_id: UUID
+    dataset_key: str
+    source: str
+    schema_id: str
+    schema_version: int
+    expected_data_date: date
+    status: str
+    first_detected_at: datetime
+    last_detected_at: datetime
+    resolved_at: Optional[datetime] = None
+    details: Optional[dict[str, Any]] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MissingDeliveryAlertListResponse(PaginatedResponse[MissingDeliveryAlertResponse]):
+    pass
 
 
 # ── Instrument Cache ──────────────────────────────────────────────────────────

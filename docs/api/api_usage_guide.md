@@ -402,6 +402,19 @@ freshness，`backfill` 全部略過。相同內容的 idempotent retry 會先回
 calendar 基礎資料不足拒絕 delivery。Attempt 查詢的 `failure_details` 會提供 violations、observed、
 expected、baseline run IDs/counts 與有效門檻，不包含原始 rows 或憑證。
 
+#### 查詢完全未送達 alert
+
+```
+GET /api/v1/admin/missing-deliveries?status=open&dataset_key=tw_equity_eod&source=finlab&page=1&page_size=100
+```
+
+此 Admin-only read endpoint 回傳 durable `DATASET_DELIVERY_MISSING` alerts。監控是 opt-in：dataset
+必須將 `delivery_expectation.missing_delivery.action` 設為 `warn` 並列出 stable lowercase
+`expected_sources`。Identity 為 source、dataset、schema id/version；符合預期 data date 的非 rerun
+full snapshot run 即視為 delivered，即使 normalization 最後失敗也算已送達。Late run 會自動 resolve；
+calendar unavailable 不建立 false alert。`GET /api/v1/admin/queue/health` 同時回傳 open count、oldest
+open timestamp 與 age。外部通知不在 API 內，由監控系統依 health 指標觸發。
+
 `futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。
 
 #### 查詢 attempt

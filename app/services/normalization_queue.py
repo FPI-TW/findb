@@ -16,6 +16,7 @@ from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
     IngestionRun,
+    MissingDeliveryAlert,
     NormalizationJob,
     NormalizationOutbox,
     NormalizationWorkerHeartbeat,
@@ -565,6 +566,16 @@ async def queue_health(session: AsyncSession) -> dict:
         .select_from(IngestionRun)
         .where(IngestionRun.failure_code == "RETRY_EXHAUSTED")
     )
+    missing_deliveries = await session.scalar(
+        select(func.count())
+        .select_from(MissingDeliveryAlert)
+        .where(MissingDeliveryAlert.status == "open")
+    )
+    oldest_missing_delivery_at = await session.scalar(
+        select(func.min(MissingDeliveryAlert.first_detected_at)).where(
+            MissingDeliveryAlert.status == "open"
+        )
+    )
     return {
         "counts": counts,
         "oldest_queued_at": oldest_queued_at,
@@ -582,4 +593,11 @@ async def queue_health(session: AsyncSession) -> dict:
         ),
         "expired_leases": int(expired_leases or 0),
         "retry_exhausted": int(retry_exhausted or 0),
+        "missing_deliveries": int(missing_deliveries or 0),
+        "oldest_missing_delivery_at": oldest_missing_delivery_at,
+        "oldest_missing_delivery_age_seconds": (
+            max(0.0, (now - oldest_missing_delivery_at).total_seconds())
+            if oldest_missing_delivery_at
+            else None
+        ),
     }

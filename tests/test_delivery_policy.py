@@ -158,7 +158,29 @@ async def test_dataset_seed_preserves_existing_operator_config(
     assert dataset.config["operator_note"] == "preserve"
     assert dataset.config["delivery_expectation"]["minimum_record_count"] == 1777
     assert dataset.config["delivery_expectation"]["freshness_hours"] == 72
+    assert dataset.config["delivery_expectation"]["missing_delivery"] == {
+        "action": "disabled",
+        "expected_sources": [],
+    }
     assert dataset.config["schema_id"] == "market_eod"
+
+    dataset.config = {
+        **dataset.config,
+        "delivery_expectation": {
+            **dataset.config["delivery_expectation"],
+            "missing_delivery": {
+                "action": "warn",
+                "expected_sources": ["operator-feed"],
+            },
+        },
+    }
+    await test_session.commit()
+    await seed_datasets(test_session)
+    await test_session.refresh(dataset)
+    assert dataset.config["delivery_expectation"]["missing_delivery"] == {
+        "action": "warn",
+        "expected_sources": ["operator-feed"],
+    }
 
 
 async def _seed_dataset(session: AsyncSession) -> None:

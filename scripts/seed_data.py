@@ -812,6 +812,28 @@ async def seed_datasets(session: AsyncSession):
         )
         await session.execute(stmt)
 
+        if ds["dataset_key"] in {
+            "tw_equity_eod",
+            "tw_etf_eod",
+            "futures_continuous_eod",
+            "wtx_eod",
+        }:
+            await session.execute(
+                text("""
+                    UPDATE dataset_registry
+                    SET config = jsonb_set(
+                        config,
+                        '{delivery_expectation,missing_delivery}',
+                        '{"action":"disabled","expected_sources":[]}'::jsonb,
+                        true
+                    )
+                    WHERE dataset_key = :dataset_key
+                      AND jsonb_typeof(config->'delivery_expectation') = 'object'
+                      AND NOT (config->'delivery_expectation' ? 'missing_delivery')
+                """),
+                {"dataset_key": ds["dataset_key"]},
+            )
+
     await session.commit()
     logger.info(f"Seeded {len(DATASETS)} datasets")
 

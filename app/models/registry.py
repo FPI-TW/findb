@@ -207,6 +207,48 @@ class IngestionRun(Base):
     dq_issues: Mapped[list["DQIssue"]] = relationship(back_populates="run")
 
 
+class MissingDeliveryAlert(Base):
+    """Durable, idempotent record of an expected canonical feed not arriving."""
+
+    __tablename__ = "missing_delivery_alert"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open', 'resolved')",
+            name="missing_delivery_alert_status_valid",
+        ),
+        UniqueConstraint(
+            "dataset_key",
+            "source",
+            "schema_id",
+            "schema_version",
+            "expected_data_date",
+            name="uq_missing_delivery_identity_date",
+        ),
+        Index("idx_missing_delivery_status_detected", "status", "first_detected_at"),
+        Index("idx_missing_delivery_dataset_source", "dataset_key", "source"),
+    )
+
+    alert_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    dataset_key: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    schema_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_data_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="open")
+    first_detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    last_detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
 class NormalizationJob(Base):
     """Durable normalization control state; RabbitMQ is only the delivery layer."""
 

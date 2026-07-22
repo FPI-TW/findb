@@ -7,6 +7,7 @@ import time
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.services.delivery_monitor import scan_missing_deliveries
 from app.services.ingestion_attempts import reconcile_stale_ingestion_attempts
 from app.services.normalization_queue import (
     claim_outbox_batch,
@@ -42,6 +43,31 @@ async def reconcile_stale_attempts_safely(
     return aborted
 
 
+async def scan_missing_deliveries_safely(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Keep delivery-monitor failures isolated from durable outbox dispatch."""
+    try:
+        async with session_factory() as session:
+            try:
+                result = await scan_missing_deliveries(session)
+            except Exception:
+                await session.rollback()
+                raise
+    except Exception:
+        logger.exception("Failed to scan missing dataset deliveries")
+        return
+    if result.skipped_locked:
+        logger.info("Delivery monitor scan skipped because another replica owns the lock")
+    elif result.created_or_refreshed or result.resolved or result.diagnostics:
+        logger.info(
+            "Delivery monitor refreshed=%s resolved=%s diagnostics=%s",
+            result.created_or_refreshed,
+            result.resolved,
+            len(result.diagnostics),
+        )
+
+
 async def run_dispatcher() -> None:
     engine = create_async_engine(settings.DATABASE_URL)
     session_factory = async_sessionmaker(
@@ -55,10 +81,15 @@ async def run_dispatcher() -> None:
             replayed = await reconcile_nonterminal_jobs(session)
             logger.info("Reconciled %s non-terminal normalization jobs", replayed)
         await reconcile_stale_attempts_safely(session_factory)
+        await scan_missing_deliveries_safely(session_factory)
 
         broker_was_unavailable = False
         last_reconciliation = time.monotonic()
+        last_delivery_monitor = time.monotonic()
         while True:
+            if time.monotonic() - last_delivery_monitor >= settings.DELIVERY_MONITOR_SECONDS:
+                await scan_missing_deliveries_safely(session_factory)
+                last_delivery_monitor = time.monotonic()
             if time.monotonic() - last_reconciliation >= settings.OUTBOX_RECONCILE_SECONDS:
                 try:
                     await asyncio.to_thread(declare_topology)
