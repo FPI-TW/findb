@@ -24,7 +24,9 @@ def _merge_config(default: dict, override: dict | None) -> dict:
 
     merged = {**default, **override}
     if "field_mapping" in override:
-        merged["field_mapping"] = override["field_mapping"]
+        default_mapping = default.get("field_mapping", {}) or {}
+        override_mapping = override.get("field_mapping", {}) or {}
+        merged["field_mapping"] = {**default_mapping, **override_mapping}
     return merged
 
 
@@ -294,6 +296,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             "close": "close",
             "volume": "volume",
             "turnover": "turnover",
+            "open_interest": "open_interest",
+            "active_contract_code": "active_contract_code",
+            "roll_adjustment": "roll_adjustment",
             "roll_rule": "roll_rule",
             "roll_rule_name": "roll_rule.name",
             "roll_rule_description": "roll_rule.description",
@@ -318,6 +323,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
 
         if record.identifier_value and not record.identifier_type:
             record.identifier_type = "bloomberg"
+
+        if record.active_contract_code:
+            record.active_contract_code = str(record.active_contract_code).strip()
 
         if record.source:
             source_value = str(record.source).lower().strip()
@@ -377,6 +385,15 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                 volume=self._parse_int(self._get_nested_value(item, field_mapping.get("volume"))),
                 turnover=self._parse_decimal(
                     self._get_nested_value(item, field_mapping.get("turnover"))
+                ),
+                open_interest=self._parse_int(
+                    self._get_nested_value(item, field_mapping.get("open_interest"))
+                ),
+                active_contract_code=self._get_nested_value(
+                    item, field_mapping.get("active_contract_code")
+                ),
+                roll_adjustment=self._parse_decimal(
+                    self._get_nested_value(item, field_mapping.get("roll_adjustment"))
                 ),
                 source=source_value,
                 raw_data=item,
@@ -481,6 +498,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
             close=record.close,
             volume=record.volume,
             turnover=record.turnover,
+            open_interest=record.open_interest,
+            active_contract_code=record.active_contract_code,
+            roll_adjustment=record.roll_adjustment,
             source=record.source,
             source_priority=source_priority,
             source_fetched_at=source_fetched_at,
@@ -500,6 +520,9 @@ class FuturesContinuousNormalizer(BaseNormalizer):
                 "close": stmt.excluded.close,
                 "volume": stmt.excluded.volume,
                 "turnover": stmt.excluded.turnover,
+                "open_interest": stmt.excluded.open_interest,
+                "active_contract_code": stmt.excluded.active_contract_code,
+                "roll_adjustment": stmt.excluded.roll_adjustment,
                 "source": stmt.excluded.source,
                 "source_priority": stmt.excluded.source_priority,
                 "source_fetched_at": stmt.excluded.source_fetched_at,
@@ -704,6 +727,21 @@ class WTXBloombergNormalizer(FuturesContinuousNormalizer):
             close_price = self._parse_decimal(price.get("last") or item.get("close"))
             volume = self._parse_int(price.get("volume") or item.get("volume"))
             turnover = self._parse_decimal(price.get("turnover") or item.get("turnover"))
+            open_interest = self._parse_int(
+                price.get("open_interest")
+                if price.get("open_interest") is not None
+                else item.get("open_interest")
+            )
+            active_contract_code = (
+                price.get("active_contract_code")
+                if price.get("active_contract_code") is not None
+                else item.get("active_contract_code")
+            )
+            roll_adjustment = self._parse_decimal(
+                price.get("roll_adjustment")
+                if price.get("roll_adjustment") is not None
+                else item.get("roll_adjustment")
+            )
 
             item_metadata = item.get("metadata", {})
             source = item_metadata.get("source") or raw_data.get("metadata", {}).get("source")
@@ -723,6 +761,9 @@ class WTXBloombergNormalizer(FuturesContinuousNormalizer):
                 close=close_price,
                 volume=volume,
                 turnover=turnover,
+                open_interest=open_interest,
+                active_contract_code=active_contract_code,
+                roll_adjustment=roll_adjustment,
                 source=source,
                 raw_data=item,
                 identifier_type="bloomberg" if ticker else None,

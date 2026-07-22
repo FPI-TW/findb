@@ -167,6 +167,9 @@ class FuturesContinuousResponse(BaseModel):
     close: Optional[Decimal] = None
     volume: Optional[int] = None
     turnover: Optional[Decimal] = None
+    open_interest: Optional[int] = None
+    active_contract_code: Optional[str] = None
+    roll_adjustment: Optional[Decimal] = None
     source: Optional[str] = None
     roll_rule_id: Optional[UUID] = None
     roll_rule_name: Optional[str] = None

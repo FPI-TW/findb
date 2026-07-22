@@ -417,7 +417,11 @@ open timestamp 與 age。來源名稱與 canonical ingress 一樣只接受 `^[a-
 background task 以 shared per-feed transaction lock 執行；掃描 timeout 會 rollback，不阻塞 outbox。
 外部通知不在 API 內，由監控系統依 health 指標觸發。
 
-`futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment` 目前會保留在 standardized raw payload，但尚未寫入 canonical table 或 Serve API；WTX fetch 切換前會另行完成欄位去向決策。
+`futures_continuous_eod.v1` 的 `open_interest`、`active_contract_code` 與 `roll_adjustment`
+會寫入 `futures_continuous_eod` 並由兩個 Serve continuous futures endpoints 回傳。三欄皆為
+nullable；legacy payload 未明確提供時保持 `null`，系統不會從 ticker 或 contract month 猜測
+active contract。Migration 不會自動回填歷史資料；如 retained `wtx_eod` raw payload 含有明確值，
+部署後可透過 rerun 補入 canonical layer。
 
 #### 查詢 attempt
 

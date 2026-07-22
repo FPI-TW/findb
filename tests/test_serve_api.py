@@ -470,6 +470,9 @@ async def test_list_futures_contracts_and_continuous(client: AsyncClient, test_s
         close=Decimal("21050"),
         volume=12000,
         turnover=Decimal("987654.1234"),
+        open_interest=23000,
+        active_contract_code="TXF202602",
+        roll_adjustment=Decimal("1.5"),
         source="taifex",
         asof_ts=utc_now(),
     )
@@ -491,6 +494,16 @@ async def test_list_futures_contracts_and_continuous(client: AsyncClient, test_s
     assert continuous_payload["success"] is True
     assert len(continuous_payload["data"]) == 1
     assert continuous_payload["data"][0]["roll_rule_name"] == "front-month"
+    assert continuous_payload["data"][0]["open_interest"] == 23000
+    assert continuous_payload["data"][0]["active_contract_code"] == "TXF202602"
+    assert continuous_payload["data"][0]["roll_adjustment"] == "1.5"
+
+    detail_response = await client.get(f"/api/v1/serve/futures/continuous/{instrument_id}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()["data"][0]
+    assert detail["open_interest"] == 23000
+    assert detail["active_contract_code"] == "TXF202602"
+    assert detail["roll_adjustment"] == "1.5"
 
 
 @pytest.mark.asyncio

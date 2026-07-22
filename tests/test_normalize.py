@@ -29,7 +29,7 @@ from app.services.normalize.crypto_index import CryptoIndexNormalizer
 from app.services.normalize.equity import IndexNormalizer
 from app.services.normalize.futures import FuturesContinuousNormalizer
 from app.services.normalize.macro import MacroNormalizer
-from app.services.normalize.types import MappedRecord
+from app.services.normalize.types import FuturesContinuousRecord, MappedRecord
 from app.utils import utc_now, uuid7
 
 
@@ -741,6 +741,9 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
         low=Decimal("95"),
         close=Decimal("99"),
         volume=900,
+        open_interest=1000,
+        active_contract_code="TXF202601",
+        roll_adjustment=Decimal("1.25"),
         asof_ts=utc_now(),
         run_id=uuid7(),
         created_at=utc_now(),
@@ -761,6 +764,9 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
                 "low": 99,
                 "close": 108,
                 "volume": 1200,
+                "open_interest": 1500,
+                "active_contract_code": "TXF202602",
+                "roll_adjustment": "2.5",
             }
         ],
     }
@@ -779,6 +785,9 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
     assert updated.open == Decimal("100")
     assert updated.close == Decimal("108")
     assert updated.volume == 1200
+    assert updated.open_interest == 1500
+    assert updated.active_contract_code == "TXF202602"
+    assert updated.roll_adjustment == Decimal("2.50000000")
     assert updated.run_id == run_id
 
     stats = await test_session.get(InstrumentStats, instrument_id)
@@ -797,6 +806,83 @@ async def test_futures_continuous_upserts_existing_eod_instead_of_failing_duplic
     persisted_run = await test_session.get(IngestionRun, run_id)
     assert persisted_run is not None
     assert persisted_run.status == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("incoming_source", "incoming_fetched_at"),
+    [
+        pytest.param("secondary", "2026-02-10T09:00:00Z", id="lower-source-precedence"),
+        pytest.param("primary", "2026-02-10T07:00:00Z", id="same-source-older-fetched-at"),
+    ],
+)
+async def test_futures_continuous_precedence_rejection_preserves_contract_fields(
+    test_session,
+    incoming_source,
+    incoming_fetched_at,
+):
+    instrument_id = uuid7()
+    existing_run_id = uuid7()
+    incoming_run_id = uuid7()
+    existing_id = uuid7()
+    trade_date = date(2026, 2, 10)
+    instrument = Instrument(
+        instrument_id=instrument_id,
+        asset_class="future",
+        market="WTX",
+        symbol="TX",
+        status="active",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    existing = FuturesContinuousEOD(
+        id=existing_id,
+        instrument_id=instrument_id,
+        trade_date=trade_date,
+        close=Decimal("100"),
+        open_interest=2000,
+        active_contract_code="TXF202602",
+        roll_adjustment=Decimal("3.5"),
+        source="primary",
+        source_priority=0,
+        source_fetched_at=datetime(2026, 2, 10, 8, tzinfo=timezone.utc),
+        asof_ts=utc_now(),
+        run_id=existing_run_id,
+    )
+    test_session.add_all([instrument, existing])
+    await test_session.commit()
+
+    normalizer = FuturesContinuousNormalizer(
+        test_session,
+        {
+            "source_precedence": ["primary", "secondary"],
+            "_ingest_fetched_at": incoming_fetched_at,
+        },
+    )
+    applied = await normalizer.upsert_continuous_eod(
+        instrument_id,
+        FuturesContinuousRecord(
+            symbol="TX",
+            trade_date=datetime(2026, 2, 10, tzinfo=timezone.utc),
+            close=Decimal("90"),
+            open_interest=1000,
+            active_contract_code="TXF202603",
+            roll_adjustment=Decimal("9"),
+            source=incoming_source,
+        ),
+        incoming_run_id,
+        None,
+    )
+    await test_session.commit()
+
+    assert applied is False
+    persisted = await test_session.get(FuturesContinuousEOD, existing_id)
+    assert persisted is not None
+    assert persisted.close == Decimal("100")
+    assert persisted.open_interest == 2000
+    assert persisted.active_contract_code == "TXF202602"
+    assert persisted.roll_adjustment == Decimal("3.50000000")
+    assert persisted.run_id == existing_run_id
 
 
 @pytest.mark.asyncio

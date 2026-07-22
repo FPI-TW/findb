@@ -167,7 +167,7 @@ class TWStockDirectRow(BaseModel):
             "OpenInterest",
             "<OpenInterest>",
         ),
-        description="接受後忽略，不會寫入 canonical",
+        description="台股/ETF direct payload 相容欄位；接受後忽略，不寫入 canonical",
     )
 
     @field_validator("symbol", mode="before")
