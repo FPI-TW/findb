@@ -6,7 +6,7 @@ Handles raw data storage and triggers normalization.
 import hashlib
 import json
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Optional, Protocol
 from uuid import UUID
 
@@ -19,12 +19,17 @@ from app.models.base import async_session_maker
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
+    DQIssue,
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
 )
 from app.schemas.ingress import IngressRequestV1
 from app.schemas.source import IngestRequest, ensure_data_items_count_within_limit
+from app.services.delivery_policy import (
+    DeliveryPolicyRejectedError,
+    evaluate_delivery_policy,
+)
 from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
@@ -474,6 +479,11 @@ class IngestionService:
         status: str = "queued",
         schema_id: str | None = None,
         schema_version: int | None = None,
+        batch_data_date: date | None = None,
+        delivery_mode: str | None = None,
+        policy_outcome: str | None = None,
+        policy_details: dict | None = None,
+        is_rerun: bool = False,
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -485,6 +495,11 @@ class IngestionService:
             request_key=request_key,
             schema_id=schema_id,
             schema_version=schema_version,
+            batch_data_date=batch_data_date,
+            delivery_mode=delivery_mode,
+            policy_outcome=policy_outcome,
+            policy_details=policy_details,
+            is_rerun=is_rerun,
             raw_records=raw_records,
             status=status,
             max_attempts=settings.NORMALIZATION_MAX_ATTEMPTS,
@@ -620,6 +635,7 @@ class IngestionService:
             raw_payload_id=raw_payload.raw_payload_id,
             schema_id=raw_payload.schema_id,
             schema_version=raw_payload.schema_version,
+            is_rerun=True,
         )
         await self.create_normalization_job(run)
         await self.db.commit()
@@ -868,6 +884,15 @@ class IngestionService:
             await self.db.commit()
             return existing_raw.run_id, status, True
 
+        policy_result = await evaluate_delivery_policy(
+            self.db,
+            request,
+            declaration.delivery_expectation,
+        )
+        policy_details = policy_result.bounded_details()
+        if policy_result.outcome == "reject":
+            raise DeliveryPolicyRejectedError(policy_result)
+
         raw_records = len(request.payload.data)
         metadata = {
             "source": request.source,
@@ -875,6 +900,7 @@ class IngestionService:
             "raw_records": raw_records,
             "schema_id": request.schema_id,
             "schema_version": request.schema_version,
+            "delivery_policy": policy_details,
         }
         legacy_request = IngestRequest(
             dataset_key=request.dataset_key,
@@ -903,9 +929,30 @@ class IngestionService:
                 raw_payload_id=raw_payload.raw_payload_id,
                 schema_id=request.schema_id,
                 schema_version=request.schema_version,
+                batch_data_date=request.payload.batch.data_date,
+                delivery_mode=request.payload.batch.delivery_mode.value,
+                policy_outcome=policy_result.outcome,
+                policy_details=policy_details,
             )
+            if policy_result.outcome == "warn":
+                self.db.add(
+                    DQIssue(
+                        id=uuid7(),
+                        run_id=run.run_id,
+                        issue_type="INGRESS_DELIVERY_POLICY_WARNING",
+                        severity="warning",
+                        description=("Canonical delivery accepted with aggregate policy warnings"),
+                        raw_data=policy_details,
+                        resolved=False,
+                        created_at=utc_now(),
+                    )
+                )
             await self.create_normalization_job(run)
-            await attempt_service.mark_accepted(attempt_id, run_id)
+            await attempt_service.mark_accepted(
+                attempt_id,
+                run_id,
+                details=policy_details if policy_result.outcome == "warn" else None,
+            )
             await self.db.commit()
         except IntegrityError:
             await self.db.rollback()

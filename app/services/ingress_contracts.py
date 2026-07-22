@@ -12,6 +12,7 @@ from app.schemas.ingress import (
     IngressRequestV1,
     MarketEODIngressRequest,
 )
+from app.services.delivery_policy import DeliveryExpectation
 from app.vocabulary import normalize_asset_class, normalize_market
 
 ContractKey = tuple[str, int]
@@ -64,6 +65,7 @@ class DatasetContractDeclaration(BaseModel):
     current_schema_version: PositiveStrictInt
     schema_enforcement: Literal["audit", "enforce"] = "audit"
     defaults: DatasetContractDefaults
+    delivery_expectation: DeliveryExpectation | None = None
 
     @model_validator(mode="after")
     def validate_versions(self) -> "DatasetContractDeclaration":

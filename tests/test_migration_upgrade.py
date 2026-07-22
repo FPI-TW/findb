@@ -1,6 +1,7 @@
 """Regression tests for upgrading databases created by earlier branch revisions."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -63,25 +64,38 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         await _run_alembic(database_url, "f7a8b9c0d1e2")
         target_engine = create_async_engine(database_url)
         async with target_engine.begin() as connection:
-            await connection.execute(text("""
-                INSERT INTO dataset_registry (
-                    dataset_key, name, asset_class, market, frequency,
-                    is_active, config, created_at, updated_at
-                )
-                VALUES (
-                    'tw_equity_eod', 'TW Equity', 'equity', 'TW', 'daily',
-                    true, '{
-                        "source_format":"legacy",
-                        "custom":"preserve",
-                        "schema_id":"production_contract",
-                        "accepted_schema_versions":[99],
-                        "defaults":{"market":"US"}
-                    }'::jsonb,
-                    now(), now()
-                )
-                ON CONFLICT (dataset_key) DO UPDATE
-                SET config = EXCLUDED.config
-                """))
+            await connection.execute(
+                text("""
+                    INSERT INTO dataset_registry (
+                        dataset_key, name, asset_class, market, frequency,
+                        is_active, config, created_at, updated_at
+                    )
+                    VALUES (
+                        'tw_equity_eod', 'TW Equity', 'equity', 'TW', 'daily',
+                        true, CAST(:config AS jsonb), now(), now()
+                    )
+                    ON CONFLICT (dataset_key) DO UPDATE
+                    SET config = EXCLUDED.config
+                    """),
+                {
+                    "config": json.dumps(
+                        {
+                            "source_format": "legacy",
+                            "custom": "preserve",
+                            "schema_id": "production_contract",
+                            "accepted_schema_versions": [99],
+                            "defaults": {"market": "US"},
+                            "delivery_expectation": {
+                                "delivery_mode": "full_snapshot",
+                                "freshness_hours": 72,
+                                "minimum_record_count": 1777,
+                                "maximum_count_drop_ratio": 0.2,
+                                "operator_note": "preserve",
+                            },
+                        }
+                    )
+                },
+            )
             for table_name in SOURCE_CONTROL_TABLES:
                 await connection.execute(
                     text(
@@ -128,6 +142,26 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                     FROM dataset_registry
                     WHERE dataset_key = 'tw_equity_eod'
                     """))
+            delivery_column_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND (
+                        (table_name = 'ingestion_attempt' AND column_name = 'failure_details')
+                        OR
+                        (table_name = 'ingestion_run' AND column_name IN (
+                            'batch_data_date', 'delivery_mode', 'policy_outcome',
+                            'policy_details', 'is_rerun'
+                        ))
+                      )
+                    """))
+            baseline_index_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'ingestion_run'
+                      AND indexname = 'idx_run_delivery_policy_baseline'
+                    """))
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -141,6 +175,15 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
             "currency": "TWD",
         }
         assert contract_config["custom"] == "preserve"
+        assert delivery_column_count == 6
+        assert baseline_index_count == 1
+        expectation = contract_config["delivery_expectation"]
+        assert expectation["freshness_hours"] == 72
+        assert expectation["minimum_record_count"] == 1777
+        assert expectation["maximum_count_drop_ratio"] == 0.2
+        assert expectation["operator_note"] == "preserve"
+        assert expectation["record_count"]["action"] == "warn"
+        assert expectation["latest_date"]["timezone"] == "Asia/Taipei"
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
         async with target_engine.connect() as connection:
@@ -168,11 +211,26 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                     FROM dataset_registry
                     WHERE dataset_key = 'tw_equity_eod'
                     """))
+            delivery_column_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND (
+                        (table_name = 'ingestion_attempt' AND column_name = 'failure_details')
+                        OR
+                        (table_name = 'ingestion_run' AND column_name IN (
+                            'batch_data_date', 'delivery_mode', 'policy_outcome',
+                            'policy_details', 'is_rerun'
+                        ))
+                      )
+                    """))
         assert cleanup_index_count == 0
         assert attempt_table is None
         assert lineage_column_count == 0
         assert contract_config["schema_id"] == "production_contract"
         assert contract_config["custom"] == "preserve"
+        assert delivery_column_count == 0
+        assert contract_config["delivery_expectation"]["operator_note"] == "preserve"
     finally:
         if target_engine is not None:
             await target_engine.dispose()

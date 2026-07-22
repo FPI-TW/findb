@@ -1,5 +1,7 @@
 """Integration tests for canonical ingest attempts and versioned contracts."""
 
+import asyncio
+import json
 from datetime import timedelta
 from uuid import UUID
 
@@ -13,15 +15,18 @@ from app.models.canonical import FuturesContinuousEOD, Instrument, MarketDataEOD
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
+    DQIssue,
     IngestionAttempt,
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
 )
+from app.services.ingestion import IngestionService
 from app.services.ingestion_attempts import (
     IngestionAttemptService,
     reconcile_stale_ingestion_attempts,
 )
+from app.services.ingress_contracts import validate_ingress_request
 from app.services.normalization_queue import execute_normalization
 from app.services.source_clients import create_source_client
 from app.utils import utc_now, uuid7
@@ -1348,3 +1353,156 @@ async def test_reconciliation_never_reverses_terminal_attempt(test_session):
     await test_session.refresh(accepted)
     assert accepted.status == "accepted"
     assert accepted.failure_code is None
+
+
+def _policy_config(*, count_action: str, minimum: int) -> dict:
+    config = _dataset_config()
+    config["delivery_expectation"] = {
+        "delivery_mode": "full_snapshot",
+        "record_count": {
+            "minimum_record_count": minimum,
+            "maximum_count_drop_ratio": 0.1,
+            "action": count_action,
+        },
+        "freshness": {
+            "maximum_fetch_age_hours": 36,
+            "allowed_clock_skew_minutes": 5,
+            "action": "disabled",
+        },
+        "latest_date": {
+            "calendar_market": "TW",
+            "timezone": "Asia/Taipei",
+            "market_close_time": "13:30:00",
+            "availability_grace_minutes": 120,
+            "action": "disabled",
+        },
+    }
+    return config
+
+
+@pytest.mark.asyncio
+async def test_delivery_policy_reject_persists_only_bounded_attempt_details(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session: AsyncSession,
+) -> None:
+    await _seed_dataset(
+        test_session,
+        config=_policy_config(count_action="reject", minimum=2),
+    )
+
+    response = await client.post(
+        "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "BATCH_RECORD_COUNT_DROP"
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_details["outcome"] == "reject"
+    assert "2330" not in str(attempt.failure_details)
+    assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(NormalizationJob)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(NormalizationOutbox)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(DQIssue)) == 0
+
+
+@pytest.mark.asyncio
+async def test_delivery_policy_warning_persists_one_aggregate_dq_issue(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session: AsyncSession,
+) -> None:
+    await _seed_dataset(
+        test_session,
+        config=_policy_config(count_action="warn", minimum=2),
+    )
+
+    response = await client.post(
+        "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    run = await test_session.get(IngestionRun, UUID(body["run_id"]))
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    issues = list(
+        (await test_session.execute(select(DQIssue).where(DQIssue.run_id == run.run_id)))
+        .scalars()
+        .all()
+    )
+    assert run.policy_outcome == "warn"
+    assert run.batch_data_date.isoformat() == "2026-07-21"
+    assert run.delivery_mode == "full_snapshot"
+    assert attempt.failure_details["outcome"] == "warn"
+    assert len(issues) == 1
+    assert issues[0].issue_type == "INGRESS_DELIVERY_POLICY_WARNING"
+    assert issues[0].raw_data["violations"][0]["code"] == "BATCH_RECORD_COUNT_DROP"
+    attempt_response = await client.get(
+        f"/api/v1/source/attempts/{attempt.attempt_id}", headers=source_headers
+    )
+    assert attempt_response.status_code == 200
+    assert attempt_response.json()["failure_details"]["outcome"] == "warn"
+
+
+@pytest.mark.asyncio
+async def test_exact_duplicate_is_returned_before_dynamic_policy_changes(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session: AsyncSession,
+) -> None:
+    await _seed_dataset(
+        test_session,
+        config=_policy_config(count_action="reject", minimum=1),
+    )
+    request = _canonical_request()
+    first = await client.post("/api/v1/source/ingest", headers=source_headers, json=request)
+    assert first.status_code == 202
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    dataset.config = _policy_config(count_action="reject", minimum=2)
+    await test_session.commit()
+
+    duplicate = await client.post("/api/v1/source/ingest", headers=source_headers, json=request)
+
+    assert duplicate.status_code == 202
+    assert duplicate.json()["run_id"] == first.json()["run_id"]
+    assert duplicate.json()["message"] == "Duplicate idempotency_key, returning existing run"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_exact_deliveries_create_one_run_without_duplicate_warning(
+    test_session: AsyncSession,
+    test_engine,
+) -> None:
+    await _seed_dataset(
+        test_session,
+        config=_policy_config(count_action="warn", minimum=1),
+    )
+    request_body = _canonical_request(idempotency_key="concurrent-policy-delivery")
+    request = validate_ingress_request(request_body)
+    session_factory = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with session_factory() as first_session, session_factory() as second_session:
+        first_attempt = await IngestionAttemptService(first_session).begin(
+            request_body, json.dumps(request_body).encode()
+        )
+        second_attempt = await IngestionAttemptService(second_session).begin(
+            request_body, json.dumps(request_body).encode()
+        )
+        results = await asyncio.gather(
+            IngestionService(first_session).ingest_contract(request, first_attempt.attempt_id),
+            IngestionService(second_session).ingest_contract(request, second_attempt.attempt_id),
+        )
+
+    assert sorted(result[2] for result in results) == [False, True]
+    assert results[0][0] == results[1][0]
+    test_session.expire_all()
+    assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 1
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 1
+    assert await test_session.scalar(select(func.count()).select_from(DQIssue)) == 0
