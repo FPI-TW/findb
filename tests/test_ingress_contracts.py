@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.schemas.ingress import FuturesContinuousEODIngressRequest, MarketEODIngressRequest
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
@@ -95,6 +95,57 @@ def test_market_eod_v1_accepts_provider_neutral_payload():
     assert request.fetched_at.hour == 8
     assert request.payload.data[0].close == Decimal("1015.0")
     assert request.payload.data[0].source_symbol == "2330 TT Equity"
+
+
+@pytest.mark.parametrize("currency", ["USDT", "USDC"])
+def test_currency_rule_accepts_uppercase_alphanumeric_for_rows_and_defaults(
+    currency: str,
+):
+    value = _market_eod_request()
+    value["payload"]["data"][0]["currency"] = currency
+    request = MarketEODIngressRequest.model_validate(value)
+    declaration = DatasetContractDeclaration.model_validate(
+        {
+            "schema_id": "market_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "defaults": {
+                "market": "TW",
+                "asset_class": "equity",
+                "currency": currency,
+            },
+        }
+    )
+
+    assert request.payload.data[0].currency == currency
+    assert declaration.defaults.currency == currency
+
+
+def test_currency_rule_rejects_non_alphanumeric_for_rows_and_defaults():
+    value = _market_eod_request()
+    value["payload"]["data"][0]["currency"] = "$$$"
+    with pytest.raises(ValidationError):
+        MarketEODIngressRequest.model_validate(value)
+    with pytest.raises(ValidationError):
+        DatasetContractDeclaration.model_validate(
+            {
+                "schema_id": "market_eod",
+                "accepted_schema_versions": [1],
+                "current_schema_version": 1,
+                "defaults": {
+                    "market": "TW",
+                    "asset_class": "equity",
+                    "currency": "$$$",
+                },
+            }
+        )
+
+
+def test_ingestion_attempt_reconciliation_settings_must_be_positive():
+    with pytest.raises(ValidationError):
+        Settings(INGESTION_ATTEMPT_STALE_SECONDS=0)
+    with pytest.raises(ValidationError):
+        Settings(INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE=0)
 
 
 @pytest.mark.parametrize("field", ["schema_id", "schema_version"])

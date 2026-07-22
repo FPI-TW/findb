@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from app.schemas.ingress import (
+    CurrencyCode,
     FuturesContinuousEODIngressRequest,
     IngressRequestV1,
     MarketEODIngressRequest,
@@ -36,7 +37,7 @@ class DatasetContractDefaults(BaseModel):
 
     market: str
     asset_class: str
-    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    currency: CurrencyCode | None = None
 
     @field_validator("market")
     @classmethod
@@ -47,11 +48,6 @@ class DatasetContractDefaults(BaseModel):
     @classmethod
     def normalize_declared_asset_class(cls, value: str) -> str:
         return normalize_asset_class(value)
-
-    @field_validator("currency")
-    @classmethod
-    def normalize_currency(cls, value: str | None) -> str | None:
-        return value.upper() if value is not None else None
 
 
 class DatasetContractDeclaration(BaseModel):

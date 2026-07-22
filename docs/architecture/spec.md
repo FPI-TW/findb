@@ -150,7 +150,7 @@ Fetch Layer
 
 - `dq_issue`：記錄資料品質問題與 resolve 狀態
 - `correction`：記錄人工修正前後快照
-- `ingestion_attempt`：記錄 canonical ingest 的 received/accepted/duplicate/rejected/aborted 與固定 failure code；dispatcher 定期回收中斷流程留下的 stale received attempt
+- `ingestion_attempt`：記錄 canonical ingest 的 received/accepted/duplicate/rejected/aborted 與固定 failure code；live request 持有 row claim，dispatcher 以 bounded `SKIP LOCKED` batch 回收 process 中斷後釋放的 stale received attempt
 - `ingestion_run`：記錄每次 ingest / rerun 的處理狀態
 - `normalization_job`：記錄 execution attempt、retry、lease 與 terminal state
 - `normalization_outbox`：以 publisher lease、confirm 與無上限 backoff 保證任務可補送

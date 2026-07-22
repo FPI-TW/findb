@@ -57,7 +57,7 @@ class IngestionAttemptService:
         self.source_client_id: UUID | None = session_info.get("source_client_id")
 
     async def begin(self, body: Any, raw_body: bytes) -> IngestionAttempt:
-        """Create and commit a ``received`` attempt before request validation."""
+        """Persist ``received``, then claim its row until the request is terminal."""
         now = utc_now()
         attempt = IngestionAttempt(
             attempt_id=uuid7(),
@@ -70,7 +70,15 @@ class IngestionAttemptService:
         )
         self.db.add(attempt)
         await self.db.commit()
-        return attempt
+        claimed = await self.db.scalar(
+            select(IngestionAttempt)
+            .where(IngestionAttempt.attempt_id == attempt.attempt_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if claimed is None:
+            raise RuntimeError(f"Ingestion attempt {attempt.attempt_id} disappeared after commit")
+        return claimed
 
     async def reject(
         self,
@@ -84,6 +92,10 @@ class IngestionAttemptService:
         attempt = await self.db.get(IngestionAttempt, attempt_id, with_for_update=True)
         if attempt is None:
             raise RuntimeError(f"Ingestion attempt {attempt_id} not found")
+        if attempt.status != "received":
+            raise RuntimeError(
+                f"Ingestion attempt {attempt_id} is already terminal ({attempt.status})"
+            )
         now = utc_now()
         attempt.status = "rejected"
         attempt.http_status = http_status
@@ -105,6 +117,10 @@ class IngestionAttemptService:
         attempt = await self.db.get(IngestionAttempt, attempt_id, with_for_update=True)
         if attempt is None:
             raise RuntimeError(f"Ingestion attempt {attempt_id} not found")
+        if attempt.status != "received":
+            raise RuntimeError(
+                f"Ingestion attempt {attempt_id} is already terminal ({attempt.status})"
+            )
         now = utc_now()
         attempt.status = "duplicate" if duplicate else "accepted"
         attempt.http_status = 202
@@ -129,13 +145,20 @@ async def reconcile_stale_ingestion_attempts(
     db: AsyncSession,
     *,
     stale_seconds: int | None = None,
+    batch_size: int | None = None,
 ) -> int:
-    """Terminalize orphaned ``received`` attempts left by interrupted requests."""
+    """Batch-terminalize orphaned attempts, skipping rows claimed by live requests."""
+    settings = get_settings()
     threshold_seconds = (
-        get_settings().INGESTION_ATTEMPT_STALE_SECONDS if stale_seconds is None else stale_seconds
+        settings.INGESTION_ATTEMPT_STALE_SECONDS if stale_seconds is None else stale_seconds
+    )
+    reconcile_batch_size = (
+        settings.INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE if batch_size is None else batch_size
     )
     if threshold_seconds < 1:
         raise ValueError("stale_seconds must be positive")
+    if reconcile_batch_size < 1:
+        raise ValueError("batch_size must be positive")
     now = utc_now()
     result = await db.execute(
         select(IngestionAttempt)
@@ -144,6 +167,7 @@ async def reconcile_stale_ingestion_attempts(
             IngestionAttempt.created_at < now - timedelta(seconds=threshold_seconds),
         )
         .order_by(IngestionAttempt.created_at)
+        .limit(reconcile_batch_size)
         .with_for_update(skip_locked=True)
     )
     attempts = list(result.scalars().all())

@@ -7,6 +7,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.canonical import FuturesContinuousEOD, Instrument, MarketDataEOD
 from app.models.raw import RawMarketPayload
@@ -714,7 +715,7 @@ async def test_database_failure_before_attempt_returns_retryable_503(
 
 
 @pytest.mark.asyncio
-async def test_stale_received_attempts_are_reconciled_as_aborted(test_session):
+async def test_stale_received_attempts_are_reconciled_in_bounded_batches(test_session):
     stale = IngestionAttempt(
         attempt_id=uuid7(),
         status="received",
@@ -727,13 +728,114 @@ async def test_stale_received_attempts_are_reconciled_as_aborted(test_session):
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    test_session.add_all([stale, recent])
+    stale_two = IngestionAttempt(
+        attempt_id=uuid7(),
+        status="received",
+        created_at=utc_now() - timedelta(minutes=9),
+        updated_at=utc_now() - timedelta(minutes=9),
+    )
+    stale_three = IngestionAttempt(
+        attempt_id=uuid7(),
+        status="received",
+        created_at=utc_now() - timedelta(minutes=8),
+        updated_at=utc_now() - timedelta(minutes=8),
+    )
+    test_session.add_all([stale, stale_two, stale_three, recent])
     await test_session.commit()
 
-    assert await reconcile_stale_ingestion_attempts(test_session, stale_seconds=300) == 1
+    assert (
+        await reconcile_stale_ingestion_attempts(
+            test_session,
+            stale_seconds=300,
+            batch_size=2,
+        )
+        == 2
+    )
+    assert (
+        await reconcile_stale_ingestion_attempts(
+            test_session,
+            stale_seconds=300,
+            batch_size=2,
+        )
+        == 1
+    )
     await test_session.refresh(stale)
     await test_session.refresh(recent)
     assert stale.status == "aborted"
     assert stale.failure_code == "ATTEMPT_INTERRUPTED"
     assert stale.completed_at is not None
     assert recent.status == "received"
+
+
+@pytest.mark.asyncio
+async def test_live_attempt_claim_is_skipped_until_owner_releases(
+    test_session,
+    test_engine,
+):
+    stale = IngestionAttempt(
+        attempt_id=uuid7(),
+        status="received",
+        created_at=utc_now() - timedelta(minutes=10),
+        updated_at=utc_now() - timedelta(minutes=10),
+    )
+    test_session.add(stale)
+    await test_session.commit()
+    session_factory = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with session_factory() as active_session:
+        claimed = await active_session.scalar(
+            select(IngestionAttempt)
+            .where(IngestionAttempt.attempt_id == stale.attempt_id)
+            .with_for_update()
+        )
+        assert claimed is not None
+        async with session_factory() as reconcile_session:
+            assert (
+                await reconcile_stale_ingestion_attempts(
+                    reconcile_session,
+                    stale_seconds=300,
+                    batch_size=10,
+                )
+                == 0
+            )
+        await active_session.rollback()
+
+    async with session_factory() as reconcile_session:
+        assert (
+            await reconcile_stale_ingestion_attempts(
+                reconcile_session,
+                stale_seconds=300,
+                batch_size=10,
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_never_reverses_terminal_attempt(test_session):
+    accepted = IngestionAttempt(
+        attempt_id=uuid7(),
+        status="accepted",
+        http_status=202,
+        created_at=utc_now() - timedelta(minutes=10),
+        updated_at=utc_now() - timedelta(minutes=10),
+        completed_at=utc_now() - timedelta(minutes=9),
+    )
+    test_session.add(accepted)
+    await test_session.commit()
+
+    assert (
+        await reconcile_stale_ingestion_attempts(
+            test_session,
+            stale_seconds=300,
+            batch_size=10,
+        )
+        == 0
+    )
+    await test_session.refresh(accepted)
+    assert accepted.status == "accepted"
+    assert accepted.failure_code is None

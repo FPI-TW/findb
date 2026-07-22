@@ -110,11 +110,12 @@ async def accept_canonical_ingest(
 
     attempt_service = IngestionAttemptService(db)
     attempt = await attempt_service.begin(body, raw_body)
+    attempt_id = attempt.attempt_id
 
     if not json_valid:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_INVALID",
             message="Request body must be valid JSON",
@@ -122,7 +123,7 @@ async def accept_canonical_ingest(
     if not isinstance(body, dict):
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_INVALID",
             message="Request body must be a JSON object",
@@ -133,7 +134,7 @@ async def accept_canonical_ingest(
     except UnsupportedIngressContractError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_UNSUPPORTED",
             message=str(exc),
@@ -141,7 +142,7 @@ async def accept_canonical_ingest(
     except ValidationError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_INVALID",
             message=_validation_message(exc),
@@ -151,12 +152,12 @@ async def accept_canonical_ingest(
     try:
         run_id, run_status, is_duplicate = await ingestion_service.ingest_contract(
             contract_request,
-            attempt.attempt_id,
+            attempt_id,
         )
     except DatasetAccessDeniedError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=403,
             code="DATASET_ACCESS_DENIED",
             message=str(exc),
@@ -164,7 +165,7 @@ async def accept_canonical_ingest(
     except SourceIdentityMismatchError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=403,
             code="SOURCE_IDENTITY_MISMATCH",
             message=str(exc),
@@ -172,7 +173,7 @@ async def accept_canonical_ingest(
     except DatasetNotFoundError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=400,
             code="DATASET_NOT_FOUND",
             message=str(exc),
@@ -180,7 +181,7 @@ async def accept_canonical_ingest(
     except DatasetInactiveError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=409,
             code="DATASET_INACTIVE",
             message=str(exc),
@@ -188,7 +189,7 @@ async def accept_canonical_ingest(
     except DatasetContractNotConfiguredError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=409,
             code="DATASET_CONTRACT_NOT_CONFIGURED",
             message=str(exc),
@@ -196,7 +197,7 @@ async def accept_canonical_ingest(
     except IngressSchemaNotAllowedError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_NOT_ALLOWED",
             message=str(exc),
@@ -204,7 +205,7 @@ async def accept_canonical_ingest(
     except IdempotencyPayloadMismatchError as exc:
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=409,
             code="IDEMPOTENCY_PAYLOAD_MISMATCH",
             message=str(exc),
@@ -215,7 +216,7 @@ async def accept_canonical_ingest(
         try:
             await _reject(
                 attempt_service,
-                attempt.attempt_id,
+                attempt_id,
                 status_code=503,
                 code="DATABASE_UNAVAILABLE",
                 message=message,
@@ -224,7 +225,7 @@ async def accept_canonical_ingest(
         except (OperationalError, DBAPIError):
             logger.exception("Database unavailable while updating ingestion attempt")
             raise CanonicalIngestRejectionError(
-                attempt_id=attempt.attempt_id,
+                attempt_id=attempt_id,
                 status_code=503,
                 code="DATABASE_UNAVAILABLE",
                 message=message,
@@ -232,17 +233,17 @@ async def accept_canonical_ingest(
             )
     except Exception:
         await db.rollback()
-        logger.exception("Unexpected canonical ingestion failure attempt_id=%s", attempt.attempt_id)
+        logger.exception("Unexpected canonical ingestion failure attempt_id=%s", attempt_id)
         await _reject(
             attempt_service,
-            attempt.attempt_id,
+            attempt_id,
             status_code=500,
             code="INTERNAL_ERROR",
             message="Ingestion failed due to an internal server error",
         )
 
     return CanonicalIngestAccepted(
-        attempt_id=attempt.attempt_id,
+        attempt_id=attempt_id,
         run_id=run_id,
         run_status=run_status,
         is_duplicate=is_duplicate,
