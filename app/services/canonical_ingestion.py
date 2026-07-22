@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn
 from uuid import UUID
@@ -27,6 +28,7 @@ from app.services.ingestion_attempts import (
     IngestionAttemptService,
 )
 from app.services.ingress_contracts import (
+    CurrencyRequiredError,
     UnsupportedIngressContractError,
     validate_ingress_request,
 )
@@ -65,15 +67,33 @@ class CanonicalIngestRejectionError(RuntimeError):
         self.headers = headers
 
 
-def _validation_message(exc: ValidationError) -> str:
+_VALIDATION_ERROR_PRIORITY = (
+    ("declared_record_count_mismatch", "DECLARED_RECORD_COUNT_MISMATCH"),
+    ("duplicate_delivery_key", "DUPLICATE_DELIVERY_KEY"),
+)
+
+
+def _select_validation_error(
+    errors: Sequence[Mapping[str, Any]],
+) -> tuple[str, Mapping[str, Any] | None]:
+    """Select one error deterministically so its code and message stay aligned."""
+    for error_type, code in _VALIDATION_ERROR_PRIORITY:
+        for error in errors:
+            if error.get("type") == error_type:
+                return code, error
+    return "INGRESS_SCHEMA_INVALID", errors[0] if errors else None
+
+
+def _validation_rejection(exc: ValidationError) -> tuple[str, str]:
+    """Return the stable code/message pair for one selected structured error."""
     errors = exc.errors(include_input=False)
-    if not errors:
-        return "Ingress request does not match the declared schema"
-    first = errors[0]
-    location = ".".join(str(part) for part in first.get("loc", ())) or "request"
-    message = str(first.get("msg") or "invalid value")
+    code, selected = _select_validation_error(errors)
+    if selected is None:
+        return code, "Ingress request does not match the declared schema"
+    location = ".".join(str(part) for part in selected.get("loc", ())) or "request"
+    message = str(selected.get("msg") or "invalid value")
     suffix = f" ({len(errors)} validation errors)" if len(errors) > 1 else ""
-    return f"{location}: {message}{suffix}"[:1_000]
+    return code, f"{location}: {message}{suffix}"[:1_000]
 
 
 async def _reject(
@@ -177,12 +197,13 @@ async def accept_canonical_ingest(
             message=str(exc),
         )
     except ValidationError as exc:
+        code, message = _validation_rejection(exc)
         await _reject(
             attempt_service,
             attempt_id,
             status_code=422,
-            code="INGRESS_SCHEMA_INVALID",
-            message=_validation_message(exc),
+            code=code,
+            message=message,
         )
 
     ingestion_service = IngestionService(db)
@@ -237,6 +258,14 @@ async def accept_canonical_ingest(
             attempt_id,
             status_code=422,
             code="INGRESS_SCHEMA_NOT_ALLOWED",
+            message=str(exc),
+        )
+    except CurrencyRequiredError as exc:
+        await _reject(
+            attempt_service,
+            attempt_id,
+            status_code=422,
+            code="CURRENCY_REQUIRED",
             message=str(exc),
         )
     except IdempotencyPayloadMismatchError as exc:

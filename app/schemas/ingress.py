@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.schemas.payload_limits import (
     ensure_data_items_count_within_limit,
@@ -138,7 +139,14 @@ def _validate_payload_batch(
 ) -> None:
     ensure_data_items_count_within_limit(len(data))
     if batch.declared_record_count != len(data):
-        raise ValueError("declared_record_count must equal the number of data rows")
+        raise PydanticCustomError(
+            "declared_record_count_mismatch",
+            "declared_record_count must equal the number of data rows",
+            {
+                "declared_record_count": batch.declared_record_count,
+                "actual_record_count": len(data),
+            },
+        )
 
     row_dates = [row.trade_date for row in data]
     if not row_dates:
@@ -167,7 +175,10 @@ class MarketEODPayload(BaseModel):
         _validate_payload_batch(self.batch, self.data)
         natural_keys = [(row.symbol, row.trade_date) for row in self.data]
         if len(natural_keys) != len(set(natural_keys)):
-            raise ValueError("duplicate (symbol, trade_date) rows are not allowed")
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate (symbol, trade_date) rows are not allowed",
+            )
         ensure_payload_size_within_limit(self.model_dump(mode="json"))
         return self
 
@@ -185,7 +196,10 @@ class FuturesContinuousEODPayload(BaseModel):
         _validate_payload_batch(self.batch, self.data)
         natural_keys = [(row.symbol, row.trade_date) for row in self.data]
         if len(natural_keys) != len(set(natural_keys)):
-            raise ValueError("duplicate (symbol, trade_date) rows are not allowed")
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate (symbol, trade_date) rows are not allowed",
+            )
         ensure_payload_size_within_limit(self.model_dump(mode="json"))
         return self
 

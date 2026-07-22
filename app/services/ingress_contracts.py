@@ -30,6 +30,10 @@ class UnsupportedIngressContractError(ValueError):
     """Raised when the requested schema id/version is not registered."""
 
 
+class CurrencyRequiredError(ValueError):
+    """Raised when neither dataset context nor market rows provide currency."""
+
+
 class DatasetContractDefaults(BaseModel):
     """Canonical scope required by schema-based normalizers."""
 
@@ -87,6 +91,410 @@ def get_contract_model(schema_id: str, schema_version: int) -> ContractModel:
         ) from exc
 
 
+def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, Any]:
+    """Return the deterministic request-body shape and semantic contract."""
+    model = get_contract_model(schema_id, schema_version)
+    schema = model.model_json_schema(mode="validation")
+    semantic_rules: list[dict[str, Any]] = [
+        {
+            "id": "envelope.fetched_at.timezone_aware",
+            "scope": "fetched_at",
+            "description": "fetched_at must include a timezone and is normalized to UTC",
+            "parameters": {
+                "format": "iso8601_date_time",
+                "timezone_offset": "required",
+                "normalization": "utc",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "batch.sequence.co_presence",
+            "scope": "payload.batch",
+            "description": "sequence and sequence_count must be provided together",
+            "parameters": {
+                "fields": ["sequence", "sequence_count"],
+                "operator": "co_present",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "batch.sequence.order",
+            "scope": "payload.batch",
+            "description": "sequence must not exceed sequence_count",
+            "parameters": {
+                "left": "sequence",
+                "operator": "less_than_or_equal",
+                "right": "sequence_count",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "batch.coverage.co_presence",
+            "scope": "payload.batch",
+            "description": "coverage_start_date and coverage_end_date must be provided together",
+            "parameters": {
+                "fields": ["coverage_start_date", "coverage_end_date"],
+                "operator": "co_present",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "batch.coverage.order",
+            "scope": "payload.batch",
+            "description": "coverage_start_date must not follow coverage_end_date",
+            "parameters": {
+                "left": "coverage_start_date",
+                "operator": "less_than_or_equal",
+                "right": "coverage_end_date",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "batch.backfill.data_date_equals_coverage_end",
+            "scope": "payload.batch",
+            "description": "backfill data_date must equal coverage_end_date when coverage is set",
+            "parameters": {
+                "when": {"delivery_mode": "backfill", "coverage_end_date": "present"},
+                "left": "data_date",
+                "operator": "equal",
+                "right": "coverage_end_date",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "row.ohlc.high_bound",
+            "scope": "payload.data[*]",
+            "description": "high must not be below any provided open, low, or close",
+            "parameters": {
+                "left": "high",
+                "operator": "greater_than_or_equal_each_present",
+                "right": ["open", "low", "close"],
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "row.ohlc.low_bound",
+            "scope": "payload.data[*]",
+            "description": "low must not be above any provided open, high, or close",
+            "parameters": {
+                "left": "low",
+                "operator": "less_than_or_equal_each_present",
+                "right": ["open", "high", "close"],
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "payload.coverage.contains_row_dates",
+            "scope": "payload",
+            "description": "coverage is required for other dates and must contain every row date",
+            "parameters": {
+                "operator": "range_contains_all",
+                "data_date": "batch.data_date",
+                "coverage_start": "batch.coverage_start_date",
+                "coverage_end": "batch.coverage_end_date",
+                "row_date": "data[*].trade_date",
+            },
+            "context_dependencies": [],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "payload.declared_record_count.matches_data",
+            "scope": "payload",
+            "description": "declared_record_count must equal the data array length",
+            "parameters": {
+                "declared": "batch.declared_record_count",
+                "operator": "equal",
+                "actual": "length(data)",
+            },
+            "context_dependencies": [],
+            "error_code": "DECLARED_RECORD_COUNT_MISMATCH",
+        },
+        {
+            "id": "payload.delivery_key.unique",
+            "scope": "payload.data",
+            "description": "delivery natural keys must be unique within the data array",
+            "parameters": {
+                "operator": "unique_by",
+                "fields": ["symbol", "trade_date"],
+            },
+            "context_dependencies": [],
+            "error_code": "DUPLICATE_DELIVERY_KEY",
+        },
+        {
+            "id": "payload.data.max_items",
+            "scope": "payload.data",
+            "description": "data array length is bounded by the active server setting",
+            "parameters": {"operator": "max_items", "minimum_effective_limit": 1},
+            "context_dependencies": [{"kind": "runtime_setting", "name": "SOURCE_MAX_DATA_ITEMS"}],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "payload.serialized.max_bytes",
+            "scope": "payload",
+            "description": "compact UTF-8 JSON encoding is bounded by the active server setting",
+            "parameters": {
+                "operator": "max_bytes",
+                "encoding": "utf-8",
+                "serialization": "compact_json",
+                "ensure_ascii": False,
+                "non_native_values": "stringified",
+                "minimum_effective_limit": 1,
+                "enforcement_stage": "after_attempt_contract_validation",
+            },
+            "context_dependencies": [
+                {"kind": "runtime_setting", "name": "SOURCE_MAX_PAYLOAD_BYTES"}
+            ],
+            "error_code": "INGRESS_SCHEMA_INVALID",
+        },
+        {
+            "id": "request.body.max_bytes",
+            "scope": "request",
+            "description": "known Content-Length is bounded before endpoint processing",
+            "parameters": {
+                "operator": "max_bytes",
+                "measurement": "content_length_header",
+                "minimum_effective_limit": 1,
+                "enforcement_stage": "before_attempt_middleware",
+            },
+            "context_dependencies": [
+                {"kind": "runtime_setting", "name": "SOURCE_MAX_PAYLOAD_BYTES"}
+            ],
+            "error_code": None,
+            "response": {
+                "http_status": 413,
+                "envelope": "middleware_detail",
+                "durable_attempt": False,
+            },
+        },
+    ]
+    if schema_id == "market_eod":
+        semantic_rules.append(
+            {
+                "id": "market.currency.row_or_dataset_default",
+                "scope": "payload.data[*]",
+                "description": "every row needs currency when the dataset has no default",
+                "parameters": {
+                    "row_field": "currency",
+                    "dataset_field": "defaults.currency",
+                    "operator": "row_present_or_dataset_default",
+                },
+                "context_dependencies": [{"kind": "dataset_context", "path": "defaults.currency"}],
+                "error_code": "CURRENCY_REQUIRED",
+            }
+        )
+    if schema_id == "futures_continuous_eod":
+        semantic_rules.append(
+            {
+                "id": "futures.currency.dataset_default_required",
+                "scope": "dataset",
+                "description": "continuous futures require a dataset default currency",
+                "parameters": {
+                    "field": "defaults.currency",
+                    "operator": "required",
+                },
+                "context_dependencies": [{"kind": "dataset_context", "path": "defaults.currency"}],
+                "error_code": "CURRENCY_REQUIRED",
+            }
+        )
+    row_string_paths = (
+        [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].name",
+            "payload.data[*].currency",
+        ]
+        if schema_id == "market_eod"
+        else [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].name",
+            "payload.data[*].active_contract_code",
+            "payload.data[*].roll_rule",
+        ]
+    )
+    transformations = [
+        {
+            "id": "normalization.strings.strip_whitespace",
+            "scope": "request_body",
+            "description": "leading and trailing whitespace is stripped before validation",
+            "operation": "strip_leading_trailing_whitespace",
+            "phase": "before_field_validation",
+            "paths": [
+                "dataset_key",
+                "source",
+                "request_key",
+                "idempotency_key",
+                "payload.batch.source_raw_ref",
+                "payload.batch.source_raw_sha256",
+                *row_string_paths,
+            ],
+        }
+    ]
+    contract_scope = {
+        "artifact_kind": "versioned_request_body_shape_and_semantics",
+        "necessary_for_api_acceptance": True,
+        "sufficient_for_api_acceptance": False,
+        "dispatch_discriminators": [
+            {
+                "path": "schema_id",
+                "type": "string",
+                "matching": "exact",
+                "normalization": "none_before_dispatch",
+                "expected": schema_id,
+            },
+            {
+                "path": "schema_version",
+                "type": "integer_non_boolean",
+                "matching": "exact",
+                "normalization": "none_before_dispatch",
+                "expected": schema_version,
+            },
+        ],
+        "covers": [
+            {
+                "id": "request_body.json_parsing",
+                "stage": "body_parsing",
+            },
+            {
+                "id": "request_body.shape",
+                "stage": "json_schema_validation",
+            },
+            {
+                "id": "request_body.normalization",
+                "stage": "body_normalization",
+                "extension": "x-findb-transformations",
+            },
+            {
+                "id": "request_body.semantics",
+                "stage": "body_semantic_validation",
+                "extension": "x-findb-semantic-rules",
+            },
+        ],
+        "excludes": [
+            "authentication_and_database_credential_lookup",
+            "rate_limiting",
+            "credential_source_and_dataset_authorization",
+            "dataset_registry_state_and_contract_declaration",
+            "idempotency_state",
+            "infrastructure_availability",
+        ],
+        "additional_acceptance_boundaries": [
+            {
+                "id": "authentication.api_key",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [401, 403],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+            },
+            {
+                "id": "authentication.database_lookup",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [503],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+            },
+            {
+                "id": "rate_limit.credential_or_client_ip",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [429],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+                "actors": ["source_client_or_legacy_credential", "client_ip"],
+            },
+            {
+                "id": "request.client_ip.available",
+                "stage": "before_attempt_dependency",
+                "http_statuses": [403],
+                "public_codes": [],
+                "attempt_semantics": "not_created",
+            },
+            {
+                "id": "credential.source_binding",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [403],
+                "public_codes": ["SOURCE_IDENTITY_MISMATCH"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "credential.dataset_allowlist",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [403],
+                "public_codes": ["DATASET_ACCESS_DENIED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.existence",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [400],
+                "public_codes": ["DATASET_NOT_FOUND"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.active",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [409],
+                "public_codes": ["DATASET_INACTIVE"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.contract_declaration",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [409],
+                "public_codes": ["DATASET_CONTRACT_NOT_CONFIGURED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.contract_scope",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [409],
+                "public_codes": ["DATASET_CONTRACT_NOT_CONFIGURED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "dataset.accepted_contract_version",
+                "stage": "after_attempt_application_validation",
+                "http_statuses": [422],
+                "public_codes": ["INGRESS_SCHEMA_NOT_ALLOWED"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "idempotency.collision",
+                "stage": "after_attempt_persistence_validation",
+                "http_statuses": [409],
+                "public_codes": ["IDEMPOTENCY_PAYLOAD_MISMATCH"],
+                "attempt_semantics": "durably_rejected",
+            },
+            {
+                "id": "infrastructure.database_or_internal_failure",
+                "stage": "multiple",
+                "http_statuses": [500, 503],
+                "public_codes": ["DATABASE_UNAVAILABLE", "INTERNAL_ERROR"],
+                "attempt_semantics": "depends_on_failure_stage",
+            },
+        ],
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"urn:findb:ingress-contract:{schema_id}:v{schema_version}",
+        "x-findb-contract": {
+            "schema_id": schema_id,
+            "schema_version": schema_version,
+        },
+        "x-findb-contract-scope": contract_scope,
+        "x-findb-transformations": transformations,
+        "x-findb-semantic-rules": semantic_rules,
+        **schema,
+    }
+
+
 def validate_ingress_request(value: Mapping[str, Any]) -> IngressRequestV1:
     """Dispatch and validate a raw request without guessing its schema version."""
     schema_id = value.get("schema_id")
@@ -127,4 +535,24 @@ def validate_dataset_contract_scope(
     if declaration.defaults.asset_class != registry_asset_class:
         raise ValueError(
             "Dataset contract defaults.asset_class does not match " "dataset_registry.asset_class"
+        )
+
+
+def validate_request_currency(
+    declaration: DatasetContractDeclaration,
+    request: IngressRequestV1,
+) -> None:
+    """Apply dataset-dependent currency requirements before persistence."""
+    if declaration.defaults.currency is not None:
+        return
+    if isinstance(request, MarketEODIngressRequest) and any(
+        row.currency is None for row in request.payload.data
+    ):
+        raise CurrencyRequiredError(
+            "currency is required for every market_eod row when the dataset has no "
+            "default currency"
+        )
+    if isinstance(request, FuturesContinuousEODIngressRequest):
+        raise CurrencyRequiredError(
+            "dataset default currency is required for futures_continuous_eod"
         )

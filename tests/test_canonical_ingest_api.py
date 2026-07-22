@@ -233,6 +233,79 @@ async def test_dataset_discovery_exposes_contract_declaration(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema_id", "expected_title", "has_currency_rule"),
+    [
+        ("market_eod", "MarketEODIngressRequest", True),
+        (
+            "futures_continuous_eod",
+            "FuturesContinuousEODIngressRequest",
+            False,
+        ),
+    ],
+)
+async def test_versioned_contract_schema_endpoint_is_machine_readable(
+    client: AsyncClient,
+    source_headers: dict,
+    schema_id: str,
+    expected_title: str,
+    has_currency_rule: bool,
+):
+    url = f"/api/v1/source/contracts/{schema_id}/versions/1"
+
+    first = await client.get(url, headers=source_headers)
+    second = await client.get(url, headers=source_headers)
+
+    assert first.status_code == 200
+    assert first.content == second.content
+    schema = first.json()
+    assert schema["$id"] == f"urn:findb:ingress-contract:{schema_id}:v1"
+    assert schema["title"] == expected_title
+    assert schema["properties"]["schema_id"]["const"] == schema_id
+    assert schema["x-findb-contract-scope"]["sufficient_for_api_acceptance"] is False
+    assert schema["x-findb-contract-scope"]["additional_acceptance_boundaries"]
+    assert schema["x-findb-transformations"][0]["id"] == ("normalization.strings.strip_whitespace")
+    assert (
+        any(
+            rule["id"] == "market.currency.row_or_dataset_default"
+            for rule in schema["x-findb-semantic-rules"]
+        )
+        is has_currency_rule
+    )
+
+
+@pytest.mark.asyncio
+async def test_contract_schema_endpoint_requires_source_auth(client: AsyncClient):
+    response = await client.get("/api/v1/source/contracts/market_eod/versions/1")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_unknown_contract_schema_returns_404(
+    client: AsyncClient,
+    source_headers: dict,
+):
+    response = await client.get(
+        "/api/v1/source/contracts/market_eod/versions/99",
+        headers=source_headers,
+    )
+
+    assert response.status_code == 404
+    assert "market_eod.v99" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_openapi_publishes_contract_route_without_prevalidating_ingest_body(
+    client: AsyncClient,
+):
+    schema = (await client.get("/openapi.json")).json()
+
+    assert "/api/v1/source/contracts/{schema_id}/versions/{schema_version}" in schema["paths"]
+    assert "requestBody" not in schema["paths"]["/api/v1/source/ingest"]["post"]
+
+
+@pytest.mark.asyncio
 async def test_canonical_market_eod_normalizes_without_provider_specific_fields(
     client: AsyncClient,
     source_headers: dict,
@@ -300,6 +373,37 @@ async def test_canonical_futures_contract_routes_by_schema_not_provider_payload(
     assert str(eod.close) == "23150.00000000"
     assert eod.source == "bloomberg"
     assert run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_futures_contract_requires_dataset_default_currency_before_persistence(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_futures_dataset(test_session)
+    dataset = (
+        await test_session.execute(
+            select(DatasetRegistry).where(DatasetRegistry.dataset_key == "wtx_eod")
+        )
+    ).scalar_one()
+    config = dict(dataset.config)
+    config["defaults"] = {**config["defaults"], "currency": None}
+    dataset.config = config
+    await test_session.commit()
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_futures_request(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CURRENCY_REQUIRED"
+    attempt = await test_session.get(IngestionAttempt, UUID(response.json()["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
 
 
 @pytest.mark.asyncio
@@ -384,6 +488,219 @@ async def test_schema_invalid_request_is_durably_rejected(
     assert attempt.run_id is None
     assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
     assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("default_currency", "row_currency", "expected_status"),
+    [
+        pytest.param("TWD", "TWD", 202, id="default-present-row-present"),
+        pytest.param("TWD", None, 202, id="default-present-row-missing"),
+        pytest.param(None, "TWD", 202, id="default-missing-row-present"),
+        pytest.param(None, None, 422, id="default-missing-row-missing"),
+    ],
+)
+async def test_market_currency_resolves_from_dataset_default_or_every_row(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    default_currency: str | None,
+    row_currency: str | None,
+    expected_status: int,
+):
+    config = _dataset_config()
+    config["defaults"]["currency"] = default_currency
+    await _seed_dataset(test_session, config=config)
+    value = _canonical_request()
+    if row_currency is None:
+        value["payload"]["data"][0].pop("currency")
+    else:
+        value["payload"]["data"][0]["currency"] = row_currency
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 202:
+        attempt = await test_session.get(
+            IngestionAttempt,
+            UUID(response.json()["attempt_id"]),
+        )
+        assert attempt.status == "accepted"
+        assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 1
+        assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 1
+    else:
+        assert response.json()["error"]["code"] == "CURRENCY_REQUIRED"
+        attempt = await test_session.get(
+            IngestionAttempt,
+            UUID(response.json()["attempt_id"]),
+        )
+        assert attempt.status == "rejected"
+        assert attempt.failure_code == "CURRENCY_REQUIRED"
+        assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+        assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
+        assert await test_session.scalar(select(func.count()).select_from(NormalizationJob)) == 0
+
+
+@pytest.mark.asyncio
+async def test_market_currency_rejects_mixed_rows_without_dataset_default(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    config = _dataset_config()
+    config["defaults"]["currency"] = None
+    await _seed_dataset(test_session, config=config)
+    value = _canonical_request()
+    second_row = dict(value["payload"]["data"][0])
+    second_row["symbol"] = "2317"
+    second_row.pop("currency")
+    value["payload"]["data"].append(second_row)
+    value["payload"]["batch"]["declared_record_count"] = 2
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CURRENCY_REQUIRED"
+    attempt = await test_session.get(IngestionAttempt, UUID(response.json()["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("count", "DECLARED_RECORD_COUNT_MISMATCH"),
+        ("duplicate", "DUPLICATE_DELIVERY_KEY"),
+    ],
+)
+async def test_semantic_validation_uses_stable_codes_and_durable_attempts(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    mutation: str,
+    expected_code: str,
+):
+    value = _canonical_request()
+    if mutation == "count":
+        value["payload"]["batch"]["declared_record_count"] = 2
+    else:
+        value["payload"]["data"].append(dict(value["payload"]["data"][0]))
+        value["payload"]["batch"]["declared_record_count"] = 2
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == expected_code
+    attempt = await test_session.get(IngestionAttempt, UUID(response.json()["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == expected_code
+    assert attempt.error_message is not None
+    assert len(attempt.error_message) <= 1_000
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
+    assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_code", "expected_message"),
+    [
+        (
+            "count",
+            "DECLARED_RECORD_COUNT_MISMATCH",
+            "declared_record_count must equal",
+        ),
+        (
+            "duplicate",
+            "DUPLICATE_DELIVERY_KEY",
+            "duplicate (symbol, trade_date)",
+        ),
+    ],
+)
+async def test_special_validation_code_and_message_select_the_same_error(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    mutation: str,
+    expected_code: str,
+    expected_message: str,
+):
+    value = _canonical_request()
+    value["source"] = "Invalid Source"
+    if mutation == "count":
+        value["payload"]["batch"]["declared_record_count"] = 2
+    else:
+        value["payload"]["data"].append(dict(value["payload"]["data"][0]))
+        value["payload"]["batch"]["declared_record_count"] = 2
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == expected_code
+    assert expected_message in body["error"]["message"]
+    assert "String should match pattern" not in body["error"]["message"]
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == expected_code
+    assert attempt.error_message == body["error"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    [
+        ("sequence", "sequence and sequence_count must be provided together"),
+        ("ohlc", "high must not be below"),
+        ("coverage", "coverage dates are required"),
+    ],
+)
+async def test_representative_semantic_rules_are_enforced_after_attempt_creation(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    mutation: str,
+    expected_message: str,
+):
+    value = _canonical_request()
+    if mutation == "sequence":
+        value["payload"]["batch"]["sequence"] = 1
+    elif mutation == "ohlc":
+        value["payload"]["data"][0]["high"] = "900"
+    else:
+        value["payload"]["data"][0]["trade_date"] = "2026-07-20"
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "INGRESS_SCHEMA_INVALID"
+    assert expected_message in body["error"]["message"]
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == "INGRESS_SCHEMA_INVALID"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
 
 
 @pytest.mark.asyncio
@@ -585,6 +902,31 @@ async def test_unbounded_schema_version_does_not_break_attempt_persistence(
     attempt = await test_session.get(IngestionAttempt, UUID(response.json()["attempt_id"]))
     assert attempt.status == "rejected"
     assert attempt.schema_version is None
+
+
+@pytest.mark.asyncio
+async def test_whitespace_schema_id_is_exact_dispatch_and_durably_unsupported(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    value = _canonical_request()
+    value["schema_id"] = " market_eod "
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=value,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "INGRESS_SCHEMA_UNSUPPORTED"
+    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
+    assert attempt.status == "rejected"
+    assert attempt.failure_code == "INGRESS_SCHEMA_UNSUPPORTED"
+    assert attempt.schema_id == "market_eod"
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
 
 
 @pytest.mark.asyncio

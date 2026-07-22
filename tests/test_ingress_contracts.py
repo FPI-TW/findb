@@ -1,5 +1,7 @@
 """Tests for provider-neutral, versioned ingress contracts."""
 
+import hashlib
+import json
 from datetime import timezone
 from decimal import Decimal
 
@@ -8,10 +10,12 @@ from pydantic import ValidationError
 
 from app.config import Settings, get_settings
 from app.schemas.ingress import FuturesContinuousEODIngressRequest, MarketEODIngressRequest
+from app.services.canonical_ingestion import _select_validation_error
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     DatasetContractDeclaration,
     UnsupportedIngressContractError,
+    get_contract_json_schema,
     parse_dataset_contract_declaration,
     supported_contracts,
     validate_ingress_request,
@@ -177,8 +181,10 @@ def test_market_eod_rejects_declared_record_count_mismatch():
     value = _market_eod_request()
     value["payload"]["batch"]["declared_record_count"] = 2
 
-    with pytest.raises(ValidationError, match="declared_record_count"):
+    with pytest.raises(ValidationError, match="declared_record_count") as caught:
         MarketEODIngressRequest.model_validate(value)
+
+    assert caught.value.errors(include_input=False)[0]["type"] == ("declared_record_count_mismatch")
 
 
 def test_market_eod_rejects_duplicate_natural_key():
@@ -186,8 +192,10 @@ def test_market_eod_rejects_duplicate_natural_key():
     value["payload"]["data"].append(dict(value["payload"]["data"][0]))
     value["payload"]["batch"]["declared_record_count"] = 2
 
-    with pytest.raises(ValidationError, match=r"duplicate \(symbol, trade_date\)"):
+    with pytest.raises(ValidationError, match=r"duplicate \(symbol, trade_date\)") as caught:
         MarketEODIngressRequest.model_validate(value)
+
+    assert caught.value.errors(include_input=False)[0]["type"] == "duplicate_delivery_key"
 
 
 @pytest.mark.parametrize(
@@ -234,6 +242,60 @@ def test_backfill_coverage_accepts_multiple_dates():
     assert len(request.payload.data) == 2
 
 
+@pytest.mark.parametrize(
+    ("batch_update", "message"),
+    [
+        ({"sequence": 1}, "sequence and sequence_count must be provided together"),
+        (
+            {"sequence": 2, "sequence_count": 1},
+            "sequence must be less than or equal to sequence_count",
+        ),
+        (
+            {"coverage_start_date": "2026-07-21"},
+            "coverage_start_date and coverage_end_date must be provided together",
+        ),
+        (
+            {
+                "coverage_start_date": "2026-07-22",
+                "coverage_end_date": "2026-07-21",
+            },
+            "coverage_start_date must not be after coverage_end_date",
+        ),
+        (
+            {
+                "delivery_mode": "backfill",
+                "coverage_start_date": "2026-07-20",
+                "coverage_end_date": "2026-07-20",
+            },
+            "backfill data_date must equal coverage_end_date",
+        ),
+    ],
+)
+def test_batch_semantic_relationships_are_enforced(
+    batch_update: dict,
+    message: str,
+):
+    value = _market_eod_request()
+    value["payload"]["batch"].update(batch_update)
+
+    with pytest.raises(ValidationError, match=message):
+        MarketEODIngressRequest.model_validate(value)
+
+
+def test_coverage_must_contain_every_row_date():
+    value = _market_eod_request()
+    value["payload"]["data"][0]["trade_date"] = "2026-07-19"
+    value["payload"]["batch"].update(
+        {
+            "coverage_start_date": "2026-07-20",
+            "coverage_end_date": "2026-07-21",
+        }
+    )
+
+    with pytest.raises(ValidationError, match="coverage dates must include every row trade_date"):
+        MarketEODIngressRequest.model_validate(value)
+
+
 def test_contract_payload_obeys_configured_item_limit():
     settings = get_settings()
     original_limit = settings.SOURCE_MAX_DATA_ITEMS
@@ -247,6 +309,18 @@ def test_contract_payload_obeys_configured_item_limit():
             MarketEODIngressRequest.model_validate(value)
     finally:
         settings.SOURCE_MAX_DATA_ITEMS = original_limit
+
+
+def test_contract_payload_obeys_configured_serialized_byte_limit():
+    settings = get_settings()
+    original_limit = settings.SOURCE_MAX_PAYLOAD_BYTES
+    settings.SOURCE_MAX_PAYLOAD_BYTES = 1
+
+    try:
+        with pytest.raises(ValidationError, match="maximum size of 1 bytes"):
+            MarketEODIngressRequest.model_validate(_market_eod_request())
+    finally:
+        settings.SOURCE_MAX_PAYLOAD_BYTES = original_limit
 
 
 def test_futures_continuous_eod_v1_accepts_contract_fields():
@@ -270,6 +344,200 @@ def test_registry_dispatches_explicit_contract_version():
 
     assert isinstance(request, MarketEODIngressRequest)
     assert supported_contracts() == (("futures_continuous_eod", 1), ("market_eod", 1))
+
+
+@pytest.mark.parametrize(
+    ("schema_id", "title", "schema_specific_rule", "expected_sha256"),
+    [
+        (
+            "market_eod",
+            "MarketEODIngressRequest",
+            "market.currency.row_or_dataset_default",
+            "9b48d9aebf3d3d1f7e619d0a1fea4c86b72e0e046e58122dfa9ac359796781de",
+        ),
+        (
+            "futures_continuous_eod",
+            "FuturesContinuousEODIngressRequest",
+            "futures.currency.dataset_default_required",
+            "8d48f044b57bd529c9940e4373d76683159717f20e61df773a9a33c6f9daa3bd",
+        ),
+    ],
+)
+def test_registry_publishes_versioned_deterministic_json_schema(
+    schema_id: str,
+    title: str,
+    schema_specific_rule: str,
+    expected_sha256: str,
+):
+    first = get_contract_json_schema(schema_id, 1)
+    second = get_contract_json_schema(schema_id, 1)
+
+    assert first == second
+    assert first["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert first["$id"] == f"urn:findb:ingress-contract:{schema_id}:v1"
+    assert first["title"] == title
+    assert first["x-findb-contract"] == {
+        "schema_id": schema_id,
+        "schema_version": 1,
+    }
+    assert first["$defs"]
+    assert first["properties"]["schema_id"]["const"] == schema_id
+    assert first["properties"]["schema_version"]["const"] == 1
+    rules = first["x-findb-semantic-rules"]
+    rule_ids = {rule["id"] for rule in rules}
+    assert rule_ids == {
+        "envelope.fetched_at.timezone_aware",
+        "batch.sequence.co_presence",
+        "batch.sequence.order",
+        "batch.coverage.co_presence",
+        "batch.coverage.order",
+        "batch.backfill.data_date_equals_coverage_end",
+        "row.ohlc.high_bound",
+        "row.ohlc.low_bound",
+        "payload.coverage.contains_row_dates",
+        "payload.declared_record_count.matches_data",
+        "payload.delivery_key.unique",
+        "payload.data.max_items",
+        "payload.serialized.max_bytes",
+        "request.body.max_bytes",
+        schema_specific_rule,
+    }
+    for rule in rules:
+        assert set(rule) >= {
+            "id",
+            "scope",
+            "description",
+            "parameters",
+            "context_dependencies",
+            "error_code",
+        }
+    by_id = {rule["id"]: rule for rule in rules}
+    assert by_id["payload.delivery_key.unique"]["parameters"]["fields"] == [
+        "symbol",
+        "trade_date",
+    ]
+    assert by_id["payload.data.max_items"]["context_dependencies"] == [
+        {"kind": "runtime_setting", "name": "SOURCE_MAX_DATA_ITEMS"}
+    ]
+    assert by_id[schema_specific_rule]["context_dependencies"] == [
+        {"kind": "dataset_context", "path": "defaults.currency"}
+    ]
+    scope = first["x-findb-contract-scope"]
+    assert scope["artifact_kind"] == "versioned_request_body_shape_and_semantics"
+    assert scope["necessary_for_api_acceptance"] is True
+    assert scope["sufficient_for_api_acceptance"] is False
+    assert {item["id"] for item in scope["covers"]} == {
+        "request_body.json_parsing",
+        "request_body.shape",
+        "request_body.normalization",
+        "request_body.semantics",
+    }
+    assert set(scope["excludes"]) == {
+        "authentication_and_database_credential_lookup",
+        "rate_limiting",
+        "credential_source_and_dataset_authorization",
+        "dataset_registry_state_and_contract_declaration",
+        "idempotency_state",
+        "infrastructure_availability",
+    }
+    boundaries = {item["id"]: item for item in scope["additional_acceptance_boundaries"]}
+    assert set(boundaries) == {
+        "authentication.api_key",
+        "authentication.database_lookup",
+        "rate_limit.credential_or_client_ip",
+        "request.client_ip.available",
+        "credential.source_binding",
+        "credential.dataset_allowlist",
+        "dataset.existence",
+        "dataset.active",
+        "dataset.contract_declaration",
+        "dataset.contract_scope",
+        "dataset.accepted_contract_version",
+        "idempotency.collision",
+        "infrastructure.database_or_internal_failure",
+    }
+    assert boundaries["authentication.api_key"]["attempt_semantics"] == "not_created"
+    assert boundaries["rate_limit.credential_or_client_ip"]["actors"] == [
+        "source_client_or_legacy_credential",
+        "client_ip",
+    ]
+    assert boundaries["dataset.existence"]["public_codes"] == ["DATASET_NOT_FOUND"]
+    assert (
+        boundaries["infrastructure.database_or_internal_failure"]["attempt_semantics"]
+        == "depends_on_failure_stage"
+    )
+    transformations = first["x-findb-transformations"]
+    assert [item["id"] for item in transformations] == ["normalization.strings.strip_whitespace"]
+    transformed_paths = set(transformations[0]["paths"])
+    assert {
+        "dataset_key",
+        "source",
+        "request_key",
+        "idempotency_key",
+        "payload.batch.source_raw_ref",
+        "payload.batch.source_raw_sha256",
+        "payload.data[*].symbol",
+        "payload.data[*].source_symbol",
+        "payload.data[*].name",
+    } <= transformed_paths
+    assert "schema_id" not in transformed_paths
+    assert "schema_version" not in transformed_paths
+    assert scope["dispatch_discriminators"] == [
+        {
+            "path": "schema_id",
+            "type": "string",
+            "matching": "exact",
+            "normalization": "none_before_dispatch",
+            "expected": schema_id,
+        },
+        {
+            "path": "schema_version",
+            "type": "integer_non_boolean",
+            "matching": "exact",
+            "normalization": "none_before_dispatch",
+            "expected": 1,
+        },
+    ]
+    expected_specific_path = (
+        "payload.data[*].currency" if schema_id == "market_eod" else "payload.data[*].roll_rule"
+    )
+    assert expected_specific_path in transformed_paths
+    canonical_json = json.dumps(first, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(canonical_json).hexdigest() == expected_sha256
+
+
+def test_validation_error_priority_selects_one_structured_error_for_code_and_message():
+    errors = [
+        {"type": "duplicate_delivery_key", "loc": ("payload",)},
+        {"type": "declared_record_count_mismatch", "loc": ("payload",)},
+        {"type": "string_pattern_mismatch", "loc": ("source",)},
+    ]
+
+    code, selected = _select_validation_error(errors)
+
+    assert code == "DECLARED_RECORD_COUNT_MISMATCH"
+    assert selected is errors[1]
+
+
+def test_contract_normalizes_declared_string_whitespace_before_validation():
+    value = _market_eod_request()
+    value["request_key"] = "  request-key  "
+    value["payload"]["batch"]["source_raw_ref"] = "  s3://bucket/raw.json  "
+    value["payload"]["data"][0]["symbol"] = "  2330  "
+
+    request = MarketEODIngressRequest.model_validate(value)
+
+    assert request.request_key == "request-key"
+    assert request.payload.batch.source_raw_ref == "s3://bucket/raw.json"
+    assert request.payload.data[0].symbol == "2330"
+
+
+def test_contract_registry_does_not_normalize_dispatch_discriminators():
+    value = _market_eod_request()
+    value["schema_id"] = " market_eod "
+
+    with pytest.raises(UnsupportedIngressContractError, match=r" market_eod \.v1"):
+        validate_ingress_request(value)
 
 
 def test_registry_does_not_guess_unknown_or_missing_versions():

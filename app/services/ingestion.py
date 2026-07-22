@@ -29,6 +29,7 @@ from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
     validate_dataset_contract_scope,
+    validate_request_currency,
 )
 from app.services.normalize import (
     BaseNormalizer,
@@ -836,6 +837,8 @@ class IngestionService:
                 f"Dataset {request.dataset_key} does not accept "
                 f"{request.schema_id}.v{request.schema_version}"
             )
+
+        validate_request_currency(declaration, request)
 
         canonical_payload = request.payload.model_dump(mode="json")
         request_payload_sha256 = payload_sha256(canonical_payload)
