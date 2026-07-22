@@ -344,6 +344,7 @@ Source API 依下列順序處理：
 - [x] 新增 attempt-level failure audit 與 schema/version lineage。
 - [x] 發布 versioned JSON Schema，補固定 semantic error codes 與 currency 跨模型規則。
 - [x] 新增 typed delivery policy、rolling median baseline、calendar-aware latest-date 與彙總 DQ warning。
+- [x] 新增 opt-in `DATASET_DELIVERY_MISSING` scheduler、durable alert、late-delivery resolve 與 Admin health 觀測。
 
 Phase 1 的 FinDB boundary 已完成；Phase 0 的真實 provider fixtures/mapping，以及 Phase 2 的
 fetch adapter shadow migration 仍未完成，因此尚不能宣告 production feed cutover。
@@ -387,7 +388,7 @@ fetch adapter shadow migration 仍未完成，因此尚不能宣告 production f
 
 ## 下一個實作切片
 
-下一個 FinDB PR 使用相同 calendar resolver 實作 `DATASET_DELIVERY_MISSING` scheduler/alert；本階段
-只評估已送達的同步 delivery，不會主動偵測「整批沒有送來」。Fetch repo 同時補真實
-FinLab/Bloomberg fixtures、TW equity/ETF adapters 與 shadow comparison。Phase 2 驗收完成前，
-不切 production feed，也不開始 Phase 4 legacy freeze。
+FinDB 已具備同步 delivery policy 與 opt-in 完全未送達監控；下一步在 Fetch repo 補真實
+FinLab/Bloomberg fixtures、TW equity/ETF adapters 與 shadow comparison，並在每個 feed cutover 時
+才設定 `missing_delivery.expected_sources`。Phase 2 驗收完成前，不切 production feed，也不開始
+Phase 4 legacy freeze。外部通知整合另案處理。

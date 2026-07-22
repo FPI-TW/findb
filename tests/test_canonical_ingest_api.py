@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 from uuid import UUID
 
 import pytest
@@ -18,6 +18,7 @@ from app.models.registry import (
     DQIssue,
     IngestionAttempt,
     IngestionRun,
+    MissingDeliveryAlert,
     NormalizationJob,
     NormalizationOutbox,
     SourceClient,
@@ -229,6 +230,38 @@ async def test_canonical_ingest_persists_attempt_raw_run_and_job(
         )
         == 1
     )
+
+
+@pytest.mark.asyncio
+async def test_canonical_full_snapshot_resolves_exact_missing_delivery_alert(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_dataset(test_session)
+    alert = MissingDeliveryAlert(
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
+        schema_version=1,
+        expected_data_date=date(2026, 7, 21),
+        status="open",
+        first_detected_at=utc_now(),
+        last_detected_at=utc_now(),
+    )
+    test_session.add(alert)
+    await test_session.commit()
+
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(idempotency_key="resolve_missing_alert"),
+    )
+
+    assert response.status_code == 202
+    await test_session.refresh(alert)
+    assert alert.status == "resolved"
+    assert alert.resolved_at is not None
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,265 @@
+"""Durable monitoring for canonical full snapshots that never arrived."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from typing import Any
+
+from sqlalchemy import exists, func, select, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
+from app.services.delivery_policy import (
+    parse_delivery_expectation,
+    resolve_expected_data_date,
+)
+from app.services.feed_scope import lock_feed_scope
+from app.services.ingress_contracts import DatasetContractDeclaration
+from app.utils import utc_now, uuid7
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DeliveryMonitorResult:
+    created_or_refreshed: int = 0
+    resolved: int = 0
+    diagnostics: tuple[dict[str, Any], ...] = ()
+    skipped_locked: bool = False
+
+
+def _bounded_diagnostic(dataset_key: str, source: str, reason: str) -> dict[str, str]:
+    return {
+        "dataset_key": dataset_key[:50],
+        "source": source[:50],
+        "reason": reason[:80],
+    }
+
+
+async def scan_missing_deliveries(
+    db: AsyncSession,
+    *,
+    now: datetime | None = None,
+) -> DeliveryMonitorResult:
+    """Resolve late arrivals and upsert one alert per missing identity/date."""
+    evaluated_at = (now or utc_now()).astimezone(timezone.utc)
+    datasets = list(
+        (await db.execute(select(DatasetRegistry).where(DatasetRegistry.is_active.is_(True))))
+        .scalars()
+        .all()
+    )
+    await db.commit()
+    diagnostics: list[dict[str, Any]] = []
+    refreshed = 0
+    resolved = 0
+    skipped_locked = False
+    for dataset in datasets:
+        dataset_key = dataset.dataset_key
+        dataset_config = dataset.config
+        try:
+            declaration = DatasetContractDeclaration.model_validate(dataset_config or {})
+            expectation = parse_delivery_expectation(dataset_config)
+        except ValueError:
+            logger.warning(
+                "Skipping invalid delivery monitor config for dataset=%s",
+                dataset_key[:50],
+            )
+            diagnostics.append(_bounded_diagnostic(dataset_key, "", "invalid_dataset_contract"))
+            continue
+        if expectation is None or expectation.missing_delivery.action == "disabled":
+            continue
+        latest = expectation.latest_date
+        if latest is None:
+            diagnostics.append(
+                _bounded_diagnostic(dataset_key, "", "latest_date_policy_not_configured")
+            )
+            continue
+
+        for source in expectation.missing_delivery.expected_sources:
+            acquired = await lock_feed_scope(
+                db,
+                dataset_key=dataset_key,
+                source=source,
+                schema_id=declaration.schema_id,
+                schema_version=declaration.current_schema_version,
+                wait=False,
+            )
+            if not acquired:
+                skipped_locked = True
+                await db.rollback()
+                diagnostics.append(_bounded_diagnostic(dataset_key, source, "feed_scope_locked"))
+                continue
+
+            resolved += await _resolve_open_alerts_for_feed(
+                db,
+                dataset_key=dataset_key,
+                source=source,
+                schema_id=declaration.schema_id,
+                schema_version=declaration.current_schema_version,
+                resolved_at=evaluated_at,
+            )
+            expected_date, reason = await resolve_expected_data_date(db, latest, evaluated_at)
+            if expected_date is None:
+                item = _bounded_diagnostic(dataset_key, source, reason or "calendar_unavailable")
+                diagnostics.append(item)
+                logger.warning("Missing delivery scan skipped: %s", item)
+                await db.commit()
+                continue
+
+            present = await db.scalar(
+                select(
+                    exists().where(
+                        IngestionRun.dataset_key == dataset_key,
+                        IngestionRun.source == source,
+                        IngestionRun.schema_id == declaration.schema_id,
+                        IngestionRun.schema_version == declaration.current_schema_version,
+                        IngestionRun.batch_data_date == expected_date,
+                        IngestionRun.delivery_mode == "full_snapshot",
+                        IngestionRun.is_rerun.is_(False),
+                    )
+                )
+            )
+            if present:
+                await db.commit()
+                continue
+            details = {
+                "code": "DATASET_DELIVERY_MISSING",
+                "feed": f"{source}:{dataset_key}",
+                "calendar_market": latest.calendar_market,
+                "evaluated_at": evaluated_at.isoformat(),
+            }
+            statement = (
+                insert(MissingDeliveryAlert)
+                .values(
+                    alert_id=uuid7(),
+                    dataset_key=dataset_key,
+                    source=source,
+                    schema_id=declaration.schema_id,
+                    schema_version=declaration.current_schema_version,
+                    expected_data_date=expected_date,
+                    status="open",
+                    first_detected_at=evaluated_at,
+                    last_detected_at=evaluated_at,
+                    details=details,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_missing_delivery_identity_date",
+                    set_={
+                        "last_detected_at": evaluated_at,
+                        "details": details,
+                    },
+                    where=MissingDeliveryAlert.status == "open",
+                )
+            )
+            await db.execute(statement)
+            refreshed += 1
+            await db.commit()
+
+    return DeliveryMonitorResult(
+        created_or_refreshed=refreshed,
+        resolved=resolved,
+        diagnostics=tuple(diagnostics[:100]),
+        skipped_locked=skipped_locked,
+    )
+
+
+async def _resolve_open_alerts_for_feed(
+    db: AsyncSession,
+    *,
+    dataset_key: str,
+    source: str,
+    schema_id: str,
+    schema_version: int,
+    resolved_at: datetime,
+) -> int:
+    delivered = exists(
+        select(IngestionRun.run_id).where(
+            IngestionRun.dataset_key == dataset_key,
+            IngestionRun.source == source,
+            IngestionRun.schema_id == schema_id,
+            IngestionRun.schema_version == schema_version,
+            IngestionRun.batch_data_date == MissingDeliveryAlert.expected_data_date,
+            IngestionRun.delivery_mode == "full_snapshot",
+            IngestionRun.is_rerun.is_(False),
+        )
+    )
+    resolution = await db.execute(
+        update(MissingDeliveryAlert)
+        .where(
+            MissingDeliveryAlert.status == "open",
+            MissingDeliveryAlert.dataset_key == dataset_key,
+            MissingDeliveryAlert.source == source,
+            MissingDeliveryAlert.schema_id == schema_id,
+            MissingDeliveryAlert.schema_version == schema_version,
+            delivered,
+        )
+        .values(status="resolved", resolved_at=resolved_at)
+        .returning(MissingDeliveryAlert.alert_id)
+    )
+    return len(resolution.scalars().all())
+
+
+async def resolve_missing_delivery_for_run(
+    db: AsyncSession,
+    *,
+    dataset_key: str,
+    source: str,
+    schema_id: str,
+    schema_version: int,
+    data_date: date,
+    resolved_at: datetime | None = None,
+) -> int:
+    """Resolve the exact alert inside the accepting ingress transaction."""
+    resolution = await db.execute(
+        update(MissingDeliveryAlert)
+        .where(
+            MissingDeliveryAlert.status == "open",
+            MissingDeliveryAlert.dataset_key == dataset_key,
+            MissingDeliveryAlert.source == source,
+            MissingDeliveryAlert.schema_id == schema_id,
+            MissingDeliveryAlert.schema_version == schema_version,
+            MissingDeliveryAlert.expected_data_date == data_date,
+        )
+        .values(status="resolved", resolved_at=resolved_at or utc_now())
+        .returning(MissingDeliveryAlert.alert_id)
+    )
+    return len(resolution.scalars().all())
+
+
+async def list_missing_delivery_alerts(
+    db: AsyncSession,
+    *,
+    status: str | None,
+    dataset_key: str | None,
+    source: str | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[MissingDeliveryAlert], int]:
+    conditions = []
+    if status:
+        conditions.append(MissingDeliveryAlert.status == status)
+    if dataset_key:
+        conditions.append(MissingDeliveryAlert.dataset_key == dataset_key)
+    if source:
+        conditions.append(MissingDeliveryAlert.source == source.strip().lower())
+    statement = select(MissingDeliveryAlert).where(*conditions)
+    count_statement = select(func.count()).select_from(MissingDeliveryAlert).where(*conditions)
+    total = int((await db.scalar(count_statement)) or 0)
+    rows = list(
+        (
+            await db.execute(
+                statement.order_by(
+                    MissingDeliveryAlert.first_detected_at.desc(),
+                    MissingDeliveryAlert.alert_id.desc(),
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return rows, total

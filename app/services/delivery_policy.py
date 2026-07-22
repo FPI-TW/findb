@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from statistics import median
@@ -11,13 +12,15 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import TradingCalendar
 from app.models.registry import IngestionRun
 from app.schemas.ingress import DeliveryMode, IngressRequestV1
+from app.services.feed_scope import lock_feed_scope
 from app.utils import utc_now
+from app.vocabulary import SOURCE_NAME_PATTERN
 
 Ratio = Annotated[float, Field(ge=0, lt=1)]
 PolicyCode = Literal[
@@ -89,6 +92,37 @@ class LatestDatePolicy(BaseModel):
         return value
 
 
+class MissingDeliveryPolicy(BaseModel):
+    """Opt-in monitor configuration for expected canonical feed sources."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    action: Literal["disabled", "warn"] = "disabled"
+    expected_sources: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+    )
+
+    @field_validator("expected_sources")
+    @classmethod
+    def normalize_sources(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(
+            not value or len(value) > 50 or re.fullmatch(SOURCE_NAME_PATTERN, value) is None
+            for value in normalized
+        ):
+            raise ValueError("expected_sources must contain stable lowercase provider names")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("expected_sources must not contain duplicates")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_enabled_sources(self) -> "MissingDeliveryPolicy":
+        if self.action == "warn" and not self.expected_sources:
+            raise ValueError("expected_sources must be non-empty when missing delivery is enabled")
+        return self
+
+
 class DeliveryExpectation(BaseModel):
     """Typed dataset delivery policy with compatibility for the original flat config."""
 
@@ -101,6 +135,7 @@ class DeliveryExpectation(BaseModel):
     record_count: RecordCountPolicy = Field(default_factory=RecordCountPolicy)
     freshness: FreshnessPolicy = Field(default_factory=FreshnessPolicy)
     latest_date: LatestDatePolicy | None = None
+    missing_delivery: MissingDeliveryPolicy = Field(default_factory=MissingDeliveryPolicy)
 
     @model_validator(mode="before")
     @classmethod
@@ -178,18 +213,13 @@ async def lock_delivery_policy_scope(
     request: IngressRequestV1,
 ) -> None:
     """Serialize duplicate recheck, baseline evaluation, and delivery creation."""
-    scope = ":".join(
-        (
-            "delivery-policy",
-            request.dataset_key,
-            request.source,
-            request.schema_id,
-            str(request.schema_version),
-        )
-    )
-    await db.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
-        {"scope": scope},
+    await lock_feed_scope(
+        db,
+        dataset_key=request.dataset_key,
+        source=request.source,
+        schema_id=request.schema_id,
+        schema_version=request.schema_version,
+        wait=True,
     )
 
 
@@ -219,7 +249,7 @@ async def _baseline_runs(
     return list((await db.execute(statement)).scalars().all())
 
 
-async def _expected_data_date(
+async def resolve_expected_data_date(
     db: AsyncSession,
     policy: LatestDatePolicy,
     now: datetime,
@@ -372,7 +402,9 @@ async def evaluate_delivery_policy(
         and latest is not None
         and latest.action != PolicyAction.DISABLED
     ):
-        expected_date, unavailable_reason = await _expected_data_date(db, latest, evaluated_at)
+        expected_date, unavailable_reason = await resolve_expected_data_date(
+            db, latest, evaluated_at
+        )
         if expected_date is None:
             violations.append(
                 PolicyViolation(

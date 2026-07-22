@@ -32,6 +32,7 @@ KNOWN_MARKETS = (
 
 ASSET_CLASS_PATTERN = r"^[a-z][a-z0-9_]{1,19}$"
 MARKET_PATTERN = r"^[A-Z][A-Z0-9_]{1,9}$"
+SOURCE_NAME_PATTERN = r"^[a-z0-9_]+$"
 
 _ASSET_CLASS_RE = re.compile(ASSET_CLASS_PATTERN)
 _MARKET_RE = re.compile(MARKET_PATTERN)
