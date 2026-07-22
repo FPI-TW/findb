@@ -20,13 +20,20 @@ from app.models.registry import (
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
+    SourceClient,
+)
+from app.services.canonical_ingestion import (
+    CanonicalIngestRejectionError,
+    accept_canonical_ingest,
 )
 from app.services.delivery_policy import (
     DeliveryPolicyResult,
     evaluate_delivery_policy,
-    lock_delivery_policy_scope,
 )
-from app.services.ingestion import IngestionService
+from app.services.ingestion import (
+    IngestionService,
+    lock_ingestion_idempotency_scope,
+)
 from app.services.ingestion_attempts import (
     IngestionAttemptService,
     reconcile_stale_ingestion_attempts,
@@ -1539,15 +1546,31 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
         second_attempt = await IngestionAttemptService(second_session).begin(
             request_body, json.dumps(request_body).encode()
         )
-        await lock_delivery_policy_scope(first_session, request)
+        await lock_ingestion_idempotency_scope(
+            first_session,
+            source_client_id=None,
+            dataset_key=request.dataset_key,
+            idempotency_key=request.idempotency_key,
+        )
 
-        second_reached_scope_lock = asyncio.Event()
+        second_reached_idempotency_lock = asyncio.Event()
         second_policy_calls = 0
 
-        async def observed_scope_lock(db, contract_request):
+        async def observed_idempotency_lock(
+            db,
+            *,
+            source_client_id,
+            dataset_key,
+            idempotency_key,
+        ):
             if db is second_session:
-                second_reached_scope_lock.set()
-            await lock_delivery_policy_scope(db, contract_request)
+                second_reached_idempotency_lock.set()
+            await lock_ingestion_idempotency_scope(
+                db,
+                source_client_id=source_client_id,
+                dataset_key=dataset_key,
+                idempotency_key=idempotency_key,
+            )
 
         async def reject_changed_policy_for_waiter(db, contract_request, expectation):
             nonlocal second_policy_calls
@@ -1562,8 +1585,8 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
             return await evaluate_delivery_policy(db, contract_request, expectation)
 
         monkeypatch.setattr(
-            "app.services.ingestion.lock_delivery_policy_scope",
-            observed_scope_lock,
+            "app.services.ingestion.lock_ingestion_idempotency_scope",
+            observed_idempotency_lock,
         )
         monkeypatch.setattr(
             "app.services.ingestion.evaluate_delivery_policy",
@@ -1576,7 +1599,7 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
                 second_attempt.attempt_id,
             )
         )
-        await asyncio.wait_for(second_reached_scope_lock.wait(), timeout=2)
+        await asyncio.wait_for(second_reached_idempotency_lock.wait(), timeout=2)
 
         first_result = await IngestionService(first_session).ingest_contract(
             request,
@@ -1586,4 +1609,107 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
 
     assert first_result[2] is False
     assert second_result == (first_result[0], first_result[1], True)
+    assert second_policy_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
+    test_session: AsyncSession,
+    test_engine,
+    monkeypatch,
+) -> None:
+    """The DB unique scope wins over source-specific policy lock scopes."""
+    await _seed_dataset(
+        test_session,
+        config=_policy_config(count_action="warn", minimum=1),
+    )
+    source_client_id = uuid7()
+    test_session.add(
+        SourceClient(
+            client_id=source_client_id,
+            name="Shared cross-source test client",
+            source_name="shared",
+            key_hash="a" * 64,
+        )
+    )
+    await test_session.commit()
+    first_body = _canonical_request(idempotency_key="cross-source-lock-waiter")
+    second_body = _canonical_request(idempotency_key="cross-source-lock-waiter")
+    second_body["source"] = "bloomberg"
+    second_body["request_key"] = "bloomberg-cross-source-lock-waiter"
+    first_request = validate_ingress_request(first_body)
+    session_factory = async_sessionmaker(
+        test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with session_factory() as first_session, session_factory() as second_session:
+        first_session.info["source_client_id"] = source_client_id
+        second_session.info["source_client_id"] = source_client_id
+        first_attempt = await IngestionAttemptService(first_session).begin(
+            first_body, json.dumps(first_body).encode()
+        )
+        await lock_ingestion_idempotency_scope(
+            first_session,
+            source_client_id=source_client_id,
+            dataset_key=first_request.dataset_key,
+            idempotency_key=first_request.idempotency_key,
+        )
+
+        second_reached_idempotency_lock = asyncio.Event()
+        second_policy_calls = 0
+
+        async def observed_idempotency_lock(
+            db,
+            *,
+            source_client_id,
+            dataset_key,
+            idempotency_key,
+        ):
+            if db is second_session:
+                second_reached_idempotency_lock.set()
+            await lock_ingestion_idempotency_scope(
+                db,
+                source_client_id=source_client_id,
+                dataset_key=dataset_key,
+                idempotency_key=idempotency_key,
+            )
+
+        async def reject_changed_policy_for_waiter(db, contract_request, expectation):
+            nonlocal second_policy_calls
+            if db is second_session:
+                second_policy_calls += 1
+                return DeliveryPolicyResult(
+                    outcome="reject",
+                    primary_code="BATCH_RECORD_COUNT_DROP",
+                    baseline_status="active",
+                    evaluated_at=utc_now(),
+                )
+            return await evaluate_delivery_policy(db, contract_request, expectation)
+
+        monkeypatch.setattr(
+            "app.services.ingestion.lock_ingestion_idempotency_scope",
+            observed_idempotency_lock,
+        )
+        monkeypatch.setattr(
+            "app.services.ingestion.evaluate_delivery_policy",
+            reject_changed_policy_for_waiter,
+        )
+
+        second_task = asyncio.create_task(
+            accept_canonical_ingest(second_session, json.dumps(second_body).encode())
+        )
+        await asyncio.wait_for(second_reached_idempotency_lock.wait(), timeout=2)
+
+        first_result = await IngestionService(first_session).ingest_contract(
+            first_request,
+            first_attempt.attempt_id,
+        )
+        with pytest.raises(CanonicalIngestRejectionError) as rejection:
+            await asyncio.wait_for(second_task, timeout=2)
+
+    assert first_result[2] is False
+    assert rejection.value.status_code == 409
+    assert rejection.value.code == "IDEMPOTENCY_PAYLOAD_MISMATCH"
     assert second_policy_calls == 0

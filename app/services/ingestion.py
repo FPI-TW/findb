@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from typing import Any, Optional, Protocol
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -274,6 +274,22 @@ def payload_sha256(payload: dict) -> str:
         default=str,
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+async def lock_ingestion_idempotency_scope(
+    db: AsyncSession,
+    *,
+    source_client_id: UUID | None,
+    dataset_key: str,
+    idempotency_key: str,
+) -> None:
+    """Lock the exact PostgreSQL unique scope before canonical policy locks."""
+    client_scope = f"uuid:{source_client_id}" if source_client_id is not None else "legacy:null"
+    scope = ":".join(("canonical-idempotency", client_scope, dataset_key, idempotency_key))
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+        {"scope": scope},
+    )
 
 
 async def _mark_unhandled_normalization_failure(
@@ -899,10 +915,16 @@ class IngestionService:
                 attempt_id,
             )
 
-        # Fixed lock ordering: an optimistic duplicate lookup is followed by the
-        # scope lock and a mandatory recheck before any time/baseline-dependent
-        # policy. The evaluator itself never acquires locks.
-        await lock_delivery_policy_scope(self.db, request)
+        # Fixed global lock ordering: the exact DB unique scope is acquired and
+        # rechecked before the broader delivery-policy scope. Both transaction
+        # locks remain held until accept/reject commit, so no third recheck is
+        # needed after the policy lock. The evaluator never acquires locks.
+        await lock_ingestion_idempotency_scope(
+            self.db,
+            source_client_id=self.source_client_id,
+            dataset_key=request.dataset_key,
+            idempotency_key=request.idempotency_key,
+        )
         existing_raw = await self.get_raw_payload_by_idempotency_key(
             request.idempotency_key,
             request.dataset_key,
@@ -914,6 +936,8 @@ class IngestionService:
                 request_payload_sha256,
                 attempt_id,
             )
+
+        await lock_delivery_policy_scope(self.db, request)
 
         policy_result = await evaluate_delivery_policy(
             self.db,

@@ -180,6 +180,7 @@ async def lock_delivery_policy_scope(
     """Serialize duplicate recheck, baseline evaluation, and delivery creation."""
     scope = ":".join(
         (
+            "delivery-policy",
             request.dataset_key,
             request.source,
             request.schema_id,
