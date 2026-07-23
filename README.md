@@ -282,7 +282,7 @@ docker compose up -d app
 
 ### 2. 開發命令（固定主命令）
 
-根目錄 `package.json` 是 monorepo 統一入口，也預留後續 Husky `pre-commit`／`pre-push` 接入位置：
+根目錄 `package.json` 是 monorepo 統一入口，Git hooks 與 pre-commit stages 也由此統一執行：
 
 ```bash
 pnpm setup
@@ -292,6 +292,8 @@ pnpm container:dashboard
 pnpm test
 pnpm check
 pnpm build
+pnpm hook:pre-commit
+pnpm hook:pre-push
 ```
 
 後端較細部命令仍可直接使用 uv：
@@ -764,14 +766,25 @@ docker compose exec app bash -c \
 ## Git Hooks（commit / push 守門）
 
 ```bash
-# 安裝 hooks（一次）
-uv --directory backend run pre-commit install --hook-type pre-commit --hook-type pre-push
+# 安裝 monorepo dependencies 與 pre-commit / pre-push hooks
+pnpm setup
+
+# 手動執行與 Git hooks 完全相同的檢查
+pnpm hook:pre-commit
+pnpm hook:pre-push
+
+# 只重新安裝 Git hooks
+uv --directory backend run pre-commit install \
+  --hook-type pre-commit \
+  --hook-type pre-push
 ```
 
 目前規則：
 
-- `pre-commit`：執行 `black` 自動格式化。
-- `pre-push`：執行含 DB 的測試流程（`uv --directory backend run python scripts/dev.py test-db`）。
+- pre-commit 同時是 Git hook 管理器與唯一檢查規則來源，設定集中於 `.pre-commit-config.yaml`。
+- `pre-commit`：對 Python staged files 執行 Ruff fix 與 Black，Dashboard 有變更時執行 Prettier check 與 ESLint。
+- `pre-push`：執行 `make check`，包含後端 lint、format、mypy、DB tests，以及 Dashboard format、lint、typecheck、tests 與 production build。
+- 不再使用 Husky；`pnpm setup` 會直接將兩個 hooks 安裝到 Git。
 
 ## Migration
 

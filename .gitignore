@@ -3,6 +3,7 @@ __pycache__/
 *$py.class
 *.so
 node_modules/
+.pnpm-store/*
 
 .env*
 !.env.example
@@ -45,6 +46,7 @@ dist-ssr
 .vinxi
 __unconfig*
 todos.json
+
 # Agent / IDE 本機設定（claude-code、codex、mcp、playwright-mcp 等）
 .claude/
 .codex

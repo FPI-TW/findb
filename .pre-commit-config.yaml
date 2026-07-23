@@ -15,6 +15,22 @@ repos:
         types_or: [python]
         stages: [pre-commit]
 
+      - id: dashboard-format-check
+        name: dashboard format check
+        entry: pnpm --filter dashboard format:check
+        language: system
+        files: ^dashboard/
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: dashboard-lint-check
+        name: dashboard lint check
+        entry: pnpm --filter dashboard lint:check
+        language: system
+        files: ^dashboard/
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: quality-pre-push
         name: quality pre-push
         entry: make check
