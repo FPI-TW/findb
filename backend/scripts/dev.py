@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from dotenv import dotenv_values
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
@@ -63,7 +65,12 @@ def _docker_compose_cmd() -> list[str]:
 
 def _local_env() -> dict[str, str]:
     """Return safe local defaults shared by host commands and Compose."""
-    env = os.environ.copy()
+    env: dict[str, str] = {}
+    for env_file in (REPO_ROOT / ".env", BACKEND_ROOT / ".env"):
+        env.update(
+            {key: value for key, value in dotenv_values(env_file).items() if value is not None}
+        )
+    env.update(os.environ)
     env.setdefault("DATABASE_URL", DEFAULT_DATABASE_URL)
     env.setdefault("SOURCE_API_KEY", "dev-source-key")
     env.setdefault("ADMIN_API_KEY", "dev-admin-key")

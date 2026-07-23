@@ -5,9 +5,11 @@ import argparse
 from scripts import dev
 
 
-def test_up_starts_complete_durable_ingestion_stack(monkeypatch):
+def test_up_starts_complete_durable_ingestion_stack(monkeypatch, tmp_path):
     calls: list[tuple[list[str], dict[str, str] | None]] = []
 
+    monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dev, "BACKEND_ROOT", tmp_path / "backend")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("SOURCE_API_KEY", raising=False)
     monkeypatch.delenv("ADMIN_API_KEY", raising=False)
@@ -45,6 +47,36 @@ def test_up_starts_complete_durable_ingestion_stack(monkeypatch):
         assert env["DATABASE_URL"] == dev.DEFAULT_DATABASE_URL
         assert env["SOURCE_API_KEY"] == "dev-source-key"
         assert env["ADMIN_API_KEY"] == "dev-admin-key"
+
+
+def test_local_env_loads_dotenv_before_applying_defaults(monkeypatch, tmp_path):
+    backend_root = tmp_path / "backend"
+    backend_root.mkdir()
+    (tmp_path / ".env").write_text(
+        "ADMIN_API_KEY=configured-admin-key\nSOURCE_API_KEY=configured-source-key\n"
+    )
+    monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("SOURCE_API_KEY", raising=False)
+
+    env = dev._local_env()
+
+    assert env["ADMIN_API_KEY"] == "configured-admin-key"
+    assert env["SOURCE_API_KEY"] == "configured-source-key"
+
+
+def test_local_env_prefers_process_environment_over_dotenv(monkeypatch, tmp_path):
+    backend_root = tmp_path / "backend"
+    backend_root.mkdir()
+    (tmp_path / ".env").write_text("ADMIN_API_KEY=dotenv-admin-key\n")
+    monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
+    monkeypatch.setenv("ADMIN_API_KEY", "exported-admin-key")
+
+    env = dev._local_env()
+
+    assert env["ADMIN_API_KEY"] == "exported-admin-key"
 
 
 def test_up_stops_before_migration_when_dependency_start_fails(monkeypatch):
