@@ -166,7 +166,8 @@ curl -X POST "http://localhost:8080/api/v1/admin/api-keys" \
   -d '{"owner":"llm-client","tier":"llm","scopes":["serve"],"rate_limit_requests":100,"rate_limit_window":60,"page_size_limit":1000}'
 ```
 
-> **生產環境 nginx Serve key 注入**：`/instrument-lookup` 等同源靜態頁不會把 Serve API
+> **生產環境 nginx Serve key 注入**：`/dashboard/lookup` 公開頁與 legacy
+> `/instrument-lookup` 不會把 Serve API
 > key 嵌入瀏覽器；生產 nginx 會以 `Referer` regex 比對後注入 `X-API-Key`。設定
 > 由 `backend/scripts/render_nginx_serve_key.py` 在 deploy 時根據 `SERVE_API_KEYS` 的
 > **第一個** key 渲染為 `infra/nginx/serve-key.conf`。Phase 3 後這是過渡機制：
@@ -195,7 +196,7 @@ X-API-Key: your-admin-key
 | **IP 允許名單** | 生產環境 nginx 使用 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*` |
 | **限流**        | 預設每個 API Key + IP 組合，每 60 秒最多 100 次請求           |
 | **Proxy 支援**  | nginx 會覆寫 `X-Real-IP` 與 `X-Forwarded-For` 為實際來源 IP |
-| **Serve key 注入** | 生產 nginx 對 Referer 匹配 `/instrument-lookup` 的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；外部 caller 仍 passthrough |
+| **Serve key 注入** | 生產 nginx 對 Referer 精確匹配 `/dashboard/lookup` 或 legacy `/instrument-lookup` 的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；外部 caller 仍 passthrough |
 
 ---
 
@@ -947,6 +948,37 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 **認證**: 視 `SERVE_REQUIRE_AUTH` 設定
 
 > Serve API 為**唯讀**，僅提供 Canonical 資料表的查詢功能。
+
+### Dashboard Lookup API
+
+公開 Dashboard Lookup 使用兩個專用列表端點；搜尋、篩選、排序、分頁與 facets
+都在後端執行，不由瀏覽器下載完整 cache：
+
+```text
+GET /api/v1/serve/lookup/instruments
+GET /api/v1/serve/lookup/macro-series
+```
+
+共用參數為 `q`、`page`、`page_size`（最大 200）、`sort_by` 與
+`sort_dir=asc|desc`。商品另支援 `market`、`asset_class`、`status`；宏觀序列另支援
+`market`、`frequency`、`source`。回應格式為：
+
+```json
+{
+  "success": true,
+  "data": [],
+  "pagination": {
+    "page": 1,
+    "page_size": 50,
+    "total_records": 0,
+    "total_pages": 0
+  },
+  "facets": {}
+}
+```
+
+`q` 會以 Unicode NFKC 正規化後進行不分大小寫的 literal substring search。
+`facets` 是不受當前 filters 影響的全域 distinct values，供 Dashboard 建立篩選選項。
 
 ### 標的查詢
 

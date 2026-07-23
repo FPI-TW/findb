@@ -173,22 +173,22 @@ done
 
 ### 2.6 Serve API key 注入（生產 nginx）
 
-`/instrument-lookup` 靜態頁不會在瀏覽器端嵌入 Serve API key；生產 nginx 透過
+`/dashboard/lookup` 公開頁不會在瀏覽器端嵌入 Serve API key；生產 nginx 透過
 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy 時
 依 `SERVE_API_KEYS` 第一個 key 渲染）以 `Referer` regex 比對後注入 `X-API-Key`。
 驗證方式：
 
 ```bash
-# 帶 Referer 從同源頁面打 Serve（生產 nginx 會注入 key）
-curl -i "https://findb.tingfong.com/api/v1/serve/instruments?market=CRYPTO" \
-  -H "Referer: https://findb.tingfong.com/instrument-lookup"
+# 帶 Referer 從同源頁面打 Dashboard Lookup API（生產 nginx 會注入 key）
+curl -i "https://findb.tingfong.com/api/v1/serve/lookup/instruments?market=CRYPTO&page_size=20" \
+  -H "Referer: https://findb.tingfong.com/dashboard/lookup"
 
 # 不帶 Referer 直打（沿用 caller 提供的 X-API-Key，未帶且 SERVE_REQUIRE_AUTH=true 應 401）
-curl -i "https://findb.tingfong.com/api/v1/serve/instruments?market=CRYPTO"
+curl -i "https://findb.tingfong.com/api/v1/serve/lookup/instruments?market=CRYPTO&page_size=20"
 ```
 
 > 本機開發未跑 nginx，`infra/nginx/serve-key.conf` 為安全 fallback（passthrough
-> caller 提供的 `X-API-Key`），所以本機 `/instrument-lookup` 仍需以 query string 或
+> caller 提供的 `X-API-Key`），所以本機 `/dashboard/lookup` 的即時詳情仍需以 query string 或
 > 其它途徑提供 key。
 
 ---

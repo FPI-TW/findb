@@ -546,31 +546,25 @@ curl http://localhost:8080/health
 
 `/test` 目前提供查詢結果 JSON 檢視與時間序列圖表預覽；若回應資料符合格式，會自動以 ECharts 顯示互動圖表。
 
-## 靜態標的與宏觀序列查詢頁
+## Dashboard 公開工具
 
-本機 `docker compose up -d app` 啟動後會自動產生快取檔。若是本機直接跑 server，
-或需要手動刷新，可執行：
+Dashboard Lookup 會直接呼叫後端的唯讀 `/api/v1/serve/lookup/instruments` 與
+`/api/v1/serve/lookup/macro-series`，不依賴 generated cache。可透過公開路由開啟：
+
+```text
+http://localhost:3000/dashboard/lookup
+```
+
+Skill 下載與安裝說明位於 `http://localhost:3000/dashboard/skill`；需要登入的
+營運台位於 `http://localhost:3000/dashboard/operations`。舊
+`/instrument-lookup` 與 `/skill-install` URL 暫時保留為公開相容頁；新的
+Dashboard routes 是主要入口。
+
+舊 `/instrument-lookup` 相容頁仍使用 generated cache；只有維護該 legacy 頁時才需
+手動刷新或排程執行：
 
 ```bash
 uv --directory backend run python scripts/generate_instrument_cache.py
-```
-
-可用環境變數：
-
-```bash
-FINDB_STATIC_CACHE_BASE_URL=http://localhost:8080
-FINDB_STATIC_CACHE_SERVE_API_KEY=your-serve-key
-```
-
-產生完成後，可透過下列網址開啟查詢頁：
-
-```text
-http://localhost:8080/instrument-lookup
-```
-
-排程範例：
-
-```bash
 0 6 * * * cd /app && python scripts/generate_instrument_cache.py
 ```
 
@@ -613,7 +607,7 @@ curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start
 | Serve API  | 可選（`SERVE_REQUIRE_AUTH`） | `X-API-Key: {SERVE_API_KEYS}`  |
 | Admin API  | **必要**                     | `X-API-Key: {ADMIN_API_KEY}`  |
 
-> **生產環境 Serve API key 注入**：`/instrument-lookup` 靜態頁不會把 Serve API key
+> **生產環境 Serve API key 注入**：`/dashboard/lookup` 公開頁不會把 Serve API key
 > 嵌入瀏覽器，而是由生產 nginx 依 `Referer` 比對後注入 `X-API-Key`（設定來自
 > `backend/scripts/render_nginx_serve_key.py` 在 deploy 時渲染的 `infra/nginx/serve-key.conf`）。
 > 外部呼叫者若自行帶 `X-API-Key`，passthrough 行為不受影響。

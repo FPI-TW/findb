@@ -1,6 +1,16 @@
 # FinDB Dashboard
 
-TanStack Start 唯讀營運台，用來監控資料導入穩定度、複查完整性與正確性，以及檢索 raw payload 與修正稽核紀錄。
+TanStack Start 前端，整合公開的標的查詢、FinDB API Skill 安裝說明，以及需登入的唯讀營運台。
+
+## Routes
+
+| Route                   | 權限   | 用途                                  |
+| ----------------------- | ------ | ------------------------------------- |
+| `/dashboard/`           | 公開   | 首頁與功能入口                        |
+| `/dashboard/lookup`     | 公開   | 金融商品與宏觀序列查詢                |
+| `/dashboard/skill`      | 公開   | Skill 下載與安裝說明                  |
+| `/dashboard/login`      | 公開   | 操作人員登入                          |
+| `/dashboard/operations` | 需登入 | 導入穩定度、資料完整性、DQ 與稽核資料 |
 
 ## Local development
 
@@ -19,7 +29,14 @@ Dashboard 統一讀取 repository 根目錄的 `.env`。必填：
 - `DASHBOARD_SESSION_SECRET`（至少 32 字元）
 - `FINDB_API_BASE_URL`（本機預設 `http://localhost:8080`）
 
-Admin key 只存在 Dashboard server 環境，瀏覽器不會收到或輸入它。操作人員需以環境設定的單一帳號與密碼登入；沒有註冊功能。登入狀態使用有期限、簽章且 `HttpOnly` 的 cookie。
+公開頁不讀取 Admin credentials。Admin key 只存在 Dashboard server
+環境，瀏覽器不會收到或輸入它。操作人員需以環境設定的單一帳號與密碼登入
+`/dashboard/operations`；沒有註冊功能。登入狀態使用有期限、簽章且
+`HttpOnly` 的 cookie。
+
+公開 Lookup 透過同源的 `/api/v1/serve/lookup/instruments` 與
+`/api/v1/serve/lookup/macro-series` 取得列表、facets 與分頁資料。前端測試只 mock
+此 HTTP contract，不讀取 backend source 或 generated cache。
 
 直接執行 `pnpm dev:dashboard` 時，開發入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
 

@@ -1,15 +1,38 @@
+import { Link } from "@tanstack/react-router"
+
+import { DEFAULT_SEARCH } from "../features/lookup/config"
 import { Separator } from "./ui/separator"
 
 export default function Footer() {
   return (
-    <footer className="mx-auto w-[min(1480px,calc(100%-24px))] pb-9 text-xs text-muted sm:w-[min(1480px,calc(100%-40px))]">
+    <footer className="mx-auto w-full max-w-screen-2xl px-3 pb-9 text-xs text-muted sm:px-5">
       <Separator />
-      <div className="flex flex-col justify-between gap-6 pt-6 sm:flex-row">
-        <div className="flex gap-3">
-          <strong className="text-ink">FinDB Operations Console</strong>
+      <div className="flex flex-col justify-between gap-6 pt-6 sm:flex-row sm:items-center">
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          <strong className="text-ink">FinDB Data Platform</strong>
           <span>Fetch → Normalize → Serve</span>
         </div>
-        <p className="m-0">此介面不提供資料修改或重跑操作。</p>
+        <nav className="flex flex-wrap gap-x-4 gap-y-2" aria-label="頁尾導覽">
+          <Link className="font-bold text-ink hover:text-accent" to="/">
+            首頁
+          </Link>
+          <Link
+            className="font-bold text-ink hover:text-accent"
+            to="/lookup"
+            search={DEFAULT_SEARCH}
+          >
+            Lookup
+          </Link>
+          <Link className="font-bold text-ink hover:text-accent" to="/skill">
+            Skill
+          </Link>
+          <Link
+            className="font-bold text-ink hover:text-accent"
+            to="/operations"
+          >
+            Operations
+          </Link>
+        </nav>
       </div>
     </footer>
   )

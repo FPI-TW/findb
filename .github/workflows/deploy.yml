@@ -449,7 +449,7 @@ jobs:
             dashboard_ready=0
             for attempt in $(seq 1 24); do
               if docker compose -f docker-compose.prod.yml exec -T dashboard \
-                wget -q --spider http://127.0.0.1:3333/dashboard/login; then
+                wget -q --spider http://127.0.0.1:3333/dashboard/; then
                 echo "Dashboard is ready"
                 dashboard_ready=1
                 break
@@ -491,6 +491,16 @@ jobs:
               diagnose_services nginx serve ingest dashboard
               exit 1
             fi
+
+            echo "Checking public Dashboard routes through nginx"
+            for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill; do
+              if ! docker compose -f docker-compose.prod.yml exec -T nginx \
+                wget -q --no-check-certificate --spider "https://127.0.0.1${dashboard_path}"; then
+                echo "::error title=Dashboard proxy check failed::${dashboard_path} is not reachable through nginx."
+                diagnose_services nginx dashboard
+                exit 1
+              fi
+            done
 
             echo "Generating instrument cache"
             if ! docker compose -f docker-compose.prod.yml exec -T serve sh -lc '

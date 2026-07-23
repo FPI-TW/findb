@@ -2,6 +2,12 @@
 
 > **版本**: 1.2 | **日期**: 2026-04-24 | **交付對象**: Codex
 
+> **現況更新（2026-07-23）**：主要使用者介面已整合至 TanStack Start Dashboard
+> 的公開 `/dashboard/lookup` route，並改由 `/api/v1/serve/lookup/*` 即時 API
+> 提供列表資料；舊 `/instrument-lookup` 暫時保留公開相容頁。
+> 本文件仍是 legacy generated cache schema、資料產生流程與舊頁行為的原始規格；
+> 現行路由與權限邊界以 `dashboard_routes.md` 為準。
+
 ---
 
 ## 1. 目標
