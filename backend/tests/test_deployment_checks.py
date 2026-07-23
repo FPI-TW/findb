@@ -15,6 +15,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
+DASHBOARD_VITE_CONFIG = REPO_ROOT / "dashboard" / "vite.config.ts"
+DASHBOARD_ROUTER = REPO_ROOT / "dashboard" / "src" / "router.tsx"
+DASHBOARD_PATHS = REPO_ROOT / "dashboard" / "src" / "lib" / "paths.ts"
 
 
 def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
@@ -38,6 +41,19 @@ def test_deploy_uses_ordered_health_checks_with_failure_diagnostics() -> None:
     assert ".State.OOMKilled" in deploy
     assert "{{json .State.Health}}" in deploy
     assert "docker compose -f docker-compose.prod.yml ps -a" in deploy
+
+
+def test_dashboard_uses_the_deployed_subpath_for_assets_and_navigation() -> None:
+    vite_config = DASHBOARD_VITE_CONFIG.read_text(encoding="utf-8")
+    router = DASHBOARD_ROUTER.read_text(encoding="utf-8")
+    paths = DASHBOARD_PATHS.read_text(encoding="utf-8")
+
+    assert 'DASHBOARD_BASE_PATH = "/dashboard"' in paths
+    assert "DASHBOARD_BASE_URL = `${DASHBOARD_BASE_PATH}/`" in paths
+    assert "base: DASHBOARD_BASE_URL" in vite_config
+    assert "baseURL: DASHBOARD_BASE_URL" in vite_config
+    assert "router: { basepath: DASHBOARD_BASE_PATH }" in vite_config
+    assert "basepath: DASHBOARD_BASE_PATH" in router
 
 
 def test_deploy_retries_celery_worker_readiness() -> None:
