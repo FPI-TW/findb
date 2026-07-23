@@ -1,0 +1,38 @@
+"""
+Tests for static HTML pages.
+"""
+
+from pathlib import Path
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = BACKEND_ROOT.parent
+
+
+@pytest.mark.asyncio
+async def test_instrument_lookup_page_is_served():
+    """Ensure the static instrument lookup page is available."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        static_response = await client.get("/static/instrument-lookup.html")
+        page_response = await client.get("/instrument-lookup")
+
+    assert static_response.status_code == 200
+    assert page_response.status_code == 200
+    assert "FinDB" in page_response.text
+    assert "標的與宏觀查詢" in page_response.text
+    assert "/static/data/instruments.json" in page_response.text
+    assert "/static/data/macro-series.json" in page_response.text
+    assert "Last Date" in page_response.text
+    assert "Last Price" in page_response.text
+
+
+def test_instrument_cache_path_is_gitignored():
+    """Ensure generated cache files are not tracked."""
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "backend/app/static/data/instruments.json" in gitignore
+    assert "backend/app/static/data/macro-series.json" in gitignore

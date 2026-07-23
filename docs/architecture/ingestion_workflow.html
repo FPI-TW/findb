@@ -177,7 +177,7 @@ flowchart TD
 
   subgraph S1 ["① Source API 入口"]
     direction TB
-    B["Source Router<br/>app/api/v1/source.py"]:::pre
+    B["Source Router<br/>backend/app/api/v1/source.py"]:::pre
     D2{"Direct 端點?"}:::decision
     D3["_build_direct_ingest_request<br/>SHA256 算 idempotency_key"]:::pre
     D["Pydantic IngestRequest 驗證"]:::pre
@@ -271,7 +271,7 @@ flowchart TD
       <h2>① Source API 入口</h2>
       <div class="grid">
         <div class="stage s1">
-          <h3>路由分派 <span class="tag">app/api/v1/source.py</span></h3>
+          <h3>路由分派 <span class="tag">backend/app/api/v1/source.py</span></h3>
           <div class="sub">統一入口、市場守門、Direct vs 通用 schema</div>
           <ul>
             <li><b>通用端點</b>：<code>/ingest/{crypto,us,fx,macro,wtx,global,tw,hk,cn}</code></li>
@@ -410,12 +410,12 @@ flowchart TD
             <tr><th>元件</th><th>來源</th><th>觸發 / 排程</th><th>作用對象</th></tr>
           </thead>
           <tbody>
-            <tr><td>Raw TTL 清理</td><td><code>scripts/cleanup_raw.py</code> · 容器 <code>findb-raw-cleanup</code></td><td>每日</td><td><code>raw.market_payload</code> · <code>expire_at &lt; now</code></td></tr>
+            <tr><td>Raw TTL 清理</td><td><code>backend/scripts/cleanup_raw.py</code> · 容器 <code>findb-raw-cleanup</code></td><td>每日</td><td><code>raw.market_payload</code> · <code>expire_at &lt; now</code></td></tr>
             <tr><td>重跑</td><td><code>IngestionService.rerun_from_raw</code></td><td><code>POST /runs/:id/rerun</code></td><td>取原 raw → 建新 run → 跑 normalize</td></tr>
             <tr><td>人工修正</td><td>Admin API</td><td><code>PATCH /eod/{instrument_id}/{trade_date}</code></td><td>直接覆寫 canonical</td></tr>
             <tr><td>DQ 結案</td><td>Admin API</td><td><code>GET /dq-issues</code> · <code>PATCH /dq-issues/{id}/resolve</code></td><td><code>dq_issue.resolved</code></td></tr>
-            <tr><td>靜態快取</td><td><code>scripts/generate_instrument_cache.py</code> + Admin <code>/instrument-cache</code></td><td>手動 / 排程</td><td>提供 <code>/instrument-lookup</code></td></tr>
-            <tr><td>Serve 讀取</td><td><code>app/api/v1/serve.py</code></td><td>客戶端查詢</td><td>唯讀 canonical（<b>無快取層</b>）</td></tr>
+            <tr><td>靜態快取</td><td><code>backend/scripts/generate_instrument_cache.py</code> + Admin <code>/instrument-cache</code></td><td>手動 / 排程</td><td>提供 <code>/instrument-lookup</code></td></tr>
+            <tr><td>Serve 讀取</td><td><code>backend/app/api/v1/serve.py</code></td><td>客戶端查詢</td><td>唯讀 canonical（<b>無快取層</b>）</td></tr>
           </tbody>
         </table>
       </div>
@@ -453,7 +453,7 @@ flowchart TD
 
     <footer>
       Generated for FinDB · branch <code>feat/twstock-direct-ingest</code> · 對應原始檔：
-      <code>app/api/v1/source.py</code> · <code>app/services/ingestion.py</code> · <code>app/services/normalize/base.py</code> · <code>app/services/dq/validators.py</code>
+      <code>backend/app/api/v1/source.py</code> · <code>backend/app/services/ingestion.py</code> · <code>backend/app/services/normalize/base.py</code> · <code>backend/app/services/dq/validators.py</code>
     </footer>
   </div>
 

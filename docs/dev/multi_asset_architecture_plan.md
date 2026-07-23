@@ -105,7 +105,7 @@
 
 ### 受控 vocabulary
 
-`asset_class`、`market` 目前是自由字串（`String(20)`），由各 normalizer 自行填值；`scripts/fix_misrouted_tw_futures.py` 與 `scripts/cleanup_stale_instruments.py` 的存在證明 drift 已發生。市場 × 類型即將從 4×3 成長為 4×7，合法值必須收斂到 DB 層（lookup table + FK，或 Postgres enum + CHECK）。
+`asset_class`、`market` 目前是自由字串（`String(20)`），由各 normalizer 自行填值；`backend/scripts/fix_misrouted_tw_futures.py` 與 `backend/scripts/cleanup_stale_instruments.py` 的存在證明 drift 已發生。市場 × 類型即將從 4×3 成長為 4×7，合法值必須收斂到 DB 層（lookup table + FK，或 Postgres enum + CHECK）。
 
 ### 量級估算（實體設計依據）
 
@@ -150,7 +150,7 @@ Phase 1 執行紀錄（2026-07-09）：
 - [x] `docker-compose.prod.yml` 拆兩個 app container（同一 image）：
   - [x] `findb-serve`：只掛 serve router（+ static、health），nginx upstream 指向此。
   - [x] `findb-ingest`：掛 source / admin router，承接 normalize workload。
-  - [x] `app/main.py` 以 env（如 `APP_ROLE=serve|ingest|all`）控制 router 掛載；本機開發維持 `all`。
+  - [x] `backend/app/main.py` 以 env（如 `APP_ROLE=serve|ingest|all`）控制 router 掛載；本機開發維持 `all`。
 - [x] 兩容器各自獨立 DB pool 設定（ingest 寫入 pool 與 serve 讀取 pool 不互搶）。
 - [x] backfill 腳本執行規範：獨立 container / cron 執行，不進 app container；文件化於 `instrument_name_backfill_deployment.md` 的既有流程。
 - [x] Serve 讀取熱點修正：
@@ -193,12 +193,12 @@ Phase 3 執行紀錄（2026-07-09）：
 - [x] 第一步（最便宜）：評估 nginx `proxy_cache` 對 serve GET endpoints 做 micro-caching；review 後因 auth/revocation 風險撤回 protected Serve API proxy cache。
 - [x] cache key 需含 query string 與 API key tier（避免 tier 間互吃 cache 額度差異）：結論是 nginx 無可信 tier，不能用 client header 或明文 key。
 - [x] 觀察命中率後再評估 Redis（application-level cache）或 CloudFront：延後到 app 可產生可信 cache policy / surrogate key 後再做。
-- [x] 資訊站的固定圖表資料（如大盤走勢）可比照 `app/static/data/` 的 generated cache 模式預產 JSON。
+- [x] 資訊站的固定圖表資料（如大盤走勢）可比照 `backend/app/static/data/` 的 generated cache 模式預產 JSON。
 
 Phase 4 執行紀錄（2026-07-09）：
 
 - 生產 nginx 的 `/api/v1/serve/*` `proxy_cache` 在 review 後撤回：DB-backed key、撤銷、scope 與 rate limit 都在 FastAPI 內驗證，nginx 無法安全地在 cache hit 前重驗，因此 protected Serve API response 不做 proxy cache。
-- cache 重點改回既有 `app/static/data/` generated cache 模式；`findb-serve` 與 `findb-ingest` 透過 shared volume 共用 generated JSON，Admin refresh 在 ingest container 執行時會打 `http://serve:${PORT}` 的 Serve API。
+- cache 重點改回既有 `backend/app/static/data/` generated cache 模式；`findb-serve` 與 `findb-ingest` 透過 shared volume 共用 generated JSON，Admin refresh 在 ingest container 執行時會打 `http://serve:${PORT}` 的 Serve API。
 - Redis / CloudFront 暫不導入；若要對受保護 Serve API 快取，需先讓 app 產生可信 cache policy / surrogate key，不能使用 client header 或明文 API key 做 nginx cache key。
 - 固定圖表資料可沿用 generated cache 模式；本 phase 未新增未被消費的預產資料。
 
@@ -254,6 +254,6 @@ Phase 6 執行紀錄（2026-07-09）：
 
 ## 驗收原則
 
-- 每個 Phase 的 schema 變更一律走 Alembic，先在 partial dump 環境演練（`uv run python scripts/dev.py seed-upsert` + `migration_workflow.md` 流程）。
+- 每個 Phase 的 schema 變更一律走 Alembic，先在 partial dump 環境演練（`uv --directory backend run python scripts/dev.py seed-upsert` + `migration_workflow.md` 流程）。
 - Phase 1、2 完成後，以 `scalability_optimization_checklist.md` Phase 0 的壓測基線重新量測，確認無回歸。
 - Serve API 在所有 Phase 中維持唯讀，不因任何新需求破例。

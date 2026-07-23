@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    defaults:
+      run:
+        working-directory: backend
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -56,7 +60,7 @@ jobs:
         with:
           version: "0.9.9"
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: "backend/uv.lock"
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -77,8 +81,49 @@ jobs:
       - name: Run tests
         run: uv run pytest --tb=short -q
 
+  dashboard-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.15.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint:check
+
+      - name: Type check
+        run: pnpm type:check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
   build-push:
-    needs: test
+    needs: [test, dashboard-test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -103,7 +148,7 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ./backend
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
             ${{ env.IMAGE }}:latest
@@ -182,12 +227,12 @@ jobs:
       - name: Render nginx configs
         run: |
           set -euo pipefail
-          python scripts/render_nginx_source_allowlist.py \
+          python backend/scripts/render_nginx_source_allowlist.py \
             --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
             --output infra/nginx/source-allowlist.conf
-          python scripts/render_nginx_cloudflare_real_ip.py \
+          python backend/scripts/render_nginx_cloudflare_real_ip.py \
             --output infra/nginx/cloudflare-real-ip.conf
-          python scripts/render_nginx_serve_key.py \
+          python backend/scripts/render_nginx_serve_key.py \
             --keys "${SERVE_API_KEYS:-}" \
             --output infra/nginx/serve-key.conf
 

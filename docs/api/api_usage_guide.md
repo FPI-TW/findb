@@ -98,16 +98,16 @@ cp .env.example .env
 # DEBUG=true
 
 # 啟動本機 DB、套用 migration、匯入 seed 包
-uv run python scripts/dev.py up-db
-uv run alembic upgrade head
-uv run python scripts/dev.py seed-upsert --truncate
+uv --directory backend run python scripts/dev.py up-db
+uv --directory backend run alembic upgrade head
+uv --directory backend run python scripts/dev.py seed-upsert --truncate
 
 # 啟動本機 FastAPI 服務
-uv run python scripts/dev.py up-server
+uv --directory backend run python scripts/dev.py up-server
 ```
 
 > 生產環境由 nginx 使用 `SOURCE_ALLOWLIST_CIDRS` 限制 `/api/v1/source/*`；本機直接跑 FastAPI 時不執行 IP 允許名單。
-> `docker-compose.yml` 目前未把 `ADMIN_API_KEYS` 傳入 app container；若要用 Docker app 容器測 Admin API，需先補上對應環境變數映射，或改用 `uv run python scripts/dev.py up-server` 啟動本機服務。
+> `docker-compose.yml` 會把 `.env` 的 `ADMIN_API_KEY` 傳入 app container；使用 Docker app 容器測試 Admin API 前，請先在 `.env` 設定此值。
 
 ### 2. 驗證服務
 
@@ -168,7 +168,7 @@ curl -X POST "http://localhost:8080/api/v1/admin/api-keys" \
 
 > **生產環境 nginx Serve key 注入**：`/instrument-lookup` 等同源靜態頁不會把 Serve API
 > key 嵌入瀏覽器；生產 nginx 會以 `Referer` regex 比對後注入 `X-API-Key`。設定
-> 由 `scripts/render_nginx_serve_key.py` 在 deploy 時根據 `SERVE_API_KEYS` 的
+> 由 `backend/scripts/render_nginx_serve_key.py` 在 deploy 時根據 `SERVE_API_KEYS` 的
 > **第一個** key 渲染為 `infra/nginx/serve-key.conf`。Phase 3 後這是過渡機制：
 > 該 key 也應透過 Admin API 建入 DB，待部署確認後再移除 env fallback。
 
@@ -535,7 +535,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
 curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
-  --data-binary "@scripts/sample_ingest_payload.json"
+  --data-binary "@backend/scripts/sample_ingest_payload.json"
 ```
 
 ---
@@ -1472,7 +1472,7 @@ Admin API 用於人工修正 Canonical 資料。每次修正都會自動寫入 `
 | GET   | `/raw-payloads/{run_id}`                  | 依 run_id 查詢原始 payload              |
 | GET   | `/corrections`                            | 查詢修正 audit log                      |
 | POST  | `/runs/bulk-rerun`                        | 批次重跑既有 runs                       |
-| GET   | `/instrument-cache`                       | 讀取 `app/static/data/instruments.json` |
+| GET   | `/instrument-cache`                       | 讀取 `backend/app/static/data/instruments.json` |
 | PUT   | `/instrument-cache`                       | 全量覆蓋 instrument cache               |
 | PATCH | `/instrument-cache/items/{instrument_id}` | 更新單一 instrument cache 項目          |
 
@@ -1976,7 +1976,7 @@ curl "http://localhost:8080/api/v1/serve/instruments?page=2&page_size=50"
 | `"EOD record not found..."`           | 404    | 指定的 instrument_id + trade_date 無日K 記錄 |
 | `"DQ issue ... not found"`            | 404    | 指定的 issue_id 不存在                       |
 | `"Raw payload not found"`             | 404    | 指定的 run_id 找不到 raw payload             |
-| `"Instrument cache not found..."`     | 404    | 尚未產生 `app/static/data/instruments.json`  |
+| `"Instrument cache not found..."`     | 404    | 尚未產生 `backend/app/static/data/instruments.json`  |
 | `"Instrument ... not found in cache"` | 404    | instrument cache 中找不到指定 instrument_id  |
 | `"Instrument cache ... invalid"`      | 400    | instrument cache 文件格式不合法              |
 | `"No OHLCV fields provided..."`       | 400    | PATCH 請求未包含任何 OHLCV 欄位              |

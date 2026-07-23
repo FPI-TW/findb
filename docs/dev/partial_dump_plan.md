@@ -9,7 +9,7 @@
 ## 一、範圍與原則
 
 1. 僅規劃，不實作程式碼。
-2. 設定檔以 `configs/partial_dump.yaml` 為標準路徑。
+2. 設定檔以 `backend/configs/partial_dump.yaml` 為標準路徑。
 3. 目標環境為 `prod`（可先將現有環境視作 `staging`，再切新 `prod`）。
 4. 抽樣原則為「每表 3 個標的 + 最近 1 年資料」。
 5. 匯出流程需可重跑、可審計、可驗證。
@@ -65,7 +65,7 @@
 
 | 欄位                 | 型別   | 必填 | 預設值               | 說明                                      |
 | -------------------- | ------ | ---- | -------------------- | ----------------------------------------- |
-| `output_dir`         | string | 是   | -                    | 輸出根目錄，例如 `seed/partial_dump`      |
+| `output_dir`         | string | 是   | -                    | 輸出根目錄（相對於 backend workspace），例如 `seed/partial_dump`      |
 | `artifact_name`      | string | 否   | `{profile}_{utc_ts}` | seed 包名稱模板（欄位名沿用舊稱）         |
 | `format`             | string | 否   | `csv`                | 目前固定 `csv`                            |
 | `compress`           | string | 否   | `zstd`               | `none` / `gzip` / `zstd`                  |
@@ -369,13 +369,13 @@ ORDER BY cnt DESC;
 ## 八、執行進度（2026-04-22）
 
 1. ✅ 已落地 Phase A（Config Contract）：
-   - `app/schemas/partial_dump.py`：`partial_dump.yaml` 欄位契約與強制驗證。
-   - `scripts/partial_dump.py validate`：可在本機與 CI 驗證配置。
-   - `configs/partial_dump.yaml`：預設 profile（含 `raw.market_payload limit: 1000`）。
+   - `backend/app/schemas/partial_dump.py`：`partial_dump.yaml` 欄位契約與強制驗證。
+   - `backend/scripts/partial_dump.py validate`：可在本機與 CI 驗證配置。
+   - `backend/configs/partial_dump.yaml`：預設 profile（含 `raw.market_payload limit: 1000`）。
 2. ✅ 已接入雙平台入口：
-   - `uv run python scripts/dev.py partial-dump-validate`
-   - `uv run python scripts/dev.py partial-dump-run`
-   - `make` 與 `scripts/dev.ps1` 可直接呼叫同命令。
-3. ✅ 已加入單元測試：`tests/test_partial_dump_config.py`。
+   - `uv --directory backend run python scripts/dev.py partial-dump-validate`
+   - `uv --directory backend run python scripts/dev.py partial-dump-run`
+   - `make` 與 `backend/scripts/dev.ps1` 可直接呼叫同命令。
+3. ✅ 已加入單元測試：`backend/tests/test_partial_dump_config.py`。
 4. ⏳ 下一步（Phase B）：
    - 擴充 dump SQL 生成策略（含更完整依賴順序與 upsert 載入路徑）。

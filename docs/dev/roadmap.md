@@ -29,7 +29,7 @@
 - Raw / Canonical / Registry / Correction 模型已建立
 - `dataset_registry`、`ingestion_run`、`dq_issue` 已納入主流程
 - UUID v7、UTC、raw retention 欄位與 cleanup script 已補齊
-- `scripts/seed_data.py` 已提供基礎 dataset 與 instrument 種子資料
+- `backend/scripts/seed_data.py` 已提供基礎 dataset 與 instrument 種子資料
 
 ### 2. Source API
 

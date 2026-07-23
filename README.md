@@ -1,6 +1,16 @@
-# FinDB - Financial Database
+# FinDB Monorepo
 
-Normalize + Serve 層後端服務，用於金融資料的標準化、儲存與查詢。
+同一個 repository 內維護 FinDB 資料服務與營運 dashboard。後端負責金融資料的導入、標準化、儲存與查詢；dashboard 用於監控導入穩定性、複查資料完整度／正確性，以及查詢稽核資料。
+
+Monorepo 將 Python 資料服務與營運前端拆成同層 workspace；後端位於 `backend/`，前端是獨立套件 [`dashboard/`](dashboard/README.md)，Docker Compose、部署設定與共用開發入口保留在 repository 根目錄。
+
+```text
+findb/
+├── backend/                      # FastAPI / PostgreSQL 資料服務
+├── dashboard/                    # TanStack Start 營運台
+├── infra/                        # Nginx 與部署設定
+└── Makefile                      # Monorepo 統一開發入口
+```
 
 ## 目錄
 
@@ -108,7 +118,8 @@ Source / Normalize / Serve / Admin 四條主路徑已串接完成，涵蓋 `CRYP
 
 ```
 findb/
-├── app/
+├── dashboard/                   # TanStack Start 營運台（導入、DQ、稽核）
+├── backend/app/
 │   ├── __init__.py
 │   ├── main.py                 # FastAPI 應用入口
 │   ├── config.py               # 設定管理
@@ -172,7 +183,7 @@ findb/
 │       ├── cloudflare-real-ip.conf     # deploy 時由 render 腳本產生
 │       └── serve-key.conf              # deploy 時由 render 腳本產生
 │
-├── scripts/
+├── backend/scripts/
 │   ├── seed_data.py            # 資料種子腳本
 │   ├── cleanup_raw.py          # Raw 清理腳本
 │   ├── generate_instrument_cache.py  # 產生標的與宏觀序列查詢快取
@@ -185,7 +196,7 @@ findb/
 │   ├── setup_ec2.sh            # EC2 一次性初始化腳本
 │   └── sample_ingest_payload.json
 │
-├── tests/                      # 測試
+├── backend/tests/              # 測試
 │   ├── conftest.py             # 共用 fixtures、DB override
 │   ├── test_source_api.py      # Source API 測試（含安全機制）
 │   ├── test_serve_api.py       # Serve API 測試
@@ -201,8 +212,11 @@ findb/
 │
 ├── docker-compose.yml          # 本機開發環境
 ├── docker-compose.prod.yml     # 生產環境（AWS EC2）
-├── Dockerfile
-├── pyproject.toml
+├── backend/Dockerfile
+├── backend/pyproject.toml
+├── backend/migrations/
+├── backend/configs/
+├── backend/seed/
 └── .env.example
 ```
 
@@ -215,6 +229,8 @@ findb/
 - Python 3.13
 - Docker & Docker Compose
 - uv
+- Node.js 22
+- pnpm 11
 
 ### 1. 複製環境設定
 
@@ -246,7 +262,7 @@ docker volume rm findb_postgres_data
 git lfs pull
 docker compose up -d db
 docker compose run --rm app uv run alembic upgrade head
-uv run python scripts/dev.py seed-upsert --truncate
+uv --directory backend run python scripts/dev.py seed-upsert --truncate
 docker compose up -d app
 ```
 
@@ -260,25 +276,25 @@ docker compose up -d app
 以下為標準入口（macOS / Linux / Windows 共通）：
 
 ```bash
-uv run python scripts/dev.py up-db
-uv run python scripts/dev.py up-rabbit
-uv run python scripts/dev.py migrate
-uv run python scripts/dev.py seed-data
-uv run python scripts/dev.py up-server
-uv run python scripts/dev.py up-app
-uv run python scripts/dev.py up
-uv run python scripts/dev.py start
-uv run python scripts/dev.py restart
-uv run python scripts/dev.py build
-uv run python scripts/dev.py queue-status
-uv run python scripts/dev.py queue-logs
-uv run python scripts/dev.py test-db
-uv run python scripts/dev.py down
-uv run python scripts/dev.py partial-dump-validate
-uv run python scripts/dev.py partial-dump-run --dry-run
-uv run python scripts/dev.py seed-upsert
-uv run python scripts/dev.py seed-upsert --truncate
-uv run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/<seed_package_name>
+uv --directory backend run python scripts/dev.py up-db
+uv --directory backend run python scripts/dev.py up-rabbit
+uv --directory backend run python scripts/dev.py migrate
+uv --directory backend run python scripts/dev.py seed-data
+uv --directory backend run python scripts/dev.py up-server
+uv --directory backend run python scripts/dev.py up-app
+uv --directory backend run python scripts/dev.py up
+uv --directory backend run python scripts/dev.py start
+uv --directory backend run python scripts/dev.py restart
+uv --directory backend run python scripts/dev.py build
+uv --directory backend run python scripts/dev.py queue-status
+uv --directory backend run python scripts/dev.py queue-logs
+uv --directory backend run python scripts/dev.py test-db
+uv --directory backend run python scripts/dev.py down
+uv --directory backend run python scripts/dev.py partial-dump-validate
+uv --directory backend run python scripts/dev.py partial-dump-run --dry-run
+uv --directory backend run python scripts/dev.py seed-upsert
+uv --directory backend run python scripts/dev.py seed-upsert --truncate
+uv --directory backend run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/<seed_package_name>
 ```
 
 雙平台 wrapper：
@@ -297,64 +313,69 @@ make down
 make status
 make logs
 make test
+make dashboard-install
+make dashboard-dev
+make dashboard-test
 make format
 make check
 ```
 
+`make check` 是 monorepo 完整品質門檻：後端執行 Ruff、Black、mypy 與 DB-backed tests，dashboard 執行 Prettier、ESLint、TypeScript、Vitest 與 production build。如只需後端門檻，使用 `make check-backend`。
+
 ```powershell
 # Windows PowerShell
-.\scripts\dev.ps1 up-db
-.\scripts\dev.ps1 up-server
-.\scripts\dev.ps1 up
-.\scripts\dev.ps1 start
-.\scripts\dev.ps1 restart
-.\scripts\dev.ps1 build
-.\scripts\dev.ps1 migrate
-.\scripts\dev.ps1 seed-data
-.\scripts\dev.ps1 test-db
-.\scripts\dev.ps1 down
-.\scripts\dev.ps1 partial-dump-validate
-.\scripts\dev.ps1 partial-dump-run --dry-run
-.\scripts\dev.ps1 seed-upsert
-.\scripts\dev.ps1 seed-upsert --truncate
-.\scripts\dev.ps1 seed-upsert --artifact-dir seed/partial_dump/<seed_package_name>
+.\backend\scripts\dev.ps1 up-db
+.\backend\scripts\dev.ps1 up-server
+.\backend\scripts\dev.ps1 up
+.\backend\scripts\dev.ps1 start
+.\backend\scripts\dev.ps1 restart
+.\backend\scripts\dev.ps1 build
+.\backend\scripts\dev.ps1 migrate
+.\backend\scripts\dev.ps1 seed-data
+.\backend\scripts\dev.ps1 test-db
+.\backend\scripts\dev.ps1 down
+.\backend\scripts\dev.ps1 partial-dump-validate
+.\backend\scripts\dev.ps1 partial-dump-run --dry-run
+.\backend\scripts\dev.ps1 seed-upsert
+.\backend\scripts\dev.ps1 seed-upsert --truncate
+.\backend\scripts\dev.ps1 seed-upsert --artifact-dir seed/partial_dump/<seed_package_name>
 ```
 
 ### 3. 常用開發流程
 
 ```bash
 # 安裝依賴
-uv sync
+uv --directory backend sync
 
 # 只啟動 DB
-uv run python scripts/dev.py up-db
+uv --directory backend run python scripts/dev.py up-db
 
 # 只啟動本機 server（連線本機 5435 DB）
-uv run python scripts/dev.py up-server
+uv --directory backend run python scripts/dev.py up-server
 ```
 
 ```bash
 # 完整啟動 DB、RabbitMQ、app、dispatcher 與 worker；自動 migrate + seed
-uv run python scripts/dev.py up
+uv --directory backend run python scripts/dev.py up
 
 # Docker Desktop / Docker daemon 更新或重啟後，以既有 image 完整啟動
-uv run python scripts/dev.py start
+uv --directory backend run python scripts/dev.py start
 
 # 完整停止並依賴順序重啟全部核心 containers
-uv run python scripts/dev.py restart
+uv --directory backend run python scripts/dev.py restart
 
 # 只啟動 app + DB，不啟動 queue workers
-uv run python scripts/dev.py up-app
+uv --directory backend run python scripts/dev.py up-app
 
 # 查看 queue services
-uv run python scripts/dev.py queue-status
-uv run python scripts/dev.py queue-logs
+uv --directory backend run python scripts/dev.py queue-status
+uv --directory backend run python scripts/dev.py queue-logs
 
 # 初始化資料（以 /seed 內 seed 包匯入可重現資料）
-uv run python scripts/dev.py seed-upsert
+uv --directory backend run python scripts/dev.py seed-upsert
 
 # 跑包含 DB 的測試
-uv run python scripts/dev.py test-db
+uv --directory backend run python scripts/dev.py test-db
 ```
 
 日常建議直接使用 Makefile：
@@ -364,7 +385,7 @@ uv run python scripts/dev.py test-db
 | 首次啟動、拉取程式更新 | `make up` | 啟動 DB/RabbitMQ，migrate、seed、build，再啟動 app/dispatcher/worker |
 | Docker 更新或 daemon 重啟 | `make start` | 使用既有 images 完整啟動，不 migrate、不 build |
 | 完整重啟 containers | `make restart` | 依安全順序停止並重啟全部核心 containers，不 build |
-| Dockerfile 或 dependencies 變更 | `make build` | 只重建 app/dispatcher/worker images |
+| `backend/Dockerfile` 或 dependencies 變更 | `make build` | 只重建 app/dispatcher/worker images |
 | 新增或拉取 migration | `make migrate` | 啟動 DB 並執行 `alembic upgrade head` |
 | dataset registry seed 變更 | `make seed` | migrate 後執行可重複的 registry seed |
 
@@ -383,28 +404,28 @@ docker compose --profile tools up -d pgadmin raw-cleanup
 export FINDB_REMOTE_DATABASE_URL='postgresql+asyncpg://user:pass@host:5432/dbname'
 
 # 2) 驗證 partial_dump.yaml 契約
-uv run python scripts/dev.py partial-dump-validate
+uv --directory backend run python scripts/dev.py partial-dump-validate
 
 # 3) 先看規劃結果（不匯出資料）
-uv run python scripts/dev.py partial-dump-run --dry-run
+uv --directory backend run python scripts/dev.py partial-dump-run --dry-run
 
 # 4) 實際匯出（CSV + manifest）
-uv run python scripts/dev.py partial-dump-run
+uv --directory backend run python scripts/dev.py partial-dump-run
 
 # 5) 對啟動中的本地 DB 套用初始資料（UPSERT）
-uv run python scripts/dev.py seed-upsert
+uv --directory backend run python scripts/dev.py seed-upsert
 
 # 6) 指定 seed 包版本（避免拿到最新包）
-uv run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/prod_partial_1y_3inst_all_tables_20260422T024418Z
+uv --directory backend run python scripts/dev.py seed-upsert --artifact-dir seed/partial_dump/prod_partial_1y_3inst_all_tables_20260422T024418Z
 
 # 7) 大改版時重建本地資料（清空 + 刪除舊表後再 UPSERT）
-uv run python scripts/dev.py seed-upsert --truncate
+uv --directory backend run python scripts/dev.py seed-upsert --truncate
 ```
 
-- 設定檔：`configs/partial_dump.yaml`
+- 設定檔：`backend/configs/partial_dump.yaml`
 - 目前預設只匯出 `public` schema（不含 `raw`）
 - 預設抽樣：每市場 3 檔標的、最近 1 年（依 `selection` 調整）
-- `seed-upsert` 預設會選 `seed/partial_dump/` 最新一包 seed 包（建議進版控），並依主鍵做 upsert 到 `DATABASE_URL`
+- `seed-upsert` 預設會選 `backend/seed/partial_dump/` 最新一包 seed 包（建議進版控），並依主鍵做 upsert 到 `DATABASE_URL`
 - `seed-upsert --artifact-dir ...` 可鎖定特定 seed 包版本（參數名沿用舊稱），避免「最新包」隨時間變動
 - `seed-upsert --truncate` 會先刪除與 seed 包同 schema 中「不在 seed 包內」的舊表（保留 `public.alembic_version`），再 `TRUNCATE ... RESTART IDENTITY CASCADE` 後匯入，適合本地大改版重建
 
@@ -417,10 +438,10 @@ uv run python scripts/dev.py seed-upsert --truncate
 目前 `.gitattributes` 規則：
 
 ```gitattributes
-seed/**/*.csv filter=lfs diff=lfs merge=lfs -text
+backend/seed/**/*.csv filter=lfs diff=lfs merge=lfs -text
 ```
 
-也就是說，`seed/partial_dump/<seed_package_name>/tables/*.csv` 會由 Git LFS 追蹤；`manifest.json`、`schema.sql`、`load.sql` 仍是一般 Git 文字檔。
+也就是說，`backend/seed/partial_dump/<seed_package_name>/tables/*.csv` 會由 Git LFS 追蹤；`manifest.json`、`schema.sql`、`load.sql` 仍是一般 Git 文字檔。
 
 #### 第一次使用或重新 clone
 
@@ -451,7 +472,7 @@ git lfs track
 git lfs ls-files
 
 # 確認指定 seed CSV 是否命中 LFS filter
-git check-attr filter diff merge text -- seed/partial_dump/<seed_package_name>/tables/public.market_data_eod.csv
+git check-attr filter diff merge text -- backend/seed/partial_dump/<seed_package_name>/tables/public.market_data_eod.csv
 ```
 
 正常情況下，`git check-attr` 會顯示 `filter: lfs`、`diff: lfs`、`merge: lfs`、`text: unset`。
@@ -460,17 +481,17 @@ git check-attr filter diff merge text -- seed/partial_dump/<seed_package_name>/t
 
 ```bash
 # 1) 產生 partial dump seed 包
-uv run python scripts/dev.py partial-dump-run
+uv --directory backend run python scripts/dev.py partial-dump-run
 
 # 2) 確認 CSV 會被 LFS 規則接住
 git lfs track
-git check-attr filter -- seed/partial_dump/<seed_package_name>/tables/public.market_data_eod.csv
+git check-attr filter -- backend/seed/partial_dump/<seed_package_name>/tables/public.market_data_eod.csv
 
 # 3) 檢查 LFS 追蹤清單
 git lfs ls-files
 
 # 4) staging：CSV 會以 LFS pointer 進 Git，實體內容由 LFS 管理
-git add .gitattributes seed/partial_dump/<seed_package_name>
+git add .gitattributes backend/seed/partial_dump/<seed_package_name>
 
 # 5) commit
 git commit -m "Add partial dump seed package"
@@ -479,8 +500,8 @@ git commit -m "Add partial dump seed package"
 如果未來需要把其他大型 seed 檔案類型納入 LFS，先更新追蹤規則，再加入檔案：
 
 ```bash
-git lfs track "seed/**/*.parquet"
-git add .gitattributes seed/
+git lfs track "backend/seed/**/*.parquet"
+git add .gitattributes backend/seed/
 ```
 
 #### 維護注意事項
@@ -508,7 +529,7 @@ curl http://localhost:8080/health
 或需要手動刷新，可執行：
 
 ```bash
-uv run python scripts/generate_instrument_cache.py
+uv --directory backend run python scripts/generate_instrument_cache.py
 ```
 
 可用環境變數：
@@ -549,7 +570,7 @@ http://localhost:8080/instrument-lookup
 curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
-  --data-binary "@scripts/sample_ingest_payload.json"
+  --data-binary "@backend/scripts/sample_ingest_payload.json"
 
 # 查詢日K
 curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
@@ -571,7 +592,7 @@ curl "http://localhost:8080/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start
 
 > **生產環境 Serve API key 注入**：`/instrument-lookup` 靜態頁不會把 Serve API key
 > 嵌入瀏覽器，而是由生產 nginx 依 `Referer` 比對後注入 `X-API-Key`（設定來自
-> `scripts/render_nginx_serve_key.py` 在 deploy 時渲染的 `infra/nginx/serve-key.conf`）。
+> `backend/scripts/render_nginx_serve_key.py` 在 deploy 時渲染的 `infra/nginx/serve-key.conf`）。
 > 外部呼叫者若自行帶 `X-API-Key`，passthrough 行為不受影響。
 
 ### IP 允許名單
@@ -642,22 +663,22 @@ Source API 限制每個 API Key + Client IP 組合的請求頻率：
 
 ```bash
 # 格式化
-uv run black app tests scripts
+uv --directory backend run black app tests scripts
 
 # Lint
-uv run ruff check .
+uv --directory backend run ruff check .
 
 # 型別檢查
-uv run mypy app
+uv --directory backend run mypy app
 ```
 
 ### 新增 Normalizer
 
-1. 在 `app/services/normalize/` 建立新檔案
+1. 在 `backend/app/services/normalize/` 建立新檔案
 2. 繼承 `BaseNormalizer`，實作 `map_fields()`
-3. 在 `app/services/normalize/__init__.py` 匯出
-4. 在 `app/services/ingestion.py` 的 `NORMALIZER_MAP` 加入對應
-5. 在 `scripts/seed_data.py` 加入 dataset 設定
+3. 在 `backend/app/services/normalize/__init__.py` 匯出
+4. 在 `backend/app/services/ingestion.py` 的 `NORMALIZER_MAP` 加入對應
+5. 在 `backend/scripts/seed_data.py` 加入 dataset 設定
 
 ### DQ 規則
 
@@ -678,22 +699,22 @@ uv run mypy app
 
 ```bash
 # 標準命令（先確保 DB 可用）
-uv run python scripts/dev.py test-db
+uv --directory backend run python scripts/dev.py test-db
 
 # 執行所有測試
-uv run pytest
+uv --directory backend run pytest
 
 # 執行單一檔案
-uv run pytest tests/test_source_api.py
+uv --directory backend run pytest tests/test_source_api.py
 
 # 執行特定測試
-uv run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
+uv --directory backend run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
 
 # 依關鍵字執行
-uv run pytest -k "crypto"
+uv --directory backend run pytest -k "crypto"
 
 # 顯示覆蓋率
-uv run pytest --cov=app
+uv --directory backend run pytest --cov=app
 ```
 
 ### Docker 容器內測試
@@ -723,18 +744,18 @@ docker compose exec app bash -c \
 
 ```bash
 # 安裝 hooks（一次）
-uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+uv --directory backend run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 目前規則：
 
 - `pre-commit`：執行 `black` 自動格式化。
-- `pre-push`：執行含 DB 的測試流程（`uv run python scripts/dev.py test-db`）。
+- `pre-push`：執行含 DB 的測試流程（`uv --directory backend run python scripts/dev.py test-db`）。
 
 ## Migration
 
 - 操作流程與 baseline/stamp 策略請見 `migration_workflow.md`（docs 索引）
-- 常用命令：`uv run alembic current`、`uv run alembic revision --autogenerate -m \"...\"`、`uv run alembic upgrade head`
+- 常用命令：`uv --directory backend run alembic current`、`uv --directory backend run alembic revision --autogenerate -m \"...\"`、`uv --directory backend run alembic upgrade head`
 - 啟動時不再自動 `create_all()`；若資料庫版本未到 `head` 或缺核心表，服務會直接啟動失敗並提示先跑 migration。
 
 ---
@@ -786,7 +807,7 @@ GitHub Actions
 
 ```bash
 # 1. 安裝 Docker
-sudo bash scripts/setup_ec2.sh
+sudo bash backend/scripts/setup_ec2.sh
 
 # 2. 在 GitHub Actions 設定下方 Secrets / Variables
 

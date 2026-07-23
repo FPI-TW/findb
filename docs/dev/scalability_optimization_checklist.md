@@ -59,9 +59,9 @@
 - [ ] 補充對應文件與操作方式
 
 建議優先修改位置：
-- `app/api/v1/source.py`
-- `app/api/v1/admin.py`
-- `app/services/ingestion.py`
+- `backend/app/api/v1/source.py`
+- `backend/app/api/v1/admin.py`
+- `backend/app/services/ingestion.py`
 
 驗收條件：
 - [ ] API 回應時間不再依賴 normalize 處理時間
@@ -87,10 +87,10 @@
 - [ ] 為 chunk 處理加入明確的 metrics 與 log
 
 建議優先修改位置：
-- `app/services/normalize/base.py`
-- `app/services/normalize/macro.py`
-- `app/services/normalize/futures.py`
-- `app/services/normalize/corporate_actions.py`
+- `backend/app/services/normalize/base.py`
+- `backend/app/services/normalize/macro.py`
+- `backend/app/services/normalize/futures.py`
+- `backend/app/services/normalize/corporate_actions.py`
 
 驗收條件：
 - [ ] `100k` 資料寫入時間顯著低於現況
@@ -116,10 +116,10 @@
 - [x] 將 schema 變更正式遷移到 Alembic，而不是 runtime `create_all()`
 
 建議優先修改位置：
-- `app/models/canonical.py`
-- `app/models/raw.py`
-- `app/models/base.py`
-- `migrations/`
+- `backend/app/models/canonical.py`
+- `backend/app/models/raw.py`
+- `backend/app/models/base.py`
+- `backend/migrations/`
 
 驗收條件：
 - [ ] 新增 constraint 與索引後，查詢計畫符合預期
@@ -139,8 +139,8 @@
 - [ ] 重新檢查百萬筆時 DQ raw_data 是否需要裁剪，避免 DQ table 膨脹
 
 建議優先修改位置：
-- `app/services/dq/validators.py`
-- `app/services/normalize/base.py`
+- `backend/app/services/dq/validators.py`
+- `backend/app/services/normalize/base.py`
 
 驗收條件：
 - [ ] DQ 開啟後的吞吐不再比關閉時慢太多
@@ -161,8 +161,8 @@
 - [ ] 為熱門 endpoint 增加快取策略或結果快照
 
 建議優先修改位置：
-- `app/api/v1/serve.py`
-- `app/schemas/serve.py`
+- `backend/app/api/v1/serve.py`
+- `backend/app/schemas/serve.py`
 
 驗收條件：
 - [ ] 深翻頁不再隨頁數大幅變慢
@@ -183,8 +183,8 @@
 - [ ] 建立 rollback 計畫，避免資料模型優化影響既有寫入
 
 建議新增內容：
-- `tests/performance/`
-- `scripts/benchmark_*.py`
+- `backend/tests/performance/`
+- `backend/scripts/benchmark_*.py`
 - `docs/` 內的壓測報告與操作說明
 
 驗收條件：

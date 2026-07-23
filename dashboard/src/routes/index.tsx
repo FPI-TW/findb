@@ -1,87 +1,509 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { useServerFn } from "@tanstack/react-start"
+import {
+  AlertTriangle,
+  Archive,
+  CheckCircle2,
+  Clock3,
+  Database,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  TriangleAlert,
+  Wifi,
+} from "lucide-react"
+import { type FormEvent, useCallback, useState } from "react"
 
-export const Route = createFileRoute("/")({ component: App })
+import type { DashboardResponse, PanelResult } from "../lib/admin-api"
+import { loadDashboard } from "../lib/admin.functions"
 
-function App() {
+export const Route = createFileRoute("/")({ component: OperationsConsole })
+
+function formatDate(value: string | null) {
+  if (!value) return "—"
+  return new Intl.DateTimeFormat("zh-TW", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value))
+}
+
+function formatAge(seconds: number | null) {
+  if (seconds === null) return "無資料"
+  if (seconds < 60) return `${Math.round(seconds)} 秒`
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分鐘`
+  return `${Math.round(seconds / 3600)} 小時`
+}
+
+function Panel({
+  title,
+  eyebrow,
+  icon,
+  result,
+  children,
+}: {
+  title: string
+  eyebrow: string
+  icon: React.ReactNode
+  result: PanelResult<unknown>
+  children: React.ReactNode
+}) {
   return (
-    <main className="page-wrap px-4 pb-8 pt-14">
-      <section className="island-shell rise-in relative overflow-hidden rounded-[2rem] px-6 py-10 sm:px-10 sm:py-14">
-        <div className="pointer-events-none absolute -left-20 -top-24 h-56 w-56 rounded-full bg-[radial-gradient(circle,rgba(79,184,178,0.32),transparent_66%)]" />
-        <div className="pointer-events-none absolute -bottom-20 -right-20 h-56 w-56 rounded-full bg-[radial-gradient(circle,rgba(47,106,74,0.18),transparent_66%)]" />
-        <p className="island-kicker mb-3">TanStack Start Base Template</p>
-        <h1 className="display-title mb-5 max-w-3xl text-4xl leading-[1.02] font-bold tracking-tight text-[var(--sea-ink)] sm:text-6xl">
-          Start simple, ship quickly.
-        </h1>
-        <p className="mb-8 max-w-2xl text-base text-[var(--sea-ink-soft)] sm:text-lg">
-          This base starter intentionally keeps things light: two routes, clean
-          structure, and the essentials you need to build from scratch.
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <a
-            href="/about"
-            className="rounded-full border border-[rgba(50,143,151,0.3)] bg-[rgba(79,184,178,0.14)] px-5 py-2.5 text-sm font-semibold text-[var(--lagoon-deep)] no-underline transition hover:-translate-y-0.5 hover:bg-[rgba(79,184,178,0.24)]"
-          >
-            About This Starter
-          </a>
-          <a
-            href="https://tanstack.com/router"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-full border border-[rgba(23,58,64,0.2)] bg-white/50 px-5 py-2.5 text-sm font-semibold text-[var(--sea-ink)] no-underline transition hover:-translate-y-0.5 hover:border-[rgba(23,58,64,0.35)]"
-          >
-            Router Guide
-          </a>
+    <section className="panel">
+      <header className="panel-header">
+        <span className="panel-icon">{icon}</span>
+        <div>
+          <p className="eyebrow">{eyebrow}</p>
+          <h2>{title}</h2>
         </div>
+      </header>
+      {result.ok ? (
+        children
+      ) : (
+        <div className="state error-state">
+          <TriangleAlert size={18} />
+          <span>{result.error}</span>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="state empty-state">
+      <CheckCircle2 size={18} />
+      <span>{children}</span>
+    </div>
+  )
+}
+
+function OperationsConsole() {
+  const load = useServerFn(loadDashboard)
+  const [apiKey, setApiKey] = useState("")
+  const [data, setData] = useState<DashboardResponse | null>(null)
+  const [error, setError] = useState("")
+  const [pending, setPending] = useState(false)
+  const [filters, setFilters] = useState({
+    datasetKey: "",
+    runId: "",
+    dateFrom: "",
+    dateTo: "",
+  })
+
+  const refresh = useCallback(
+    async (nextFilters = filters) => {
+      if (!apiKey.trim()) {
+        setError("請輸入既有的 Admin API Key。")
+        return
+      }
+      setPending(true)
+      setError("")
+      try {
+        const result = await load({
+          data: { apiKey, audit: nextFilters },
+        })
+        setData(result)
+      } catch (reason) {
+        setError(
+          reason instanceof Error ? reason.message : "無法連線至 FinDB API。"
+        )
+      } finally {
+        setPending(false)
+      }
+    },
+    [apiKey, filters, load]
+  )
+
+  function submitConnection(event: FormEvent) {
+    event.preventDefault()
+    void refresh()
+  }
+
+  function submitAudit(event: FormEvent) {
+    event.preventDefault()
+    void refresh(filters)
+  }
+
+  const unavailable: PanelResult<unknown> = {
+    ok: false,
+    error: "連線後顯示資料",
+  }
+  const panelResults = data
+    ? [
+        data.queue,
+        data.deliveries,
+        data.issues,
+        data.corrections,
+        data.rawPayloads,
+      ]
+    : []
+  const successfulPanels = panelResults.filter(result => result.ok).length
+  const connectionState =
+    data === null
+      ? "idle"
+      : successfulPanels === panelResults.length
+        ? "healthy"
+        : successfulPanels === 0
+          ? "failed"
+          : "degraded"
+  const connectionLabel = {
+    idle: "尚未連線",
+    healthy: "連線正常",
+    degraded: "部分服務異常",
+    failed: "連線失敗",
+  }[connectionState]
+
+  return (
+    <main className="console-shell">
+      <section className="hero">
+        <div>
+          <p className="eyebrow">FinDB Operations / Read only</p>
+          <h1>資料導入營運台</h1>
+          <p className="hero-copy">
+            集中檢查導入穩定度、資料完整性與修正稽核，所有操作皆為唯讀。
+          </p>
+        </div>
+        <form className="connection-form" onSubmit={submitConnection}>
+          <label htmlFor="api-key">Admin API Key</label>
+          <div className="input-row">
+            <input
+              id="api-key"
+              type="password"
+              autoComplete="off"
+              value={apiKey}
+              onChange={event => setApiKey(event.target.value)}
+              placeholder="僅保留於目前頁面記憶體"
+            />
+            <button type="submit" disabled={pending}>
+              {pending ? (
+                <RefreshCw className="spin" size={17} />
+              ) : (
+                <Wifi size={17} />
+              )}
+              {data ? "重新整理" : "連線"}
+            </button>
+          </div>
+          <p className="field-hint">
+            金鑰不會寫入 localStorage、sessionStorage 或伺服器環境設定。
+          </p>
+        </form>
       </section>
 
-      <section className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          [
-            "Type-Safe Routing",
-            "Routes and links stay in sync across every page.",
-          ],
-          [
-            "Server Functions",
-            "Call server code from your UI without creating API boilerplate.",
-          ],
-          [
-            "Streaming by Default",
-            "Ship progressively rendered responses for faster experiences.",
-          ],
-          [
-            "Tailwind Native",
-            "Design quickly with utility-first styling and reusable tokens.",
-          ],
-        ].map(([title, desc], index) => (
-          <article
-            key={title}
-            className="island-shell feature-card rise-in rounded-2xl p-5"
-            style={{ animationDelay: `${index * 90 + 80}ms` }}
+      {error && (
+        <div className="global-error" role="alert">
+          <AlertTriangle size={18} />
+          {error}
+        </div>
+      )}
+
+      <div className="status-strip">
+        <span className={`status-dot ${connectionState}`} />
+        <strong>{connectionLabel}</strong>
+        <span>
+          {data
+            ? `${successfulPanels}/${panelResults.length} 個資料來源成功 · 最後更新 ${formatDate(data.fetchedAt)}`
+            : "等待操作人員授權"}
+        </span>
+        {data && (
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => void refresh()}
+            disabled={pending}
           >
-            <h2 className="mb-2 text-base font-semibold text-[var(--sea-ink)]">
-              {title}
-            </h2>
-            <p className="m-0 text-sm text-[var(--sea-ink-soft)]">{desc}</p>
-          </article>
-        ))}
+            <RefreshCw className={pending ? "spin" : ""} size={15} />
+            手動更新
+          </button>
+        )}
+      </div>
+      {connectionState === "failed" && (
+        <div className="global-error" role="alert">
+          <AlertTriangle size={18} />
+          所有 Admin API 查詢均失敗，請確認後端服務與 API key 後再試一次。
+        </div>
+      )}
+      {connectionState === "degraded" && (
+        <div className="global-warning" role="status">
+          <AlertTriangle size={18} />
+          部分資料來源暫時無法取得；其餘成功面板仍為有效結果。
+        </div>
+      )}
+
+      <div className="panel-grid">
+        <Panel
+          eyebrow="Ingestion stability"
+          title="佇列與 Worker"
+          icon={<Database size={19} />}
+          result={data?.queue ?? unavailable}
+        >
+          {data?.queue.ok && (
+            <div className="metric-grid">
+              <div className="metric">
+                <span>排隊中</span>
+                <strong>{data.queue.data.counts.queued ?? 0}</strong>
+              </div>
+              <div className="metric">
+                <span>處理中</span>
+                <strong>{data.queue.data.counts.processing ?? 0}</strong>
+              </div>
+              <div className="metric">
+                <span>重試耗盡</span>
+                <strong>{data.queue.data.retry_exhausted}</strong>
+              </div>
+              <div className="metric">
+                <span>過期租約</span>
+                <strong>{data.queue.data.expired_leases}</strong>
+              </div>
+              <div className="metric wide">
+                <span>Worker heartbeat</span>
+                <strong>
+                  {formatAge(data.queue.data.worker_heartbeat_age_seconds)}
+                </strong>
+                <small>
+                  {formatDate(data.queue.data.last_worker_heartbeat_at)}
+                </small>
+              </div>
+              <div className="metric wide">
+                <span>未發布 outbox</span>
+                <strong>{data.queue.data.unpublished_outbox}</strong>
+              </div>
+            </div>
+          )}
+        </Panel>
+
+        <Panel
+          eyebrow="Completeness"
+          title="缺漏交付"
+          icon={<Clock3 size={19} />}
+          result={data?.deliveries ?? unavailable}
+        >
+          {data?.deliveries.ok &&
+            (data.deliveries.data.data.length === 0 ? (
+              <EmptyState>目前沒有未解決的交付缺漏</EmptyState>
+            ) : (
+              <>
+                <p className="result-count">
+                  共 {data.deliveries.data.pagination.total_records} 筆，顯示前{" "}
+                  {data.deliveries.data.data.length} 筆
+                </p>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>資料集</th>
+                        <th>來源</th>
+                        <th>預期日期</th>
+                        <th>首次偵測</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.deliveries.data.data.map(alert => (
+                        <tr key={alert.alert_id}>
+                          <td className="mono">{alert.dataset_key}</td>
+                          <td>{alert.source}</td>
+                          <td>{alert.expected_data_date}</td>
+                          <td>{formatDate(alert.first_detected_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ))}
+        </Panel>
+
+        <Panel
+          eyebrow="Correctness"
+          title="未解決 DQ 問題"
+          icon={<ShieldCheck size={19} />}
+          result={data?.issues ?? unavailable}
+        >
+          {data?.issues.ok &&
+            (data.issues.data.data.length === 0 ? (
+              <EmptyState>目前沒有未解決的資料品質問題</EmptyState>
+            ) : (
+              <>
+                <p className="result-count">
+                  共 {data.issues.data.pagination.total_records} 筆，顯示前{" "}
+                  {data.issues.data.data.length} 筆
+                </p>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>嚴重度</th>
+                        <th>類型</th>
+                        <th>交易日</th>
+                        <th>說明</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.issues.data.data.map(issue => (
+                        <tr key={issue.id}>
+                          <td>
+                            <span className={`severity ${issue.severity}`}>
+                              {issue.severity}
+                            </span>
+                          </td>
+                          <td className="mono">{issue.issue_type}</td>
+                          <td>{issue.trade_date ?? "—"}</td>
+                          <td>{issue.description ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ))}
+        </Panel>
+
+        <Panel
+          eyebrow="Audit trail"
+          title="近期修正"
+          icon={<Archive size={19} />}
+          result={data?.corrections ?? unavailable}
+        >
+          {data?.corrections.ok &&
+            (data.corrections.data.data.length === 0 ? (
+              <EmptyState>目前沒有修正紀錄</EmptyState>
+            ) : (
+              <>
+                <p className="result-count">
+                  共 {data.corrections.data.pagination.total_records} 筆，顯示前{" "}
+                  {data.corrections.data.data.length} 筆
+                </p>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>時間</th>
+                        <th>資料表</th>
+                        <th>修正者</th>
+                        <th>原因</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.corrections.data.data.map(correction => (
+                        <tr key={correction.id}>
+                          <td>{formatDate(correction.created_at)}</td>
+                          <td className="mono">{correction.table_name}</td>
+                          <td>{correction.corrected_by}</td>
+                          <td>{correction.correction_reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ))}
+        </Panel>
+      </div>
+
+      <section className="panel audit-panel">
+        <header className="panel-header">
+          <span className="panel-icon">
+            <Search size={19} />
+          </span>
+          <div>
+            <p className="eyebrow">Raw payload retrieval</p>
+            <h2>原始資料稽核查詢</h2>
+          </div>
+        </header>
+        <form className="filter-grid" onSubmit={submitAudit}>
+          <label>
+            Dataset key
+            <input
+              value={filters.datasetKey}
+              onChange={event =>
+                setFilters({ ...filters, datasetKey: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            Run ID
+            <input
+              value={filters.runId}
+              onChange={event =>
+                setFilters({ ...filters, runId: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            起始日期
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={event =>
+                setFilters({ ...filters, dateFrom: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            結束日期
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={event =>
+                setFilters({ ...filters, dateTo: event.target.value })
+              }
+            />
+          </label>
+          <button type="submit" disabled={pending || !apiKey}>
+            <Search size={16} /> 查詢
+          </button>
+        </form>
+        {!data ? (
+          <div className="state empty-state">連線後可查詢 raw payload</div>
+        ) : !data.rawPayloads.ok ? (
+          <div className="state error-state">{data.rawPayloads.error}</div>
+        ) : data.rawPayloads.data.data.length === 0 ? (
+          <EmptyState>查無符合條件的原始資料</EmptyState>
+        ) : (
+          <>
+            <p className="result-count">
+              共 {data.rawPayloads.data.pagination.total_records} 筆，顯示前{" "}
+              {data.rawPayloads.data.data.length} 筆
+            </p>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>建立時間</th>
+                    <th>Dataset</th>
+                    <th>來源</th>
+                    <th>Run ID</th>
+                    <th>保留期限</th>
+                    <th>Payload</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rawPayloads.data.data.map(payload => (
+                    <tr key={`${payload.run_id}:${payload.idempotency_key}`}>
+                      <td>{formatDate(payload.created_at)}</td>
+                      <td className="mono">{payload.dataset_key}</td>
+                      <td>{payload.source}</td>
+                      <td className="mono">{payload.run_id}</td>
+                      <td>{formatDate(payload.expire_at)}</td>
+                      <td>
+                        <details className="payload-review">
+                          <summary>檢視 JSON</summary>
+                          <pre>{JSON.stringify(payload.payload, null, 2)}</pre>
+                        </details>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </section>
 
-      <section className="island-shell mt-8 rounded-2xl p-6">
-        <p className="island-kicker mb-2">Quick Start</p>
-        <ul className="m-0 list-disc space-y-2 pl-5 text-sm text-[var(--sea-ink-soft)]">
-          <li>
-            Edit <code>src/routes/index.tsx</code> to customize the home page.
-          </li>
-          <li>
-            Update <code>src/components/Header.tsx</code> and{" "}
-            <code>src/components/Footer.tsx</code> for brand links.
-          </li>
-          <li>
-            Add routes in <code>src/routes</code> and tweak visual tokens in{" "}
-            <code>src/styles.css</code>.
-          </li>
-        </ul>
-      </section>
+      <aside className="limitations">
+        <strong>目前限制</strong>
+        <span>後端尚無歷史 run 趨勢 API，因此本頁只呈現即時佇列狀態。</span>
+        <span>Raw payload 受保留政策影響，過期資料可能無法從此查詢取得。</span>
+      </aside>
     </main>
   )
 }

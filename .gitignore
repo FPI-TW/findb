@@ -27,8 +27,8 @@ htmlcov/
 
 *.log
 artifacts/
-app/static/data/instruments.json
-app/static/data/macro-series.json
+backend/app/static/data/instruments.json
+backend/app/static/data/macro-series.json
 
 .idea/
 .vscode/
@@ -49,7 +49,7 @@ docs/superpowers/
 .ingest_log_daily/
 .ingest_log_prod/
 datas/
-seed/partial_dump/prod_partial_*/
+backend/seed/partial_dump/prod_partial_*/
 
 # Skills
 .agents/*
