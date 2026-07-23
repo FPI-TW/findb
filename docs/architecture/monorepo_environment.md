@@ -33,4 +33,4 @@ Deploy: GitHub Secrets ──┘             │
 
 ## 部署
 
-Dashboard 使用獨立 image 與 `findb-dashboard` container，由 nginx 的 `/dashboard/` 路徑代理。Deploy workflow 會在啟動前檢查三個 Dashboard 認證 secrets 均非空，缺少任何一項即拒絕部署。
+Dashboard 使用獨立 image 與 `findb-dashboard` container，image 內固定監聽 port `3333`，由 nginx 的 `/dashboard/` 路徑代理。本機 `pnpm dev:dashboard` 仍使用 port `3000`，Compose container 則映射至 host port `3333`，兩種模式可以並行。Deploy workflow 會在啟動前檢查三個 Dashboard 認證 secrets 均非空，缺少任何一項即拒絕部署。

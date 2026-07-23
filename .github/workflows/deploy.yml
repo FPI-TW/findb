@@ -449,7 +449,7 @@ jobs:
             dashboard_ready=0
             for attempt in $(seq 1 24); do
               if docker compose -f docker-compose.prod.yml exec -T dashboard \
-                wget -q --spider http://127.0.0.1:3000/dashboard/login; then
+                wget -q --spider http://127.0.0.1:3333/dashboard/login; then
                 echo "Dashboard is ready"
                 dashboard_ready=1
                 break

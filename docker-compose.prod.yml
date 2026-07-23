@@ -80,6 +80,7 @@ services:
     image: "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE must be set by deployment}:${IMAGE_TAG:-latest}"
     container_name: findb-dashboard
     environment:
+      PORT: "3333"
       FINDB_API_BASE_URL: "http://ingest:${PORT:?PORT must be set in GitHub Actions variables}"
       ADMIN_API_KEY: "${ADMIN_API_KEY:?ADMIN_API_KEY must be set in GitHub Actions secrets}"
       DASHBOARD_USERNAME: "${DASHBOARD_USERNAME:?DASHBOARD_USERNAME must be set in GitHub Actions secrets}"
@@ -92,7 +93,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q --spider http://127.0.0.1:3000/dashboard/login",
+          "wget -q --spider http://127.0.0.1:3333/dashboard/login",
         ]
       interval: 15s
       timeout: 5s

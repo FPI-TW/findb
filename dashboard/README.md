@@ -21,11 +21,15 @@ Dashboard 統一讀取 repository 根目錄的 `.env`。必填：
 
 Admin key 只存在 Dashboard server 環境，瀏覽器不會收到或輸入它。操作人員需以環境設定的單一帳號與密碼登入；沒有註冊功能。登入狀態使用有期限、簽章且 `HttpOnly` 的 cookie。
 
-本機入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
+直接執行 `pnpm dev:dashboard` 時，開發入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
 
 ```bash
 pnpm container:dashboard
 ```
+
+Dashboard image 內固定監聽 port `3333`，本機 Compose 也映射為
+`http://localhost:3333/dashboard/`，因此 container 不會占用前端開發常用的
+port `3000`。
 
 ## Checks
 
