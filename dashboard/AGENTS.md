@@ -104,7 +104,9 @@ tanstackIntent:
 
 - 元件視覺樣式優先使用 Tailwind CSS utilities；新增或修改 UI 時，不新增只為單一元件服務的 semantic CSS class。
 - 盡可能使用 Tailwind 原生 class name；僅在 Tailwind 沒有對應 utility 或必須引用專案 design token 時使用 arbitrary values（例如 `[...]`）。
-- 重複的 utilities 應抽成共用元件或靜態 class 常數，避免複製長字串；條件式 class 必須列出完整 class 名稱，避免 Tailwind 無法掃描動態拼接值。
+- 不得使用常數保存 Tailwind class name，避免編輯器的 Tailwind 插件無法辨識；重複樣式應抽成共用元件、shadcn variant，或在 Tailwind 中定義可復用的 class name。
+- 因執行期條件、狀態或其他功能需求時可以使用變數組合 class；不得只為集中保存一組靜態樣式而建立變數。
+- 頁面元件的條件式 class 必須直接列出完整 class 名稱；只有共用 UI 元件內的 shadcn/CVA variants 可以集中管理 class 組合。
 - `src/styles.css` 僅保留 Tailwind import、全域 design tokens、字型、頁面基礎樣式，以及 utilities 難以清楚表達的跨元件規則。
 - 沿用 CSS variables 作為明暗主題的 design tokens，再由 Tailwind utilities 引用；不得在元件內複製 light/dark 色碼。
 - 所有非同步資料頁面必須有明確的初次 loading UI（建議 skeleton 並搭配 `role="status"` / `aria-live`）；第一次請求完成前，不得顯示錯誤占位或「無資料」狀態。

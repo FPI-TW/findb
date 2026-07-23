@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router"
 import { Activity } from "lucide-react"
 
 import ThemeToggle from "./ThemeToggle"
+import { Badge } from "./ui/badge"
 
 export default function Header() {
   return (
@@ -20,9 +21,9 @@ export default function Header() {
           </small>
         </Link>
         <div className="flex items-center gap-2.5">
-          <span className="hidden rounded-full border border-line px-2.5 py-1 text-xs font-bold text-muted sm:inline">
+          <Badge className="hidden sm:inline-flex" variant="outline">
             唯讀模式
-          </span>
+          </Badge>
           <ThemeToggle />
         </div>
       </div>
