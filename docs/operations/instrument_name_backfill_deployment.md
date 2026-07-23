@@ -118,7 +118,7 @@ docker compose -f docker-compose.prod.yml run --rm raw-cleanup python /app/scrip
 
 ### 3. 重生靜態 cache
 
-`/static/data/instruments.json` 由 cron 每日 06:00 重生（見 `scripts/generate_instrument_cache.py` 註解），手動補一次：
+`/static/data/instruments.json` 由 cron 每日 06:00 重生（見 `backend/scripts/generate_instrument_cache.py` 註解），手動補一次：
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm ingest python /app/scripts/generate_instrument_cache.py

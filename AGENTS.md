@@ -2,38 +2,40 @@
 
 ## 專案概覽
 
-FinDB 是以 FastAPI 建置的金融資料後端，負責接收市場資料 payload、保存 raw layer、標準化為 canonical models，並提供唯讀查詢 API。
+FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以及用於監控資料導入、複查資料品質與查詢稽核資料的 TanStack Dashboard。
 
-核心堆疊：Python 3.13、FastAPI、SQLAlchemy async、PostgreSQL、Alembic、uv、pytest。
+核心堆疊：Python 3.13、FastAPI、SQLAlchemy async、PostgreSQL、Alembic、uv、pytest、TypeScript、React、TanStack Start、pnpm。
 
 整體資料流程是 Fetch -> Normalize -> Serve：
 
 - Fetch layer：外部資料擷取服務，不在本 repo 內，會將 Bloomberg 等 provider 的原始資料 POST 到 Source API。
-- Source API：`app/api/v1/source.py`，負責驗證、冪等去重、寫入 raw layer，並觸發標準化。
-- Normalize layer：`app/services/normalize/`，把 raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
-- Serve API：`app/api/v1/serve.py`，只讀取 canonical layer，必須保持唯讀。
+- Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重、寫入 raw layer，並觸發標準化。
+- Normalize layer：`backend/app/services/normalize/`，把 raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
+- Serve API：`backend/app/api/v1/serve.py`，只讀取 canonical layer，必須保持唯讀。
 
 ## 專案結構
 
 ```text
 findb/
-|- app/                      # API、services、models、schemas、utils、static pages
-|  |- api/v1/                # Source ingest、Serve query、Admin routers
-|  |- services/normalize/    # 市場別 normalizers 與 mapping logic
-|  |- models/                # canonical、raw、registry ORM models
-|  |- schemas/               # Pydantic request/response models
-|  `- static/                # /test、/instrument-lookup、generated data cache
-|- migrations/               # Alembic migration scripts
-|- configs/                  # YAML configs，例如 partial_dump.yaml
+|- backend/                  # FastAPI 後端套件與開發工具
+|  |- app/                   # API、services、models、schemas、utils、static pages
+|  |  |- api/v1/             # Source ingest、Serve query、Admin routers
+|  |  |- services/normalize/ # 市場別 normalizers 與 mapping logic
+|  |  |- models/             # canonical、raw、registry ORM models
+|  |  |- schemas/            # Pydantic request/response models
+|  |  `- static/             # /test、/instrument-lookup、generated data cache
+|  |- migrations/            # Alembic migration scripts
+|  |- configs/               # YAML configs，例如 partial_dump.yaml
+|  |- tests/                 # async API/service integration tests 與 unit tests
+|  |- scripts/               # dev.py、seed scripts、partial dump、cleanup、cache gen、render nginx confs
+|  |- seed/                  # local development partial dump data
+|  `- pyproject.toml         # uv deps + black/ruff/mypy/pytest settings
+|- dashboard/                # TanStack Start 營運台；監控導入、DQ 與稽核查詢
 |- docs/                     # 分類文件：api/、architecture/、operations/、dev/；索引見 docs/README.md
-|- tests/                    # async API/service integration tests 與 unit tests
-|- scripts/                  # dev.py、seed scripts、partial dump、cleanup、cache gen、render nginx confs
 |- infra/nginx/              # 生產環境 nginx 設定（HTTPS、Source allowlist、Serve API key 注入）
-|- seed/                     # local development partial dump data
 |- docker-compose.yml        # local app + postgres + pgadmin stack
 |- docker-compose.prod.yml   # 生產環境 stack；含 nginx + findb-app
-|- Makefile                  # dev workflow shortcuts，包裝 scripts/dev.py
-`- pyproject.toml            # uv deps + black/ruff/mypy/pytest settings
+`- Makefile                  # monorepo workflow shortcuts，包裝 backend/scripts/dev.py
 ```
 
 ## 資料層
@@ -47,7 +49,7 @@ findb/
 ## 主要流程
 
 1. Source API 收到 raw payload，依 `idempotency_key` 去重，寫入 `raw.market_payload`，建立 `ingestion_run`。
-2. `app/services/ingestion.py` 依 `NORMALIZER_MAP[dataset_key]` 路由到對應 normalizer。
+2. `backend/app/services/ingestion.py` 依 `NORMALIZER_MAP[dataset_key]` 路由到對應 normalizer。
 3. Normalizer 映射欄位、執行 DQ 檢查、upsert canonical rows，並更新 `ingestion_run`。
 4. Serve API 只讀 canonical tables，回傳查詢結果與 pagination wrapper。
 
@@ -55,40 +57,41 @@ findb/
 
 | 任務 | 位置 | 備註 |
 | --- | --- | --- |
-| App 啟動與生命週期 | `app/main.py` | FastAPI app、lifespan DB init、router mounts、health endpoints |
-| Source 寫入流程 | `app/api/v1/source.py` | auth、idempotency、ingestion/rerun dispatch、direct-format endpoints |
-| Serve 查詢流程 | `app/api/v1/serve.py` | read-only query endpoints、filters、pagination |
-| Admin API | `app/api/v1/admin.py` | admin-only registry、run、raw payload 查詢與管理 |
-| API dependencies | `app/api/deps.py` | `verify_source_api_key`、`verify_serve_api_key`、IP allowlist、rate limiting |
-| DB dependency | `app/dependencies.py` | async session injection |
-| 設定 | `app/config.py` | 所有設定由 env 與 `get_settings()` 載入 |
-| Ingestion orchestration | `app/services/ingestion.py` | dataset validation、run lifecycle、rerun support、`NORMALIZER_MAP` |
-| Normalizer 基底 | `app/services/normalize/base.py` | `BaseNormalizer`，所有 normalizer 的基底 |
-| 市場資料標準化 | `app/services/normalize/` | 市場別 mapping、DQ checks、canonical writes |
-| DQ 規則 | `app/services/dq/validators.py` | `severity="error"` 會阻擋寫入，`warning` 不會 |
-| ORM/data model | `app/models/` | raw schema、canonical tables、registry tables |
-| API schemas | `app/schemas/` | request/response contracts |
-| 靜態 lookup/cache | `app/static/instrument-lookup.html` + `scripts/generate_instrument_cache.py` | `/instrument-lookup` UI 與 generated JSON cache |
-| 測試頁 | `app/static/test_page.html` | static `/test` API tester；除非明確要求，避免修改 |
-| 測試與 fixtures | `tests/` + `tests/conftest.py` | AsyncClient、ASGITransport、DB dependency overrides |
-| Alembic migrations | `alembic.ini` + `migrations/` | schema-as-code；`init_db()` 只驗證 revision，不自動建表 |
-| 開發工作流 | `scripts/dev.py` + `Makefile` | cross-platform local commands |
-| Partial dump tooling | `scripts/partial_dump.py` + `configs/partial_dump.yaml` | export/import partial production data for local dev |
-| Seed upsert | `scripts/seed_upsert.py` | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate |
-| Instrument name backfill | `scripts/backfill_instrument_names.py`（TW）+ `scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；TW backfill 支援 `--overwrite-existing` 清理舊版 Big5 解碼亂碼；皆為可重複執行 |
-| Instrument routing 修正 | `scripts/fix_misrouted_tw_futures.py` + `scripts/cleanup_stale_instruments.py` | 修整舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
+| App 啟動與生命週期 | `backend/app/main.py` | FastAPI app、lifespan DB init、router mounts、health endpoints |
+| Source 寫入流程 | `backend/app/api/v1/source.py` | auth、idempotency、ingestion/rerun dispatch、direct-format endpoints |
+| Serve 查詢流程 | `backend/app/api/v1/serve.py` | read-only query endpoints、filters、pagination |
+| Admin API | `backend/app/api/v1/admin.py` | admin-only registry、run、raw payload 查詢與管理 |
+| API dependencies | `backend/app/api/deps.py` | `verify_source_api_key`、`verify_serve_api_key`、IP allowlist、rate limiting |
+| DB dependency | `backend/app/dependencies.py` | async session injection |
+| 設定 | `backend/app/config.py` | 所有設定由 env 與 `get_settings()` 載入 |
+| Ingestion orchestration | `backend/app/services/ingestion.py` | dataset validation、run lifecycle、rerun support、`NORMALIZER_MAP` |
+| Normalizer 基底 | `backend/app/services/normalize/base.py` | `BaseNormalizer`，所有 normalizer 的基底 |
+| 市場資料標準化 | `backend/app/services/normalize/` | 市場別 mapping、DQ checks、canonical writes |
+| DQ 規則 | `backend/app/services/dq/validators.py` | `severity="error"` 會阻擋寫入，`warning` 不會 |
+| ORM/data model | `backend/app/models/` | raw schema、canonical tables、registry tables |
+| API schemas | `backend/app/schemas/` | request/response contracts |
+| 靜態 lookup/cache | `backend/app/static/instrument-lookup.html` + `backend/scripts/generate_instrument_cache.py` | `/instrument-lookup` UI 與 generated JSON cache |
+| 測試頁 | `backend/app/static/test_page.html` | static `/test` API tester；除非明確要求，避免修改 |
+| 營運 Dashboard | `dashboard/` | TanStack Start 前端；子目錄規則見 `dashboard/AGENTS.md` |
+| 測試與 fixtures | `backend/tests/` + `backend/tests/conftest.py` | AsyncClient、ASGITransport、DB dependency overrides |
+| Alembic migrations | `backend/alembic.ini` + `backend/migrations/` | schema-as-code；`init_db()` 只驗證 revision，不自動建表 |
+| 開發工作流 | `backend/scripts/dev.py` + `Makefile` | cross-platform local commands |
+| Partial dump tooling | `backend/scripts/partial_dump.py` + `backend/configs/partial_dump.yaml` | export/import partial production data for local dev |
+| Seed upsert | `backend/scripts/seed_upsert.py` | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate |
+| Instrument name backfill | `backend/scripts/backfill_instrument_names.py`（TW）+ `backend/scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；TW backfill 支援 `--overwrite-existing` 清理舊版 Big5 解碼亂碼；皆為可重複執行 |
+| Instrument routing 修正 | `backend/scripts/fix_misrouted_tw_futures.py` + `backend/scripts/cleanup_stale_instruments.py` | 修整舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
 | 文件（規格、計劃、維運手冊、事故紀錄） | `docs/README.md` | 唯一文件入口，由索引導向 api/、architecture/、operations/、dev/ 各文件；含架構演進計劃（動 schema 或部署拓撲前先讀）、backfill 部署手冊、ingestion 流程圖、事故筆記等 |
 | Nginx 設定樣板 | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf` | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入） |
-| Nginx render 腳本 | `scripts/render_nginx_source_allowlist.py`、`scripts/render_nginx_cloudflare_real_ip.py`、`scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
+| Nginx render 腳本 | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
 | 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2；含 nginx confs 渲染、scp、reload 步驟 |
 
 ## 子目錄指南
 
 先套用本檔，再套用最接近工作目錄的子目錄 `AGENTS.md`：
 
-- `app/api/v1/AGENTS.md`
-- `app/models/AGENTS.md`
-- `app/services/normalize/AGENTS.md`
+- `backend/app/api/v1/AGENTS.md`
+- `backend/app/models/AGENTS.md`
+- `backend/app/services/normalize/AGENTS.md`
 
 若本檔與子目錄指南衝突，優先採用更接近修改檔案的子目錄指南；若仍不確定，先詢問。
 
@@ -103,9 +106,9 @@ findb/
 - Pydantic v2 model 需要 ORM hydration 時使用 `from_attributes=True`。
 - secrets/config 一律經由 `app.config.Settings` 與 env 載入；不可 hardcode。
 - Source provider names 正規化為穩定 lowercase，例如 `bloomberg`。
-- Dependencies 由 `uv` 管理，來源是 `pyproject.toml` 與 `uv.lock`。
+- Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。
 - Schema 變更一律透過 Alembic migrations；runtime `init_db()` 只檢查 Alembic revision 與 required tables，不執行 `create_all()`。
-- 靜態 UI 位於 `app/static/`，包含 `/test` 與 `/instrument-lookup`；`app/static/test_page.html` 只在明確要求時修改。
+- 靜態 UI 位於 `backend/app/static/`，包含 `/test` 與 `/instrument-lookup`；`backend/app/static/test_page.html` 只在明確要求時修改。
 
 ## 專案反模式
 
@@ -122,22 +125,22 @@ findb/
 ## 專案特性
 
 - Raw payload persistence 使用 PostgreSQL schema `raw`，核心 table 是 `raw.market_payload`。
-- Normalizer routing 明確集中在 `app/services/ingestion.py` 的 `NORMALIZER_MAP`。
+- Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `NORMALIZER_MAP`。
 - 部分市場支援 direct-format source ingest endpoints (`.../direct`)，必要時會自動 bootstrap built-in dataset registry rows。
 - Macro direct payload 如果省略 market，預設為 `MACRO`。
-- Instrument 與 macro lookup data 是 generated cache files：`app/static/data/instruments.json`、`app/static/data/macro-series.json`，不是 source-of-truth data。
-- 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 Referer regex 比對，對 `/instrument-lookup` 靜態頁觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
+- Instrument 與 macro lookup data 是 generated cache files：`backend/app/static/data/instruments.json`、`backend/app/static/data/macro-series.json`，不是 source-of-truth data。
+- 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 Referer regex 比對，對 `/instrument-lookup` 靜態頁觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
 - Source allowlist、Cloudflare real-IP、Serve key 注入三組 `*.conf` 都是 deploy time 渲染；本機開發不會跑 nginx，FastAPI 自身只負責 API key、rate limit、ingest 邏輯。
 - Test suite 大量使用 async fixtures、ASGITransport 與 dependency overrides。
 - Rate limit state 在測試間會自動 reset。
 
 ## 新增 Normalizer
 
-1. 在 `app/services/normalize/{market}.py` 建立 `BaseNormalizer` subclass，實作 `map_fields()`，並設定 `dataset_key`、`asset_class`、`market` 等 class attributes。
-2. 從 `app/services/normalize/__init__.py` export。
-3. 在 `app/services/ingestion.py` 的 `NORMALIZER_MAP` 註冊。
-4. 在 `scripts/seed_data.py` 新增 dataset definition。
-5. 在 `tests/test_normalize.py` 或市場別 test file 新增測試。
+1. 在 `backend/app/services/normalize/{market}.py` 建立 `BaseNormalizer` subclass，實作 `map_fields()`，並設定 `dataset_key`、`asset_class`、`market` 等 class attributes。
+2. 從 `backend/app/services/normalize/__init__.py` export。
+3. 在 `backend/app/services/ingestion.py` 的 `NORMALIZER_MAP` 註冊。
+4. 在 `backend/scripts/seed_data.py` 新增 dataset definition。
+5. 在 `backend/tests/test_normalize.py` 或市場別 test file 新增測試。
 
 ## 安全性
 
@@ -150,16 +153,16 @@ findb/
 ## 測試環境
 
 - 預設測試 DB 是 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`，可用 `TEST_DATABASE_URL` 覆蓋。
-- `tests/conftest.py` 會在需要時建立 `findb_test` database。
+- `backend/tests/conftest.py` 會在需要時建立 `findb_test` database。
 - 測試資料表由 function-scope fixture 建立與清理。
 - 測試 fixture 會設定 `SOURCE_API_KEY=test-source-key`、`ADMIN_API_KEY=test-admin-key`、`DEBUG=true`。
-- Preferred test runner 是 `uv run python scripts/dev.py test-db` 或 `make test`，會先確保 DB container 已啟動。
+- Preferred test runner 是 `uv --directory backend run python scripts/dev.py test-db` 或 `make test`，會先確保 DB container 已啟動。
 
 ## 常用命令
 
 ```bash
 # 安裝 dependencies
-uv sync
+pnpm setup
 
 # local development
 make up        # migrate + seed + build + 完整啟動
@@ -175,31 +178,42 @@ make up-server
 make up-db
 
 # seed local DB from partial dump
-uv run python scripts/dev.py seed-upsert
-uv run python scripts/dev.py seed-upsert --truncate
+uv --directory backend run python scripts/dev.py seed-upsert
+uv --directory backend run python scripts/dev.py seed-upsert --truncate
 
 # quality
 make format
 make check
 
 # direct quality commands
-uv run black app tests scripts migrations
-uv run ruff check app tests scripts migrations
-uv run mypy app
+uv --directory backend run black app tests scripts migrations
+uv --directory backend run ruff check app tests scripts migrations
+uv --directory backend run mypy app
 
 # tests
-uv run pytest
-uv run pytest tests/test_source_api.py
-uv run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
-uv run pytest -k "crypto"
-uv run pytest --cov=app
-uv run python scripts/dev.py test-db
+uv --directory backend run pytest
+uv --directory backend run pytest tests/test_source_api.py
+uv --directory backend run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
+uv --directory backend run pytest -k "crypto"
+uv --directory backend run pytest --cov=app
+uv --directory backend run python scripts/dev.py test-db
+
+# dashboard
+pnpm dev:dashboard
+pnpm container:dashboard
+pnpm check:dashboard
+pnpm build:dashboard
+make dashboard-install
+make dashboard-dev
+make dashboard-test
+make dashboard-check
+make dashboard-build
 
 # Alembic
-uv run alembic current
-uv run alembic upgrade head
-uv run alembic revision --autogenerate -m "describe change"
-uv run alembic downgrade -1
+uv --directory backend run alembic current
+uv --directory backend run alembic upgrade head
+uv --directory backend run alembic revision --autogenerate -m "describe change"
+uv --directory backend run alembic downgrade -1
 ```
 
 ## 基礎設施

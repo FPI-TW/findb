@@ -1,0 +1,69 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap");
+@import "tailwindcss";
+
+@theme inline {
+  --color-page: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-soft: var(--surface-soft);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+  --shadow-panel: var(--shadow);
+}
+
+:root {
+  --bg: #f0f3ef;
+  --surface: #ffffff;
+  --surface-soft: #f7f9f6;
+  --ink: #18221d;
+  --muted: #69736c;
+  --line: #dce2dc;
+  --accent: #1d7251;
+  --accent-soft: #dff2e9;
+  --danger: #b94438;
+  --danger-soft: #fff0ed;
+  --warning: #9a6517;
+  --shadow: 0 14px 40px rgba(26, 44, 34, 0.08);
+}
+
+.dark {
+  --bg: #0e1411;
+  --surface: #151d19;
+  --surface-soft: #19231e;
+  --ink: #edf4ef;
+  --muted: #9dab9f;
+  --line: #2c3931;
+  --accent: #68d4a6;
+  --accent-soft: #193a2d;
+  --danger: #ff9286;
+  --danger-soft: #3b211f;
+  --warning: #e7b25d;
+  --shadow: 0 18px 45px rgba(0, 0, 0, 0.24);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    linear-gradient(rgba(24, 34, 29, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(24, 34, 29, 0.025) 1px, transparent 1px),
+    var(--bg);
+  background-size: 32px 32px;
+  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+}

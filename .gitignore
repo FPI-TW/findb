@@ -2,9 +2,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+node_modules/
+.pnpm-store/*
 
-.env
-.env.*
+.env*
 !.env.example
 
 .venv/
@@ -27,12 +28,24 @@ htmlcov/
 
 *.log
 artifacts/
-app/static/data/instruments.json
-app/static/data/macro-series.json
+backend/app/static/data/instruments.json
+backend/app/static/data/macro-series.json
 
 .idea/
 .vscode/
 .DS_Store
+
+# Frontend
+dist
+dist-ssr
+*.local
+.nitro
+.tanstack
+.wrangler
+.output
+.vinxi
+__unconfig*
+todos.json
 
 # Agent / IDE 本機設定（claude-code、codex、mcp、playwright-mcp 等）
 .claude/
@@ -49,7 +62,7 @@ docs/superpowers/
 .ingest_log_daily/
 .ingest_log_prod/
 datas/
-seed/partial_dump/prod_partial_*/
+backend/seed/partial_dump/prod_partial_*/
 
 # Skills
 .agents/*

@@ -16,15 +16,15 @@
 ┌─────────────────────────────────────────────┐
 │  FastAPI 專案                                │
 │                                             │
-│  scripts/generate_instrument_cache.py       │
+│  backend/scripts/generate_instrument_cache.py       │
 │       │  定期執行（cron / 手動）              │
 │       │  呼叫 GET /api/v1/serve/instruments  │
 │       │  遍歷所有分頁                         │
 │       ▼                                     │
-│  app/static/data/instruments.json           │
+│  backend/app/static/data/instruments.json           │
 │       │                                     │
 │       ▼                                     │
-│  app/static/instrument-lookup.html          │
+│  backend/app/static/instrument-lookup.html          │
 │       （由 /instrument-lookup 與 /static/*   │
 │        提供頁面/靜態資源）                   │
 └─────────────────────────────────────────────┘
@@ -36,24 +36,24 @@
 
 | # | 檔案路徑 | 說明 |
 |---|---------|------|
-| 1 | `scripts/generate_instrument_cache.py` | 靜態 JSON 產生腳本 |
-| 2 | `app/static/data/instruments.json` | 標的快取資料（腳本產出物，不進 git） |
-| 3 | `app/static/data/macro-series.json` | 宏觀序列快取資料（腳本產出物，不進 git） |
-| 4 | `app/static/instrument-lookup.html` | 獨立查詢頁面（單檔 HTML，含 CSS/JS） |
+| 1 | `backend/scripts/generate_instrument_cache.py` | 靜態 JSON 產生腳本 |
+| 2 | `backend/app/static/data/instruments.json` | 標的快取資料（腳本產出物，不進 git） |
+| 3 | `backend/app/static/data/macro-series.json` | 宏觀序列快取資料（腳本產出物，不進 git） |
+| 4 | `backend/app/static/instrument-lookup.html` | 獨立查詢頁面（單檔 HTML，含 CSS/JS） |
 | 5 | FastAPI `StaticFiles` mount 設定 | 確保 `/static/` 路徑可存取 |
 
 ---
 
 ## 4. 靜態 JSON 產生腳本
 
-### 4.1 檔案：`scripts/generate_instrument_cache.py`
+### 4.1 檔案：`backend/scripts/generate_instrument_cache.py`
 
-**功能**：呼叫 Serve API 的 `GET /api/v1/serve/instruments` 與 `GET /api/v1/serve/macro/series`，遍歷所有分頁後產出 `app/static/data/instruments.json` 與 `app/static/data/macro-series.json`。
+**功能**：呼叫 Serve API 的 `GET /api/v1/serve/instruments` 與 `GET /api/v1/serve/macro/series`，遍歷所有分頁後產出 `backend/app/static/data/instruments.json` 與 `backend/app/static/data/macro-series.json`。
 
 **執行方式**：
 
 ```bash
-uv run python scripts/generate_instrument_cache.py
+uv --directory backend run python scripts/generate_instrument_cache.py
 ```
 
 **環境變數**（皆有預設值）：
@@ -101,7 +101,7 @@ uv run python scripts/generate_instrument_cache.py
 ```
 
 4. `markets` 和 `asset_classes` 從實際資料中 distinct 提取，排序後寫入，供前端動態生成篩選選項。
-5. 寫入 `app/static/data/instruments.json` 與 `app/static/data/macro-series.json`，若目錄不存在則自動建立。
+5. 寫入 `backend/app/static/data/instruments.json` 與 `backend/app/static/data/macro-series.json`，若目錄不存在則自動建立。
 6. 成功時 stdout 印出摘要（總數、各市場數量），失敗時 exit code 1 並印出錯誤。
 
 **定期排程建議**（寫在腳本 docstring 與 README）：
@@ -115,7 +115,7 @@ uv run python scripts/generate_instrument_cache.py
 
 ## 5. 靜態查詢頁面
 
-### 5.1 檔案：`app/static/instrument-lookup.html`
+### 5.1 檔案：`backend/app/static/instrument-lookup.html`
 
 單檔 HTML（CSS + JS 內嵌），無外部框架依賴。視覺風格與現有 `api_tester.html` 保持一致（使用相同 CSS 變數與字體）。
 
@@ -276,23 +276,23 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 ```
 findb/
-├── scripts/
+├── backend/scripts/
 │   ├── generate_instrument_cache.py   ← 新增
 │   └── ...
-├── app/static/
+├── backend/app/static/
 │   ├── data/
 │   │   ├── instruments.json           ← 腳本產出（加入 .gitignore）
 │   │   └── macro-series.json          ← 腳本產出（加入 .gitignore）
 │   └── instrument-lookup.html         ← 新增
-├── app/main.py                        ← 確認 StaticFiles mount
+├── backend/app/main.py                ← 確認 StaticFiles mount
 └── ...
 ```
 
 `.gitignore` 新增：
 
 ```
-app/static/data/instruments.json
-app/static/data/macro-series.json
+backend/app/static/data/instruments.json
+backend/app/static/data/macro-series.json
 ```
 
 ---
@@ -311,7 +311,7 @@ app/static/data/macro-series.json
 
 | # | 項目 | 通過條件 |
 |---|------|---------|
-| A1 | 腳本執行 | `python scripts/generate_instrument_cache.py` 成功產出 `instruments.json` 與 `macro-series.json` |
+| A1 | 腳本執行 | `uv --directory backend run python scripts/generate_instrument_cache.py` 成功產出 `instruments.json` 與 `macro-series.json` |
 | A2 | JSON 格式 | 包含 `generated_at`、`total`、`markets`、`asset_classes`、`data` 欄位 |
 | A3 | 頁面載入 | 瀏覽器開啟 `/static/instrument-lookup.html` 可正常顯示表格 |
 | A4 | 搜尋功能 | 輸入 "bit" 可篩出 Bitcoin，輸入 "AAPL" 可篩出 Apple |

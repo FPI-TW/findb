@@ -1,0 +1,12 @@
+.git
+.github
+.env
+backend
+docs
+infra
+node_modules
+dashboard/node_modules
+dashboard/.output
+dashboard/.vinxi
+dashboard/coverage
+*.log

@@ -1,0 +1,14 @@
+node_modules
+.git
+.agents
+.claude
+dist
+build
+coverage
+*.log
+.env*
+.vercel
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+src/routeTree.gen.ts

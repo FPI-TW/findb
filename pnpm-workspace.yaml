@@ -1,0 +1,6 @@
+packages:
+  - dashboard
+
+allowBuilds:
+  esbuild: true
+  lightningcss: true

@@ -40,10 +40,10 @@ cp .env.example .env
 ### 0.2 啟動資料庫與服務
 
 ```bash
-uv run python scripts/dev.py up-db
-uv run alembic upgrade head
-uv run python scripts/dev.py seed-upsert --truncate
-uv run python scripts/dev.py up-server
+uv --directory backend run python scripts/dev.py up-db
+uv --directory backend run alembic upgrade head
+uv --directory backend run python scripts/dev.py seed-upsert --truncate
+uv --directory backend run python scripts/dev.py up-server
 ```
 
 若需要完整 Docker app 容器，可改用：
@@ -174,7 +174,7 @@ done
 ### 2.6 Serve API key 注入（生產 nginx）
 
 `/instrument-lookup` 靜態頁不會在瀏覽器端嵌入 Serve API key；生產 nginx 透過
-`infra/nginx/serve-key.conf`（由 `scripts/render_nginx_serve_key.py` 在 deploy 時
+`infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy 時
 依 `SERVE_API_KEYS` 第一個 key 渲染）以 `Referer` regex 比對後注入 `X-API-Key`。
 驗證方式：
 
@@ -212,7 +212,7 @@ curl "http://localhost:8080/api/v1/source/datasets" \
 curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
-  --data-binary "@scripts/sample_ingest_payload.json"
+  --data-binary "@backend/scripts/sample_ingest_payload.json"
 ```
 
 預期回傳：
@@ -234,7 +234,7 @@ curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
 curl -X POST "http://localhost:8080/api/v1/source/ingest/crypto" \
   -H "X-API-Key: dev-source-key" \
   -H "Content-Type: application/json" \
-  --data-binary "@scripts/sample_ingest_payload.json"
+  --data-binary "@backend/scripts/sample_ingest_payload.json"
 ```
 
 預期回傳相同 `run_id`，message 為 `"Duplicate idempotency_key, returning existing run"`。
@@ -918,7 +918,7 @@ echo -e "\n=== 3. 攝取 Crypto 資料 ==="
 RESULT=$(curl -s -X POST "$BASE/api/v1/source/ingest/crypto" \
   -H "X-API-Key: $KEY" \
   -H "Content-Type: application/json" \
-  --data-binary "@scripts/sample_ingest_payload.json")
+  --data-binary "@backend/scripts/sample_ingest_payload.json")
 echo "$RESULT" | python3 -m json.tool
 RUN_ID=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['run_id'])")
 
@@ -941,11 +941,11 @@ curl -s "$BASE/api/v1/serve/eod?market=CRYPTO&symbols=BTC&start_date=2026-01-01"
 echo -e "\n=== 煙霧測試完成 ==="
 ```
 
-將以上存為 `scripts/smoke_test.sh` 並執行：
+將以上存為 `backend/scripts/smoke_test.sh` 並執行：
 
 ```bash
-chmod +x scripts/smoke_test.sh
-./scripts/smoke_test.sh
+chmod +x backend/scripts/smoke_test.sh
+./backend/scripts/smoke_test.sh
 ```
 
 或直接使用**視覺化測試面板**的一鍵煙霧測試按鈕（見 §7）。
@@ -955,7 +955,7 @@ chmod +x scripts/smoke_test.sh
 ## 7. 視覺化測試面板
 
 瀏覽器開啟 [http://localhost:8080/test](http://localhost:8080/test)。
-測試面板的原始檔為 `app/static/test_page.html`（非明確要求請勿修改）。
+測試面板的原始檔為 `backend/app/static/test_page.html`（非明確要求請勿修改）。
 
 測試面板提供：
 
@@ -981,7 +981,7 @@ chmod +x scripts/smoke_test.sh
 ### 本機
 
 ```bash
-uv run pytest
+uv --directory backend run pytest
 ```
 
 ### Docker 容器內
@@ -1010,19 +1010,19 @@ docker compose exec app bash -c \
 
 ```bash
 # 只跑 Source API 測試
-uv run pytest tests/test_source_api.py -v
+uv --directory backend run pytest tests/test_source_api.py -v
 
 # 只跑 Admin API 測試
-uv run pytest tests/test_admin_api.py -v
+uv --directory backend run pytest tests/test_admin_api.py -v
 
 # 只跑 crypto 相關
-uv run pytest -k "crypto" -v
+uv --directory backend run pytest -k "crypto" -v
 
 # 只跑安全機制測試
-uv run pytest -k "allowlist or rate_limit or admin_auth" -v
+uv --directory backend run pytest -k "allowlist or rate_limit or admin_auth" -v
 
 # 顯示覆蓋率
-uv run pytest --cov=app --cov-report=term-missing
+uv --directory backend run pytest --cov=app --cov-report=term-missing
 ```
 
 ---

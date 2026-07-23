@@ -1,6 +1,6 @@
 # 風險與錯誤原因推測清單
 
-> 狀態核對日：2026-07-09（比對 `app/models/canonical.py`、`app/api/v1/source.py` 現況）。
+> 狀態核對日：2026-07-09（比對 `backend/app/models/canonical.py`、`backend/app/api/v1/source.py` 現況）。
 > 未結案項的根本解法已納入 `multi_asset_architecture_plan.md` 與 `scalability_optimization_checklist.md`，於對應 Phase 執行。
 
 ## A. 架構風險清單（依優先級）
@@ -8,7 +8,7 @@
 ### [x] R1（高）`corporate_action` 缺業務唯一鍵，併發下可能重複入庫 — 已修復
 
 - 風險描述：normalizer 採「先查再寫」，高併發時可能同時通過檢查，產生重複資料。
-- 現況：`uq_ca_instrument_action_date (instrument_id, action_type, ex_date)` 唯一鍵已存在於 `app/models/canonical.py`。
+- 現況：`uq_ca_instrument_action_date (instrument_id, action_type, ex_date)` 唯一鍵已存在於 `backend/app/models/canonical.py`。
 
 ### [x] R2（高）`instrument_identifiers` 唯一鍵含 nullable `valid_from` — 已修復
 
