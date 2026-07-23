@@ -69,7 +69,9 @@ describe("lookup API client", () => {
     })
 
     const url = String(fetchMock.mock.calls[0]?.[0])
-    expect(url.startsWith("/api/v1/serve/lookup/instruments?")).toBe(true)
+    expect(
+      url.startsWith("http://localhost:8080/api/v1/serve/lookup/instruments?")
+    ).toBe(true)
     const params = new URL(url, "https://findb.example").searchParams
     expect(Object.fromEntries(params)).toEqual({
       q: "2330",
@@ -108,7 +110,9 @@ describe("lookup API client", () => {
     })
 
     const url = String(fetchMock.mock.calls[0]?.[0])
-    expect(url.startsWith("/api/v1/serve/lookup/macro-series?")).toBe(true)
+    expect(
+      url.startsWith("http://localhost:8080/api/v1/serve/lookup/macro-series?")
+    ).toBe(true)
     const params = new URL(url, "https://findb.example").searchParams
     expect(params.has("q")).toBe(false)
     expect(params.has("market")).toBe(false)
@@ -145,9 +149,9 @@ describe("lookup API client", () => {
     await loadMacroObservations("series/id")
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "/api/v1/serve/eod/instrument%2Fid?page_size=10",
-      "/api/v1/serve/corporate-actions/instrument%2Fid?page_size=5",
-      "/api/v1/serve/macro/observations/series%2Fid?page_size=10",
+      "http://localhost:8080/api/v1/serve/eod/instrument%2Fid?page_size=10",
+      "http://localhost:8080/api/v1/serve/corporate-actions/instrument%2Fid?page_size=5",
+      "http://localhost:8080/api/v1/serve/macro/observations/series%2Fid?page_size=10",
     ])
     for (const [, init] of fetchMock.mock.calls) {
       expect(init).not.toHaveProperty("headers.X-API-Key")

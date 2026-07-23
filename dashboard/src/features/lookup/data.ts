@@ -8,6 +8,7 @@ import type {
   MacroObservationRow,
   PriceRow,
 } from "./types"
+import { resolvePublicApiUrl } from "./api-url"
 
 const LOOKUP_ENDPOINTS = {
   instruments: "/api/v1/serve/lookup/instruments",
@@ -15,7 +16,7 @@ const LOOKUP_ENDPOINTS = {
 } as const
 
 async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(resolvePublicApiUrl(url), {
     headers: { Accept: "application/json" },
     ...(signal ? { signal } : {}),
   })

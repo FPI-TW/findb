@@ -46,7 +46,9 @@ pnpm container:dashboard
 
 Dashboard image 內固定監聽 port `3333`，本機 Compose 也映射為
 `http://localhost:3333/dashboard/`，因此 container 不會占用前端開發常用的
-port `3000`。
+port `3000`。這兩個本機 Dashboard port 的公開 Lookup 請求會直接連到
+`http://localhost:8080`；正式環境則維持同源 `/api/v1/serve/*`，由 Nginx 代理並注入
+Serve key。
 
 ## Checks
 
