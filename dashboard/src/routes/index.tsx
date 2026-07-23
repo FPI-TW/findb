@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useServerFn } from "@tanstack/react-start"
 import {
   AlertTriangle,
@@ -6,18 +6,34 @@ import {
   CheckCircle2,
   Clock3,
   Database,
+  LogOut,
   RefreshCw,
   Search,
   ShieldCheck,
   TriangleAlert,
   Wifi,
 } from "lucide-react"
-import { type FormEvent, useCallback, useState } from "react"
+import { type FormEvent, useCallback, useEffect, useState } from "react"
 
 import type { DashboardResponse, PanelResult } from "../lib/admin-api"
 import { loadDashboard } from "../lib/admin.functions"
+import { getSession, logout } from "../lib/auth.functions"
 
-export const Route = createFileRoute("/")({ component: OperationsConsole })
+const EMPTY_FILTERS = {
+  datasetKey: "",
+  runId: "",
+  dateFrom: "",
+  dateTo: "",
+}
+
+export const Route = createFileRoute("/")({
+  beforeLoad: async () => {
+    const session = await getSession()
+    if (!session.authenticated) throw redirect({ to: "/login" })
+    return { username: session.username }
+  },
+  component: OperationsConsole,
+})
 
 function formatDate(value: string | null) {
   if (!value) return "—"
@@ -79,28 +95,21 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 
 function OperationsConsole() {
   const load = useServerFn(loadDashboard)
-  const [apiKey, setApiKey] = useState("")
+  const logoutFn = useServerFn(logout)
+  const navigate = Route.useNavigate()
+  const { username } = Route.useRouteContext()
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [error, setError] = useState("")
   const [pending, setPending] = useState(false)
-  const [filters, setFilters] = useState({
-    datasetKey: "",
-    runId: "",
-    dateFrom: "",
-    dateTo: "",
-  })
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
 
   const refresh = useCallback(
-    async (nextFilters = filters) => {
-      if (!apiKey.trim()) {
-        setError("請輸入既有的 Admin API Key。")
-        return
-      }
+    async (nextFilters: typeof EMPTY_FILTERS) => {
       setPending(true)
       setError("")
       try {
         const result = await load({
-          data: { apiKey, audit: nextFilters },
+          data: { audit: nextFilters },
         })
         setData(result)
       } catch (reason) {
@@ -111,17 +120,21 @@ function OperationsConsole() {
         setPending(false)
       }
     },
-    [apiKey, filters, load]
+    [load]
   )
 
-  function submitConnection(event: FormEvent) {
-    event.preventDefault()
-    void refresh()
-  }
+  useEffect(() => {
+    void refresh(EMPTY_FILTERS)
+  }, [refresh])
 
   function submitAudit(event: FormEvent) {
     event.preventDefault()
     void refresh(filters)
+  }
+
+  async function signOut() {
+    await logoutFn()
+    await navigate({ to: "/login" })
   }
 
   const unavailable: PanelResult<unknown> = {
@@ -163,30 +176,35 @@ function OperationsConsole() {
             集中檢查導入穩定度、資料完整性與修正稽核，所有操作皆為唯讀。
           </p>
         </div>
-        <form className="connection-form" onSubmit={submitConnection}>
-          <label htmlFor="api-key">Admin API Key</label>
-          <div className="input-row">
-            <input
-              id="api-key"
-              type="password"
-              autoComplete="off"
-              value={apiKey}
-              onChange={event => setApiKey(event.target.value)}
-              placeholder="僅保留於目前頁面記憶體"
-            />
-            <button type="submit" disabled={pending}>
+        <div className="operator-panel">
+          <div>
+            <span>已登入</span>
+            <strong>{username}</strong>
+            <small>Admin key 僅由 Dashboard server 讀取</small>
+          </div>
+          <div className="operator-actions">
+            <button
+              type="button"
+              onClick={() => void refresh(filters)}
+              disabled={pending}
+            >
               {pending ? (
                 <RefreshCw className="spin" size={17} />
               ) : (
                 <Wifi size={17} />
               )}
-              {data ? "重新整理" : "連線"}
+              重新整理
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void signOut()}
+            >
+              <LogOut size={16} />
+              登出
             </button>
           </div>
-          <p className="field-hint">
-            金鑰不會寫入 localStorage、sessionStorage 或伺服器環境設定。
-          </p>
-        </form>
+        </div>
       </section>
 
       {error && (
@@ -202,13 +220,13 @@ function OperationsConsole() {
         <span>
           {data
             ? `${successfulPanels}/${panelResults.length} 個資料來源成功 · 最後更新 ${formatDate(data.fetchedAt)}`
-            : "等待操作人員授權"}
+            : "正在載入營運資料"}
         </span>
         {data && (
           <button
             className="text-button"
             type="button"
-            onClick={() => void refresh()}
+            onClick={() => void refresh(filters)}
             disabled={pending}
           >
             <RefreshCw className={pending ? "spin" : ""} size={15} />
@@ -219,7 +237,7 @@ function OperationsConsole() {
       {connectionState === "failed" && (
         <div className="global-error" role="alert">
           <AlertTriangle size={18} />
-          所有 Admin API 查詢均失敗，請確認後端服務與 API key 後再試一次。
+          所有 Admin API 查詢均失敗，請確認後端服務與 Dashboard server 設定。
         </div>
       )}
       {connectionState === "degraded" && (
@@ -448,7 +466,7 @@ function OperationsConsole() {
               }
             />
           </label>
-          <button type="submit" disabled={pending || !apiKey}>
+          <button type="submit" disabled={pending}>
             <Search size={16} /> 查詢
           </button>
         </form>

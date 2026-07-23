@@ -9,6 +9,9 @@ findb/
 ├── backend/                      # FastAPI / PostgreSQL 資料服務
 ├── dashboard/                    # TanStack Start 營運台
 ├── infra/                        # Nginx 與部署設定
+├── package.json                  # Monorepo scripts；Husky 將由此接入
+├── pnpm-workspace.yaml           # Node workspace 定義
+├── pnpm-lock.yaml                # 全 repository 唯一 Node lockfile
 └── Makefile                      # Monorepo 統一開發入口
 ```
 
@@ -109,7 +112,7 @@ Source / Normalize / Serve / Admin 四條主路徑已串接完成，涵蓋 `CRYP
 | ORM      | SQLAlchemy 2.0 (async)  |
 | 時間基準 | UTC                     |
 | 主鍵策略 | UUID v7                 |
-| 套件管理 | uv                      |
+| 套件管理 | uv（Python）/ pnpm workspace（Node） |
 | 容器化   | Docker / Docker Compose |
 
 ---
@@ -244,8 +247,14 @@ cp .env.example .env
 SOURCE_API_KEY=your-source-key
 SERVE_API_KEYS=your-serve-key
 ADMIN_API_KEY=your-admin-key
+DASHBOARD_USERNAME=operator
+DASHBOARD_PASSWORD=your-strong-password
+DASHBOARD_SESSION_SECRET=at-least-32-random-characters
+FINDB_API_BASE_URL=http://localhost:8080
 SERVE_REQUIRE_AUTH=false
 ```
+
+根目錄 `.env` 是本機唯一環境設定入口；backend、Dashboard host process 與 Docker Compose 都使用同一份設定。Dashboard 不使用 `VITE_` secret，也不另設 `dashboard/.env`。
 
 > **注意**：`docker-compose.yml` 使用 `${SOURCE_API_KEY:-dev-source-key}` 語法，
 > 若 `.env` 未設定則預設使用 `dev-source-key`。本機測試可直接使用預設值。
@@ -273,7 +282,19 @@ docker compose up -d app
 
 ### 2. 開發命令（固定主命令）
 
-以下為標準入口（macOS / Linux / Windows 共通）：
+根目錄 `package.json` 是 monorepo 統一入口，也預留後續 Husky `pre-commit`／`pre-push` 接入位置：
+
+```bash
+pnpm setup
+pnpm dev:dashboard
+pnpm dev:backend
+pnpm container:dashboard
+pnpm test
+pnpm check
+pnpm build
+```
+
+後端較細部命令仍可直接使用 uv：
 
 ```bash
 uv --directory backend run python scripts/dev.py up-db
@@ -827,6 +848,9 @@ git push origin main
 | `DATABASE_URL`        | RDS / Aurora PostgreSQL 連線字串                                         |
 | `SOURCE_API_KEY`     | Source API 金鑰                                                          |
 | `ADMIN_API_KEY`      | Admin API 金鑰                                                           |
+| `DASHBOARD_USERNAME` | Dashboard 唯一登入帳號                                                   |
+| `DASHBOARD_PASSWORD` | Dashboard 登入密碼                                                       |
+| `DASHBOARD_SESSION_SECRET` | Dashboard session 簽章密鑰，至少 32 個隨機字元                    |
 | `SERVE_API_KEYS`      | Serve API 金鑰（`SERVE_REQUIRE_AUTH=true` 時必填）。Deploy workflow 會以**第一個** key 渲染 `infra/nginx/serve-key.conf` 注入給 `/instrument-lookup` 同源請求 |
 | `FINDB_STATIC_CACHE_SERVE_API_KEY` | 產生靜態查詢快取使用的 Serve API key（`SERVE_REQUIRE_AUTH=true` 時必填） |
 

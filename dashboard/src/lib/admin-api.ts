@@ -11,7 +11,6 @@ export const auditFiltersSchema = z.object({
 })
 
 export const dashboardRequestSchema = z.object({
-  apiKey: z.string().trim().min(1).max(500),
   audit: auditFiltersSchema,
 })
 

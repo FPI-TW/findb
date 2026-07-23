@@ -690,7 +690,6 @@ def _cmd_dump(args: argparse.Namespace) -> int:
 def main() -> int:
     # Keep behavior aligned with app config loading from local .env
     load_dotenv(REPO_ROOT / ".env")
-    load_dotenv(BACKEND_ROOT / ".env")
 
     parser = _build_parser()
     args = parser.parse_args()

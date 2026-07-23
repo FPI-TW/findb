@@ -5,24 +5,33 @@ TanStack Start 唯讀營運台，用來監控資料導入穩定度、複查完�
 ## Local development
 
 ```bash
+cd ..
 cp .env.example .env
-pnpm install
-pnpm dev
+pnpm setup
+pnpm dev:dashboard
 ```
 
-`FINDB_API_BASE_URL` 是 server-only 的 FinDB 後端位址，預設為 `http://localhost:8080`。請勿使用 `VITE_` 前綴放置任何 API key。
+Dashboard 統一讀取 repository 根目錄的 `.env`。必填：
 
-操作人員在畫面輸入既有的 Admin API key。金鑰只保留在 React 記憶體，經過 TanStack server function 轉送至固定 allowlist 內的 Admin GET endpoints，不會寫入瀏覽器儲存空間。
+- `ADMIN_API_KEY`
+- `DASHBOARD_USERNAME`
+- `DASHBOARD_PASSWORD`
+- `DASHBOARD_SESSION_SECRET`（至少 32 字元）
+- `FINDB_API_BASE_URL`（本機預設 `http://localhost:8080`）
+
+Admin key 只存在 Dashboard server 環境，瀏覽器不會收到或輸入它。操作人員需以環境設定的單一帳號與密碼登入；沒有註冊功能。登入狀態使用有期限、簽章且 `HttpOnly` 的 cookie。
+
+本機入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
+
+```bash
+pnpm container:dashboard
+```
 
 ## Checks
 
 ```bash
-pnpm generate-routes
-pnpm format:check
-pnpm lint:check
-pnpm type:check
-pnpm test
-pnpm build
+pnpm check:dashboard
+pnpm build:dashboard
 ```
 
 目前後端沒有歷史 ingestion run 趨勢端點，因此 dashboard 只呈現即時 queue/worker health。Raw payload 搜尋結果也受後端 retention policy 限制。

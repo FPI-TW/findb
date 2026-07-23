@@ -26,12 +26,11 @@ describe("admin API request helpers", () => {
     expect(params.get("date_to")).toBe("2026-01-31")
   })
 
-  it("rejects requests without an operator-provided key", () => {
-    expect(() =>
-      dashboardRequestSchema.parse({
-        apiKey: "",
-        audit: auditFiltersSchema.parse({}),
-      })
-    ).toThrow()
+  it("accepts audit input without exposing an Admin API key field", () => {
+    const parsed = dashboardRequestSchema.parse({
+      audit: auditFiltersSchema.parse({}),
+    })
+    expect(parsed).toEqual({ audit: auditFiltersSchema.parse({}) })
+    expect(parsed).not.toHaveProperty("apiKey")
   })
 })

@@ -79,6 +79,20 @@ def test_local_env_prefers_process_environment_over_dotenv(monkeypatch, tmp_path
     assert env["ADMIN_API_KEY"] == "exported-admin-key"
 
 
+def test_local_env_ignores_backend_dotenv(monkeypatch, tmp_path):
+    backend_root = tmp_path / "backend"
+    backend_root.mkdir()
+    (tmp_path / ".env").write_text("ADMIN_API_KEY=root-admin-key\n")
+    (backend_root / ".env").write_text("ADMIN_API_KEY=backend-admin-key\n")
+    monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+
+    env = dev._local_env()
+
+    assert env["ADMIN_API_KEY"] == "root-admin-key"
+
+
 def test_up_stops_before_migration_when_dependency_start_fails(monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])

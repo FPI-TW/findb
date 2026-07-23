@@ -2,9 +2,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+node_modules/
 
-.env
-.env.*
+.env*
 !.env.example
 
 .venv/
@@ -34,6 +34,17 @@ backend/app/static/data/macro-series.json
 .vscode/
 .DS_Store
 
+# Frontend
+dist
+dist-ssr
+*.local
+.nitro
+.tanstack
+.wrangler
+.output
+.vinxi
+__unconfig*
+todos.json
 # Agent / IDE 本機設定（claude-code、codex、mcp、playwright-mcp 等）
 .claude/
 .codex

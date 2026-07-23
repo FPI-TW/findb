@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     RAW_RETENTION_DAYS: int = 14
 
     model_config = SettingsConfigDict(
-        env_file=(REPO_ROOT / ".env", BACKEND_ROOT / ".env"),
+        env_file=REPO_ROOT / ".env",
         case_sensitive=True,
         extra="ignore",
     )

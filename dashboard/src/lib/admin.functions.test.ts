@@ -11,7 +11,6 @@ const pagination = {
   total_pages: 1,
 }
 const request: DashboardRequest = {
-  apiKey: "operator-secret",
   audit: {
     datasetKey: "tw.eod",
     runId: "",
@@ -102,6 +101,7 @@ describe("FinDB Admin server boundary", () => {
     const calls: RecordedCall[] = []
     const result = await fetchDashboardData(
       request,
+      "operator-secret",
       "https://findb.internal:8443",
       recordingFetch(calls)
     )
@@ -130,6 +130,7 @@ describe("FinDB Admin server boundary", () => {
   it("keeps successful panels when one endpoint fails", async () => {
     const result = await fetchDashboardData(
       request,
+      "operator-secret",
       undefined,
       recordingFetch([], { "/api/v1/admin/dq-issues": 503 })
     )
@@ -147,11 +148,13 @@ describe("FinDB Admin server boundary", () => {
   it("sanitizes authentication and upstream response bodies", async () => {
     const authResult = await fetchDashboardData(
       request,
+      "operator-secret",
       undefined,
       recordingFetch([], { "/api/v1/admin/queue/health": 401 })
     )
     const upstreamResult = await fetchDashboardData(
       request,
+      "operator-secret",
       undefined,
       recordingFetch([], { "/api/v1/admin/queue/health": 500 })
     )
@@ -175,6 +178,7 @@ describe("FinDB Admin server boundary", () => {
   it("rejects malformed endpoint responses without exposing their body", async () => {
     const result = await fetchDashboardData(
       request,
+      "operator-secret",
       undefined,
       recordingFetch([], {}, "/api/v1/admin/queue/health")
     )

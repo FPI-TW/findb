@@ -445,7 +445,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     load_dotenv(REPO_ROOT / ".env")
-    load_dotenv(BACKEND_ROOT / ".env")
     csv.field_size_limit(min(sys.maxsize, 1024 * 1024 * 128))
 
     parser = _build_parser()

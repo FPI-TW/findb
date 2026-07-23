@@ -175,6 +175,103 @@ button:disabled {
   font-weight: 700;
 }
 
+.operator-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.operator-panel > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.operator-panel span,
+.operator-panel small {
+  color: var(--muted);
+  font-size: 0.69rem;
+}
+
+.operator-panel strong {
+  font-family: "DM Mono", monospace;
+}
+
+.operator-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.secondary-button {
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+
+.login-shell {
+  min-height: calc(100vh - 160px);
+  display: grid;
+  place-items: center;
+  width: min(100% - 32px, 480px);
+  margin: 0 auto;
+  padding: 56px 0;
+}
+
+.login-card {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  padding: clamp(24px, 6vw, 42px);
+  box-shadow: var(--shadow);
+}
+
+.login-mark {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+  border-radius: 14px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.login-card h1 {
+  margin: 8px 0 10px;
+  font-size: clamp(1.8rem, 6vw, 2.7rem);
+  letter-spacing: -0.045em;
+}
+
+.login-copy {
+  margin: 0 0 26px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.login-form {
+  display: grid;
+  gap: 16px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.login-form .global-error {
+  margin: 0;
+}
+
 .input-row {
   display: flex;
   gap: 8px;
@@ -550,6 +647,12 @@ tr:last-child td {
 
   .input-row,
   .app-footer {
+    flex-direction: column;
+  }
+
+  .operator-panel,
+  .operator-actions {
+    align-items: stretch;
     flex-direction: column;
   }
 

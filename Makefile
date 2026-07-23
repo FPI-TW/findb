@@ -1,6 +1,6 @@
 .PHONY: help up start restart down build migrate seed up-server up-db status logs test \
 	format check check-backend dashboard-install dashboard-dev dashboard-format \
-	dashboard-test dashboard-check dashboard-build
+	dashboard-test dashboard-check dashboard-build dashboard-up
 
 help:
 	@echo "FinDB local workflow"
@@ -19,6 +19,7 @@ help:
 	@echo "  make up-db      Start PostgreSQL only"
 	@echo "  make dashboard-install  Install dashboard dependencies"
 	@echo "  make dashboard-dev      Start the dashboard development server"
+	@echo "  make dashboard-up       Build and start the dashboard container"
 	@echo ""
 	@echo "Observe and verify:"
 	@echo "  make status     Show complete stack status"
@@ -65,9 +66,7 @@ test:
 	uv --directory backend run python scripts/dev.py test-db
 
 format:
-	uv --directory backend run ruff check --fix app tests scripts migrations
-	uv --directory backend run black app tests scripts migrations
-	pnpm --dir dashboard format
+	pnpm format
 
 check-backend:
 	uv --directory backend run ruff check app tests scripts migrations
@@ -76,24 +75,24 @@ check-backend:
 	uv --directory backend run python scripts/dev.py test-db
 
 dashboard-install:
-	pnpm --dir dashboard install --frozen-lockfile
+	pnpm install --frozen-lockfile
 
 dashboard-dev:
-	pnpm --dir dashboard dev
+	pnpm dev:dashboard
+
+dashboard-up:
+	pnpm container:dashboard
 
 dashboard-format:
-	pnpm --dir dashboard format
+	pnpm format:dashboard
 
 dashboard-test:
-	pnpm --dir dashboard test
+	pnpm test:dashboard
 
 dashboard-check:
-	pnpm --dir dashboard format:check
-	pnpm --dir dashboard lint:check
-	pnpm --dir dashboard type:check
-	pnpm --dir dashboard test
+	pnpm check:dashboard
 
 dashboard-build:
-	pnpm --dir dashboard build
+	pnpm build:dashboard
 
 check: check-backend dashboard-check dashboard-build

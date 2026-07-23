@@ -16,6 +16,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/fpi-tw/findb
+  DASHBOARD_IMAGE: ghcr.io/fpi-tw/findb-dashboard
 
 jobs:
   test:
@@ -102,7 +103,7 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: dashboard/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -145,7 +146,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push backend image
         uses: docker/build-push-action@v7
         with:
           context: ./backend
@@ -155,6 +156,18 @@ jobs:
             ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push dashboard image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: dashboard/Dockerfile
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.DASHBOARD_IMAGE }}:latest
+            ${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
 
   deploy:
     needs: build-push
@@ -185,6 +198,9 @@ jobs:
       SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
       SERVE_REQUIRE_AUTH: ${{ vars.SERVE_REQUIRE_AUTH }}
       ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+      DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
+      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+      DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
       RATE_LIMIT_REQUESTS: ${{ vars.RATE_LIMIT_REQUESTS }}
       RATE_LIMIT_WINDOW: ${{ vars.RATE_LIMIT_WINDOW }}
       RAW_RETENTION_ENABLED: ${{ vars.RAW_RETENTION_ENABLED }}
@@ -204,12 +220,16 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEY SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
+          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEY SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEY DASHBOARD_USERNAME DASHBOARD_PASSWORD DASHBOARD_SESSION_SECRET RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
               missing=1
             fi
           done
+          if [ "${#DASHBOARD_SESSION_SECRET}" -lt 32 ]; then
+            echo "::error title=Invalid Dashboard session secret::DASHBOARD_SESSION_SECRET must contain at least 32 characters"
+            missing=1
+          fi
           if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -z "${SERVE_API_KEYS:-}" ]; then
             echo "::error title=Missing deployment secret::SERVE_API_KEYS must be configured when SERVE_REQUIRE_AUTH=true"
             missing=1
@@ -276,7 +296,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,DASHBOARD_IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,DASHBOARD_USERNAME,DASHBOARD_PASSWORD,DASHBOARD_SESSION_SECRET,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE
           script: |
             set -euo pipefail
             echo "Logging in to GHCR"
@@ -339,7 +359,7 @@ jobs:
             '
 
             if ! docker compose -f docker-compose.prod.yml up -d --remove-orphans; then
-              diagnose_services rabbitmq rabbitmq-policy dispatcher worker serve ingest nginx raw-cleanup
+              diagnose_services rabbitmq rabbitmq-policy dispatcher worker serve ingest dashboard nginx raw-cleanup
               exit 1
             fi
 
@@ -425,6 +445,23 @@ jobs:
               fi
             done
 
+            echo "Waiting for Dashboard readiness"
+            dashboard_ready=0
+            for attempt in $(seq 1 24); do
+              if docker compose -f docker-compose.prod.yml exec -T dashboard \
+                wget -q --spider http://127.0.0.1:3000/dashboard/login; then
+                echo "Dashboard is ready"
+                dashboard_ready=1
+                break
+              fi
+              echo "Dashboard not ready (attempt ${attempt}/24); waiting 5s..."
+              sleep 5
+            done
+            if [ "$dashboard_ready" -ne 1 ]; then
+              diagnose_services dashboard
+              exit 1
+            fi
+
             echo "Waiting for DB-authoritative queue health"
             if ! docker compose -f docker-compose.prod.yml exec -T ingest \
               python /app/scripts/check_queue_health.py \
@@ -451,7 +488,7 @@ jobs:
 
             if [ "$proxy_ready" -ne 1 ]; then
               echo "::error title=Nginx proxy check failed::Nginx did not report healthy in time. Check TLS cert mounts and upstream app routing."
-              diagnose_services nginx serve ingest
+              diagnose_services nginx serve ingest dashboard
               exit 1
             fi
 

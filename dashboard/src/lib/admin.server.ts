@@ -65,6 +65,7 @@ function settled<T>(result: PromiseSettledResult<T>): PanelResult<T> {
 
 export async function fetchDashboardData(
   data: DashboardRequest,
+  apiKey: string,
   baseUrlValue: string | undefined,
   fetchImplementation: FetchImplementation = fetch
 ) {
@@ -74,35 +75,35 @@ export async function fetchDashboardData(
     await Promise.allSettled([
       fetchTarget(
         baseUrl,
-        data.apiKey,
+        apiKey,
         "/api/v1/admin/queue/health",
         queueHealthSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        data.apiKey,
+        apiKey,
         "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
         missingDeliveriesSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        data.apiKey,
+        apiKey,
         "/api/v1/admin/dq-issues?resolved=false&page=1&page_size=100",
         dqIssuesSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        data.apiKey,
+        apiKey,
         "/api/v1/admin/corrections?page=1&page_size=50",
         correctionsSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        data.apiKey,
+        apiKey,
         `/api/v1/admin/raw-payloads?${auditSearch.toString()}`,
         rawPayloadsSchema,
         fetchImplementation

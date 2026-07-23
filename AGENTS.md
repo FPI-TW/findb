@@ -162,7 +162,7 @@ findb/
 
 ```bash
 # 安裝 dependencies
-uv --directory backend sync
+pnpm setup
 
 # local development
 make up        # migrate + seed + build + 完整啟動
@@ -199,6 +199,10 @@ uv --directory backend run pytest --cov=app
 uv --directory backend run python scripts/dev.py test-db
 
 # dashboard
+pnpm dev:dashboard
+pnpm container:dashboard
+pnpm check:dashboard
+pnpm build:dashboard
 make dashboard-install
 make dashboard-dev
 make dashboard-test

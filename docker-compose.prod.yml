@@ -76,6 +76,30 @@ services:
     volumes:
       - findb-static-data:/app/app/static/data
 
+  dashboard:
+    image: "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE must be set by deployment}:${IMAGE_TAG:-latest}"
+    container_name: findb-dashboard
+    environment:
+      FINDB_API_BASE_URL: "http://ingest:${PORT:?PORT must be set in GitHub Actions variables}"
+      ADMIN_API_KEY: "${ADMIN_API_KEY:?ADMIN_API_KEY must be set in GitHub Actions secrets}"
+      DASHBOARD_USERNAME: "${DASHBOARD_USERNAME:?DASHBOARD_USERNAME must be set in GitHub Actions secrets}"
+      DASHBOARD_PASSWORD: "${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD must be set in GitHub Actions secrets}"
+      DASHBOARD_SESSION_SECRET: "${DASHBOARD_SESSION_SECRET:?DASHBOARD_SESSION_SECRET must be set in GitHub Actions secrets}"
+    depends_on:
+      ingest:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://127.0.0.1:3000/dashboard/login",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+
   rabbitmq:
     image: "rabbitmq:4.2-management@sha256:a29528adc5fa512cdadf60204e3336602ee400f8e026f5637b281959d2d51426"
     container_name: findb-rabbitmq
@@ -174,6 +198,7 @@ services:
       depends_on:
         - serve
         - ingest
+        - dashboard
       restart: unless-stopped
 
   raw-cleanup:

@@ -49,6 +49,33 @@ services:
       - ./backend/scripts:/app/scripts:ro
     command: sh /app/scripts/start_local_app_with_cache.sh
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: findb-dashboard
+    environment:
+      FINDB_API_BASE_URL: http://app:${PORT:-8080}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - app
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://127.0.0.1:3000/dashboard/login",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
   rabbitmq:
     image: "rabbitmq:4.2-management@sha256:a29528adc5fa512cdadf60204e3336602ee400f8e026f5637b281959d2d51426"
     container_name: findb-rabbitmq
