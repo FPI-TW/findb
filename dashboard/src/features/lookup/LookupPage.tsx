@@ -520,7 +520,7 @@ export function LookupPage({
                 </div>
               </div>
             ) : (
-              <Table className="min-w-[900px]">
+              <Table scrollMode="page" className="w-full min-w-[900px]">
                 <TableHeader>
                   <TableRow>
                     {config.columns.map(column => (
@@ -570,7 +570,11 @@ export function LookupPage({
                             column.key === "source_code" ? (
                               <button
                                 type="button"
-                                className="inline-flex items-center gap-1 font-mono font-semibold text-accent hover:underline"
+                                className={
+                                  column.key === "symbol"
+                                    ? "inline-flex items-center gap-1 font-sans font-bold tracking-wide text-accent hover:underline"
+                                    : "inline-flex items-center gap-1 font-mono font-semibold text-accent hover:underline"
+                                }
                                 title={`複製 ${String(copyValue ?? "")}`}
                                 onClick={() =>
                                   void copyIdentifier(
