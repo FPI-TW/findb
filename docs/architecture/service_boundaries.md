@@ -16,8 +16,9 @@ findb/
 └── backend/tests/        Contract artifact drift與backend acceptance tests
 ```
 
-Provider adapters、scheduler、checkpoint、S3 raw storage、跨process integration
-tests與Fetcher deployment workflow尚未建立。
+Provider adapters、scheduler、checkpoint、S3 raw storage與跨process integration
+tests尚未建立。Fetcher CD目前只負責immutable image release與獨立部署handoff，
+不代表已有持續運作的production fetch loop。
 
 ## Release 與部署單位
 
@@ -25,11 +26,14 @@ tests與Fetcher deployment workflow尚未建立。
 | --- | --- | --- | --- |
 | FinDB backend | `findb:<sha>` | FinDB EC2 | 已有 |
 | Dashboard | `findb-dashboard:<sha>` | FinDB EC2 | 已有 |
-| Fetcher | `findb-fetcher:<sha>` | 獨立 Fetch EC2 | Package/image/CI已有；部署規劃中 |
+| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher target | Delivery client/image與獨立CI/CD已有；runtime未完成 |
 
-同 repo 不代表同時部署。每個服務需要獨立 path-filtered CI、image tag、deployment
-workflow、concurrency group 與 rollback。環境必須記錄實際部署的 image SHA 與啟用的
-contract versions。
+同 repo 不代表同時部署。目前以四個workflow分離FinDB CI、FinDB CD、Fetcher CI與
+Fetcher CD；FinDB deployment unit包含backend與Dashboard。各自使用path filter、
+image tag、CD concurrency group與rollback，CD job分別綁定 `production-findb`和
+`production-fetcher`。Contract變更可觸發兩個CI，但contract-only變更不自動部署
+Fetcher；自動CD只部署已通過對應CI的同一commit。環境必須記錄實際部署的image SHA
+與啟用的contract versions。
 
 ## FinDB 邊界
 
@@ -51,7 +55,7 @@ FinDB 不負責：
 
 ## Fetcher 邊界
 
-Fetcher 負責：
+Fetcher完整runtime完成後負責：
 
 - Provider SDK/API、抓取排程與限流
 - Provider payload轉換成 versioned FinDB contract
@@ -61,6 +65,22 @@ Fetcher 負責：
 
 Fetcher 只能透過 HTTPS Source API 與 FinDB互動；不得取得 FinDB DB、RabbitMQ、
 Admin或Serve credentials。
+
+目前已落地的範圍只有contract驗證、delivery client、bounded HTTP retry、readiness
+與image/CI/CD foundation；其餘項目保留在backlog。
+
+## CI/CD 與credential邊界
+
+- FinDB CD只能取得FinDB target、DB、RabbitMQ、Source/Admin/Serve、Dashboard與TLS
+  credentials。
+- Fetcher CD只能取得Fetcher target、provider、Fetcher Source client與Fetcher raw
+  object storage credentials。
+- Production secrets必須放入對應GitHub Environment並從repository-level移除；
+  environment隔離不會自動限制仍留在repository scope的secret。
+- GitHub Environments、OIDC roles、AWS secret paths與EC2 target均為外部資源，不能
+  僅憑workflow檔宣稱已建立。
+- 所有workflow可手動執行；contract rollout使用backend-first，先部署可同時接受
+  新舊版本的FinDB，再明確啟動Fetcher CD切換版本。
 
 ## Dashboard 與下游
 

@@ -15,7 +15,6 @@
 ## P0：Deployment與secret isolation
 
 - [ ] 建立 `production-findb`、`production-fetcher` GitHub Environments。
-- [ ] 拆分FinDB與Fetcher deployment workflow、image與concurrency group。
 - [ ] 將production secrets從repository/job-wide scope移到對應environment。
 - [ ] 為workflow、infra與contract設定CODEOWNERS與environment protection。
 - [ ] 建立service-specific GitHub OIDC AWS deploy roles。

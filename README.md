@@ -2,7 +2,8 @@
 
 FinDB 是金融資料 ingestion、normalization、data quality 與 canonical query
 平台。Repository 包含FastAPI backend、TanStack Dashboard、versioned contracts
-與獨立Fetcher基礎套件；Fetcher未來使用獨立image、EC2與部署權限。
+與獨立Fetcher基礎套件；Fetcher已有獨立image與CI/CD，production EC2、GitHub
+Environment與部署權限仍須在外部建立。
 
 ## 架構
 
@@ -197,8 +198,9 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 
 ## Production
 
-目前 `.github/workflows/deploy.yml` 建置backend與Dashboard images，透過SSH與
-`docker-compose.prod.yml`部署至FinDB EC2。Production包含：
+CI/CD已拆成FinDB CI、FinDB CD、Fetcher CI與Fetcher CD四個獨立workflow。FinDB
+deployment unit建置backend與Dashboard images，並透過
+`docker-compose.prod.yml`部署以下服務：
 
 - `serve`
 - `ingest`
@@ -210,13 +212,18 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 - `nginx`
 - `raw-cleanup`
 
-Fetcher image與CI foundation已建立但尚未production部署。已核准的下一步是：
+Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立target，但Fetcher
+目前只有contract validation、readiness與delivery client，尚未實作production
+provider scheduler/fetch loop。Production外部設定仍需完成：
 
-- FinDB與Fetcher使用不同GitHub Environments。
-- 拆分deployment workflow、image與EC2。
+- 建立並設定 `production-findb`、`production-fetcher` GitHub Environments。
+- 將production secrets搬入對應Environment並自repository scope移除。
 - GitHub Actions改用AWS OIDC短效權限。
 - Runtime secrets搬到AWS Secrets Manager/Parameter Store。
 - FinDB與Fetcher使用不同deploy roles、instance roles與secret paths。
+
+Contract變更會執行兩個CI，但contract-only變更不會自動部署Fetcher；發布採
+backend-first，必要時以 `workflow_dispatch`明確啟動各CD。
 
 現況、目標權限矩陣、migration與rollback規則見
 [Production Deployment](docs/operations/deployment.md)。

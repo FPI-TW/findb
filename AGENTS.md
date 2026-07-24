@@ -86,7 +86,7 @@ findb/
 | 文件 | `docs/README.md` | 唯一文件入口；只保存現行架構、契約、維運規則與未完成 backlog，歷史決策由 Git history 追溯 |
 | Nginx 設定樣板 | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf` | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入） |
 | Nginx render 腳本 | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
-| 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2；含 nginx confs 渲染、scp、reload 步驟 |
+| CI/CD 流程 | `.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml` | FinDB 與 Fetcher 各自獨立驗證、建置與部署；production jobs 分別綁定自己的 GitHub Environment |
 
 ## 子目錄指南
 

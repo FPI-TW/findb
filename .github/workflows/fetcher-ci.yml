@@ -4,32 +4,38 @@ on:
   push:
     branches: [main]
     paths:
-      - ".dockerignore"
       - "fetcher/**"
       - "contracts/**"
-      - "backend/app/schemas/ingress.py"
-      - "backend/app/services/ingress_contracts.py"
+      # Contract generation imports application code transitively. Keep this
+      # conservative CI-only gate broad so backend changes cannot silently
+      # invalidate checked-in contracts consumed by Fetcher.
+      - "backend/app/**"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
       - "backend/scripts/export_ingress_contracts.py"
       - "backend/tests/test_contract_artifacts.py"
       - ".github/workflows/fetcher-ci.yml"
+      - ".github/workflows/fetcher-cd.yml"
   pull_request:
     branches: [main]
     paths:
-      - ".dockerignore"
       - "fetcher/**"
       - "contracts/**"
-      - "backend/app/schemas/ingress.py"
-      - "backend/app/services/ingress_contracts.py"
+      - "backend/app/**"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
       - "backend/scripts/export_ingress_contracts.py"
       - "backend/tests/test_contract_artifacts.py"
       - ".github/workflows/fetcher-ci.yml"
+      - ".github/workflows/fetcher-cd.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: fetcher-ci-${{ github.ref }}
+  group: fetcher-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -42,15 +48,15 @@ jobs:
         working-directory: fetcher
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.9.9"
           enable-cache: true
