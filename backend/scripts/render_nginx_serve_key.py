@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-DEFAULT_REFERER_REGEX = r"^https?://findb\.tingfong\.com/instrument-lookup"
+DEFAULT_REFERER_REGEX = (
+    r"^https?://findb\.tingfong\.com/"
+    r"(?:instrument-lookup(?:[/?#]|$)|dashboard/lookup(?:[/?#]|$))"
+)
 
 
 def render_serve_key(raw_keys: str, allowed_referer_regex: str) -> str:
@@ -21,7 +24,7 @@ def render_serve_key(raw_keys: str, allowed_referer_regex: str) -> str:
     header = (
         "# Generated during deployment from SERVE_API_KEYS.\n"
         "# Injects X-API-Key into /api/v1/serve/* requests whose Referer matches the\n"
-        "# instrument-lookup static page; external callers without a Referer match\n"
+        "# public instrument lookup pages; external callers without a Referer match\n"
         "# fall through to passing their own X-API-Key header.\n"
     )
 

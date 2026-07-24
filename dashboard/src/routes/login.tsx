@@ -19,7 +19,7 @@ import { getSession, login } from "../lib/auth.functions"
 export const Route = createFileRoute("/login")({
   beforeLoad: async () => {
     const session = await getSession()
-    if (session.authenticated) throw redirect({ to: "/" })
+    if (session.authenticated) throw redirect({ to: "/operations" })
   },
   component: LoginPage,
 })
@@ -38,7 +38,7 @@ function LoginPage() {
     setError("")
     try {
       await loginFn({ data: { username, password } })
-      await navigate({ to: "/" })
+      await navigate({ to: "/operations" })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "登入失敗。")
     } finally {

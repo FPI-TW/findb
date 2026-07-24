@@ -15,7 +15,8 @@
 | --- | --- |
 | [spec.md](architecture/spec.md) | 技術規格快照：系統架構、canonical 模型、已實作資料集、DQ 規則、目前限制。 |
 | [ingestion_workflow.html](architecture/ingestion_workflow.html) | Ingestion 五大階段流程視覺化（守門點、raw 落地、背景正規化、維運鉤子、canonical 查詢）。 |
-| [instrument_lookup_spec.md](architecture/instrument_lookup_spec.md) | `/instrument-lookup` 靜態查詢頁與 generated cache 的技術規格。 |
+| [instrument_lookup_spec.md](architecture/instrument_lookup_spec.md) | Lookup generated cache 契約與 legacy 靜態頁原始規格。 |
+| [dashboard_routes.md](architecture/dashboard_routes.md) | Dashboard 公開／受保護路由、Lookup 資料來源與 secret 邊界。 |
 | [rag_supply_contract.md](architecture/rag_supply_contract.md) | RAG 衍生服務與 FinDB 的邊界：FinDB 只提供 Serve API / read replica，不承擔 embedding 或 vector index。 |
 | [monorepo_environment.md](architecture/monorepo_environment.md) | 根層 pnpm workspace、單一 `.env`、Dashboard secrets 與 container 部署邊界。 |
 

@@ -15,9 +15,6 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
-DASHBOARD_VITE_CONFIG = REPO_ROOT / "dashboard" / "vite.config.ts"
-DASHBOARD_ROUTER = REPO_ROOT / "dashboard" / "src" / "router.tsx"
-DASHBOARD_PATHS = REPO_ROOT / "dashboard" / "src" / "lib" / "paths.ts"
 
 
 def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
@@ -43,17 +40,17 @@ def test_deploy_uses_ordered_health_checks_with_failure_diagnostics() -> None:
     assert "docker compose -f docker-compose.prod.yml ps -a" in deploy
 
 
-def test_dashboard_uses_the_deployed_subpath_for_assets_and_navigation() -> None:
-    vite_config = DASHBOARD_VITE_CONFIG.read_text(encoding="utf-8")
-    router = DASHBOARD_ROUTER.read_text(encoding="utf-8")
-    paths = DASHBOARD_PATHS.read_text(encoding="utf-8")
+def test_dashboard_health_checks_use_the_public_landing_page() -> None:
+    deploy = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    compose = PROD_COMPOSE.read_text(encoding="utf-8")
 
-    assert 'DASHBOARD_BASE_PATH = "/dashboard"' in paths
-    assert "DASHBOARD_BASE_URL = `${DASHBOARD_BASE_PATH}/`" in paths
-    assert "base: DASHBOARD_BASE_URL" in vite_config
-    assert "baseURL: DASHBOARD_BASE_URL" in vite_config
-    assert "router: { basepath: DASHBOARD_BASE_PATH }" in vite_config
-    assert "basepath: DASHBOARD_BASE_PATH" in router
+    expected_url = "http://127.0.0.1:3333/dashboard/"
+    assert expected_url in deploy
+    assert expected_url in compose
+    assert "http://127.0.0.1:3333/dashboard/login" not in deploy
+    assert "http://127.0.0.1:3333/dashboard/login" not in compose
+    assert "Checking public Dashboard routes through nginx" in deploy
+    assert "for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill" in deploy
 
 
 def test_deploy_retries_celery_worker_readiness() -> None:

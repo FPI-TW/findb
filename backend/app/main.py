@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import admin, serve, source
+from app.api.v1 import admin, lookup, serve, source
 from app.config import get_settings
 from app.models.base import init_db
 
@@ -92,6 +92,11 @@ if APP_ROLE in {"serve", "all"}:
         prefix=f"{settings.API_V1_PREFIX}/serve",
         tags=["Serve API"],
     )
+    app.include_router(
+        lookup.router,
+        prefix=f"{settings.API_V1_PREFIX}/serve/lookup",
+        tags=["Serve API"],
+    )
 
 if APP_ROLE in {"ingest", "all"}:
     app.include_router(
@@ -134,11 +139,11 @@ async def test_page():
 
 @app.get("/instrument-lookup", include_in_schema=False)
 async def instrument_lookup_page():
-    """商品查詢頁面。"""
+    """Serve the legacy public lookup page."""
     return FileResponse(INSTRUMENT_LOOKUP_PAGE_PATH, media_type="text/html")
 
 
 @app.get("/skill-install", include_in_schema=False)
 async def skill_install_page():
-    """AI Skill 安裝說明頁。"""
+    """Serve the legacy public Skill page."""
     return FileResponse(SKILL_INSTALL_PAGE_PATH, media_type="text/html")

@@ -1,4 +1,19 @@
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
+import {
+  HeadContent,
+  Link,
+  Scripts,
+  createRootRoute,
+} from "@tanstack/react-router"
+import { ArrowLeft, SearchX } from "lucide-react"
+
+import { Button } from "../components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card"
 import Footer from "../components/Footer"
 import Header from "../components/Header"
 
@@ -27,8 +42,40 @@ export const Route = createRootRoute({
       },
     ],
   }),
+  notFoundComponent: NotFoundPage,
   shellComponent: RootDocument,
 })
+
+export function NotFoundPage() {
+  return (
+    <main className="mx-auto grid min-h-[calc(100vh-10rem)] w-full max-w-screen-2xl place-items-center px-4 py-14 sm:px-6 lg:px-8">
+      <Card className="w-full max-w-xl text-center">
+        <CardHeader className="items-center">
+          <span className="mb-2 inline-flex size-12 items-center justify-center rounded-2xl bg-accent-soft text-accent">
+            <SearchX aria-hidden="true" />
+          </span>
+          <p className="font-mono text-xs font-medium tracking-widest text-accent uppercase">
+            Error 404
+          </p>
+          <CardTitle asChild className="text-3xl tracking-tight">
+            <h1>找不到這個頁面</h1>
+          </CardTitle>
+          <CardDescription className="max-w-md leading-6">
+            網址可能有誤，或頁面已經移動。你可以返回 FinDB 首頁重新選擇功能。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild>
+            <Link to="/">
+              <ArrowLeft aria-hidden="true" />
+              返回首頁
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+    </main>
+  )
+}
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (

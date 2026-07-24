@@ -19,24 +19,24 @@
 }
 
 :root {
-  --bg: #f0f3ef;
+  --bg: #f4f6f5;
   --surface: #ffffff;
-  --surface-soft: #f7f9f6;
-  --ink: #18221d;
-  --muted: #69736c;
-  --line: #dce2dc;
-  --accent: #1d7251;
-  --accent-soft: #dff2e9;
+  --surface-soft: #f7f9f8;
+  --ink: #17201c;
+  --muted: #657069;
+  --line: #d7ded9;
+  --accent: #155f45;
+  --accent-soft: #e2f0e9;
   --danger: #b94438;
   --danger-soft: #fff0ed;
   --warning: #9a6517;
-  --shadow: 0 14px 40px rgba(26, 44, 34, 0.08);
+  --shadow: 0 8px 24px rgba(26, 44, 34, 0.06);
 }
 
 .dark {
-  --bg: #0e1411;
-  --surface: #151d19;
-  --surface-soft: #19231e;
+  --bg: #101512;
+  --surface: #171d19;
+  --surface-soft: #1b231e;
   --ink: #edf4ef;
   --muted: #9dab9f;
   --line: #2c3931;
@@ -45,7 +45,7 @@
   --danger: #ff9286;
   --danger-soft: #3b211f;
   --warning: #e7b25d;
-  --shadow: 0 18px 45px rgba(0, 0, 0, 0.24);
+  --shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
 * {
@@ -60,10 +60,6 @@ html {
 body {
   margin: 0;
   color: var(--ink);
-  background:
-    linear-gradient(rgba(24, 34, 29, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(24, 34, 29, 0.025) 1px, transparent 1px),
-    var(--bg);
-  background-size: 32px 32px;
+  background: var(--bg);
   font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
 }

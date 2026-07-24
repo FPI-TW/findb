@@ -71,6 +71,11 @@ export async function fetchDashboardData(
 ) {
   const baseUrl = safeBaseUrl(baseUrlValue)
   const auditSearch = buildAuditSearch(data.audit)
+  const issuesSearch = new URLSearchParams({
+    resolved: "false",
+    page: data.audit.page.toString(),
+    page_size: data.audit.pageSize.toString(),
+  })
   const [queue, deliveries, issues, corrections, rawPayloads] =
     await Promise.allSettled([
       fetchTarget(
@@ -90,7 +95,7 @@ export async function fetchDashboardData(
       fetchTarget(
         baseUrl,
         apiKey,
-        "/api/v1/admin/dq-issues?resolved=false&page=1&page_size=100",
+        `/api/v1/admin/dq-issues?${issuesSearch.toString()}`,
         dqIssuesSchema,
         fetchImplementation
       ),

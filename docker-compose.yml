@@ -69,7 +69,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q --spider http://127.0.0.1:3333/dashboard/login",
+          "wget -q --spider http://127.0.0.1:3333/dashboard/",
         ]
       interval: 10s
       timeout: 5s
