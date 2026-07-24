@@ -2,17 +2,35 @@ repos:
   - repo: local
     hooks:
       - id: ruff-fix
-        name: ruff fix
+        name: backend ruff fix
         entry: uv --project backend run ruff check --fix
         language: system
         types_or: [python]
+        files: ^backend/
         stages: [pre-commit]
 
       - id: black-format
-        name: black format
+        name: backend black format
         entry: uv --project backend run black
         language: system
         types_or: [python]
+        files: ^backend/
+        stages: [pre-commit]
+
+      - id: fetcher-ruff-fix
+        name: fetcher ruff fix
+        entry: uv --project fetcher run ruff check --fix
+        language: system
+        types_or: [python]
+        files: ^fetcher/
+        stages: [pre-commit]
+
+      - id: fetcher-black-format
+        name: fetcher black format
+        entry: uv --project fetcher run black
+        language: system
+        types_or: [python]
+        files: ^fetcher/
         stages: [pre-commit]
 
       - id: dashboard-format-check

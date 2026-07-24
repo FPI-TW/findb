@@ -110,6 +110,20 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 urn:findb:ingress-contract:{schema_id}:v{schema_version}
 ```
 
+Repository內的發布artifacts位於：
+
+```text
+contracts/<schema_id>/v<schema_version>.schema.json
+contracts/manifest.json
+```
+
+它們由backend registry產生，不可手動修改：
+
+```bash
+uv --directory backend run python scripts/export_ingress_contracts.py
+uv --directory backend run python scripts/export_ingress_contracts.py --check
+```
+
 ## Dataset declaration
 
 Dataset registry 必須聲明：
@@ -139,7 +153,7 @@ Optional 欄位只能在缺省語意明確且舊 producer 安全時加入既有�
 
 ## Fetcher 規則
 
-- Fetcher 與 FinDB 可位於同一 monorepo，但必須是獨立 application 與 image。
+- Fetcher 與 FinDB 位於同一 monorepo，但維持獨立 application、lockfile與image。
 - Fetcher 不得 import backend ORM、normalizer 或 DB config。
 - Fetcher 不得直接連線 FinDB DB。
 - Provider 原始檔由 Fetcher 存 object storage。

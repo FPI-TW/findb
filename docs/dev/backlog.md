@@ -4,11 +4,10 @@
 
 ## P0：Fetcher落地
 
-- [ ] 建立top-level `fetcher/` application與獨立container image。
-- [ ] 建立repository-level `contracts/`，固化已發布JSON Schema與manifest。
 - [ ] 建立真實FinLab/Bloomberg fixtures與provider mapping表。
 - [ ] 建立adapter → contract → Source API整合測試。
-- [ ] 實作Fetcher自己的scheduler、checkpoint、retry與delivery status。
+- [ ] 實作Fetcher scheduler、persistent retry state、checkpoint與delivery status；
+  單次process內的bounded HTTP retry已完成。
 - [ ] Provider原始檔寫入Fetcher S3，delivery帶raw reference與checksum。
 - [ ] Shadow delivery後逐一將legacy feed切到canonical `/source/ingest`。
 - [ ] 所有保留raw不再需要legacy rerun後，移除provider-specific endpoints/normalizers。

@@ -2,22 +2,22 @@
 
 ## 核准方向
 
-FinDB backend、Dashboard 與未來 Fetcher 放在同一個 Git repository，以便 contract、
+FinDB backend、Dashboard 與 Fetcher 放在同一個 Git repository，以便 contract、
 fixtures 與整合測試在同一個 PR 演進；各服務仍為獨立 release unit。
 
-目標結構：
+目前結構：
 
 ```text
 findb/
 ├── backend/              FinDB API、queue orchestration、normalization
 ├── dashboard/            營運介面
-├── fetcher/              Provider adapters、scheduler、delivery client
+├── fetcher/              Contract validation與delivery client基礎
 ├── contracts/            發布後不可變的 machine-readable contracts
-└── integration-tests/    Fetcher 到 Source API 的契約測試
+└── backend/tests/        Contract artifact drift與backend acceptance tests
 ```
 
-`fetcher/`、`contracts/` 與對應 deployment workflow 尚未建立前，本文件描述已核准的
-落地方向，不表示程式已存在。
+Provider adapters、scheduler、checkpoint、S3 raw storage、跨process integration
+tests與Fetcher deployment workflow尚未建立。
 
 ## Release 與部署單位
 
@@ -25,7 +25,7 @@ findb/
 | --- | --- | --- | --- |
 | FinDB backend | `findb:<sha>` | FinDB EC2 | 已有 |
 | Dashboard | `findb-dashboard:<sha>` | FinDB EC2 | 已有 |
-| Fetcher | `findb-fetcher:<sha>` | 獨立 Fetch EC2 | 規劃中 |
+| Fetcher | `findb-fetcher:<sha>` | 獨立 Fetch EC2 | Package/image/CI已有；部署規劃中 |
 
 同 repo 不代表同時部署。每個服務需要獨立 path-filtered CI、image tag、deployment
 workflow、concurrency group 與 rollback。環境必須記錄實際部署的 image SHA 與啟用的
@@ -77,6 +77,9 @@ Admin或Serve credentials。
 - 無 secrets 的 fixtures
 - source naming、UTC、idempotency等純規則
 - Contract validation測試工具
+
+`contracts/` artifacts由backend registry確定性產生並以SHA-256 manifest固定。
+`backend/scripts/export_ingress_contracts.py --check`負責阻擋drift。
 
 禁止共享：
 

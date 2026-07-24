@@ -1,6 +1,7 @@
 # Production Deployment
 
-> 現況：FinDB backend與Dashboard部署在同一台EC2；Fetcher尚未納入本repo。
+> 現況：FinDB backend與Dashboard部署在同一台EC2；Fetcher package、image與CI
+> foundation已在repo，但尚未production部署。
 > 核准目標：FinDB與Fetcher同repo、不同image、不同workflow、不同EC2。
 
 ## Current FinDB deployment

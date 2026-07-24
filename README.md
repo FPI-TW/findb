@@ -1,8 +1,8 @@
 # FinDB
 
 FinDB 是金融資料 ingestion、normalization、data quality 與 canonical query
-平台。Repository 同時包含 FastAPI backend與TanStack Dashboard；未來的Fetcher
-會作為獨立application加入同一monorepo，但使用獨立image、EC2與部署權限。
+平台。Repository 包含FastAPI backend、TanStack Dashboard、versioned contracts
+與獨立Fetcher基礎套件；Fetcher未來使用獨立image、EC2與部署權限。
 
 ## 架構
 
@@ -40,6 +40,8 @@ findb/
 │   ├── scripts/                 Dev、seed、maintenance、deploy helpers
 │   └── configs/                 Maintenance configs
 ├── dashboard/                   TanStack營運台
+├── fetcher/                     獨立Source API delivery client
+├── contracts/                   由backend registry產生的不可變契約
 ├── docs/                        現行架構、API、維運與backlog
 ├── infra/nginx/                 Production nginx設定
 ├── docker-compose.yml           Local stack
@@ -48,7 +50,8 @@ findb/
 └── pnpm-workspace.yaml
 ```
 
-規劃中的top-level `fetcher/`、`contracts/`與integration tests見
+Fetcher目前只包含contract validation與安全delivery client；provider adapter、
+scheduler、checkpoint與production deployment仍在backlog。詳見
 [服務邊界](docs/architecture/service_boundaries.md)。
 
 ## 技術
@@ -133,6 +136,11 @@ make dashboard-test
 make dashboard-check
 make dashboard-build
 
+# Fetcher
+make fetcher-test
+make fetcher-check
+make fetcher-build
+
 # Quality
 make format
 make check
@@ -202,7 +210,7 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 - `nginx`
 - `raw-cleanup`
 
-已核准的下一步是：
+Fetcher image與CI foundation已建立但尚未production部署。已核准的下一步是：
 
 - FinDB與Fetcher使用不同GitHub Environments。
 - 拆分deployment workflow、image與EC2。

@@ -32,6 +32,8 @@ findb/
 |  |- seed/                  # local development partial dump data
 |  `- pyproject.toml         # uv deps + black/ruff/mypy/pytest settings
 |- dashboard/                # TanStack Start 營運台；監控導入、DQ 與稽核查詢
+|- fetcher/                  # 獨立 Source API delivery client；不得 import backend/ 或連 FinDB DB
+|- contracts/                # 由 backend contract registry 確定性產生的 versioned JSON Schema
 |- docs/                     # 現行架構、API、維運與 backlog；索引見 docs/README.md
 |- infra/nginx/              # 生產環境 nginx 設定（HTTPS、Source allowlist、Serve API key 注入）
 |- docker-compose.yml        # local app + postgres + pgadmin stack
