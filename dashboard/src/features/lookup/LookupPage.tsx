@@ -520,7 +520,7 @@ export function LookupPage({
                 </div>
               </div>
             ) : (
-              <Table scrollMode="page" className="min-w-[900px]">
+              <Table scrollMode="page" className="w-full min-w-[900px]">
                 <TableHeader>
                   <TableRow>
                     {config.columns.map(column => (
