@@ -16,7 +16,7 @@ function Table({
       data-slot="table-container"
       className={
         scrollMode === "page"
-          ? "relative min-w-full rounded-lg border border-line"
+          ? "relative min-w-full overflow-x-auto rounded-lg border border-line"
           : "relative max-h-80 w-full overflow-auto rounded-lg border border-line"
       }
     >

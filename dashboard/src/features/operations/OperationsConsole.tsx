@@ -598,7 +598,24 @@ export function DeliveriesPage() {
 }
 
 export function QualityPage() {
-  const { data, initialLoading } = useOperations()
+  const { data, filters, initialLoading, pending, refresh, setFilters } =
+    useOperations()
+  const issues = data?.issues.ok ? data.issues.data : null
+  const [pageSizeDraft, setPageSizeDraft] = useState(filters.pageSize)
+
+  function submitIssues(event: FormEvent) {
+    event.preventDefault()
+    const nextFilters = { ...filters, page: 1, pageSize: pageSizeDraft }
+    setFilters(nextFilters)
+    void refresh(nextFilters)
+  }
+
+  function changePage(page: number) {
+    const nextFilters = { ...filters, page }
+    setFilters(nextFilters)
+    void refresh(nextFilters)
+  }
+
   return (
     <>
       <PageIntro
@@ -613,51 +630,144 @@ export function QualityPage() {
         result={data?.issues ?? null}
         loading={initialLoading}
       >
-        {data?.issues.ok &&
-          (data.issues.data.data.length === 0 ? (
-            <EmptyState>目前沒有未解決的資料品質問題</EmptyState>
-          ) : (
-            <>
-              <p className="mt-0 mb-2 text-xs text-muted">
-                共 {data.issues.data.pagination.total_records} 筆，顯示前{" "}
-                {data.issues.data.data.length} 筆
-              </p>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>嚴重度</TableHead>
-                    <TableHead>類型</TableHead>
-                    <TableHead>交易日</TableHead>
-                    <TableHead>說明</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.issues.data.data.map(issue => (
-                    <TableRow key={issue.id}>
-                      <TableCell>
-                        <Badge
-                          variant={
-                            issue.severity === "error"
-                              ? "destructive"
-                              : "warning"
-                          }
-                        >
-                          {issue.severity}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono wrap-anywhere">
-                        {issue.issue_type}
-                      </TableCell>
-                      <TableCell>{issue.trade_date ?? "—"}</TableCell>
-                      <TableCell className="whitespace-normal">
-                        {issue.description ?? "—"}
-                      </TableCell>
+        {data?.issues.ok && (
+          <>
+            <form
+              className="mb-4 flex flex-wrap items-end justify-end gap-2.5"
+              onSubmit={submitIssues}
+            >
+              <div className="grid w-full gap-1.5 sm:w-36">
+                <Label htmlFor="quality-page-size">每頁筆數</Label>
+                <select
+                  id="quality-page-size"
+                  className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
+                  value={pageSizeDraft}
+                  onChange={event =>
+                    setPageSizeDraft(Number(event.target.value))
+                  }
+                  disabled={pending}
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+              <Button type="submit" disabled={pending}>
+                <Search size={16} /> 查詢
+              </Button>
+            </form>
+            {issues?.data.length === 0 ? (
+              <EmptyState>目前沒有未解決的資料品質問題</EmptyState>
+            ) : (
+              <>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+                  <p className="m-0">
+                    第 {issues?.pagination.page} /{" "}
+                    {issues?.pagination.total_pages} 頁，共{" "}
+                    {issues?.pagination.total_records} 筆，本頁{" "}
+                    {issues?.data.length} 筆
+                  </p>
+                  {pending && (
+                    <span role="status" aria-live="polite">
+                      正在更新…
+                    </span>
+                  )}
+                </div>
+                <Table scrollMode="page">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>嚴重度</TableHead>
+                      <TableHead>類型</TableHead>
+                      <TableHead>交易日</TableHead>
+                      <TableHead>說明</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </>
-          ))}
+                  </TableHeader>
+                  <TableBody>
+                    {issues?.data.map(issue => (
+                      <TableRow key={issue.id}>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              issue.severity === "error"
+                                ? "destructive"
+                                : "warning"
+                            }
+                          >
+                            {issue.severity}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="font-mono wrap-anywhere">
+                          {issue.issue_type}
+                        </TableCell>
+                        <TableCell>{issue.trade_date ?? "—"}</TableCell>
+                        <TableCell className="whitespace-normal">
+                          {issue.description ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {issues && issues.pagination.total_pages > 1 && (
+                  <nav
+                    className="mt-4 flex flex-wrap items-center justify-center gap-1"
+                    aria-label="資料品質分頁"
+                  >
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      type="button"
+                      onClick={() => changePage(issues.pagination.page - 1)}
+                      disabled={pending || issues.pagination.page <= 1}
+                    >
+                      上一頁
+                    </Button>
+                    {getVisiblePages(
+                      issues.pagination.page,
+                      issues.pagination.total_pages
+                    ).map((page, index, pages) => (
+                      <span className="contents" key={page}>
+                        {index > 0 && page - (pages[index - 1] ?? page) > 1 && (
+                          <span className="px-1 text-muted" aria-hidden="true">
+                            …
+                          </span>
+                        )}
+                        <Button
+                          variant={
+                            page === issues.pagination.page
+                              ? "default"
+                              : "secondary"
+                          }
+                          size="sm"
+                          type="button"
+                          aria-label={`第 ${page} 頁`}
+                          aria-current={
+                            page === issues.pagination.page ? "page" : undefined
+                          }
+                          onClick={() => changePage(page)}
+                          disabled={pending}
+                        >
+                          {page}
+                        </Button>
+                      </span>
+                    ))}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      type="button"
+                      onClick={() => changePage(issues.pagination.page + 1)}
+                      disabled={
+                        pending ||
+                        issues.pagination.page >= issues.pagination.total_pages
+                      }
+                    >
+                      下一頁
+                    </Button>
+                  </nav>
+                )}
+              </>
+            )}
+          </>
+        )}
       </Panel>
     </>
   )
@@ -873,7 +983,7 @@ export function RawPayloadsPage() {
                   </span>
                 )}
               </div>
-              <Table scrollMode="page" className="[&_th]:top-16">
+              <Table scrollMode="page">
                 <TableHeader>
                   <TableRow>
                     <TableHead>建立時間</TableHead>
