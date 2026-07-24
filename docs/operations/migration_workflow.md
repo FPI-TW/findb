@@ -1,51 +1,76 @@
-# Migration Workflow (Alembic)
+# Alembic Migration Workflow
 
-## Goals
+## 原則
 
-- Use Alembic as the source of truth for schema evolution.
-- Support both empty databases and existing databases with live data.
+- ORM model與Alembic migration必須在同一個PR更新。
+- Runtime `init_db()`只驗證revision與required tables，不執行 `create_all()`。
+- Production schema是forward-only operation；downgrade只用於本機migration round-trip測試。
+- Migration前停止所有DB writers，不能只停止HTTP ingest。
+- 禁止手動修改production schema後不補migration。
 
-## Local commands
+## 本機流程
 
 ```bash
-# show current revision
 uv --directory backend run alembic current
-
-# create a migration from model changes
-uv --directory backend run alembic revision --autogenerate -m "describe change"
-
-# upgrade to latest
 uv --directory backend run alembic upgrade head
-
-# downgrade one step
+uv --directory backend run alembic revision --autogenerate -m "describe change"
 uv --directory backend run alembic downgrade -1
+uv --directory backend run alembic upgrade head
 ```
 
-## Existing remote database baseline strategy
+Autogenerate後必須人工審查：
 
-For an environment that already has data/schema:
+- schema與table名稱
+- enum、constraint與index
+- PostgreSQL-specific options
+- data backfill順序
+- lock duration與大表rewrite
+- upgrade/downgrade是否可逆
+- default partition與existing rows
 
-1. Back up the database first.
-2. Create and review a baseline revision in Git.
-3. Stamp the existing database to that baseline revision without replaying DDL:
+## 測試
+
+至少執行：
 
 ```bash
-uv --directory backend run alembic stamp <baseline_revision>
+make check
+make test
+uv --directory backend run alembic upgrade head
+uv --directory backend run alembic current
 ```
 
-4. From that point onward, apply incremental migrations with `upgrade head`.
+涉及既有資料或partition時，在production-like clone或partial dump演練。驗證舊資料、
+新寫入、Serve查詢與downtime估算，不只驗證空DB。
 
-## Developer local mismatch strategy
+## Existing database baseline
 
-- If local data can be discarded: recreate local DB and run `uv --directory backend run alembic upgrade head`.
-- If local data must be kept: backup first, manually align schema, then `stamp` to baseline and continue with incremental migrations.
+只有schema已人工確認與某個revision完全一致時，才能 `alembic stamp`。Stamp不會執行
+DDL；它不能用來跳過未知schema drift。
 
-## Notes for this repository
+若remote DB不是head：
 
-- Runtime startup no longer performs `create_all()`.
-- Application startup now checks:
-  - database has Alembic revision stamp
-  - current revision equals Alembic `head`
-  - required core relations exist (`public.dataset_registry`, `public.instruments`, `raw.market_payload`)
-- If check fails, app exits and you must run `uv --directory backend run alembic upgrade head` (or stamp baseline first, then upgrade).
-- All schema changes must be introduced through Alembic revisions only.
+1. 備份並建立clone。
+2. 比對revision與實際schema。
+3. 在clone執行upgrade與application smoke tests。
+4. 排定writer pause。
+5. 執行production preflight後upgrade。
+
+## Production rollout
+
+1. 確認RDS snapshot/PITR與restore演練。
+2. 暫停provider或確認安全retry。
+3. 執行read-only DB preflight。
+4. 停止ingest、dispatcher、worker、raw-cleanup及所有one-off writers。
+5. 執行 `alembic upgrade head` 與 `alembic current`。
+6. 啟動queue、worker、ingest，再啟動/確認Serve。
+7. 執行health、queue與fixed-idempotency smoke test。
+
+若preflight失敗，不停止既有服務。
+
+## 失敗處置
+
+- 不刪除raw/job/outbox。
+- 不以 `stamp head`掩蓋失敗migration。
+- 不直接啟動revision較舊的image；startup會拒絕且舊程式可能不懂新schema。
+- 能在目前schema上運作的修正版image是首選。
+- 只有已演練且不會遺失資料的downgrade才可在維護窗口考慮。
