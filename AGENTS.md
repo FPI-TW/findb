@@ -6,11 +6,12 @@ FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以�
 
 核心堆疊：Python 3.13、FastAPI、SQLAlchemy async、PostgreSQL、Alembic、uv、pytest、TypeScript、React、TanStack Start、pnpm。
 
-整體資料流程是 Fetch -> Normalize -> Serve：
+整體資料流程是 Fetch -> Source -> durable queue -> Normalize -> Serve：
 
-- Fetch layer：外部資料擷取服務，不在本 repo 內，會將 Bloomberg 等 provider 的原始資料 POST 到 Source API。
-- Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重、寫入 raw layer，並觸發標準化。
-- Normalize layer：`backend/app/services/normalize/`，把 raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
+- Fetch layer：目前是外部服務；已核准未來以獨立 application 納入 monorepo。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
+- Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重，並在同一 transaction 寫入 raw、run、normalization job 與 outbox。
+- Durable queue：dispatcher 將 outbox 發布到 RabbitMQ，Celery worker 執行 normalization；RabbitMQ 可重建，PostgreSQL 是 durable truth。
+- Normalize layer：`backend/app/services/normalize/`，把 contract/raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
 - Serve API：`backend/app/api/v1/serve.py`，只讀取 canonical layer，必須保持唯讀。
 
 ## 專案結構
@@ -31,10 +32,10 @@ findb/
 |  |- seed/                  # local development partial dump data
 |  `- pyproject.toml         # uv deps + black/ruff/mypy/pytest settings
 |- dashboard/                # TanStack Start 營運台；監控導入、DQ 與稽核查詢
-|- docs/                     # 分類文件：api/、architecture/、operations/、dev/；索引見 docs/README.md
+|- docs/                     # 現行架構、API、維運與 backlog；索引見 docs/README.md
 |- infra/nginx/              # 生產環境 nginx 設定（HTTPS、Source allowlist、Serve API key 注入）
 |- docker-compose.yml        # local app + postgres + pgadmin stack
-|- docker-compose.prod.yml   # 生產環境 stack；含 nginx + findb-app
+|- docker-compose.prod.yml   # 生產環境 stack；serve/ingest/dispatcher/worker/RabbitMQ/Dashboard/nginx
 `- Makefile                  # monorepo workflow shortcuts，包裝 backend/scripts/dev.py
 ```
 
@@ -44,13 +45,13 @@ findb/
 | --- | --- | --- |
 | Raw | `raw.market_payload`，JSONB 原始 payload | 由 `RAW_RETENTION_ENABLED` 控制；預設停用，期限設定為 `RAW_RETENTION_DAYS=14` |
 | Canonical | `instruments`、`instrument_identifiers`、`trading_calendar`、`market_data_eod`、`corporate_action`、`macro_series`、`macro_observation`、`roll_rule`、`futures_contract`、`futures_continuous_eod` | 長期保存 |
-| Registry | `dataset_registry`、`ingestion_run`、`dq_issue` | 長期保存 |
+| Workflow / Registry | `dataset_registry`、`ingestion_attempt`、`ingestion_run`、`normalization_job`、`normalization_outbox`、`dq_issue` | 長期保存 |
 
 ## 主要流程
 
-1. Source API 收到 raw payload，依 `idempotency_key` 去重，寫入 `raw.market_payload`，建立 `ingestion_run`。
-2. `backend/app/services/ingestion.py` 依 `NORMALIZER_MAP[dataset_key]` 路由到對應 normalizer。
-3. Normalizer 映射欄位、執行 DQ 檢查、upsert canonical rows，並更新 `ingestion_run`。
+1. Source API 收到 contract/raw payload，依 `idempotency_key` 去重，原子寫入 raw、run、job 與 outbox。
+2. Dispatcher 發布 outbox，RabbitMQ 將 delivery 交給 Celery worker。
+3. Worker 依 schema/version 或 legacy dataset 路由 normalizer，執行 DQ 與 canonical upsert，更新 terminal state。
 4. Serve API 只讀 canonical tables，回傳查詢結果與 pagination wrapper。
 
 ## 優先查看位置
@@ -80,7 +81,7 @@ findb/
 | Seed upsert | `backend/scripts/seed_upsert.py` | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate |
 | Instrument name backfill | `backend/scripts/backfill_instrument_names.py`（TW）+ `backend/scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；TW backfill 支援 `--overwrite-existing` 清理舊版 Big5 解碼亂碼；皆為可重複執行 |
 | Instrument routing 修正 | `backend/scripts/fix_misrouted_tw_futures.py` + `backend/scripts/cleanup_stale_instruments.py` | 修整舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
-| 文件（規格、計劃、維運手冊、事故紀錄） | `docs/README.md` | 唯一文件入口，由索引導向 api/、architecture/、operations/、dev/ 各文件；含架構演進計劃（動 schema 或部署拓撲前先讀）、backfill 部署手冊、ingestion 流程圖、事故筆記等 |
+| 文件 | `docs/README.md` | 唯一文件入口；只保存現行架構、契約、維運規則與未完成 backlog，歷史決策由 Git history 追溯 |
 | Nginx 設定樣板 | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf` | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入） |
 | Nginx render 腳本 | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
 | 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2；含 nginx confs 渲染、scp、reload 步驟 |
@@ -220,12 +221,16 @@ uv --directory backend run alembic downgrade -1
 
 | Container | 說明 | Port |
 | --- | --- | --- |
-| `findb-app` | FastAPI app | `8080` by default |
+| `findb-app` | 本機 `APP_ROLE=all` FastAPI app | `8080` by default |
 | `findb-postgres` | PostgreSQL 16 | host `5435` -> container `5432` |
+| `findb-rabbitmq` | 本機 durable delivery broker | container network only |
+| `findb-dispatcher` / `findb-worker` | 本機 outbox dispatcher 與 normalization worker | n/a |
 | `findb-raw-cleanup` | daily raw TTL cleanup，profile: `tools` | n/a |
 | `findb-pgadmin` | pgAdmin UI，profile: `tools` | `5056` -> `80` |
 
 App container 連線 DB 使用 `db:5432`；local host 連線 DB 使用 `localhost:5435`。
+Production 不使用 `findb-app` 單一角色，而是依 `docker-compose.prod.yml` 拆為
+`serve`、`ingest`、`dispatcher` 與 `worker`。
 
 ## Git 行為
 
