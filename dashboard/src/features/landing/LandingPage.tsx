@@ -1,11 +1,10 @@
 import { Link } from "@tanstack/react-router"
 import {
   Activity,
-  Archive,
   ArrowRight,
   BookOpenCheck,
   ChartNoAxesCombined,
-  Clock3,
+  CircleCheckBig,
   Database,
   Gauge,
   LockKeyhole,
@@ -40,20 +39,21 @@ export default function LandingPage() {
               FinDB Workspace
             </p>
             <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-              資料工作台
+              金融資料工作台
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
-              查詢金融資料、監控導入狀態，或開啟整合文件。
+              從 canonical
+              資料查詢到導入品質監控，提供一致、唯讀且可追溯的操作入口。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
             <Badge variant="outline">
               <Search aria-hidden="true" />
-              Lookup 公開
+              Canonical 唯讀
             </Badge>
             <Badge variant="outline">
-              <LockKeyhole aria-hidden="true" />
-              Operations 需登入
+              <CircleCheckBig aria-hidden="true" />
+              DQ 與稽核可追溯
             </Badge>
           </div>
         </div>
@@ -76,28 +76,29 @@ export default function LandingPage() {
           </div>
 
           <div className="grid gap-5 lg:grid-cols-2">
-            <Card className="gap-0 overflow-hidden border-accent/30">
-              <CardHeader className="border-b border-line bg-accent-soft/55 py-5">
+            <Card className="h-full gap-0 overflow-hidden rounded-xl border-t-2 border-t-accent shadow-sm">
+              <CardHeader className="min-h-48 border-b border-line bg-surface py-5">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <span className="inline-flex size-10 items-center justify-center rounded-xl bg-accent text-white">
+                  <span className="inline-flex size-10 items-center justify-center rounded-lg bg-accent text-white">
                     <Search aria-hidden="true" />
                   </span>
-                  <Badge variant="outline">公開工具</Badge>
+                  <Badge variant="outline">Serve / Read only</Badge>
                 </div>
                 <CardTitle asChild className="text-2xl tracking-tight">
                   <h3>Lookup</h3>
                 </CardTitle>
                 <CardDescription className="leading-6">
-                  搜尋金融商品與宏觀序列，檢視識別資料、價格及相關紀錄。
+                  僅從 canonical layer
+                  查詢金融商品與宏觀序列，維持一致的識別與欄位定義。
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-4 py-5">
+              <CardContent className="grid flex-1 grid-rows-[1fr_auto] gap-4 py-5">
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Link
                     to="/lookup"
                     search={DEFAULT_SEARCH}
                     preload="intent"
-                    className="group rounded-xl border border-line bg-surface-soft p-3 outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft/55 focus-visible:ring-3 focus-visible:ring-accent/20"
+                    className="group rounded-lg border border-line bg-surface-soft p-3 outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft/55 focus-visible:ring-3 focus-visible:ring-accent/20"
                   >
                     <Database
                       className="mb-3 size-5 text-accent"
@@ -105,7 +106,7 @@ export default function LandingPage() {
                     />
                     <strong className="block text-sm">金融商品</strong>
                     <span className="mt-1 block text-xs leading-5 text-muted">
-                      Symbol、名稱、市場與資產類別
+                      Canonical identifier 與市場屬性
                     </span>
                     <ArrowRight
                       className="mt-3 size-4 text-accent transition-transform group-hover:translate-x-0.5"
@@ -116,7 +117,7 @@ export default function LandingPage() {
                     to="/lookup"
                     search={MACRO_SEARCH}
                     preload="intent"
-                    className="group rounded-xl border border-line bg-surface-soft p-3 outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft/55 focus-visible:ring-3 focus-visible:ring-accent/20"
+                    className="group rounded-lg border border-line bg-surface-soft p-3 outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft/55 focus-visible:ring-3 focus-visible:ring-accent/20"
                   >
                     <ChartNoAxesCombined
                       className="mb-3 size-5 text-accent"
@@ -124,7 +125,7 @@ export default function LandingPage() {
                     />
                     <strong className="block text-sm">宏觀序列</strong>
                     <span className="mt-1 block text-xs leading-5 text-muted">
-                      頻率、單位、來源與觀察值
+                      統一頻率、單位與來源定義
                     </span>
                     <ArrowRight
                       className="mt-3 size-4 text-accent transition-transform group-hover:translate-x-0.5"
@@ -141,10 +142,10 @@ export default function LandingPage() {
               </CardContent>
             </Card>
 
-            <Card className="gap-0 overflow-hidden">
-              <CardHeader className="border-b border-line bg-surface-soft py-5">
+            <Card className="h-full gap-0 overflow-hidden rounded-xl border-t-2 border-t-ink shadow-sm">
+              <CardHeader className="min-h-48 border-b border-line bg-surface py-5">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <span className="inline-flex size-10 items-center justify-center rounded-xl bg-ink text-page">
+                  <span className="inline-flex size-10 items-center justify-center rounded-lg bg-ink text-page">
                     <Gauge aria-hidden="true" />
                   </span>
                   <Badge variant="outline">
@@ -156,33 +157,25 @@ export default function LandingPage() {
                   <h3>Operations</h3>
                 </CardTitle>
                 <CardDescription className="leading-6">
-                  監控導入健康度、資料完整性、DQ 問題及稽核紀錄。
+                  檢視導入健康度、資料完整性與 DQ 結果，追蹤原始資料及後續修正。
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-4 py-5">
+              <CardContent className="grid flex-1 grid-rows-[1fr_auto] gap-4 py-5">
                 <nav
-                  className="grid grid-cols-2 gap-2"
+                  className="grid gap-2 sm:grid-cols-2"
                   aria-label="Operations 快捷入口"
                 >
                   <WorkspaceLink
                     to="/operations"
                     icon={<Gauge aria-hidden="true" />}
-                    label="導入概況"
-                  />
-                  <WorkspaceLink
-                    to="/operations/deliveries"
-                    icon={<Clock3 aria-hidden="true" />}
-                    label="缺漏交付"
+                    label="營運監控"
+                    description="佇列、Worker 與缺漏交付"
                   />
                   <WorkspaceLink
                     to="/operations/quality"
                     icon={<ShieldCheck aria-hidden="true" />}
-                    label="資料品質"
-                  />
-                  <WorkspaceLink
-                    to="/operations/corrections"
-                    icon={<Archive aria-hidden="true" />}
-                    label="修正稽核"
+                    label="品質與稽核"
+                    description="DQ、修正紀錄與原始資料"
                   />
                 </nav>
                 <Button asChild variant="outline">
@@ -204,16 +197,16 @@ export default function LandingPage() {
             <h2 className="mt-1 text-xl font-bold tracking-tight">輔助資源</h2>
           </div>
 
-          <Card className="gap-0 shadow-none">
+          <Card className="gap-0 rounded-xl shadow-none">
             <CardHeader className="py-5">
-              <span className="mb-2 inline-flex size-9 items-center justify-center rounded-xl bg-accent-soft text-accent">
+              <span className="mb-2 inline-flex size-9 items-center justify-center rounded-lg bg-surface-soft text-accent">
                 <BookOpenCheck aria-hidden="true" />
               </span>
-              <CardTitle asChild className="text-lg">
+              <CardTitle asChild className="text-base">
                 <h3>FinDB Skill</h3>
               </CardTitle>
               <CardDescription className="leading-6">
-                安裝 Codex Skill，取得資料查詢方式與 API 使用指引。
+                查閱資料合約、查詢方式與 API 使用指引。
               </CardDescription>
             </CardHeader>
             <CardContent className="pb-5">
@@ -225,19 +218,6 @@ export default function LandingPage() {
               </Button>
             </CardContent>
           </Card>
-
-          <div className="rounded-xl border border-line bg-surface-soft p-4">
-            <p className="text-xs font-bold tracking-wide text-muted uppercase">
-              資料流程
-            </p>
-            <div className="mt-3 flex items-center gap-2 text-xs font-bold text-ink">
-              <span>Fetch</span>
-              <ArrowRight className="size-3 text-muted" aria-hidden="true" />
-              <span>Normalize</span>
-              <ArrowRight className="size-3 text-muted" aria-hidden="true" />
-              <span>Serve</span>
-            </div>
-          </div>
         </aside>
       </div>
     </main>
@@ -248,23 +228,28 @@ function WorkspaceLink({
   to,
   icon,
   label,
+  description,
 }: {
-  to:
-    | "/operations"
-    | "/operations/deliveries"
-    | "/operations/quality"
-    | "/operations/corrections"
+  to: "/operations" | "/operations/quality"
   icon: React.ReactNode
   label: string
+  description: string
 }) {
   return (
     <Link
       to={to}
       preload="intent"
-      className="flex min-h-11 items-center gap-2 rounded-lg border border-line bg-surface-soft px-3 text-sm font-bold text-ink outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft hover:text-accent focus-visible:ring-3 focus-visible:ring-accent/20"
+      className="group rounded-lg border border-line bg-surface-soft p-3 outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft/55 focus-visible:ring-3 focus-visible:ring-accent/20"
     >
-      <span className="text-accent [&>svg]:size-4">{icon}</span>
-      {label}
+      <span className="mb-3 block text-accent [&>svg]:size-5">{icon}</span>
+      <strong className="block text-sm">{label}</strong>
+      <span className="mt-1 block text-xs leading-5 text-muted">
+        {description}
+      </span>
+      <ArrowRight
+        className="mt-3 size-4 text-accent transition-transform group-hover:translate-x-0.5"
+        aria-hidden="true"
+      />
     </Link>
   )
 }

@@ -25,7 +25,7 @@ describe("LandingPage workspace", () => {
     render(<LandingPage />)
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "資料工作台" })
+      screen.getByRole("heading", { level: 1, name: "金融資料工作台" })
     ).toBeTruthy()
     expect(
       screen.getByRole("heading", { level: 2, name: "主要工作區" })
@@ -38,5 +38,7 @@ describe("LandingPage workspace", () => {
     expect(
       screen.getByRole("navigation", { name: "Operations 快捷入口" })
     ).toBeTruthy()
+    expect(screen.getByRole("link", { name: /營運監控/ })).toBeTruthy()
+    expect(screen.getByRole("link", { name: /品質與稽核/ })).toBeTruthy()
   })
 })
