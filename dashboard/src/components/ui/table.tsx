@@ -4,15 +4,29 @@ import * as React from "react"
 
 import { cn } from "#/lib/utils"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({
+  className,
+  scrollMode = "container",
+  ...props
+}: React.ComponentProps<"table"> & {
+  scrollMode?: "container" | "page"
+}) {
   return (
     <div
       data-slot="table-container"
-      className="relative max-h-80 w-full overflow-auto rounded-lg border border-line"
+      className={
+        scrollMode === "page"
+          ? "relative min-w-full rounded-lg border border-line"
+          : "relative max-h-80 w-full overflow-auto rounded-lg border border-line"
+      }
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-xs", className)}
+        className={cn(
+          scrollMode === "page" ? "w-max min-w-full" : "w-full",
+          "caption-bottom text-xs",
+          className
+        )}
         {...props}
       />
     </div>

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import OperationsConsole from "../../features/operations/OperationsConsole"
+import OperationsLayout from "../../features/operations/OperationsConsole"
 
 export const Route = createFileRoute("/_authenticated/operations")({
   component: OperationsPage,
@@ -9,5 +9,5 @@ export const Route = createFileRoute("/_authenticated/operations")({
 function OperationsPage() {
   const { username } = Route.useRouteContext()
 
-  return <OperationsConsole username={username} />
+  return <OperationsLayout username={username} />
 }

@@ -15,6 +15,11 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as LookupRouteImport } from './routes/lookup'
 import { Route as SkillRouteImport } from './routes/skill'
 import { Route as AuthenticatedOperationsRouteImport } from './routes/_authenticated/operations'
+import { Route as AuthenticatedOperationsIndexRouteImport } from './routes/_authenticated/operations.index'
+import { Route as AuthenticatedOperationsCorrectionsRouteImport } from './routes/_authenticated/operations.corrections'
+import { Route as AuthenticatedOperationsDeliveriesRouteImport } from './routes/_authenticated/operations.deliveries'
+import { Route as AuthenticatedOperationsQualityRouteImport } from './routes/_authenticated/operations.quality'
+import { Route as AuthenticatedOperationsRawPayloadsRouteImport } from './routes/_authenticated/operations.raw-payloads'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -45,20 +50,59 @@ const AuthenticatedOperationsRoute = AuthenticatedOperationsRouteImport.update({
   path: '/operations',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedOperationsIndexRoute =
+  AuthenticatedOperationsIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
+const AuthenticatedOperationsCorrectionsRoute =
+  AuthenticatedOperationsCorrectionsRouteImport.update({
+    id: '/corrections',
+    path: '/corrections',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
+const AuthenticatedOperationsDeliveriesRoute =
+  AuthenticatedOperationsDeliveriesRouteImport.update({
+    id: '/deliveries',
+    path: '/deliveries',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
+const AuthenticatedOperationsQualityRoute =
+  AuthenticatedOperationsQualityRouteImport.update({
+    id: '/quality',
+    path: '/quality',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
+const AuthenticatedOperationsRawPayloadsRoute =
+  AuthenticatedOperationsRawPayloadsRouteImport.update({
+    id: '/raw-payloads',
+    path: '/raw-payloads',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
-  '/operations': typeof AuthenticatedOperationsRoute
+  '/operations': typeof AuthenticatedOperationsRouteWithChildren
+  '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
+  '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
+  '/operations/quality': typeof AuthenticatedOperationsQualityRoute
+  '/operations/raw-payloads': typeof AuthenticatedOperationsRawPayloadsRoute
+  '/operations/': typeof AuthenticatedOperationsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
-  '/operations': typeof AuthenticatedOperationsRoute
+  '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
+  '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
+  '/operations/quality': typeof AuthenticatedOperationsQualityRoute
+  '/operations/raw-payloads': typeof AuthenticatedOperationsRawPayloadsRoute
+  '/operations': typeof AuthenticatedOperationsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -67,13 +111,37 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
-  '/_authenticated/operations': typeof AuthenticatedOperationsRoute
+  '/_authenticated/operations': typeof AuthenticatedOperationsRouteWithChildren
+  '/_authenticated/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
+  '/_authenticated/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
+  '/_authenticated/operations/quality': typeof AuthenticatedOperationsQualityRoute
+  '/_authenticated/operations/raw-payloads': typeof AuthenticatedOperationsRawPayloadsRoute
+  '/_authenticated/operations/': typeof AuthenticatedOperationsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/lookup' | '/skill' | '/operations'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/lookup'
+    | '/skill'
+    | '/operations'
+    | '/operations/corrections'
+    | '/operations/deliveries'
+    | '/operations/quality'
+    | '/operations/raw-payloads'
+    | '/operations/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/lookup' | '/skill' | '/operations'
+  to:
+    | '/'
+    | '/login'
+    | '/lookup'
+    | '/skill'
+    | '/operations/corrections'
+    | '/operations/deliveries'
+    | '/operations/quality'
+    | '/operations/raw-payloads'
+    | '/operations'
   id:
     | '__root__'
     | '/'
@@ -82,6 +150,11 @@ export interface FileRouteTypes {
     | '/lookup'
     | '/skill'
     | '/_authenticated/operations'
+    | '/_authenticated/operations/corrections'
+    | '/_authenticated/operations/deliveries'
+    | '/_authenticated/operations/quality'
+    | '/_authenticated/operations/raw-payloads'
+    | '/_authenticated/operations/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -136,15 +209,75 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedOperationsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/operations/': {
+      id: '/_authenticated/operations/'
+      path: '/'
+      fullPath: '/operations/'
+      preLoaderRoute: typeof AuthenticatedOperationsIndexRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
+    '/_authenticated/operations/corrections': {
+      id: '/_authenticated/operations/corrections'
+      path: '/corrections'
+      fullPath: '/operations/corrections'
+      preLoaderRoute: typeof AuthenticatedOperationsCorrectionsRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
+    '/_authenticated/operations/deliveries': {
+      id: '/_authenticated/operations/deliveries'
+      path: '/deliveries'
+      fullPath: '/operations/deliveries'
+      preLoaderRoute: typeof AuthenticatedOperationsDeliveriesRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
+    '/_authenticated/operations/quality': {
+      id: '/_authenticated/operations/quality'
+      path: '/quality'
+      fullPath: '/operations/quality'
+      preLoaderRoute: typeof AuthenticatedOperationsQualityRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
+    '/_authenticated/operations/raw-payloads': {
+      id: '/_authenticated/operations/raw-payloads'
+      path: '/raw-payloads'
+      fullPath: '/operations/raw-payloads'
+      preLoaderRoute: typeof AuthenticatedOperationsRawPayloadsRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
   }
 }
 
+interface AuthenticatedOperationsRouteChildren {
+  AuthenticatedOperationsCorrectionsRoute: typeof AuthenticatedOperationsCorrectionsRoute
+  AuthenticatedOperationsDeliveriesRoute: typeof AuthenticatedOperationsDeliveriesRoute
+  AuthenticatedOperationsQualityRoute: typeof AuthenticatedOperationsQualityRoute
+  AuthenticatedOperationsRawPayloadsRoute: typeof AuthenticatedOperationsRawPayloadsRoute
+  AuthenticatedOperationsIndexRoute: typeof AuthenticatedOperationsIndexRoute
+}
+
+const AuthenticatedOperationsRouteChildren: AuthenticatedOperationsRouteChildren =
+  {
+    AuthenticatedOperationsCorrectionsRoute:
+      AuthenticatedOperationsCorrectionsRoute,
+    AuthenticatedOperationsDeliveriesRoute:
+      AuthenticatedOperationsDeliveriesRoute,
+    AuthenticatedOperationsQualityRoute: AuthenticatedOperationsQualityRoute,
+    AuthenticatedOperationsRawPayloadsRoute:
+      AuthenticatedOperationsRawPayloadsRoute,
+    AuthenticatedOperationsIndexRoute: AuthenticatedOperationsIndexRoute,
+  }
+
+const AuthenticatedOperationsRouteWithChildren =
+  AuthenticatedOperationsRoute._addFileChildren(
+    AuthenticatedOperationsRouteChildren,
+  )
+
 interface AuthenticatedRouteChildren {
-  AuthenticatedOperationsRoute: typeof AuthenticatedOperationsRoute
+  AuthenticatedOperationsRoute: typeof AuthenticatedOperationsRouteWithChildren
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
-  AuthenticatedOperationsRoute: AuthenticatedOperationsRoute,
+  AuthenticatedOperationsRoute: AuthenticatedOperationsRouteWithChildren,
 }
 
 const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(

@@ -8,6 +8,8 @@ export const auditFiltersSchema = z.object({
   runId: z.union([z.uuid(), z.literal("")]).default(""),
   dateFrom: z.union([z.iso.date(), z.literal("")]).default(""),
   dateTo: z.union([z.iso.date(), z.literal("")]).default(""),
+  page: z.number().int().positive().default(1),
+  pageSize: z.number().int().min(1).max(100).default(25),
 })
 
 export const dashboardRequestSchema = z.object({
@@ -135,7 +137,10 @@ export type PanelResult<T> =
   { ok: true; data: T } | { ok: false; error: string }
 
 export function buildAuditSearch(filters: DashboardRequest["audit"]) {
-  const params = new URLSearchParams({ page: "1", page_size: "10" })
+  const params = new URLSearchParams({
+    page: filters.page.toString(),
+    page_size: filters.pageSize.toString(),
+  })
   if (filters.datasetKey) params.set("dataset_key", filters.datasetKey)
   if (filters.runId) params.set("run_id", filters.runId)
   if (filters.dateFrom) params.set("date_from", filters.dateFrom)

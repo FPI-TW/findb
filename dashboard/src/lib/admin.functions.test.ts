@@ -16,6 +16,8 @@ const request: DashboardRequest = {
     runId: "",
     dateFrom: "",
     dateTo: "",
+    page: 3,
+    pageSize: 100,
   },
 }
 
@@ -123,7 +125,8 @@ describe("FinDB Admin server boundary", () => {
       )
     }
     expect(calls[4]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
-    expect(calls[4]?.url.searchParams.get("page_size")).toBe("10")
+    expect(calls[4]?.url.searchParams.get("page")).toBe("3")
+    expect(calls[4]?.url.searchParams.get("page_size")).toBe("100")
     expect(result.rawPayloads.ok).toBe(true)
   })
 

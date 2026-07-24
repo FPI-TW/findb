@@ -4,13 +4,17 @@ TanStack Start 前端，整合公開的標的查詢、FinDB API Skill 安裝說�
 
 ## Routes
 
-| Route                   | 權限   | 用途                                  |
-| ----------------------- | ------ | ------------------------------------- |
-| `/dashboard/`           | 公開   | 首頁與功能入口                        |
-| `/dashboard/lookup`     | 公開   | 金融商品與宏觀序列查詢                |
-| `/dashboard/skill`      | 公開   | Skill 下載與安裝說明                  |
-| `/dashboard/login`      | 公開   | 操作人員登入                          |
-| `/dashboard/operations` | 需登入 | 導入穩定度、資料完整性、DQ 與稽核資料 |
+| Route                                | 權限   | 用途                   |
+| ------------------------------------ | ------ | ---------------------- |
+| `/dashboard/`                        | 公開   | 首頁與功能入口         |
+| `/dashboard/lookup`                  | 公開   | 金融商品與宏觀序列查詢 |
+| `/dashboard/skill`                   | 公開   | Skill 下載與安裝說明   |
+| `/dashboard/login`                   | 公開   | 操作人員登入           |
+| `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況 |
+| `/dashboard/operations/deliveries`   | 需登入 | 缺漏交付               |
+| `/dashboard/operations/quality`      | 需登入 | 未解決 DQ 問題         |
+| `/dashboard/operations/corrections`  | 需登入 | 修正稽核紀錄           |
+| `/dashboard/operations/raw-payloads` | 需登入 | Raw payload 稽核查詢   |
 
 ## Local development
 
