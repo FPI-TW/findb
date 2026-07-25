@@ -11,12 +11,12 @@
 
 ## P0：Deployment與secret isolation
 
-- [ ] 執行首次production Fetcher rollout，現場驗證durable mount owner/mode、
+- [ ] 執行首次staging Fetcher rollout，現場驗證durable mount owner/mode、
   單一scheduler container與失敗rollback；workflow能力已完成，但尚未實際部署。
 - [ ] 建立Fetcher-owned private Cloudflare R2 bucket、bucket-scoped API token、
   retention lifecycle與bucket lock。
-- [ ] 建立 `production-findb`、`production-fetcher` GitHub Environments。
-- [ ] 將production secrets從repository/job-wide scope移到對應environment。
+- [ ] 補齊 `staging-fetcher` 的獨立EC2 secrets。
+- [ ] 將部署secrets從repository/job-wide scope移到對應environment。
 - [ ] 為workflow、infra與contract設定CODEOWNERS與environment protection。
 - [ ] 建立service-specific GitHub OIDC AWS deploy roles。
 - [ ] 以SSM/deployment service取代長效EC2 SSH key。

@@ -212,12 +212,12 @@ deployment unit建置backend與Dashboard images，並透過
 - `nginx`
 - `raw-cleanup`
 
-Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立target，但Fetcher
-目前只有contract validation、readiness與delivery client，尚未實作production
-provider scheduler/fetch loop。Production外部設定仍需完成：
+Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立staging target；
+durable scheduler與Cloudflare R2 persistence已實作，但尚未執行首次staging rollout。
+部署外部設定仍需完成：
 
-- 建立並設定 `production-findb`、`production-fetcher` GitHub Environments。
-- 將production secrets搬入對應Environment並自repository scope移除。
+- 維護 `production-findb`，並補齊 `staging-fetcher` 的獨立EC2 secrets。
+- 將部署secrets搬入對應Environment並自repository scope移除。
 - GitHub Actions改用AWS OIDC短效權限。
 - Runtime secrets搬到AWS Secrets Manager/Parameter Store。
 - FinDB與Fetcher使用不同deploy roles、instance roles與secret paths。

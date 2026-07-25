@@ -21,8 +21,8 @@ CLI、versioned小型US symbol universe、bounded per-symbol orchestration、Fet
 SQLite scheduler state、persistent retry、lease recovery、逐symbol checkpoint與mock
 Source API整合測試，以及exact-byte provider response的Fetcher-owned Cloudflare R2 persistence
 與raw reference/checksum delivery已建立；自動化真實跨服務integration tests尚未
-建立。Fetcher CD目前只負責immutable image release與獨立部署handoff，尚未啟用持續
-運作的production fetch loop，也不代表production R2 bucket、API token或retention已建立。
+建立。Fetcher CD目前交付staging的immutable image與常駐scheduler，尚未執行首次
+staging rollout，也不代表正式服務已建立。
 
 ## Release 與部署單位
 
@@ -30,12 +30,12 @@ Source API整合測試，以及exact-byte provider response的Fetcher-owned Clou
 | --- | --- | --- | --- |
 | FinDB backend | `findb:<sha>` | FinDB EC2 | 已有 |
 | Dashboard | `findb-dashboard:<sha>` | FinDB EC2 | 已有 |
-| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher target | Runtime能力已有；production scheduler尚未啟用 |
+| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher staging target | Runtime能力已有；staging scheduler尚未啟用 |
 
 同 repo 不代表同時部署。目前以四個workflow分離FinDB CI、FinDB CD、Fetcher CI與
 Fetcher CD；FinDB deployment unit包含backend與Dashboard。各自使用path filter、
 image tag、CD concurrency group與rollback，CD job分別綁定 `production-findb`和
-`production-fetcher`。Contract變更可觸發兩個CI，但contract-only變更不自動部署
+`staging-fetcher`。Contract變更可觸發兩個CI，但contract-only變更不自動部署
 Fetcher；自動CD只部署已通過對應CI的同一commit。環境必須記錄實際部署的image SHA
 與啟用的contract versions。
 

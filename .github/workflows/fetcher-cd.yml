@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: production-fetcher
+  group: staging-fetcher
   cancel-in-progress: false
 
 permissions:
@@ -60,7 +60,7 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: production-fetcher
+    environment: staging-fetcher
 
     permissions:
       contents: read

@@ -1,4 +1,4 @@
-"""Tests for production deployment gates."""
+"""Tests for deployment gates."""
 
 import os
 import re
@@ -135,7 +135,7 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
 
     for workflow, ci_path, environment in (
         (findb_cd, "./.github/workflows/findb-ci.yml", "production-findb"),
-        (fetcher_cd, "./.github/workflows/fetcher-ci.yml", "production-fetcher"),
+        (fetcher_cd, "./.github/workflows/fetcher-ci.yml", "staging-fetcher"),
     ):
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)
@@ -257,10 +257,10 @@ def test_root_context_images_use_service_specific_dockerignore_files() -> None:
         assert trigger_path in workflow["on"]["push"]["paths"]
 
 
-def test_production_secret_references_are_confined_to_environment_deploy_jobs() -> None:
+def test_deployment_secret_references_are_confined_to_environment_jobs() -> None:
     for path, environment in (
         (FINDB_CD_WORKFLOW, "production-findb"),
-        (FETCHER_CD_WORKFLOW, "production-fetcher"),
+        (FETCHER_CD_WORKFLOW, "staging-fetcher"),
     ):
         workflow = _load_workflow(path)
         assert workflow["jobs"]["deploy"]["environment"] == environment
@@ -535,7 +535,7 @@ def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
     assert "FINDB_EC2_USER" in setup_script
     assert "FINDB_EC2_SSH_KEY" in setup_script
     assert "\n       EC2_HOST" not in setup_script
-    assert "production-fetcher" in setup_script
+    assert "staging-fetcher" in setup_script
 
 
 def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:

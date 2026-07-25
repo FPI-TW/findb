@@ -19,9 +19,9 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness與scheduler preflight入口；不會自動抓取或送出資料。
 
-Production CD會在獨立Fetcher target維持一個scheduler container。R2 bucket、API
-token、lifecycle與bucket lock仍需在外部建立；repo內有部署能力不表示實際production
-資源或服務已完成部署。
+Staging CD會在獨立Fetcher target維持一個scheduler container。R2 bucket與API
+token已由外部提供；lifecycle與bucket lock仍須在正式上線前決定。Repo內有部署能力
+不表示staging資源或服務已完成部署。
 
 ## 開發
 
@@ -293,7 +293,7 @@ Scheduler one-shot exit code：
 | `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，
-不會呼叫provider或產生delivery。Production CD會以
+不會呼叫provider或產生delivery。Staging CD會以
 `findb-fetch-scheduler --run-forever`覆蓋command並掛載durable state；rollout先用同一
 image與mount執行`--check`，通過後才停止舊container。候選container需持續存活且未重啟
 才會取得stable名稱，否則會移除候選並重新啟動舊container。若程序遭突然SIGTERM，

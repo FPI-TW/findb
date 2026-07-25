@@ -1,7 +1,8 @@
-# Production Deployment
+# Deployment
 
 > Repo內已將CI/CD拆成四個獨立workflow。GitHub Environments、AWS角色、runtime
-> secrets與Fetcher EC2仍須在外部建立；workflow檔存在不代表production資源已完成。
+> secrets與Fetcher EC2仍須在外部建立。FinDB目前使用production環境；Fetcher目前只
+> 部署staging。
 
 ## Workflow 邊界
 
@@ -9,8 +10,8 @@
 | --- | --- | --- | --- |
 | `findb-ci.yml` | Backend、migration、Dashboard與contract acceptance | FinDB或contract相關PR/push、手動 | 不讀production environment |
 | `findb-cd.yml` | 建置並部署backend與Dashboard | `main`的FinDB部署檔案變更、手動 | `production-findb` / FinDB專屬group |
-| `fetcher-ci.yml` | Fetcher lint、test、contract與container build | Fetcher或contract相關PR/push、手動 | 不讀production environment |
-| `fetcher-cd.yml` | 發布Fetcher image並交付獨立目標 | `main`的Fetcher runtime/deploy檔案變更、手動 | `production-fetcher` / Fetcher專屬group |
+| `fetcher-ci.yml` | Fetcher lint、test、contract與container build | Fetcher或contract相關PR/push、手動 | 不讀部署environment |
+| `fetcher-cd.yml` | 發布Fetcher image並交付獨立staging目標 | `main`的Fetcher runtime/deploy檔案變更、手動 | `staging-fetcher` / Fetcher專屬group |
 
 兩個CI可同時因 `contracts/**` 或contract source變更而執行。Contract-only變更不會
 自動部署Fetcher；跨版本更新必須依下方backend-first順序，由
@@ -36,8 +37,8 @@ delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，
 Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
 Cloudflare R2 persistence。Fetcher CD會用exact SHA image執行無外部呼叫的scheduler
 preflight，通過後在獨立target維持單一`findb-fetcher-scheduler --run-forever`
-container；它不會建立R2 bucket/API token。Workflow存在不代表已實際部署production
-服務或完成外部資源。
+container；它不會建立R2 bucket/API token。Workflow存在不代表已實際部署staging
+服務。
 
 Production migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
@@ -48,7 +49,7 @@ Serve若與新schema相容，可以持續提供查詢。
 
 ```text
 production-findb
-production-fetcher
+staging-fetcher
 ```
 
 每個deployment job只能引用自己的environment。不要在workflow-level或大型job-level
@@ -67,7 +68,7 @@ production-fetcher
 | Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
 | Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS` |
 
-### `production-fetcher`
+### `staging-fetcher`
 
 | 類型 | Environment設定名稱 |
 | --- | --- |
@@ -79,7 +80,7 @@ production-fetcher
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
-container。現階段Source、Twelve Data與R2 secrets由`production-fetcher` Environment
+container。現階段Source、Twelve Data與R2 secrets由`staging-fetcher` Environment
 逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
 Secrets Manager/Parameter Store前的明確過渡機制，不可加入FinDB環境或使用
 `--env NAME=value`出現在command line。R2 credentials與未來OIDC/SSM設定亦須使用
@@ -107,7 +108,7 @@ rollback的已知延遲。
 Fetcher raw R2 bucket不得綁定public development URL或custom domain；R2 API token只授權
 該bucket的Object Read & Write，並以Fetcher專屬secret注入。Cloudflare R2會自動以
 AES-256加密所有object及metadata，因此PutObject不得傳入R2不支援的AWS SSE/KMS headers。
-Bucket lifecycle、retention與bucket lock必須在production啟用前明確決定。Application
+Bucket lifecycle、retention與bucket lock必須在正式上線前明確決定。Application
 只傳credential-free `r2://account-id/bucket/key` reference，不產生presigned URL，也
 不把R2 credentials送入FinDB。
 
@@ -124,7 +125,7 @@ secrets仍可能被repository內其他workflow引用。因此上表的production
 
 ## GitHub protection
 
-- Production environment只允許protected `main`或release tags。
+- `staging-fetcher`只允許`main`部署。
 - 啟用required reviewer與prevent self-review（依GitHub方案能力）。
 - `.github/workflows/**`、`infra/**`、production Compose與contract manifest設定
   CODEOWNERS。
