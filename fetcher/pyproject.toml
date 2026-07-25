@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 findb-fetch-twelve-data = "findb_fetcher.twelve_data_cli:main"
+findb-fetch-scheduler = "findb_fetcher.scheduler_cli:main"
 
 [dependency-groups]
 dev = [

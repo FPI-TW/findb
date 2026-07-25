@@ -13,10 +13,12 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 明確選用的`--deliver`與具整體deadline的`--wait`手動工作流。
 - Versioned US Common Stock symbol universe與credit/record/date硬上限。
 - 每個symbol獨立identity與delivery的bounded multi-symbol orchestration。
+- Fetcher-owned SQLite scheduler state、persistent retry、lease recovery與逐symbol checkpoint。
+- 安全的one-shot scheduler，以及需明確選用的常駐poll loop。
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness入口；不會自動抓取或送出資料。
 
-尚未提供production scheduler、checkpoint、S3 raw storage或常駐fetch loop。
+尚未提供S3 raw storage，production CD也尚未啟用scheduler service。
 
 ## 開發
 
@@ -141,7 +143,7 @@ V1 universe限制：
 
 Twelve Data目前將`/time_series`計為每symbol 1 credit；[batch query也仍按symbol計費](https://support.twelvedata.com/en/articles/5203360-batch-api-requests)。
 Universe會在呼叫provider前驗證預估credits，且每次嘗試（包含失敗與429）都計入本次
-執行的`credits_used`。此切片不含scheduler、persistent retry或checkpoint。
+執行的`credits_used`。
 
 固定provider參數為`interval=1day`、`order=asc`、`format=JSON`與
 `adjust=splits`。多筆資料轉為`backfill`，單筆資料轉為`incremental`；目前只接受
@@ -161,6 +163,61 @@ request一致後才建立contract。
 `tests/fixtures/twelve_data/aapl_1day_2024-01-02_2024-01-05.json`。Provider參數與
 限制應以[Twelve Data文件](https://twelvedata.com/docs/introduction/overview)為準。
 
+## Durable scheduler
+
+Scheduler設定位於
+`configs/twelve_data_us_common_stocks_daily.v1.json`，固定引用同目錄的versioned
+universe。預設每日`02:00 UTC`建立一次最近工作日的工作，每個symbol獨立保存狀態。
+安全預設是只執行一個due cycle後退出：
+
+```bash
+uv run --env-file .env findb-fetch-scheduler \
+  --state-path .state/scheduler.sqlite3
+```
+
+只有明確指定`--run-forever`才會進入poll loop：
+
+```bash
+uv run --env-file .env findb-fetch-scheduler \
+  --state-path .state/scheduler.sqlite3 \
+  --run-forever
+```
+
+SQLite檔屬於Fetcher自己的runtime state，不是FinDB DB，也不包含provider或Source
+credentials。Production必須將`/var/lib/findb-fetcher`掛載至單一writer使用的durable
+volume；不能把container writable layer當checkpoint。狀態包含：
+
+- 每個schedule date與symbol的`pending`、`running`、`retry_wait`、`completed`或
+  `failed`狀態。
+- Attempt count、bounded exponential retry時間、lease與上次安全outcome。
+- Source attempt/run identity，以及只有terminal `completed`才會推進的trade-date
+  checkpoint。
+- Delivery尚未成功時暫存已驗證的canonical request；跨程序delivery retry直接重用
+  相同body與idempotency key，完成或terminal failure後即清除payload。
+
+首次執行使用設定內的bounded `outputsize` bootstrap。已有checkpoint後改用
+`checkpoint + 1 day`到schedule date的完整bounded日期區間；若中斷跨度超過universe
+的date-span硬上限，會以`checkpoint_gap_exceeded`停止，不能靜默跳過資料。重啟時，
+逾期的`running` lease會回到retry queue；同一scheduled job採確定性job key，重跑
+Source delivery仍受既有idempotency保護。
+
+Transient provider/Source 429、5xx、transport及wait timeout會保存在SQLite等待下次
+attempt。若fetch尚未成功，下次attempt才重新呼叫provider並計入credit；若canonical
+request已保存，delivery retry不重新抓取、`credits_used`也不增加。Mapping、
+contract、auth、Source protocol及normalization terminal failure不自動重試；下一個
+schedule date仍可重新嘗試該symbol。排程不內建交易所假日日曆，但週末會回退到最近
+星期五；假日無資料由provider結果明確記錄，下一個工作日仍從未前進的checkpoint
+接續。
+
+Scheduler one-shot exit code：
+
+| Code | 意義 |
+| --- | --- |
+| `0` | 本次schedule的所有symbol均已完成 |
+| `2` | Schedule、universe、runtime secrets、contract或state設定錯誤 |
+| `8` | 至少一項等待persistent retry或仍pending |
+| `9` | 至少一項進入terminal scheduler failure |
+
 ## Runtime設定
 
 | 變數 | 必填 | 預設 | 用途 |
@@ -171,9 +228,12 @@ request一致後才建立contract。
 | `FETCHER_REQUEST_TIMEOUT_SECONDS` | 否 | `30` | 單次HTTP timeout |
 | `FETCHER_MAX_ATTEMPTS` | 否 | `3` | 包含首次呼叫的最大attempt數 |
 | `FETCHER_MAX_RETRY_AFTER_SECONDS` | 否 | `30` | Retry-After與backoff上限 |
+| `FETCHER_SCHEDULE_FILE` | 否 | `/app/configs/twelve_data_us_common_stocks_daily.v1.json` | Versioned scheduler設定 |
+| `FETCHER_STATE_PATH` | 否 | `/var/lib/findb-fetcher/state.sqlite3` | Fetcher-owned durable SQLite state |
 | `TWELVE_DATA_API_KEY` | 是 | — | 固定資料來源Twelve Data的runtime secret |
 | `TWELVE_DATA_BASE_URL` | 否 | `https://api.twelvedata.com` | Twelve Data HTTPS origin |
 | `TWELVE_DATA_TIMEOUT_SECONDS` | 否 | `30` | Provider request timeout |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，
-不會呼叫provider或產生delivery。Scheduler會在後續切片加入。
+不會呼叫provider或產生delivery。啟用scheduler必須明確將container command改為
+`findb-fetch-scheduler --run-forever`並掛載durable state volume。

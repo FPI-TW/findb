@@ -56,6 +56,10 @@ class TwelveDataPayloadError(TwelveDataError):
     """A successful provider response cannot be mapped safely."""
 
 
+class TwelveDataNoNewDataError(TwelveDataError):
+    """A valid provider response contains no rows after the durable checkpoint."""
+
+
 @dataclass(frozen=True, slots=True)
 class TwelveDataConfig:
     """Provider-owned configuration that never enters FinDB backend settings."""
@@ -207,6 +211,7 @@ def build_market_eod_request(
     requested_exchange: str | None = None,
     canonical_symbol: str | None = None,
     allowed_instrument_types: Sequence[str] = tuple(_DEFAULT_ALLOWED_TYPES),
+    after_trade_date: date | None = None,
 ) -> dict[str, Any]:
     """Map a successful daily response into a deterministic ``market_eod.v1`` request."""
 
@@ -298,6 +303,10 @@ def build_market_eod_request(
         dated_rows.append((trade_date, row))
 
     dated_rows.sort(key=lambda item: item[0])
+    if after_trade_date is not None:
+        dated_rows = [item for item in dated_rows if item[0] > after_trade_date]
+        if not dated_rows:
+            raise TwelveDataNoNewDataError("Twelve Data response has no rows after checkpoint")
     first_date = dated_rows[0][0]
     last_date = dated_rows[-1][0]
     rows = [row for _, row in dated_rows]

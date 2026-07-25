@@ -21,6 +21,7 @@ from findb_fetcher.contracts import (
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
+    TwelveDataNoNewDataError,
     TwelveDataPayloadError,
     TwelveDataResponseError,
     build_market_eod_request,
@@ -57,6 +58,7 @@ __all__ = [
     "SymbolUniverse",
     "TwelveDataClient",
     "TwelveDataConfig",
+    "TwelveDataNoNewDataError",
     "TwelveDataPayloadError",
     "TwelveDataResponseError",
     "UniverseError",

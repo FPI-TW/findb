@@ -17,10 +17,11 @@ findb/
 ```
 
 Twelve Data Common Stock日線adapter、去識別化fixture、正式manual delivery/wait
-CLI、versioned小型US symbol universe、bounded per-symbol orchestration與mock Source
-API整合測試已建立；scheduler、checkpoint、S3 raw storage與自動化真實跨服務
-integration tests尚未建立。Fetcher CD目前只負責immutable image release與獨立部署
-handoff，不代表已有持續運作的production fetch loop。
+CLI、versioned小型US symbol universe、bounded per-symbol orchestration、Fetcher-owned
+SQLite scheduler state、persistent retry、lease recovery、逐symbol checkpoint與mock
+Source API整合測試已建立；S3 raw storage與自動化真實跨服務integration tests尚未
+建立。Fetcher CD目前只負責immutable image release與獨立部署handoff，尚未啟用
+持續運作的production fetch loop。
 
 ## Release 與部署單位
 
@@ -28,7 +29,7 @@ handoff，不代表已有持續運作的production fetch loop。
 | --- | --- | --- | --- |
 | FinDB backend | `findb:<sha>` | FinDB EC2 | 已有 |
 | Dashboard | `findb-dashboard:<sha>` | FinDB EC2 | 已有 |
-| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher target | Delivery client/image與獨立CI/CD已有；runtime未完成 |
+| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher target | Runtime能力已有；production scheduler尚未啟用 |
 
 同 repo 不代表同時部署。目前以四個workflow分離FinDB CI、FinDB CD、Fetcher CI與
 Fetcher CD；FinDB deployment unit包含backend與Dashboard。各自使用path filter、
@@ -70,8 +71,9 @@ Admin或Serve credentials。
 
 目前已將Twelve Data列為固定資料來源之一，並落地其日線adapter、contract驗證、
 明確選用的manual delivery/wait CLI、受治理symbol universe、逐symbol獨立identity、
-credit/record/date bounds、bounded HTTP retry、readiness與image/CI/CD foundation；
-其餘項目保留在backlog。
+credit/record/date bounds、bounded HTTP retry、SQLite persistent scheduler state、
+lease recovery、checkpoint、readiness與image/CI/CD foundation；其餘項目保留在
+backlog。
 
 ## CI/CD 與credential邊界
 

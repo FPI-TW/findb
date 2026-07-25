@@ -16,6 +16,7 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
     TwelveDataConfigError,
+    TwelveDataNoNewDataError,
     TwelveDataPayloadError,
     TwelveDataResponseError,
     build_market_eod_request,
@@ -304,6 +305,33 @@ def test_single_daily_value_maps_to_incremental_delivery(
         "delivery_mode": "incremental",
         "declared_record_count": 1,
     }
+
+
+def test_mapping_filters_rows_at_or_before_checkpoint(
+    twelve_data_response: dict[str, Any],
+) -> None:
+    request = build_market_eod_request(
+        twelve_data_response,
+        dataset_key="us_equity_eod",
+        fetched_at=FETCHED_AT,
+        requested_symbol="AAPL",
+        after_trade_date=date(2024, 1, 3),
+    )
+
+    assert [row["trade_date"] for row in request["payload"]["data"]] == [
+        "2024-01-04",
+        "2024-01-05",
+    ]
+    assert request["payload"]["batch"]["coverage_start_date"] == "2024-01-04"
+
+    with pytest.raises(TwelveDataNoNewDataError):
+        build_market_eod_request(
+            twelve_data_response,
+            dataset_key="us_equity_eod",
+            fetched_at=FETCHED_AT,
+            requested_symbol="AAPL",
+            after_trade_date=date(2024, 1, 5),
+        )
 
 
 @pytest.mark.parametrize(
