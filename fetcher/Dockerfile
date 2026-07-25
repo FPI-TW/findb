@@ -8,6 +8,7 @@ COPY fetcher/pyproject.toml fetcher/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY fetcher/src ./src
+COPY fetcher/configs ./configs
 COPY contracts ./contracts
 RUN uv sync --frozen --no-dev
 

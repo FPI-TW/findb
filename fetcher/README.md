@@ -11,6 +11,8 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 只重試transport errors、429、502、503、504。
 - Twelve Data `/time_series`日線client與`market_eod.v1` adapter。
 - 明確選用的`--deliver`與具整體deadline的`--wait`手動工作流。
+- Versioned US Common Stock symbol universe與credit/record/date硬上限。
+- 每個symbol獨立identity與delivery的bounded multi-symbol orchestration。
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness入口；不會自動抓取或送出資料。
 
@@ -92,6 +94,54 @@ CLI exit code：
 | `4` | Transport retry耗盡、response超限/格式錯誤或protocol identity不一致 |
 | `5` | `--wait`整體deadline到期 |
 | `6` | Run終止於`failed`或`completed_with_errors` |
+| `7` | Universe部分或全部symbol失敗，包括provider rate limit |
+
+## 受治理symbol universe
+
+Repository內第一版pilot universe位於
+`configs/twelve_data_us_common_stocks.v1.json`，只包含AAPL、MSFT與NVDA三個NASDAQ
+Common Stock。檔案是無secrets、嚴格欄位且versioned的執行輸入；修改symbols或limits
+時必須經code review，不能從未驗證的runtime字串動態擴張。
+
+Universe dry-run必須明確提供date window或`outputsize`：
+
+```bash
+uv run --env-file .env findb-fetch-twelve-data \
+  --universe-file configs/twelve_data_us_common_stocks.v1.json \
+  --start-date 2024-01-02 \
+  --end-date 2024-01-06
+```
+
+正式送出並等待每個symbol的terminal state：
+
+```bash
+uv run --env-file .env findb-fetch-twelve-data \
+  --universe-file configs/twelve_data_us_common_stocks.v1.json \
+  --start-date 2024-01-02 \
+  --end-date 2024-01-06 \
+  --deliver \
+  --wait
+```
+
+目前採順序、逐symbol呼叫Twelve Data與Source API，而不是把多個symbols合成同一
+provider response或FinDB delivery。這保證每個symbol維持獨立request/idempotency
+identity，單一mapping或delivery錯誤不會污染其它symbols。Provider 429、Source
+401/403/429、整體deadline或transport/protocol failure會停止後續呼叫，剩餘項目標記
+為`not_attempted`；一般單symbol provider/mapping錯誤則記錄partial failure並繼續。
+
+V1 universe限制：
+
+| 限制 | Pilot設定 | 程式絕對上限 |
+| --- | ---: | ---: |
+| 每次symbols | 3 | 5 |
+| 每symbol records | 260 | 5000 |
+| 每次總records | 780 | 10000 |
+| Date span | 366天 | 3660天 |
+| 每次credits | 3 | 5 |
+
+Twelve Data目前將`/time_series`計為每symbol 1 credit；[batch query也仍按symbol計費](https://support.twelvedata.com/en/articles/5203360-batch-api-requests)。
+Universe會在呼叫provider前驗證預估credits，且每次嘗試（包含失敗與429）都計入本次
+執行的`credits_used`。此切片不含scheduler、persistent retry或checkpoint。
 
 固定provider參數為`interval=1day`、`order=asc`、`format=JSON`與
 `adjust=splits`。多筆資料轉為`backfill`，單筆資料轉為`incremental`；目前只接受

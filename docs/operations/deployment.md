@@ -32,8 +32,8 @@ ghcr.io/fpi-tw/findb-fetcher:<git-sha>
 
 並將該immutable tag交付給獨立Fetcher target。現有Fetcher程式提供contract
 validation、readiness、Source API delivery client、具整體deadline的manual
-delivery/wait CLI與Twelve Data日線adapter，尚無持久排程、checkpoint或production
-fetch loop；部署image不得被描述為已啟動持續抓取。
+delivery/wait CLI、versioned小型symbol universe與Twelve Data日線adapter，尚無持久
+排程、checkpoint或production fetch loop；部署image不得被描述為已啟動持續抓取。
 
 Production migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。

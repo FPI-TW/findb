@@ -6,7 +6,6 @@
 
 - [ ] 依資料來源優先序補FinLab/Bloomberg真實fixtures與provider mapping；
   Twelve Data Common Stock日線adapter、fixture與mock Source API整合測試已完成。
-- [ ] 將Twelve Data單一symbol pilot擴成受治理symbol universe與bounded batching。
 - [ ] 實作Fetcher scheduler、persistent retry state與checkpoint；單次process內的
   bounded HTTP retry及manual terminal-status wait已完成。
 - [ ] Provider原始檔寫入Fetcher S3，delivery帶raw reference與checksum。

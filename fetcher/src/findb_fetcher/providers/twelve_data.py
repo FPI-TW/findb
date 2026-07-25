@@ -36,6 +36,21 @@ class TwelveDataConfigError(TwelveDataError):
 class TwelveDataResponseError(TwelveDataError):
     """The Twelve Data API returned an unsuccessful or malformed response."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        provider_code: int | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.provider_code = provider_code
+        super().__init__(message)
+
+    @property
+    def is_rate_limited(self) -> bool:
+        return self.status_code == 429 or self.provider_code == 429
+
 
 class TwelveDataPayloadError(TwelveDataError):
     """A successful provider response cannot be mapped safely."""
@@ -160,10 +175,13 @@ class TwelveDataClient:
 
         provider_status = payload.get("status")
         if response.status_code >= 400 or provider_status == "error":
-            provider_code = payload.get("code", response.status_code)
+            raw_provider_code = payload.get("code", response.status_code)
+            provider_code = _provider_code(raw_provider_code)
             provider_message = _redacted_message(payload.get("message"), self._config.api_key)
             raise TwelveDataResponseError(
-                f"Twelve Data request failed ({provider_code}): {provider_message}"
+                f"Twelve Data request failed ({raw_provider_code}): {provider_message}",
+                status_code=response.status_code,
+                provider_code=provider_code,
             )
         if provider_status != "ok":
             raise TwelveDataResponseError("Twelve Data response status must be 'ok'")
@@ -335,6 +353,17 @@ def _positive_float_env(name: str, default: float) -> float:
     if not isfinite(value) or value <= 0:
         raise TwelveDataConfigError(f"{name} must be a finite, positive number")
     return value
+
+
+def _provider_code(value: object) -> int | None:
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _redacted_message(value: object, api_key: str) -> str:

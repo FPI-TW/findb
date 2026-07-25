@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,11 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataError,
     build_market_eod_request,
 )
+from findb_fetcher.twelve_data_universe import (
+    UniverseExecution,
+    execute_twelve_data_universe,
+)
+from findb_fetcher.universe import UniverseError, load_symbol_universe
 
 EXIT_OK = 0
 EXIT_LOCAL_ERROR = 2
@@ -39,6 +45,7 @@ EXIT_SOURCE_REJECTED = 3
 EXIT_DELIVERY_ERROR = 4
 EXIT_WAIT_TIMEOUT = 5
 EXIT_TERMINAL_FAILURE = 6
+EXIT_PARTIAL_FAILURE = 7
 
 DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
 MAX_WAIT_TIMEOUT_SECONDS = 7200.0
@@ -52,7 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fetch and validate Twelve Data daily prices, with optional Source delivery."
     )
-    parser.add_argument("--symbol", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--symbol")
+    target.add_argument(
+        "--universe-file",
+        type=Path,
+        help="Run the exact symbols and hard limits from a versioned universe JSON file.",
+    )
     parser.add_argument("--dataset-key", default="us_equity_eod")
     parser.add_argument("--canonical-symbol")
     parser.add_argument("--exchange")
@@ -96,14 +109,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--wait requires --deliver")
     if args.wait and args.poll_interval_seconds > args.wait_timeout_seconds:
         parser.error("--poll-interval-seconds must not exceed --wait-timeout-seconds")
+    if args.universe_file is not None and (args.canonical_symbol or args.exchange):
+        parser.error("--canonical-symbol and --exchange are single-symbol options")
 
     try:
+        if args.universe_file is not None:
+            return _run_universe(args)
         request, registry = _fetch_and_validate(args)
         if not args.deliver:
             _emit_summary(_request_summary(request, mode="dry_run", status="validated"))
             return EXIT_OK
         return _deliver(args, request, registry)
-    except (TwelveDataError, ContractError, ConfigError, ValueError):
+    except (TwelveDataError, ContractError, ConfigError, UniverseError, ValueError):
         _emit_error("local_validation_failed")
         return EXIT_LOCAL_ERROR
     except SourceAPIDeadlineExceeded:
@@ -145,6 +162,44 @@ def _fetch_and_validate(args: argparse.Namespace) -> tuple[dict[str, Any], Contr
     registry = ContractRegistry(args.contracts_dir)
     registry.validate("market_eod", 1, request)
     return request, registry
+
+
+def _run_universe(args: argparse.Namespace) -> int:
+    universe = load_symbol_universe(args.universe_file)
+    if args.dataset_key != universe.dataset_key:
+        raise UniverseError("CLI dataset_key must match the governed universe")
+    registry = ContractRegistry(args.contracts_dir)
+    deadline = time.monotonic() + args.wait_timeout_seconds if args.wait else None
+
+    with ExitStack() as stack:
+        provider = stack.enter_context(TwelveDataClient(TwelveDataConfig.from_env()))
+        source: SourceAPIClient | None = None
+        if args.deliver:
+            source = stack.enter_context(SourceAPIClient(FetcherConfig.from_env(), registry))
+        execution = execute_twelve_data_universe(
+            universe,
+            provider=provider,
+            registry=registry,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            outputsize=args.outputsize,
+            source=source,
+            wait=args.wait,
+            deadline=deadline,
+            poll_interval_seconds=args.poll_interval_seconds,
+        )
+
+    _emit_summary(_universe_summary(execution, args=args))
+    if execution.status == "completed":
+        return EXIT_OK
+    _emit_error("universe_failed" if execution.succeeded_symbols == 0 else "partial_failure")
+    if any(result.outcome == "wait_timeout" for result in execution.results):
+        return EXIT_WAIT_TIMEOUT
+    if execution.succeeded_symbols == 0 and any(
+        result.outcome == "source_rejected" for result in execution.results
+    ):
+        return EXIT_SOURCE_REJECTED
+    return EXIT_PARTIAL_FAILURE
 
 
 def _deliver(
@@ -238,6 +293,49 @@ def _request_summary(
             if value is not None:
                 summary[key] = value
     return summary
+
+
+def _universe_summary(
+    execution: UniverseExecution,
+    *,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    mode = "universe_dry_run"
+    if args.deliver:
+        mode = "universe_deliver_wait" if args.wait else "universe_deliver"
+    results: list[dict[str, Any]] = []
+    for item in execution.results:
+        result: dict[str, Any] = {
+            "symbol": item.symbol,
+            "outcome": item.outcome,
+            "record_count": item.record_count,
+        }
+        if item.source_status is not None:
+            result["source_status"] = item.source_status
+        if item.attempt_id is not None:
+            result["attempt_id"] = str(item.attempt_id)
+        if item.run_id is not None:
+            result["run_id"] = str(item.run_id)
+        if item.total_records is not None:
+            result["total_records"] = item.total_records
+            result["success_records"] = item.success_records
+            result["failed_records"] = item.failed_records
+        results.append(result)
+    return {
+        "mode": mode,
+        "status": execution.status,
+        "universe_id": execution.universe_id,
+        "universe_version": execution.universe_version,
+        "dataset_key": execution.dataset_key,
+        "symbols_requested": len(execution.results),
+        "symbols_succeeded": execution.succeeded_symbols,
+        "symbols_failed": execution.failed_symbols,
+        "symbols_skipped": execution.skipped_symbols,
+        "credits_budget": execution.credits_budget,
+        "credits_used": execution.credits_used,
+        "records_fetched": execution.records_fetched,
+        "results": results,
+    }
 
 
 def _emit_summary(summary: Mapping[str, Any]) -> None:

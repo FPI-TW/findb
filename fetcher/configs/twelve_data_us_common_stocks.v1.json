@@ -1,0 +1,34 @@
+{
+  "universe_version": 1,
+  "universe_id": "twelve_data_us_common_stocks_v1",
+  "provider": "twelve_data",
+  "dataset_key": "us_equity_eod",
+  "market": "US",
+  "asset_class": "equity",
+  "instrument_type": "Common Stock",
+  "credit_cost_per_symbol": 1,
+  "limits": {
+    "max_symbols_per_run": 3,
+    "max_records_per_symbol": 260,
+    "max_total_records_per_run": 780,
+    "max_date_span_days": 366,
+    "max_credits_per_run": 3
+  },
+  "symbols": [
+    {
+      "symbol": "AAPL",
+      "canonical_symbol": "AAPL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MSFT",
+      "canonical_symbol": "MSFT",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "NVDA",
+      "canonical_symbol": "NVDA",
+      "exchange": "NASDAQ"
+    }
+  ]
+}

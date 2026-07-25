@@ -9,6 +9,7 @@ import pytest
 
 from findb_fetcher import twelve_data_cli
 from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+from findb_fetcher.twelve_data_universe import SymbolExecution, UniverseExecution
 
 ATTEMPT_ID = UUID("019f98b5-ee0b-7b16-9a28-d8e2ed638a91")
 RUN_ID = UUID("019f98b5-ee0b-7b16-9a28-d8e2ed638a92")
@@ -269,6 +270,165 @@ def test_delivery_failures_use_safe_exit_and_output(
     assert json.loads(captured.err)["error"] == expected_category
 
 
+def test_universe_dry_run_is_bounded_and_does_not_load_source_config(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    execution = UniverseExecution(
+        universe_id="twelve_data_us_common_stocks_v1",
+        universe_version=1,
+        dataset_key="us_equity_eod",
+        credits_budget=3,
+        credits_used=3,
+        records_fetched=12,
+        results=tuple(
+            SymbolExecution(symbol=symbol, outcome="validated", record_count=4)
+            for symbol in ("AAPL", "MSFT", "NVDA")
+        ),
+    )
+    universe = SimpleNamespace(dataset_key="us_equity_eod")
+
+    class ProviderContext:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    def unexpected_source_config() -> object:
+        raise AssertionError("universe dry-run must not load Source config")
+
+    monkeypatch.setattr(twelve_data_cli, "load_symbol_universe", lambda _path: universe)
+    monkeypatch.setattr(twelve_data_cli, "ContractRegistry", lambda _path: object())
+    monkeypatch.setattr(twelve_data_cli.TwelveDataConfig, "from_env", lambda: object())
+    monkeypatch.setattr(
+        twelve_data_cli,
+        "TwelveDataClient",
+        lambda _config: ProviderContext(),
+    )
+    monkeypatch.setattr(
+        twelve_data_cli.FetcherConfig,
+        "from_env",
+        unexpected_source_config,
+    )
+    monkeypatch.setattr(
+        twelve_data_cli,
+        "execute_twelve_data_universe",
+        lambda *_args, **_kwargs: execution,
+    )
+
+    result = twelve_data_cli.main(
+        [
+            "--universe-file",
+            "configs/twelve_data_us_common_stocks.v1.json",
+            "--start-date",
+            "2024-01-02",
+            "--end-date",
+            "2024-01-06",
+        ]
+    )
+
+    assert result == twelve_data_cli.EXIT_OK
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert summary["mode"] == "universe_dry_run"
+    assert summary["status"] == "completed"
+    assert summary["symbols_succeeded"] == 3
+    assert summary["credits_used"] == 3
+    assert len(summary["results"]) == 3
+    assert len(captured.out.encode()) < twelve_data_cli.MAX_OUTPUT_BYTES
+    assert captured.err == ""
+
+
+def test_universe_partial_failure_has_stable_nonzero_exit_and_safe_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    execution = UniverseExecution(
+        universe_id="twelve_data_us_common_stocks_v1",
+        universe_version=1,
+        dataset_key="us_equity_eod",
+        credits_budget=3,
+        credits_used=2,
+        records_fetched=4,
+        results=(
+            SymbolExecution(symbol="AAPL", outcome="validated", record_count=4),
+            SymbolExecution(symbol="MSFT", outcome="provider_rate_limited"),
+            SymbolExecution(symbol="NVDA", outcome="not_attempted"),
+        ),
+    )
+    monkeypatch.setattr(twelve_data_cli, "_run_universe", lambda _args: _emit_execution(execution))
+
+    result = twelve_data_cli.main(
+        [
+            "--universe-file",
+            "universe.json",
+            "--start-date",
+            "2024-01-02",
+            "--end-date",
+            "2024-01-06",
+        ]
+    )
+
+    assert result == twelve_data_cli.EXIT_PARTIAL_FAILURE
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["status"] == "partial_failure"
+    assert json.loads(captured.err) == {"error": "partial_failure"}
+
+
+def test_maximum_universe_delivery_summary_stays_within_output_limit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    execution = UniverseExecution(
+        universe_id="u" * 64,
+        universe_version=1,
+        dataset_key="us_equity_eod",
+        credits_budget=5,
+        credits_used=5,
+        records_fetched=10_000,
+        results=tuple(
+            SymbolExecution(
+                symbol=f"SYM{index:02d}",
+                outcome="completed",
+                record_count=5000,
+                source_status="completed_with_errors",
+                attempt_id=ATTEMPT_ID,
+                run_id=RUN_ID,
+                total_records=5000,
+                success_records=4999,
+                failed_records=1,
+            )
+            for index in range(5)
+        ),
+    )
+
+    twelve_data_cli._emit_summary(
+        twelve_data_cli._universe_summary(
+            execution,
+            args=SimpleNamespace(deliver=True, wait=True),
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert len(captured.out.encode()) < twelve_data_cli.MAX_OUTPUT_BYTES
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("option", ["--canonical-symbol", "--exchange"])
+def test_universe_rejects_single_symbol_options(option: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        twelve_data_cli.main(
+            [
+                "--universe-file",
+                "universe.json",
+                option,
+                "AAPL",
+            ]
+        )
+
+    assert error.value.code == 2
+
+
 @pytest.mark.parametrize(
     "extra",
     [
@@ -306,3 +466,10 @@ def _run_status(status: str, *, failed_records: int = 0) -> SimpleNamespace:
         failed_records=failed_records,
         failure_code="NORMALIZATION_FAILED" if failed_records else None,
     )
+
+
+def _emit_execution(execution: UniverseExecution) -> int:
+    args = SimpleNamespace(deliver=False, wait=False)
+    twelve_data_cli._emit_summary(twelve_data_cli._universe_summary(execution, args=args))
+    twelve_data_cli._emit_error("partial_failure")
+    return twelve_data_cli.EXIT_PARTIAL_FAILURE

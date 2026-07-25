@@ -147,9 +147,37 @@ def test_client_rejects_provider_error_and_redacts_key() -> None:
     with pytest.raises(TwelveDataResponseError) as error:
         client.fetch_daily("AAPL", outputsize=1)
 
+    assert error.value.status_code == 429
+    assert error.value.provider_code == 429
+    assert error.value.is_rate_limited is True
     assert "429" in str(error.value)
     assert "provider-secret" not in str(error.value)
     assert "[redacted]" in str(error.value)
+
+
+def test_provider_error_code_string_is_typed_for_rate_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": "429",
+                "message": "rate limited",
+                "status": "error",
+            },
+            request=request,
+        )
+
+    client = TwelveDataClient(
+        TwelveDataConfig(api_key="provider-secret"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(TwelveDataResponseError) as error:
+        client.fetch_daily("AAPL", outputsize=1)
+
+    assert error.value.status_code == 200
+    assert error.value.provider_code == 429
+    assert error.value.is_rate_limited is True
 
 
 def test_client_rejects_ambiguous_date_window_and_outputsize() -> None:
