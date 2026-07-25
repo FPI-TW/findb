@@ -328,11 +328,9 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     }
     assert required_environment_values <= set(step_env)
     assert required_environment_values <= forwarded
-    assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == (
-        "${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}"
-    )
+    assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == ("${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}")
 
-    assert "image=\"${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}\"" in script
+    assert 'image="${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}"' in script
     assert 'docker pull "$image"' in script
     assert "state_dir=/var/lib/findb-fetcher" in script
     assert 'sudo chown 10001:10001 "$state_dir"' in script
@@ -364,10 +362,10 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert "recover_scheduler()" in script
 
     recovery_start = script.index("recover_scheduler()")
-    recovery_end = script.index('trap \'recover_scheduler "$?"\' ERR')
+    recovery_end = script.index("trap 'recover_scheduler \"$?\"' ERR")
     recovery = script[recovery_start:recovery_end]
     assert recovery_start < recovery_end < stop_old
-    assert 'trap - ERR INT TERM HUP' in recovery
+    assert "trap - ERR INT TERM HUP" in recovery
     assert recovery.index('docker rm -f "$candidate"') < recovery.index(
         'docker container inspect "$stable"'
     )
@@ -378,7 +376,7 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert '"$had_previous"' not in recovery
     assert 'exit "$original_status"' in recovery
     assert "Scheduler recovery did not complete" in recovery
-    assert 'trap \'recover_scheduler "$?"\' ERR' in script
+    assert "trap 'recover_scheduler \"$?\"' ERR" in script
     assert "trap 'recover_scheduler 130' INT" in script
     assert "trap 'recover_scheduler 143' TERM" in script
     assert "trap 'recover_scheduler 129' HUP" in script
@@ -441,7 +439,9 @@ def test_fetcher_scheduler_reconciliation_behavior(
         workflow,
         "deploy",
         "Release and validate Fetcher image on Fetcher EC2",
-    )["with"]["script"]
+    )[
+        "with"
+    ]["script"]
     begin = "# BEGIN FETCHER SCHEDULER RECONCILIATION"
     end = "# END FETCHER SCHEDULER RECONCILIATION"
     reconciliation = script.split(begin, 1)[1].split(end, 1)[0]
@@ -514,10 +514,7 @@ previous=findb-fetcher-scheduler-previous
     )
 
     assert (completed.returncode == 0) is succeeds
-    statuses = {
-        path.name: path.read_text(encoding="utf-8").strip()
-        for path in state_dir.iterdir()
-    }
+    statuses = {path.name: path.read_text(encoding="utf-8").strip() for path in state_dir.iterdir()}
     assert sum(status == "running" for status in statuses.values()) == expected_running
     assert "findb-fetcher-scheduler-candidate" not in statuses
     if succeeds:
