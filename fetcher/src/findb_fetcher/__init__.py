@@ -1,9 +1,14 @@
 """Independent FinDB fetch and delivery primitives."""
 
 from findb_fetcher.client import (
+    DeliveryReceipt,
     PreparedDelivery,
+    RunStatus,
     SourceAPIClient,
+    SourceAPIDeadlineExceeded,
+    SourceAPIProtocolError,
     SourceAPIResponseError,
+    SourceAPITransportError,
 )
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import (
@@ -27,10 +32,15 @@ __all__ = [
     "ContractNotFoundError",
     "ContractRegistry",
     "ContractValidationError",
+    "DeliveryReceipt",
     "FetcherConfig",
     "PreparedDelivery",
+    "RunStatus",
     "SourceAPIClient",
+    "SourceAPIDeadlineExceeded",
+    "SourceAPIProtocolError",
     "SourceAPIResponseError",
+    "SourceAPITransportError",
     "TwelveDataClient",
     "TwelveDataConfig",
     "TwelveDataPayloadError",

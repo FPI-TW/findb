@@ -16,10 +16,10 @@ findb/
 └── backend/tests/        Contract artifact drift與backend acceptance tests
 ```
 
-Twelve Data Common Stock日線adapter、去識別化fixture與mock Source API整合測試
-已建立；scheduler、checkpoint、S3 raw storage與真實跨服務integration tests尚未建立。
-Fetcher CD目前只負責immutable image release與獨立部署handoff，不代表已有持續運作的
-production fetch loop。
+Twelve Data Common Stock日線adapter、去識別化fixture、正式manual delivery/wait CLI
+與mock Source API整合測試已建立；scheduler、checkpoint、S3 raw storage與自動化真實
+跨服務integration tests尚未建立。Fetcher CD目前只負責immutable image release與
+獨立部署handoff，不代表已有持續運作的production fetch loop。
 
 ## Release 與部署單位
 
@@ -68,8 +68,8 @@ Fetcher 只能透過 HTTPS Source API 與 FinDB互動；不得取得 FinDB DB、
 Admin或Serve credentials。
 
 目前已將Twelve Data列為固定資料來源之一，並落地其日線adapter、contract驗證、
-delivery client、bounded HTTP retry、readiness與image/CI/CD foundation；其餘項目
-保留在backlog。
+明確選用的manual delivery/wait CLI、bounded HTTP retry、readiness與image/CI/CD
+foundation；其餘項目保留在backlog。
 
 ## CI/CD 與credential邊界
 

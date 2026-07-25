@@ -10,6 +10,7 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 保持相同body與idempotency key的bounded retry。
 - 只重試transport errors、429、502、503、504。
 - Twelve Data `/time_series`日線client與`market_eod.v1` adapter。
+- 明確選用的`--deliver`與具整體deadline的`--wait`手動工作流。
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness入口；不會自動抓取或送出資料。
 
@@ -32,7 +33,9 @@ docker build -f fetcher/Dockerfile -t findb-fetcher:local .
 
 ## Twelve Data手動抓取
 
-本機開發將API key放在被Git忽略的`fetcher/.env`，不要加入版控：
+本機開發將API key放在被Git忽略的`fetcher/.env`，不要加入版控。從
+`fetcher/.env.example`複製時，`FETCHER_CONTRACTS_DIR=../contracts`適用於以下從
+`fetcher/`執行的命令；container則固定使用`/app/contracts`：
 
 ```bash
 uv run --env-file .env findb-fetch-twelve-data \
@@ -42,9 +45,53 @@ uv run --env-file .env findb-fetch-twelve-data \
   --end-date 2024-01-06
 ```
 
-命令會呼叫Twelve Data、轉換並驗證contract，最後只將canonical request印到
-stdout，不會送至Source API。若同時指定`start-date`與`end-date`，不要再指定
-`outputsize`，避免查詢區間被截斷。
+命令預設為dry-run：它會呼叫Twelve Data、轉換並驗證contract，只把不含資料列的
+bounded JSON摘要印到stdout，不會送至Source API。若同時指定`start-date`與
+`end-date`，不要再指定`outputsize`，避免查詢區間被截斷。
+
+明確指定`--deliver`才會送入Source API：
+
+```bash
+uv run --env-file .env findb-fetch-twelve-data \
+  --symbol AAPL \
+  --dataset-key us_equity_eod \
+  --start-date 2024-01-02 \
+  --end-date 2024-01-06 \
+  --deliver
+```
+
+加上`--wait`會使用同一組Fetcher Source client credential輪詢run狀態，直到
+`completed`、`completed_with_errors`或`failed`。整體deadline從delivery前開始，
+包含POST、retry、backoff與status polling：
+
+```bash
+uv run --env-file .env findb-fetch-twelve-data \
+  --symbol AAPL \
+  --dataset-key us_equity_eod \
+  --start-date 2024-01-02 \
+  --end-date 2024-01-06 \
+  --deliver \
+  --wait \
+  --wait-timeout-seconds 3600 \
+  --poll-interval-seconds 2
+```
+
+`--wait`必須搭配`--deliver`。Wait timeout預設3600秒、上限7200秒；poll interval
+預設2秒、上限60秒，且不得大於wait timeout。stdout摘要限制為2048 bytes，只包含
+dataset/schema、request/idempotency identity、資料日期與筆數，以及delivery後的
+attempt/run identity與terminal counts；不輸出API key、完整payload或任意Source
+response body。
+
+CLI exit code：
+
+| Code | 意義 |
+| --- | --- |
+| `0` | dry-run驗證成功、delivery accepted/duplicate，或run為`completed` |
+| `2` | CLI參數、provider、runtime config或本機contract錯誤 |
+| `3` | Source永久拒絕，例如auth、contract rejection或idempotency conflict |
+| `4` | Transport retry耗盡、response超限/格式錯誤或protocol identity不一致 |
+| `5` | `--wait`整體deadline到期 |
+| `6` | Run終止於`failed`或`completed_with_errors` |
 
 固定provider參數為`interval=1day`、`order=asc`、`format=JSON`與
 `adjust=splits`。多筆資料轉為`backfill`，單筆資料轉為`incremental`；目前只接受

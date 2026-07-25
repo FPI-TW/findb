@@ -310,10 +310,24 @@ def test_adapter_contract_and_source_delivery_integration(
     contracts_dir: Path,
 ) -> None:
     delivered: dict[str, Any] = {}
+    attempt_id = "019f98b5-ee0b-7b16-9a28-d8e2ed638a91"
+    run_id = "019f98b5-ee0b-7b16-9a28-d8e2ed638a92"
 
     def handler(request: httpx.Request) -> httpx.Response:
         delivered.update(json.loads(request.content))
-        return httpx.Response(202, json={"status": "queued"}, request=request)
+        return httpx.Response(
+            202,
+            json={
+                "success": True,
+                "attempt_id": attempt_id,
+                "run_id": run_id,
+                "status": "queued",
+                "schema_id": "market_eod",
+                "schema_version": 1,
+                "message": "Data received, processing queued",
+            },
+            request=request,
+        )
 
     request = build_market_eod_request(
         twelve_data_response,
@@ -331,7 +345,10 @@ def test_adapter_contract_and_source_delivery_integration(
     )
 
     prepared = source_client.prepare(request)
-    assert source_client.deliver(prepared) == {"status": "queued"}
+    receipt = source_client.deliver(prepared)
+    assert str(receipt.attempt_id) == attempt_id
+    assert str(receipt.run_id) == run_id
+    assert receipt.status == "queued"
     assert delivered == request
 
 
