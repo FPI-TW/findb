@@ -31,8 +31,8 @@ ghcr.io/fpi-tw/findb-fetcher:<git-sha>
 ```
 
 並將該immutable tag交付給獨立Fetcher target。現有Fetcher程式只提供contract
-validation、readiness與Source API delivery client，尚無provider adapter、持久排程、
-checkpoint或production fetch loop；部署image不得被描述為已啟動持續抓取。
+validation、readiness、Source API delivery client與Twelve Data日線adapter，尚無持久
+排程、checkpoint或production fetch loop；部署image不得被描述為已啟動持續抓取。
 
 Production migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
@@ -71,9 +71,11 @@ production-fetcher
 | Variables | `FETCHER_SOURCE_API_URL` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，不是需搬入environment的自訂secret。
-Provider、S3/KMS與未來OIDC/SSM設定尚未被現有Fetcher runtime引用；實作時必須以
-Fetcher專屬名稱加入 `production-fetcher`。FinDB TLS private key若未來由workflow
-管理，只能加入 `production-findb`，不能共用。
+Twelve Data adapter執行時需要`TWELVE_DATA_API_KEY`，但目前CD readiness不呼叫
+provider，workflow也不傳入此secret。啟用scheduler時，將它放在Fetcher專屬
+Secrets Manager path，由Fetcher instance role在runtime讀取；不可加入FinDB環境。
+S3/KMS與未來OIDC/SSM設定亦須使用Fetcher專屬名稱。FinDB TLS private key若未來由
+workflow管理，只能加入 `production-findb`，不能共用。
 
 FinDB job不得讀provider credentials、Fetcher Source client key、raw storage或Fetcher
 部署credential。Fetcher job不得讀 `DATABASE_URL`、RabbitMQ、Admin、Dashboard、TLS、

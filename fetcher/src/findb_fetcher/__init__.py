@@ -13,6 +13,13 @@ from findb_fetcher.contracts import (
     ContractRegistry,
     ContractValidationError,
 )
+from findb_fetcher.providers.twelve_data import (
+    TwelveDataClient,
+    TwelveDataConfig,
+    TwelveDataPayloadError,
+    TwelveDataResponseError,
+    build_market_eod_request,
+)
 
 __all__ = [
     "ContractChecksumError",
@@ -24,4 +31,9 @@ __all__ = [
     "PreparedDelivery",
     "SourceAPIClient",
     "SourceAPIResponseError",
+    "TwelveDataClient",
+    "TwelveDataConfig",
+    "TwelveDataPayloadError",
+    "TwelveDataResponseError",
+    "build_market_eod_request",
 ]

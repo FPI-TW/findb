@@ -4,8 +4,9 @@
 
 ## P0：Fetcher落地
 
-- [ ] 建立真實FinLab/Bloomberg fixtures與provider mapping表。
-- [ ] 建立adapter → contract → Source API整合測試。
+- [ ] 依資料來源優先序補FinLab/Bloomberg真實fixtures與provider mapping；
+  Twelve Data Common Stock日線adapter、fixture與mock Source API整合測試已完成。
+- [ ] 將Twelve Data單一symbol pilot擴成受治理symbol universe與bounded batching。
 - [ ] 實作Fetcher scheduler、persistent retry state、checkpoint與delivery status；
   單次process內的bounded HTTP retry已完成。
 - [ ] Provider原始檔寫入Fetcher S3，delivery帶raw reference與checksum。

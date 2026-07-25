@@ -2,8 +2,8 @@
 
 FinDB 是金融資料 ingestion、normalization、data quality 與 canonical query
 平台。Repository 包含FastAPI backend、TanStack Dashboard、versioned contracts
-與獨立Fetcher基礎套件；Fetcher已有獨立image與CI/CD，production EC2、GitHub
-Environment與部署權限仍須在外部建立。
+與獨立Fetcher套件；Fetcher已有Twelve Data日線adapter、獨立image與CI/CD，
+production EC2、GitHub Environment與部署權限仍須在外部建立。
 
 ## 架構
 
@@ -41,7 +41,7 @@ findb/
 │   ├── scripts/                 Dev、seed、maintenance、deploy helpers
 │   └── configs/                 Maintenance configs
 ├── dashboard/                   TanStack營運台
-├── fetcher/                     獨立Source API delivery client
+├── fetcher/                     Provider adapter、contract validation與delivery client
 ├── contracts/                   由backend registry產生的不可變契約
 ├── docs/                        現行架構、API、維運與backlog
 ├── infra/nginx/                 Production nginx設定
@@ -51,8 +51,8 @@ findb/
 └── pnpm-workspace.yaml
 ```
 
-Fetcher目前只包含contract validation與安全delivery client；provider adapter、
-scheduler、checkpoint與production deployment仍在backlog。詳見
+Fetcher目前包含contract validation、安全delivery client，以及Twelve Data
+`market_eod.v1`日線adapter；scheduler、checkpoint與production runtime仍在backlog。詳見
 [服務邊界](docs/architecture/service_boundaries.md)。
 
 ## 技術

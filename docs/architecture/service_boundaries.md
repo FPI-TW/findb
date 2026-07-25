@@ -11,14 +11,15 @@ fixtures 與整合測試在同一個 PR 演進；各服務仍為獨立 release u
 findb/
 ├── backend/              FinDB API、queue orchestration、normalization
 ├── dashboard/            營運介面
-├── fetcher/              Contract validation與delivery client基礎
+├── fetcher/              Provider adapter、contract validation與delivery client
 ├── contracts/            發布後不可變的 machine-readable contracts
 └── backend/tests/        Contract artifact drift與backend acceptance tests
 ```
 
-Provider adapters、scheduler、checkpoint、S3 raw storage與跨process integration
-tests尚未建立。Fetcher CD目前只負責immutable image release與獨立部署handoff，
-不代表已有持續運作的production fetch loop。
+Twelve Data Common Stock日線adapter、去識別化fixture與mock Source API整合測試
+已建立；scheduler、checkpoint、S3 raw storage與真實跨服務integration tests尚未建立。
+Fetcher CD目前只負責immutable image release與獨立部署handoff，不代表已有持續運作的
+production fetch loop。
 
 ## Release 與部署單位
 
@@ -66,8 +67,9 @@ Fetcher完整runtime完成後負責：
 Fetcher 只能透過 HTTPS Source API 與 FinDB互動；不得取得 FinDB DB、RabbitMQ、
 Admin或Serve credentials。
 
-目前已落地的範圍只有contract驗證、delivery client、bounded HTTP retry、readiness
-與image/CI/CD foundation；其餘項目保留在backlog。
+目前已將Twelve Data列為固定資料來源之一，並落地其日線adapter、contract驗證、
+delivery client、bounded HTTP retry、readiness與image/CI/CD foundation；其餘項目
+保留在backlog。
 
 ## CI/CD 與credential邊界
 

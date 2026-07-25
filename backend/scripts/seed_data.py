@@ -53,6 +53,41 @@ DATASETS = [
         "frequency": "daily",
         "is_active": True,
         "config": {
+            "schema_id": "market_eod",
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "schema_enforcement": "audit",
+            "defaults": {
+                "market": "US",
+                "asset_class": "equity",
+                "currency": "USD",
+            },
+            "delivery_expectation": {
+                "delivery_mode": "incremental",
+                "baseline": {
+                    "strategy": "rolling_median",
+                    "scope": "dataset_source_schema",
+                    "window_size": 7,
+                    "minimum_history": 3,
+                },
+                "record_count": {
+                    "minimum_record_count": 1,
+                    "maximum_count_drop_ratio": 0.0,
+                    "action": "warn",
+                },
+                "freshness": {
+                    "maximum_fetch_age_hours": 36,
+                    "allowed_clock_skew_minutes": 5,
+                    "action": "warn",
+                },
+                "latest_date": {
+                    "calendar_market": "US",
+                    "timezone": "America/New_York",
+                    "market_close_time": "16:00:00",
+                    "availability_grace_minutes": 120,
+                    "action": "warn",
+                },
+            },
             "source_format": "bloomberg_equity_api",
             "symbol_field": "symbol",
             "name_field": "name",
@@ -813,6 +848,7 @@ async def seed_datasets(session: AsyncSession):
         await session.execute(stmt)
 
         if ds["dataset_key"] in {
+            "us_equity_eod",
             "tw_equity_eod",
             "tw_etf_eod",
             "futures_continuous_eod",

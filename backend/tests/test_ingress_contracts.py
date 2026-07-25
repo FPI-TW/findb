@@ -684,7 +684,13 @@ def test_generic_futures_normalizer_defaults_new_fields_with_seeded_full_mapping
 
 @pytest.mark.parametrize(
     "dataset_key",
-    ["tw_equity_eod", "tw_etf_eod", "futures_continuous_eod", "wtx_eod"],
+    [
+        "us_equity_eod",
+        "tw_equity_eod",
+        "tw_etf_eod",
+        "futures_continuous_eod",
+        "wtx_eod",
+    ],
 )
 def test_initial_dataset_contract_declarations_are_audit_only(dataset_key: str):
     config = next(item["config"] for item in DATASETS if item["dataset_key"] == dataset_key)
