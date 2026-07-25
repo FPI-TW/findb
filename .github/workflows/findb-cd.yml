@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: production-findb
+  group: staging-findb
   cancel-in-progress: false
 
 permissions:
@@ -80,7 +80,7 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: production-findb
+    environment: staging-findb
 
     permissions:
       contents: read

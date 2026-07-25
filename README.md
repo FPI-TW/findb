@@ -196,7 +196,7 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 - Secrets只能經Settings與環境注入，不得hardcode。
 - Source production入口由API key、client scope、rate limit與nginx allowlist共同保護。
 
-## Production
+## Deployment
 
 CI/CD已拆成FinDB CI、FinDB CD、Fetcher CI與Fetcher CD四個獨立workflow。FinDB
 deployment unit建置backend與Dashboard images，並透過
@@ -214,9 +214,9 @@ deployment unit建置backend與Dashboard images，並透過
 
 Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立staging target；
 durable scheduler與Cloudflare R2 persistence已實作，但尚未執行首次staging rollout。
-部署外部設定仍需完成：
+部署設定由 `infra/env/` 的service-specific安全來源管理；實際值不進Git。仍需完成：
 
-- 維護 `production-findb`，並補齊 `staging-fetcher` 的獨立EC2 secrets。
+- 補齊 `staging-findb` 的FinDB EC2 SSH key。
 - 將部署secrets搬入對應Environment並自repository scope移除。
 - GitHub Actions改用AWS OIDC短效權限。
 - Runtime secrets搬到AWS Secrets Manager/Parameter Store。
@@ -226,7 +226,7 @@ Contract變更會執行兩個CI，但contract-only變更不會自動部署Fetche
 backend-first，必要時以 `workflow_dispatch`明確啟動各CD。
 
 現況、目標權限矩陣、migration與rollback規則見
-[Production Deployment](docs/operations/deployment.md)。
+[Deployment](docs/operations/deployment.md)。
 
 ## 文件
 

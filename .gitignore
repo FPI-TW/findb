@@ -12,6 +12,9 @@ node_modules/
 venv/
 ENV/
 env/
+!infra/env/
+!infra/env/**
+infra/env/*/.env.remote
 
 build/
 dist/

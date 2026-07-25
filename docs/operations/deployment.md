@@ -1,15 +1,14 @@
 # Deployment
 
-> Repo內已將CI/CD拆成四個獨立workflow。GitHub Environments、AWS角色、runtime
-> secrets與Fetcher EC2仍須在外部建立。FinDB目前使用production環境；Fetcher目前只
-> 部署staging。
+> Repo內已將CI/CD拆成四個獨立workflow。GitHub Environments、AWS角色與runtime
+> secrets仍須在外部管理。FinDB與Fetcher目前都只部署staging。
 
 ## Workflow 邊界
 
 | Workflow | 責任 | 主要觸發 | Environment / concurrency |
 | --- | --- | --- | --- |
-| `findb-ci.yml` | Backend、migration、Dashboard與contract acceptance | FinDB或contract相關PR/push、手動 | 不讀production environment |
-| `findb-cd.yml` | 建置並部署backend與Dashboard | `main`的FinDB部署檔案變更、手動 | `production-findb` / FinDB專屬group |
+| `findb-ci.yml` | Backend、migration、Dashboard與contract acceptance | FinDB或contract相關PR/push、手動 | 不讀部署environment |
+| `findb-cd.yml` | 建置並部署backend與Dashboard | `main`的FinDB部署檔案變更、手動 | `staging-findb` / FinDB專屬group |
 | `fetcher-ci.yml` | Fetcher lint、test、contract與container build | Fetcher或contract相關PR/push、手動 | 不讀部署environment |
 | `fetcher-cd.yml` | 發布Fetcher image並交付獨立staging目標 | `main`的Fetcher runtime/deploy檔案變更、手動 | `staging-fetcher` / Fetcher專屬group |
 
@@ -22,7 +21,7 @@
 也必須確認指定revision的CI結果。
 
 FinDB deployment unit包含backend與Dashboard。FinDB CD會建置兩個image、render nginx
-設定、同步production Compose/infra、執行migration，再啟動與驗證serve、ingest、
+設定、同步remote Compose/infra、執行migration，再啟動與驗證serve、ingest、
 dispatcher、worker、RabbitMQ、Dashboard及nginx。
 
 Fetcher CD發布：
@@ -40,7 +39,7 @@ preflight，通過後在獨立target維持單一`findb-fetcher-scheduler --run-f
 container；它不會建立R2 bucket/API token。Workflow存在不代表已實際部署staging
 服務。
 
-Production migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
+Remote migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
 
 ## Deployment isolation
@@ -48,7 +47,7 @@ Serve若與新schema相容，可以持續提供查詢。
 外部設定需建立兩個GitHub Environments：
 
 ```text
-production-findb
+staging-findb
 staging-fetcher
 ```
 
@@ -56,7 +55,7 @@ staging-fetcher
 `env:`注入全部secrets，也不要對reusable workflow使用 `secrets: inherit`；逐一傳入
 具名secret。
 
-### `production-findb`
+### `staging-findb`
 
 | 類型 | Environment設定名稱 |
 | --- | --- |
@@ -85,7 +84,7 @@ container。現階段Source、Twelve Data與R2 secrets由`staging-fetcher` Envir
 Secrets Manager/Parameter Store前的明確過渡機制，不可加入FinDB環境或使用
 `--env NAME=value`出現在command line。R2 credentials與未來OIDC/SSM設定亦須使用
 Fetcher專屬名稱。FinDB TLS private key若未來由workflow管理，只能加入
-`production-findb`，不能共用。
+`staging-findb`，不能共用。
 
 Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
 `0700`），以bind mount提供給preflight與scheduler，並維持單一scheduler writer。
@@ -119,13 +118,13 @@ FinDB Source shared key或FinDB部署credential。
 非敏感值，如API URL、port、image name與retention days，放Environment variables。
 
 GitHub Environment只會限制存放在該environment內的secrets/variables；repository-level
-secrets仍可能被repository內其他workflow引用。因此上表的production secrets必須實際
+secrets仍可能被repository內其他workflow引用。因此上表的deployment secrets必須實際
 搬入對應environment，確認workflow已切換後再從repository scope移除。建立environment、
 設定reviewer/branch policy與搬移secret都是GitHub外部作業，repo檔案不會自動完成。
 
 ## GitHub protection
 
-- `staging-fetcher`只允許`main`部署。
+- `staging-findb`與`staging-fetcher`只允許`main`部署。
 - 啟用required reviewer與prevent self-review（依GitHub方案能力）。
 - `.github/workflows/**`、`infra/**`、production Compose與contract manifest設定
   CODEOWNERS。
@@ -153,8 +152,8 @@ GitHub Actions
 
 - `GitHubDeployFinDBRole`：只能部署FinDB資源。
 - `GitHubDeployFetcherRole`：只能部署Fetcher資源。
-- `FinDBInstanceRole`：只能讀 `/findb/prod/*`。
-- `FetcherInstanceRole`：只能讀 `/fetcher/prod/*`。
+- `FinDBInstanceRole`：只能讀 `/findb/staging/*`。
+- `FetcherInstanceRole`：只能讀 `/fetcher/staging/*`。
 
 Application secrets由runtime instance role讀取Secrets Manager/Parameter Store；GitHub
 Actions只取得部署權限。需要更強隔離時，兩個secret path使用不同KMS key與key policy。

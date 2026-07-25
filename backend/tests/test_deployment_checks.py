@@ -2,6 +2,7 @@
 
 import os
 import re
+import runpy
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ FETCHER_CI_WORKFLOW = WORKFLOWS_ROOT / "fetcher-ci.yml"
 FETCHER_CD_WORKFLOW = WORKFLOWS_ROOT / "fetcher-cd.yml"
 DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
+ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
+ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 
 
 class UniqueKeyLoader(yaml.BaseLoader):
@@ -134,7 +137,7 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
     fetcher_cd = _load_workflow(FETCHER_CD_WORKFLOW)
 
     for workflow, ci_path, environment in (
-        (findb_cd, "./.github/workflows/findb-ci.yml", "production-findb"),
+        (findb_cd, "./.github/workflows/findb-ci.yml", "staging-findb"),
         (fetcher_cd, "./.github/workflows/fetcher-ci.yml", "staging-fetcher"),
     ):
         jobs = workflow["jobs"]
@@ -145,6 +148,21 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
+
+
+def test_remote_env_examples_cover_the_sync_contract() -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    service_configs = namespace["SERVICE_CONFIGS"]
+
+    for service, config in service_configs.items():
+        example = ENV_CONFIG_ROOT / service / "remote.env.example"
+        configured_names = {
+            match.group(1)
+            for line in example.read_text(encoding="utf-8").splitlines()
+            if (match := re.fullmatch(r"([A-Z][A-Z0-9_]*)=.*", line))
+        }
+        required_names = set((*config.variables, *config.secrets))
+        assert configured_names == required_names
 
 
 def test_contract_changes_gate_both_ci_workflows_but_not_cd() -> None:
@@ -259,7 +277,7 @@ def test_root_context_images_use_service_specific_dockerignore_files() -> None:
 
 def test_deployment_secret_references_are_confined_to_environment_jobs() -> None:
     for path, environment in (
-        (FINDB_CD_WORKFLOW, "production-findb"),
+        (FINDB_CD_WORKFLOW, "staging-findb"),
         (FETCHER_CD_WORKFLOW, "staging-fetcher"),
     ):
         workflow = _load_workflow(path)
@@ -530,7 +548,7 @@ previous=findb-fetcher-scheduler-previous
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
     setup_script = (BACKEND_ROOT / "scripts" / "setup_ec2.sh").read_text(encoding="utf-8")
 
-    assert "production-findb" in setup_script
+    assert "staging-findb" in setup_script
     assert "FINDB_EC2_HOST" in setup_script
     assert "FINDB_EC2_USER" in setup_script
     assert "FINDB_EC2_SSH_KEY" in setup_script

@@ -34,7 +34,7 @@ staging rollout，也不代表正式服務已建立。
 
 同 repo 不代表同時部署。目前以四個workflow分離FinDB CI、FinDB CD、Fetcher CI與
 Fetcher CD；FinDB deployment unit包含backend與Dashboard。各自使用path filter、
-image tag、CD concurrency group與rollback，CD job分別綁定 `production-findb`和
+image tag、CD concurrency group與rollback，CD job分別綁定 `staging-findb`和
 `staging-fetcher`。Contract變更可觸發兩個CI，但contract-only變更不自動部署
 Fetcher；自動CD只部署已通過對應CI的同一commit。環境必須記錄實際部署的image SHA
 與啟用的contract versions。
