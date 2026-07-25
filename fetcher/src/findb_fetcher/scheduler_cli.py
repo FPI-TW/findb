@@ -55,23 +55,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=_default_state_path(),
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--run-forever",
         action="store_true",
         help="Poll continuously; the safe default runs one due cycle and exits.",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--as-of",
         type=_aware_datetime,
         help="Override the UTC-aware scheduler clock for a one-shot run.",
+    )
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate scheduler configuration and durable state without external calls.",
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.run_forever and args.as_of is not None:
-        raise SystemExit("--as-of cannot be combined with --run-forever")
     try:
         schedule = load_schedule_config(args.schedule_file)
         universe = load_symbol_universe(schedule.universe_file)
@@ -79,11 +83,20 @@ def main(argv: list[str] | None = None) -> int:
             raise ScheduleError("schedule outputsize exceeds universe limit")
         fetcher_config = FetcherConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
+        raw_storage_config = RawStorageConfig.from_env()
+        twelve_data_config = TwelveDataConfig.from_env()
         state = SchedulerState(args.state_path)
-        raw_store = R2RawPayloadStore(RawStorageConfig.from_env())
+        if args.check:
+            _emit_json(
+                {"mode": "scheduler_check", "status": "ok"},
+                stream=sys.stdout,
+            )
+            return EXIT_OK
+
+        raw_store = R2RawPayloadStore(raw_storage_config)
 
         with ExitStack() as stack:
-            provider = stack.enter_context(TwelveDataClient(TwelveDataConfig.from_env()))
+            provider = stack.enter_context(TwelveDataClient(twelve_data_config))
             source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
             executor = TwelveDataScheduledExecutor(
                 schedule=schedule,

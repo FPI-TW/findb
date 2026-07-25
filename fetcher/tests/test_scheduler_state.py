@@ -5,8 +5,10 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from findb_fetcher.schedule import load_schedule_config
-from findb_fetcher.scheduler_state import SchedulerState
+from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.universe import load_symbol_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
@@ -187,3 +189,59 @@ def test_retry_exhaustion_becomes_terminal_and_checkpoint_never_regresses(
         checkpoint_after=date(2026, 7, 23),
     )
     assert state.checkpoint(universe, "AAPL") == date(2026, 7, 24)
+
+
+def test_versioned_empty_database_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "empty.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 1")
+
+    with pytest.raises(SchedulerStateError, match="schema"):
+        SchedulerState(path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "DROP TABLE symbol_checkpoint",
+        "ALTER TABLE scheduled_job DROP COLUMN completed_at",
+        (
+            "ALTER TABLE scheduled_job ADD COLUMN generated_symbol TEXT "
+            "GENERATED ALWAYS AS (symbol) VIRTUAL"
+        ),
+        "DROP INDEX ix_scheduled_job_due",
+        """
+        DROP INDEX ix_scheduled_job_due;
+        CREATE INDEX ix_scheduled_job_due
+        ON scheduled_job (
+            schedule_id, status DESC, next_attempt_at, scheduled_date
+        );
+        """,
+        """
+        DROP INDEX ix_scheduled_job_due;
+        CREATE INDEX ix_scheduled_job_due
+        ON scheduled_job (
+            schedule_id COLLATE NOCASE, status, next_attempt_at, scheduled_date
+        );
+        """,
+    ],
+)
+def test_malformed_versioned_schema_is_rejected(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    path = tmp_path / "malformed.sqlite3"
+    SchedulerState(path)
+    with sqlite3.connect(path) as connection:
+        connection.executescript(mutation)
+
+    with pytest.raises(SchedulerStateError, match="schema|index"):
+        SchedulerState(path)
+
+
+def test_corrupt_database_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "corrupt.sqlite3"
+    path.write_bytes(b"not a sqlite database")
+
+    with pytest.raises(SchedulerStateError):
+        SchedulerState(path)

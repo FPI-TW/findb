@@ -17,10 +17,11 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 安全的one-shot scheduler，以及需明確選用的常駐poll loop。
 - Exact-byte provider response寫入Fetcher-owned Cloudflare R2，delivery攜帶immutable ref與SHA-256。
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
-- 安全的container readiness入口；不會自動抓取或送出資料。
+- 安全的container readiness與scheduler preflight入口；不會自動抓取或送出資料。
 
-Production CD尚未啟用scheduler service；R2 bucket、API token、lifecycle與bucket lock
-仍需在外部建立。
+Production CD會在獨立Fetcher target維持一個scheduler container。R2 bucket、API
+token、lifecycle與bucket lock仍需在外部建立；repo內有部署能力不表示實際production
+資源或服務已完成部署。
 
 ## 開發
 
@@ -188,9 +189,21 @@ uv run --env-file .env findb-fetch-scheduler \
   --run-forever
 ```
 
+部署前可執行不觸發外部呼叫的preflight。它驗證schedule、universe bounds、runtime
+config、contracts及SQLite path/schema與`PRAGMA quick_check`，但不建立provider、
+Source或R2 client，也不enqueue工作。宣告目前schema version但缺少table、column、
+必要index或constraint的state會fail closed，不會被preflight靜默重建：
+
+```bash
+uv run --env-file .env findb-fetch-scheduler \
+  --state-path .state/scheduler.sqlite3 \
+  --check
+```
+
 SQLite檔屬於Fetcher自己的runtime state，不是FinDB DB，也不包含provider或Source
 credentials。Production必須將`/var/lib/findb-fetcher`掛載至單一writer使用的durable
-volume；不能把container writable layer當checkpoint。狀態包含：
+volume；CD以UID/GID `10001:10001`及directory mode `0700`驗證此mount，不能把
+container writable layer當checkpoint。狀態包含：
 
 - 每個schedule date與symbol的`pending`、`running`、`retry_wait`、`completed`或
   `failed`狀態。
@@ -259,7 +272,7 @@ Scheduler one-shot exit code：
 
 | 變數 | 必填 | 預設 | 用途 |
 | --- | --- | --- | --- |
-| `SOURCE_API_URL` | 是 | — | FinDB Source API origin，不含 `/api/v1/source/ingest` |
+| `SOURCE_API_URL` | 是 | — | FinDB Source API HTTPS origin；只允許root/trailing slash與有效optional port，不含credentials、path、query或fragment |
 | `SOURCE_CLIENT_KEY` | 是 | — | Fetcher專用DB-backed source client key |
 | `FETCHER_CONTRACTS_DIR` | 否 | `/app/contracts` | Contract manifest目錄 |
 | `FETCHER_REQUEST_TIMEOUT_SECONDS` | 否 | `30` | 單次HTTP timeout |
@@ -280,5 +293,8 @@ Scheduler one-shot exit code：
 | `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，
-不會呼叫provider或產生delivery。啟用scheduler必須明確將container command改為
-`findb-fetch-scheduler --run-forever`並掛載durable state volume。
+不會呼叫provider或產生delivery。Production CD會以
+`findb-fetch-scheduler --run-forever`覆蓋command並掛載durable state；rollout先用同一
+image與mount執行`--check`，通過後才停止舊container。候選container需持續存活且未重啟
+才會取得stable名稱，否則會移除候選並重新啟動舊container。若程序遭突然SIGTERM，
+執行中的job會留到lease到期後由scheduler回收，而非立即重派。

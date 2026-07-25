@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
 
+import httpx
+
 
 class ConfigError(ValueError):
     """Fetcher environment configuration is missing or invalid."""
+
+
+_DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +30,7 @@ class FetcherConfig:
 
     @classmethod
     def from_env(cls) -> "FetcherConfig":
-        source_api_url = _required_env("SOURCE_API_URL").rstrip("/")
+        source_api_url = _https_origin_env("SOURCE_API_URL")
         source_client_key = _required_env("SOURCE_CLIENT_KEY")
         contracts_dir = Path(os.getenv("FETCHER_CONTRACTS_DIR", "/app/contracts"))
         request_timeout_seconds = _positive_float_env("FETCHER_REQUEST_TIMEOUT_SECONDS", 30.0)
@@ -44,6 +51,67 @@ def _required_env(name: str) -> str:
     if not value:
         raise ConfigError(f"{name} is required")
     return value
+
+
+def _https_origin_env(name: str) -> str:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        raise ConfigError(f"{name} is required")
+    if (
+        raw != raw.strip()
+        or "\\" in raw
+        or "%" in raw
+        or "@" in raw
+        or "?" in raw
+        or "#" in raw
+        or raw.rstrip("/").endswith(":")
+        or any(character.isspace() or ord(character) == 127 for character in raw)
+    ):
+        raise ConfigError(f"{name} must be a valid HTTPS origin")
+    try:
+        parsed = httpx.URL(raw)
+        port = parsed.port
+    except (httpx.InvalidURL, ValueError) as exc:
+        raise ConfigError(f"{name} must be a valid HTTPS origin") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.host
+        or bool(parsed.username)
+        or bool(parsed.password)
+        or parsed.path not in ("", "/")
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ConfigError(f"{name} must be a valid HTTPS origin")
+    host = _canonical_host(parsed.host, raw)
+    authority = f"{host}:{port}" if port is not None else host
+    return f"https://{authority}"
+
+
+def _canonical_host(host: str, raw_url: str) -> str:
+    authority = raw_url.split("://", 1)[1].rstrip("/")
+    if ":" in host:
+        if not authority.startswith("["):
+            raise ConfigError("SOURCE_API_URL must be a valid HTTPS origin")
+        try:
+            address = ipaddress.IPv6Address(host)
+        except ValueError as exc:
+            raise ConfigError("SOURCE_API_URL must be a valid HTTPS origin") from exc
+        return f"[{address.compressed}]"
+
+    if host.replace(".", "").isdigit():
+        try:
+            return str(ipaddress.IPv4Address(host))
+        except ValueError as exc:
+            raise ConfigError("SOURCE_API_URL must be a valid HTTPS origin") from exc
+
+    if len(host) > 253:
+        raise ConfigError("SOURCE_API_URL must be a valid HTTPS origin")
+    labels = host.split(".")
+    if any(_DNS_LABEL.fullmatch(label) is None for label in labels):
+        raise ConfigError("SOURCE_API_URL must be a valid HTTPS origin")
+    return host
 
 
 def _positive_int_env(name: str, default: int) -> int:

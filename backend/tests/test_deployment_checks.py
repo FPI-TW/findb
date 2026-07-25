@@ -1,9 +1,12 @@
 """Tests for production deployment gates."""
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
@@ -301,6 +304,230 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
 
     assert "secrets: inherit" not in findb_cd
     assert "secrets: inherit" not in fetcher_cd
+
+
+def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    step = _named_step(
+        workflow,
+        "deploy",
+        "Release and validate Fetcher image on Fetcher EC2",
+    )
+    step_env = step["env"]
+    script = step["with"]["script"]
+    forwarded = set(step["with"]["envs"].split(","))
+
+    required_environment_values = {
+        "FETCHER_SOURCE_API_URL",
+        "FETCHER_SOURCE_CLIENT_KEY",
+        "TWELVE_DATA_API_KEY",
+        "CLOUDFLARE_R2_ACCOUNT_ID",
+        "CLOUDFLARE_R2_BUCKET",
+        "CLOUDFLARE_R2_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+    }
+    assert required_environment_values <= set(step_env)
+    assert required_environment_values <= forwarded
+    assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == (
+        "${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}"
+    )
+
+    assert "image=\"${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}\"" in script
+    assert 'docker pull "$image"' in script
+    assert "state_dir=/var/lib/findb-fetcher" in script
+    assert 'sudo chown 10001:10001 "$state_dir"' in script
+    assert 'sudo chmod 0700 "$state_dir"' in script
+    assert "stat -c '%u:%g'" in script
+    assert "stat -c '%a'" in script
+    assert "--user 10001:10001" in script
+    assert '--mount "type=bind,src=$state_dir,dst=/var/lib/findb-fetcher"' in script
+    assert "--restart unless-stopped" in script
+    assert "--read-only" in script
+    assert "--cap-drop ALL" in script
+    assert "--security-opt no-new-privileges" in script
+    assert "--log-opt max-size=10m" in script
+    assert "--log-opt max-file=3" in script
+
+    preflight = script.index("findb-fetch-scheduler --check")
+    stop_old = script.index('docker stop --time 30 "$stable"')
+    start_candidate = script.index("findb-fetch-scheduler --run-forever")
+    promote = script.rindex('docker rename "$candidate" "$stable"')
+    assert preflight < stop_old < start_candidate < promote
+    assert "stable=findb-fetcher-scheduler" in script
+    assert "candidate=findb-fetcher-scheduler-candidate" in script
+    assert "previous=findb-fetcher-scheduler-previous" in script
+    assert 'docker rm -f "$candidate"' in script
+    assert 'docker rename "$previous" "$stable"' in script
+    assert 'docker start "$stable"' in script
+    assert "for attempt in $(seq 1 6)" in script
+    assert "{{.RestartCount}}" in script
+    assert "recover_scheduler()" in script
+
+    recovery_start = script.index("recover_scheduler()")
+    recovery_end = script.index('trap \'recover_scheduler "$?"\' ERR')
+    recovery = script[recovery_start:recovery_end]
+    assert recovery_start < recovery_end < stop_old
+    assert 'trap - ERR INT TERM HUP' in recovery
+    assert recovery.index('docker rm -f "$candidate"') < recovery.index(
+        'docker container inspect "$stable"'
+    )
+    assert 'if docker container inspect "$stable"' in recovery
+    assert 'docker start "$stable"' in recovery
+    assert 'elif docker container inspect "$previous"' in recovery
+    assert 'docker rename "$previous" "$stable"' in recovery
+    assert '"$had_previous"' not in recovery
+    assert 'exit "$original_status"' in recovery
+    assert "Scheduler recovery did not complete" in recovery
+    assert 'trap \'recover_scheduler "$?"\' ERR' in script
+    assert "trap 'recover_scheduler 130' INT" in script
+    assert "trap 'recover_scheduler 143' TERM" in script
+    assert "trap 'recover_scheduler 129' HUP" in script
+    clear_recovery = script.rindex("trap - ERR INT TERM HUP")
+    assert promote < clear_recovery
+    assert "{{.State.Running}}" in script
+
+    runtime_block = script[script.index('runtime_env_args="') : preflight]
+    assert "--env GITHUB_TOKEN" not in runtime_block
+    assert "--env GITHUB_ACTOR" not in runtime_block
+    for name in (
+        "SOURCE_API_URL",
+        "SOURCE_CLIENT_KEY",
+        "TWELVE_DATA_API_KEY",
+        "CLOUDFLARE_R2_ACCOUNT_ID",
+        "CLOUDFLARE_R2_BUCKET",
+        "CLOUDFLARE_R2_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+    ):
+        assert f"--env {name}" in runtime_block
+        assert f"--env {name}=" not in runtime_block
+    assert ".Config.Env" not in script
+    assert "set -x" not in script
+
+
+@pytest.mark.parametrize(
+    ("initial", "succeeds", "expected_running"),
+    [
+        ({"findb-fetcher-scheduler": "stopped"}, True, 1),
+        (
+            {
+                "findb-fetcher-scheduler": "running",
+                "findb-fetcher-scheduler-candidate": "running",
+            },
+            True,
+            1,
+        ),
+        (
+            {
+                "findb-fetcher-scheduler": "stopped",
+                "findb-fetcher-scheduler-previous": "stopped",
+            },
+            True,
+            1,
+        ),
+        ({"findb-fetcher-scheduler-candidate": "running"}, True, 1),
+        ({"findb-fetcher-scheduler-previous": "stopped"}, True, 1),
+        ({"findb-fetcher-scheduler": "start-fail"}, False, 0),
+        ({}, True, 0),
+    ],
+)
+def test_fetcher_scheduler_reconciliation_behavior(
+    tmp_path: Path,
+    initial: dict[str, str],
+    succeeds: bool,
+    expected_running: int,
+) -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    script = _named_step(
+        workflow,
+        "deploy",
+        "Release and validate Fetcher image on Fetcher EC2",
+    )["with"]["script"]
+    begin = "# BEGIN FETCHER SCHEDULER RECONCILIATION"
+    end = "# END FETCHER SCHEDULER RECONCILIATION"
+    reconciliation = script.split(begin, 1)[1].split(end, 1)[0]
+    assert script.index(end) < script.index('docker pull "$image"')
+
+    state_dir = tmp_path / "state"
+    fake_bin = tmp_path / "bin"
+    state_dir.mkdir()
+    fake_bin.mkdir()
+    for name, status in initial.items():
+        (state_dir / name).write_text(status, encoding="utf-8")
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+operation="$1"
+shift
+case "$operation" in
+  container)
+    [ "$1" = "inspect" ]
+    [ -f "$FAKE_DOCKER_STATE/$2" ]
+    ;;
+  rm)
+    [ "$1" = "-f" ]
+    rm -f "$FAKE_DOCKER_STATE/$2"
+    ;;
+  rename)
+    mv "$FAKE_DOCKER_STATE/$1" "$FAKE_DOCKER_STATE/$2"
+    ;;
+  start)
+    if [ "$(cat "$FAKE_DOCKER_STATE/$1")" = "start-fail" ]; then
+      exit 1
+    fi
+    printf 'running\\n' > "$FAKE_DOCKER_STATE/$1"
+    ;;
+  inspect)
+    [ "$1" = "--format" ]
+    status="$(cat "$FAKE_DOCKER_STATE/$3")"
+    if [ "$status" = "running" ]; then
+      printf 'true\\n'
+    else
+      printf 'false\\n'
+    fi
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    harness = f"""
+set -euo pipefail
+stable=findb-fetcher-scheduler
+candidate=findb-fetcher-scheduler-candidate
+previous=findb-fetcher-scheduler-previous
+{reconciliation}
+"""
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    environment["FAKE_DOCKER_STATE"] = str(state_dir)
+
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert (completed.returncode == 0) is succeeds
+    statuses = {
+        path.name: path.read_text(encoding="utf-8").strip()
+        for path in state_dir.iterdir()
+    }
+    assert sum(status == "running" for status in statuses.values()) == expected_running
+    assert "findb-fetcher-scheduler-candidate" not in statuses
+    if succeeds:
+        assert "findb-fetcher-scheduler-previous" not in statuses
+        if expected_running == 1:
+            assert statuses == {"findb-fetcher-scheduler": "running"}
+        else:
+            assert statuses == {}
+    else:
+        assert "Scheduler state could not be reconciled" in completed.stderr
 
 
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:

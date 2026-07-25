@@ -11,7 +11,8 @@
 
 ## P0：Deployment與secret isolation
 
-- [ ] 在獨立Fetcher target掛載durable state volume，並啟用單一scheduler service。
+- [ ] 執行首次production Fetcher rollout，現場驗證durable mount owner/mode、
+  單一scheduler container與失敗rollback；workflow能力已完成，但尚未實際部署。
 - [ ] 建立Fetcher-owned private Cloudflare R2 bucket、bucket-scoped API token、
   retention lifecycle與bucket lock。
 - [ ] 建立 `production-findb`、`production-fetcher` GitHub Environments。

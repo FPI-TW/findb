@@ -34,8 +34,10 @@ ghcr.io/fpi-tw/findb-fetcher:<git-sha>
 validation、readiness、Source API delivery client、具整體deadline的manual
 delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，以及
 Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
-Cloudflare R2 persistence。現有CD仍只執行readiness，不會啟動production fetch loop
-或建立R2 bucket/API token；部署image不得被描述為已啟動持續抓取。
+Cloudflare R2 persistence。Fetcher CD會用exact SHA image執行無外部呼叫的scheduler
+preflight，通過後在獨立target維持單一`findb-fetcher-scheduler --run-forever`
+container；它不會建立R2 bucket/API token。Workflow存在不代表已實際部署production
+服務或完成外部資源。
 
 Production migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
@@ -70,21 +72,37 @@ production-fetcher
 | 類型 | Environment設定名稱 |
 | --- | --- |
 | Secrets | `FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY` |
-| Secrets | `FETCHER_SOURCE_CLIENT_KEY` |
 | Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
-| Variables | `CLOUDFLARE_R2_PREFIX`、`CLOUDFLARE_R2_MAX_OBJECT_BYTES` |
+| Variables | `CLOUDFLARE_R2_PREFIX`、`CLOUDFLARE_R2_MAX_OBJECT_BYTES`、`TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
+| Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
+| Secrets | `FETCHER_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
 
-`GITHUB_TOKEN`由GitHub針對workflow run提供，不是需搬入environment的自訂secret。
-Twelve Data adapter執行時需要`TWELVE_DATA_API_KEY`，但目前CD readiness不呼叫
-provider，workflow也不傳入此secret。啟用scheduler時，將它放在Fetcher專屬
-Secrets Manager path，由Fetcher instance role在runtime讀取；不可加入FinDB環境。
-R2 credentials與未來OIDC/SSM設定亦須使用Fetcher專屬名稱。FinDB TLS private key若未來由
-workflow管理，只能加入 `production-findb`，不能共用。
+`GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
+container。現階段Source、Twelve Data與R2 secrets由`production-fetcher` Environment
+逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
+Secrets Manager/Parameter Store前的明確過渡機制，不可加入FinDB環境或使用
+`--env NAME=value`出現在command line。R2 credentials與未來OIDC/SSM設定亦須使用
+Fetcher專屬名稱。FinDB TLS private key若未來由workflow管理，只能加入
+`production-findb`，不能共用。
 
-啟用production scheduler時還必須把`/var/lib/findb-fetcher`掛載到持久volume，並
-維持單一scheduler writer。SQLite state保存schedule job、retry lease與逐symbol
-checkpoint；container writable layer、FinDB RDS與RabbitMQ都不能替代此volume。
+Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
+`0700`），以bind mount提供給preflight與scheduler，並維持單一scheduler writer。
+SQLite state保存schedule job、retry lease與逐symbol checkpoint；container writable
+layer、FinDB RDS與RabbitMQ都不能替代此volume。Rollout在停止stable container前先以
+exact SHA image對實際mount執行`--check`；之後停止舊服務、啟動唯一candidate，通過
+bounded存活與restart-count檢查後以rename原地promote。失敗會移除candidate並恢復舊
+container；首次部署失敗則不留下service。State不隨rollback備份或還原。
+
+每次release在pull新image前先reconcile `stable`、`candidate`與`previous`名稱：先移除
+競爭中的candidate，保留stable或在其不存在時恢復previous，最後確認保留的stable確實
+可啟動。Reconciliation失敗會在preflight與停止舊服務之前以generic error終止，避免
+留下兩個running scheduler。Scheduler preflight亦會驗證SQLite quick-check、完整v1
+table/column/index/uniqueness，不接受只偽造`user_version=1`的空或不相容資料庫。
+
+Container停止給予30秒grace period，但scheduler目前不攔截SIGTERM來主動釋放執行中
+lease；若在job中途被終止，重新啟動後須等該lease到期才會恢復為retry，這是現有
+rollback的已知延遲。
 
 Fetcher raw R2 bucket不得綁定public development URL或custom domain；R2 API token只授權
 該bucket的Object Read & Write，並以Fetcher專屬secret注入。Cloudflare R2會自動以

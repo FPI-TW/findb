@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +19,41 @@ from findb_fetcher.schedule import ScheduleConfig, ScheduleError
 from findb_fetcher.universe import SymbolUniverse
 
 _SCHEMA_VERSION = 1
+_EXPECTED_COLUMNS = {
+    "scheduled_job": {
+        "job_key": ("TEXT", 0, 1),
+        "schedule_id": ("TEXT", 1, 0),
+        "scheduled_date": ("TEXT", 1, 0),
+        "universe_id": ("TEXT", 1, 0),
+        "universe_version": ("INTEGER", 1, 0),
+        "symbol": ("TEXT", 1, 0),
+        "canonical_symbol": ("TEXT", 1, 0),
+        "exchange": ("TEXT", 1, 0),
+        "status": ("TEXT", 1, 0),
+        "attempt_count": ("INTEGER", 1, 0),
+        "next_attempt_at": ("TEXT", 0, 0),
+        "lease_until": ("TEXT", 0, 0),
+        "last_outcome": ("TEXT", 0, 0),
+        "record_count": ("INTEGER", 0, 0),
+        "checkpoint_before": ("TEXT", 0, 0),
+        "checkpoint_after": ("TEXT", 0, 0),
+        "attempt_id": ("TEXT", 0, 0),
+        "run_id": ("TEXT", 0, 0),
+        "request_key": ("TEXT", 0, 0),
+        "idempotency_key": ("TEXT", 0, 0),
+        "prepared_request": ("TEXT", 0, 0),
+        "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+        "completed_at": ("TEXT", 0, 0),
+    },
+    "symbol_checkpoint": {
+        "universe_id": ("TEXT", 1, 1),
+        "universe_version": ("INTEGER", 1, 2),
+        "symbol": ("TEXT", 1, 3),
+        "trade_date": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    },
+}
 
 
 class SchedulerStateError(RuntimeError):
@@ -442,8 +478,9 @@ class SchedulerState:
                         PRIMARY KEY (universe_id, universe_version, symbol)
                     );
                     PRAGMA user_version = 1;
-                    """)
+                """)
                 connection.commit()
+            self._validate_schema(connection)
         try:
             os.chmod(self.path, 0o600)
         except OSError as exc:
@@ -451,14 +488,98 @@ class SchedulerState:
                 f"unable to secure scheduler state file: {self.path}"
             ) from exc
 
+    def _validate_schema(self, connection: sqlite3.Connection) -> None:
+        quick_check = [row[0] for row in connection.execute("PRAGMA quick_check").fetchall()]
+        if quick_check != ["ok"]:
+            raise SchedulerStateError("scheduler state integrity check failed")
+
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            ).fetchall()
+        }
+        if not set(_EXPECTED_COLUMNS) <= tables:
+            raise SchedulerStateError("scheduler state schema is incomplete")
+
+        for table, expected in _EXPECTED_COLUMNS.items():
+            actual = {
+                row["name"]: (
+                    str(row["type"]).upper(),
+                    int(row["notnull"]),
+                    int(row["pk"]),
+                    int(row["hidden"]),
+                )
+                for row in connection.execute(f'PRAGMA table_xinfo("{table}")').fetchall()
+            }
+            expected_with_visibility = {
+                name: (*definition, 0) for name, definition in expected.items()
+            }
+            if actual != expected_with_visibility:
+                raise SchedulerStateError("scheduler state schema is incompatible")
+
+        scheduled_table = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'scheduled_job'"
+        ).fetchone()
+        scheduled_sql = scheduled_table["sql"] if scheduled_table else ""
+        status_constraint = re.compile(
+            r"check\s*\(\s*status\s+in\s*\(\s*'pending'\s*,\s*'running'\s*,"
+            r"\s*'retry_wait'\s*,\s*'completed'\s*,\s*'failed'\s*\)\s*\)",
+            re.IGNORECASE,
+        )
+        if not isinstance(scheduled_sql, str) or status_constraint.search(scheduled_sql) is None:
+            raise SchedulerStateError("scheduler state status constraint is missing")
+
+        scheduled_indexes = _index_definitions(connection, "scheduled_job")
+        if scheduled_indexes.get("ix_scheduled_job_due") != (
+            False,
+            False,
+            (
+                ("schedule_id", False, "BINARY"),
+                ("status", False, "BINARY"),
+                ("next_attempt_at", False, "BINARY"),
+                ("scheduled_date", False, "BINARY"),
+            ),
+        ):
+            raise SchedulerStateError("scheduler state due index is missing")
+        if not any(
+            unique
+            and not partial
+            and key_columns
+            == (
+                ("schedule_id", False, "BINARY"),
+                ("scheduled_date", False, "BINARY"),
+                ("symbol", False, "BINARY"),
+            )
+            for unique, partial, key_columns in scheduled_indexes.values()
+        ):
+            raise SchedulerStateError("scheduler state uniqueness constraint is missing")
+
+        checkpoint_indexes = _index_definitions(connection, "symbol_checkpoint")
+        if not any(
+            unique
+            and not partial
+            and key_columns
+            == (
+                ("universe_id", False, "BINARY"),
+                ("universe_version", False, "BINARY"),
+                ("symbol", False, "BINARY"),
+            )
+            for unique, partial, key_columns in checkpoint_indexes.values()
+        ):
+            raise SchedulerStateError("scheduler checkpoint primary index is missing")
+
     def _connect(self) -> sqlite3.Connection:
+        connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(self.path, timeout=5.0)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
         except sqlite3.Error as exc:
+            if connection is not None:
+                connection.close()
             raise SchedulerStateError(f"unable to open scheduler state: {self.path}") from exc
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
     @contextmanager
@@ -476,6 +597,26 @@ class SchedulerState:
 def _job_key(schedule_id: str, scheduled_date: date, symbol: str) -> str:
     identity = f"{schedule_id}:{scheduled_date.isoformat()}:{symbol}".encode()
     return hashlib.sha256(identity).hexdigest()
+
+
+def _index_definitions(
+    connection: sqlite3.Connection,
+    table: str,
+) -> dict[str, tuple[bool, bool, tuple[tuple[str, bool, str], ...]]]:
+    definitions: dict[str, tuple[bool, bool, tuple[tuple[str, bool, str], ...]]] = {}
+    for row in connection.execute(f'PRAGMA index_list("{table}")').fetchall():
+        name = row["name"]
+        key_columns = tuple(
+            (
+                str(column["name"]),
+                bool(column["desc"]),
+                str(column["coll"]).upper(),
+            )
+            for column in connection.execute(f'PRAGMA index_xinfo("{name}")').fetchall()
+            if bool(column["key"])
+        )
+        definitions[name] = (bool(row["unique"]), bool(row["partial"]), key_columns)
+    return definitions
 
 
 def _datetime_text(value: datetime) -> str:
