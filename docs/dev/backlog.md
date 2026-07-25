@@ -6,13 +6,14 @@
 
 - [ ] 依資料來源優先序補FinLab/Bloomberg真實fixtures與provider mapping；
   Twelve Data Common Stock日線adapter、fixture與mock Source API整合測試已完成。
-- [ ] Provider原始檔寫入Fetcher S3，delivery帶raw reference與checksum。
 - [ ] Shadow delivery後逐一將legacy feed切到canonical `/source/ingest`。
 - [ ] 所有保留raw不再需要legacy rerun後，移除provider-specific endpoints/normalizers。
 
 ## P0：Deployment與secret isolation
 
 - [ ] 在獨立Fetcher target掛載durable state volume，並啟用單一scheduler service。
+- [ ] 建立Fetcher-owned private Cloudflare R2 bucket、bucket-scoped API token、
+  retention lifecycle與bucket lock。
 - [ ] 建立 `production-findb`、`production-fetcher` GitHub Environments。
 - [ ] 將production secrets從repository/job-wide scope移到對應environment。
 - [ ] 為workflow、infra與contract設定CODEOWNERS與environment protection。
@@ -25,6 +26,8 @@
 
 ## P1：Ingress production readiness
 
+- [ ] 若要在FinDB全域強制raw provenance成對，採backend-first新增ingress
+  contract v2；不得原地收緊已發布的v1 contract。
 - [ ] 用真實feed校準record count、freshness、coverage與missing-delivery policy。
 - [ ] 完成warn → reject切換準則與production觀察窗口。
 - [ ] 建立delivery-missing monitor與告警接收流程。

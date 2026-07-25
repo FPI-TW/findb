@@ -20,6 +20,11 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataConfig,
     TwelveDataError,
 )
+from findb_fetcher.raw_storage import (
+    R2RawPayloadStore,
+    RawStorageConfig,
+    RawStorageError,
+)
 from findb_fetcher.schedule import ScheduleError, load_schedule_config
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.twelve_data_scheduler import (
@@ -75,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         fetcher_config = FetcherConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
         state = SchedulerState(args.state_path)
+        raw_store = R2RawPayloadStore(RawStorageConfig.from_env())
 
         with ExitStack() as stack:
             provider = stack.enter_context(TwelveDataClient(TwelveDataConfig.from_env()))
@@ -85,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider=provider,
                 source=source,
                 registry=registry,
+                raw_store=raw_store,
                 state=state,
             )
             service = SchedulerService(
@@ -102,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         ConfigError,
         ContractError,
         ScheduleError,
+        RawStorageError,
         SchedulerStateError,
         TwelveDataError,
         UniverseError,

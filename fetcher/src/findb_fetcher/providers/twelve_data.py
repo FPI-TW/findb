@@ -23,6 +23,7 @@ _INTEGER_PATTERN = re.compile(r"^[0-9]+$")
 _EXCHANGE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._&/+:-]{0,99}$")
 _MIC_CODE_PATTERN = re.compile(r"^[A-Z0-9]{4}$")
 _DEFAULT_ALLOWED_TYPES = frozenset({"Common Stock"})
+_MAX_RESPONSE_BYTES_HARD = 16 * 1024 * 1024
 
 
 class TwelveDataError(RuntimeError):
@@ -60,6 +61,14 @@ class TwelveDataNoNewDataError(TwelveDataError):
     """A valid provider response contains no rows after the durable checkpoint."""
 
 
+class TwelveDataResponse(dict[str, Any]):
+    """Parsed provider response retaining the exact bounded HTTP body."""
+
+    def __init__(self, payload: Mapping[str, Any], *, raw_bytes: bytes) -> None:
+        super().__init__(payload)
+        self.raw_bytes = raw_bytes
+
+
 @dataclass(frozen=True, slots=True)
 class TwelveDataConfig:
     """Provider-owned configuration that never enters FinDB backend settings."""
@@ -67,6 +76,7 @@ class TwelveDataConfig:
     api_key: str = field(repr=False)
     base_url: str = TWELVE_DATA_DEFAULT_BASE_URL
     timeout_seconds: float = 30.0
+    max_response_bytes: int = 8 * 1024 * 1024
 
     def __post_init__(self) -> None:
         api_key = self.api_key.strip()
@@ -96,6 +106,10 @@ class TwelveDataConfig:
             raise TwelveDataConfigError(
                 "TWELVE_DATA_TIMEOUT_SECONDS must be a finite, positive number"
             )
+        if not 1 <= self.max_response_bytes <= _MAX_RESPONSE_BYTES_HARD:
+            raise TwelveDataConfigError(
+                f"TWELVE_DATA_MAX_RESPONSE_BYTES must be between 1 and {_MAX_RESPONSE_BYTES_HARD}"
+            )
 
         object.__setattr__(self, "api_key", api_key)
         object.__setattr__(self, "base_url", base_url)
@@ -105,7 +119,13 @@ class TwelveDataConfig:
         api_key = os.getenv("TWELVE_DATA_API_KEY", "")
         base_url = os.getenv("TWELVE_DATA_BASE_URL", TWELVE_DATA_DEFAULT_BASE_URL)
         timeout_seconds = _positive_float_env("TWELVE_DATA_TIMEOUT_SECONDS", 30.0)
-        return cls(api_key=api_key, base_url=base_url, timeout_seconds=timeout_seconds)
+        max_response_bytes = _positive_int_env("TWELVE_DATA_MAX_RESPONSE_BYTES", 8 * 1024 * 1024)
+        return cls(
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
 
 
 class TwelveDataClient:
@@ -129,7 +149,7 @@ class TwelveDataClient:
         end_date: date | None = None,
         outputsize: int | None = None,
         exchange: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> TwelveDataResponse:
         normalized_symbol = symbol.strip()
         if not normalized_symbol or len(normalized_symbol) > 100:
             raise ValueError("symbol must contain between 1 and 100 characters")
@@ -161,35 +181,64 @@ class TwelveDataClient:
             params["exchange"] = normalized_exchange
 
         try:
-            response = self._client.get(
+            with self._client.stream(
+                "GET",
                 f"{self._config.base_url}/time_series",
                 params=params,
-            )
+                headers={"Accept-Encoding": "identity"},
+            ) as response:
+                content_encoding = response.headers.get("content-encoding")
+                if content_encoding is not None and content_encoding.strip().lower() != "identity":
+                    raise TwelveDataResponseError(
+                        "Twelve Data returned an unsupported Content-Encoding"
+                    )
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError as exc:
+                        raise TwelveDataResponseError(
+                            "Twelve Data returned an invalid Content-Length"
+                        ) from exc
+                    if declared_length < 0:
+                        raise TwelveDataResponseError(
+                            "Twelve Data returned an invalid Content-Length"
+                        )
+                    if declared_length > self._config.max_response_bytes:
+                        raise TwelveDataResponseError("Twelve Data response exceeds the size limit")
+                raw_buffer = bytearray()
+                chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
+                for chunk in chunks:
+                    if len(raw_buffer) + len(chunk) > self._config.max_response_bytes:
+                        raise TwelveDataResponseError("Twelve Data response exceeds the size limit")
+                    raw_buffer.extend(chunk)
+                raw_bytes = bytes(raw_buffer)
+                response_status_code = response.status_code
         except httpx.TransportError as exc:
             raise TwelveDataResponseError("Twelve Data transport request failed") from exc
 
         try:
-            payload = response.json()
-        except json.JSONDecodeError as exc:
+            payload = json.loads(raw_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise TwelveDataResponseError(
-                f"Twelve Data returned non-JSON HTTP {response.status_code}"
+                f"Twelve Data returned non-JSON HTTP {response_status_code}"
             ) from exc
         if not isinstance(payload, dict):
             raise TwelveDataResponseError("Twelve Data response must be a JSON object")
 
         provider_status = payload.get("status")
-        if response.status_code >= 400 or provider_status == "error":
-            raw_provider_code = payload.get("code", response.status_code)
+        if response_status_code >= 400 or provider_status == "error":
+            raw_provider_code = payload.get("code", response_status_code)
             provider_code = _provider_code(raw_provider_code)
             provider_message = _redacted_message(payload.get("message"), self._config.api_key)
             raise TwelveDataResponseError(
                 f"Twelve Data request failed ({raw_provider_code}): {provider_message}",
-                status_code=response.status_code,
+                status_code=response_status_code,
                 provider_code=provider_code,
             )
         if provider_status != "ok":
             raise TwelveDataResponseError("Twelve Data response status must be 'ok'")
-        return payload
+        return TwelveDataResponse(payload, raw_bytes=raw_bytes)
 
     def close(self) -> None:
         if self._owns_client:
@@ -361,6 +410,18 @@ def _positive_float_env(name: str, default: float) -> float:
         raise TwelveDataConfigError(f"{name} must be a number") from exc
     if not isfinite(value) or value <= 0:
         raise TwelveDataConfigError(f"{name} must be a finite, positive number")
+    return value
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    if not raw.isascii() or not raw.isdigit():
+        raise TwelveDataConfigError(f"{name} must be a positive integer")
+    value = int(raw)
+    if value <= 0:
+        raise TwelveDataConfigError(f"{name} must be a positive integer")
     return value
 
 

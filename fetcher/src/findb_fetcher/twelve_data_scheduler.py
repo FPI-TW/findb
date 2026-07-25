@@ -25,6 +25,12 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataResponseError,
     build_market_eod_request,
 )
+from findb_fetcher.raw_storage import (
+    RawPayloadStore,
+    RawStorageUploadError,
+    attach_raw_object,
+    require_raw_provenance,
+)
 from findb_fetcher.schedule import ScheduleConfig, ScheduleError
 from findb_fetcher.scheduler_state import ScheduledJob, SchedulerState
 from findb_fetcher.universe import SymbolUniverse
@@ -86,15 +92,19 @@ class TwelveDataScheduledExecutor:
         provider: TwelveDataClient,
         source: SourceAPIClient,
         registry: ContractRegistry,
+        raw_store: RawPayloadStore,
         state: SchedulerState | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if raw_store is None:
+            raise ValueError("scheduled Source delivery requires raw object storage")
         self._schedule = schedule
         self._universe = universe
         self._provider = provider
         self._source = source
         self._registry = registry
+        self._raw_store = raw_store
         self._state = state
         self._monotonic = monotonic
         self._sleep = sleep
@@ -131,6 +141,11 @@ class TwelveDataScheduledExecutor:
                     exchange=job.exchange,
                     **query,
                 )
+                raw_object = self._raw_store.persist(
+                    response.raw_bytes,
+                    dataset_key=self._universe.dataset_key,
+                    source_symbol=job.symbol,
+                )
                 request = build_market_eod_request(
                     response,
                     dataset_key=self._universe.dataset_key,
@@ -140,6 +155,15 @@ class TwelveDataScheduledExecutor:
                     canonical_symbol=job.canonical_symbol,
                     allowed_instrument_types=(self._universe.instrument_type,),
                     after_trade_date=job.checkpoint_before,
+                )
+                attach_raw_object(request, raw_object)
+            try:
+                # New Fetcher delivery is stricter than the optional legacy v1 fields.
+                require_raw_provenance(request)
+            except RawStorageUploadError:
+                return JobExecution(
+                    outcome="raw_provenance_missing",
+                    succeeded=False,
                 )
             self._registry.validate("market_eod", 1, request)
             record_count = len(request["payload"]["data"])
@@ -205,6 +229,12 @@ class TwelveDataScheduledExecutor:
             )
         except (TwelveDataPayloadError, ContractError, ValueError):
             return JobExecution(outcome="mapping_failed", succeeded=False)
+        except RawStorageUploadError as exc:
+            return JobExecution(
+                outcome="raw_upload_failed",
+                succeeded=False,
+                retryable=exc.retryable,
+            )
         except SourceAPIDeadlineExceeded:
             return JobExecution(outcome="wait_timeout", succeeded=False, retryable=True)
         except SourceAPIResponseError as exc:

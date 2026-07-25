@@ -126,6 +126,63 @@ def test_client_requests_bounded_daily_json_without_leaking_key() -> None:
     assert captured_request.url.params["end_date"] == "2024-01-06"
     assert captured_request.url.params["exchange"] == "NASDAQ"
     assert captured_request.url.params["apikey"] == "provider-secret"
+    assert captured_request.headers["accept-encoding"] == "identity"
+
+
+def test_client_preserves_exact_identity_encoded_response_bytes() -> None:
+    raw = FIXTURE_PATH.read_bytes()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=raw,
+            headers={"Content-Encoding": "identity"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = TwelveDataClient(
+            TwelveDataConfig(api_key="provider-secret"),
+            client=http_client,
+        ).fetch_daily("AAPL")
+
+    assert result.raw_bytes == raw
+
+
+def test_client_rejects_compressed_or_oversized_stream_before_full_read() -> None:
+    def compressed(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(b"compressed"),
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(compressed)) as http_client:
+        with pytest.raises(TwelveDataResponseError, match="Content-Encoding"):
+            TwelveDataClient(
+                TwelveDataConfig(api_key="provider-secret"),
+                client=http_client,
+            ).fetch_daily("AAPL")
+
+    yielded = 0
+
+    def chunked(_request: httpx.Request) -> httpx.Response:
+        class Chunks(httpx.SyncByteStream):
+            def __iter__(self):
+                nonlocal yielded
+                for chunk in (b"1234", b"5678", b"not-read"):
+                    yielded += 1
+                    yield chunk
+
+        return httpx.Response(200, stream=Chunks())
+
+    with httpx.Client(transport=httpx.MockTransport(chunked)) as http_client:
+        with pytest.raises(TwelveDataResponseError, match="size limit"):
+            TwelveDataClient(
+                TwelveDataConfig(api_key="provider-secret", max_response_bytes=6),
+                client=http_client,
+            ).fetch_daily("AAPL")
+
+    assert yielded == 2
 
 
 def test_client_rejects_provider_error_and_redacts_key() -> None:

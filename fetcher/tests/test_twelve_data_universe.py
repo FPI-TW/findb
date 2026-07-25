@@ -13,7 +13,8 @@ import pytest
 
 from findb_fetcher.client import SourceAPIResponseError
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+from findb_fetcher.providers.twelve_data import TwelveDataResponse, TwelveDataResponseError
+from findb_fetcher.raw_storage import RawObject, RawStorageUploadError
 from findb_fetcher.twelve_data_universe import execute_twelve_data_universe
 from findb_fetcher.universe import UniverseLimits, load_symbol_universe
 
@@ -41,14 +42,34 @@ class FakeProvider:
         self.calls: list[str] = []
         self.fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
-    def fetch_daily(self, symbol: str, **_kwargs: object) -> dict[str, Any]:
+    def fetch_daily(self, symbol: str, **_kwargs: object) -> TwelveDataResponse:
         self.calls.append(symbol)
         failure = self.failures.get(symbol)
         if failure is not None:
             raise failure
         response = deepcopy(self.fixture)
         response["meta"]["symbol"] = symbol
-        return response
+        return TwelveDataResponse(response, raw_bytes=json.dumps(response).encode())
+
+
+class RawFakeProvider(FakeProvider):
+    def fetch_daily(self, symbol: str, **kwargs: object) -> TwelveDataResponse:
+        return super().fetch_daily(symbol, **kwargs)
+
+
+class SuccessfulRawStore:
+    def persist(
+        self,
+        raw_bytes: bytes,
+        *,
+        source_symbol: str,
+        **_kwargs: object,
+    ) -> RawObject:
+        return RawObject(
+            ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/{source_symbol}.json",
+            sha256="a" * 64,
+            size_bytes=len(raw_bytes),
+        )
 
 
 class CapturingRegistry:
@@ -116,6 +137,97 @@ class FakeSource:
             success_records=4 - failed,
             failed_records=failed,
         )
+
+
+def test_raw_upload_failure_halts_universe_without_delivery(
+    contracts_dir: Path,
+) -> None:
+    class FailedRawStore:
+        def persist(self, *_args: object, **_kwargs: object) -> object:
+            raise RawStorageUploadError("safe upload failure", retryable=False)
+
+    provider = RawFakeProvider()
+    source = FakeSource()
+    execution = execute_twelve_data_universe(
+        load_symbol_universe(CONFIG_PATH),
+        provider=provider,  # type: ignore[arg-type]
+        registry=ContractRegistry(contracts_dir),
+        start_date=None,
+        end_date=None,
+        outputsize=4,
+        source=source,  # type: ignore[arg-type]
+        raw_store=FailedRawStore(),  # type: ignore[arg-type]
+    )
+
+    assert provider.calls == ["AAPL"]
+    assert source.requests == []
+    assert [result.outcome for result in execution.results] == [
+        "raw_upload_failed",
+        "not_attempted",
+        "not_attempted",
+    ]
+
+
+def test_universe_delivery_rejects_missing_raw_store_before_any_calls(
+    contracts_dir: Path,
+) -> None:
+    provider = FakeProvider()
+    source = FakeSource()
+
+    with pytest.raises(ValueError, match="raw object storage"):
+        execute_twelve_data_universe(
+            load_symbol_universe(CONFIG_PATH),
+            provider=provider,  # type: ignore[arg-type]
+            registry=ContractRegistry(contracts_dir),
+            start_date=None,
+            end_date=None,
+            outputsize=4,
+            source=source,  # type: ignore[arg-type]
+        )
+
+    assert provider.calls == []
+    assert source.requests == []
+
+
+def test_universe_delivery_attaches_complete_raw_pair(
+    contracts_dir: Path,
+) -> None:
+    class RawStore:
+        def persist(
+            self,
+            raw_bytes: bytes,
+            *,
+            source_symbol: str,
+            **_kwargs: object,
+        ) -> RawObject:
+            assert raw_bytes
+            return RawObject(
+                ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/{source_symbol}.json",
+                sha256="a" * 64,
+                size_bytes=len(raw_bytes),
+            )
+
+    provider = RawFakeProvider()
+    source = FakeSource()
+    registry = CapturingRegistry(ContractRegistry(contracts_dir))
+
+    execution = execute_twelve_data_universe(
+        load_symbol_universe(CONFIG_PATH),
+        provider=provider,  # type: ignore[arg-type]
+        registry=registry,  # type: ignore[arg-type]
+        start_date=None,
+        end_date=None,
+        outputsize=4,
+        source=source,  # type: ignore[arg-type]
+        raw_store=RawStore(),
+    )
+
+    assert execution.status == "completed"
+    assert len(source.requests) == 3
+    for request in registry.requests:
+        batch = request["payload"]["batch"]
+        assert batch["source_raw_ref"].startswith(f"r2://{'a' * 32}/findb-fetcher-raw/raw/")
+        assert batch["source_raw_sha256"] == "a" * 64
 
 
 @pytest.fixture
@@ -225,6 +337,7 @@ def test_source_delivery_remains_one_request_per_symbol(
         end_date=date(2024, 1, 6),
         outputsize=None,
         source=source,  # type: ignore[arg-type]
+        raw_store=SuccessfulRawStore(),
     )
 
     assert execution.status == "completed"
@@ -247,6 +360,7 @@ def test_terminal_failure_is_partial_and_does_not_pollute_other_symbols(
         end_date=date(2024, 1, 6),
         outputsize=None,
         source=source,  # type: ignore[arg-type]
+        raw_store=SuccessfulRawStore(),
         wait=True,
         deadline=100.0,
         monotonic=lambda: 1.0,
@@ -288,6 +402,7 @@ def test_systemic_source_rejection_stops_remaining_symbols(
         end_date=date(2024, 1, 6),
         outputsize=None,
         source=RejectingSource(),  # type: ignore[arg-type]
+        raw_store=SuccessfulRawStore(),
     )
 
     expected = "source_rate_limited" if status_code == 429 else "source_rejected"

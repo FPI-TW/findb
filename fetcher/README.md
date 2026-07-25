@@ -15,10 +15,12 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 每個symbol獨立identity與delivery的bounded multi-symbol orchestration。
 - Fetcher-owned SQLite scheduler state、persistent retry、lease recovery與逐symbol checkpoint。
 - 安全的one-shot scheduler，以及需明確選用的常駐poll loop。
+- Exact-byte provider response寫入Fetcher-owned Cloudflare R2，delivery攜帶immutable ref與SHA-256。
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness入口；不會自動抓取或送出資料。
 
-尚未提供S3 raw storage，production CD也尚未啟用scheduler service。
+Production CD尚未啟用scheduler service；R2 bucket、API token、lifecycle與bucket lock
+仍需在外部建立。
 
 ## 開發
 
@@ -63,6 +65,9 @@ uv run --env-file .env findb-fetch-twelve-data \
   --end-date 2024-01-06 \
   --deliver
 ```
+
+所有`--deliver`路徑會先要求Fetcher raw R2設定並成功保存provider response；dry-run
+不讀S3設定，也不建立AWS client。Raw upload失敗時不會呼叫Source API。
 
 加上`--wait`會使用同一組Fetcher Source client credential輪詢run狀態，直到
 `completed`、`completed_with_errors`或`failed`。整體deadline從delivery前開始，
@@ -209,6 +214,38 @@ schedule date仍可重新嘗試該symbol。排程不內建交易所假日日曆�
 星期五；假日無資料由provider結果明確記錄，下一個工作日仍從未前進的checkpoint
 接續。
 
+## Provider raw storage（Cloudflare R2）
+
+Fetcher以streaming hard cap讀取Twelve Data response，要求`Accept-Encoding:
+identity`並拒絕其它content encoding。S3保存的是HTTP client實際收到、未重新
+序列化的response bytes；SHA-256直接從同一份bytes計算。
+
+Raw-enabled執行順序固定為：
+
+1. Bounded provider fetch。
+2. 將exact bytes寫入Fetcher-owned Cloudflare R2。
+3. Provider mapping並加入`source_raw_ref`與`source_raw_sha256`。
+4. Contract validation。
+5. 保存scheduler prepared request。
+6. Source delivery與terminal wait。
+
+Object key依dataset、source symbol hash與content SHA-256確定性產生；delivery只帶不含
+credentials或query string的`r2://account-id/bucket/key`。R2 S3-compatible PutObject
+明確帶`ContentLength`、`ChecksumSHA256`、content type與metadata。Endpoint只由已驗證
+的Cloudflare account ID組成，不接受任意URL；credentials使用bucket-scoped R2 API
+token或短效credentials。R2會自動以AES-256加密所有object及metadata，因此程式不傳送
+R2不支援的AWS SSE/KMS headers。
+
+`source_raw_ref`與`source_raw_sha256`必須成對存在，raw provenance也會納入
+request/idempotency identity。因此相同raw artifact重試維持相同identity；即使
+canonical rows相同，只要provider exact bytes改變，就會建立不同identity，避免Source
+把同key/different payload判為409 collision。
+
+Scheduler在delivery retry時直接重用SQLite內的prepared canonical request，不重新抓取
+或上傳。R2 transient 429/5xx/transport failure可進入persistent retry；auth、bucket
+或其它deterministic 4xx會terminal fail且不推進checkpoint。舊prepared state若缺
+raw provenance會fail closed，不會靜默送出。
+
 Scheduler one-shot exit code：
 
 | Code | 意義 |
@@ -233,6 +270,14 @@ Scheduler one-shot exit code：
 | `TWELVE_DATA_API_KEY` | 是 | — | 固定資料來源Twelve Data的runtime secret |
 | `TWELVE_DATA_BASE_URL` | 否 | `https://api.twelvedata.com` | Twelve Data HTTPS origin |
 | `TWELVE_DATA_TIMEOUT_SECONDS` | 否 | `30` | Provider request timeout |
+| `TWELVE_DATA_MAX_RESPONSE_BYTES` | 否 | `8388608` | Provider response streaming上限，程式硬上限16 MiB |
+| `CLOUDFLARE_R2_ACCOUNT_ID` | Delivery/scheduler是 | — | 32字元Cloudflare account ID，用來建立固定R2 endpoint |
+| `CLOUDFLARE_R2_BUCKET` | Delivery/scheduler是 | — | Fetcher-owned private raw bucket |
+| `CLOUDFLARE_R2_ACCESS_KEY_ID` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API access key |
+| `CLOUDFLARE_R2_SECRET_ACCESS_KEY` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API secret |
+| `CLOUDFLARE_R2_SESSION_TOKEN` | 否 | — | 使用R2 temporary credentials時設定 |
+| `CLOUDFLARE_R2_PREFIX` | 否 | `raw/twelve-data` | 經驗證的object key prefix |
+| `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，
 不會呼叫provider或產生delivery。啟用scheduler必須明確將container command改為

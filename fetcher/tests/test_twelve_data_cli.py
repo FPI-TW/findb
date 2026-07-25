@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
@@ -8,7 +9,11 @@ from uuid import UUID
 import pytest
 
 from findb_fetcher import twelve_data_cli
-from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+from findb_fetcher.providers.twelve_data import (
+    TwelveDataResponse,
+    TwelveDataResponseError,
+)
+from findb_fetcher.raw_storage import RawObject
 from findb_fetcher.twelve_data_universe import SymbolExecution, UniverseExecution
 
 ATTEMPT_ID = UUID("019f98b5-ee0b-7b16-9a28-d8e2ed638a91")
@@ -138,6 +143,70 @@ def test_deliver_reports_attempt_and_run_identity(
     assert summary["attempt_id"] == str(ATTEMPT_ID)
     assert summary["run_id"] == str(RUN_ID)
     assert _FakeSourceClient.delivered_deadline is None
+
+
+def test_single_symbol_delivery_persists_raw_before_contract_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    contracts_dir: Path,
+) -> None:
+    payload = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "twelve_data"
+            / "aapl_1day_2024-01-02_2024-01-05.json"
+        ).read_text()
+    )
+    raw_bytes = json.dumps(payload, indent=2).encode()
+    events: list[str] = []
+
+    class Provider:
+        def __enter__(self) -> "Provider":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def fetch_daily(self, *_args: object, **_kwargs: object) -> TwelveDataResponse:
+            events.append("fetch")
+            return TwelveDataResponse(payload, raw_bytes=raw_bytes)
+
+    class RawStore:
+        def persist(self, body: bytes, **_kwargs: object) -> RawObject:
+            events.append("upload")
+            assert body == raw_bytes
+            return RawObject(
+                ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+                sha256="a" * 64,
+                size_bytes=len(body),
+            )
+
+    class Registry:
+        def __init__(self, _path: object) -> None:
+            pass
+
+        def validate(self, _schema: str, _version: int, request: dict[str, Any]) -> None:
+            events.append("validate")
+            assert request["payload"]["batch"]["source_raw_sha256"] == "a" * 64
+
+    monkeypatch.setattr(twelve_data_cli.TwelveDataConfig, "from_env", lambda: object())
+    monkeypatch.setattr(twelve_data_cli, "TwelveDataClient", lambda _config: Provider())
+    monkeypatch.setattr(twelve_data_cli, "_raw_store_from_env", lambda: RawStore())
+    monkeypatch.setattr(twelve_data_cli, "ContractRegistry", Registry)
+    args = twelve_data_cli.build_parser().parse_args(
+        [
+            "--symbol",
+            "AAPL",
+            "--contracts-dir",
+            str(contracts_dir),
+            "--deliver",
+        ]
+    )
+
+    request, _registry = twelve_data_cli._fetch_and_validate(args)
+
+    assert events == ["fetch", "upload", "validate"]
+    assert request["payload"]["batch"]["source_raw_ref"].startswith("r2://")
 
 
 def test_wait_polls_until_completed_under_one_deadline(

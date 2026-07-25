@@ -24,6 +24,11 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataResponseError,
     build_market_eod_request,
 )
+from findb_fetcher.raw_storage import (
+    RawPayloadStore,
+    RawStorageUploadError,
+    attach_raw_object,
+)
 from findb_fetcher.universe import SymbolUniverse, UniverseSymbol
 
 _SUCCESS_OUTCOMES = frozenset({"validated", "accepted", "completed"})
@@ -90,6 +95,7 @@ def execute_twelve_data_universe(
     end_date: date | None,
     outputsize: int | None,
     source: SourceAPIClient | None = None,
+    raw_store: RawPayloadStore | None = None,
     wait: bool = False,
     deadline: float | None = None,
     poll_interval_seconds: float = 2.0,
@@ -103,6 +109,8 @@ def execute_twelve_data_universe(
         end_date=end_date,
         outputsize=outputsize,
     )
+    if source is not None and raw_store is None:
+        raise ValueError("Source delivery requires Fetcher raw object storage")
     if wait and (source is None or deadline is None):
         raise ValueError("wait requires a Source client and deadline")
 
@@ -135,6 +143,7 @@ def execute_twelve_data_universe(
                 end_date=end_date,
                 outputsize=outputsize,
                 fetched_at=now(),
+                raw_store=raw_store,
             )
             record_count = len(request["payload"]["data"])
             if record_count > universe.limits.max_records_per_symbol:
@@ -222,6 +231,9 @@ def execute_twelve_data_universe(
                 halted = True
         except (TwelveDataPayloadError, ContractError, ValueError):
             results.append(SymbolExecution(symbol=member.symbol, outcome="mapping_failed"))
+        except RawStorageUploadError:
+            results.append(SymbolExecution(symbol=member.symbol, outcome="raw_upload_failed"))
+            halted = True
         except SourceAPIDeadlineExceeded:
             results.append(SymbolExecution(symbol=member.symbol, outcome="wait_timeout"))
             halted = True
@@ -255,6 +267,7 @@ def _fetch_request(
     end_date: date | None,
     outputsize: int | None,
     fetched_at: datetime,
+    raw_store: RawPayloadStore | None,
 ) -> dict[str, Any]:
     response = provider.fetch_daily(
         member.symbol,
@@ -263,6 +276,13 @@ def _fetch_request(
         outputsize=outputsize,
         exchange=member.exchange,
     )
+    raw_object = None
+    if raw_store is not None:
+        raw_object = raw_store.persist(
+            response.raw_bytes,
+            dataset_key=universe.dataset_key,
+            source_symbol=member.symbol,
+        )
     request = build_market_eod_request(
         response,
         dataset_key=universe.dataset_key,
@@ -272,6 +292,8 @@ def _fetch_request(
         canonical_symbol=member.canonical_symbol,
         allowed_instrument_types=(universe.instrument_type,),
     )
+    if raw_object is not None:
+        attach_raw_object(request, raw_object)
     registry.validate("market_eod", 1, request)
     return request
 

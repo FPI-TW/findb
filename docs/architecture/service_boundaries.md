@@ -19,9 +19,10 @@ findb/
 Twelve Data Common Stock日線adapter、去識別化fixture、正式manual delivery/wait
 CLI、versioned小型US symbol universe、bounded per-symbol orchestration、Fetcher-owned
 SQLite scheduler state、persistent retry、lease recovery、逐symbol checkpoint與mock
-Source API整合測試已建立；S3 raw storage與自動化真實跨服務integration tests尚未
-建立。Fetcher CD目前只負責immutable image release與獨立部署handoff，尚未啟用
-持續運作的production fetch loop。
+Source API整合測試，以及exact-byte provider response的Fetcher-owned Cloudflare R2 persistence
+與raw reference/checksum delivery已建立；自動化真實跨服務integration tests尚未
+建立。Fetcher CD目前只負責immutable image release與獨立部署handoff，尚未啟用持續
+運作的production fetch loop，也不代表production R2 bucket、API token或retention已建立。
 
 ## Release 與部署單位
 
@@ -62,7 +63,7 @@ Fetcher完整runtime完成後負責：
 
 - Provider SDK/API、抓取排程與限流
 - Provider payload轉換成 versioned FinDB contract
-- 原始檔寫入自己的 S3/object storage
+- 原始檔寫入自己的Cloudflare R2 bucket
 - Stable idempotency key、retry、checkpoint與delivery status
 - 真實 fixtures與adapter mapping tests
 
@@ -72,8 +73,8 @@ Admin或Serve credentials。
 目前已將Twelve Data列為固定資料來源之一，並落地其日線adapter、contract驗證、
 明確選用的manual delivery/wait CLI、受治理symbol universe、逐symbol獨立identity、
 credit/record/date bounds、bounded HTTP retry、SQLite persistent scheduler state、
-lease recovery、checkpoint、readiness與image/CI/CD foundation；其餘項目保留在
-backlog。
+lease recovery、checkpoint、exact-byte raw R2 persistence、readiness與image/CI/CD
+foundation；其餘項目保留在backlog。
 
 ## CI/CD 與credential邊界
 

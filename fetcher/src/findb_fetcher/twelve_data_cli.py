@@ -33,6 +33,12 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataError,
     build_market_eod_request,
 )
+from findb_fetcher.raw_storage import (
+    R2RawPayloadStore,
+    RawStorageConfig,
+    RawStorageError,
+    attach_raw_object,
+)
 from findb_fetcher.twelve_data_universe import (
     UniverseExecution,
     execute_twelve_data_universe,
@@ -120,7 +126,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit_summary(_request_summary(request, mode="dry_run", status="validated"))
             return EXIT_OK
         return _deliver(args, request, registry)
-    except (TwelveDataError, ContractError, ConfigError, UniverseError, ValueError):
+    except (
+        TwelveDataError,
+        ContractError,
+        ConfigError,
+        RawStorageError,
+        UniverseError,
+        ValueError,
+    ):
         _emit_error("local_validation_failed")
         return EXIT_LOCAL_ERROR
     except SourceAPIDeadlineExceeded:
@@ -151,6 +164,14 @@ def _fetch_and_validate(args: argparse.Namespace) -> tuple[dict[str, Any], Contr
             outputsize=args.outputsize,
             exchange=args.exchange,
         )
+    raw_object = None
+    if args.deliver:
+        raw_store = _raw_store_from_env()
+        raw_object = raw_store.persist(
+            response.raw_bytes,
+            dataset_key=args.dataset_key,
+            source_symbol=args.symbol,
+        )
     request = build_market_eod_request(
         response,
         dataset_key=args.dataset_key,
@@ -159,6 +180,8 @@ def _fetch_and_validate(args: argparse.Namespace) -> tuple[dict[str, Any], Contr
         requested_exchange=args.exchange,
         canonical_symbol=args.canonical_symbol,
     )
+    if raw_object is not None:
+        attach_raw_object(request, raw_object)
     registry = ContractRegistry(args.contracts_dir)
     registry.validate("market_eod", 1, request)
     return request, registry
@@ -174,8 +197,10 @@ def _run_universe(args: argparse.Namespace) -> int:
     with ExitStack() as stack:
         provider = stack.enter_context(TwelveDataClient(TwelveDataConfig.from_env()))
         source: SourceAPIClient | None = None
+        raw_store = None
         if args.deliver:
             source = stack.enter_context(SourceAPIClient(FetcherConfig.from_env(), registry))
+            raw_store = _raw_store_from_env()
         execution = execute_twelve_data_universe(
             universe,
             provider=provider,
@@ -184,6 +209,7 @@ def _run_universe(args: argparse.Namespace) -> int:
             end_date=args.end_date,
             outputsize=args.outputsize,
             source=source,
+            raw_store=raw_store,
             wait=args.wait,
             deadline=deadline,
             poll_interval_seconds=args.poll_interval_seconds,
@@ -200,6 +226,10 @@ def _run_universe(args: argparse.Namespace) -> int:
     ):
         return EXIT_SOURCE_REJECTED
     return EXIT_PARTIAL_FAILURE
+
+
+def _raw_store_from_env() -> R2RawPayloadStore:
+    return R2RawPayloadStore(RawStorageConfig.from_env())
 
 
 def _deliver(

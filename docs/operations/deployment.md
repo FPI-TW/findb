@@ -33,8 +33,9 @@ ghcr.io/fpi-tw/findb-fetcher:<git-sha>
 並將該immutable tag交付給獨立Fetcher target。現有Fetcher程式提供contract
 validation、readiness、Source API delivery client、具整體deadline的manual
 delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，以及
-Fetcher-owned SQLite scheduler、persistent retry與checkpoint。現有CD仍只執行
-readiness，不會啟動production fetch loop；部署image不得被描述為已啟動持續抓取。
+Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
+Cloudflare R2 persistence。現有CD仍只執行readiness，不會啟動production fetch loop
+或建立R2 bucket/API token；部署image不得被描述為已啟動持續抓取。
 
 Production migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
@@ -70,18 +71,27 @@ production-fetcher
 | --- | --- |
 | Secrets | `FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY` |
 | Secrets | `FETCHER_SOURCE_CLIENT_KEY` |
-| Variables | `FETCHER_SOURCE_API_URL` |
+| Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
+| Variables | `CLOUDFLARE_R2_PREFIX`、`CLOUDFLARE_R2_MAX_OBJECT_BYTES` |
+| Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，不是需搬入environment的自訂secret。
 Twelve Data adapter執行時需要`TWELVE_DATA_API_KEY`，但目前CD readiness不呼叫
 provider，workflow也不傳入此secret。啟用scheduler時，將它放在Fetcher專屬
 Secrets Manager path，由Fetcher instance role在runtime讀取；不可加入FinDB環境。
-S3/KMS與未來OIDC/SSM設定亦須使用Fetcher專屬名稱。FinDB TLS private key若未來由
+R2 credentials與未來OIDC/SSM設定亦須使用Fetcher專屬名稱。FinDB TLS private key若未來由
 workflow管理，只能加入 `production-findb`，不能共用。
 
 啟用production scheduler時還必須把`/var/lib/findb-fetcher`掛載到持久volume，並
 維持單一scheduler writer。SQLite state保存schedule job、retry lease與逐symbol
 checkpoint；container writable layer、FinDB RDS與RabbitMQ都不能替代此volume。
+
+Fetcher raw R2 bucket不得綁定public development URL或custom domain；R2 API token只授權
+該bucket的Object Read & Write，並以Fetcher專屬secret注入。Cloudflare R2會自動以
+AES-256加密所有object及metadata，因此PutObject不得傳入R2不支援的AWS SSE/KMS headers。
+Bucket lifecycle、retention與bucket lock必須在production啟用前明確決定。Application
+只傳credential-free `r2://account-id/bucket/key` reference，不產生presigned URL，也
+不把R2 credentials送入FinDB。
 
 FinDB job不得讀provider credentials、Fetcher Source client key、raw storage或Fetcher
 部署credential。Fetcher job不得讀 `DATABASE_URL`、RabbitMQ、Admin、Dashboard、TLS、

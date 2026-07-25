@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,12 @@ import pytest
 
 from findb_fetcher.client import SourceAPIResponseError, SourceAPITransportError
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+from findb_fetcher.providers.twelve_data import (
+    TwelveDataResponse,
+    TwelveDataResponseError,
+    build_market_eod_request,
+)
+from findb_fetcher.raw_storage import RawObject, RawStorageUploadError, attach_raw_object
 from findb_fetcher.schedule import load_schedule_config
 from findb_fetcher.scheduler_state import ScheduledJob, SchedulerState
 from findb_fetcher.twelve_data_scheduler import (
@@ -38,13 +44,13 @@ class FakeProvider:
         self.failure = failure
         self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def fetch_daily(self, symbol: str, **kwargs: object) -> dict[str, Any]:
+    def fetch_daily(self, symbol: str, **kwargs: object) -> TwelveDataResponse:
         self.calls.append((symbol, kwargs))
         if self.failure:
             raise self.failure
         response = json.loads(FIXTURE_PATH.read_text())
         response["meta"]["symbol"] = symbol
-        return response
+        return TwelveDataResponse(response, raw_bytes=json.dumps(response).encode())
 
 
 class FakeSource:
@@ -107,6 +113,8 @@ def _executor(
     *,
     provider: FakeProvider | None = None,
     source: FakeSource | None = None,
+    raw_store: object | None = None,
+    state: SchedulerState | None = None,
 ) -> TwelveDataScheduledExecutor:
     return TwelveDataScheduledExecutor(
         schedule=load_schedule_config(SCHEDULE_PATH),
@@ -114,9 +122,170 @@ def _executor(
         provider=provider or FakeProvider(),  # type: ignore[arg-type]
         source=source or FakeSource(),  # type: ignore[arg-type]
         registry=ContractRegistry(contracts_dir),
+        raw_store=raw_store or RecordingRawStore([]),  # type: ignore[arg-type]
+        state=state,
         monotonic=lambda: 1.0,
         sleep=lambda _seconds: None,
     )
+
+
+class RecordingRawStore:
+    def __init__(
+        self,
+        events: list[str],
+        failure: RawStorageUploadError | None = None,
+    ) -> None:
+        self.events = events
+        self.failure = failure
+        self.calls = 0
+
+    def persist(self, raw_bytes: bytes, **_kwargs: object) -> RawObject:
+        self.events.append("upload")
+        self.calls += 1
+        assert raw_bytes.startswith(b"{")
+        if self.failure:
+            raise self.failure
+        return RawObject(
+            ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+            sha256="a" * 64,
+            size_bytes=len(raw_bytes),
+        )
+
+
+class RawProvider(FakeProvider):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    def fetch_daily(self, symbol: str, **kwargs: object) -> TwelveDataResponse:
+        self.events.append("fetch")
+        payload = super().fetch_daily(symbol, **kwargs)
+        return payload
+
+
+def test_scheduler_executor_rejects_missing_raw_store(contracts_dir: Path) -> None:
+    with pytest.raises(ValueError, match="raw object storage"):
+        TwelveDataScheduledExecutor(
+            schedule=load_schedule_config(SCHEDULE_PATH),
+            universe=load_symbol_universe(UNIVERSE_PATH),
+            provider=FakeProvider(),  # type: ignore[arg-type]
+            source=FakeSource(),  # type: ignore[arg-type]
+            registry=ContractRegistry(contracts_dir),
+            raw_store=None,  # type: ignore[arg-type]
+        )
+
+
+class OrderedSource(FakeSource):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    def prepare(self, request: dict[str, Any]) -> SimpleNamespace:
+        self.events.append("prepare")
+        assert request["payload"]["batch"]["source_raw_ref"].startswith("r2://")
+        return super().prepare(request)
+
+    def deliver(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+        self.events.append("deliver")
+        return super().deliver(*_args, **_kwargs)
+
+
+def test_scheduler_uploads_before_prepare_and_delivery(contracts_dir: Path) -> None:
+    events: list[str] = []
+    source = OrderedSource(events)
+    result = _executor(
+        contracts_dir,
+        provider=RawProvider(events),
+        source=source,
+        raw_store=RecordingRawStore(events),
+    ).execute(_job(), now=NOW)
+
+    assert result.succeeded
+    assert events == ["fetch", "upload", "prepare", "deliver"]
+    batch = source.requests[0]["payload"]["batch"]
+    assert batch["source_raw_ref"] == (f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json")
+    assert batch["source_raw_sha256"] == "a" * 64
+
+
+@pytest.mark.parametrize("retryable", [False, True])
+def test_scheduler_raw_upload_failure_never_delivers_or_advances_checkpoint(
+    contracts_dir: Path,
+    retryable: bool,
+) -> None:
+    events: list[str] = []
+    source = OrderedSource(events)
+    result = _executor(
+        contracts_dir,
+        provider=RawProvider(events),
+        source=source,
+        raw_store=RecordingRawStore(
+            events,
+            RawStorageUploadError("safe failure", retryable=retryable),
+        ),
+    ).execute(_job(), now=NOW)
+
+    assert result.outcome == "raw_upload_failed"
+    assert result.retryable is retryable
+    assert result.checkpoint_after is None
+    assert source.requests == []
+    assert events == ["fetch", "upload"]
+
+
+def test_scheduler_prepared_retry_does_not_refetch_or_reupload(
+    contracts_dir: Path,
+) -> None:
+    request = build_market_eod_request(
+        json.loads(FIXTURE_PATH.read_text()),
+        dataset_key="us_equity_eod",
+        fetched_at=NOW,
+        requested_symbol="AAPL",
+    )
+    attach_raw_object(
+        request,
+        RawObject(
+            ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+            sha256="a" * 64,
+            size_bytes=1,
+        ),
+    )
+    events: list[str] = []
+    provider = RawProvider(events)
+    raw_store = RecordingRawStore(events)
+    source = OrderedSource(events)
+
+    result = _executor(
+        contracts_dir,
+        provider=provider,
+        source=source,
+        raw_store=raw_store,
+    ).execute(replace(_job(), prepared_request=request), now=NOW)
+
+    assert result.succeeded
+    assert provider.calls == []
+    assert raw_store.calls == 0
+    assert events == ["prepare", "deliver"]
+
+
+def test_scheduler_rejects_legacy_or_partial_prepared_raw_state(
+    contracts_dir: Path,
+) -> None:
+    request = {
+        "payload": {
+            "batch": {
+                "source_raw_ref": f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+            }
+        }
+    }
+    events: list[str] = []
+
+    result = _executor(
+        contracts_dir,
+        raw_store=RecordingRawStore(events),
+    ).execute(replace(_job(), prepared_request=request), now=NOW)
+
+    assert result.outcome == "raw_provenance_missing"
+    assert not result.retryable
+    assert events == []
 
 
 def test_executor_delivers_only_rows_after_checkpoint(contracts_dir: Path) -> None:
@@ -301,6 +470,7 @@ def test_delivery_retry_reuses_persisted_request_without_refetching(
         provider=provider,  # type: ignore[arg-type]
         source=source,  # type: ignore[arg-type]
         registry=ContractRegistry(contracts_dir),
+        raw_store=RecordingRawStore([]),
         state=state,
         monotonic=lambda: 1.0,
         sleep=lambda _seconds: None,
