@@ -122,9 +122,9 @@ rollback的已知延遲。
 Fetcher raw R2 bucket不得綁定public development URL或custom domain；R2 API token只授權
 該bucket的Object Read & Write，並以Fetcher專屬secret注入。Cloudflare R2會自動以
 AES-256加密所有object及metadata，因此PutObject不得傳入R2不支援的AWS SSE/KMS headers。
-Bucket lifecycle、retention與bucket lock必須在正式上線前明確決定。Application
-只傳credential-free `r2://account-id/bucket/key` reference，不產生presigned URL，也
-不把R2 credentials送入FinDB。
+R2 raw data lifecycle為30天，bucket lock為7天；規則由Cloudflare R2管理。
+Application只傳credential-free `r2://account-id/bucket/key` reference，不產生
+presigned URL，也不把Fetcher的R2 credentials送入FinDB。
 
 FinDB job不得讀provider credentials、Fetcher Source client key、raw storage或Fetcher
 部署credential。Fetcher job不得讀 `DATABASE_URL`、RabbitMQ、Admin、Dashboard、TLS、

@@ -126,8 +126,8 @@ Returns the lifecycle state of an ingest run.
 Re-trigger normalization using the stored raw payload. Returns a fresh
 `IngestResponse` with a **new** `run_id`. Useful after a normalizer fix.
 
-Note: raw payloads expire per `RAW_RETENTION_DAYS` (default 14, retention disabled
-by default in prod). Once expired, rerun will fail with `404`.
+Note: raw payloads expire per `RAW_RETENTION_DAYS` (default 30, retention enabled
+by default). Once expired, rerun will fail with `404`.
 
 ### Dataset registry
 

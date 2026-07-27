@@ -33,7 +33,8 @@ Consumer timeout必須高於Celery hard time limit與graceful shutdown所需時�
 - Queue policy `findb-normalization-consumer-timeout`與Compose設定一致。
 - Worker ping成功且heartbeat小於90秒。
 - Unpublished outbox、queued oldest age、expired lease沒有持續上升。
-- 第一次啟用durable queue期間保持 `RAW_RETENTION_ENABLED=false`。
+- `RAW_RETENTION_ENABLED=true`且`RAW_RETENTION_DAYS=30`；事故調查或queue
+  recovery期間需要延長保存時，先暫停cleanup再處理。
 - Source client已綁定正確source/datasets。
 
 ## Smoke test

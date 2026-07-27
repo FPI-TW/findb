@@ -20,8 +20,8 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 安全的container readiness與scheduler preflight入口；不會自動抓取或送出資料。
 
 Staging CD會在獨立Fetcher target維持一個scheduler container。R2 bucket與API
-token已由外部提供；lifecycle與bucket lock仍須在正式上線前決定。Repo內有部署能力
-不表示staging資源或服務已完成部署。
+token已由外部提供；raw object lifecycle為30天，bucket lock為7天，兩者由Cloudflare
+R2管理而非Fetcher scheduler。Repo內有部署能力不表示staging資源或服務已完成部署。
 
 ## 開發
 

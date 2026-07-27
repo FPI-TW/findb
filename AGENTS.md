@@ -45,7 +45,7 @@ findb/
 
 | 層級 | 儲存位置 | 保存規則 |
 | --- | --- | --- |
-| Raw | `raw.market_payload`，JSONB 原始 payload | 由 `RAW_RETENTION_ENABLED` 控制；預設停用，期限設定為 `RAW_RETENTION_DAYS=14` |
+| Raw | `raw.market_payload`，JSONB 原始 payload | 由 `RAW_RETENTION_ENABLED` 控制；預設啟用，期限設定為 `RAW_RETENTION_DAYS=30` |
 | Canonical | `instruments`、`instrument_identifiers`、`trading_calendar`、`market_data_eod`、`corporate_action`、`macro_series`、`macro_observation`、`roll_rule`、`futures_contract`、`futures_continuous_eod` | 長期保存 |
 | Workflow / Registry | `dataset_registry`、`ingestion_attempt`、`ingestion_run`、`normalization_job`、`normalization_outbox`、`dq_issue` | 長期保存 |
 
