@@ -173,7 +173,8 @@ request一致後才建立contract。
 
 Scheduler設定位於
 `configs/twelve_data_us_common_stocks_daily.v1.json`，固定引用同目錄的versioned
-universe。預設每日`02:00 UTC`建立一次最近工作日的工作，每個symbol獨立保存狀態。
+universe。預設每日`22:00 UTC`（美股收盤後）建立一次最近工作日的工作，每個symbol
+獨立保存狀態。
 安全預設是只執行一個due cycle後退出：
 
 ```bash

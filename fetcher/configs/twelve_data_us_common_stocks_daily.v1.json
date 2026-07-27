@@ -2,7 +2,7 @@
   "schedule_version": 1,
   "schedule_id": "twelve_data_us_common_stocks_daily_v1",
   "universe_file": "twelve_data_us_common_stocks.v1.json",
-  "hour_utc": 2,
+  "hour_utc": 22,
   "minute_utc": 0,
   "outputsize": 20,
   "max_attempts": 5,
