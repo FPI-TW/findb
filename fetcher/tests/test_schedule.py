@@ -19,6 +19,8 @@ def test_repository_schedule_is_strict_and_bounded() -> None:
     assert schedule.schedule_version == 1
     assert schedule.schedule_id == "twelve_data_us_common_stocks_daily_v1"
     assert schedule.universe_file.name == "twelve_data_us_common_stocks.v1.json"
+    assert schedule.hour_utc == 22
+    assert schedule.minute_utc == 0
     assert schedule.outputsize == 20
     assert schedule.max_attempts == 5
     assert schedule.lease_seconds > schedule.wait_timeout_seconds
@@ -28,17 +30,20 @@ def test_latest_due_date_uses_utc_schedule_boundary() -> None:
     schedule = load_schedule_config(CONFIG_PATH)
 
     assert schedule.latest_due_date(
-        datetime(2026, 7, 25, 1, 59, tzinfo=timezone.utc)
+        datetime(2026, 7, 25, 21, 59, tzinfo=timezone.utc)
     ).isoformat() == ("2026-07-24")
     assert schedule.latest_due_date(
-        datetime(2026, 7, 25, 2, 0, tzinfo=timezone.utc)
+        datetime(2026, 7, 25, 22, 0, tzinfo=timezone.utc)
     ).isoformat() == ("2026-07-24")
     assert schedule.latest_due_date(
-        datetime(2026, 7, 27, 2, 0, tzinfo=timezone.utc)
+        datetime(2026, 7, 27, 21, 59, tzinfo=timezone.utc)
+    ).isoformat() == ("2026-07-24")
+    assert schedule.latest_due_date(
+        datetime(2026, 7, 27, 22, 0, tzinfo=timezone.utc)
     ).isoformat() == ("2026-07-27")
 
     with pytest.raises(ScheduleError, match="timezone-aware"):
-        schedule.latest_due_date(datetime(2026, 7, 25, 2, 0))
+        schedule.latest_due_date(datetime(2026, 7, 25, 22, 0))
 
 
 def test_retry_delay_is_exponential_and_bounded() -> None:
