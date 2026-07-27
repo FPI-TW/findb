@@ -8,7 +8,7 @@ FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以�
 
 整體資料流程是 Fetch -> Source -> durable queue -> Normalize -> Serve：
 
-- Fetch layer：目前是外部服務；已核准未來以獨立 application 納入 monorepo。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
+- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data 日線 adapter、contract validation 與 delivery client；production scheduler/checkpoint 尚未完成。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
 - Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重，並在同一 transaction 寫入 raw、run、normalization job 與 outbox。
 - Durable queue：dispatcher 將 outbox 發布到 RabbitMQ，Celery worker 執行 normalization；RabbitMQ 可重建，PostgreSQL 是 durable truth。
 - Normalize layer：`backend/app/services/normalize/`，把 contract/raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
@@ -32,6 +32,8 @@ findb/
 |  |- seed/                  # local development partial dump data
 |  `- pyproject.toml         # uv deps + black/ruff/mypy/pytest settings
 |- dashboard/                # TanStack Start 營運台；監控導入、DQ 與稽核查詢
+|- fetcher/                  # Provider adapter、contract validation 與 delivery client；不得 import backend/ 或連 FinDB DB
+|- contracts/                # 由 backend contract registry 確定性產生的 versioned JSON Schema
 |- docs/                     # 現行架構、API、維運與 backlog；索引見 docs/README.md
 |- infra/nginx/              # 生產環境 nginx 設定（HTTPS、Source allowlist、Serve API key 注入）
 |- docker-compose.yml        # local app + postgres + pgadmin stack
@@ -84,7 +86,7 @@ findb/
 | 文件 | `docs/README.md` | 唯一文件入口；只保存現行架構、契約、維運規則與未完成 backlog，歷史決策由 Git history 追溯 |
 | Nginx 設定樣板 | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf` | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入） |
 | Nginx render 腳本 | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
-| 部署流程 | `.github/workflows/deploy.yml` | GitHub Actions deploy to EC2；含 nginx confs 渲染、scp、reload 步驟 |
+| CI/CD 流程 | `.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml` | FinDB 與 Fetcher 各自獨立驗證、建置與部署；production jobs 分別綁定自己的 GitHub Environment |
 
 ## 子目錄指南
 

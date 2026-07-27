@@ -1,6 +1,7 @@
 .PHONY: help up start restart down build migrate seed up-server up-db status logs test \
 	format check check-backend dashboard-install dashboard-dev dashboard-format \
-	dashboard-test dashboard-check dashboard-build dashboard-up
+	dashboard-test dashboard-check dashboard-build dashboard-up fetcher-test fetcher-check \
+	fetcher-build contracts-export contracts-check
 
 help:
 	@echo "FinDB local workflow"
@@ -20,12 +21,17 @@ help:
 	@echo "  make dashboard-install  Install dashboard dependencies"
 	@echo "  make dashboard-dev      Start the dashboard development server"
 	@echo "  make dashboard-up       Build and start the dashboard container"
+	@echo "  make fetcher-build      Build the standalone Fetcher image"
+	@echo "  make contracts-export   Regenerate published ingress contracts"
 	@echo ""
 	@echo "Observe and verify:"
 	@echo "  make status     Show complete stack status"
 	@echo "  make logs       Follow RabbitMQ, dispatcher, and worker logs"
 	@echo "  make test       Run the DB-backed backend test suite"
 	@echo "  make dashboard-test   Run dashboard tests"
+	@echo "  make fetcher-test     Run Fetcher tests"
+	@echo "  make fetcher-check    Run Fetcher quality gates"
+	@echo "  make contracts-check  Fail when published contracts drift"
 	@echo "  make format     Format backend and dashboard code"
 	@echo "  make check      Run all backend and dashboard quality gates"
 
@@ -72,6 +78,7 @@ check-backend:
 	uv --directory backend run ruff check app tests scripts migrations
 	uv --directory backend run black --check app tests scripts migrations
 	uv --directory backend run mypy app
+	uv --directory backend run python scripts/export_ingress_contracts.py --check
 	uv --directory backend run python scripts/dev.py test-db
 
 dashboard-install:
@@ -95,4 +102,21 @@ dashboard-check:
 dashboard-build:
 	pnpm build:dashboard
 
-check: check-backend dashboard-check dashboard-build
+fetcher-test:
+	uv --directory fetcher run pytest
+
+fetcher-check:
+	uv --directory fetcher run ruff check .
+	uv --directory fetcher run black --check .
+	uv --directory fetcher run pytest
+
+fetcher-build:
+	docker build -f fetcher/Dockerfile -t findb-fetcher:local .
+
+contracts-export:
+	uv --directory backend run python scripts/export_ingress_contracts.py
+
+contracts-check:
+	uv --directory backend run python scripts/export_ingress_contracts.py --check
+
+check: check-backend dashboard-check fetcher-check dashboard-build

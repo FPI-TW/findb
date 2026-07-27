@@ -104,4 +104,5 @@ Provider 原始檔若需要長期保留，屬 Fetcher 的 object storage；FinDB
 - ORM：`backend/app/models/`
 - DB schema：`backend/migrations/`
 - Production topology：`docker-compose.prod.yml`
-- Deployment：`.github/workflows/deploy.yml`
+- CI/CD：`.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、
+  `.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml`

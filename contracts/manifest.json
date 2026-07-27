@@ -1,0 +1,17 @@
+{
+  "contracts": [
+    {
+      "path": "futures_continuous_eod/v1.schema.json",
+      "schema_id": "futures_continuous_eod",
+      "schema_version": 1,
+      "sha256": "2f2433a2e89c439be95479fecef06e19ef19124e16c67fa5be004e40369b4ce1"
+    },
+    {
+      "path": "market_eod/v1.schema.json",
+      "schema_id": "market_eod",
+      "schema_version": 1,
+      "sha256": "c04bbeb5cd57c90d1431f6ca579f3866e3cd16a0956dde547e4679ed43b5e000"
+    }
+  ],
+  "manifest_version": 1
+}

@@ -1,15 +1,22 @@
-name: CI/CD
+name: FinDB CD
 
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    paths:
+      - "backend/**"
+      - "dashboard/**"
+      - "infra/nginx/**"
+      - "docker-compose.prod.yml"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/findb-cd.yml"
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: staging-findb
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -19,112 +26,12 @@ env:
   DASHBOARD_IMAGE: ghcr.io/fpi-tw/findb-dashboard
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    defaults:
-      run:
-        working-directory: backend
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: findb
-          POSTGRES_PASSWORD: findb
-          POSTGRES_DB: findb_test
-        ports:
-          - 5435:5432
-        options: >-
-          --health-cmd "pg_isready -U findb -d findb_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
-      TEST_DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
-      SOURCE_API_KEY: test-source-key
-      ADMIN_API_KEY: test-admin-key
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
-        with:
-          version: "0.9.9"
-          enable-cache: true
-          cache-dependency-glob: "backend/uv.lock"
-
-      - name: Install dependencies
-        run: uv sync --frozen
-
-      - name: Lint
-        run: |
-          uv run ruff check app tests scripts migrations
-          uv run black --check app tests scripts migrations
-
-      - name: Type check
-        run: uv run mypy app
-
-      - name: Run migration smoke test
-        run: |
-          uv run alembic upgrade head
-          uv run alembic current
-
-      - name: Run tests
-        run: uv run pytest --tb=short -q
-
-  dashboard-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    defaults:
-      run:
-        working-directory: dashboard
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.15.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Check formatting
-        run: pnpm format:check
-
-      - name: Lint
-        run: pnpm lint:check
-
-      - name: Type check
-        run: pnpm type:check
-
-      - name: Test
-        run: pnpm test
-
-      - name: Build
-        run: pnpm build
+  verify:
+    uses: ./.github/workflows/findb-ci.yml
 
   build-push:
-    needs: [test, dashboard-test]
+    needs: verify
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -133,21 +40,21 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to GitHub Container Registry
         if: github.ref == 'refs/heads/main'
-        uses: docker/login-action@v4
+        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push backend image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: ./backend
           push: ${{ github.ref == 'refs/heads/main' }}
@@ -158,7 +65,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push dashboard image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: dashboard/Dockerfile
@@ -173,50 +80,50 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: staging-findb
 
     permissions:
       contents: read
       packages: read
 
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_ACTOR: ${{ github.actor }}
       IMAGE_TAG: ${{ github.sha }}
       APP_NAME: ${{ vars.APP_NAME }}
       APP_VERSION: ${{ vars.APP_VERSION }}
       DEBUG: ${{ vars.DEBUG }}
       PORT: ${{ vars.PORT }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DATABASE_POOL_SIZE: ${{ vars.DATABASE_POOL_SIZE }}
       DATABASE_MAX_OVERFLOW: ${{ vars.DATABASE_MAX_OVERFLOW }}
       API_V1_PREFIX: ${{ vars.API_V1_PREFIX }}
       API_KEY_HEADER: ${{ vars.API_KEY_HEADER }}
-      SOURCE_API_KEY: ${{ secrets.SOURCE_API_KEY }}
       SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
       SOURCE_TRUST_PROXY_HEADERS: ${{ vars.SOURCE_TRUST_PROXY_HEADERS }}
-      SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
       SERVE_REQUIRE_AUTH: ${{ vars.SERVE_REQUIRE_AUTH }}
-      ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-      DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
-      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
-      DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
       RATE_LIMIT_REQUESTS: ${{ vars.RATE_LIMIT_REQUESTS }}
       RATE_LIMIT_WINDOW: ${{ vars.RATE_LIMIT_WINDOW }}
       RAW_RETENTION_ENABLED: ${{ vars.RAW_RETENTION_ENABLED }}
       RAW_RETENTION_DAYS: ${{ vars.RAW_RETENTION_DAYS }}
       FINDB_STATIC_CACHE_BASE_URL: ${{ vars.FINDB_STATIC_CACHE_BASE_URL }}
-      FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
       FINDB_LATEST_PRICE_WORKERS: ${{ vars.FINDB_LATEST_PRICE_WORKERS }}
-      CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
-      RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
-      RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
-      RABBITMQ_ERLANG_COOKIE: ${{ secrets.RABBITMQ_ERLANG_COOKIE }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Validate deployment configuration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SOURCE_API_KEY: ${{ secrets.SOURCE_API_KEY }}
+          SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
+          FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
+          CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
+          RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
+          RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
+          RABBITMQ_ERLANG_COOKIE: ${{ secrets.RABBITMQ_ERLANG_COOKIE }}
         run: |
           set -euo pipefail
           missing=0
@@ -245,6 +152,8 @@ jobs:
           exit "$missing"
 
       - name: Render nginx configs
+        env:
+          SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
         run: |
           set -euo pipefail
           python backend/scripts/render_nginx_source_allowlist.py \
@@ -257,11 +166,11 @@ jobs:
             --output infra/nginx/serve-key.conf
 
       - name: Prepare deploy directories on EC2
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           script: |
             set -euo pipefail
             sudo mkdir -p /var/lib/findb/rabbitmq
@@ -269,32 +178,46 @@ jobs:
             sudo chown -R 999:999 /var/lib/findb/rabbitmq
 
       - name: Sync deploy artifacts to EC2
-        uses: appleboy/scp-action@v1
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           source: "docker-compose.prod.yml"
           target: /opt/findb
           overwrite: true
 
       - name: Sync nginx.conf to EC2 nginx path
-        uses: appleboy/scp-action@v1
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf,infra/nginx/serve-key.conf"
           target: /home/ubuntu/etc/nginx
           strip_components: 2
           overwrite: true
 
       - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SOURCE_API_KEY: ${{ secrets.SOURCE_API_KEY }}
+          SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
+          FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
+          CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
+          RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
+          RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
+          RABBITMQ_ERLANG_COOKIE: ${{ secrets.RABBITMQ_ERLANG_COOKIE }}
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           command_timeout: 30m
           envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,DASHBOARD_IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,DASHBOARD_USERNAME,DASHBOARD_PASSWORD,DASHBOARD_SESSION_SECRET,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE
           script: |

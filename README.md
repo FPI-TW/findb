@@ -1,8 +1,9 @@
 # FinDB
 
 FinDB 是金融資料 ingestion、normalization、data quality 與 canonical query
-平台。Repository 同時包含 FastAPI backend與TanStack Dashboard；未來的Fetcher
-會作為獨立application加入同一monorepo，但使用獨立image、EC2與部署權限。
+平台。Repository 包含FastAPI backend、TanStack Dashboard、versioned contracts
+與獨立Fetcher套件；Fetcher已有Twelve Data日線adapter、獨立image與CI/CD，
+production EC2、GitHub Environment與部署權限仍須在外部建立。
 
 ## 架構
 
@@ -40,6 +41,8 @@ findb/
 │   ├── scripts/                 Dev、seed、maintenance、deploy helpers
 │   └── configs/                 Maintenance configs
 ├── dashboard/                   TanStack營運台
+├── fetcher/                     Provider adapter、contract validation與delivery client
+├── contracts/                   由backend registry產生的不可變契約
 ├── docs/                        現行架構、API、維運與backlog
 ├── infra/nginx/                 Production nginx設定
 ├── docker-compose.yml           Local stack
@@ -48,7 +51,8 @@ findb/
 └── pnpm-workspace.yaml
 ```
 
-規劃中的top-level `fetcher/`、`contracts/`與integration tests見
+Fetcher目前包含contract validation、安全delivery client，以及Twelve Data
+`market_eod.v1`日線adapter；scheduler、checkpoint與production runtime仍在backlog。詳見
 [服務邊界](docs/architecture/service_boundaries.md)。
 
 ## 技術
@@ -133,6 +137,11 @@ make dashboard-test
 make dashboard-check
 make dashboard-build
 
+# Fetcher
+make fetcher-test
+make fetcher-check
+make fetcher-build
+
 # Quality
 make format
 make check
@@ -187,10 +196,11 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 - Secrets只能經Settings與環境注入，不得hardcode。
 - Source production入口由API key、client scope、rate limit與nginx allowlist共同保護。
 
-## Production
+## Deployment
 
-目前 `.github/workflows/deploy.yml` 建置backend與Dashboard images，透過SSH與
-`docker-compose.prod.yml`部署至FinDB EC2。Production包含：
+CI/CD已拆成FinDB CI、FinDB CD、Fetcher CI與Fetcher CD四個獨立workflow。FinDB
+deployment unit建置backend與Dashboard images，並透過
+`docker-compose.prod.yml`部署以下服務：
 
 - `serve`
 - `ingest`
@@ -202,16 +212,21 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 - `nginx`
 - `raw-cleanup`
 
-已核准的下一步是：
+Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立staging target；
+durable scheduler與Cloudflare R2 persistence已實作，但尚未執行首次staging rollout。
+部署設定由 `infra/env/` 的service-specific安全來源管理；實際值不進Git。仍需完成：
 
-- FinDB與Fetcher使用不同GitHub Environments。
-- 拆分deployment workflow、image與EC2。
+- 補齊 `staging-findb` 的FinDB EC2 SSH key。
+- 將部署secrets搬入對應Environment並自repository scope移除。
 - GitHub Actions改用AWS OIDC短效權限。
 - Runtime secrets搬到AWS Secrets Manager/Parameter Store。
 - FinDB與Fetcher使用不同deploy roles、instance roles與secret paths。
 
+Contract變更會執行兩個CI，但contract-only變更不會自動部署Fetcher；發布採
+backend-first，必要時以 `workflow_dispatch`明確啟動各CD。
+
 現況、目標權限矩陣、migration與rollback規則見
-[Production Deployment](docs/operations/deployment.md)。
+[Deployment](docs/operations/deployment.md)。
 
 ## 文件
 

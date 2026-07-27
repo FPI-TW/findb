@@ -12,6 +12,9 @@ node_modules/
 venv/
 ENV/
 env/
+!infra/env/
+!infra/env/**
+infra/env/*/.env.remote
 
 build/
 dist/
@@ -61,6 +64,7 @@ docs/superpowers/
 .ingest_log/
 .ingest_log_daily/
 .ingest_log_prod/
+fetcher/.state/
 datas/
 backend/seed/partial_dump/prod_partial_*/
 

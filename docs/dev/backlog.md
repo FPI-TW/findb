@@ -4,20 +4,19 @@
 
 ## P0：Fetcher落地
 
-- [ ] 建立top-level `fetcher/` application與獨立container image。
-- [ ] 建立repository-level `contracts/`，固化已發布JSON Schema與manifest。
-- [ ] 建立真實FinLab/Bloomberg fixtures與provider mapping表。
-- [ ] 建立adapter → contract → Source API整合測試。
-- [ ] 實作Fetcher自己的scheduler、checkpoint、retry與delivery status。
-- [ ] Provider原始檔寫入Fetcher S3，delivery帶raw reference與checksum。
+- [ ] 依資料來源優先序補FinLab/Bloomberg真實fixtures與provider mapping；
+  Twelve Data Common Stock日線adapter、fixture與mock Source API整合測試已完成。
 - [ ] Shadow delivery後逐一將legacy feed切到canonical `/source/ingest`。
 - [ ] 所有保留raw不再需要legacy rerun後，移除provider-specific endpoints/normalizers。
 
 ## P0：Deployment與secret isolation
 
-- [ ] 建立 `production-findb`、`production-fetcher` GitHub Environments。
-- [ ] 拆分FinDB與Fetcher deployment workflow、image與concurrency group。
-- [ ] 將production secrets從repository/job-wide scope移到對應environment。
+- [ ] 執行首次staging Fetcher rollout，現場驗證durable mount owner/mode、
+  單一scheduler container與失敗rollback；workflow能力已完成，但尚未實際部署。
+- [ ] 建立Fetcher-owned private Cloudflare R2 bucket、bucket-scoped API token、
+  retention lifecycle與bucket lock。
+- [ ] 補齊 `staging-findb` 的 `FINDB_EC2_SSH_KEY`。
+- [ ] 將部署secrets從repository/job-wide scope移到對應environment。
 - [ ] 為workflow、infra與contract設定CODEOWNERS與environment protection。
 - [ ] 建立service-specific GitHub OIDC AWS deploy roles。
 - [ ] 以SSM/deployment service取代長效EC2 SSH key。
@@ -28,6 +27,8 @@
 
 ## P1：Ingress production readiness
 
+- [ ] 若要在FinDB全域強制raw provenance成對，採backend-first新增ingress
+  contract v2；不得原地收緊已發布的v1 contract。
 - [ ] 用真實feed校準record count、freshness、coverage與missing-delivery policy。
 - [ ] 完成warn → reject切換準則與production觀察窗口。
 - [ ] 建立delivery-missing monitor與告警接收流程。

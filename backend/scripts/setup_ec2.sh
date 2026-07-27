@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time EC2 initialization script for Ubuntu 22.04
+# One-time FinDB EC2 initialization script for Ubuntu 22.04
 # Run as root or with sudo: sudo bash setup_ec2.sh
 
 set -euo pipefail
@@ -32,11 +32,12 @@ echo "==> Docker installed: $(docker --version)"
 echo "==> docker compose installed: $(docker compose version)"
 echo ""
 echo "Next steps (manual):"
-echo "  1. Configure all production environment variables in GitHub Actions."
+echo "  1. Create/configure the staging-findb GitHub Environment."
+echo "     Keep these settings out of repository scope and out of staging-fetcher."
 echo "     Secrets:"
-echo "       EC2_HOST"
-echo "       EC2_USER"
-echo "       EC2_SSH_KEY"
+echo "       FINDB_EC2_HOST"
+echo "       FINDB_EC2_USER"
+echo "       FINDB_EC2_SSH_KEY"
 echo "       DATABASE_URL"
 echo "       SOURCE_API_KEY"
 echo "       ADMIN_API_KEY"
@@ -44,6 +45,9 @@ echo "       CELERY_BROKER_URL"
 echo "       RABBITMQ_DEFAULT_USER"
 echo "       RABBITMQ_DEFAULT_PASS"
 echo "       RABBITMQ_ERLANG_COOKIE"
+echo "       DASHBOARD_USERNAME"
+echo "       DASHBOARD_PASSWORD"
+echo "       DASHBOARD_SESSION_SECRET"
 echo "       SERVE_API_KEYS (optional Serve fallback; DB-backed keys preferred)"
 echo "       FINDB_STATIC_CACHE_SERVE_API_KEY (required when SERVE_REQUIRE_AUTH=true)"
 echo "     Variables:"
@@ -72,5 +76,9 @@ echo "  4. Push through a PR to main. GitHub Actions will sync compose and deplo
 echo ""
 echo "  5. Add EC2 user to docker group (optional, avoids sudo):"
 echo "     usermod -aG docker \$USER && newgrp docker"
+echo ""
+echo "Fetcher is a separate deployment target. Do not configure FETCHER_EC2_*,"
+echo "provider, raw-storage, or Fetcher Source client credentials on this host or"
+echo "in staging-findb; those belong only to staging-fetcher."
 echo ""
 echo "Setup complete."
