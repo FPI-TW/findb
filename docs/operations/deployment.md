@@ -63,9 +63,12 @@ staging-fetcher
 | Secrets | `DATABASE_URL`、`CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE` |
 | Secrets | `SOURCE_API_KEY`、`SERVE_API_KEYS`、`ADMIN_API_KEY` |
 | Secrets | `DASHBOARD_USERNAME`、`DASHBOARD_PASSWORD`、`DASHBOARD_SESSION_SECRET`、`FINDB_STATIC_CACHE_SERVE_API_KEY` |
+| Secrets | `CLOUDFLARE_R2_CONFIG_READ_API_TOKEN`（`Workers R2 Storage: Read`） |
+| Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`（bucket-scoped `Object Read & Write`） |
 | Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
 | Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
 | Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS` |
+| Variables | `CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
 
 ### `staging-fetcher`
 
@@ -81,10 +84,22 @@ staging-fetcher
 `GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
 container。現階段Source、Twelve Data與R2 secrets由`staging-fetcher` Environment
 逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
-Secrets Manager/Parameter Store前的明確過渡機制，不可加入FinDB環境或使用
-`--env NAME=value`出現在command line。R2 credentials與未來OIDC/SSM設定亦須使用
-Fetcher專屬名稱。FinDB TLS private key若未來由workflow管理，只能加入
+Secrets Manager/Parameter Store前的明確過渡機制，不可使用
+`--env NAME=value`出現在command line。Fetcher的R2 credentials與未來OIDC/SSM
+設定必須維持Fetcher專屬，不能複製到FinDB。FinDB TLS private key若未來由workflow管理，只能加入
 `staging-findb`，不能共用。
+
+R2 credentials依服務分層：Fetcher只持有指定bucket的`Object Read & Write` S3
+credentials；FinDB另外持有`Workers R2 Storage: Read` Bearer token供bucket
+configuration稽核，以及獨立的bucket-scoped `Object Read & Write` S3
+credentials。`Workers R2 Storage: Edit`不屬於任何application runtime；若需修改
+lifecycle或bucket lock，必須使用獨立、短效的管理credential。
+
+FinDB不設定全域R2 prefix；它以完整object reference或bucket inventory辨識物件。
+Provider-specific prefix由各Fetcher application管理。目前
+`CLOUDFLARE_R2_PREFIX`只屬於Twelve Data Fetcher，未來新增provider時必須使用該
+provider自己的prefix或由provider identity確定性產生路徑，不能把單一prefix提升為
+Backend全域設定。
 
 Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
 `0700`），以bind mount提供給preflight與scheduler，並維持單一scheduler writer。
@@ -107,9 +122,9 @@ rollback的已知延遲。
 Fetcher raw R2 bucket不得綁定public development URL或custom domain；R2 API token只授權
 該bucket的Object Read & Write，並以Fetcher專屬secret注入。Cloudflare R2會自動以
 AES-256加密所有object及metadata，因此PutObject不得傳入R2不支援的AWS SSE/KMS headers。
-Bucket lifecycle、retention與bucket lock必須在正式上線前明確決定。Application
-只傳credential-free `r2://account-id/bucket/key` reference，不產生presigned URL，也
-不把R2 credentials送入FinDB。
+R2 raw data lifecycle為30天，bucket lock為7天；規則由Cloudflare R2管理。
+Application只傳credential-free `r2://account-id/bucket/key` reference，不產生
+presigned URL，也不把Fetcher的R2 credentials送入FinDB。
 
 FinDB job不得讀provider credentials、Fetcher Source client key、raw storage或Fetcher
 部署credential。Fetcher job不得讀 `DATABASE_URL`、RabbitMQ、Admin、Dashboard、TLS、

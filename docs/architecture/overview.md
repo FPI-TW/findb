@@ -47,13 +47,13 @@ handler 不得新增寫入行為，未來才能安全指向 read replica。
 
 | 層級 | 主要資料 | 保存策略 |
 | --- | --- | --- |
-| Raw | `raw.market_payload` | 由 `RAW_RETENTION_ENABLED` 與 `RAW_RETENTION_DAYS` 控制 |
+| Raw | `raw.market_payload` | 預設啟用清理並保存30天，由 `RAW_RETENTION_ENABLED` 與 `RAW_RETENTION_DAYS` 控制 |
 | Workflow | `ingestion_attempt`、`ingestion_run`、`normalization_job`、`normalization_outbox` | durable audit 與 recovery truth |
 | Registry | `dataset_registry`、source clients、API keys、`dq_issue` | 長期保存 |
 | Canonical | instruments、calendar、EOD、corporate actions、macro、futures、bonds、stats | 長期保存 |
 
-Provider 原始檔若需要長期保留，屬 Fetcher 的 object storage；FinDB contract 只帶
-不含 credentials 的 `source_raw_ref` 與 checksum。
+Provider原始檔由Fetcher寫入R2；R2 lifecycle保存30天、bucket lock保護前7天。
+FinDB contract只帶不含credentials的`source_raw_ref`與checksum。
 
 ## 寫入路徑
 

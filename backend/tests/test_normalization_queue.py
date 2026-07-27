@@ -563,14 +563,33 @@ async def test_source_precedence_is_independent_of_worker_completion_order(test_
 
 
 @pytest.mark.asyncio
+async def test_raw_cleanup_skips_database_when_disabled():
+    with patch("scripts.cleanup_raw.create_async_engine") as create_engine:
+        deleted = await cleanup_expired_raw(retention_enabled=False)
+
+    assert deleted == 0
+    create_engine.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     test_session,
     test_engine,
 ):
     await _seed_crypto_dataset(test_session)
     now = utc_now()
+    retention_days = get_settings().RAW_RETENTION_DAYS
+    old_terminal_at = now - timedelta(days=retention_days + 1)
+    recently_terminal_at = now - timedelta(days=1)
+    expired_at = now - timedelta(days=1)
 
-    async def add_work(key: str, status: str, outbox_status: str):
+    async def add_work(
+        key: str,
+        status: str,
+        outbox_status: str,
+        *,
+        terminal_at: datetime | None = None,
+    ):
         run_id = uuid7()
         raw = RawMarketPayload(
             raw_payload_id=uuid7(),
@@ -580,18 +599,18 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
             idempotency_key=key,
             payload_sha256="a" * 64,
             payload={"data": []},
-            fetched_at=now - timedelta(days=30),
-            expire_at=now - timedelta(days=16),
+            fetched_at=old_terminal_at,
+            expire_at=expired_at,
             run_id=run_id,
-            created_at=now - timedelta(days=30),
+            created_at=old_terminal_at,
         )
         run = IngestionRun(
             run_id=run_id,
             dataset_key="crypto_eod",
             raw_payload_id=raw.raw_payload_id,
             status=status,
-            completed_at=(now - timedelta(days=15) if status == "completed" else None),
-            created_at=now - timedelta(days=30),
+            completed_at=terminal_at,
+            created_at=old_terminal_at,
         )
         job = NormalizationJob(
             job_id=uuid7(),
@@ -600,9 +619,9 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
             status=status,
             delivery_id=uuid7(),
             available_at=now,
-            created_at=now - timedelta(days=30),
+            created_at=old_terminal_at,
             updated_at=now,
-            completed_at=(now - timedelta(days=15) if status == "completed" else None),
+            completed_at=terminal_at,
         )
         outbox = NormalizationOutbox(
             outbox_id=uuid7(),
@@ -617,9 +636,28 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         test_session.add_all((raw, run, job, outbox))
         return raw.raw_payload_id
 
-    deletable_id = await add_work("terminal-published", "completed", "published")
+    deletable_ids = [
+        await add_work(
+            f"{status}-published",
+            status,
+            "published",
+            terminal_at=old_terminal_at,
+        )
+        for status in ("completed", "completed_with_errors", "failed")
+    ]
     queued_id = await add_work("queued-pending", "queued", "pending")
-    unpublished_id = await add_work("terminal-pending", "completed", "pending")
+    unpublished_id = await add_work(
+        "terminal-pending",
+        "completed",
+        "pending",
+        terminal_at=old_terminal_at,
+    )
+    recent_terminal_id = await add_work(
+        "recent-terminal-published",
+        "completed",
+        "published",
+        terminal_at=recently_terminal_at,
+    )
     legacy_run_id = uuid7()
     legacy_raw = RawMarketPayload(
         raw_payload_id=uuid7(),
@@ -629,10 +667,10 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         idempotency_key="legacy-terminal",
         payload_sha256="b" * 64,
         payload={"data": []},
-        fetched_at=now - timedelta(days=30),
-        expire_at=now - timedelta(days=16),
+        fetched_at=old_terminal_at,
+        expire_at=expired_at,
         run_id=legacy_run_id,
-        created_at=now - timedelta(days=30),
+        created_at=old_terminal_at,
     )
     legacy_run = IngestionRun(
         run_id=legacy_run_id,
@@ -640,7 +678,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         raw_payload_id=legacy_raw.raw_payload_id,
         status="completed",
         completed_at=None,
-        created_at=now - timedelta(days=30),
+        created_at=old_terminal_at,
     )
     legacy_raw_id = legacy_raw.raw_payload_id
     test_session.add_all((legacy_raw, legacy_run))
@@ -652,8 +690,10 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     )
     test_session.expire_all()
 
-    assert deleted == 2
-    assert await test_session.get(RawMarketPayload, deletable_id) is None
+    assert deleted == 4
+    for raw_payload_id in deletable_ids:
+        assert await test_session.get(RawMarketPayload, raw_payload_id) is None
     assert await test_session.get(RawMarketPayload, queued_id) is not None
     assert await test_session.get(RawMarketPayload, unpublished_id) is not None
+    assert await test_session.get(RawMarketPayload, recent_terminal_id) is not None
     assert await test_session.get(RawMarketPayload, legacy_raw_id) is None

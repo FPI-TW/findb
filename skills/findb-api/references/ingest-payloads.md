@@ -275,7 +275,7 @@ curl -X POST "https://findb.tingfong.com/api/v1/source/runs/<run_id>/rerun" \
 ```
 
 Re-runs only work while the raw payload is still inside the
-`RAW_RETENTION_DAYS` window (default 14 days; retention may be disabled in prod).
+`RAW_RETENTION_DAYS` window (default 30 days; retention is enabled by default).
 Past that, you have to re-fetch from the upstream provider.
 
 ---

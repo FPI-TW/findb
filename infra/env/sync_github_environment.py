@@ -44,6 +44,8 @@ SERVICE_CONFIGS: Final = {
             "RAW_RETENTION_DAYS",
             "FINDB_STATIC_CACHE_BASE_URL",
             "FINDB_LATEST_PRICE_WORKERS",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_BUCKET",
         ),
         secrets=(
             "FINDB_EC2_HOST",
@@ -61,7 +63,11 @@ SERVICE_CONFIGS: Final = {
             "RABBITMQ_DEFAULT_USER",
             "RABBITMQ_DEFAULT_PASS",
             "RABBITMQ_ERLANG_COOKIE",
+            "CLOUDFLARE_R2_CONFIG_READ_API_TOKEN",
+            "CLOUDFLARE_R2_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
         ),
+        optional_secrets=("CLOUDFLARE_R2_SESSION_TOKEN",),
     ),
     "fetcher": ServiceConfig(
         environment="staging-fetcher",

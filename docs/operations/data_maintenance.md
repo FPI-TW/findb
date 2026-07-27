@@ -77,7 +77,11 @@ Production deploy會在服務健康後重生instrument cache。Cache失敗不能
 
 ## Raw retention
 
-- `RAW_RETENTION_ENABLED=false`時不自動刪除。
+- 正式政策為PostgreSQL `raw.market_payload`與R2 raw object都保存30天。
+- PostgreSQL以`RAW_RETENTION_ENABLED=true`、`RAW_RETENTION_DAYS=30`執行每日清理。
+- R2由Cloudflare lifecycle在object滿30天後刪除，bucket lock保護前7天。
+- R2 lifecycle依provider prefix套用；Fetcher與Backend application不主動刪除R2 object。
+- `RAW_RETENTION_ENABLED=false`只供事故處理時暫停PostgreSQL自動刪除。
 - 啟用前確認queue reconciliation、rerun保留期與稽核需求。
 - `RAW_RETENTION_DAYS`必須長於正常延遲、事故調查與contract migration窗口。
 - Queue backlog、expired leases或migration期間不要清理相關raw payload。
