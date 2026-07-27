@@ -79,4 +79,17 @@ jobs:
 
       - name: Build container
         working-directory: .
-        run: docker build -f fetcher/Dockerfile -t findb-fetcher:${{ github.sha }} .
+        run: |
+          image="findb-fetcher:${{ github.sha }}"
+          for attempt in 1 2 3; do
+            if docker build -f fetcher/Dockerfile -t "$image" .; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error title=Fetcher container build failed::Docker build failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((attempt * 10))
+            echo "::warning title=Fetcher container build retry::Attempt ${attempt} failed; retrying in ${delay}s"
+            sleep "$delay"
+          done

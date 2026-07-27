@@ -193,6 +193,18 @@ def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> 
         assert required_paths <= set(fetcher_ci["on"][event]["paths"])
 
 
+def test_fetcher_ci_retries_transient_container_build_failures() -> None:
+    fetcher_ci = _load_workflow(FETCHER_CI_WORKFLOW)
+    build_step = _named_step(fetcher_ci, "test", "Build container")
+    script = build_step["run"]
+
+    assert "for attempt in 1 2 3; do" in script
+    assert 'if docker build -f fetcher/Dockerfile -t "$image" .; then' in script
+    assert 'if [ "$attempt" -eq 3 ]; then' in script
+    assert 'sleep "$delay"' in script
+    assert "Docker build failed after 3 attempts" in script
+
+
 def test_dashboard_image_inputs_gate_findb_ci_and_cd() -> None:
     required_paths = {
         "dashboard/**",
