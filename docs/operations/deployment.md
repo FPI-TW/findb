@@ -68,7 +68,7 @@ staging-fetcher
 | Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
 | Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
 | Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS` |
-| Variables | `CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET`、`CLOUDFLARE_R2_PREFIX` |
+| Variables | `CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
 
 ### `staging-fetcher`
 
@@ -94,6 +94,12 @@ credentials；FinDB另外持有`Workers R2 Storage: Read` Bearer token供bucket
 configuration稽核，以及獨立的bucket-scoped `Object Read & Write` S3
 credentials。`Workers R2 Storage: Edit`不屬於任何application runtime；若需修改
 lifecycle或bucket lock，必須使用獨立、短效的管理credential。
+
+FinDB不設定全域R2 prefix；它以完整object reference或bucket inventory辨識物件。
+Provider-specific prefix由各Fetcher application管理。目前
+`CLOUDFLARE_R2_PREFIX`只屬於Twelve Data Fetcher，未來新增provider時必須使用該
+provider自己的prefix或由provider identity確定性產生路徑，不能把單一prefix提升為
+Backend全域設定。
 
 Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
 `0700`），以bind mount提供給preflight與scheduler，並維持單一scheduler writer。

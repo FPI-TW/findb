@@ -46,7 +46,6 @@ SERVICE_CONFIGS: Final = {
             "FINDB_LATEST_PRICE_WORKERS",
             "CLOUDFLARE_R2_ACCOUNT_ID",
             "CLOUDFLARE_R2_BUCKET",
-            "CLOUDFLARE_R2_PREFIX",
         ),
         secrets=(
             "FINDB_EC2_HOST",
