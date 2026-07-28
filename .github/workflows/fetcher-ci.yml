@@ -1,26 +1,16 @@
 name: Fetcher CI
 
+# Pull requests run CI directly. After merge, Fetcher CD calls this workflow once
+# through workflow_call before it can build or deploy.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "fetcher/**"
-      - "contracts/**"
-      # Contract generation imports application code transitively. Keep this
-      # conservative CI-only gate broad so backend changes cannot silently
-      # invalidate checked-in contracts consumed by Fetcher.
-      - "backend/app/**"
-      - "backend/pyproject.toml"
-      - "backend/uv.lock"
-      - "backend/scripts/export_ingress_contracts.py"
-      - "backend/tests/test_contract_artifacts.py"
-      - ".github/workflows/fetcher-ci.yml"
-      - ".github/workflows/fetcher-cd.yml"
   pull_request:
     branches: [main]
     paths:
       - "fetcher/**"
       - "contracts/**"
+      # Contract generation imports application code transitively. Keep this
+      # conservative PR gate broad so backend changes cannot silently invalidate
+      # checked-in contracts consumed by Fetcher.
       - "backend/app/**"
       - "backend/pyproject.toml"
       - "backend/uv.lock"
