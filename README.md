@@ -51,8 +51,8 @@ findb/
 └── pnpm-workspace.yaml
 ```
 
-Fetcher目前包含contract validation、安全delivery client，以及Twelve Data
-`market_eod.v1`日線adapter；scheduler、checkpoint與production runtime仍在backlog。詳見
+Fetcher目前包含contract validation、安全delivery client、Twelve Data
+`market_eod.v1`日線adapter、durable scheduler、checkpoint與staging runtime。詳見
 [服務邊界](docs/architecture/service_boundaries.md)。
 
 ## 技術
@@ -213,10 +213,15 @@ deployment unit建置backend與Dashboard images，並透過
 - `raw-cleanup`
 
 Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立staging target；
-durable scheduler與Cloudflare R2 persistence已實作，但尚未執行首次staging rollout。
+durable scheduler與Cloudflare R2 persistence已部署到staging；data-producing
+scheduler是否運行仍受獨立operation gate控制。
+
+Staging只用於有明確symbol、日期與筆數上限的端到端功能驗證，不導入完整
+universe或production-scale歷史資料。完整限制與例外核准方式見
+[Deployment staging data policy](docs/operations/deployment.md#staging-data-policy)。
+
 部署設定由 `infra/env/` 的service-specific安全來源管理；實際值不進Git。仍需完成：
 
-- 補齊 `staging-findb` 的FinDB EC2 SSH key。
 - 將部署secrets搬入對應Environment並自repository scope移除。
 - GitHub Actions改用AWS OIDC短效權限。
 - Runtime secrets搬到AWS Secrets Manager/Parameter Store。

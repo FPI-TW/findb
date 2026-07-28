@@ -11,9 +11,6 @@
 
 ## P0：Deployment與secret isolation
 
-- [ ] 執行首次staging Fetcher rollout，現場驗證durable mount owner/mode、
-  單一scheduler container與失敗rollback；workflow能力已完成，但尚未實際部署。
-- [ ] 補齊 `staging-findb` 的 `FINDB_EC2_SSH_KEY`。
 - [ ] 將部署secrets從repository/job-wide scope移到對應environment。
 - [ ] 為workflow、infra與contract設定CODEOWNERS與environment protection。
 - [ ] 建立service-specific GitHub OIDC AWS deploy roles。

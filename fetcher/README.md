@@ -21,7 +21,21 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 
 Staging CD會在獨立Fetcher target維持一個scheduler container。R2 bucket與API
 token已由外部提供；raw object lifecycle為30天，bucket lock為7天，兩者由Cloudflare
-R2管理而非Fetcher scheduler。Repo內有部署能力不表示staging資源或服務已完成部署。
+R2管理而非Fetcher scheduler。
+
+### Staging execution boundary
+
+Staging只驗證完整資料流與故障處理，不承載完整資料集。預設data-producing profile
+固定使用committed AAPL、MSFT、NVDA universe與scheduler `outputsize=20`；fresh cycle
+最多3個symbols、60筆provider rows。Universe內的260筆per-symbol與780筆total hard
+limits是程式安全上限，不是staging載入授權。
+
+不得在staging執行完整歷史backfill、完整universe導入或擴大symbol、日期、record
+caps；例外必須依
+[staging data policy](../docs/operations/deployment.md#staging-data-policy)
+針對具名run另行核准。常駐 `--run-forever` 只代表排程方式，不授權大量導入。
+Bounded acceptance完成後預設停止data-producing scheduler；只有具名觀察窗口可保持
+運行，且仍須遵守相同caps。
 
 ## 開發
 

@@ -37,7 +37,12 @@ Consumer timeout必須高於Celery hard time limit與graceful shutdown所需時�
   recovery期間需要延長保存時，先暫停cleanup再處理。
 - Source client已綁定正確source/datasets。
 
-## Smoke test
+## Staging bounded end-to-end acceptance
+
+Staging驗收的目標是覆蓋完整功能，不是累積資料量。任何data-producing測試都必須
+符合[staging data policy](deployment.md#staging-data-policy)，並在執行前記錄
+image/config SHA、pilot universe、日期或output上限、預估credits，以及相關資料表的
+pre-run counts。禁止以smoke test名義執行完整歷史或完整universe導入。
 
 ```bash
 docker compose -f docker-compose.prod.yml exec -T rabbitmq \
@@ -52,12 +57,16 @@ docker compose -f docker-compose.prod.yml exec -T ingest \
   python /app/scripts/check_queue_health.py
 ```
 
-送一筆固定idempotency key的payload，確認：
+以固定bounded identity送出pilot payload，確認：
 
-1. Source回 `202` 與 `attempt_id/run_id`。
-2. Run最後進入completed或明確failed terminal state。
-3. 相同內容重送不增加canonical row。
-4. 相同key不同內容回 `409`。
+1. Provider raw的R2 reference與checksum存在且符合delivery內容。
+2. Source回 `202` 與 `attempt_id/run_id`。
+3. Run/job進入預期terminal state，outbox已published且沒有active delivery殘留。
+4. DQ結果、canonical values與row counts符合pilot範圍。
+5. Serve、Admin與Dashboard可查到相同lineage與結果。
+6. 相同內容重送不增加canonical row。
+7. 相同key不同內容回 `409`。
+8. 記錄post-run counts、queue/DLQ狀態與實際provider credits。
 
 ## 監控
 

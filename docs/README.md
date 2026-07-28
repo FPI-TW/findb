@@ -11,10 +11,10 @@
 | [architecture/ingress_contracts.md](architecture/ingress_contracts.md) | Fetcher 與 FinDB 間的 versioned ingress contract。 |
 | [architecture/service_boundaries.md](architecture/service_boundaries.md) | Monorepo 內 FinDB、Fetcher、Dashboard 與下游服務的責任邊界。 |
 | [api/api_usage_guide.md](api/api_usage_guide.md) | Source、Serve、Admin API 的認證、主要端點與使用方式。 |
-| [operations/deployment.md](operations/deployment.md) | EC2 部署、GitHub Environment、AWS IAM 與 secrets 邊界。 |
-| [operations/ingestion.md](operations/ingestion.md) | Durable ingestion、RabbitMQ、監控、恢復與 rollback。 |
+| [operations/deployment.md](operations/deployment.md) | EC2 部署、staging資料界線、GitHub Environment、AWS IAM 與 secrets 邊界。 |
+| [operations/ingestion.md](operations/ingestion.md) | Durable ingestion、bounded staging驗收、RabbitMQ、監控、恢復與 rollback。 |
 | [operations/migration_workflow.md](operations/migration_workflow.md) | Alembic migration 與 production rollout 規則。 |
-| [operations/data_maintenance.md](operations/data_maintenance.md) | Partial dump、seed、backfill、raw retention 與 cache 維護。 |
+| [operations/data_maintenance.md](operations/data_maintenance.md) | Staging reset、partial dump、seed、backfill、raw retention 與 cache 維護。 |
 | [dev/backlog.md](dev/backlog.md) | 尚未完成、仍需追蹤的工作與已知風險。 |
 
 ## 文件原則
