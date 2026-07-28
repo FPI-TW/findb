@@ -19,6 +19,8 @@
 - [ ] 建立不同EC2 instance role與secret path/KMS policy。
 - [ ] 為每個Fetcher/provider簽發DB-backed source client key，移除legacy共享
   `SOURCE_API_KEY`。
+- [ ] 完成一個完整排程週期的credential usage觀察後，移除 `SERVE_API_KEYS`、
+  `ADMIN_API_KEY`。
 
 ## P1：Ingress production readiness
 
@@ -35,14 +37,13 @@
 - [ ] 評估canonical/raw的 `run_id` FK或定期lineage consistency job。
 - [ ] 壓測並優化 `admin/raw-payloads` 的index與pagination。
 - [ ] 監控 `market_data_eod_default`；若累積資料，建立安全搬移runbook。
-- [ ] 以access log或離線aggregation回填API key usage；不得在Serve request inline寫DB。
 - [ ] 建立代表性ingest吞吐與Serve latency baseline。
 - [ ] 依量測結果導入bulk insert/upsert與batch DQ，不先做無基線微調。
 
 ## P2：服務與治理
 
 - [ ] 評估Serve read replica；前提是維持完全唯讀。
-- [ ] 完成非阻塞API usage audit與異常key偵測。
+- [ ] 將credential usage aggregate與invalid-key安全事件接入集中式告警。
 - [ ] 需求出現後再建S3/Parquet bulk export，不以深分頁JSON支援大型回測。
 - [ ] 新增債券、ETF或其他asset時，先取得真實payload contract與fixtures。
 

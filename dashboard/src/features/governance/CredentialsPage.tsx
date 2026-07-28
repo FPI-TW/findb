@@ -1,0 +1,573 @@
+import { useServerFn } from "@tanstack/react-start"
+import {
+  KeyRound,
+  Plus,
+  RefreshCw,
+  RotateCw,
+  ShieldAlert,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react"
+import { type FormEvent, useCallback, useEffect, useState } from "react"
+
+import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
+import { Badge } from "../../components/ui/badge"
+import { Button } from "../../components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card"
+import { Input } from "../../components/ui/input"
+import { Label } from "../../components/ui/label"
+import { Skeleton } from "../../components/ui/skeleton"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../../components/ui/table"
+import type {
+  AdminRole,
+  Credential,
+  CredentialFilters,
+  CredentialsOverview,
+} from "../../lib/admin-governance-api"
+import {
+  credentialKindSchema,
+  credentialStatusSchema,
+} from "../../lib/admin-governance-api"
+import {
+  issueCredential,
+  loadCredentials,
+  loadCredentialsOverview,
+  revokeCredential,
+  rotateCredential,
+} from "../../lib/admin-governance.functions"
+import {
+  canIssueCredential,
+  canManageCredential,
+} from "../../lib/admin-permissions"
+import { SecretDialog } from "./SecretDialog"
+
+const EMPTY_FILTERS: CredentialFilters = { kind: "", status: "", owner: "" }
+
+function formatDate(value: string | null) {
+  if (!value) return "—"
+  return new Intl.DateTimeFormat("zh-TW", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value))
+}
+
+function statusVariant(status: Credential["status"]) {
+  if (status === "active") return "default" as const
+  if (status === "expiring" || status === "legacy") return "warning" as const
+  if (status === "revoked" || status === "expired")
+    return "destructive" as const
+  return "secondary" as const
+}
+
+export function CredentialsPage({ role }: { role: AdminRole }) {
+  const load = useServerFn(loadCredentials)
+  const loadOverview = useServerFn(loadCredentialsOverview)
+  const issue = useServerFn(issueCredential)
+  const rotate = useServerFn(rotateCredential)
+  const revoke = useServerFn(revokeCredential)
+  const [credentials, setCredentials] = useState<Credential[]>([])
+  const [overview, setOverview] = useState<CredentialsOverview | null>(null)
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS)
+  const [loading, setLoading] = useState(true)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  const [secret, setSecret] = useState<{ title: string; value: string } | null>(
+    null
+  )
+  const [kind, setKind] = useState<"source" | "serve" | "admin">("source")
+  const [name, setName] = useState("")
+  const [owner, setOwner] = useState("")
+  const [description, setDescription] = useState("")
+  const [sourceName, setSourceName] = useState("")
+  const [allowedDatasets, setAllowedDatasets] = useState("")
+  const [scopes, setScopes] = useState("")
+  const [credentialRole, setCredentialRole] = useState<AdminRole>("operator")
+  const [expiresAt, setExpiresAt] = useState("")
+
+  const refresh = useCallback(
+    async (nextFilters: CredentialFilters, initial = false) => {
+      if (initial) setLoading(true)
+      else setPending(true)
+      setError("")
+      try {
+        const [credentialResult, overviewResult] = await Promise.all([
+          load({ data: nextFilters }),
+          loadOverview(),
+        ])
+        setCredentials(credentialResult.data)
+        setOverview(overviewResult)
+      } catch (reason) {
+        setError(
+          reason instanceof Error ? reason.message : "無法載入 credential。"
+        )
+      } finally {
+        setLoading(false)
+        setPending(false)
+      }
+    },
+    [load, loadOverview]
+  )
+
+  useEffect(() => {
+    void refresh(EMPTY_FILTERS, true)
+  }, [refresh])
+
+  async function submitIssue(event: FormEvent) {
+    event.preventDefault()
+    setPending(true)
+    setError("")
+    const expiry = expiresAt ? new Date(expiresAt).toISOString() : undefined
+    const split = (value: string) =>
+      value
+        .split(",")
+        .map(item => item.trim())
+        .filter(Boolean)
+    try {
+      const result =
+        kind === "source"
+          ? await issue({
+              data: {
+                kind,
+                name,
+                owner,
+                description: description || undefined,
+                source_name: sourceName,
+                allowed_datasets: split(allowedDatasets),
+                expires_at: expiry,
+              },
+            })
+          : kind === "serve"
+            ? await issue({
+                data: {
+                  kind,
+                  name: name || undefined,
+                  owner,
+                  description: description || undefined,
+                  scopes: split(scopes),
+                  expires_at: expiry,
+                },
+              })
+            : await issue({
+                data: {
+                  kind,
+                  name: name || undefined,
+                  owner,
+                  description: description || undefined,
+                  role: credentialRole,
+                  scopes: split(scopes),
+                  expires_at: expiry,
+                },
+              })
+      setSecret({ title: `已簽發 ${result.data.name}`, value: result.api_key })
+      setName("")
+      setDescription("")
+      setAllowedDatasets("")
+      setScopes("")
+      setExpiresAt("")
+      await refresh(filters)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "簽發失敗。")
+      setPending(false)
+    }
+  }
+
+  async function rotateItem(item: Credential) {
+    if (
+      !item.id ||
+      item.kind === "legacy" ||
+      !canManageCredential(role, item.kind)
+    )
+      return
+    setPending(true)
+    setError("")
+    try {
+      const result = await rotate({ data: { kind: item.kind, id: item.id } })
+      setSecret({
+        title: `已輪替 ${result.data.name}`,
+        value: result.api_key,
+      })
+      await refresh(filters)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "輪替失敗。")
+      setPending(false)
+    }
+  }
+
+  async function revokeItem(item: Credential) {
+    if (
+      !item.id ||
+      item.kind === "legacy" ||
+      !canManageCredential(role, item.kind) ||
+      !window.confirm(`確定立即撤銷「${item.name}」？撤銷後下一個請求即失效。`)
+    )
+      return
+    setPending(true)
+    setError("")
+    try {
+      await revoke({ data: { kind: item.kind, id: item.id } })
+      await refresh(filters)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "撤銷失敗。")
+      setPending(false)
+    }
+  }
+
+  const legacyConfigured =
+    overview &&
+    (overview.legacy.admin || overview.legacy.source || overview.legacy.serve)
+  const mayIssue = canIssueCredential(role, kind)
+
+  return (
+    <div className="grid gap-5">
+      <header>
+        <p className="mb-1 font-mono text-xs font-medium tracking-widest text-accent uppercase">
+          Credential governance
+        </p>
+        <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          API Credentials
+        </h2>
+        <p className="mt-2 text-sm text-muted">
+          集中確認用途、owner、生命週期、使用狀態，並安全增發與輪替。
+        </p>
+      </header>
+
+      {error && (
+        <Alert variant="destructive">
+          <TriangleAlert size={18} />
+          <AlertTitle>操作失敗</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {legacyConfigured && (
+        <Alert variant="warning">
+          <ShieldAlert size={18} />
+          <AlertTitle>仍有 legacy credential</AlertTitle>
+          <AlertDescription>
+            環境共享 key 仍可通過驗證；完成 consumer 遷移後應依序移除。
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {loading ? (
+        <div className="grid gap-3 sm:grid-cols-5" role="status">
+          <span className="sr-only">正在載入 credential 狀態</span>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Skeleton key={index} className="h-24 rounded-xl" />
+          ))}
+        </div>
+      ) : overview ? (
+        <div className="grid gap-3 sm:grid-cols-5">
+          {Object.entries(overview.counts).map(([label, count]) => (
+            <Card className="gap-1 p-4" key={label}>
+              <span className="font-mono text-xs tracking-wide text-muted uppercase">
+                {label}
+              </span>
+              <strong className="text-2xl">{count}</strong>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {mayIssue && (
+        <Card className="gap-0 p-5">
+          <CardHeader className="mb-4 px-0">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Plus size={18} /> 簽發 credential
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-0">
+            <form
+              className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"
+              onSubmit={submitIssue}
+            >
+              <div className="grid gap-1.5">
+                <Label htmlFor="credential-kind">類型</Label>
+                <select
+                  id="credential-kind"
+                  className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+                  value={kind}
+                  onChange={event =>
+                    setKind(event.target.value as "source" | "serve" | "admin")
+                  }
+                >
+                  <option value="source">Source</option>
+                  <option value="serve">Serve</option>
+                  {role === "owner" && <option value="admin">Admin</option>}
+                </select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="credential-name">名稱</Label>
+                <Input
+                  id="credential-name"
+                  value={name}
+                  onChange={event => setName(event.target.value)}
+                  required={kind === "source"}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="credential-owner">Owner</Label>
+                <Input
+                  id="credential-owner"
+                  value={owner}
+                  onChange={event => setOwner(event.target.value)}
+                  required
+                />
+              </div>
+              {kind === "source" ? (
+                <>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="credential-source">Source name</Label>
+                    <Input
+                      id="credential-source"
+                      value={sourceName}
+                      onChange={event => setSourceName(event.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="grid gap-1.5 md:col-span-2">
+                    <Label htmlFor="credential-datasets">
+                      Allowed datasets（逗號分隔）
+                    </Label>
+                    <Input
+                      id="credential-datasets"
+                      value={allowedDatasets}
+                      onChange={event => setAllowedDatasets(event.target.value)}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="grid gap-1.5 md:col-span-2">
+                  <Label htmlFor="credential-scopes">Scopes（逗號分隔）</Label>
+                  <Input
+                    id="credential-scopes"
+                    value={scopes}
+                    onChange={event => setScopes(event.target.value)}
+                  />
+                </div>
+              )}
+              {kind === "admin" && (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="credential-role">角色</Label>
+                  <select
+                    id="credential-role"
+                    className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+                    value={credentialRole}
+                    onChange={event =>
+                      setCredentialRole(event.target.value as AdminRole)
+                    }
+                  >
+                    <option value="owner">Owner</option>
+                    <option value="operator">Operator</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </div>
+              )}
+              <div className="grid gap-1.5">
+                <Label htmlFor="credential-expiry">到期時間（可選）</Label>
+                <Input
+                  id="credential-expiry"
+                  type="datetime-local"
+                  value={expiresAt}
+                  onChange={event => setExpiresAt(event.target.value)}
+                />
+              </div>
+              <div className="grid gap-1.5 md:col-span-2">
+                <Label htmlFor="credential-description">說明</Label>
+                <Input
+                  id="credential-description"
+                  value={description}
+                  onChange={event => setDescription(event.target.value)}
+                />
+              </div>
+              <div className="flex items-end">
+                <Button className="w-full" type="submit" disabled={pending}>
+                  <KeyRound size={17} /> {pending ? "處理中…" : "簽發"}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className="gap-0 p-5">
+        <CardHeader className="mb-4 px-0">
+          <CardTitle className="text-lg">目前 Credentials</CardTitle>
+        </CardHeader>
+        <CardContent className="px-0">
+          <form
+            className="mb-4 grid gap-2 sm:grid-cols-4"
+            onSubmit={event => {
+              event.preventDefault()
+              setFilters(draftFilters)
+              void refresh(draftFilters)
+            }}
+          >
+            <select
+              aria-label="Credential 類型"
+              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+              value={draftFilters.kind}
+              onChange={event =>
+                setDraftFilters({
+                  ...draftFilters,
+                  kind:
+                    event.target.value === ""
+                      ? ""
+                      : credentialKindSchema.parse(event.target.value),
+                })
+              }
+            >
+              <option value="">所有類型</option>
+              <option value="source">Source</option>
+              <option value="serve">Serve</option>
+              <option value="admin">Admin</option>
+              <option value="legacy">Legacy</option>
+            </select>
+            <select
+              aria-label="Credential 狀態"
+              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+              value={draftFilters.status}
+              onChange={event =>
+                setDraftFilters({
+                  ...draftFilters,
+                  status:
+                    event.target.value === ""
+                      ? ""
+                      : credentialStatusSchema.parse(event.target.value),
+                })
+              }
+            >
+              <option value="">所有狀態</option>
+              <option value="active">Active</option>
+              <option value="expiring">Expiring</option>
+              <option value="expired">Expired</option>
+              <option value="revoked">Revoked</option>
+              <option value="legacy">Legacy</option>
+            </select>
+            <Input
+              aria-label="Credential owner"
+              placeholder="Owner"
+              value={draftFilters.owner}
+              onChange={event =>
+                setDraftFilters({ ...draftFilters, owner: event.target.value })
+              }
+            />
+            <Button type="submit" disabled={pending}>
+              <RefreshCw className={pending ? "animate-spin" : ""} size={17} />
+              更新
+            </Button>
+          </form>
+          {loading ? (
+            <div className="grid gap-2" role="status">
+              <span className="sr-only">正在載入 credential</span>
+              <Skeleton className="h-10" />
+              <Skeleton className="h-10" />
+              <Skeleton className="h-10" />
+            </div>
+          ) : credentials.length === 0 ? (
+            <Alert role="status">
+              <AlertDescription>沒有符合條件的 credential。</AlertDescription>
+            </Alert>
+          ) : (
+            <Table scrollMode="page">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>名稱 / 類型</TableHead>
+                  <TableHead>Owner</TableHead>
+                  <TableHead>狀態</TableHead>
+                  <TableHead>Fingerprint</TableHead>
+                  <TableHead>最後使用 / 次數</TableHead>
+                  <TableHead>到期</TableHead>
+                  <TableHead className="text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {credentials.map(item => (
+                  <TableRow key={item.credential_ref}>
+                    <TableCell>
+                      <strong className="block">{item.name}</strong>
+                      <span className="font-mono text-xs text-muted">
+                        {item.kind}
+                      </span>
+                    </TableCell>
+                    <TableCell>{item.owner ?? "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant(item.status)}>
+                        {item.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {item.fingerprint ?? "—"}
+                    </TableCell>
+                    <TableCell>
+                      <span className="block">
+                        {formatDate(item.last_used_at)}
+                      </span>
+                      <span className="text-xs text-muted">
+                        {item.usage_count.toLocaleString()} requests
+                      </span>
+                    </TableCell>
+                    <TableCell>{formatDate(item.expires_at)}</TableCell>
+                    <TableCell>
+                      {item.status !== "revoked" &&
+                        item.id &&
+                        canManageCredential(role, item.kind) && (
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`輪替 ${item.name}`}
+                              disabled={pending}
+                              onClick={() => void rotateItem(item)}
+                            >
+                              <RotateCw size={16} />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`撤銷 ${item.name}`}
+                              disabled={pending}
+                              onClick={() => void revokeItem(item)}
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          </div>
+                        )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          {overview && (
+            <p className="mt-3 text-xs text-muted">
+              使用量為近即時估算；聚合更新：
+              {formatDate(overview.usage_updated_at)}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+      {secret && (
+        <SecretDialog
+          title={secret.title}
+          secret={secret.value}
+          onClose={() => setSecret(null)}
+        />
+      )}
+    </div>
+  )
+}

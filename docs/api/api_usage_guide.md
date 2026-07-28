@@ -22,14 +22,22 @@ Production 由 nginx 將 Source/Admin 導向 ingest role，Serve 導向 serve ro
 X-API-Key: <key>
 ```
 
+Admin human session改用：
+
+```http
+Authorization: Bearer <admin-session>
+```
+
 | API | 規則 |
 | --- | --- |
 | Source | 必須；優先使用 DB-backed source client key，legacy env key 只供過渡 |
 | Serve | 由 `SERVE_REQUIRE_AUTH` 控制；production 建議啟用 |
-| Admin | 永遠必須 |
+| Admin | 永遠必須；Dashboard使用具名user session，machine client使用DB-backed Admin key |
 
 Source client可限制 `source_name`、`allowed_datasets`與rate limit。每個
 provider/client應使用獨立 key。Source production入口另受 nginx IP allowlist保護。
+`ADMIN_BREAK_GLASS_API_KEY`只供初次bootstrap與緊急復原；legacy
+`ADMIN_API_KEY`不得作為日常Dashboard身分。
 
 ## Canonical ingest
 
@@ -163,8 +171,8 @@ endpoint的實際 query parameters以 OpenAPI為準。
 
 Admin API具有敏感讀寫能力，只供Dashboard與維運：
 
-- Source client簽發、列表與撤銷
-- Serve API key簽發、列表與撤銷
+- Source、Serve與Admin machine credential簽發、列表、輪替與撤銷
+- Admin user、角色與session管理
 - Queue health與missing delivery
 - DQ issue查詢與resolve
 - EOD人工修正與correction audit
@@ -172,8 +180,19 @@ Admin API具有敏感讀寫能力，只供Dashboard與維運：
 - Bulk rerun
 - Instrument cache管理
 
-主要端點可由 `/docs` 的 `Admin API` tag查看。Admin key不得提供給Fetcher或一般
-Serve consumer。
+Credential與登入主要端點：
+
+| Endpoint | 用途 |
+| --- | --- |
+| `POST /admin/auth/bootstrap` | 尚無user時，以break-glass credential建立第一位Owner |
+| `POST /admin/auth/login`、`POST /admin/auth/logout` | 建立或撤銷Dashboard user session |
+| `GET /admin/credentials`、`GET /admin/credentials/overview` | 統一清單、legacy狀態與近即時usage摘要 |
+| `POST /admin/credentials` | 簽發一次性顯示plaintext的credential |
+| `POST /admin/credentials/{kind}/{id}/rotate` | 建立successor；不自動撤銷舊key |
+| `DELETE /admin/credentials/{kind}/{id}` | 立即撤銷credential |
+
+其餘端點可由 `/docs` 的 `Admin API` tag查看。Admin machine key不得提供給Fetcher或
+一般Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。
 
 ## 常見狀態碼
 

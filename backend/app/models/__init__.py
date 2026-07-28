@@ -18,7 +18,11 @@ from app.models.canonical import (
 from app.models.correction import CanonicalCorrection
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
+    AdminAuditEvent,
+    AdminSession,
+    AdminUser,
     APIKey,
+    CredentialUsageRollup,
     DatasetRegistry,
     DQIssue,
     IngestionAttempt,
@@ -56,5 +60,9 @@ __all__ = [
     "SourceClient",
     "DQIssue",
     "APIKey",
+    "AdminUser",
+    "AdminSession",
+    "AdminAuditEvent",
+    "CredentialUsageRollup",
     "CanonicalCorrection",
 ]

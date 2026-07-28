@@ -2,6 +2,7 @@
 FastAPI application entry point.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import admin, lookup, serve, source
 from app.config import get_settings
-from app.models.base import init_db
+from app.models.base import async_session_maker, init_db
+from app.services.credential_usage import flush_usage, periodic_flush, record_usage
 
 settings = get_settings()
 APP_ROLE = settings.APP_ROLE.lower().strip()
@@ -29,9 +31,19 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     await init_db()
-    yield
-    # Shutdown
-    pass
+    flush_task = asyncio.create_task(
+        periodic_flush(async_session_maker, settings.CREDENTIAL_USAGE_FLUSH_SECONDS)
+    )
+    try:
+        yield
+    finally:
+        flush_task.cancel()
+        try:
+            await flush_task
+        except asyncio.CancelledError:
+            pass
+        async with async_session_maker() as db:
+            await flush_usage(db)
 
 
 app = FastAPI(
@@ -80,7 +92,16 @@ async def enforce_source_payload_size(request, call_next):
             except ValueError:
                 pass
 
-    return await call_next(request)
+    response = await call_next(request)
+    credential_ref = getattr(request.state, "credential_ref", None)
+    if credential_ref:
+        record_usage(
+            credential_ref[0],
+            credential_ref[1],
+            request.url.path,
+            response.status_code,
+        )
+    return response
 
 
 if APP_ROLE not in {"serve", "ingest", "all"}:

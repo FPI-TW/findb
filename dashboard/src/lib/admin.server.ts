@@ -25,7 +25,7 @@ function safeBaseUrl(value: string | undefined) {
 
 async function fetchTarget<T extends z.ZodType>(
   baseUrl: URL,
-  apiKey: string,
+  sessionToken: string,
   path: string,
   schema: T,
   fetchImplementation: FetchImplementation
@@ -35,7 +35,10 @@ async function fetchTarget<T extends z.ZodType>(
   try {
     response = await fetchImplementation(url, {
       method: "GET",
-      headers: { "X-API-Key": apiKey, Accept: "application/json" },
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+      },
       cache: "no-store",
     })
   } catch {
@@ -43,7 +46,7 @@ async function fetchTarget<T extends z.ZodType>(
   }
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error("Admin API key was rejected")
+      throw new Error("Dashboard session was rejected")
     }
     throw new Error(`FinDB API request failed (${response.status})`)
   }
@@ -65,7 +68,7 @@ function settled<T>(result: PromiseSettledResult<T>): PanelResult<T> {
 
 export async function fetchDashboardData(
   data: DashboardRequest,
-  apiKey: string,
+  sessionToken: string,
   baseUrlValue: string | undefined,
   fetchImplementation: FetchImplementation = fetch
 ) {
@@ -80,35 +83,35 @@ export async function fetchDashboardData(
     await Promise.allSettled([
       fetchTarget(
         baseUrl,
-        apiKey,
+        sessionToken,
         "/api/v1/admin/queue/health",
         queueHealthSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        apiKey,
+        sessionToken,
         "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
         missingDeliveriesSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        apiKey,
+        sessionToken,
         `/api/v1/admin/dq-issues?${issuesSearch.toString()}`,
         dqIssuesSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        apiKey,
+        sessionToken,
         "/api/v1/admin/corrections?page=1&page_size=50",
         correctionsSchema,
         fetchImplementation
       ),
       fetchTarget(
         baseUrl,
-        apiKey,
+        sessionToken,
         `/api/v1/admin/raw-payloads?${auditSearch.toString()}`,
         rawPayloadsSchema,
         fetchImplementation

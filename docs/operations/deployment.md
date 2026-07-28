@@ -83,8 +83,9 @@ staging-fetcher
 | --- | --- |
 | Secrets | `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY` |
 | Secrets | `DATABASE_URL`、`CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE` |
-| Secrets | `SOURCE_API_KEY`、`SERVE_API_KEYS`、`ADMIN_API_KEY` |
-| Secrets | `DASHBOARD_USERNAME`、`DASHBOARD_PASSWORD`、`DASHBOARD_SESSION_SECRET`、`FINDB_STATIC_CACHE_SERVE_API_KEY` |
+| Secrets | `ADMIN_BREAK_GLASS_API_KEY` |
+| Secrets | `FINDB_LOOKUP_SERVE_API_KEY`、`FINDB_STATIC_CACHE_SERVE_API_KEY`（`SERVE_REQUIRE_AUTH=true`時必填且必須為不同的DB-backed keys） |
+| Optional legacy secrets | `SOURCE_API_KEY`、`SERVE_API_KEYS`、`ADMIN_API_KEY` |
 | Secrets | `CLOUDFLARE_R2_CONFIG_READ_API_TOKEN`（`Workers R2 Storage: Read`） |
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`（bucket-scoped `Object Read & Write`） |
 | Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
@@ -207,6 +208,31 @@ Fetcher使用Admin API簽發的DB-backed source client key：
 - FinDB只保存hash；plaintext只在簽發時回傳一次。
 - Plaintext存入Fetcher的Secrets Manager path，不放FinDB runtime。
 - 切換完成後移除legacy共享 `SOURCE_API_KEY`。
+
+## Credential bootstrap與分階段退場
+
+部署先維持雙軌驗證，但日常運作只使用DB-backed credentials：
+
+1. 設定一把高強度 `ADMIN_BREAK_GLASS_API_KEY`，只透過
+   `POST /api/v1/admin/auth/bootstrap`建立第一位Owner；bootstrap完成後不得注入
+   Dashboard或一般automation。
+2. Owner在Credentials頁分別簽發lookup、static cache、各Fetcher與machine Admin key。
+   Plaintext只顯示一次，立即存入對應deployment secret。
+3. `FINDB_LOOKUP_SERVE_API_KEY`只供nginx同源lookup Referer注入；
+   `FINDB_STATIC_CACHE_SERVE_API_KEY`只供cache generator。兩者不可共用，也不再從
+   `SERVE_API_KEYS`第一項推導。
+4. `SERVE_REQUIRE_AUTH=true`時，FinDB CD會要求上述兩把專用Serve key；
+   `SERVE_API_KEYS`可以為空。部署前先確保兩把key已在DB建立且未撤銷。
+5. 逐一切換consumer並觀察Credentials頁的last-used/usage freshness至少一個完整
+   排程週期，再依序清除 `SOURCE_API_KEY`、`SERVE_API_KEYS`、legacy
+   `ADMIN_API_KEY`。
+
+Dashboard以DB-backed Admin user登入，後端簽發的opaque session只存在
+`HttpOnly + Secure + SameSite=Strict` cookie；不再讀取共享Dashboard帳密或Admin key。
+
+Break-glass輪替時先更新runtime secret並重新部署，再以新key執行受控復原檢查；不要把
+break-glass key用於一般健康檢查。若所有Owner無法登入，使用break-glass credential
+建立或恢復Owner後，立即撤銷臨時session並記錄稽核事件。
 
 ## Network boundaries
 

@@ -164,10 +164,15 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
         configured_names = {
             match.group(1)
             for line in example.read_text(encoding="utf-8").splitlines()
-            if (match := re.fullmatch(r"([A-Z][A-Z0-9_]*)=.*", line))
+            if (
+                match := re.fullmatch(
+                    r"(?:# )?([A-Z][A-Z0-9_]*)=.*",
+                    line,
+                )
+            )
         }
-        required_names = set((*config.variables, *config.secrets))
-        assert configured_names == required_names
+        documented_names = set((*config.variables, *config.secrets, *config.optional_secrets))
+        assert configured_names == documented_names
 
 
 def test_contract_changes_gate_both_ci_workflows_but_not_cd() -> None:
@@ -312,6 +317,51 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
 
     for path in (FINDB_CI_WORKFLOW, FETCHER_CI_WORKFLOW):
         assert _secret_reference_paths(_load_workflow(path)) == []
+
+
+def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    validate = _named_step(workflow, "deploy", "Validate deployment configuration")
+    render = _named_step(workflow, "deploy", "Render nginx configs")
+    deploy = _named_step(workflow, "deploy", "Deploy to EC2")
+
+    validation_script = validate["run"]
+    assert "ADMIN_BREAK_GLASS_API_KEY" in validation_script
+    assert "FINDB_LOOKUP_SERVE_API_KEY must be configured" in validation_script
+    assert "FINDB_STATIC_CACHE_SERVE_API_KEY must be configured" in validation_script
+    assert (
+        "FINDB_LOOKUP_SERVE_API_KEY and FINDB_STATIC_CACHE_SERVE_API_KEY must be distinct"
+        in validation_script
+    )
+    assert "SERVE_API_KEYS must be configured" not in validation_script
+
+    required_loop = next(line for line in validation_script.splitlines() if "for name in " in line)
+    for legacy_name in (
+        "SOURCE_API_KEY",
+        "SERVE_API_KEYS",
+        "ADMIN_API_KEY",
+    ):
+        assert legacy_name not in required_loop
+
+    assert render["env"]["FINDB_LOOKUP_SERVE_API_KEY"] == (
+        "${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}"
+    )
+    assert '--key "${FINDB_LOOKUP_SERVE_API_KEY:-}"' in render["run"]
+    assert "--keys" not in render["run"]
+
+    forwarded = set(deploy["with"]["envs"].split(","))
+    assert "ADMIN_BREAK_GLASS_API_KEY" in forwarded
+    assert "FINDB_LOOKUP_SERVE_API_KEY" not in forwarded
+
+    compose = PROD_COMPOSE.read_text(encoding="utf-8")
+    assert (
+        'ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:'
+        "?ADMIN_BREAK_GLASS_API_KEY must be set"
+    ) in compose
+    assert 'SOURCE_API_KEY: "${SOURCE_API_KEY:-}"' in compose
+    assert 'ADMIN_API_KEY: "${ADMIN_API_KEY:-}"' in compose
+    assert "DASHBOARD_USERNAME" not in compose
+    assert "DASHBOARD_PASSWORD" not in compose
 
 
 def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:

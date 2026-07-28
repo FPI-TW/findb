@@ -62,7 +62,7 @@ function LoginPage() {
             </CardTitle>
           </div>
           <CardDescription className="leading-relaxed">
-            使用部署環境設定的操作帳號登入。本服務不提供註冊功能。
+            使用 FinDB 管理者帳號登入。本服務不提供公開註冊。
           </CardDescription>
         </CardHeader>
         <CardContent className="px-6 sm:px-10">
