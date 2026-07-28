@@ -3,6 +3,7 @@ Pytest configuration and fixtures.
 """
 
 import os
+from inspect import signature
 from typing import AsyncGenerator
 
 import pytest
@@ -24,14 +25,20 @@ TEST_DATABASE_URL = os.getenv(
 )
 
 
-@pytest_asyncio.fixture(scope="function")
+def _requests_fixture_directly(request, fixture_name: str) -> bool:
+    """Return whether the test function, rather than another fixture, requests a fixture."""
+    return fixture_name in signature(request.node.obj).parameters
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def test_engine():
-    """Create test database engine."""
+    """Create the test schema once for the whole test session."""
     await ensure_test_database()
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine
@@ -40,6 +47,31 @@ async def test_engine():
         await conn.run_sync(Base.metadata.drop_all)
 
     await engine.dispose()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_test_database(request):
+    """Keep DB-backed tests isolated without rebuilding the schema for every test."""
+    if not _requests_fixture_directly(request, "test_engine"):
+        yield
+        return
+
+    engine = request.getfixturevalue("test_engine")
+    yield
+
+    table_names = []
+    preparer = engine.dialect.identifier_preparer
+    for table in Base.metadata.sorted_tables:
+        table_name = preparer.quote(table.name)
+        if table.schema:
+            table_name = f"{preparer.quote_schema(table.schema)}.{table_name}"
+        table_names.append(table_name)
+
+    if table_names:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(f"TRUNCATE TABLE {', '.join(table_names)} RESTART IDENTITY CASCADE")
+            )
 
 
 async def ensure_test_database():
@@ -61,16 +93,38 @@ async def ensure_test_database():
 
 
 @pytest_asyncio.fixture(scope="function")
-async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Create test database session."""
-    async_session = async_sessionmaker(
-        test_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+async def test_session(request, test_engine) -> AsyncGenerator[AsyncSession, None]:
+    """Create an isolated test session.
 
-    async with async_session() as session:
-        yield session
+    Most tests run inside an outer transaction so application-level commits remain
+    visible to the test but are rolled back afterward. Tests that request the engine
+    directly need committed data to be visible across connections, so they use a
+    regular session and are cleaned by ``clean_test_database`` instead.
+    """
+    if _requests_fixture_directly(request, "test_engine"):
+        session_factory = async_sessionmaker(
+            test_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        async with session_factory() as session:
+            yield session
+        return
+
+    async with test_engine.connect() as connection:
+        transaction = await connection.begin()
+        session_factory = async_sessionmaker(
+            bind=connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            if transaction.is_active:
+                await transaction.rollback()
 
 
 @pytest_asyncio.fixture(scope="function")
