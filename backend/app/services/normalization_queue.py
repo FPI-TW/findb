@@ -76,12 +76,9 @@ async def reconcile_nonterminal_jobs(session: AsyncSession) -> int:
         )
         active_deliveries = list(active_result.scalars().all())
         if active_deliveries:
-            # Preserve the delivery generation that is already waiting to be
-            # published. Rotating only the job id would make every active
-            # outbox row stale and strand the run until lease reconciliation.
-            for delivery in active_deliveries:
-                delivery.delivery_id = job.delivery_id
-                delivery.updated_at = now
+            # Active outbox rows are immutable delivery generations. A
+            # mismatched generation is allowed to finish publishing; stale
+            # reconciliation can repair the job after that row is terminal.
             job.updated_at = now
             continue
         job.delivery_id = uuid7()
@@ -111,7 +108,10 @@ async def reconcile_stale_jobs(session: AsyncSession) -> int:
     stale_before = now - timedelta(seconds=settings.NORMALIZATION_LEASE_SECONDS)
     latest_published_at = (
         select(func.max(NormalizationOutbox.published_at))
-        .where(NormalizationOutbox.job_id == NormalizationJob.job_id)
+        .where(
+            NormalizationOutbox.job_id == NormalizationJob.job_id,
+            NormalizationOutbox.delivery_id == NormalizationJob.delivery_id,
+        )
         .correlate(NormalizationJob)
         .scalar_subquery()
     )
@@ -131,7 +131,10 @@ async def reconcile_stale_jobs(session: AsyncSession) -> int:
             or_(
                 (
                     (NormalizationJob.status == "processing")
-                    & (NormalizationJob.lease_expires_at < now)
+                    & or_(
+                        NormalizationJob.lease_expires_at.is_(None),
+                        NormalizationJob.lease_expires_at < now,
+                    )
                 ),
                 (
                     NormalizationJob.status.in_(("queued", "retrying"))
@@ -342,6 +345,65 @@ async def _mark_permanent_failure(
     await session.commit()
 
 
+async def _defer_for_lock_contention(
+    session: AsyncSession,
+    *,
+    job_id: UUID,
+    run_id: UUID,
+    delivery_id: UUID,
+) -> bool:
+    """Create at most one delayed delivery generation after lock contention."""
+    job = (
+        await session.execute(
+            select(NormalizationJob)
+            .where(NormalizationJob.job_id == job_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if (
+        job is None
+        or job.status in TERMINAL_STATUSES
+        or job.status == "processing"
+        or job.delivery_id != delivery_id
+    ):
+        return False
+
+    active_delivery = await session.scalar(
+        select(NormalizationOutbox.outbox_id).where(
+            NormalizationOutbox.job_id == job_id,
+            NormalizationOutbox.status.in_(("pending", "publishing")),
+        )
+    )
+    if active_delivery is not None:
+        return False
+
+    now = utc_now()
+    available_at = now + timedelta(seconds=random.uniform(5, 15))
+    next_delivery_id = uuid7()
+    job.status = "queued"
+    job.delivery_id = next_delivery_id
+    job.available_at = available_at
+    job.lease_expires_at = None
+    job.updated_at = now
+    session.add(
+        NormalizationOutbox(
+            outbox_id=uuid7(),
+            job_id=job_id,
+            run_id=run_id,
+            delivery_id=next_delivery_id,
+            event_type="normalize_run",
+            status="pending",
+            available_at=available_at,
+            publish_attempts=0,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await session.commit()
+    return True
+
+
 async def execute_normalization(
     run_id: UUID,
     delivery_id: UUID,
@@ -395,34 +457,17 @@ async def execute_normalization(
                     )
                 )
                 if not lock_acquired:
-                    await session.refresh(job)
-                    if job.status == "processing":
-                        logger.info(
-                            "Ignoring duplicate in-flight delivery %s for run %s",
-                            delivery_id,
-                            run_id,
-                        )
-                        await _heartbeat(session, worker_id, None)
-                        return
-                    now = utc_now()
-                    job.status = "queued"
-                    job.available_at = now + timedelta(seconds=random.uniform(5, 15))
-                    job.updated_at = now
-                    session.add(
-                        NormalizationOutbox(
-                            outbox_id=uuid7(),
-                            job_id=job.job_id,
-                            run_id=run_id,
-                            delivery_id=delivery_id,
-                            event_type="normalize_run",
-                            status="pending",
-                            available_at=job.available_at,
-                            publish_attempts=0,
-                            created_at=now,
-                            updated_at=now,
-                        )
+                    deferred = await _defer_for_lock_contention(
+                        session,
+                        job_id=job.job_id,
+                        run_id=run_id,
+                        delivery_id=delivery_id,
                     )
-                    await session.commit()
+                    logger.info(
+                        "%s normalization delivery %s after dataset lock contention",
+                        "Deferred" if deferred else "Ignored duplicate or stale",
+                        delivery_id,
+                    )
                     await _heartbeat(session, worker_id, None)
                     return
 

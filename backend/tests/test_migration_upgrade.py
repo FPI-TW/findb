@@ -221,6 +221,14 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         'open_interest', 'active_contract_code', 'roll_adjustment'
                       )
                     """))
+            active_outbox_index_count = await connection.scalar(text("""
+                    SELECT count(*)
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'normalization_outbox'
+                      AND indexname = 'uq_normalization_outbox_active_job'
+                      AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
+                    """))
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -239,6 +247,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert missing_alert_table == "missing_delivery_alert"
         assert missing_alert_index_count == 2
         assert futures_contract_field_count == 3
+        assert active_outbox_index_count == 1
         expectation = contract_config["delivery_expectation"]
         assert expectation["freshness_hours"] == 72
         assert expectation["minimum_record_count"] == 1777

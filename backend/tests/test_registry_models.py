@@ -1,6 +1,11 @@
 """Registry model schema invariants."""
 
-from app.models.registry import IngestionAttempt, IngestionRun, MissingDeliveryAlert
+from app.models.registry import (
+    IngestionAttempt,
+    IngestionRun,
+    MissingDeliveryAlert,
+    NormalizationOutbox,
+)
 
 
 def test_ingestion_run_indexes_raw_payload_cleanup_lookup() -> None:
@@ -29,3 +34,16 @@ def test_missing_delivery_alert_has_identity_and_health_indexes() -> None:
     assert "idx_missing_delivery_dataset_source" in index_names
     assert "uq_missing_delivery_identity_date" in constraint_names
     assert "ck_missing_delivery_alert_status_valid" in constraint_names
+
+
+def test_normalization_outbox_has_one_active_generation_per_job() -> None:
+    index = next(
+        index
+        for index in NormalizationOutbox.__table__.indexes
+        if index.name == "uq_normalization_outbox_active_job"
+    )
+
+    assert index.unique is True
+    assert str(index.dialect_options["postgresql"]["where"]) == (
+        "status IN ('pending', 'publishing')"
+    )

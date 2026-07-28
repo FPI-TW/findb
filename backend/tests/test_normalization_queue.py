@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from celery.exceptions import Retry
+from celery.exceptions import Reject, Retry
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,6 +24,7 @@ from app.models.registry import (
     NormalizationOutbox,
 )
 from app.services.normalization_queue import (
+    _defer_for_lock_contention,
     reconcile_nonterminal_jobs,
     reconcile_stale_jobs,
 )
@@ -64,6 +65,35 @@ def test_worker_infrastructure_failure_uses_delayed_retry():
 
     assert str(raised.value) == "delayed"
     assert retry.call_args.kwargs["countdown"] == (get_settings().NORMALIZATION_RETRY_BASE_SECONDS)
+
+
+@pytest.mark.parametrize("failure", [ValueError("internal value"), TypeError("internal type")])
+def test_worker_internal_value_and_type_errors_use_delayed_retry(failure):
+    with (
+        patch(
+            "app.workers.tasks.execute_normalization",
+            new=AsyncMock(side_effect=failure),
+        ),
+        patch.object(normalize_run, "retry", side_effect=Retry("delayed")) as retry,
+        pytest.raises(Retry),
+    ):
+        normalize_run.run(str(uuid7()), str(uuid7()))
+
+    retry.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("run_id", "delivery_id"),
+    [("invalid", str(uuid7())), (str(uuid7()), None)],
+)
+def test_worker_rejects_invalid_uuid_without_executing(run_id, delivery_id):
+    with (
+        patch("app.workers.tasks.execute_normalization", new=AsyncMock()) as execute,
+        pytest.raises(Reject),
+    ):
+        normalize_run.run(run_id, delivery_id)
+
+    execute.assert_not_called()
 
 
 async def _seed_crypto_dataset(session) -> None:
@@ -415,6 +445,306 @@ async def test_reconciliation_preserves_delivery_id_when_active_outbox_exists(
     assert job.status == "queued"
     assert job.delivery_id == delivery_id
     assert outbox.delivery_id == delivery_id
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_never_rewrites_mismatched_active_generation(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_crypto_dataset(test_session)
+    response = await client.post(
+        "/api/v1/source/ingest/crypto",
+        headers=source_headers,
+        json=_request("mismatched-active-delivery"),
+    )
+    run_id = response.json()["run_id"]
+    job = (
+        await test_session.execute(
+            select(NormalizationJob).where(NormalizationJob.run_id == run_id)
+        )
+    ).scalar_one()
+    outbox = (
+        await test_session.execute(
+            select(NormalizationOutbox).where(NormalizationOutbox.run_id == run_id)
+        )
+    ).scalar_one()
+    active_delivery_id = outbox.delivery_id
+    current_delivery_id = uuid7()
+    job.delivery_id = current_delivery_id
+    job.status = "processing"
+    job.lease_expires_at = utc_now() - timedelta(seconds=1)
+    await test_session.commit()
+
+    assert await reconcile_nonterminal_jobs(test_session) == 0
+    await test_session.refresh(job)
+    await test_session.refresh(outbox)
+    assert job.status == "queued"
+    assert job.delivery_id == current_delivery_id
+    assert outbox.delivery_id == active_delivery_id
+
+    assert await reconcile_stale_jobs(test_session) == 0
+    assert (
+        await test_session.scalar(
+            select(func.count(NormalizationOutbox.outbox_id)).where(
+                NormalizationOutbox.job_id == job.job_id,
+                NormalizationOutbox.status.in_(("pending", "publishing")),
+            )
+        )
+        == 1
+    )
+    outbox.status = "published"
+    outbox.published_at = utc_now()
+    job.available_at = utc_now() - timedelta(seconds=1)
+    await test_session.commit()
+
+    assert await reconcile_stale_jobs(test_session) == 1
+    await test_session.refresh(job)
+    repaired_delivery_id = job.delivery_id
+    assert repaired_delivery_id not in {current_delivery_id, active_delivery_id}
+    active = (
+        (
+            await test_session.execute(
+                select(NormalizationOutbox).where(
+                    NormalizationOutbox.job_id == job.job_id,
+                    NormalizationOutbox.status.in_(("pending", "publishing")),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(active) == 1
+    assert active[0].delivery_id == repaired_delivery_id
+    assert await reconcile_stale_jobs(test_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_reconciliation_repairs_processing_job_without_lease(test_session):
+    await _seed_crypto_dataset(test_session)
+    now = utc_now()
+    run = IngestionRun(
+        dataset_key="crypto_eod",
+        source="bloomberg",
+        status="processing",
+        created_at=now - timedelta(hours=1),
+    )
+    test_session.add(run)
+    await test_session.flush()
+    delivery_id = uuid7()
+    job = NormalizationJob(
+        run_id=run.run_id,
+        dataset_key="crypto_eod",
+        status="processing",
+        delivery_id=delivery_id,
+        lease_expires_at=None,
+        available_at=now - timedelta(hours=1),
+        created_at=now - timedelta(hours=1),
+        updated_at=now - timedelta(hours=1),
+    )
+    test_session.add(job)
+    await test_session.flush()
+    test_session.add(
+        NormalizationOutbox(
+            job_id=job.job_id,
+            run_id=run.run_id,
+            delivery_id=delivery_id,
+            status="published",
+            available_at=now - timedelta(hours=1),
+            published_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await test_session.commit()
+
+    assert await reconcile_stale_jobs(test_session) == 1
+    await test_session.refresh(job)
+    assert job.status == "queued"
+    assert job.delivery_id != delivery_id
+    assert await reconcile_stale_jobs(test_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_lock_contention_creates_one_new_delivery_for_concurrent_duplicates(
+    test_engine,
+    test_session,
+):
+    await _seed_crypto_dataset(test_session)
+    now = utc_now()
+    run = IngestionRun(
+        dataset_key="crypto_eod",
+        source="bloomberg",
+        status="queued",
+        created_at=now,
+    )
+    test_session.add(run)
+    await test_session.flush()
+    original_delivery_id = uuid7()
+    job = NormalizationJob(
+        run_id=run.run_id,
+        dataset_key="crypto_eod",
+        status="queued",
+        delivery_id=original_delivery_id,
+        available_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    test_session.add(job)
+    await test_session.flush()
+    test_session.add(
+        NormalizationOutbox(
+            job_id=job.job_id,
+            run_id=run.run_id,
+            delivery_id=original_delivery_id,
+            status="published",
+            available_at=now,
+            published_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await test_session.commit()
+    job_id = job.job_id
+    run_id = run.run_id
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as first, session_factory() as second:
+        results = await asyncio.gather(
+            _defer_for_lock_contention(
+                first,
+                job_id=job_id,
+                run_id=run_id,
+                delivery_id=original_delivery_id,
+            ),
+            _defer_for_lock_contention(
+                second,
+                job_id=job_id,
+                run_id=run_id,
+                delivery_id=original_delivery_id,
+            ),
+        )
+
+    assert sum(results) == 1
+    test_session.expire_all()
+    refreshed = await test_session.get(NormalizationJob, job_id)
+    assert refreshed is not None
+    assert refreshed.delivery_id != original_delivery_id
+    rows = (
+        (
+            await test_session.execute(
+                select(NormalizationOutbox).where(NormalizationOutbox.job_id == job_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 2
+    assert (
+        sum(row.status == "pending" and row.delivery_id == refreshed.delivery_id for row in rows)
+        == 1
+    )
+
+    assert (
+        await _defer_for_lock_contention(
+            test_session,
+            job_id=job_id,
+            run_id=run_id,
+            delivery_id=refreshed.delivery_id,
+        )
+        is False
+    )
+    assert (
+        await test_session.scalar(
+            select(func.count(NormalizationOutbox.outbox_id)).where(
+                NormalizationOutbox.job_id == job_id
+            )
+        )
+        == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_lock_contention_refreshes_preloaded_job_before_deferring(
+    test_engine,
+    test_session,
+):
+    await _seed_crypto_dataset(test_session)
+    now = utc_now()
+    run = IngestionRun(
+        dataset_key="crypto_eod",
+        source="bloomberg",
+        status="queued",
+        created_at=now,
+    )
+    test_session.add(run)
+    await test_session.flush()
+    delivery_id = uuid7()
+    job = NormalizationJob(
+        run_id=run.run_id,
+        dataset_key="crypto_eod",
+        status="queued",
+        delivery_id=delivery_id,
+        available_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    test_session.add(job)
+    await test_session.flush()
+    test_session.add(
+        NormalizationOutbox(
+            job_id=job.job_id,
+            run_id=run.run_id,
+            delivery_id=delivery_id,
+            status="published",
+            available_at=now,
+            published_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await test_session.commit()
+    job_id = job.job_id
+    run_id = run.run_id
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as stale_session, session_factory() as updater_session:
+        preloaded = await stale_session.get(NormalizationJob, job_id)
+        assert preloaded is not None
+        assert preloaded.status == "queued"
+
+        updated = await updater_session.get(NormalizationJob, job_id)
+        assert updated is not None
+        updated.status = "completed"
+        updated.completed_at = utc_now()
+        updated.updated_at = utc_now()
+        await updater_session.commit()
+
+        assert (
+            await _defer_for_lock_contention(
+                stale_session,
+                job_id=job_id,
+                run_id=run_id,
+                delivery_id=delivery_id,
+            )
+            is False
+        )
+        assert preloaded.status == "completed"
+
+    test_session.expire_all()
+    refreshed = await test_session.get(NormalizationJob, job_id)
+    assert refreshed is not None
+    assert refreshed.status == "completed"
+    assert refreshed.delivery_id == delivery_id
+    assert (
+        await test_session.scalar(
+            select(func.count(NormalizationOutbox.outbox_id)).where(
+                NormalizationOutbox.job_id == job_id
+            )
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio

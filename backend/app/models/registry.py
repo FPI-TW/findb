@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -291,6 +292,12 @@ class NormalizationOutbox(Base):
     __table_args__ = (
         Index("idx_normalization_outbox_pending", "status", "available_at"),
         Index("idx_normalization_outbox_run", "run_id"),
+        Index(
+            "uq_normalization_outbox_active_job",
+            "job_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'publishing')"),
+        ),
     )
 
     outbox_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)

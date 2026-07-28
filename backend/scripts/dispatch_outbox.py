@@ -15,7 +15,6 @@ from app.services.normalization_queue import (
     mark_outbox_publish_failure,
     mark_outbox_published,
     publish_outbox_event,
-    reconcile_nonterminal_jobs,
     reconcile_stale_jobs,
 )
 from app.task_queue import declare_topology
@@ -96,8 +95,8 @@ async def run_dispatcher() -> None:
     try:
         await asyncio.to_thread(declare_topology)
         async with session_factory() as session:
-            replayed = await reconcile_nonterminal_jobs(session)
-            logger.info("Reconciled %s non-terminal normalization jobs", replayed)
+            repaired = await reconcile_stale_jobs(session)
+            logger.info("Repaired %s stale normalization deliveries", repaired)
         await reconcile_stale_attempts_safely(session_factory)
         monitor_task = asyncio.create_task(
             delivery_monitor_loop(session_factory),
@@ -116,10 +115,10 @@ async def run_dispatcher() -> None:
                 else:
                     async with session_factory() as session:
                         if broker_was_unavailable:
-                            replayed = await reconcile_nonterminal_jobs(session)
+                            repaired = await reconcile_stale_jobs(session)
                             logger.warning(
-                                "RabbitMQ recovered; replayed %s deliveries",
-                                replayed,
+                                "RabbitMQ recovered; repaired %s stale deliveries",
+                                repaired,
                             )
                             broker_was_unavailable = False
                         else:
@@ -150,10 +149,10 @@ async def run_dispatcher() -> None:
                         await mark_outbox_published(session, row.outbox_id)
                     if broker_was_unavailable:
                         async with session_factory() as session:
-                            replayed = await reconcile_nonterminal_jobs(session)
+                            repaired = await reconcile_stale_jobs(session)
                         logger.warning(
-                            "RabbitMQ recovered during publish; replayed %s deliveries",
-                            replayed,
+                            "RabbitMQ recovered during publish; repaired %s stale deliveries",
+                            repaired,
                         )
                         broker_was_unavailable = False
     finally:

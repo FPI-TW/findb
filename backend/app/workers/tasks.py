@@ -21,9 +21,13 @@ settings = get_settings()
 def normalize_run(self, run_id: str, delivery_id: str) -> None:
     """Run async normalization in a fresh, process-local event loop."""
     try:
-        asyncio.run(execute_normalization(UUID(run_id), UUID(delivery_id)))
+        parsed_run_id = UUID(run_id)
+        parsed_delivery_id = UUID(delivery_id)
     except (ValueError, TypeError) as exc:
         raise Reject(str(exc), requeue=False) from exc
+
+    try:
+        asyncio.run(execute_normalization(parsed_run_id, parsed_delivery_id))
     except Exception as exc:
         # A DB outage can prevent the worker from persisting its normal retry
         # decision. Use Celery's delayed, bounded retry instead of an immediate
