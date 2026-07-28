@@ -10,11 +10,14 @@ TanStack Start 前端，整合公開的標的查詢、FinDB API Skill 安裝說�
 | `/dashboard/lookup`                  | 公開   | 金融商品與宏觀序列查詢 |
 | `/dashboard/skill`                   | 公開   | Skill 下載與安裝說明   |
 | `/dashboard/login`                   | 公開   | 操作人員登入           |
+| `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼     |
 | `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況 |
 | `/dashboard/operations/deliveries`   | 需登入 | 缺漏交付               |
 | `/dashboard/operations/quality`      | 需登入 | 未解決 DQ 問題         |
 | `/dashboard/operations/corrections`  | 需登入 | 修正稽核紀錄           |
 | `/dashboard/operations/raw-payloads` | 需登入 | Raw payload 稽核查詢   |
+| `/dashboard/operations/credentials`  | 需登入 | API credential 治理    |
+| `/dashboard/operations/users`        | Owner  | 管理者帳號與角色       |
 
 ## Local development
 
@@ -25,18 +28,15 @@ pnpm setup
 pnpm dev:dashboard
 ```
 
-Dashboard 統一讀取 repository 根目錄的 `.env`。必填：
+Dashboard 統一讀取 repository 根目錄的 `.env`。Dashboard 本身只需要：
 
-- `ADMIN_API_KEY`
-- `DASHBOARD_USERNAME`
-- `DASHBOARD_PASSWORD`
-- `DASHBOARD_SESSION_SECRET`（至少 32 字元）
 - `FINDB_API_BASE_URL`（本機預設 `http://localhost:8080`）
 
-公開頁不讀取 Admin credentials。Admin key 只存在 Dashboard server
-環境，瀏覽器不會收到或輸入它。操作人員需以環境設定的單一帳號與密碼登入
-`/dashboard/operations`；沒有註冊功能。登入狀態使用有期限、簽章且
-`HttpOnly` 的 cookie。
+公開頁不讀取 Admin credentials。操作人員使用後端 DB-backed 管理者帳號登入；
+後端 opaque session token 只保存在 Dashboard server 設定的 `HttpOnly`、
+`SameSite=Strict` cookie，瀏覽器 JavaScript 無法讀取。Dashboard server 呼叫
+Admin API 時以 Bearer token 轉送。Production cookie 同時啟用 `Secure`；本機 HTTP
+開發則停用 `Secure`，以便在 localhost 測試。
 
 公開 Lookup 透過同源的 `/api/v1/serve/lookup/instruments` 與
 `/api/v1/serve/lookup/macro-series` 取得列表、facets 與分頁資料。前端測試只 mock

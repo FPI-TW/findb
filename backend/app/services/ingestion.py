@@ -884,8 +884,7 @@ class IngestionService:
                 )
         except ValueError as exc:
             raise DatasetContractNotConfiguredError(
-                f"Dataset {request.dataset_key} has an invalid ingress contract declaration: "
-                f"{exc}"
+                f"Dataset {request.dataset_key} has an invalid ingress contract declaration: {exc}"
             ) from exc
         if declaration is None:
             raise DatasetContractNotConfiguredError(

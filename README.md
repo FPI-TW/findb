@@ -63,7 +63,7 @@ Fetcher目前包含contract validation、安全delivery client、Twelve Data
 | Database | PostgreSQL 16、Alembic |
 | Queue | RabbitMQ、Celery |
 | Frontend | TypeScript、React、TanStack Start |
-| Tooling | uv、pnpm、pytest、ruff、black、mypy、Vitest |
+| Tooling | uv、pnpm、pytest、ruff、mypy、Vitest |
 | Deployment | Docker Compose、GHCR、GitHub Actions、AWS EC2/Aurora |
 | Time/ID | UTC-aware datetime、UUIDv7 |
 
@@ -154,7 +154,7 @@ make test
 uv --directory backend run pytest
 uv --directory backend run pytest tests/test_source_api.py
 uv --directory backend run ruff check app tests scripts migrations
-uv --directory backend run black --check app tests scripts migrations
+uv --directory backend run ruff format --check app tests scripts migrations
 uv --directory backend run mypy app
 ```
 

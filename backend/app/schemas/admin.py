@@ -2,12 +2,13 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import PaginatedResponse
+from app.utils import ensure_utc, utc_now
 
 # ── EOD Correction ────────────────────────────────────────────────────────────
 
@@ -156,18 +157,38 @@ class SourceClientCreateRequest(BaseModel):
     allowed_datasets: Optional[list[str]] = None
     rate_limit_requests: int = Field(default=100, ge=1)
     rate_limit_window: int = Field(default=60, ge=1)
+    owner: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiry(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        value = ensure_utc(value)
+        if value <= utc_now():
+            raise ValueError("expires_at must be in the future")
+        return value
 
 
 class SourceClientResponse(BaseModel):
     client_id: UUID
     name: str
     source_name: str
+    owner: Optional[str] = None
+    description: Optional[str] = None
+    fingerprint: Optional[str] = None
     allowed_datasets: Optional[list[str]] = None
     rate_limit_requests: int
     rate_limit_window: int
     created_at: datetime
     updated_at: datetime
     revoked_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    rotated_from_id: Optional[UUID] = None
+    usage_count: int = 0
+    last_used_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -305,11 +326,29 @@ class APIKeyCreateRequest(BaseModel):
     rate_limit_requests: int = Field(default=100, ge=1)
     rate_limit_window: int = Field(default=60, ge=1)
     page_size_limit: int = Field(default=1000, ge=1, le=1000)
+    name: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiry(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        value = ensure_utc(value)
+        if value <= utc_now():
+            raise ValueError("expires_at must be in the future")
+        return value
 
 
 class APIKeyResponse(BaseModel):
     key_id: UUID
+    kind: str = "serve"
+    name: Optional[str] = None
     owner: str
+    description: Optional[str] = None
+    fingerprint: Optional[str] = None
+    role: Optional[str] = None
     tier: str
     scopes: list[str]
     rate_limit_requests: int
@@ -319,6 +358,8 @@ class APIKeyResponse(BaseModel):
     created_at: datetime
     last_used_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    rotated_from_id: Optional[UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -332,3 +373,140 @@ class APIKeyCreateResponse(BaseModel):
 class APIKeyListResponse(BaseModel):
     success: bool = True
     data: list[APIKeyResponse]
+
+
+# ── Admin identity and unified credentials ───────────────────────────────────
+
+
+class AdminUserResponse(BaseModel):
+    user_id: UUID
+    username: str
+    display_name: str
+    role: Literal["owner", "operator", "viewer"]
+    is_active: bool
+    must_change_password: bool
+    created_at: datetime
+    updated_at: datetime
+    disabled_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+    password_changed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BootstrapRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    display_name: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=12, max_length=256)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class SessionResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+    user: AdminUserResponse
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=12, max_length=256)
+
+
+class SuccessResponse(BaseModel):
+    success: bool = True
+
+
+class AdminUserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    display_name: str = Field(..., min_length=1, max_length=100)
+    role: Literal["owner", "operator", "viewer"]
+    password: Optional[str] = Field(default=None, min_length=12, max_length=256)
+    must_change_password: bool = True
+
+
+class AdminUserUpdateRequest(BaseModel):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    role: Optional[Literal["owner", "operator", "viewer"]] = None
+    is_active: Optional[bool] = None
+
+
+class PasswordResetRequest(BaseModel):
+    password: Optional[str] = Field(default=None, min_length=12, max_length=256)
+
+
+class AdminUserEnvelope(BaseModel):
+    data: AdminUserResponse
+    temporary_password: Optional[str] = None
+
+
+class AdminUserListResponse(BaseModel):
+    data: list[AdminUserResponse]
+
+
+class CredentialCreateRequest(BaseModel):
+    kind: Literal["source", "serve", "admin"]
+    name: Optional[str] = Field(default=None, max_length=100)
+    owner: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    source_name: Optional[str] = Field(default=None, max_length=50)
+    allowed_datasets: Optional[list[str]] = None
+    role: Optional[Literal["owner", "operator", "viewer"]] = None
+    tier: str = "standard"
+    scopes: Optional[list[str]] = None
+    rate_limit_requests: int = Field(default=100, ge=1)
+    rate_limit_window: int = Field(default=60, ge=1)
+    page_size_limit: int = Field(default=1000, ge=1, le=1000)
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiry(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        value = ensure_utc(value)
+        if value <= utc_now():
+            raise ValueError("expires_at must be in the future")
+        return value
+
+
+class CredentialResponse(BaseModel):
+    credential_ref: str
+    id: Optional[UUID] = None
+    kind: str
+    name: str
+    owner: Optional[str] = None
+    description: Optional[str] = None
+    status: Literal["active", "expiring", "expired", "revoked", "legacy"]
+    fingerprint: Optional[str] = None
+    role: Optional[str] = None
+    scopes: Optional[list[str]] = None
+    policies: dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    usage_count: int = 0
+    rotated_from_id: Optional[UUID] = None
+
+
+class CredentialCreateResponse(BaseModel):
+    api_key: str
+    data: CredentialResponse
+
+
+class CredentialListResponse(BaseModel):
+    data: list[CredentialResponse]
+
+
+class CredentialOverviewResponse(BaseModel):
+    auth_mode: str
+    serve_require_auth: bool
+    legacy: dict[str, bool]
+    counts: dict[str, int]
+    auth_failure_counts: dict[str, int] = Field(default_factory=dict)
+    usage_updated_at: Optional[datetime] = None

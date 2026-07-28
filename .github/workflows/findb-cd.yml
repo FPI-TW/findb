@@ -13,9 +13,18 @@ on:
       - "pnpm-lock.yaml"
       - ".github/workflows/findb-cd.yml"
   workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: GitHub Environment target
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
 
 concurrency:
-  group: staging-findb
+  group: ${{ inputs.deployment_target || 'staging' }}-findb
   cancel-in-progress: false
 
 permissions:
@@ -80,7 +89,7 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: staging-findb
+    environment: ${{ inputs.deployment_target || 'staging' }}-findb
 
     permissions:
       contents: read
@@ -115,10 +124,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SOURCE_API_KEY: ${{ secrets.SOURCE_API_KEY }}
           SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
+          ADMIN_BREAK_GLASS_API_KEY: ${{ secrets.ADMIN_BREAK_GLASS_API_KEY }}
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-          DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
-          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
-          DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
+          FINDB_LOOKUP_SERVE_API_KEY: ${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}
           FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
           CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
           RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
@@ -127,22 +135,22 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_API_KEY SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_API_KEY DASHBOARD_USERNAME DASHBOARD_PASSWORD DASHBOARD_SESSION_SECRET RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
+          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_BREAK_GLASS_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
               missing=1
             fi
           done
-          if [ "${#DASHBOARD_SESSION_SECRET}" -lt 32 ]; then
-            echo "::error title=Invalid Dashboard session secret::DASHBOARD_SESSION_SECRET must contain at least 32 characters"
-            missing=1
-          fi
-          if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -z "${SERVE_API_KEYS:-}" ]; then
-            echo "::error title=Missing deployment secret::SERVE_API_KEYS must be configured when SERVE_REQUIRE_AUTH=true"
+          if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -z "${FINDB_LOOKUP_SERVE_API_KEY:-}" ]; then
+            echo "::error title=Missing deployment secret::FINDB_LOOKUP_SERVE_API_KEY must be configured when SERVE_REQUIRE_AUTH=true"
             missing=1
           fi
           if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -z "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}" ]; then
             echo "::error title=Missing deployment secret::FINDB_STATIC_CACHE_SERVE_API_KEY must be configured when SERVE_REQUIRE_AUTH=true"
+            missing=1
+          fi
+          if [ "${SERVE_REQUIRE_AUTH:-}" = "true" ] && [ -n "${FINDB_LOOKUP_SERVE_API_KEY:-}" ] && [ "${FINDB_LOOKUP_SERVE_API_KEY}" = "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}" ]; then
+            echo "::error title=Credential reuse::FINDB_LOOKUP_SERVE_API_KEY and FINDB_STATIC_CACHE_SERVE_API_KEY must be distinct credentials"
             missing=1
           fi
           if [ "${PORT:-}" != "8080" ]; then
@@ -153,7 +161,7 @@ jobs:
 
       - name: Render nginx configs
         env:
-          SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
+          FINDB_LOOKUP_SERVE_API_KEY: ${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}
         run: |
           set -euo pipefail
           python backend/scripts/render_nginx_source_allowlist.py \
@@ -162,7 +170,7 @@ jobs:
           python backend/scripts/render_nginx_cloudflare_real_ip.py \
             --output infra/nginx/cloudflare-real-ip.conf
           python backend/scripts/render_nginx_serve_key.py \
-            --keys "${SERVE_API_KEYS:-}" \
+            --key "${FINDB_LOOKUP_SERVE_API_KEY:-}" \
             --output infra/nginx/serve-key.conf
 
       - name: Prepare deploy directories on EC2
@@ -205,10 +213,8 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SOURCE_API_KEY: ${{ secrets.SOURCE_API_KEY }}
           SERVE_API_KEYS: ${{ secrets.SERVE_API_KEYS }}
+          ADMIN_BREAK_GLASS_API_KEY: ${{ secrets.ADMIN_BREAK_GLASS_API_KEY }}
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-          DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
-          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
-          DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
           FINDB_STATIC_CACHE_SERVE_API_KEY: ${{ secrets.FINDB_STATIC_CACHE_SERVE_API_KEY }}
           CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
           RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
@@ -219,7 +225,7 @@ jobs:
           username: ${{ secrets.FINDB_EC2_USER }}
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,DASHBOARD_IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_API_KEY,DASHBOARD_USERNAME,DASHBOARD_PASSWORD,DASHBOARD_SESSION_SECRET,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,DASHBOARD_IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_API_KEY,SOURCE_TRUST_PROXY_HEADERS,SERVE_API_KEYS,SERVE_REQUIRE_AUTH,ADMIN_BREAK_GLASS_API_KEY,ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE
           script: |
             set -euo pipefail
             echo "Logging in to GHCR"

@@ -74,8 +74,11 @@ class SourceClient(Base):
 
     client_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    owner: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source_name: Mapped[str] = mapped_column(String(50), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     allowed_datasets: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
     rate_limit_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     rate_limit_window: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
@@ -84,6 +87,12 @@ class SourceClient(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    rotated_from_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("source_client.client_id"), nullable=True
+    )
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IngestionAttempt(Base):
@@ -379,11 +388,21 @@ class APIKey(Base):
         UniqueConstraint("key_hash", name="uq_api_key_hash"),
         Index("idx_api_key_revoked", "revoked_at"),
         Index("idx_api_key_owner", "owner"),
+        CheckConstraint("kind IN ('serve', 'admin')", name="api_key_kind_valid"),
+        CheckConstraint(
+            "role IS NULL OR role IN ('owner', 'operator', 'viewer')",
+            name="api_key_role_valid",
+        ),
     )
 
     key_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="serve")
+    name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     owner: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     tier: Mapped[str] = mapped_column(String(30), nullable=False, default="standard")
     scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     rate_limit_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
@@ -393,3 +412,96 @@ class APIKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    rotated_from_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("api_key.key_id"), nullable=True
+    )
+
+
+class AdminUser(Base):
+    """Named human administrator authenticated with a password and session."""
+
+    __tablename__ = "admin_user"
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_admin_user_username"),
+        Index("idx_admin_user_role_active", "role", "is_active"),
+        CheckConstraint("role IN ('owner', 'operator', 'viewer')", name="admin_user_role_valid"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    username: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    disabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class AdminSession(Base):
+    """Revocable, hashed opaque session for an Admin user."""
+
+    __tablename__ = "admin_session"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_admin_session_token_hash"),
+        Index("idx_admin_session_user_active", "user_id", "revoked_at"),
+        Index("idx_admin_session_expires", "expires_at"),
+    )
+
+    session_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("admin_user.user_id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CredentialUsageRollup(Base):
+    """Near-real-time aggregate usage for DB-backed credentials."""
+
+    __tablename__ = "credential_usage_rollup"
+    __table_args__ = (
+        UniqueConstraint("credential_kind", "credential_id", name="uq_credential_usage_ref"),
+    )
+
+    usage_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    credential_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    credential_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    last_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AdminAuditEvent(Base):
+    """Immutable attribution record for Admin identity and credential mutations."""
+
+    __tablename__ = "admin_audit_event"
+    __table_args__ = (
+        Index("idx_admin_audit_event_created", "created_at"),
+        Index("idx_admin_audit_event_resource", "resource_type", "resource_id"),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    actor_display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

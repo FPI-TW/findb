@@ -11,11 +11,13 @@ x-app-environment: &app-environment
   DATABASE_MAX_OVERFLOW: "${DATABASE_MAX_OVERFLOW:?DATABASE_MAX_OVERFLOW must be set in GitHub Actions variables}"
   API_V1_PREFIX: "${API_V1_PREFIX:?API_V1_PREFIX must be set in GitHub Actions variables}"
   API_KEY_HEADER: "${API_KEY_HEADER:?API_KEY_HEADER must be set in GitHub Actions variables}"
-  SOURCE_API_KEY: "${SOURCE_API_KEY:?SOURCE_API_KEY must be set in GitHub Actions secrets}"
+  # Optional legacy fallbacks during the DB-backed credential migration.
+  SOURCE_API_KEY: "${SOURCE_API_KEY:-}"
   SOURCE_TRUST_PROXY_HEADERS: "${SOURCE_TRUST_PROXY_HEADERS:?SOURCE_TRUST_PROXY_HEADERS must be set in GitHub Actions variables}"
   SERVE_API_KEYS: "${SERVE_API_KEYS:-}"
   SERVE_REQUIRE_AUTH: "${SERVE_REQUIRE_AUTH:?SERVE_REQUIRE_AUTH must be set in GitHub Actions variables}"
-  ADMIN_API_KEY: "${ADMIN_API_KEY:?ADMIN_API_KEY must be set in GitHub Actions secrets}"
+  ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:?ADMIN_BREAK_GLASS_API_KEY must be set in GitHub Actions secrets}"
+  ADMIN_API_KEY: "${ADMIN_API_KEY:-}"
   RATE_LIMIT_REQUESTS: "${RATE_LIMIT_REQUESTS:?RATE_LIMIT_REQUESTS must be set in GitHub Actions variables}"
   RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:?RATE_LIMIT_WINDOW must be set in GitHub Actions variables}"
   RAW_RETENTION_ENABLED: "${RAW_RETENTION_ENABLED:?RAW_RETENTION_ENABLED must be set in GitHub Actions variables}"
@@ -82,10 +84,6 @@ services:
     environment:
       PORT: "3333"
       FINDB_API_BASE_URL: "http://ingest:${PORT:?PORT must be set in GitHub Actions variables}"
-      ADMIN_API_KEY: "${ADMIN_API_KEY:?ADMIN_API_KEY must be set in GitHub Actions secrets}"
-      DASHBOARD_USERNAME: "${DASHBOARD_USERNAME:?DASHBOARD_USERNAME must be set in GitHub Actions secrets}"
-      DASHBOARD_PASSWORD: "${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD must be set in GitHub Actions secrets}"
-      DASHBOARD_SESSION_SECRET: "${DASHBOARD_SESSION_SECRET:?DASHBOARD_SESSION_SECRET must be set in GitHub Actions secrets}"
     depends_on:
       ingest:
         condition: service_healthy

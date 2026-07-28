@@ -553,11 +553,13 @@ class BaseNormalizer(ABC):
         year = trade_date_value.year
         if year in self._eod_partition_cache:
             return
-        await self.db.execute(text(f"""
+        await self.db.execute(
+            text(f"""
                 CREATE TABLE IF NOT EXISTS market_data_eod_y{year}
                 PARTITION OF market_data_eod
                 FOR VALUES FROM ('{year}-01-01') TO ('{year + 1}-01-01')
-                """))
+                """)
+        )
         self._eod_partition_cache.add(year)
 
     async def check_duplicate_in_db(

@@ -76,7 +76,7 @@ format:
 
 check-backend:
 	uv --directory backend run ruff check app tests scripts migrations
-	uv --directory backend run black --check app tests scripts migrations
+	uv --directory backend run ruff format --check app tests scripts migrations
 	uv --directory backend run mypy app
 	uv --directory backend run python scripts/export_ingress_contracts.py --check
 	uv --directory backend run python scripts/dev.py test-db
@@ -107,7 +107,8 @@ fetcher-test:
 
 fetcher-check:
 	uv --directory fetcher run ruff check .
-	uv --directory fetcher run black --check .
+	uv --directory fetcher run ruff format --check .
+	uv --directory fetcher run mypy src
 	uv --directory fetcher run pytest
 
 fetcher-build:

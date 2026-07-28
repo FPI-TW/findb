@@ -536,7 +536,7 @@ def validate_dataset_contract_scope(
         raise ValueError("Dataset contract defaults.market does not match dataset_registry.market")
     if declaration.defaults.asset_class != registry_asset_class:
         raise ValueError(
-            "Dataset contract defaults.asset_class does not match " "dataset_registry.asset_class"
+            "Dataset contract defaults.asset_class does not match dataset_registry.asset_class"
         )
 
 
@@ -551,8 +551,7 @@ def validate_request_currency(
         row.currency is None for row in request.payload.data
     ):
         raise CurrencyRequiredError(
-            "currency is required for every market_eod row when the dataset has no "
-            "default currency"
+            "currency is required for every market_eod row when the dataset has no default currency"
         )
     if isinstance(request, FuturesContinuousEODIngressRequest):
         raise CurrencyRequiredError(

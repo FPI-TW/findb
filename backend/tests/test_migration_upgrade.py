@@ -145,17 +145,20 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                     """),
                 {"table_names": list(SOURCE_CONTROL_TABLES)},
             )
-            cleanup_index_count = await connection.scalar(text("""
+            cleanup_index_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM pg_indexes
                     WHERE schemaname = 'public'
                       AND tablename = 'ingestion_run'
                       AND indexname = 'idx_run_raw_payload'
-                    """))
+                    """)
+            )
             attempt_table = await connection.scalar(
                 text("SELECT to_regclass('public.ingestion_attempt')")
             )
-            lineage_column_count = await connection.scalar(text("""
+            lineage_column_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM information_schema.columns
                     WHERE (table_schema, table_name) IN (
@@ -163,23 +166,31 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         ('raw', 'market_payload')
                     )
                       AND column_name IN ('schema_id', 'schema_version')
-                    """))
-            contract_config = await connection.scalar(text("""
+                    """)
+            )
+            contract_config = await connection.scalar(
+                text("""
                     SELECT config
                     FROM dataset_registry
                     WHERE dataset_key = 'tw_equity_eod'
-                    """))
-            default_monitor_config = await connection.scalar(text("""
+                    """)
+            )
+            default_monitor_config = await connection.scalar(
+                text("""
                         SELECT config->'delivery_expectation'->'missing_delivery'
                         FROM dataset_registry
                         WHERE dataset_key = 'tw_etf_eod'
-                        """))
-            us_equity_contract_config = await connection.scalar(text("""
+                        """)
+            )
+            us_equity_contract_config = await connection.scalar(
+                text("""
                         SELECT config
                         FROM dataset_registry
                         WHERE dataset_key = 'us_equity_eod'
-                        """))
-            delivery_column_count = await connection.scalar(text("""
+                        """)
+            )
+            delivery_column_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM information_schema.columns
                     WHERE table_schema = 'public'
@@ -191,18 +202,22 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                             'policy_details', 'is_rerun'
                         ))
                       )
-                    """))
-            baseline_index_count = await connection.scalar(text("""
+                    """)
+            )
+            baseline_index_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM pg_indexes
                     WHERE schemaname = 'public'
                       AND tablename = 'ingestion_run'
                       AND indexname = 'idx_run_delivery_policy_baseline'
-                    """))
+                    """)
+            )
             missing_alert_table = await connection.scalar(
                 text("SELECT to_regclass('public.missing_delivery_alert')")
             )
-            missing_alert_index_count = await connection.scalar(text("""
+            missing_alert_index_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM pg_indexes
                     WHERE schemaname = 'public'
@@ -211,8 +226,10 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         'idx_missing_delivery_status_detected',
                         'idx_missing_delivery_dataset_source'
                       )
-                    """))
-            futures_contract_field_count = await connection.scalar(text("""
+                    """)
+            )
+            futures_contract_field_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM information_schema.columns
                     WHERE table_schema = 'public'
@@ -220,15 +237,18 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                       AND column_name IN (
                         'open_interest', 'active_contract_code', 'roll_adjustment'
                       )
-                    """))
-            active_outbox_index_count = await connection.scalar(text("""
+                    """)
+            )
+            active_outbox_index_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM pg_indexes
                     WHERE schemaname = 'public'
                       AND tablename = 'normalization_outbox'
                       AND indexname = 'uq_normalization_outbox_active_job'
                       AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
-                    """))
+                    """)
+            )
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -277,7 +297,8 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
         async with target_engine.connect() as connection:
-            futures_contract_field_count = await connection.scalar(text("""
+            futures_contract_field_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM information_schema.columns
                     WHERE table_schema = 'public'
@@ -285,19 +306,23 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                       AND column_name IN (
                         'open_interest', 'active_contract_code', 'roll_adjustment'
                       )
-                    """))
-            cleanup_index_count = await connection.scalar(text("""
+                    """)
+            )
+            cleanup_index_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM pg_indexes
                     WHERE schemaname = 'public'
                       AND tablename = 'ingestion_run'
                       AND indexname = 'idx_run_raw_payload'
-                    """))
+                    """)
+            )
             attempt_table = await connection.scalar(
                 text("SELECT to_regclass('public.ingestion_attempt')")
             )
             assert futures_contract_field_count == 0
-            lineage_column_count = await connection.scalar(text("""
+            lineage_column_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM information_schema.columns
                     WHERE (table_schema, table_name) IN (
@@ -305,13 +330,17 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         ('raw', 'market_payload')
                     )
                       AND column_name IN ('schema_id', 'schema_version')
-                    """))
-            contract_config = await connection.scalar(text("""
+                    """)
+            )
+            contract_config = await connection.scalar(
+                text("""
                     SELECT config
                     FROM dataset_registry
                     WHERE dataset_key = 'tw_equity_eod'
-                    """))
-            delivery_column_count = await connection.scalar(text("""
+                    """)
+            )
+            delivery_column_count = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM information_schema.columns
                     WHERE table_schema = 'public'
@@ -323,7 +352,8 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                             'policy_details', 'is_rerun'
                         ))
                       )
-                    """))
+                    """)
+            )
             missing_alert_table = await connection.scalar(
                 text("SELECT to_regclass('public.missing_delivery_alert')")
             )

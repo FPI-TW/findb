@@ -99,7 +99,7 @@ function recordingFetch(
 }
 
 describe("FinDB Admin server boundary", () => {
-  it("calls only fixed GET targets and forwards the operator key without caching", async () => {
+  it("calls only fixed GET targets and forwards the session without caching", async () => {
     const calls: RecordedCall[] = []
     const result = await fetchDashboardData(
       request,
@@ -120,8 +120,8 @@ describe("FinDB Admin server boundary", () => {
       expect(call.url.origin).toBe("https://findb.internal:8443")
       expect(call.init?.method).toBe("GET")
       expect(call.init?.cache).toBe("no-store")
-      expect(new Headers(call.init?.headers).get("X-API-Key")).toBe(
-        "operator-secret"
+      expect(new Headers(call.init?.headers).get("Authorization")).toBe(
+        "Bearer operator-secret"
       )
     }
     expect(calls[4]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
@@ -168,7 +168,7 @@ describe("FinDB Admin server boundary", () => {
 
     expect(authResult.queue).toEqual({
       ok: false,
-      error: "Admin API key was rejected",
+      error: "Dashboard session was rejected",
     })
     expect(upstreamResult.queue).toEqual({
       ok: false,

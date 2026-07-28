@@ -9,9 +9,9 @@ repos:
         files: ^backend/
         stages: [pre-commit]
 
-      - id: black-format
-        name: backend black format
-        entry: uv --project backend run black
+      - id: ruff-format
+        name: backend ruff format
+        entry: uv --project backend run ruff format
         language: system
         types_or: [python]
         files: ^backend/
@@ -25,9 +25,9 @@ repos:
         files: ^fetcher/
         stages: [pre-commit]
 
-      - id: fetcher-black-format
-        name: fetcher black format
-        entry: uv --project fetcher run black
+      - id: fetcher-ruff-format
+        name: fetcher ruff format
+        entry: uv --project fetcher run ruff format
         language: system
         types_or: [python]
         files: ^fetcher/

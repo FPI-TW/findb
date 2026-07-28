@@ -43,7 +43,8 @@ Bounded acceptance完成後預設停止data-producing scheduler；只有具名�
 uv sync --frozen
 uv run pytest
 uv run ruff check .
-uv run black --check .
+uv run ruff format --check .
+uv run mypy src
 ```
 
 從repository root建置：

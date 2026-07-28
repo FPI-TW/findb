@@ -14,12 +14,15 @@ import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LookupRouteImport } from './routes/lookup'
 import { Route as SkillRouteImport } from './routes/skill'
+import { Route as AuthenticatedChangePasswordRouteImport } from './routes/_authenticated/change-password'
 import { Route as AuthenticatedOperationsRouteImport } from './routes/_authenticated/operations'
 import { Route as AuthenticatedOperationsIndexRouteImport } from './routes/_authenticated/operations.index'
 import { Route as AuthenticatedOperationsCorrectionsRouteImport } from './routes/_authenticated/operations.corrections'
+import { Route as AuthenticatedOperationsCredentialsRouteImport } from './routes/_authenticated/operations.credentials'
 import { Route as AuthenticatedOperationsDeliveriesRouteImport } from './routes/_authenticated/operations.deliveries'
 import { Route as AuthenticatedOperationsQualityRouteImport } from './routes/_authenticated/operations.quality'
 import { Route as AuthenticatedOperationsRawPayloadsRouteImport } from './routes/_authenticated/operations.raw-payloads'
+import { Route as AuthenticatedOperationsUsersRouteImport } from './routes/_authenticated/operations.users'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -45,6 +48,12 @@ const SkillRoute = SkillRouteImport.update({
   path: '/skill',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedChangePasswordRoute =
+  AuthenticatedChangePasswordRouteImport.update({
+    id: '/change-password',
+    path: '/change-password',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedOperationsRoute = AuthenticatedOperationsRouteImport.update({
   id: '/operations',
   path: '/operations',
@@ -60,6 +69,12 @@ const AuthenticatedOperationsCorrectionsRoute =
   AuthenticatedOperationsCorrectionsRouteImport.update({
     id: '/corrections',
     path: '/corrections',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
+const AuthenticatedOperationsCredentialsRoute =
+  AuthenticatedOperationsCredentialsRouteImport.update({
+    id: '/credentials',
+    path: '/credentials',
     getParentRoute: () => AuthenticatedOperationsRoute,
   } as any)
 const AuthenticatedOperationsDeliveriesRoute =
@@ -80,17 +95,26 @@ const AuthenticatedOperationsRawPayloadsRoute =
     path: '/raw-payloads',
     getParentRoute: () => AuthenticatedOperationsRoute,
   } as any)
+const AuthenticatedOperationsUsersRoute =
+  AuthenticatedOperationsUsersRouteImport.update({
+    id: '/users',
+    path: '/users',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
+  '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations': typeof AuthenticatedOperationsRouteWithChildren
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
+  '/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
   '/operations/quality': typeof AuthenticatedOperationsQualityRoute
   '/operations/raw-payloads': typeof AuthenticatedOperationsRawPayloadsRoute
+  '/operations/users': typeof AuthenticatedOperationsUsersRoute
   '/operations/': typeof AuthenticatedOperationsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -98,10 +122,13 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
+  '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
+  '/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
   '/operations/quality': typeof AuthenticatedOperationsQualityRoute
   '/operations/raw-payloads': typeof AuthenticatedOperationsRawPayloadsRoute
+  '/operations/users': typeof AuthenticatedOperationsUsersRoute
   '/operations': typeof AuthenticatedOperationsIndexRoute
 }
 export interface FileRoutesById {
@@ -111,11 +138,14 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
+  '/_authenticated/change-password': typeof AuthenticatedChangePasswordRoute
   '/_authenticated/operations': typeof AuthenticatedOperationsRouteWithChildren
   '/_authenticated/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
+  '/_authenticated/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/_authenticated/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
   '/_authenticated/operations/quality': typeof AuthenticatedOperationsQualityRoute
   '/_authenticated/operations/raw-payloads': typeof AuthenticatedOperationsRawPayloadsRoute
+  '/_authenticated/operations/users': typeof AuthenticatedOperationsUsersRoute
   '/_authenticated/operations/': typeof AuthenticatedOperationsIndexRoute
 }
 export interface FileRouteTypes {
@@ -125,11 +155,14 @@ export interface FileRouteTypes {
     | '/login'
     | '/lookup'
     | '/skill'
+    | '/change-password'
     | '/operations'
     | '/operations/corrections'
+    | '/operations/credentials'
     | '/operations/deliveries'
     | '/operations/quality'
     | '/operations/raw-payloads'
+    | '/operations/users'
     | '/operations/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -137,10 +170,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/lookup'
     | '/skill'
+    | '/change-password'
     | '/operations/corrections'
+    | '/operations/credentials'
     | '/operations/deliveries'
     | '/operations/quality'
     | '/operations/raw-payloads'
+    | '/operations/users'
     | '/operations'
   id:
     | '__root__'
@@ -149,11 +185,14 @@ export interface FileRouteTypes {
     | '/login'
     | '/lookup'
     | '/skill'
+    | '/_authenticated/change-password'
     | '/_authenticated/operations'
     | '/_authenticated/operations/corrections'
+    | '/_authenticated/operations/credentials'
     | '/_authenticated/operations/deliveries'
     | '/_authenticated/operations/quality'
     | '/_authenticated/operations/raw-payloads'
+    | '/_authenticated/operations/users'
     | '/_authenticated/operations/'
   fileRoutesById: FileRoutesById
 }
@@ -202,6 +241,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SkillRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/change-password': {
+      id: '/_authenticated/change-password'
+      path: '/change-password'
+      fullPath: '/change-password'
+      preLoaderRoute: typeof AuthenticatedChangePasswordRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/operations': {
       id: '/_authenticated/operations'
       path: '/operations'
@@ -221,6 +267,13 @@ declare module '@tanstack/react-router' {
       path: '/corrections'
       fullPath: '/operations/corrections'
       preLoaderRoute: typeof AuthenticatedOperationsCorrectionsRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
+    '/_authenticated/operations/credentials': {
+      id: '/_authenticated/operations/credentials'
+      path: '/credentials'
+      fullPath: '/operations/credentials'
+      preLoaderRoute: typeof AuthenticatedOperationsCredentialsRouteImport
       parentRoute: typeof AuthenticatedOperationsRoute
     }
     '/_authenticated/operations/deliveries': {
@@ -244,14 +297,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedOperationsRawPayloadsRouteImport
       parentRoute: typeof AuthenticatedOperationsRoute
     }
+    '/_authenticated/operations/users': {
+      id: '/_authenticated/operations/users'
+      path: '/users'
+      fullPath: '/operations/users'
+      preLoaderRoute: typeof AuthenticatedOperationsUsersRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
   }
 }
 
 interface AuthenticatedOperationsRouteChildren {
   AuthenticatedOperationsCorrectionsRoute: typeof AuthenticatedOperationsCorrectionsRoute
+  AuthenticatedOperationsCredentialsRoute: typeof AuthenticatedOperationsCredentialsRoute
   AuthenticatedOperationsDeliveriesRoute: typeof AuthenticatedOperationsDeliveriesRoute
   AuthenticatedOperationsQualityRoute: typeof AuthenticatedOperationsQualityRoute
   AuthenticatedOperationsRawPayloadsRoute: typeof AuthenticatedOperationsRawPayloadsRoute
+  AuthenticatedOperationsUsersRoute: typeof AuthenticatedOperationsUsersRoute
   AuthenticatedOperationsIndexRoute: typeof AuthenticatedOperationsIndexRoute
 }
 
@@ -259,11 +321,14 @@ const AuthenticatedOperationsRouteChildren: AuthenticatedOperationsRouteChildren
   {
     AuthenticatedOperationsCorrectionsRoute:
       AuthenticatedOperationsCorrectionsRoute,
+    AuthenticatedOperationsCredentialsRoute:
+      AuthenticatedOperationsCredentialsRoute,
     AuthenticatedOperationsDeliveriesRoute:
       AuthenticatedOperationsDeliveriesRoute,
     AuthenticatedOperationsQualityRoute: AuthenticatedOperationsQualityRoute,
     AuthenticatedOperationsRawPayloadsRoute:
       AuthenticatedOperationsRawPayloadsRoute,
+    AuthenticatedOperationsUsersRoute: AuthenticatedOperationsUsersRoute,
     AuthenticatedOperationsIndexRoute: AuthenticatedOperationsIndexRoute,
   }
 
@@ -273,10 +338,12 @@ const AuthenticatedOperationsRouteWithChildren =
   )
 
 interface AuthenticatedRouteChildren {
+  AuthenticatedChangePasswordRoute: typeof AuthenticatedChangePasswordRoute
   AuthenticatedOperationsRoute: typeof AuthenticatedOperationsRouteWithChildren
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
+  AuthenticatedChangePasswordRoute: AuthenticatedChangePasswordRoute,
   AuthenticatedOperationsRoute: AuthenticatedOperationsRouteWithChildren,
 }
 

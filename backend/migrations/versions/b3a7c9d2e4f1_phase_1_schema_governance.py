@@ -62,7 +62,9 @@ def _raise_invalid_error(label: str, rows: list[sa.RowMapping]) -> None:
 
 def _check_normalization_collisions() -> None:
     bind = op.get_bind()
-    instrument_duplicates = list(bind.execute(sa.text("""
+    instrument_duplicates = list(
+        bind.execute(
+            sa.text("""
                 SELECT
                     lower(trim(asset_class)) AS asset_class,
                     upper(trim(market)) AS market,
@@ -73,10 +75,14 @@ def _check_normalization_collisions() -> None:
                 HAVING COUNT(*) > 1
                 ORDER BY duplicate_count DESC, asset_class, market, symbol
                 LIMIT 10
-                """)).mappings())
+                """)
+        ).mappings()
+    )
     _raise_duplicate_error("instruments", instrument_duplicates)
 
-    calendar_duplicates = list(bind.execute(sa.text("""
+    calendar_duplicates = list(
+        bind.execute(
+            sa.text("""
                 SELECT
                     upper(trim(market)) AS market,
                     trade_date,
@@ -86,7 +92,9 @@ def _check_normalization_collisions() -> None:
                 HAVING COUNT(*) > 1
                 ORDER BY duplicate_count DESC, market, trade_date
                 LIMIT 10
-                """)).mappings())
+                """)
+        ).mappings()
+    )
     _raise_duplicate_error("trading_calendar", calendar_duplicates)
 
 
@@ -275,12 +283,18 @@ def _drop_old_eod_objects(table_name: str) -> None:
 
 def _create_eod_partitions_from_old() -> None:
     bind = op.get_bind()
-    bounds = bind.execute(sa.text("""
+    bounds = (
+        bind.execute(
+            sa.text("""
             SELECT
                 EXTRACT(YEAR FROM min(trade_date))::int AS min_year,
                 EXTRACT(YEAR FROM max(trade_date))::int AS max_year
             FROM market_data_eod_old
-            """)).mappings().one()
+            """)
+        )
+        .mappings()
+        .one()
+    )
     min_year = bounds["min_year"]
     max_year = bounds["max_year"]
     current_year = date.today().year
@@ -293,7 +307,7 @@ def _create_eod_partitions_from_old() -> None:
                 FOR VALUES FROM ('{year}-01-01') TO ('{year + 1}-01-01')
                 """)
     op.execute(
-        "CREATE TABLE IF NOT EXISTS market_data_eod_default " "PARTITION OF market_data_eod DEFAULT"
+        "CREATE TABLE IF NOT EXISTS market_data_eod_default PARTITION OF market_data_eod DEFAULT"
     )
 
 

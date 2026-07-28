@@ -1,9 +1,3 @@
-import {
-  createHash,
-  createHmac,
-  randomBytes,
-  timingSafeEqual,
-} from "node:crypto"
 import { basename, resolve } from "node:path"
 
 import { config as loadDotenv } from "dotenv"
@@ -15,48 +9,25 @@ import {
   setResponseHeader,
 } from "@tanstack/react-start/server"
 
+import {
+  adminLoginResponseSchema,
+  adminSessionUserSchema,
+  type AdminSessionUser,
+} from "./admin-governance-api"
+
 const SESSION_COOKIE = "findb_dashboard_session"
 const SESSION_TTL_SECONDS = 8 * 60 * 60
-const LOGIN_WINDOW_MS = 60_000
-const LOGIN_ATTEMPTS = 5
-const loginAttempts = new Map<string, number[]>()
 
-type DashboardConfig = {
-  adminApiKey: string
+export type DashboardConfig = {
   apiBaseUrl: string
-  username: string
-  password: string
-  sessionSecret: string
-}
-
-type SessionPayload = {
-  username: string
-  expiresAt: number
-  nonce: string
-}
-
-function required(name: string, value: string | undefined, minimum = 1) {
-  const normalized = value?.trim() ?? ""
-  if (normalized.length < minimum) {
-    throw new Error(`${name} is not configured`)
-  }
-  return normalized
 }
 
 export function configFromEnvironment(
   environment: NodeJS.ProcessEnv
 ): DashboardConfig {
   return {
-    adminApiKey: required("ADMIN_API_KEY", environment.ADMIN_API_KEY),
     apiBaseUrl:
       environment.FINDB_API_BASE_URL?.trim() || "http://localhost:8080",
-    username: required("DASHBOARD_USERNAME", environment.DASHBOARD_USERNAME),
-    password: required("DASHBOARD_PASSWORD", environment.DASHBOARD_PASSWORD),
-    sessionSecret: required(
-      "DASHBOARD_SESSION_SECRET",
-      environment.DASHBOARD_SESSION_SECRET,
-      32
-    ),
   }
 }
 
@@ -72,109 +43,183 @@ export function getDashboardConfig() {
   return configFromEnvironment(process.env)
 }
 
-function digest(value: string) {
-  return createHash("sha256").update(value).digest()
+function apiUrl(path: string, config = getDashboardConfig()) {
+  const baseUrl = new URL(config.apiBaseUrl)
+  if (!["http:", "https:"].includes(baseUrl.protocol)) {
+    throw new Error("FinDB API base URL must use HTTP or HTTPS")
+  }
+  return new URL(path, baseUrl)
 }
 
-export function credentialsMatch(
-  submittedUsername: string,
-  submittedPassword: string,
-  config: Pick<DashboardConfig, "username" | "password">
+export function dashboardCookieOptions(
+  protocol: string,
+  nodeEnvironment = process.env.NODE_ENV
 ) {
-  const usernameMatches = timingSafeEqual(
-    digest(submittedUsername),
-    digest(config.username)
-  )
-  const passwordMatches = timingSafeEqual(
-    digest(submittedPassword),
-    digest(config.password)
-  )
-  return usernameMatches && passwordMatches
-}
-
-function signature(payload: string, config: DashboardConfig) {
-  return createHmac("sha256", config.sessionSecret)
-    .update(payload)
-    .update("\0")
-    .update(config.username)
-    .update("\0")
-    .update(config.password)
-    .digest("base64url")
-}
-
-export function createSessionToken(config: DashboardConfig, now = Date.now()) {
-  const payload: SessionPayload = {
-    username: config.username,
-    expiresAt: now + SESSION_TTL_SECONDS * 1000,
-    nonce: randomBytes(18).toString("base64url"),
-  }
-  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url")
-  return `${encoded}.${signature(encoded, config)}`
-}
-
-export function verifySessionToken(
-  token: string | undefined,
-  config: DashboardConfig,
-  now = Date.now()
-) {
-  if (!token) return null
-  const separator = token.lastIndexOf(".")
-  if (separator <= 0) return null
-  const encoded = token.slice(0, separator)
-  const receivedSignature = token.slice(separator + 1)
-  const expectedSignature = signature(encoded, config)
-  const receivedBytes = Buffer.from(receivedSignature, "base64url")
-  const expectedBytes = Buffer.from(expectedSignature, "base64url")
-  if (
-    receivedBytes.toString("base64url") !== receivedSignature ||
-    receivedBytes.length !== expectedBytes.length ||
-    !timingSafeEqual(receivedBytes, expectedBytes)
-  ) {
-    return null
-  }
-  try {
-    const payload = JSON.parse(
-      Buffer.from(encoded, "base64url").toString("utf8")
-    ) as SessionPayload
-    if (
-      payload.username !== config.username ||
-      !Number.isFinite(payload.expiresAt) ||
-      payload.expiresAt <= now
-    ) {
-      return null
-    }
-    return { username: payload.username, expiresAt: payload.expiresAt }
-  } catch {
-    return null
-  }
-}
-
-function cookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: nodeEnvironment === "production" || protocol === "https",
     sameSite: "strict" as const,
     path: "/dashboard",
     maxAge: SESSION_TTL_SECONDS,
   }
 }
 
-export function issueDashboardSession(config: DashboardConfig) {
-  setCookie(SESSION_COOKIE, createSessionToken(config), cookieOptions())
+function cookieOptions() {
+  const request = getRequest()
+  const forwardedProto = request.headers.get("x-forwarded-proto")
+  const requestProtocol = new URL(request.url).protocol.replace(":", "")
+  return dashboardCookieOptions(forwardedProto || requestProtocol)
+}
+
+export function issueDashboardSession(token: string) {
+  setCookie(SESSION_COOKIE, token, cookieOptions())
 }
 
 export function clearDashboardSession() {
   deleteCookie(SESSION_COOKIE, cookieOptions())
 }
 
-export function getDashboardSession(config = getDashboardConfig()) {
-  return verifySessionToken(getCookie(SESSION_COOKIE), config)
+export function getDashboardSessionToken() {
+  return getCookie(SESSION_COOKIE) ?? null
 }
 
-export function requireDashboardSession(config = getDashboardConfig()) {
-  const session = getDashboardSession(config)
-  if (!session) throw new Error("Unauthorized")
-  return session
+async function parseError(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as {
+      detail?: string
+      message?: string
+    }
+    return payload.detail || payload.message || fallback
+  } catch {
+    return fallback
+  }
+}
+
+export async function authenticateDashboardUser(
+  username: string,
+  password: string,
+  fetchImplementation: typeof fetch = fetch
+) {
+  let response: Response
+  try {
+    response = await fetchImplementation(apiUrl("/api/v1/admin/auth/login"), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ username, password }),
+      cache: "no-store",
+    })
+  } catch {
+    throw new Error("無法連線至 FinDB API。")
+  }
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("帳號或密碼錯誤。")
+    }
+    if (response.status === 429) {
+      throw new Error("登入嘗試過於頻繁，請稍後再試。")
+    }
+    throw new Error(await parseError(response, "登入失敗。"))
+  }
+  try {
+    return adminLoginResponseSchema.parse(await response.json())
+  } catch {
+    throw new Error("FinDB API 回傳了無法辨識的登入結果。")
+  }
+}
+
+export async function fetchDashboardSession(
+  token = getDashboardSessionToken(),
+  fetchImplementation: typeof fetch = fetch
+): Promise<AdminSessionUser | null> {
+  if (!token) return null
+  let response: Response
+  try {
+    response = await fetchImplementation(apiUrl("/api/v1/admin/auth/me"), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    })
+  } catch {
+    throw new Error("無法確認登入狀態。")
+  }
+  if (response.status === 401 || response.status === 403) return null
+  if (!response.ok) {
+    throw new Error(await parseError(response, "無法確認登入狀態。"))
+  }
+  try {
+    return adminSessionUserSchema.parse(await response.json())
+  } catch {
+    throw new Error("FinDB API 回傳了無法辨識的登入狀態。")
+  }
+}
+
+export async function revokeDashboardSession(
+  token = getDashboardSessionToken(),
+  fetchImplementation: typeof fetch = fetch
+) {
+  if (!token) return
+  try {
+    await fetchImplementation(apiUrl("/api/v1/admin/auth/logout"), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    })
+  } catch {
+    // Clearing the browser cookie is still required when the backend is down.
+  }
+}
+
+export async function changeDashboardPassword(
+  currentPassword: string,
+  newPassword: string,
+  fetchImplementation: typeof fetch = fetch
+) {
+  const token = getDashboardSessionToken()
+  if (!token) throw new Error("Unauthorized")
+  let response: Response
+  try {
+    response = await fetchImplementation(
+      apiUrl("/api/v1/admin/auth/change-password"),
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+        cache: "no-store",
+      }
+    )
+  } catch {
+    throw new Error("無法連線至 FinDB API。")
+  }
+  if (!response.ok) {
+    throw new Error(await parseError(response, "密碼更新失敗。"))
+  }
+}
+
+export async function requireDashboardSession() {
+  const token = getDashboardSessionToken()
+  if (!token) throw new Error("Unauthorized")
+  const user = await fetchDashboardSession(token)
+  if (!user) {
+    clearDashboardSession()
+    throw new Error("Unauthorized")
+  }
+  return { token, user }
 }
 
 export function assertSameOrigin() {
@@ -186,27 +231,6 @@ export function assertSameOrigin() {
   const expectedOrigin = `${forwardedProto || new URL(request.url).protocol.replace(":", "")}://${forwardedHost || request.headers.get("host")}`
   if (new URL(origin).origin !== expectedOrigin) {
     throw new Error("Origin check failed")
-  }
-}
-
-export function enforceLoginRateLimit(now = Date.now()) {
-  const request = getRequest()
-  const forwarded = request.headers.get("x-forwarded-for")
-  const identity =
-    request.headers.get("cf-connecting-ip") ||
-    forwarded?.split(",")[0]?.trim() ||
-    "unknown"
-  const recent = (loginAttempts.get(identity) ?? []).filter(
-    timestamp => timestamp > now - LOGIN_WINDOW_MS
-  )
-  if (recent.length >= LOGIN_ATTEMPTS) {
-    throw new Error("登入嘗試過於頻繁，請稍後再試。")
-  }
-  recent.push(now)
-  loginAttempts.set(identity, recent)
-  if (loginAttempts.size > 10_000) {
-    const oldestIdentity = loginAttempts.keys().next().value
-    if (oldestIdentity) loginAttempts.delete(oldestIdentity)
   }
 }
 

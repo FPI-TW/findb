@@ -25,12 +25,12 @@
     "test:fetcher": "uv --directory fetcher run pytest",
     "format": "pnpm format:dashboard && pnpm format:backend && pnpm format:fetcher",
     "format:dashboard": "pnpm --filter dashboard format",
-    "format:backend": "uv --directory backend run ruff check --fix app tests scripts migrations && uv --directory backend run black app tests scripts migrations",
-    "format:fetcher": "uv --directory fetcher run ruff check --fix . && uv --directory fetcher run black .",
+    "format:backend": "uv --directory backend run ruff check --fix app tests scripts migrations && uv --directory backend run ruff format app tests scripts migrations",
+    "format:fetcher": "uv --directory fetcher run ruff check --fix . && uv --directory fetcher run ruff format .",
     "check": "pnpm check:dashboard && pnpm check:backend && pnpm check:fetcher && pnpm build:dashboard",
     "check:dashboard": "pnpm --filter dashboard format:check && pnpm --filter dashboard lint:check && pnpm --filter dashboard type:check && pnpm --filter dashboard test",
-    "check:backend": "uv --directory backend run ruff check app tests scripts migrations && uv --directory backend run black --check app tests scripts migrations && uv --directory backend run mypy app",
-    "check:fetcher": "uv --directory fetcher run ruff check . && uv --directory fetcher run black --check . && uv --directory fetcher run pytest",
+    "check:backend": "uv --directory backend run ruff check app tests scripts migrations && uv --directory backend run ruff format --check app tests scripts migrations && uv --directory backend run mypy app && uv --directory backend run python scripts/dev.py test-db",
+    "check:fetcher": "uv --directory fetcher run ruff check . && uv --directory fetcher run ruff format --check . && uv --directory fetcher run mypy src && uv --directory fetcher run pytest",
     "hook:pre-commit": "uv --directory backend run pre-commit run --hook-stage pre-commit",
     "hook:pre-push": "uv --directory backend run pre-commit run --hook-stage pre-push"
   }

@@ -19,7 +19,8 @@ INDEX_NAME = "uq_normalization_outbox_active_job"
 
 
 def upgrade() -> None:
-    op.execute(sa.text("""
+    op.execute(
+        sa.text("""
         DO $$
         BEGIN
             IF EXISTS (
@@ -35,7 +36,8 @@ def upgrade() -> None:
             END IF;
         END
         $$;
-    """))
+    """)
+    )
     op.create_index(
         INDEX_NAME,
         "normalization_outbox",

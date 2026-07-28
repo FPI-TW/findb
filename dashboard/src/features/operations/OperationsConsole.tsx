@@ -7,11 +7,13 @@ import {
   Clock3,
   Database,
   Gauge,
+  KeyRound,
   LogOut,
   RefreshCw,
   Search,
   ShieldCheck,
   TriangleAlert,
+  Users,
 } from "lucide-react"
 import {
   createContext,
@@ -49,6 +51,8 @@ import type {
   DashboardResponse,
   PanelResult,
 } from "../../lib/admin-api"
+import type { AdminRole } from "../../lib/admin-governance-api"
+import { canViewUsers } from "../../lib/admin-permissions"
 import { loadDashboard } from "../../lib/admin.functions"
 import { logout } from "../../lib/auth.functions"
 
@@ -276,9 +280,28 @@ const navigation = [
     icon: Search,
     exact: false,
   },
+  {
+    to: "/operations/credentials",
+    label: "API Credentials",
+    icon: KeyRound,
+    exact: false,
+  },
+  {
+    to: "/operations/users",
+    label: "管理者使用者",
+    icon: Users,
+    exact: false,
+    ownerOnly: true,
+  },
 ] as const
 
-export default function OperationsLayout({ username }: { username: string }) {
+export default function OperationsLayout({
+  username,
+  role,
+}: {
+  username: string
+  role: AdminRole
+}) {
   const load = useServerFn(loadDashboard)
   const logoutFn = useServerFn(logout)
   const navigate = useNavigate()
@@ -347,7 +370,7 @@ export default function OperationsLayout({ username }: { username: string }) {
       <section className="grid grid-cols-1 items-end gap-6 px-1 pt-3 pb-6 lg:grid-cols-2 lg:gap-12">
         <div>
           <p className="mb-1 font-mono text-xs font-medium tracking-widest text-accent uppercase">
-            FinDB Operations / Read only
+            FinDB Operations / Governed access
           </p>
           <h1 className="my-2.5 text-4xl leading-none tracking-tighter sm:text-5xl">
             資料導入營運台
@@ -360,9 +383,7 @@ export default function OperationsLayout({ username }: { username: string }) {
           <div className="grid gap-1">
             <span className="text-xs text-muted">已登入</span>
             <strong className="font-mono">{username}</strong>
-            <small className="text-xs text-muted">
-              Admin key 僅由 Dashboard server 讀取
-            </small>
+            <small className="text-xs text-muted">{role}</small>
           </div>
           <div className="flex flex-col items-stretch gap-2 sm:flex-row">
             <Button
@@ -432,24 +453,26 @@ export default function OperationsLayout({ username }: { username: string }) {
             className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface p-2 shadow-sm lg:flex-col lg:overflow-visible"
             aria-label="營運資料分類"
           >
-            {navigation.map(item => {
-              const Icon = item.icon
-              return (
-                <Link
-                  key={item.to}
-                  to={item.to}
-                  activeOptions={{ exact: item.exact }}
-                  activeProps={{
-                    className:
-                      "bg-accent-soft text-accent ring-1 ring-accent/20",
-                  }}
-                  className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-bold whitespace-nowrap text-muted transition-colors hover:bg-surface-soft hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20 focus-visible:outline-none"
-                >
-                  <Icon className="size-4" aria-hidden="true" />
-                  {item.label}
-                </Link>
-              )
-            })}
+            {navigation
+              .filter(item => !("ownerOnly" in item) || canViewUsers(role))
+              .map(item => {
+                const Icon = item.icon
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    activeOptions={{ exact: item.exact }}
+                    activeProps={{
+                      className:
+                        "bg-accent-soft text-accent ring-1 ring-accent/20",
+                    }}
+                    className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-bold whitespace-nowrap text-muted transition-colors hover:bg-surface-soft hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20 focus-visible:outline-none"
+                  >
+                    <Icon className="size-4" aria-hidden="true" />
+                    {item.label}
+                  </Link>
+                )
+              })}
           </nav>
         </aside>
         <OperationsContext.Provider

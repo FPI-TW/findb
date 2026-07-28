@@ -24,11 +24,11 @@ def test_default_referer_allows_legacy_and_dashboard_lookup_routes() -> None:
     assert not any(re.search(DEFAULT_REFERER_REGEX, referer) for referer in rejected)
 
 
-def test_rendered_map_injects_only_the_first_serve_key() -> None:
-    rendered = render_serve_key("primary-key,secondary-key", DEFAULT_REFERER_REGEX)
+def test_rendered_map_injects_dedicated_lookup_key() -> None:
+    rendered = render_serve_key("lookup-key", DEFAULT_REFERER_REGEX)
 
-    assert f'"~{DEFAULT_REFERER_REGEX}"  "primary-key";' in rendered
-    assert "secondary-key" not in rendered
+    assert f'"~{DEFAULT_REFERER_REGEX}"  "lookup-key";' in rendered
+    assert "FINDB_LOOKUP_SERVE_API_KEY" in rendered
     assert "default" in rendered
     assert "$http_x_api_key" in rendered
 
@@ -36,5 +36,15 @@ def test_rendered_map_injects_only_the_first_serve_key() -> None:
 def test_rendered_map_falls_back_to_caller_header_without_keys() -> None:
     rendered = render_serve_key("", DEFAULT_REFERER_REGEX)
 
-    assert "SERVE_API_KEYS is empty" in rendered
+    assert "FINDB_LOOKUP_SERVE_API_KEY is empty" in rendered
     assert "default $http_x_api_key;" in rendered
+
+
+def test_lookup_key_rejects_unsafe_nginx_characters() -> None:
+    for unsafe_key in ('bad"key', "bad\\key", "bad\nkey", "bad\rkey"):
+        try:
+            render_serve_key(unsafe_key, DEFAULT_REFERER_REGEX)
+        except ValueError as exc:
+            assert "FINDB_LOOKUP_SERVE_API_KEY" in str(exc)
+        else:
+            raise AssertionError(f"unsafe key was accepted: {unsafe_key!r}")

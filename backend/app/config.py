@@ -65,6 +65,11 @@ class Settings(BaseSettings):
 
     # Admin API Key
     ADMIN_API_KEY: str = ""
+    ADMIN_BREAK_GLASS_API_KEY: str = ""
+    ADMIN_SESSION_HOURS: int = Field(default=8, ge=1, le=168)
+    ADMIN_LOGIN_RATE_LIMIT_REQUESTS: int = Field(default=5, ge=1)
+    ADMIN_LOGIN_RATE_LIMIT_WINDOW: int = Field(default=300, ge=1)
+    CREDENTIAL_USAGE_FLUSH_SECONDS: int = Field(default=60, ge=1)
 
     # Rate Limiting
     RATE_LIMIT_REQUESTS: int = 100

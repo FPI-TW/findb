@@ -132,19 +132,20 @@ def test_external_actions_are_pinned_to_full_commit_shas() -> None:
         for reference in _uses_references(_load_workflow(path)):
             if reference.startswith("./"):
                 continue
-            assert re.fullmatch(
-                r"[^@\s]+@[0-9a-f]{40}", reference
-            ), f"{path.name} contains an unpinned action reference: {reference}"
+            assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference), (
+                f"{path.name} contains an unpinned action reference: {reference}"
+            )
 
 
 def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
     fetcher_cd = _load_workflow(FETCHER_CD_WORKFLOW)
 
-    for workflow, ci_path, environment in (
-        (findb_cd, "./.github/workflows/findb-ci.yml", "staging-findb"),
-        (fetcher_cd, "./.github/workflows/fetcher-ci.yml", "staging-fetcher"),
+    for workflow, ci_path, service in (
+        (findb_cd, "./.github/workflows/findb-ci.yml", "findb"),
+        (fetcher_cd, "./.github/workflows/fetcher-ci.yml", "fetcher"),
     ):
+        environment = f"${{{{ inputs.deployment_target || 'staging' }}}}-{service}"
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)
         assert jobs["verify"]["uses"] == ci_path
@@ -153,21 +154,48 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
+        target_input = workflow["on"]["workflow_dispatch"]["inputs"]["deployment_target"]
+        assert target_input["default"] == "staging"
+        assert target_input["options"] == ["staging", "production"]
 
 
 def test_remote_env_examples_cover_the_sync_contract() -> None:
     namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
     service_configs = namespace["SERVICE_CONFIGS"]
+    deployment_targets = namespace["DEPLOYMENT_TARGETS"]
 
-    for service, config in service_configs.items():
-        example = ENV_CONFIG_ROOT / service / "remote.env.example"
-        configured_names = {
-            match.group(1)
-            for line in example.read_text(encoding="utf-8").splitlines()
-            if (match := re.fullmatch(r"([A-Z][A-Z0-9_]*)=.*", line))
-        }
-        required_names = set((*config.variables, *config.secrets))
-        assert configured_names == required_names
+    for target in deployment_targets:
+        for service, config in service_configs.items():
+            example = ENV_CONFIG_ROOT / target / service / "remote.env.example"
+            configured_names = {
+                match.group(1)
+                for line in example.read_text(encoding="utf-8").splitlines()
+                if (
+                    match := re.fullmatch(
+                        r"(?:# )?([A-Z][A-Z0-9_]*)=.*",
+                        line,
+                    )
+                )
+            }
+            documented_names = set((*config.variables, *config.secrets, *config.optional_secrets))
+            assert configured_names == documented_names
+
+
+def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
+    for target in ("staging", "production"):
+        for service in ("findb", "fetcher"):
+            example = ENV_CONFIG_ROOT / target / service / "remote.env.example"
+            first_line = example.read_text(encoding="utf-8").splitlines()[0]
+            assert first_line == f"# GitHub Environment: {target}-{service}"
+
+    staging_findb = (ENV_CONFIG_ROOT / "staging" / "findb" / "remote.env.example").read_text(
+        encoding="utf-8"
+    )
+    production_findb = (ENV_CONFIG_ROOT / "production" / "findb" / "remote.env.example").read_text(
+        encoding="utf-8"
+    )
+    assert "\nSERVE_REQUIRE_AUTH=false\n" in staging_findb
+    assert "\nSERVE_REQUIRE_AUTH=true\n" in production_findb
 
 
 def test_contract_changes_gate_both_ci_workflows_but_not_cd() -> None:
@@ -293,11 +321,12 @@ def test_root_context_images_use_service_specific_dockerignore_files() -> None:
 
 
 def test_deployment_secret_references_are_confined_to_environment_jobs() -> None:
-    for path, environment in (
-        (FINDB_CD_WORKFLOW, "staging-findb"),
-        (FETCHER_CD_WORKFLOW, "staging-fetcher"),
+    for path, service in (
+        (FINDB_CD_WORKFLOW, "findb"),
+        (FETCHER_CD_WORKFLOW, "fetcher"),
     ):
         workflow = _load_workflow(path)
+        environment = f"${{{{ inputs.deployment_target || 'staging' }}}}-{service}"
         assert workflow["jobs"]["deploy"]["environment"] == environment
         for reference_path in _secret_reference_paths(workflow):
             referenced_value: object = workflow
@@ -312,6 +341,51 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
 
     for path in (FINDB_CI_WORKFLOW, FETCHER_CI_WORKFLOW):
         assert _secret_reference_paths(_load_workflow(path)) == []
+
+
+def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    validate = _named_step(workflow, "deploy", "Validate deployment configuration")
+    render = _named_step(workflow, "deploy", "Render nginx configs")
+    deploy = _named_step(workflow, "deploy", "Deploy to EC2")
+
+    validation_script = validate["run"]
+    assert "ADMIN_BREAK_GLASS_API_KEY" in validation_script
+    assert "FINDB_LOOKUP_SERVE_API_KEY must be configured" in validation_script
+    assert "FINDB_STATIC_CACHE_SERVE_API_KEY must be configured" in validation_script
+    assert (
+        "FINDB_LOOKUP_SERVE_API_KEY and FINDB_STATIC_CACHE_SERVE_API_KEY must be distinct"
+        in validation_script
+    )
+    assert "SERVE_API_KEYS must be configured" not in validation_script
+
+    required_loop = next(line for line in validation_script.splitlines() if "for name in " in line)
+    for legacy_name in (
+        "SOURCE_API_KEY",
+        "SERVE_API_KEYS",
+        "ADMIN_API_KEY",
+    ):
+        assert legacy_name not in required_loop
+
+    assert render["env"]["FINDB_LOOKUP_SERVE_API_KEY"] == (
+        "${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}"
+    )
+    assert '--key "${FINDB_LOOKUP_SERVE_API_KEY:-}"' in render["run"]
+    assert "--keys" not in render["run"]
+
+    forwarded = set(deploy["with"]["envs"].split(","))
+    assert "ADMIN_BREAK_GLASS_API_KEY" in forwarded
+    assert "FINDB_LOOKUP_SERVE_API_KEY" not in forwarded
+
+    compose = PROD_COMPOSE.read_text(encoding="utf-8")
+    assert (
+        'ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:'
+        "?ADMIN_BREAK_GLASS_API_KEY must be set"
+    ) in compose
+    assert 'SOURCE_API_KEY: "${SOURCE_API_KEY:-}"' in compose
+    assert 'ADMIN_API_KEY: "${ADMIN_API_KEY:-}"' in compose
+    assert "DASHBOARD_USERNAME" not in compose
+    assert "DASHBOARD_PASSWORD" not in compose
 
 
 def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
@@ -474,9 +548,7 @@ def test_fetcher_scheduler_reconciliation_behavior(
         workflow,
         "deploy",
         "Release and validate Fetcher image on Fetcher EC2",
-    )[
-        "with"
-    ]["script"]
+    )["with"]["script"]
     begin = "# BEGIN FETCHER SCHEDULER RECONCILIATION"
     end = "# END FETCHER SCHEDULER RECONCILIATION"
     reconciliation = script.split(begin, 1)[1].split(end, 1)[0]
@@ -566,11 +638,13 @@ def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
     setup_script = (BACKEND_ROOT / "scripts" / "setup_ec2.sh").read_text(encoding="utf-8")
 
     assert "staging-findb" in setup_script
+    assert "production-findb" in setup_script
     assert "FINDB_EC2_HOST" in setup_script
     assert "FINDB_EC2_USER" in setup_script
     assert "FINDB_EC2_SSH_KEY" in setup_script
     assert "\n       EC2_HOST" not in setup_script
     assert "staging-fetcher" in setup_script
+    assert "production-fetcher" in setup_script
 
 
 def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
@@ -783,7 +857,7 @@ def test_fetch_dlq_health_encodes_queue_path_and_uses_broker_credentials() -> No
 
     assert result == {"dlq_ready": 0, "dlq_unacked": 0, "dlq_depth": 0}
     assert captured == {
-        "url": ("http://rabbitmq:15672/api/queues/%2Ffindb/" "findb.normalize.dlq.v1"),
+        "url": ("http://rabbitmq:15672/api/queues/%2Ffindb/findb.normalize.dlq.v1"),
         "authorization": "Basic c2VydmljZTpwQHNz",
         "timeout": 10,
     }

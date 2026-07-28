@@ -6,6 +6,10 @@ The reset deliberately preserves only schema/configuration/authentication data:
 * ``public.dataset_registry``
 * ``public.source_client``
 * ``public.api_key``
+* ``public.admin_user``
+* ``public.admin_session``
+* ``public.admin_audit_event``
+* ``public.credential_usage_rollup``
 
 Every other current application data table is cleared, including canonical,
 raw, workflow, audit, alert, calendar, roll-rule, and worker-heartbeat data.
@@ -47,8 +51,12 @@ ADVISORY_LOCK_KEY = 7_135_202_607_280_001
 TERMINAL_STATUSES = ("completed", "completed_with_errors", "failed")
 
 PROTECTED_TABLES = (
+    "public.admin_audit_event",
+    "public.admin_session",
+    "public.admin_user",
     "public.alembic_version",
     "public.api_key",
+    "public.credential_usage_rollup",
     "public.dataset_registry",
     "public.source_client",
 )
@@ -112,12 +120,16 @@ async def _acquire_lock(connection: AsyncConnection) -> None:
 
 async def get_target_fingerprint(connection: AsyncConnection) -> str:
     """Return a non-secret digest identifying the live database target."""
-    row = (await connection.execute(text("""
+    row = (
+        await connection.execute(
+            text("""
                 SELECT current_database(),
                        current_user,
                        COALESCE(inet_server_addr()::text, 'local-socket'),
                        COALESCE(inet_server_port()::text, 'local-socket')
-            """))).one()
+            """)
+        )
+    ).one()
     identity = "\x00".join(str(value) for value in row)
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 

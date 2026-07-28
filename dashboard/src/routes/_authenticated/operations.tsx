@@ -7,7 +7,7 @@ export const Route = createFileRoute("/_authenticated/operations")({
 })
 
 function OperationsPage() {
-  const { username } = Route.useRouteContext()
+  const { role, username } = Route.useRouteContext()
 
-  return <OperationsLayout username={username} />
+  return <OperationsLayout username={username} role={role} />
 }

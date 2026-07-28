@@ -7,9 +7,18 @@ on:
       - "fetcher/**"
       - ".github/workflows/fetcher-cd.yml"
   workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: GitHub Environment target
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
 
 concurrency:
-  group: staging-fetcher
+  group: ${{ inputs.deployment_target || 'staging' }}-fetcher
   cancel-in-progress: false
 
 permissions:
@@ -60,7 +69,7 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: staging-fetcher
+    environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
 
     permissions:
       contents: read

@@ -178,7 +178,7 @@ class R2RawPayloadStore:
         digest_bytes = hashlib.sha256(raw_bytes).digest()
         digest = digest_bytes.hex()
         symbol_digest = hashlib.sha256(normalized_symbol.encode("utf-8")).hexdigest()[:16]
-        key = f"{self._config.prefix}/twelve_data/{dataset_key}/" f"{symbol_digest}/{digest}.json"
+        key = f"{self._config.prefix}/twelve_data/{dataset_key}/{symbol_digest}/{digest}.json"
         ref = f"r2://{self._config.account_id}/{self._config.bucket}/{key}"
         if len(ref) > _MAX_REF_LENGTH:
             raise RawStorageUploadError("raw object reference exceeds ingress contract limit")

@@ -190,7 +190,8 @@ def _load_artifact_tables(artifact_dir: Path, manifest: dict[str, Any]) -> list[
 
 
 async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
-    result = await conn.execute(text("""
+    result = await conn.execute(
+        text("""
             SELECT
                 child_ns.nspname AS child_schema,
                 child_cls.relname AS child_table,
@@ -202,7 +203,8 @@ async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
             JOIN pg_class parent_cls ON parent_cls.oid = con.confrelid
             JOIN pg_namespace parent_ns ON parent_ns.oid = parent_cls.relnamespace
             WHERE con.contype = 'f'
-            """))
+            """)
+    )
     return [
         (
             f"{row.child_schema}.{row.child_table}",

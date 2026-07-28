@@ -53,8 +53,16 @@ def _mask_key(key: str) -> str:
     return key[:4] + "****"
 
 
-def build_correction_actor(api_key: str) -> str:
+def build_correction_actor(api_key: object) -> str:
     """Persist a non-reversible identifier instead of the raw admin API key."""
+    if hasattr(api_key, "actor_type"):
+        actor_type = getattr(api_key, "actor_type")
+        actor_id = getattr(api_key, "actor_id", None) or getattr(api_key, "display_name")
+        if actor_type == "break_glass":
+            return f"key_fp:{actor_id}"
+        display_name = getattr(api_key, "display_name")
+        return f"{actor_type}:{actor_id}:{display_name}"[:200]
+    api_key = str(api_key)
     digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
     return f"key_fp:{digest}"
 
@@ -62,6 +70,8 @@ def build_correction_actor(api_key: str) -> str:
 def present_correction_actor(value: str) -> str:
     """Show fingerprints as-is while masking legacy raw API keys."""
     if value.startswith("key_fp:"):
+        return value
+    if value.startswith(("user:", "machine:")):
         return value
     return _mask_key(value)
 
@@ -138,7 +148,7 @@ async def patch_eod_record(
     instrument_id: UUID,
     trade_date: date,
     patch: PatchEODRequest,
-    api_key: str,
+    api_key: object,
 ) -> tuple[CanonicalCorrection, MarketDataEOD]:
     """
     Apply a partial update to a MarketDataEOD record and write an audit row.
@@ -239,7 +249,7 @@ async def resolve_dq_issue(
     db: AsyncSession,
     issue_id: UUID,
     request: ResolveDQIssueRequest,
-    api_key: str,
+    api_key: object,
 ) -> tuple[CanonicalCorrection, DQIssue]:
     """
     Mark a DQ issue as resolved and write an audit row.

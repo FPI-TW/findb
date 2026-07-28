@@ -4,27 +4,49 @@ Admin API 端點。
 """
 
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import verify_admin_api_key
+from app.api.deps import (
+    AdminPrincipal,
+    enforce_admin_login_rate_limit,
+    get_admin_break_glass_api_key,
+    require_operator,
+    require_owner,
+    require_viewer,
+    verify_admin_api_key,
+)
+from app.config import get_settings
 from app.dependencies import get_db
 from app.models.raw import RawMarketPayload
-from app.models.registry import IngestionRun
+from app.models.registry import AdminSession, AdminUser, APIKey, IngestionRun, SourceClient
 from app.schemas.admin import (
+    AdminUserCreateRequest,
+    AdminUserEnvelope,
+    AdminUserListResponse,
+    AdminUserResponse,
+    AdminUserUpdateRequest,
     APIKeyCreateRequest,
     APIKeyCreateResponse,
     APIKeyListResponse,
     APIKeyResponse,
+    BootstrapRequest,
     BulkRerunResponse,
     CacheTriggerResponse,
+    ChangePasswordRequest,
     CorrectionListResponse,
     CorrectionResponse,
+    CredentialCreateRequest,
+    CredentialCreateResponse,
+    CredentialListResponse,
+    CredentialOverviewResponse,
+    CredentialResponse,
     DQIssueListResponse,
     DQIssueResponse,
     InstrumentCacheDocument,
@@ -33,8 +55,10 @@ from app.schemas.admin import (
     InstrumentCacheItemUpdateResponse,
     InstrumentCacheReplaceRequest,
     InstrumentCacheWriteResponse,
+    LoginRequest,
     MissingDeliveryAlertListResponse,
     MissingDeliveryAlertResponse,
+    PasswordResetRequest,
     PatchEODRequest,
     PatchEODResponse,
     QueueHealthResponse,
@@ -42,10 +66,12 @@ from app.schemas.admin import (
     RawPayloadResponse,
     ResolveDQIssueRequest,
     ResolveDQIssueResponse,
+    SessionResponse,
     SourceClientCreateRequest,
     SourceClientCreateResponse,
     SourceClientListResponse,
     SourceClientResponse,
+    SuccessResponse,
 )
 from app.schemas.common import PaginationInfo
 from app.services.admin import (
@@ -59,7 +85,31 @@ from app.services.admin import (
     present_correction_actor,
     resolve_dq_issue,
 )
-from app.services.api_keys import create_api_key, list_api_keys, revoke_api_key
+from app.services.admin_audit import record_admin_audit
+from app.services.admin_identity import (
+    active_owner_count,
+    authenticate_user,
+    create_user,
+    issue_session,
+    lock_admin_identity,
+    revoke_session,
+    set_password,
+    temporary_password,
+    update_user,
+    verify_password,
+)
+from app.services.api_keys import (
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
+    rotate_api_key,
+)
+from app.services.credentials import (
+    credential_overview,
+    list_credentials,
+    present_api_key,
+    present_source,
+)
 from app.services.delivery_monitor import list_missing_delivery_alerts
 from app.services.ingestion import IngestionService, RawPayloadNotFoundError
 from app.services.instrument_cache import (
@@ -75,16 +125,398 @@ from app.services.source_clients import (
     create_source_client,
     list_source_clients,
     revoke_source_client,
+    rotate_source_client,
 )
 from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
+settings = get_settings()
+
+
+def _session_response(user: AdminUser, session: AdminSession, token: str) -> SessionResponse:
+    return SessionResponse(
+        access_token=token,
+        expires_at=session.expires_at,
+        user=AdminUserResponse.model_validate(user),
+    )
+
+
+@router.post("/auth/bootstrap", response_model=SessionResponse)
+async def bootstrap_admin(
+    body: BootstrapRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create the first Owner only, authorized by the break-glass key."""
+    supplied = request.headers.get(settings.API_KEY_HEADER)
+    if supplied and request.headers.get("authorization"):
+        raise HTTPException(status_code=400, detail="Provide exactly one admin credential")
+    expected = get_admin_break_glass_api_key()
+    if not supplied:
+        raise HTTPException(status_code=401, detail="Missing break-glass credential")
+    from hmac import compare_digest
+
+    if not expected or not compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Invalid break-glass credential")
+    await lock_admin_identity(db)
+    if (
+        await active_owner_count(db)
+        or (await db.execute(select(AdminUser.user_id).limit(1))).first()
+    ):
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Admin bootstrap is already complete")
+    try:
+        user = await create_user(
+            db,
+            username=body.username,
+            display_name=body.display_name,
+            password=body.password,
+            role="owner",
+            commit=False,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Username already exists")
+    session, token = await issue_session(db, user, commit=False)
+    await record_admin_audit(
+        db,
+        AdminPrincipal(
+            "break_glass",
+            sha256(supplied.encode("utf-8")).hexdigest()[:12],
+            "break-glass",
+            "owner",
+        ),
+        action="bootstrap",
+        resource_type="admin_user",
+        resource_id=str(user.user_id),
+    )
+    return _session_response(user, session, token)
+
+
+@router.post("/auth/login", response_model=SessionResponse)
+async def login_admin(
+    body: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_admin_login_rate_limit(request, body.username)
+    user = await authenticate_user(db, body.username, body.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    session, token = await issue_session(db, user)
+    return _session_response(user, session, token)
+
+
+@router.get("/auth/me", response_model=AdminUserResponse)
+async def get_current_admin(
+    principal: AdminPrincipal = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    if principal.actor_type != "user" or principal.actor_id is None:
+        raise HTTPException(status_code=403, detail="User session required")
+    user = await db.get(AdminUser, UUID(principal.actor_id))
+    if user is None:
+        raise HTTPException(status_code=404, detail="Admin user not found")
+    return AdminUserResponse.model_validate(user)
+
+
+@router.post("/auth/logout", response_model=SuccessResponse)
+async def logout_admin(
+    principal: AdminPrincipal = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    if principal.session_id:
+        await revoke_session(db, UUID(principal.session_id))
+    return SuccessResponse()
+
+
+@router.post("/auth/change-password", response_model=SuccessResponse)
+async def change_admin_password(
+    body: ChangePasswordRequest,
+    principal: AdminPrincipal = Depends(verify_admin_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    if principal.actor_type != "user" or principal.actor_id is None:
+        raise HTTPException(status_code=403, detail="User session required")
+    user = await db.get(AdminUser, UUID(principal.actor_id))
+    if user is None or not verify_password(user.password_hash, body.current_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    await set_password(db, user, body.new_password, must_change=False, commit=False)
+    await record_admin_audit(
+        db,
+        principal,
+        action="change_password",
+        resource_type="admin_user",
+        resource_id=str(user.user_id),
+    )
+    return SuccessResponse()
+
+
+@router.get("/users", response_model=AdminUserListResponse)
+async def list_admin_users(
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = list((await db.execute(select(AdminUser).order_by(AdminUser.username))).scalars().all())
+    return AdminUserListResponse(data=[AdminUserResponse.model_validate(row) for row in rows])
+
+
+@router.post("/users", response_model=AdminUserEnvelope)
+async def create_admin_user(
+    body: AdminUserCreateRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    plaintext = body.password or temporary_password()
+    try:
+        row = await create_user(
+            db,
+            username=body.username,
+            display_name=body.display_name,
+            password=plaintext,
+            role=body.role,
+            must_change_password=body.must_change_password or body.password is None,
+            commit=False,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Username already exists")
+    await record_admin_audit(
+        db,
+        principal,
+        action="create",
+        resource_type="admin_user",
+        resource_id=str(row.user_id),
+        details={"role": row.role},
+    )
+    return AdminUserEnvelope(
+        data=AdminUserResponse.model_validate(row),
+        temporary_password=plaintext if body.password is None else None,
+    )
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserEnvelope)
+async def update_admin_user(
+    user_id: UUID,
+    body: AdminUserUpdateRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.get(AdminUser, user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Admin user not found")
+    try:
+        row = await update_user(
+            db,
+            row,
+            display_name=body.display_name,
+            role=body.role,
+            is_active=body.is_active,
+            commit=False,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    await record_admin_audit(
+        db,
+        principal,
+        action="update",
+        resource_type="admin_user",
+        resource_id=str(row.user_id),
+        details=body.model_dump(exclude_none=True),
+    )
+    return AdminUserEnvelope(data=AdminUserResponse.model_validate(row))
+
+
+@router.post("/users/{user_id}/reset-password", response_model=AdminUserEnvelope)
+async def reset_admin_user_password(
+    user_id: UUID,
+    body: PasswordResetRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.get(AdminUser, user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Admin user not found")
+    plaintext = body.password or temporary_password()
+    row = await set_password(db, row, plaintext, must_change=True, commit=False)
+    await record_admin_audit(
+        db,
+        principal,
+        action="reset_password",
+        resource_type="admin_user",
+        resource_id=str(row.user_id),
+    )
+    return AdminUserEnvelope(
+        data=AdminUserResponse.model_validate(row),
+        temporary_password=plaintext,
+    )
+
+
+@router.get("/credentials", response_model=CredentialListResponse)
+async def list_credentials_endpoint(
+    kind: Optional[Literal["source", "serve", "admin", "legacy"]] = None,
+    credential_status: Optional[
+        Literal["active", "expiring", "expired", "revoked", "legacy"]
+    ] = Query(None, alias="status"),
+    owner: Optional[str] = None,
+    principal: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_credentials(db, kind=kind, status=credential_status, owner=owner)
+    return CredentialListResponse(data=rows)
+
+
+@router.get("/credentials/overview", response_model=CredentialOverviewResponse)
+async def credentials_overview_endpoint(
+    principal: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    return CredentialOverviewResponse(**await credential_overview(db))
+
+
+@router.post("/credentials", response_model=CredentialCreateResponse)
+async def create_credential_endpoint(
+    body: CredentialCreateRequest,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.kind == "admin" and principal.role != "owner":
+        raise HTTPException(status_code=403, detail="Owner role required for Admin credentials")
+    if body.kind == "source":
+        if not body.name or not body.owner or not body.source_name:
+            raise HTTPException(
+                status_code=422,
+                detail="Source credentials require name, owner, and source_name",
+            )
+        source_row, plaintext = await create_source_client(
+            db,
+            name=body.name,
+            owner=body.owner,
+            description=body.description,
+            source_name=body.source_name,
+            allowed_datasets=body.allowed_datasets,
+            rate_limit_requests=body.rate_limit_requests,
+            rate_limit_window=body.rate_limit_window,
+            expires_at=body.expires_at,
+            commit=False,
+        )
+        data = present_source(source_row)
+        resource_id = str(source_row.client_id)
+    else:
+        if not body.owner:
+            raise HTTPException(status_code=422, detail="Serve/Admin credentials require owner")
+        api_key_row, plaintext = await create_api_key(
+            db,
+            owner=body.owner,
+            tier=body.tier,
+            scopes=body.scopes or (["serve"] if body.kind == "serve" else ["admin"]),
+            rate_limit_requests=body.rate_limit_requests,
+            rate_limit_window=body.rate_limit_window,
+            page_size_limit=body.page_size_limit,
+            kind=body.kind,
+            name=body.name,
+            description=body.description,
+            role=body.role or ("viewer" if body.kind == "admin" else None),
+            expires_at=body.expires_at,
+            commit=False,
+        )
+        data = present_api_key(api_key_row)
+        resource_id = str(api_key_row.key_id)
+    await record_admin_audit(
+        db,
+        principal,
+        action="create",
+        resource_type=f"{body.kind}_credential",
+        resource_id=resource_id,
+    )
+    return CredentialCreateResponse(api_key=plaintext, data=data)
+
+
+@router.post(
+    "/credentials/{kind}/{credential_id}/rotate",
+    response_model=CredentialCreateResponse,
+)
+async def rotate_credential_endpoint(
+    kind: Literal["source", "serve", "admin"],
+    credential_id: UUID,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    if kind == "admin" and principal.role != "owner":
+        raise HTTPException(status_code=403, detail="Owner role required for Admin credentials")
+    if kind == "source":
+        source = await db.get(SourceClient, credential_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        rotated_source, plaintext = await rotate_source_client(db, source, commit=False)
+        data = present_source(rotated_source)
+        rotated_id = str(rotated_source.client_id)
+    else:
+        key = await db.get(APIKey, credential_id)
+        if key is None or key.kind != kind:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        rotated_key, plaintext = await rotate_api_key(db, key, commit=False)
+        data = present_api_key(rotated_key)
+        rotated_id = str(rotated_key.key_id)
+    await record_admin_audit(
+        db,
+        principal,
+        action="rotate",
+        resource_type=f"{kind}_credential",
+        resource_id=rotated_id,
+        details={"rotated_from_id": str(credential_id)},
+    )
+    return CredentialCreateResponse(api_key=plaintext, data=data)
+
+
+@router.delete(
+    "/credentials/{kind}/{credential_id}",
+    response_model=CredentialResponse,
+)
+async def revoke_credential_endpoint(
+    kind: Literal["source", "serve", "admin"],
+    credential_id: UUID,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    if kind == "admin":
+        if principal.role != "owner":
+            raise HTTPException(status_code=403, detail="Owner role required for Admin credentials")
+        if principal.actor_type == "machine" and principal.actor_id == str(credential_id):
+            raise HTTPException(status_code=409, detail="Cannot revoke the credential in use")
+    if kind == "source":
+        revoked_source = await revoke_source_client(db, credential_id, commit=False)
+        if revoked_source is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        await record_admin_audit(
+            db,
+            principal,
+            action="revoke",
+            resource_type="source_credential",
+            resource_id=str(credential_id),
+        )
+        return present_source(revoked_source)
+    api_key_row = await db.get(APIKey, credential_id)
+    if api_key_row is None or api_key_row.kind != kind:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    revoked_key = await revoke_api_key(db, credential_id, commit=False)
+    if revoked_key is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    await record_admin_audit(
+        db,
+        principal,
+        action="revoke",
+        resource_type=f"{kind}_credential",
+        resource_id=str(credential_id),
+    )
+    return present_api_key(revoked_key)
 
 
 @router.post("/source-clients", response_model=SourceClientCreateResponse)
 async def create_source_client_endpoint(
     body: SourceClientCreateRequest,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a provider identity; the plaintext key is returned once."""
@@ -92,14 +524,25 @@ async def create_source_client_endpoint(
         row, plaintext = await create_source_client(
             db,
             name=body.name,
+            owner=body.owner,
+            description=body.description,
             source_name=body.source_name,
             allowed_datasets=body.allowed_datasets,
             rate_limit_requests=body.rate_limit_requests,
             rate_limit_window=body.rate_limit_window,
+            expires_at=body.expires_at,
+            commit=False,
         )
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Source client conflicts with an existing key")
+    await record_admin_audit(
+        db,
+        api_key,
+        action="create",
+        resource_type="source_credential",
+        resource_id=str(row.client_id),
+    )
     return SourceClientCreateResponse(
         api_key=plaintext,
         data=SourceClientResponse.model_validate(row),
@@ -108,7 +551,7 @@ async def create_source_client_endpoint(
 
 @router.get("/source-clients", response_model=SourceClientListResponse)
 async def list_source_clients_endpoint(
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await list_source_clients(db)
@@ -118,18 +561,25 @@ async def list_source_clients_endpoint(
 @router.delete("/source-clients/{client_id}", response_model=SourceClientResponse)
 async def revoke_source_client_endpoint(
     client_id: UUID,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
-    row = await revoke_source_client(db, client_id)
+    row = await revoke_source_client(db, client_id, commit=False)
     if row is None:
         raise HTTPException(status_code=404, detail="Source client not found")
+    await record_admin_audit(
+        db,
+        api_key,
+        action="revoke",
+        resource_type="source_credential",
+        resource_id=str(client_id),
+    )
     return SourceClientResponse.model_validate(row)
 
 
 @router.get("/queue/health", response_model=QueueHealthResponse)
 async def queue_health_endpoint(
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """Return DB-authoritative delivery and worker health."""
@@ -143,7 +593,7 @@ async def list_missing_deliveries_endpoint(
     source: Optional[str] = Query(None, min_length=1, max_length=50),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """List durable missing-delivery alerts without mutating their state."""
@@ -169,7 +619,7 @@ async def list_missing_deliveries_endpoint(
 @router.post("/api-keys", response_model=APIKeyCreateResponse)
 async def create_api_key_endpoint(
     body: APIKeyCreateRequest,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
     """Issue a hashed Serve API key. Plaintext is returned once."""
@@ -181,13 +631,24 @@ async def create_api_key_endpoint(
         rate_limit_requests=body.rate_limit_requests,
         rate_limit_window=body.rate_limit_window,
         page_size_limit=body.page_size_limit,
+        name=body.name,
+        description=body.description,
+        expires_at=body.expires_at,
+        commit=False,
+    )
+    await record_admin_audit(
+        db,
+        api_key,
+        action="create",
+        resource_type="serve_credential",
+        resource_id=str(row.key_id),
     )
     return APIKeyCreateResponse(api_key=plaintext, data=APIKeyResponse.model_validate(row))
 
 
 @router.get("/api-keys", response_model=APIKeyListResponse)
 async def list_api_keys_endpoint(
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """List API key metadata without hashes or plaintext."""
@@ -198,19 +659,29 @@ async def list_api_keys_endpoint(
 @router.delete("/api-keys/{key_id}", response_model=APIKeyResponse)
 async def revoke_api_key_endpoint(
     key_id: UUID,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke an API key."""
-    row = await revoke_api_key(db, key_id)
+    existing = await db.get(APIKey, key_id)
+    if existing is None or existing.kind != "serve":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    row = await revoke_api_key(db, key_id, commit=False)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    await record_admin_audit(
+        db,
+        api_key,
+        action="revoke",
+        resource_type="serve_credential",
+        resource_id=str(key_id),
+    )
     return APIKeyResponse.model_validate(row)
 
 
 @router.get("/instrument-cache", response_model=InstrumentCacheDocument)
 async def get_instrument_cache(
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
 ):
     """回傳已產生的靜態商品查詢快取。"""
     try:
@@ -224,7 +695,7 @@ async def get_instrument_cache(
 @router.put("/instrument-cache", response_model=InstrumentCacheWriteResponse)
 async def put_instrument_cache(
     body: InstrumentCacheReplaceRequest,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
 ):
     """以已驗證且正規化的文件替換 instruments.json。"""
     try:
@@ -245,7 +716,7 @@ async def put_instrument_cache(
 async def patch_instrument_cache_item(
     instrument_id: str,
     body: InstrumentCacheItemPatchRequest,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
 ):
     """修補產生後 instruments.json 快取中的單一商品。"""
     try:
@@ -273,7 +744,7 @@ async def list_dq_issues_endpoint(
     severity: Optional[str] = Query(None, description="依嚴重程度篩選：warning / error"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """列出資料品質問題，可依解決狀態、商品或嚴重程度篩選。"""
@@ -295,7 +766,7 @@ async def patch_eod(
     instrument_id: UUID,
     trade_date: date,
     body: PatchEODRequest,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
     """修補 MarketDataEOD 紀錄的 OHLCV 欄位，並建立不可變的修正稽核紀錄。"""
@@ -321,7 +792,7 @@ async def patch_eod(
 async def resolve_dq_issue_endpoint(
     issue_id: UUID,
     body: ResolveDQIssueRequest,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
     """以稽核原因將資料品質問題標記為已解決，並建立修正紀錄。"""
@@ -359,7 +830,7 @@ async def list_raw_payloads(
     ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """列出原始市場資料，最新資料在前；可依 dataset_key、run_id 或日期區間篩選。"""
@@ -411,7 +882,7 @@ async def list_raw_payloads(
 @router.get("/raw-payloads/{run_id}", response_model=RawPayloadResponse)
 async def get_raw_payload_by_run(
     run_id: UUID,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """取得指定匯入執行的原始資料。"""
@@ -428,7 +899,7 @@ async def list_corrections_endpoint(
     instrument_id: Optional[UUID] = Query(None, description="依商品 UUID 篩選"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """列出修正稽核紀錄，最新資料在前；可依資料表或商品篩選。"""
@@ -474,7 +945,7 @@ async def bulk_rerun_runs(
         le=1000,
         description="單次最多排入的 run 數量，避免無界重跑全部歷史資料",
     ),
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
     """針對符合篩選條件的既有執行紀錄重新執行正規化。
@@ -528,7 +999,7 @@ async def bulk_rerun_runs(
 )
 async def refresh_instrument_cache(
     background_tasks: BackgroundTasks,
-    api_key: str = Depends(verify_admin_api_key),
+    api_key: AdminPrincipal = Depends(require_operator),
 ):
     """
     手動刷新靜態商品快取 instruments.json。

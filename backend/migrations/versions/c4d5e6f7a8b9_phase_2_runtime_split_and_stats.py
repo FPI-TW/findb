@@ -35,7 +35,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("instrument_id", name=op.f("pk_instrument_stats")),
     )
 
-    op.execute(sa.text("""
+    op.execute(
+        sa.text("""
         INSERT INTO instrument_stats (
             instrument_id,
             first_trade_date,
@@ -72,7 +73,8 @@ def upgrade() -> None:
         ) f ON f.instrument_id = i.instrument_id
         WHERE e.first_trade_date IS NOT NULL
            OR f.first_trade_date IS NOT NULL
-        """))
+        """)
+    )
 
 
 def downgrade() -> None:

@@ -30,7 +30,7 @@ findb/
 |  |- tests/                 # async API/service integration tests 與 unit tests
 |  |- scripts/               # dev.py、seed scripts、partial dump、cleanup、cache gen、render nginx confs
 |  |- seed/                  # local development partial dump data
-|  `- pyproject.toml         # uv deps + black/ruff/mypy/pytest settings
+|  `- pyproject.toml         # uv deps + ruff/mypy/pytest settings
 |- dashboard/                # TanStack Start 營運台；監控導入、DQ 與稽核查詢
 |- fetcher/                  # Provider adapter、contract validation 與 delivery client；不得 import backend/ 或連 FinDB DB
 |- contracts/                # 由 backend contract registry 確定性產生的 versioned JSON Schema
@@ -189,7 +189,7 @@ make format
 make check
 
 # direct quality commands
-uv --directory backend run black app tests scripts migrations
+uv --directory backend run ruff format app tests scripts migrations
 uv --directory backend run ruff check app tests scripts migrations
 uv --directory backend run mypy app
 

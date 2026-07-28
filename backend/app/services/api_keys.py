@@ -1,5 +1,6 @@
 """API key issuing and lookup helpers."""
 
+from datetime import datetime
 from hashlib import sha256
 from hmac import compare_digest
 from secrets import token_urlsafe
@@ -22,13 +23,40 @@ async def find_active_api_key(db: AsyncSession, api_key: str) -> APIKey | None:
         select(APIKey).where(APIKey.key_hash == key_hash, APIKey.revoked_at.is_(None))
     )
     row = result.scalar_one_or_none()
-    if row is None or not compare_digest(row.key_hash, key_hash):
+    if (
+        row is None
+        or not compare_digest(row.key_hash, key_hash)
+        or (row.expires_at is not None and row.expires_at <= utc_now())
+    ):
         return None
     return row
 
 
 async def has_active_api_keys(db: AsyncSession) -> bool:
-    result = await db.execute(select(APIKey.key_id).where(APIKey.revoked_at.is_(None)).limit(1))
+    now = utc_now()
+    result = await db.execute(
+        select(APIKey.key_id)
+        .where(
+            APIKey.kind == "serve",
+            APIKey.revoked_at.is_(None),
+            (APIKey.expires_at.is_(None) | (APIKey.expires_at > now)),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def has_active_admin_keys(db: AsyncSession) -> bool:
+    now = utc_now()
+    result = await db.execute(
+        select(APIKey.key_id)
+        .where(
+            APIKey.kind == "admin",
+            APIKey.revoked_at.is_(None),
+            (APIKey.expires_at.is_(None) | (APIKey.expires_at > now)),
+        )
+        .limit(1)
+    )
     return result.scalar_one_or_none() is not None
 
 
@@ -41,12 +69,26 @@ async def create_api_key(
     rate_limit_requests: int,
     rate_limit_window: int,
     page_size_limit: int,
+    kind: str = "serve",
+    name: str | None = None,
+    description: str | None = None,
+    role: str | None = None,
+    expires_at: datetime | None = None,
+    rotated_from_id: UUID | None = None,
+    commit: bool = True,
 ) -> tuple[APIKey, str]:
-    plaintext = f"findb_{token_urlsafe(32)}"
+    prefix = "findb_adm_" if kind == "admin" else "findb_srv_"
+    plaintext = f"{prefix}{token_urlsafe(32)}"
+    key_hash = hash_api_key(plaintext)
     row = APIKey(
         key_id=uuid7(),
-        key_hash=hash_api_key(plaintext),
+        key_hash=key_hash,
+        fingerprint=key_hash[:16],
+        kind=kind,
+        name=name,
         owner=owner,
+        description=description,
+        role=role if kind == "admin" else None,
         tier=tier,
         scopes=scopes,
         rate_limit_requests=rate_limit_requests,
@@ -54,24 +96,55 @@ async def create_api_key(
         page_size_limit=page_size_limit,
         usage_count=0,
         created_at=utc_now(),
+        expires_at=expires_at,
+        rotated_from_id=rotated_from_id,
     )
     db.add(row)
-    await db.commit()
-    await db.refresh(row)
+    if commit:
+        await db.commit()
+        await db.refresh(row)
+    else:
+        await db.flush()
     return row, plaintext
 
 
 async def list_api_keys(db: AsyncSession) -> list[APIKey]:
-    result = await db.execute(select(APIKey).order_by(APIKey.created_at.desc()))
+    result = await db.execute(
+        select(APIKey).where(APIKey.kind == "serve").order_by(APIKey.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
-async def revoke_api_key(db: AsyncSession, key_id: UUID) -> APIKey | None:
+async def revoke_api_key(db: AsyncSession, key_id: UUID, *, commit: bool = True) -> APIKey | None:
     row = await db.get(APIKey, key_id)
     if row is None:
         return None
     if row.revoked_at is None:
         row.revoked_at = utc_now()
-        await db.commit()
-        await db.refresh(row)
+        if commit:
+            await db.commit()
+            await db.refresh(row)
+        else:
+            await db.flush()
     return row
+
+
+async def rotate_api_key(
+    db: AsyncSession, row: APIKey, *, commit: bool = True
+) -> tuple[APIKey, str]:
+    return await create_api_key(
+        db,
+        owner=row.owner,
+        tier=row.tier,
+        scopes=list(row.scopes),
+        rate_limit_requests=row.rate_limit_requests,
+        rate_limit_window=row.rate_limit_window,
+        page_size_limit=row.page_size_limit,
+        kind=row.kind,
+        name=row.name,
+        description=row.description,
+        role=row.role,
+        expires_at=None,
+        rotated_from_id=row.key_id,
+        commit=commit,
+    )
