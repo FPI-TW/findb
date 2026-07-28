@@ -75,6 +75,52 @@ backend/scripts/generate_instrument_cache.py
 Production deploy會在服務健康後重生instrument cache。Cache失敗不能以直接編輯JSON
 取代；應修正canonical data或generator。
 
+## Staging legacy data reset
+
+經明確授權的staging reset可以移除所有mutable canonical、workflow與PostgreSQL
+raw資料，建立不含legacy provenance的空白基線；它不是production rollback流程，
+也不得套用production。執行時：
+
+1. 確認目標database/host屬於staging並記錄Alembic revision與image SHA。
+2. 暫停Fetcher scheduler及 `ingest`、`dispatcher`、`worker`、`raw-cleanup`，
+   確認main queue、DLQ與active tasks為空。
+3. 依source/client/dataset/schema/run IDs與日期範圍盤點，保存pre-delete counts。
+4. 使用reviewed maintenance tool先dry-run，再以單一transaction執行完整reset。
+5. 明確處理canonical、`dq_issue`、`normalization_outbox`、
+   `normalization_job`、`ingestion_attempt`、`ingestion_run`與
+   `raw.market_payload`，並檢查orphan instruments/calendar/cache。
+6. 驗證所有mutable target為零、protected tables筆數未變且lineage無orphan，
+   才恢復服務。
+7. 重生受影響的generated cache，再執行一次bounded staging acceptance。
+
+Reset tool採兩階段、target-specific確認：
+
+```bash
+# 先在目標image與DATABASE_URL執行唯讀盤點，保存counts與target_fingerprint
+python scripts/reset_staging_legacy_data.py
+
+# writers停止後，以同一連線目標及剛取得的fingerprint執行
+python scripts/reset_staging_legacy_data.py \
+  --apply \
+  --confirm-staging RESET-STAGING-MUTABLE-DATA \
+  --confirm-target-fingerprint <dry-run-target-fingerprint> \
+  --confirm-db-writers-stopped
+```
+
+Fingerprint是live database/user/server identity的非敏感digest。不得使用另一個環境、
+舊連線或舊dry-run的值；目標不符時tool必須拒絕。
+
+`market_data_eod.run_id`與`raw.market_payload.run_id`沒有DB foreign key，
+`dq_issue.run_id`也不會隨run自動刪除；不得只依賴cascade。
+`dataset_registry`、`source_client`、`api_key`與`alembic_version`屬設定／schema state，
+必須保留。即使canonical rows來自已驗證的新provider，只要instrument、identifier、
+stats或calendar承接legacy state，也必須完整reset後以bounded pilot重建。
+
+R2 raw objects不屬於PostgreSQL reset，維持既有lifecycle與bucket lock。Fetcher
+SQLite checkpoint必須在scheduler停止後同步reset，否則舊job identity與checkpoint
+可能阻止空白基線重新執行pilot；這個state reset必須記錄精確檔案路徑與post-reset
+schema/checkpoint驗證。
+
 ## Raw retention
 
 - 正式政策為PostgreSQL `raw.market_payload`與R2 raw object都保存30天。

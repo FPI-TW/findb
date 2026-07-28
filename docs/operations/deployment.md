@@ -36,11 +36,33 @@ delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，
 Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
 Cloudflare R2 persistence。Fetcher CD會用exact SHA image執行無外部呼叫的scheduler
 preflight，通過後在獨立target維持單一`findb-fetcher-scheduler --run-forever`
-container；它不會建立R2 bucket/API token。Workflow存在不代表已實際部署staging
-服務。
+container；它不會建立R2 bucket/API token。Staging scheduler目前已部署，但仍受
+下方資料界線約束。
 
 Remote migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
+
+## Staging data policy
+
+`staging-findb`與`staging-fetcher`只用於驗證部署、完整端到端資料流與故障處理，
+不承載完整資料集。預設data-producing acceptance profile固定為committed
+`twelve_data_us_common_stocks.v1.json`中的AAPL、MSFT、NVDA，以及scheduler
+`outputsize=20`；fresh cycle最多3個symbols、60筆provider rows。Universe內較大的
+hard limits只是程式安全上限，不是操作授權。
+
+Staging可以用bounded fixtures或pilot rows驗證：
+
+- provider fetch、R2 raw、Source、outbox、RabbitMQ、worker、DQ、canonical與
+  Serve/Admin/Dashboard的完整lineage；
+- retry、idempotency、duplicate handling、failure recovery與rollback；
+- migration、deployment與cache generation的功能正確性。
+
+Staging禁止完整universe導入、production-scale歷史backfill，以及未經核准擴大
+symbol、日期或record caps。例外必須針對具名run另行授權，並事前記錄config/image
+SHA、symbol/date/row上限、預估provider credits、rollback/cleanup方案與operator。
+Deployment或scheduler rollout不得隱含啟動或擴大資料導入；data-producing run是
+獨立operation gate。Bounded acceptance完成後預設停止data-producing scheduler；
+只有具名觀察窗口可保持運行，且不得放寬上述caps。
 
 ## Deployment isolation
 
