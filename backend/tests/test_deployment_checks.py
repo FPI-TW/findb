@@ -159,6 +159,22 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert target_input["options"] == ["staging", "production"]
 
 
+def test_main_push_runs_each_ci_workflow_only_through_its_cd_gate() -> None:
+    for ci_path, cd_path, reusable_path in (
+        (FINDB_CI_WORKFLOW, FINDB_CD_WORKFLOW, "./.github/workflows/findb-ci.yml"),
+        (FETCHER_CI_WORKFLOW, FETCHER_CD_WORKFLOW, "./.github/workflows/fetcher-ci.yml"),
+    ):
+        ci_workflow = _load_workflow(ci_path)
+        ci_triggers = ci_workflow["on"]
+        assert "push" not in ci_triggers
+        assert "pull_request" in ci_triggers
+        assert "workflow_call" in ci_triggers
+
+        cd_workflow = _load_workflow(cd_path)
+        assert cd_workflow["on"]["push"]["branches"] == ["main"]
+        assert cd_workflow["jobs"]["verify"]["uses"] == reusable_path
+
+
 def test_remote_env_examples_cover_the_sync_contract() -> None:
     namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
     service_configs = namespace["SERVICE_CONFIGS"]
@@ -202,7 +218,6 @@ def test_contract_changes_gate_both_ci_workflows_but_not_cd() -> None:
     for path in (FINDB_CI_WORKFLOW, FETCHER_CI_WORKFLOW):
         workflow = _load_workflow(path)
         triggers = workflow["on"]
-        assert "contracts/**" in triggers["push"]["paths"]
         assert "contracts/**" in triggers["pull_request"]["paths"]
         assert "workflow_call" in triggers
 
@@ -222,8 +237,7 @@ def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> 
     }
     fetcher_ci = _load_workflow(FETCHER_CI_WORKFLOW)
 
-    for event in ("push", "pull_request"):
-        assert required_paths <= set(fetcher_ci["on"][event]["paths"])
+    assert required_paths <= set(fetcher_ci["on"]["pull_request"]["paths"])
 
 
 def test_fetcher_ci_retries_transient_container_build_failures() -> None:
@@ -247,8 +261,7 @@ def test_dashboard_image_inputs_gate_findb_ci_and_cd() -> None:
     }
 
     findb_ci = _load_workflow(FINDB_CI_WORKFLOW)
-    for event in ("push", "pull_request"):
-        assert required_paths <= set(findb_ci["on"][event]["paths"])
+    assert required_paths <= set(findb_ci["on"]["pull_request"]["paths"])
 
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
     assert required_paths <= set(findb_cd["on"]["push"]["paths"])
@@ -267,8 +280,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "docker-compose.prod.yml",
         "infra/nginx/**",
     }
-    for event in ("push", "pull_request"):
-        assert required_findb_ci_paths <= set(findb_ci["on"][event]["paths"])
+    assert required_findb_ci_paths <= set(findb_ci["on"]["pull_request"]["paths"])
 
     required_findb_cd_paths = {
         "backend/**",
