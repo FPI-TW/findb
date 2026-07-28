@@ -13,11 +13,11 @@ from dotenv import dotenv_values
 
 REPOSITORY: Final = "FPI-TW/findb"
 ENV_ROOT: Final = Path(__file__).resolve().parent
+DEPLOYMENT_TARGETS: Final = ("staging", "production")
 
 
 @dataclass(frozen=True)
 class ServiceConfig:
-    environment: str
     variables: tuple[str, ...]
     secrets: tuple[str, ...]
     optional_secrets: tuple[str, ...] = ()
@@ -25,7 +25,6 @@ class ServiceConfig:
 
 SERVICE_CONFIGS: Final = {
     "findb": ServiceConfig(
-        environment="staging-findb",
         variables=(
             "APP_NAME",
             "APP_VERSION",
@@ -71,7 +70,6 @@ SERVICE_CONFIGS: Final = {
         ),
     ),
     "fetcher": ServiceConfig(
-        environment="staging-fetcher",
         variables=(
             "FETCHER_SOURCE_API_URL",
             "FETCHER_REQUEST_TIMEOUT_SECONDS",
@@ -193,6 +191,7 @@ def _ensure_environment(environment: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("target", choices=DEPLOYMENT_TARGETS)
     parser.add_argument("service", choices=sorted(SERVICE_CONFIGS))
     parser.add_argument(
         "--apply",
@@ -202,18 +201,39 @@ def main() -> int:
     arguments = parser.parse_args()
 
     config = SERVICE_CONFIGS[arguments.service]
-    source = ENV_ROOT / arguments.service / ".env.remote"
+    environment = f"{arguments.target}-{arguments.service}"
+    source = ENV_ROOT / arguments.target / arguments.service / ".env.remote"
     if not source.is_file():
         parser.error(f"missing ignored source: {source}")
 
     values = {
         key: str(value or "").strip() for key, value in dotenv_values(source).items()
     }
+    required_secrets = list(config.secrets)
+    if arguments.service == "findb" and values.get("SERVE_REQUIRE_AUTH") == "false":
+        required_secrets = [
+            name
+            for name in required_secrets
+            if name
+            not in {
+                "FINDB_LOOKUP_SERVE_API_KEY",
+                "FINDB_STATIC_CACHE_SERVE_API_KEY",
+            }
+        ]
     missing = sorted(
-        name for name in (*config.variables, *config.secrets) if not values.get(name)
+        name for name in (*config.variables, *required_secrets) if not values.get(name)
     )
+    if (
+        arguments.service == "findb"
+        and values.get("SERVE_REQUIRE_AUTH") == "true"
+        and values.get("FINDB_LOOKUP_SERVE_API_KEY")
+        == values.get("FINDB_STATIC_CACHE_SERVE_API_KEY")
+    ):
+        print("Serve lookup and static-cache credentials must be different")
+        return 1
     print(f"service: {arguments.service}")
-    print(f"environment: {config.environment}")
+    print(f"environment: {environment}")
+    print(f"source: {source}")
     print(f"variables ({len(config.variables)}): {', '.join(config.variables)}")
     print(f"secrets ({len(config.secrets)}): {', '.join(config.secrets)}")
     if missing:
@@ -223,7 +243,7 @@ def main() -> int:
         print("validation passed; rerun with --apply to publish")
         return 0
 
-    _ensure_environment(config.environment)
+    _ensure_environment(environment)
     for name in config.variables:
         _run(
             [
@@ -232,22 +252,24 @@ def main() -> int:
                 "set",
                 name,
                 "--env",
-                config.environment,
+                environment,
                 "--body",
                 values[name],
             ]
         )
         print(f"set variable: {name}")
     for name in config.secrets:
+        if not values.get(name):
+            continue
         _run(
-            ["gh", "secret", "set", name, "--env", config.environment],
+            ["gh", "secret", "set", name, "--env", environment],
             input_text=values[name],
         )
         print(f"set secret: {name}")
     for name in config.optional_secrets:
         if values.get(name):
             _run(
-                ["gh", "secret", "set", name, "--env", config.environment],
+                ["gh", "secret", "set", name, "--env", environment],
                 input_text=values[name],
             )
             print(f"set optional secret: {name}")

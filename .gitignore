@@ -15,7 +15,7 @@ ENV/
 env/
 !infra/env/
 !infra/env/**
-infra/env/*/.env.remote
+infra/env/**/.env.remote
 
 build/
 dist/

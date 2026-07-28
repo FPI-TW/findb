@@ -13,9 +13,18 @@ on:
       - "pnpm-lock.yaml"
       - ".github/workflows/findb-cd.yml"
   workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: GitHub Environment target
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
 
 concurrency:
-  group: staging-findb
+  group: ${{ inputs.deployment_target || 'staging' }}-findb
   cancel-in-progress: false
 
 permissions:
@@ -80,7 +89,7 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: staging-findb
+    environment: ${{ inputs.deployment_target || 'staging' }}-findb
 
     permissions:
       contents: read

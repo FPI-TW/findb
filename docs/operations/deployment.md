@@ -1,16 +1,17 @@
 # Deployment
 
 > Repo內已將CI/CD拆成四個獨立workflow。GitHub Environments、AWS角色與runtime
-> secrets仍須在外部管理。FinDB與Fetcher目前都只部署staging。
+> secrets仍須在外部管理。Push至`main`會自動部署staging；production只能透過
+> `workflow_dispatch`明確選擇，並受production Environment protection約束。
 
 ## Workflow 邊界
 
 | Workflow | 責任 | 主要觸發 | Environment / concurrency |
 | --- | --- | --- | --- |
 | `findb-ci.yml` | Backend、migration、Dashboard與contract acceptance | FinDB或contract相關PR/push、手動 | 不讀部署environment |
-| `findb-cd.yml` | 建置並部署backend與Dashboard | `main`的FinDB部署檔案變更、手動 | `staging-findb` / FinDB專屬group |
+| `findb-cd.yml` | 建置並部署backend與Dashboard | `main`的FinDB部署檔案變更、手動 | 自動：`staging-findb`；手動：可選`staging-findb`/`production-findb` |
 | `fetcher-ci.yml` | Fetcher lint、test、contract與container build | Fetcher或contract相關PR/push、手動 | 不讀部署environment |
-| `fetcher-cd.yml` | 發布Fetcher image並交付獨立staging目標 | `main`的Fetcher runtime/deploy檔案變更、手動 | `staging-fetcher` / Fetcher專屬group |
+| `fetcher-cd.yml` | 發布Fetcher image並交付獨立目標 | `main`的Fetcher runtime/deploy檔案變更、手動 | 自動：`staging-fetcher`；手動：可選`staging-fetcher`/`production-fetcher` |
 
 兩個CI可同時因 `contracts/**` 或contract source變更而執行。Contract-only變更不會
 自動部署Fetcher；跨版本更新必須依下方backend-first順序，由
@@ -66,18 +67,20 @@ Deployment或scheduler rollout不得隱含啟動或擴大資料導入；data-pro
 
 ## Deployment isolation
 
-外部設定需建立兩個GitHub Environments：
+外部設定需建立四個互相隔離的GitHub Environments：
 
 ```text
 staging-findb
 staging-fetcher
+production-findb
+production-fetcher
 ```
 
 每個deployment job只能引用自己的environment。不要在workflow-level或大型job-level
 `env:`注入全部secrets，也不要對reusable workflow使用 `secrets: inherit`；逐一傳入
 具名secret。
 
-### `staging-findb`
+### `{staging|production}-findb`
 
 | 類型 | Environment設定名稱 |
 | --- | --- |
@@ -93,7 +96,7 @@ staging-fetcher
 | Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS` |
 | Variables | `CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
 
-### `staging-fetcher`
+### `{staging|production}-fetcher`
 
 | 類型 | Environment設定名稱 |
 | --- | --- |
@@ -105,12 +108,12 @@ staging-fetcher
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
-container。現階段Source、Twelve Data與R2 secrets由`staging-fetcher` Environment
+container。現階段Source、Twelve Data與R2 secrets由對應的`{target}-fetcher` Environment
 逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
 Secrets Manager/Parameter Store前的明確過渡機制，不可使用
 `--env NAME=value`出現在command line。Fetcher的R2 credentials與未來OIDC/SSM
 設定必須維持Fetcher專屬，不能複製到FinDB。FinDB TLS private key若未來由workflow管理，只能加入
-`staging-findb`，不能共用。
+對應的`{target}-findb`，不能跨環境或服務共用。
 
 R2 credentials依服務分層：Fetcher只持有指定bucket的`Object Read & Write` S3
 credentials；FinDB另外持有`Workers R2 Storage: Read` Bearer token供bucket
@@ -162,8 +165,10 @@ secrets仍可能被repository內其他workflow引用。因此上表的deployment
 
 ## GitHub protection
 
-- `staging-findb`與`staging-fetcher`只允許`main`部署。
-- 啟用required reviewer與prevent self-review（依GitHub方案能力）。
+- 四個Environment都只允許`main`部署。
+- `production-findb`與`production-fetcher`必須啟用required reviewer與prevent
+  self-review；production只允許手動選擇，不接受push事件自動部署。
+- Staging也建議啟用required reviewer與prevent self-review（依GitHub方案能力）。
 - `.github/workflows/**`、`infra/**`、production Compose與contract manifest設定
   CODEOWNERS。
 - Branch protection禁止未review直接更新 `main`。
