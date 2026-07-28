@@ -72,16 +72,12 @@ def _load_workflow(path: Path) -> dict[str, object]:
     return loaded
 
 
-def _named_step(
-    workflow: dict[str, Any], job_name: str, step_name: str
-) -> dict[str, Any]:
+def _named_step(workflow: dict[str, Any], job_name: str, step_name: str) -> dict[str, Any]:
     steps = workflow["jobs"][job_name]["steps"]
     return next(step for step in steps if step.get("name") == step_name)
 
 
-def _secret_reference_paths(
-    value: object, path: tuple[str, ...] = ()
-) -> list[tuple[str, ...]]:
+def _secret_reference_paths(value: object, path: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
     references: list[tuple[str, ...]] = []
     if isinstance(value, dict):
         for key, child in value.items():
@@ -136,9 +132,9 @@ def test_external_actions_are_pinned_to_full_commit_shas() -> None:
         for reference in _uses_references(_load_workflow(path)):
             if reference.startswith("./"):
                 continue
-            assert re.fullmatch(
-                r"[^@\s]+@[0-9a-f]{40}", reference
-            ), f"{path.name} contains an unpinned action reference: {reference}"
+            assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference), (
+                f"{path.name} contains an unpinned action reference: {reference}"
+            )
 
 
 def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
@@ -158,9 +154,7 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
-        target_input = workflow["on"]["workflow_dispatch"]["inputs"][
-            "deployment_target"
-        ]
+        target_input = workflow["on"]["workflow_dispatch"]["inputs"]["deployment_target"]
         assert target_input["default"] == "staging"
         assert target_input["options"] == ["staging", "production"]
 
@@ -183,9 +177,7 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
                     )
                 )
             }
-            documented_names = set(
-                (*config.variables, *config.secrets, *config.optional_secrets)
-            )
+            documented_names = set((*config.variables, *config.secrets, *config.optional_secrets))
             assert configured_names == documented_names
 
 
@@ -196,12 +188,12 @@ def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
             first_line = example.read_text(encoding="utf-8").splitlines()[0]
             assert first_line == f"# GitHub Environment: {target}-{service}"
 
-    staging_findb = (
-        ENV_CONFIG_ROOT / "staging" / "findb" / "remote.env.example"
-    ).read_text(encoding="utf-8")
-    production_findb = (
-        ENV_CONFIG_ROOT / "production" / "findb" / "remote.env.example"
-    ).read_text(encoding="utf-8")
+    staging_findb = (ENV_CONFIG_ROOT / "staging" / "findb" / "remote.env.example").read_text(
+        encoding="utf-8"
+    )
+    production_findb = (ENV_CONFIG_ROOT / "production" / "findb" / "remote.env.example").read_text(
+        encoding="utf-8"
+    )
     assert "\nSERVE_REQUIRE_AUTH=false\n" in staging_findb
     assert "\nSERVE_REQUIRE_AUTH=true\n" in production_findb
 
@@ -262,9 +254,7 @@ def test_dashboard_image_inputs_gate_findb_ci_and_cd() -> None:
     assert required_paths <= set(findb_cd["on"]["push"]["paths"])
 
 
-def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy() -> (
-    None
-):
+def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy() -> None:
     findb_ci = _load_workflow(FINDB_CI_WORKFLOW)
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
     fetcher_cd = _load_workflow(FETCHER_CD_WORKFLOW)
@@ -303,23 +293,16 @@ def test_root_context_images_use_service_specific_dockerignore_files() -> None:
     assert not (REPO_ROOT / ".dockerignore").exists()
 
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
-    dashboard_build = _named_step(
-        findb_cd, "build-push", "Build and push dashboard image"
-    )
+    dashboard_build = _named_step(findb_cd, "build-push", "Build and push dashboard image")
     assert dashboard_build["with"]["context"] == "."
     assert dashboard_build["with"]["file"] == "dashboard/Dockerfile"
     backend_build = _named_step(findb_cd, "build-push", "Build and push backend image")
     assert backend_build["with"]["context"] == "./backend"
     assert "${{ env.IMAGE }}:${{ github.sha }}" in backend_build["with"]["tags"]
-    assert (
-        "${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}"
-        in dashboard_build["with"]["tags"]
-    )
+    assert "${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}" in dashboard_build["with"]["tags"]
 
     fetcher_cd = _load_workflow(FETCHER_CD_WORKFLOW)
-    fetcher_build = _named_step(
-        fetcher_cd, "build-push", "Build and push Fetcher image"
-    )
+    fetcher_build = _named_step(fetcher_cd, "build-push", "Build and push Fetcher image")
     assert fetcher_build["with"]["context"] == "."
     assert fetcher_build["with"]["file"] == "fetcher/Dockerfile"
     assert fetcher_build["with"]["tags"] == (
@@ -360,9 +343,7 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
         assert _secret_reference_paths(_load_workflow(path)) == []
 
 
-def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional() -> (
-    None
-):
+def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional() -> None:
     workflow = _load_workflow(FINDB_CD_WORKFLOW)
     validate = _named_step(workflow, "deploy", "Validate deployment configuration")
     render = _named_step(workflow, "deploy", "Render nginx configs")
@@ -378,9 +359,7 @@ def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional()
     )
     assert "SERVE_API_KEYS must be configured" not in validation_script
 
-    required_loop = next(
-        line for line in validation_script.splitlines() if "for name in " in line
-    )
+    required_loop = next(line for line in validation_script.splitlines() if "for name in " in line)
     for legacy_name in (
         "SOURCE_API_KEY",
         "SERVE_API_KEYS",
@@ -458,9 +437,7 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     }
     assert required_environment_values <= set(step_env)
     assert required_environment_values <= forwarded
-    assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == (
-        "${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}"
-    )
+    assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == ("${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}")
 
     assert 'image="${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}"' in script
     assert 'docker pull "$image"' in script
@@ -644,10 +621,7 @@ previous=findb-fetcher-scheduler-previous
     )
 
     assert (completed.returncode == 0) is succeeds
-    statuses = {
-        path.name: path.read_text(encoding="utf-8").strip()
-        for path in state_dir.iterdir()
-    }
+    statuses = {path.name: path.read_text(encoding="utf-8").strip() for path in state_dir.iterdir()}
     assert sum(status == "running" for status in statuses.values()) == expected_running
     assert "findb-fetcher-scheduler-candidate" not in statuses
     if succeeds:
@@ -661,9 +635,7 @@ previous=findb-fetcher-scheduler-previous
 
 
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
-    setup_script = (BACKEND_ROOT / "scripts" / "setup_ec2.sh").read_text(
-        encoding="utf-8"
-    )
+    setup_script = (BACKEND_ROOT / "scripts" / "setup_ec2.sh").read_text(encoding="utf-8")
 
     assert "staging-findb" in setup_script
     assert "production-findb" in setup_script
@@ -708,9 +680,7 @@ def test_dashboard_health_checks_use_the_public_landing_page() -> None:
     assert "http://127.0.0.1:3333/dashboard/login" not in deploy
     assert "http://127.0.0.1:3333/dashboard/login" not in compose
     assert "Checking public Dashboard routes through nginx" in deploy
-    assert (
-        "for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill" in deploy
-    )
+    assert "for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill" in deploy
 
 
 def test_deploy_retries_celery_worker_readiness() -> None:
@@ -729,9 +699,7 @@ def test_rabbitmq_consumer_timeout_has_one_source_and_is_verified() -> None:
 
     assert compose["x-app-environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"] == expected
     assert (
-        compose["services"]["rabbitmq-policy"]["environment"][
-            "NORMALIZATION_CONSUMER_TIMEOUT_MS"
-        ]
+        compose["services"]["rabbitmq-policy"]["environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"]
         == expected
     )
 
@@ -877,9 +845,7 @@ def test_fetch_dlq_health_encodes_queue_path_and_uses_broker_credentials() -> No
         captured["url"] = request.full_url
         captured["authorization"] = request.get_header("Authorization")
         captured["timeout"] = timeout
-        return Response(
-            b'{"messages_ready": 0, "messages_unacknowledged": 0, "messages": 0}'
-        )
+        return Response(b'{"messages_ready": 0, "messages_unacknowledged": 0, "messages": 0}')
 
     result = fetch_dlq_health(
         "http://rabbitmq:15672",
@@ -891,7 +857,7 @@ def test_fetch_dlq_health_encodes_queue_path_and_uses_broker_credentials() -> No
 
     assert result == {"dlq_ready": 0, "dlq_unacked": 0, "dlq_depth": 0}
     assert captured == {
-        "url": ("http://rabbitmq:15672/api/queues/%2Ffindb/" "findb.normalize.dlq.v1"),
+        "url": ("http://rabbitmq:15672/api/queues/%2Ffindb/findb.normalize.dlq.v1"),
         "authorization": "Basic c2VydmljZTpwQHNz",
         "timeout": 10,
     }

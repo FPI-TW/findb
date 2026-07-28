@@ -83,14 +83,16 @@ async def _discover_tables(
 
     include_schemas = set(config.table_discovery.include_schemas)
     exclude_tables = set(config.table_discovery.exclude_tables)
-    result = await conn.execute(text("""
+    result = await conn.execute(
+        text("""
             SELECT n.nspname AS table_schema, c.relname AS table_name
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
               AND NOT c.relispartition
             ORDER BY n.nspname, c.relname
-            """))
+            """)
+    )
 
     tables: list[tuple[str, str]] = []
     for row in result:
@@ -402,7 +404,8 @@ def _write_load_sql(
 
 
 async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
-    result = await conn.execute(text("""
+    result = await conn.execute(
+        text("""
             SELECT
                 child_ns.nspname AS child_schema,
                 child_cls.relname AS child_table,
@@ -414,7 +417,8 @@ async def _load_fk_edges(conn: AsyncConnection) -> list[tuple[str, str]]:
             JOIN pg_class parent_cls ON parent_cls.oid = con.confrelid
             JOIN pg_namespace parent_ns ON parent_ns.oid = parent_cls.relnamespace
             WHERE con.contype = 'f'
-            """))
+            """)
+    )
     return [
         (
             _table_key(row.child_schema, row.child_table),

@@ -91,9 +91,7 @@ def fetch_dlq_health(
         f"{quote(vhost, safe='')}/{quote(queue_name, safe='')}"
     )
     request = Request(endpoint, headers={"Authorization": f"Basic {authorization}"})
-    with urlopen_func(
-        request, timeout=10
-    ) as response:  # noqa: S310 - internal RabbitMQ management origin
+    with urlopen_func(request, timeout=10) as response:  # noqa: S310 - internal RabbitMQ management origin
         payload = json.load(response)
 
     values: dict[str, int] = {}

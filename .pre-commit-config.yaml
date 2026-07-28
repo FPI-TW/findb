@@ -9,9 +9,9 @@ repos:
         files: ^backend/
         stages: [pre-commit]
 
-      - id: black-format
-        name: backend black format
-        entry: uv --project backend run black
+      - id: ruff-format
+        name: backend ruff format
+        entry: uv --project backend run ruff format
         language: system
         types_or: [python]
         files: ^backend/

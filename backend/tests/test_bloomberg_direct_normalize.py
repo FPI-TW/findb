@@ -155,9 +155,9 @@ class TestCryptoBloombergNormalizer:
         n = self._n()
         for ticker, expected_symbol in cases:
             records = n.map_fields(self._payload(ticker=ticker, symbol=ticker.split()[0]))
-            assert (
-                records[0].symbol == expected_symbol
-            ), f"Ticker {ticker} should map to {expected_symbol}"
+            assert records[0].symbol == expected_symbol, (
+                f"Ticker {ticker} should map to {expected_symbol}"
+            )
 
     def test_name_from_name_map_when_missing(self):
         payload = self._payload()

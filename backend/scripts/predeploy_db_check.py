@@ -35,7 +35,8 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                 text("SELECT pg_size_pretty(pg_total_relation_size('raw.market_payload'))")
             )
             raw_rows = await connection.scalar(text("SELECT count(*) FROM raw.market_payload"))
-            duplicate_run_ids = await connection.scalar(text("""
+            duplicate_run_ids = await connection.scalar(
+                text("""
                     SELECT count(*)
                     FROM (
                         SELECT run_id
@@ -44,39 +45,59 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                         GROUP BY run_id
                         HAVING count(*) > 1
                     ) AS duplicates
-                    """))
-            pending_counts = (await connection.execute(text("""
+                    """)
+            )
+            pending_counts = (
+                await connection.execute(
+                    text("""
                         SELECT
                             count(*) FILTER (WHERE raw.run_id IS NOT NULL) AS with_raw,
                             count(*) FILTER (WHERE raw.run_id IS NULL) AS missing_raw
                         FROM ingestion_run AS run
                         LEFT JOIN raw.market_payload AS raw ON raw.run_id = run.run_id
                         WHERE run.status IN ('pending', 'processing')
-                        """))).one()
+                        """)
+                )
+            ).one()
             max_connections = int(
                 await connection.scalar(text("SELECT current_setting('max_connections')::int")) or 0
             )
-            reserved_connection_slots = int(await connection.scalar(text("""
+            reserved_connection_slots = int(
+                await connection.scalar(
+                    text("""
                         SELECT
                             current_setting('superuser_reserved_connections')::int
                             + COALESCE(
                                 NULLIF(current_setting('reserved_connections', true), '')::int,
                                 0
                             )
-                        """)) or 0)
-            current_connections = int(await connection.scalar(text("""
+                        """)
+                )
+                or 0
+            )
+            current_connections = int(
+                await connection.scalar(
+                    text("""
                         SELECT count(*)
                         FROM pg_stat_activity
                         WHERE backend_type = 'client backend'
-                        """)) or 0)
-            long_transactions = int(await connection.scalar(text("""
+                        """)
+                )
+                or 0
+            )
+            long_transactions = int(
+                await connection.scalar(
+                    text("""
                         SELECT count(*)
                         FROM pg_stat_activity
                         WHERE datname = current_database()
                           AND pid <> pg_backend_pid()
                           AND xact_start IS NOT NULL
                           AND now() - xact_start > interval '5 minutes'
-                        """)) or 0)
+                        """)
+                )
+                or 0
+            )
     finally:
         await engine.dispose()
 
@@ -112,7 +133,7 @@ def validate_predeploy_state(
         errors.append("database has transactions older than five minutes")
     if state["connection_headroom"] < minimum_connection_headroom:
         errors.append(
-            "database connection headroom is below " f"{minimum_connection_headroom} connections"
+            f"database connection headroom is below {minimum_connection_headroom} connections"
         )
     return errors
 
