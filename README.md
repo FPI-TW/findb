@@ -63,7 +63,7 @@ Fetcher目前包含contract validation、安全delivery client、Twelve Data
 | Database | PostgreSQL 16、Alembic |
 | Queue | RabbitMQ、Celery |
 | Frontend | TypeScript、React、TanStack Start |
-| Tooling | uv、pnpm、pytest、ruff、mypy、Vitest（Fetcher仍使用Black） |
+| Tooling | uv、pnpm、pytest、ruff、mypy、Vitest |
 | Deployment | Docker Compose、GHCR、GitHub Actions、AWS EC2/Aurora |
 | Time/ID | UTC-aware datetime、UUIDv7 |
 

@@ -107,7 +107,8 @@ fetcher-test:
 
 fetcher-check:
 	uv --directory fetcher run ruff check .
-	uv --directory fetcher run black --check .
+	uv --directory fetcher run ruff format --check .
+	uv --directory fetcher run mypy src
 	uv --directory fetcher run pytest
 
 fetcher-build:

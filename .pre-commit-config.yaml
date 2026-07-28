@@ -25,9 +25,9 @@ repos:
         files: ^fetcher/
         stages: [pre-commit]
 
-      - id: fetcher-black-format
-        name: fetcher black format
-        entry: uv --project fetcher run black
+      - id: fetcher-ruff-format
+        name: fetcher ruff format
+        entry: uv --project fetcher run ruff format
         language: system
         types_or: [python]
         files: ^fetcher/

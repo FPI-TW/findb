@@ -252,6 +252,7 @@ def _deliver(
             )
             _emit_summary(summary)
             return EXIT_OK
+        assert deadline is not None
         run = _wait_for_terminal(
             source,
             receipt.run_id,
