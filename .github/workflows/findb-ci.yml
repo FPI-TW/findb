@@ -1,20 +1,8 @@
 name: FinDB CI
 
+# Pull requests run CI directly. After merge, FinDB CD calls this workflow once
+# through workflow_call before it can build or deploy.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "dashboard/**"
-      - "contracts/**"
-      - "docker-compose.yml"
-      - "docker-compose.prod.yml"
-      - "infra/nginx/**"
-      - "package.json"
-      - "pnpm-workspace.yaml"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/findb-ci.yml"
-      - ".github/workflows/findb-cd.yml"
   pull_request:
     branches: [main]
     paths:
