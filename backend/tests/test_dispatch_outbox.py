@@ -84,6 +84,7 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
     monitor_started = asyncio.Event()
     published = asyncio.Event()
     claimed = 0
+    stale_reconciliations = 0
 
     class StopDispatcherError(RuntimeError):
         pass
@@ -100,6 +101,11 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
             return [SimpleNamespace(outbox_id="outbox-1")]
         raise StopDispatcherError
 
+    async def repair_stale(*args, **kwargs):
+        nonlocal stale_reconciliations
+        stale_reconciliations += 1
+        return 0
+
     async def no_reconciliation(*args, **kwargs):
         return 0
 
@@ -107,7 +113,7 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
         published.set()
 
     monkeypatch.setattr(dispatch_outbox, "declare_topology", lambda: None)
-    monkeypatch.setattr(dispatch_outbox, "reconcile_nonterminal_jobs", no_reconciliation)
+    monkeypatch.setattr(dispatch_outbox, "reconcile_stale_jobs", repair_stale)
     monkeypatch.setattr(dispatch_outbox, "reconcile_stale_attempts_safely", no_reconciliation)
     monkeypatch.setattr(dispatch_outbox, "scan_missing_deliveries", blocked_scan)
     monkeypatch.setattr(dispatch_outbox, "claim_outbox_batch", claim)
@@ -118,3 +124,4 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
     with pytest.raises(StopDispatcherError):
         await asyncio.wait_for(dispatch_outbox.run_dispatcher(), timeout=2)
     assert published.is_set()
+    assert stale_reconciliations >= 1

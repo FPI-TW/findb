@@ -4,6 +4,7 @@ import os
 import re
 import runpy
 import subprocess
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,11 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
-from scripts.check_queue_health import validate_queue_health
+from scripts.check_queue_health import (
+    fetch_dlq_health,
+    fetch_readiness_payload,
+    validate_queue_health,
+)
 from scripts.predeploy_db_check import (
     DEFAULT_MINIMUM_CONNECTION_HEADROOM,
     calculate_connection_headroom,
@@ -678,17 +683,127 @@ def test_predeploy_database_state_reports_every_blocker() -> None:
 def test_queue_health_requires_recent_worker_and_no_expired_leases() -> None:
     assert (
         validate_queue_health(
-            {"worker_heartbeat_age_seconds": 12.5, "expired_leases": 0},
+            {
+                "worker_heartbeat_age_seconds": 12.5,
+                "expired_leases": 0,
+                "dlq_ready": 0,
+                "dlq_unacked": 0,
+                "dlq_depth": 0,
+            },
             maximum_heartbeat_age=90,
         )
         == []
     )
 
     errors = validate_queue_health(
-        {"worker_heartbeat_age_seconds": None, "expired_leases": 3},
+        {
+            "worker_heartbeat_age_seconds": None,
+            "expired_leases": 3,
+            "dlq_ready": 0,
+            "dlq_unacked": 0,
+            "dlq_depth": 0,
+        },
         maximum_heartbeat_age=90,
     )
     assert errors == [
         "worker heartbeat has not been recorded",
         "3 normalization execution leases are expired",
     ]
+
+
+def test_queue_health_fails_when_dlq_is_not_empty() -> None:
+    payload = {
+        "worker_heartbeat_age_seconds": 12.5,
+        "expired_leases": 0,
+        "dlq_ready": 9,
+        "dlq_unacked": 1,
+        "dlq_depth": 10,
+    }
+    assert validate_queue_health(payload, maximum_heartbeat_age=90) == []
+
+    errors = validate_queue_health(
+        payload,
+        maximum_heartbeat_age=90,
+        require_empty_dlq=True,
+    )
+
+    assert errors == ["normalization DLQ is not empty (depth=10, ready=9, unacked=1)"]
+
+
+def test_deployment_readiness_does_not_enable_mass_import_dlq_gate() -> None:
+    workflow = FINDB_CD_WORKFLOW.read_text()
+
+    assert "--require-empty-dlq" not in workflow
+
+
+def test_queue_readiness_fails_closed_when_dlq_query_fails() -> None:
+    def failed_dlq_query(*args, **kwargs):
+        raise ConnectionError("management API unavailable")
+
+    with pytest.raises(ConnectionError, match="management API unavailable"):
+        fetch_readiness_payload(
+            "http://127.0.0.1:8080/api/v1/admin/queue/health",
+            api_key_header="X-API-Key",
+            api_key="test-admin-key",
+            management_url="http://rabbitmq:15672",
+            broker_url="amqp://user:password@rabbitmq:5672/%2Ffindb",
+            vhost="/findb",
+            queue_name="findb.normalize.dlq.v1",
+            queue_health_fetcher=lambda *args, **kwargs: {
+                "worker_heartbeat_age_seconds": 12.5,
+                "expired_leases": 0,
+            },
+            dlq_health_fetcher=failed_dlq_query,
+        )
+
+
+def test_fetch_dlq_health_encodes_queue_path_and_uses_broker_credentials() -> None:
+    captured = {}
+
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def open_management(request, *, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return Response(b'{"messages_ready": 0, "messages_unacknowledged": 0, "messages": 0}')
+
+    result = fetch_dlq_health(
+        "http://rabbitmq:15672",
+        broker_url="amqp://service:p%40ss@rabbitmq:5672/%2Ffindb",
+        vhost="/findb",
+        queue_name="findb.normalize.dlq.v1",
+        urlopen_func=open_management,
+    )
+
+    assert result == {"dlq_ready": 0, "dlq_unacked": 0, "dlq_depth": 0}
+    assert captured == {
+        "url": ("http://rabbitmq:15672/api/queues/%2Ffindb/" "findb.normalize.dlq.v1"),
+        "authorization": "Basic c2VydmljZTpwQHNz",
+        "timeout": 10,
+    }
+
+
+def test_fetch_dlq_health_rejects_missing_or_non_integer_counters() -> None:
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    with pytest.raises(ValueError, match="messages_unacknowledged"):
+        fetch_dlq_health(
+            "http://rabbitmq:15672",
+            broker_url="amqp://service:password@rabbitmq:5672/%2Ffindb",
+            vhost="/findb",
+            queue_name="findb.normalize.dlq.v1",
+            urlopen_func=lambda *args, **kwargs: Response(
+                b'{"messages_ready": 0, "messages_unacknowledged": false, "messages": 0}'
+            ),
+        )
