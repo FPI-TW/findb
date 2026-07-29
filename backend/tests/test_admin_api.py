@@ -142,7 +142,10 @@ class TestAdminAuth:
 
     @pytest.mark.asyncio
     async def test_patch_eod_with_invalid_api_key_returns_403(
-        self, client: AsyncClient, test_session: AsyncSession
+        self,
+        client: AsyncClient,
+        test_session: AsyncSession,
+        admin_headers: dict,
     ):
         instrument = await _create_instrument(test_session)
         await _create_eod(test_session, instrument.instrument_id)
