@@ -11,7 +11,8 @@
 
 ## P0：Deployment與secret isolation
 
-- [ ] 將部署secrets從repository/job-wide scope移到對應environment。
+- [ ] 建立 `production-findb`與`production-fetcher` Environment，將production部署
+  secrets隔離到對應Environment，並確認repository scope無殘留。
 - [ ] 為workflow、infra與contract設定CODEOWNERS與environment protection。
 - [ ] 建立service-specific GitHub OIDC AWS deploy roles。
 - [ ] 以SSM/deployment service取代長效EC2 SSH key。

@@ -21,8 +21,9 @@ CLI、versioned小型US symbol universe、bounded per-symbol orchestration、Fet
 SQLite scheduler state、persistent retry、lease recovery、逐symbol checkpoint與mock
 Source API整合測試，以及exact-byte provider response的Fetcher-owned Cloudflare R2 persistence
 與raw reference/checksum delivery已建立；自動化真實跨服務integration tests尚未
-建立。Fetcher CD目前已交付staging的immutable image與常駐scheduler；這只代表
-staging runtime已建立，不代表production服務或完整資料導入已建立。
+建立。Fetcher CD目前已交付staging的immutable image與由Environment desired state
+管理的scheduler container；staging固定為`stopped`，部署會更新container但不啟動
+排程。這只代表staging runtime已建立，不代表production服務或完整資料導入已建立。
 
 ## Release 與部署單位
 
@@ -30,7 +31,7 @@ staging runtime已建立，不代表production服務或完整資料導入已建�
 | --- | --- | --- | --- |
 | FinDB backend | `findb:<sha>` | FinDB EC2 | 已有 |
 | Dashboard | `findb-dashboard:<sha>` | FinDB EC2 | 已有 |
-| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher staging target | Runtime已部署；data-producing scheduler受獨立gate控制 |
+| Fetcher | `ghcr.io/fpi-tw/findb-fetcher:<sha>` | 獨立 Fetcher staging target | Runtime已部署；scheduler由Environment desired state管理，staging為`stopped` |
 
 同 repo 不代表同時部署。目前以四個workflow分離FinDB CI、FinDB CD、Fetcher CI與
 Fetcher CD；FinDB deployment unit包含backend與Dashboard。各自使用path filter、
