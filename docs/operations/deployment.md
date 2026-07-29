@@ -104,11 +104,14 @@ production-fetcher
 | Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
 | Variables | `CLOUDFLARE_R2_PREFIX`、`CLOUDFLARE_R2_MAX_OBJECT_BYTES`、`TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
 | Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
-| Secrets | `FETCHER_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
+| Secrets | `FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
+| Optional secrets | `FETCHER_FINLAB_SOURCE_CLIENT_KEY`（FinLab consumer上線前只保存於Environment，不注入Twelve Data container） |
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
-container。現階段Source、Twelve Data與R2 secrets由對應的`{target}-fetcher` Environment
+container。部署層使用provider-specific的
+`FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`，再映射為container內共用的
+`SOURCE_CLIENT_KEY`。現階段Source、Twelve Data與R2 secrets由對應的`{target}-fetcher` Environment
 逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
 Secrets Manager/Parameter Store前的明確過渡機制，不可使用
 `--env NAME=value`出現在command line。Fetcher的R2 credentials與未來OIDC/SSM
