@@ -64,13 +64,13 @@ SERVICE_CONFIGS: Final = {
         ),
         optional_secrets=(
             "SOURCE_API_KEY",
-            "SERVE_API_KEYS",
             "ADMIN_API_KEY",
             "CLOUDFLARE_R2_SESSION_TOKEN",
         ),
     ),
     "fetcher": ServiceConfig(
         variables=(
+            "FETCHER_SCHEDULER_DESIRED_STATE",
             "FETCHER_SOURCE_API_URL",
             "FETCHER_REQUEST_TIMEOUT_SECONDS",
             "FETCHER_MAX_ATTEMPTS",

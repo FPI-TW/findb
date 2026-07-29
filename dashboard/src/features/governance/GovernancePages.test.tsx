@@ -68,7 +68,7 @@ beforeEach(() => {
   mocks.loadCredentialsOverview.mockResolvedValue({
     auth_mode: "db_with_legacy_fallback",
     serve_require_auth: true,
-    legacy: { admin: false, source: false, serve: false },
+    legacy: { admin: false, source: false },
     counts: {
       active: 1,
       expiring: 0,

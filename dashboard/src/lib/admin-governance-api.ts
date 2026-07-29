@@ -131,7 +131,6 @@ export const credentialsOverviewSchema = z.object({
   legacy: z.object({
     admin: z.boolean(),
     source: z.boolean(),
-    serve: z.boolean(),
   }),
   counts: z.object({
     active: z.number().int().nonnegative(),

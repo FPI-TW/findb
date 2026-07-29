@@ -83,6 +83,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           FETCHER_IMAGE: ${{ env.FETCHER_IMAGE }}
           FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_SCHEDULER_DESIRED_STATE: ${{ vars.FETCHER_SCHEDULER_DESIRED_STATE }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY: ${{ secrets.FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY }}
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
@@ -104,7 +105,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY,TWELVE_DATA_API_KEY,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_BUCKET,CLOUDFLARE_R2_ACCESS_KEY_ID,CLOUDFLARE_R2_SECRET_ACCESS_KEY,CLOUDFLARE_R2_SESSION_TOKEN,CLOUDFLARE_R2_PREFIX,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SCHEDULER_DESIRED_STATE,FETCHER_SOURCE_API_URL,FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY,TWELVE_DATA_API_KEY,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_BUCKET,CLOUDFLARE_R2_ACCESS_KEY_ID,CLOUDFLARE_R2_SECRET_ACCESS_KEY,CLOUDFLARE_R2_SESSION_TOKEN,CLOUDFLARE_R2_PREFIX,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
 
@@ -122,6 +123,13 @@ jobs:
             require_runtime_value r2_bucket "${CLOUDFLARE_R2_BUCKET:-}"
             require_runtime_value r2_access_key_id "${CLOUDFLARE_R2_ACCESS_KEY_ID:-}"
             require_runtime_value r2_secret_access_key "${CLOUDFLARE_R2_SECRET_ACCESS_KEY:-}"
+            case "${FETCHER_SCHEDULER_DESIRED_STATE:-}" in
+              running|stopped) ;;
+              *)
+                echo "::error title=Invalid Fetcher scheduler state::FETCHER_SCHEDULER_DESIRED_STATE must be running or stopped"
+                exit 1
+                ;;
+            esac
 
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
@@ -151,9 +159,8 @@ jobs:
               exit 1
             }
 
-            # Resolve a rollout interrupted before its final cleanup. Remove any
-            # competing candidate first, choose stable over previous, then prove
-            # the retained service can run before pulling or validating a release.
+            # Resolve interrupted rollouts to the Environment's declared state.
+            # A stopped target must never be started merely by reconciliation.
             if docker container inspect "$candidate" >/dev/null 2>&1; then
               if docker container inspect "$stable" >/dev/null 2>&1 \
                 || docker container inspect "$previous" >/dev/null 2>&1; then
@@ -174,11 +181,17 @@ jobs:
               fi
             fi
             if docker container inspect "$stable" >/dev/null 2>&1; then
-              docker start "$stable" >/dev/null 2>&1 || reconciliation_failed
-              stable_running="$(
-                docker inspect --format '{{.State.Running}}' "$stable" 2>/dev/null
-              )" || reconciliation_failed
-              if [ "$stable_running" != "true" ]; then
+              if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ]; then
+                docker start "$stable" >/dev/null 2>&1 || reconciliation_failed
+              else
+                docker stop --time 30 "$stable" >/dev/null 2>&1 || reconciliation_failed
+              fi
+              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")" \
+                || reconciliation_failed
+              if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ] && [ "$stable_running" != "true" ]; then
+                reconciliation_failed
+              fi
+              if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "stopped" ] && [ "$stable_running" != "false" ]; then
                 reconciliation_failed
               fi
             fi
@@ -230,15 +243,16 @@ jobs:
               if docker container inspect "$candidate" >/dev/null 2>&1; then
                 docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1
               fi
-              if [ "$recovery_failed" -eq 0 ]; then
-                if docker container inspect "$stable" >/dev/null 2>&1; then
-                  docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
-                elif docker container inspect "$previous" >/dev/null 2>&1; then
+              if [ "$recovery_failed" -eq 0 ] && ! docker container inspect "$stable" >/dev/null 2>&1 \
+                && docker container inspect "$previous" >/dev/null 2>&1; then
                   docker rename "$previous" "$stable" >/dev/null 2>&1 \
                     || recovery_failed=1
-                  if [ "$recovery_failed" -eq 0 ]; then
-                    docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
-                  fi
+              fi
+              if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
+                if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ]; then
+                  docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
+                else
+                  docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1
                 fi
               fi
               if [ "$recovery_failed" -ne 0 ]; then
@@ -256,6 +270,41 @@ jobs:
               had_previous=1
               docker stop --time 30 "$stable" >/dev/null
               docker rename "$stable" "$previous"
+            fi
+
+            if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "stopped" ]; then
+              docker create \
+                --name "$candidate" \
+                --user 10001:10001 \
+                --restart unless-stopped \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --log-opt max-size=10m \
+                --log-opt max-file=3 \
+                --mount "type=bind,src=$state_dir,dst=/var/lib/findb-fetcher" \
+                $runtime_env_args \
+                "$image" \
+                findb-fetch-scheduler --run-forever >/dev/null
+              candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
+              candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
+              if [ "$candidate_image" != "$image" ] || [ "$candidate_running" != "false" ]; then
+                echo "::error title=Fetcher stopped release rejected::Candidate is not the exact stopped image" >&2
+                false
+              fi
+              docker rename "$candidate" "$stable"
+              if [ "$had_previous" -eq 1 ]; then
+                docker rm "$previous" >/dev/null 2>&1 || false
+              fi
+              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
+              if [ "$stable_running" != "false" ]; then
+                echo "::error title=Fetcher stopped release rejected::Stopped target has a running scheduler" >&2
+                false
+              fi
+              trap - ERR INT TERM HUP
+              trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+              echo "Fetcher scheduler release reconciled to stopped"
+              exit 0
             fi
 
             docker run -d \
@@ -295,7 +344,7 @@ jobs:
             docker rename "$candidate" "$stable"
             trap - ERR INT TERM HUP
             if [ "$had_previous" -eq 1 ]; then
-              docker rm "$previous" >/dev/null 2>&1 || true
+              docker rm "$previous" >/dev/null 2>&1 || false
             fi
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             echo "Fetcher scheduler release completed"

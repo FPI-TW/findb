@@ -19,7 +19,10 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness與scheduler preflight入口；不會自動抓取或送出資料。
 
-Staging CD會在獨立Fetcher target維持一個scheduler container。R2 bucket與API
+Fetcher CD依Environment的`FETCHER_SCHEDULER_DESIRED_STATE`收斂scheduler：staging
+設定為`stopped`，每次部署會更新並停妥container；production設定為`running`並維持
+單一scheduler。兩種狀態使用相同immutable image、runtime config與SQLite state。
+R2 bucket與API
 token已由外部提供；raw object lifecycle為30天，bucket lock為7天，兩者由Cloudflare
 R2管理而非Fetcher scheduler。
 
@@ -295,6 +298,7 @@ Scheduler one-shot exit code：
 | `FETCHER_MAX_ATTEMPTS` | 否 | `3` | 包含首次呼叫的最大attempt數 |
 | `FETCHER_MAX_RETRY_AFTER_SECONDS` | 否 | `30` | Retry-After與backoff上限 |
 | `FETCHER_SCHEDULE_FILE` | 否 | `/app/configs/twelve_data_us_common_stocks_daily.v1.json` | Versioned scheduler設定 |
+| `FETCHER_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | 僅接受`running`或`stopped`；staging=`stopped`、production=`running` |
 | `FETCHER_STATE_PATH` | 否 | `/var/lib/findb-fetcher/state.sqlite3` | Fetcher-owned durable SQLite state |
 | `TWELVE_DATA_API_KEY` | 是 | — | 固定資料來源Twelve Data的runtime secret |
 | `TWELVE_DATA_BASE_URL` | 否 | `https://api.twelvedata.com` | Twelve Data HTTPS origin |

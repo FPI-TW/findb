@@ -59,8 +59,7 @@ class Settings(BaseSettings):
     DELIVERY_MONITOR_SECONDS: float = Field(default=60, gt=0)
     DELIVERY_MONITOR_TIMEOUT_SECONDS: float = Field(default=30, gt=0)
 
-    # Serve API Keys (comma-separated, optional)
-    SERVE_API_KEYS: str = ""
+    # Serve API access is provided only by DB-backed keys when enabled.
     SERVE_REQUIRE_AUTH: bool = False
 
     # Admin API Key

@@ -27,7 +27,6 @@ services:
       DEBUG: ${DEBUG:-true}
       PORT: ${PORT:-8080}
       SOURCE_API_KEY: ${SOURCE_API_KEY:-dev-source-key}
-      SERVE_API_KEYS: ${SERVE_API_KEYS:-}
       SERVE_REQUIRE_AUTH: ${SERVE_REQUIRE_AUTH:-false}
       ADMIN_BREAK_GLASS_API_KEY: ${ADMIN_BREAK_GLASS_API_KEY:-}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}

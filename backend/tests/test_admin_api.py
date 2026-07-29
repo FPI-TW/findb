@@ -172,9 +172,7 @@ class TestAPIKeyAdmin:
     ):
         settings = get_settings()
         original_require_auth = settings.SERVE_REQUIRE_AUTH
-        original_serve_keys = settings.SERVE_API_KEYS
         settings.SERVE_REQUIRE_AUTH = True
-        settings.SERVE_API_KEYS = ""
         try:
             create_response = await client.post(
                 "/api/v1/admin/api-keys",
@@ -248,32 +246,12 @@ class TestAPIKeyAdmin:
             assert revoke_response.json()["revoked_at"] is not None
         finally:
             settings.SERVE_REQUIRE_AUTH = original_require_auth
-            settings.SERVE_API_KEYS = original_serve_keys
-
-    @pytest.mark.asyncio
-    async def test_serve_api_keeps_env_fallback(self, client: AsyncClient):
-        settings = get_settings()
-        original_require_auth = settings.SERVE_REQUIRE_AUTH
-        original_serve_keys = settings.SERVE_API_KEYS
-        settings.SERVE_REQUIRE_AUTH = True
-        settings.SERVE_API_KEYS = "legacy-key"
-        try:
-            response = await client.get(
-                "/api/v1/serve/instruments",
-                headers={settings.API_KEY_HEADER: "legacy-key"},
-            )
-            assert response.status_code == 200
-        finally:
-            settings.SERVE_REQUIRE_AUTH = original_require_auth
-            settings.SERVE_API_KEYS = original_serve_keys
 
     @pytest.mark.asyncio
     async def test_serve_api_reports_server_misconfiguration(self, client: AsyncClient):
         settings = get_settings()
         original_require_auth = settings.SERVE_REQUIRE_AUTH
-        original_serve_keys = settings.SERVE_API_KEYS
         settings.SERVE_REQUIRE_AUTH = True
-        settings.SERVE_API_KEYS = ""
         try:
             response = await client.get(
                 "/api/v1/serve/instruments",
@@ -283,7 +261,6 @@ class TestAPIKeyAdmin:
             assert "no API keys configured" in response.json()["detail"]
         finally:
             settings.SERVE_REQUIRE_AUTH = original_require_auth
-            settings.SERVE_API_KEYS = original_serve_keys
 
     @pytest.mark.asyncio
     async def test_resolve_dq_without_api_key_returns_401(

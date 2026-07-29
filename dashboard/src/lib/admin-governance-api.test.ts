@@ -61,7 +61,7 @@ describe("admin governance wire contracts", () => {
       credentialsOverviewSchema.parse({
         auth_mode: "db_with_legacy_fallback",
         serve_require_auth: true,
-        legacy: { admin: false, source: true, serve: false },
+        legacy: { admin: false, source: true },
         counts: {
           active: 1,
           expiring: 0,
