@@ -355,7 +355,7 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
         assert _secret_reference_paths(_load_workflow(path)) == []
 
 
-def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional() -> None:
+def test_findb_deployment_uses_dedicated_credentials_without_legacy_serve_key() -> None:
     workflow = _load_workflow(FINDB_CD_WORKFLOW)
     validate = _named_step(workflow, "deploy", "Validate deployment configuration")
     render = _named_step(workflow, "deploy", "Render nginx configs")
@@ -369,12 +369,10 @@ def test_findb_deployment_uses_dedicated_credentials_and_keeps_legacy_optional()
         "FINDB_LOOKUP_SERVE_API_KEY and FINDB_STATIC_CACHE_SERVE_API_KEY must be distinct"
         in validation_script
     )
-    assert "SERVE_API_KEYS must be configured" not in validation_script
 
     required_loop = next(line for line in validation_script.splitlines() if "for name in " in line)
     for legacy_name in (
         "SOURCE_API_KEY",
-        "SERVE_API_KEYS",
         "ADMIN_API_KEY",
     ):
         assert legacy_name not in required_loop
@@ -421,7 +419,6 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
         "ADMIN_API_KEY",
         "DASHBOARD_PASSWORD",
         "DASHBOARD_SESSION_SECRET",
-        "SERVE_API_KEYS",
     ):
         assert forbidden not in fetcher_cd
 
@@ -441,6 +438,7 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     forwarded = set(step["with"]["envs"].split(","))
 
     required_environment_values = {
+        "FETCHER_SCHEDULER_DESIRED_STATE",
         "FETCHER_SOURCE_API_URL",
         "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
         "TWELVE_DATA_API_KEY",
@@ -452,6 +450,9 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert required_environment_values <= set(step_env)
     assert required_environment_values <= forwarded
     assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == ("${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}")
+    assert step_env["FETCHER_SCHEDULER_DESIRED_STATE"] == (
+        "${{ vars.FETCHER_SCHEDULER_DESIRED_STATE }}"
+    )
 
     assert 'image="${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}"' in script
     assert 'docker pull "$image"' in script
@@ -470,8 +471,8 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert "--log-opt max-file=3" in script
 
     preflight = script.index("findb-fetch-scheduler --check")
-    stop_old = script.index('docker stop --time 30 "$stable"')
-    start_candidate = script.index("findb-fetch-scheduler --run-forever")
+    stop_old = script.rindex('docker stop --time 30 "$stable"')
+    start_candidate = script.rindex("findb-fetch-scheduler --run-forever")
     promote = script.rindex('docker rename "$candidate" "$stable"')
     assert preflight < stop_old < start_candidate < promote
     assert "stable=findb-fetcher-scheduler" in script
@@ -479,7 +480,8 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert "previous=findb-fetcher-scheduler-previous" in script
     assert 'docker rm -f "$candidate"' in script
     assert 'docker rename "$previous" "$stable"' in script
-    assert 'docker start "$stable"' in script
+    assert 'if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ]; then' in script
+    assert "docker create \\" in script
     assert "for attempt in $(seq 1 6)" in script
     assert "{{.RestartCount}}" in script
     assert "recover_scheduler()" in script
@@ -492,9 +494,9 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert recovery.index('docker rm -f "$candidate"') < recovery.index(
         'docker container inspect "$stable"'
     )
-    assert 'if docker container inspect "$stable"' in recovery
-    assert 'docker start "$stable"' in recovery
-    assert 'elif docker container inspect "$previous"' in recovery
+    assert 'docker container inspect "$stable"' in recovery
+    assert 'docker stop --time 30 "$stable"' in recovery
+    assert 'docker container inspect "$previous"' in recovery
     assert 'docker rename "$previous" "$stable"' in recovery
     assert '"$had_previous"' not in recovery
     assert 'exit "$original_status"' in recovery
@@ -506,6 +508,7 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     clear_recovery = script.rindex("trap - ERR INT TERM HUP")
     assert promote < clear_recovery
     assert "{{.State.Running}}" in script
+    assert "FETCHER_SCHEDULER_DESIRED_STATE must be running or stopped" in script
 
     runtime_block = script[script.index('runtime_env_args="') : preflight]
     assert "--env GITHUB_TOKEN" not in runtime_block
@@ -526,14 +529,16 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
 
 
 @pytest.mark.parametrize(
-    ("initial", "succeeds", "expected_running"),
+    ("initial", "desired_state", "succeeds", "expected_running"),
     [
-        ({"findb-fetcher-scheduler": "stopped"}, True, 1),
+        ({"findb-fetcher-scheduler": "stopped"}, "running", True, 1),
+        ({"findb-fetcher-scheduler": "running"}, "stopped", True, 0),
         (
             {
                 "findb-fetcher-scheduler": "running",
                 "findb-fetcher-scheduler-candidate": "running",
             },
+            "running",
             True,
             1,
         ),
@@ -542,18 +547,21 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
                 "findb-fetcher-scheduler": "stopped",
                 "findb-fetcher-scheduler-previous": "stopped",
             },
+            "stopped",
             True,
-            1,
+            0,
         ),
-        ({"findb-fetcher-scheduler-candidate": "running"}, True, 1),
-        ({"findb-fetcher-scheduler-previous": "stopped"}, True, 1),
-        ({"findb-fetcher-scheduler": "start-fail"}, False, 0),
-        ({}, True, 0),
+        ({"findb-fetcher-scheduler-candidate": "running"}, "stopped", True, 0),
+        ({"findb-fetcher-scheduler-previous": "stopped"}, "running", True, 1),
+        ({"findb-fetcher-scheduler": "start-fail"}, "running", False, 0),
+        ({"findb-fetcher-scheduler": "stop-fail"}, "stopped", False, 0),
+        ({}, "stopped", True, 0),
     ],
 )
 def test_fetcher_scheduler_reconciliation_behavior(
     tmp_path: Path,
     initial: dict[str, str],
+    desired_state: str,
     succeeds: bool,
     expected_running: int,
 ) -> None:
@@ -580,6 +588,7 @@ def test_fetcher_scheduler_reconciliation_behavior(
 set -eu
 operation="$1"
 shift
+printf '%s\\n' "$operation" >> "$FAKE_DOCKER_LOG"
 case "$operation" in
   container)
     [ "$1" = "inspect" ]
@@ -597,6 +606,13 @@ case "$operation" in
       exit 1
     fi
     printf 'running\\n' > "$FAKE_DOCKER_STATE/$1"
+    ;;
+  stop)
+    [ "$1" = "--time" ]
+    if [ "$(cat "$FAKE_DOCKER_STATE/$3")" = "stop-fail" ]; then
+      exit 1
+    fi
+    printf 'stopped\\n' > "$FAKE_DOCKER_STATE/$3"
     ;;
   inspect)
     [ "$1" = "--format" ]
@@ -620,11 +636,14 @@ set -euo pipefail
 stable=findb-fetcher-scheduler
 candidate=findb-fetcher-scheduler-candidate
 previous=findb-fetcher-scheduler-previous
+FETCHER_SCHEDULER_DESIRED_STATE={desired_state}
 {reconciliation}
 """
     environment = dict(os.environ)
     environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
     environment["FAKE_DOCKER_STATE"] = str(state_dir)
+    log_path = tmp_path / "docker.log"
+    environment["FAKE_DOCKER_LOG"] = str(log_path)
 
     completed = subprocess.run(
         ["bash", "-c", harness],
@@ -638,14 +657,81 @@ previous=findb-fetcher-scheduler-previous
     statuses = {path.name: path.read_text(encoding="utf-8").strip() for path in state_dir.iterdir()}
     assert sum(status == "running" for status in statuses.values()) == expected_running
     assert "findb-fetcher-scheduler-candidate" not in statuses
+    operations = log_path.read_text(encoding="utf-8").splitlines()
+    if desired_state == "stopped":
+        assert "start" not in operations
     if succeeds:
         assert "findb-fetcher-scheduler-previous" not in statuses
         if expected_running == 1:
             assert statuses == {"findb-fetcher-scheduler": "running"}
         else:
-            assert statuses == {}
+            assert statuses in ({}, {"findb-fetcher-scheduler": "stopped"})
     else:
         assert "Scheduler state could not be reconciled" in completed.stderr
+
+
+def test_fetcher_scheduler_recovery_keeps_stopped_target_stopped(tmp_path: Path) -> None:
+    script = _named_step(
+        _load_workflow(FETCHER_CD_WORKFLOW),
+        "deploy",
+        "Release and validate Fetcher image on Fetcher EC2",
+    )["with"]["script"]
+    recovery = script.split("recover_scheduler() {", 1)[1].split(
+        "trap 'recover_scheduler \"$?\"' ERR", 1
+    )[0]
+    state_dir = tmp_path / "state"
+    fake_bin = tmp_path / "bin"
+    state_dir.mkdir()
+    fake_bin.mkdir()
+    (state_dir / "findb-fetcher-scheduler").write_text("running", encoding="utf-8")
+    (state_dir / "findb-fetcher-scheduler-candidate").write_text("running", encoding="utf-8")
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+operation="$1"
+shift
+printf '%s\\n' "$operation" >> "$FAKE_DOCKER_LOG"
+case "$operation" in
+  container) [ "$1" = "inspect" ]; [ -f "$FAKE_DOCKER_STATE/$2" ] ;;
+  rm) [ "$1" = "-f" ]; rm -f "$FAKE_DOCKER_STATE/$2" ;;
+  stop) [ "$1" = "--time" ]; printf 'stopped\\n' > "$FAKE_DOCKER_STATE/$3" ;;
+  start) printf 'running\\n' > "$FAKE_DOCKER_STATE/$1" ;;
+  rename) mv "$FAKE_DOCKER_STATE/$1" "$FAKE_DOCKER_STATE/$2" ;;
+  *) exit 2 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    log_path = tmp_path / "docker.log"
+    environment = dict(os.environ)
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        FAKE_DOCKER_STATE=str(state_dir),
+        FAKE_DOCKER_LOG=str(log_path),
+    )
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"""set -euo pipefail
+stable=findb-fetcher-scheduler
+candidate=findb-fetcher-scheduler-candidate
+previous=findb-fetcher-scheduler-previous
+FETCHER_SCHEDULER_DESIRED_STATE=stopped
+recover_scheduler() {{{recovery}
+recover_scheduler 1""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 1
+    assert (state_dir / "findb-fetcher-scheduler").read_text(encoding="utf-8") == "stopped\n"
+    assert "start" not in log_path.read_text(encoding="utf-8").splitlines()
 
 
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:

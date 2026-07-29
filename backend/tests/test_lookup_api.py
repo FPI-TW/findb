@@ -360,12 +360,22 @@ async def test_lookup_query_validation_returns_422(
 @pytest.mark.asyncio
 async def test_lookup_uses_serve_api_auth_dependency(
     client: AsyncClient,
+    test_session,
 ):
+    from app.services.api_keys import create_api_key
+
     settings = get_settings()
     original_require_auth = settings.SERVE_REQUIRE_AUTH
-    original_keys = settings.SERVE_API_KEYS
     settings.SERVE_REQUIRE_AUTH = True
-    settings.SERVE_API_KEYS = "lookup-test-key"
+    _, lookup_key = await create_api_key(
+        test_session,
+        owner="lookup-test",
+        tier="standard",
+        scopes=["serve"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        page_size_limit=200,
+    )
 
     try:
         missing = await client.get("/api/v1/serve/lookup/instruments")
@@ -375,11 +385,10 @@ async def test_lookup_uses_serve_api_auth_dependency(
         )
         valid = await client.get(
             "/api/v1/serve/lookup/instruments",
-            headers={settings.API_KEY_HEADER: "lookup-test-key"},
+            headers={settings.API_KEY_HEADER: lookup_key},
         )
     finally:
         settings.SERVE_REQUIRE_AUTH = original_require_auth
-        settings.SERVE_API_KEYS = original_keys
 
     assert missing.status_code == 401
     assert invalid.status_code == 403

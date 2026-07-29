@@ -85,16 +85,10 @@ def legacy_credentials() -> list[CredentialResponse]:
     values: list[tuple[str, bool]] = [
         ("source", bool(settings.SOURCE_API_KEY.strip())),
         ("admin", bool(settings.ADMIN_API_KEY.strip())),
-        ("break-glass", bool(settings.ADMIN_BREAK_GLASS_API_KEY.strip())),
     ]
-    values.extend(
-        (f"serve-{index + 1}", True)
-        for index, value in enumerate(settings.SERVE_API_KEYS.split(","))
-        if value.strip()
-    )
     for name, configured in values:
         if configured:
-            legacy_kind = "admin" if name == "break-glass" else name.split("-", 1)[0]
+            legacy_kind = name.split("-", 1)[0]
             rows.append(
                 CredentialResponse(
                     credential_ref=f"legacy:{name}",
@@ -142,9 +136,7 @@ async def credential_overview(db: AsyncSession) -> dict[str, Any]:
         "serve_require_auth": settings.SERVE_REQUIRE_AUTH,
         "legacy": {
             "admin": bool(settings.ADMIN_API_KEY.strip()),
-            "break_glass": bool(settings.ADMIN_BREAK_GLASS_API_KEY.strip()),
             "source": bool(settings.SOURCE_API_KEY.strip()),
-            "serve": bool(settings.SERVE_API_KEYS.strip()),
         },
         "counts": counts,
         "auth_failure_counts": auth_failure_counts(),

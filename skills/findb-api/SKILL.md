@@ -44,7 +44,7 @@ lookup UI: `<base>/instrument-lookup`.
    FastAPI). If the service sits behind Cloudflare, the allowlist matches the real
    client IP, not the Cloudflare edge.
 2. **Serve API** — auth is optional and governed by the server's `SERVE_REQUIRE_AUTH`
-   flag. If enabled, pass `X-API-Key: <one of SERVE_API_KEYS>`. **Production nginx
+   flag. If enabled, pass an active DB-backed Serve API key in `X-API-Key`. **Production nginx
    shortcut**: same-origin requests from `/instrument-lookup` get `X-API-Key` injected
    by nginx based on `Referer`, so the static page calls Serve without exposing the
    key to the browser. Programmatic clients still need to send their own key.
@@ -253,7 +253,7 @@ instrument-cache CRUD) is in `references/endpoints.md`.
 - **Reads with auth disabled**: if `SERVE_REQUIRE_AUTH=false` (default in dev),
   you can drop the `X-API-Key` header entirely on Serve calls. Don't rely on
   this in production — check by hitting `/health` or a sample query first.
-- **Browser clients hitting Serve in prod**: don't bake `SERVE_API_KEYS` into
+- **Browser clients hitting Serve in prod**: don't bake DB-backed Serve keys into
   JavaScript. If your page lives at `findb.tingfong.com/instrument-lookup` or
   a path nginx rewrites for, the key is injected server-side; otherwise route
   through your own backend.

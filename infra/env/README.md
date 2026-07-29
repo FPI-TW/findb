@@ -61,3 +61,10 @@ The sync command creates or updates the Environment, restricts deployment to
 before making remote changes and never prints values. Serve lookup/cache secrets
 are required only when `SERVE_REQUIRE_AUTH=true`; when enabled they must be
 different DB-backed credentials.
+
+Fetcher Environments must set `FETCHER_SCHEDULER_DESIRED_STATE` to exactly
+`running` or `stopped`. The same CD workflow always preflights the exact image
+and durable SQLite state, then converges its scheduler container to that state;
+staging uses `stopped`, while production uses `running`. Removing a local value
+does not delete an already-published GitHub Environment value: delete retired
+remote values explicitly before redeploying.

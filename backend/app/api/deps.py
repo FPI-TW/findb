@@ -51,13 +51,6 @@ def get_source_api_key() -> str:
     return settings.SOURCE_API_KEY.strip()
 
 
-def get_serve_api_keys() -> list[str]:
-    """Get list of valid serve API keys."""
-    if not settings.SERVE_API_KEYS:
-        return []
-    return [key.strip() for key in settings.SERVE_API_KEYS.split(",") if key.strip()]
-
-
 def get_admin_api_key() -> str:
     """Get the valid admin API key."""
     return settings.ADMIN_API_KEY.strip()
@@ -352,29 +345,14 @@ async def verify_serve_api_key(
         request.state.credential_ref = ("serve", db_key.key_id)
         return str(db_key.key_id)
 
-    valid_keys = get_serve_api_keys()
-    is_legacy_match = any(compare_digest(api_key, valid_key) for valid_key in valid_keys)
-    if not is_legacy_match:
-        record_invalid_credential(
-            "serve",
-            endpoint=request.url.path,
-            client_ip=_extract_client_ip(request),
-        )
-    if not valid_keys:
-        if not await has_active_api_keys(db):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Authentication required but no API keys configured",
-            )
+    record_invalid_credential(
+        "serve",
+        endpoint=request.url.path,
+        client_ip=_extract_client_ip(request),
+    )
+    if not await has_active_api_keys(db):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid API key",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication required but no API keys configured",
         )
-
-    if not is_legacy_match:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid API key",
-        )
-
-    return api_key
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")

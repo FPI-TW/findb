@@ -258,8 +258,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   }
 
   const legacyConfigured =
-    overview &&
-    (overview.legacy.admin || overview.legacy.source || overview.legacy.serve)
+    overview && (overview.legacy.admin || overview.legacy.source)
   const mayIssue = canIssueCredential(role, kind)
 
   return (

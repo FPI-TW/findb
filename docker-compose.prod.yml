@@ -11,10 +11,9 @@ x-app-environment: &app-environment
   DATABASE_MAX_OVERFLOW: "${DATABASE_MAX_OVERFLOW:?DATABASE_MAX_OVERFLOW must be set in GitHub Actions variables}"
   API_V1_PREFIX: "${API_V1_PREFIX:?API_V1_PREFIX must be set in GitHub Actions variables}"
   API_KEY_HEADER: "${API_KEY_HEADER:?API_KEY_HEADER must be set in GitHub Actions variables}"
-  # Optional legacy fallbacks during the DB-backed credential migration.
+  # Optional legacy fallbacks retained for Source and Admin migration only.
   SOURCE_API_KEY: "${SOURCE_API_KEY:-}"
   SOURCE_TRUST_PROXY_HEADERS: "${SOURCE_TRUST_PROXY_HEADERS:?SOURCE_TRUST_PROXY_HEADERS must be set in GitHub Actions variables}"
-  SERVE_API_KEYS: "${SERVE_API_KEYS:-}"
   SERVE_REQUIRE_AUTH: "${SERVE_REQUIRE_AUTH:?SERVE_REQUIRE_AUTH must be set in GitHub Actions variables}"
   ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:?ADMIN_BREAK_GLASS_API_KEY must be set in GitHub Actions secrets}"
   ADMIN_API_KEY: "${ADMIN_API_KEY:-}"
