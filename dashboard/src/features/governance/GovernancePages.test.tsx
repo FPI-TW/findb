@@ -150,6 +150,48 @@ describe("governance pages", () => {
     expect(screen.getByRole("button", { name: "簽發" })).toBeDisabled()
   })
 
+  it("issues a source credential for all current and future provider datasets", async () => {
+    mocks.issueCredential.mockResolvedValue({
+      api_key: "findb_src_provider_wide",
+      data: {
+        ...credential,
+        kind: "source",
+        name: "finlab-fetcher",
+        scopes: null,
+        policies: { source_name: "finlab", allowed_datasets: null },
+      },
+    })
+    render(<CredentialsPage role="owner" />)
+
+    await screen.findByText("lookup")
+    fireEvent.change(screen.getByLabelText("名稱"), {
+      target: { value: "finlab-fetcher" },
+    })
+    fireEvent.change(screen.getByLabelText("Owner"), {
+      target: { value: "data-platform" },
+    })
+    fireEvent.change(screen.getByLabelText("Source name"), {
+      target: { value: "finlab" },
+    })
+    fireEvent.click(
+      screen.getByLabelText("此 Provider 的全部 datasets（包含未來新增）")
+    )
+
+    expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
+    expect(screen.queryByLabelText("tw_equity_eod")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "簽發" }))
+
+    await waitFor(() =>
+      expect(mocks.issueCredential).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          kind: "source",
+          source_name: "finlab",
+          allowed_datasets: null,
+        }),
+      })
+    )
+  })
+
   it("rotates with one-time display and confirms immediate revocation", async () => {
     mocks.rotateCredential.mockResolvedValue({
       api_key: "findb_srv_rotated_once",

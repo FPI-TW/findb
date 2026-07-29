@@ -93,6 +93,18 @@ describe("admin governance wire contracts", () => {
         allowed_datasets: [],
       })
     ).toThrow()
+    expect(
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "provider-wide-fetcher",
+        owner: "data-platform",
+        source_name: "finlab",
+        allowed_datasets: null,
+      })
+    ).toMatchObject({
+      kind: "source",
+      allowed_datasets: null,
+    })
     expect(() =>
       createCredentialSchema.parse({
         kind: "source",
