@@ -1,12 +1,5 @@
 import { useServerFn } from "@tanstack/react-start"
-import {
-  KeyRound,
-  Plus,
-  RefreshCw,
-  TriangleAlert,
-  UserCheck,
-  UserX,
-} from "lucide-react"
+import { KeyRound, Plus, RefreshCw, UserCheck, UserX } from "lucide-react"
 import { type FormEvent, useCallback, useEffect, useState } from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
@@ -29,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table"
+import { toast } from "../../components/ui/toast"
 import type { AdminRole, AdminUser } from "../../lib/admin-governance-api"
 import {
   createUser,
@@ -54,7 +48,7 @@ export function UsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([])
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
-  const [error, setError] = useState("")
+  const [loadError, setLoadError] = useState("")
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [role, setRole] = useState<AdminRole>("viewer")
@@ -63,27 +57,32 @@ export function UsersPage() {
     null
   )
 
-  const refresh = useCallback(async () => {
-    setError("")
-    try {
-      const result = await load()
-      setUsers(result.data)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "無法載入使用者。")
-    } finally {
-      setLoading(false)
-      setPending(false)
-    }
-  }, [load])
+  const refresh = useCallback(
+    async (initial = false) => {
+      setLoadError("")
+      try {
+        const result = await load()
+        setUsers(result.data)
+      } catch (reason) {
+        const message =
+          reason instanceof Error ? reason.message : "無法載入使用者。"
+        if (initial) setLoadError(message)
+        else toast.error("更新使用者失敗", { description: message })
+      } finally {
+        setLoading(false)
+        setPending(false)
+      }
+    },
+    [load]
+  )
 
   useEffect(() => {
-    void refresh()
+    void refresh(true)
   }, [refresh])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     setPending(true)
-    setError("")
     try {
       const result = await create({
         data: {
@@ -103,21 +102,32 @@ export function UsersPage() {
       setUsername("")
       setDisplayName("")
       setPassword("")
+      toast.success("使用者已建立", {
+        description: `已建立 ${result.data.username}。`,
+      })
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "建立使用者失敗。")
+      toast.error("建立使用者失敗", {
+        description:
+          reason instanceof Error ? reason.message : "建立使用者失敗。",
+      })
       setPending(false)
     }
   }
 
   async function changeRole(user: AdminUser, nextRole: AdminRole) {
     setPending(true)
-    setError("")
     try {
       await update({ data: { userId: user.user_id, role: nextRole } })
+      toast.success("角色已更新", {
+        description: `${user.username} 已改為 ${nextRole}。`,
+      })
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "角色更新失敗。")
+      toast.error("角色更新失敗", {
+        description:
+          reason instanceof Error ? reason.message : "角色更新失敗。",
+      })
       setPending(false)
     }
   }
@@ -126,14 +136,19 @@ export function UsersPage() {
     const action = user.is_active ? "停用" : "啟用"
     if (!window.confirm(`確定${action}「${user.username}」？`)) return
     setPending(true)
-    setError("")
     try {
       await update({
         data: { userId: user.user_id, is_active: !user.is_active },
       })
+      toast.success(`使用者已${action}`, {
+        description: `${user.username} 已${action}。`,
+      })
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : `${action}失敗。`)
+      toast.error(`${action}使用者失敗`, {
+        description:
+          reason instanceof Error ? reason.message : `${action}失敗。`,
+      })
       setPending(false)
     }
   }
@@ -141,7 +156,6 @@ export function UsersPage() {
   async function reset(user: AdminUser) {
     if (!window.confirm(`確定重設「${user.username}」的密碼？`)) return
     setPending(true)
-    setError("")
     try {
       const result = await resetPassword({ data: { userId: user.user_id } })
       if (result.temporary_password) {
@@ -150,9 +164,15 @@ export function UsersPage() {
           value: result.temporary_password,
         })
       }
+      toast.success("密碼已重設", {
+        description: `${user.username} 下次登入時須更改密碼。`,
+      })
       await refresh()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "密碼重設失敗。")
+      toast.error("密碼重設失敗", {
+        description:
+          reason instanceof Error ? reason.message : "密碼重設失敗。",
+      })
       setPending(false)
     }
   }
@@ -171,11 +191,10 @@ export function UsersPage() {
         </p>
       </header>
 
-      {error && (
+      {loadError && (
         <Alert variant="destructive">
-          <TriangleAlert size={18} />
-          <AlertTitle>操作失敗</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
+          <AlertTitle>無法載入使用者</AlertTitle>
+          <AlertDescription>{loadError}</AlertDescription>
         </Alert>
       )}
 

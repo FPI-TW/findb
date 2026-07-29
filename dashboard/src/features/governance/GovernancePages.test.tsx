@@ -9,6 +9,8 @@ import {
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { toast, Toaster } from "../../components/ui/toast"
+
 const mocks = vi.hoisted(() => ({
   loadCredentials: vi.fn(),
   loadCredentialsOverview: vi.fn(),
@@ -80,6 +82,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  toast.dismiss()
   cleanup()
   vi.restoreAllMocks()
 })
@@ -111,6 +114,7 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "twelve_data" },
     })
+    fireEvent.click(screen.getByLabelText("us_equity_eod"))
     fireEvent.click(screen.getByRole("button", { name: "簽發" }))
 
     expect(await screen.findByText("findb_src_one_time")).toBeInTheDocument()
@@ -121,10 +125,29 @@ describe("governance pages", () => {
         name: "fetcher",
         owner: "data-platform",
         source_name: "twelve_data",
+        allowed_datasets: ["us_equity_eod"],
       }),
     })
     fireEvent.click(screen.getByRole("button", { name: "關閉" }))
     expect(screen.queryByText("findb_src_one_time")).not.toBeInTheDocument()
+  })
+
+  it("offers provider-specific dataset checkboxes and clears stale scope", async () => {
+    render(<CredentialsPage role="owner" />)
+
+    await screen.findByText("lookup")
+    expect(screen.getByLabelText("us_equity_eod")).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText("us_equity_eod"))
+    expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
+
+    fireEvent.change(screen.getByLabelText("Source name"), {
+      target: { value: "finlab" },
+    })
+    expect(screen.queryByLabelText("us_equity_eod")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("tw_equity_eod")).toBeInTheDocument()
+    expect(screen.getByLabelText("tw_etf_eod")).toBeInTheDocument()
+    expect(screen.getByLabelText("wtx_eod")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "簽發" })).toBeDisabled()
   })
 
   it("rotates with one-time display and confirms immediate revocation", async () => {
@@ -201,5 +224,24 @@ describe("governance pages", () => {
     expect(mocks.resetUserPassword).toHaveBeenCalledWith({
       data: { userId: user.user_id },
     })
+  })
+
+  it("shows mutation failures near the action as a toast", async () => {
+    mocks.updateUser.mockRejectedValue(new Error("角色不可變更。"))
+    render(
+      <>
+        <UsersPage />
+        <Toaster />
+      </>
+    )
+
+    await screen.findByText("Primary Owner")
+    fireEvent.change(screen.getByLabelText("owner 的角色"), {
+      target: { value: "viewer" },
+    })
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("角色更新失敗")
+    expect(screen.getByRole("alert")).toHaveTextContent("角色不可變更。")
+    expect(screen.queryByText("操作失敗")).not.toBeInTheDocument()
   })
 })

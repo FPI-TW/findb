@@ -6,7 +6,6 @@ import {
   RotateCw,
   ShieldAlert,
   Trash2,
-  TriangleAlert,
 } from "lucide-react"
 import { type FormEvent, useCallback, useEffect, useState } from "react"
 
@@ -30,15 +29,19 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table"
+import { toast } from "../../components/ui/toast"
 import type {
   AdminRole,
   Credential,
   CredentialFilters,
   CredentialsOverview,
+  SourceProvider,
 } from "../../lib/admin-governance-api"
 import {
+  SOURCE_PROVIDER_DATASETS,
   credentialKindSchema,
   credentialStatusSchema,
+  sourceProviderSchema,
 } from "../../lib/admin-governance-api"
 import {
   issueCredential,
@@ -83,7 +86,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS)
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
-  const [error, setError] = useState("")
+  const [loadError, setLoadError] = useState("")
   const [secret, setSecret] = useState<{ title: string; value: string } | null>(
     null
   )
@@ -91,8 +94,8 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   const [name, setName] = useState("")
   const [owner, setOwner] = useState("")
   const [description, setDescription] = useState("")
-  const [sourceName, setSourceName] = useState("")
-  const [allowedDatasets, setAllowedDatasets] = useState("")
+  const [sourceName, setSourceName] = useState<SourceProvider>("twelve_data")
+  const [allowedDatasets, setAllowedDatasets] = useState<string[]>([])
   const [scopes, setScopes] = useState("")
   const [credentialRole, setCredentialRole] = useState<AdminRole>("operator")
   const [expiresAt, setExpiresAt] = useState("")
@@ -101,7 +104,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     async (nextFilters: CredentialFilters, initial = false) => {
       if (initial) setLoading(true)
       else setPending(true)
-      setError("")
+      setLoadError("")
       try {
         const [credentialResult, overviewResult] = await Promise.all([
           load({ data: nextFilters }),
@@ -110,9 +113,10 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
         setCredentials(credentialResult.data)
         setOverview(overviewResult)
       } catch (reason) {
-        setError(
+        const message =
           reason instanceof Error ? reason.message : "無法載入 credential。"
-        )
+        if (initial) setLoadError(message)
+        else toast.error("更新 Credential 失敗", { description: message })
       } finally {
         setLoading(false)
         setPending(false)
@@ -128,7 +132,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   async function submitIssue(event: FormEvent) {
     event.preventDefault()
     setPending(true)
-    setError("")
     const expiry = expiresAt ? new Date(expiresAt).toISOString() : undefined
     const split = (value: string) =>
       value
@@ -145,7 +148,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                 owner,
                 description: description || undefined,
                 source_name: sourceName,
-                allowed_datasets: split(allowedDatasets),
+                allowed_datasets: allowedDatasets,
                 expires_at: expiry,
               },
             })
@@ -174,12 +177,17 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
       setSecret({ title: `已簽發 ${result.data.name}`, value: result.api_key })
       setName("")
       setDescription("")
-      setAllowedDatasets("")
+      setAllowedDatasets([])
       setScopes("")
       setExpiresAt("")
+      toast.success("Credential 已簽發", {
+        description: `${result.data.name} 已建立，請立即保存密鑰。`,
+      })
       await refresh(filters)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "簽發失敗。")
+      toast.error("簽發 Credential 失敗", {
+        description: reason instanceof Error ? reason.message : "簽發失敗。",
+      })
       setPending(false)
     }
   }
@@ -192,16 +200,20 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     )
       return
     setPending(true)
-    setError("")
     try {
       const result = await rotate({ data: { kind: item.kind, id: item.id } })
       setSecret({
         title: `已輪替 ${result.data.name}`,
         value: result.api_key,
       })
+      toast.success("Credential 已輪替", {
+        description: `${result.data.name} 的新密鑰已產生，請立即保存。`,
+      })
       await refresh(filters)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "輪替失敗。")
+      toast.error("輪替 Credential 失敗", {
+        description: reason instanceof Error ? reason.message : "輪替失敗。",
+      })
       setPending(false)
     }
   }
@@ -215,12 +227,16 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     )
       return
     setPending(true)
-    setError("")
     try {
       await revoke({ data: { kind: item.kind, id: item.id } })
+      toast.success("Credential 已撤銷", {
+        description: `${item.name} 已立即失效。`,
+      })
       await refresh(filters)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "撤銷失敗。")
+      toast.error("撤銷 Credential 失敗", {
+        description: reason instanceof Error ? reason.message : "撤銷失敗。",
+      })
       setPending(false)
     }
   }
@@ -244,11 +260,10 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
         </p>
       </header>
 
-      {error && (
+      {loadError && (
         <Alert variant="destructive">
-          <TriangleAlert size={18} />
-          <AlertTitle>操作失敗</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
+          <AlertTitle>無法載入 Credential</AlertTitle>
+          <AlertDescription>{loadError}</AlertDescription>
         </Alert>
       )}
       {legacyConfigured && (
@@ -330,23 +345,55 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                 <>
                   <div className="grid gap-1.5">
                     <Label htmlFor="credential-source">Source name</Label>
-                    <Input
+                    <select
                       id="credential-source"
+                      className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
                       value={sourceName}
-                      onChange={event => setSourceName(event.target.value)}
+                      onChange={event => {
+                        setSourceName(
+                          sourceProviderSchema.parse(event.target.value)
+                        )
+                        setAllowedDatasets([])
+                      }}
                       required
-                    />
+                    >
+                      <option value="twelve_data">twelve_data</option>
+                      <option value="finlab">finlab</option>
+                      <option value="bloomberg">bloomberg</option>
+                    </select>
                   </div>
-                  <div className="grid gap-1.5 md:col-span-2">
-                    <Label htmlFor="credential-datasets">
-                      Allowed datasets（逗號分隔）
-                    </Label>
-                    <Input
-                      id="credential-datasets"
-                      value={allowedDatasets}
-                      onChange={event => setAllowedDatasets(event.target.value)}
-                    />
-                  </div>
+                  <fieldset className="grid gap-2 rounded-lg border border-line p-3 md:col-span-2 xl:col-span-3">
+                    <legend className="px-1 text-sm font-medium">
+                      Allowed datasets
+                    </legend>
+                    <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+                      {SOURCE_PROVIDER_DATASETS[sourceName].map(dataset => (
+                        <label
+                          className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm"
+                          key={dataset}
+                        >
+                          <input
+                            aria-label={dataset}
+                            checked={allowedDatasets.includes(dataset)}
+                            onChange={event =>
+                              setAllowedDatasets(current =>
+                                event.target.checked
+                                  ? [...current, dataset]
+                                  : current.filter(item => item !== dataset)
+                              )
+                            }
+                            type="checkbox"
+                          />
+                          <span className="font-mono text-xs">{dataset}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {allowedDatasets.length === 0 && (
+                      <p className="text-xs text-warning">
+                        至少選擇一個 dataset，否則 credential 無法簽發。
+                      </p>
+                    )}
+                  </fieldset>
                 </>
               ) : (
                 <div className="grid gap-1.5 md:col-span-2">
@@ -393,7 +440,14 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                 />
               </div>
               <div className="flex items-end">
-                <Button className="w-full" type="submit" disabled={pending}>
+                <Button
+                  className="w-full"
+                  type="submit"
+                  disabled={
+                    pending ||
+                    (kind === "source" && allowedDatasets.length === 0)
+                  }
+                >
                   <KeyRound size={17} /> {pending ? "處理中…" : "簽發"}
                 </Button>
               </div>
