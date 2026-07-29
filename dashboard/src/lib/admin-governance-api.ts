@@ -171,7 +171,10 @@ export const createCredentialSchema = z
       owner: z.string().trim().min(1).max(200),
       description: optionalText,
       source_name: sourceProviderSchema,
-      allowed_datasets: z.array(z.string().trim().min(1).max(200)).min(1),
+      allowed_datasets: z
+        .array(z.string().trim().min(1).max(200))
+        .min(1)
+        .nullable(),
       rate_limit_requests: optionalPositiveInteger,
       rate_limit_window: optionalPositiveInteger,
       expires_at: optionalExpiresAt,
@@ -203,6 +206,7 @@ export const createCredentialSchema = z
   ])
   .superRefine((credential, context) => {
     if (credential.kind !== "source") return
+    if (credential.allowed_datasets === null) return
     const supported = new Set(SOURCE_PROVIDER_DATASETS[credential.source_name])
     credential.allowed_datasets.forEach((dataset, index) => {
       if (!supported.has(dataset)) {

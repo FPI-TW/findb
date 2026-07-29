@@ -174,6 +174,21 @@ async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
     assert source_created.json()["data"]["owner"] == "data-platform"
     assert source_created.json()["data"]["policies"]["source_name"] == "twelve data"
 
+    provider_wide_source = await client.post(
+        "/api/v1/admin/credentials",
+        headers=owner,
+        json={
+            "kind": "source",
+            "name": "finlab-fetcher",
+            "owner": "data-platform",
+            "source_name": "finlab",
+            "allowed_datasets": None,
+        },
+    )
+    assert provider_wide_source.status_code == 200
+    assert provider_wide_source.json()["data"]["scopes"] is None
+    assert provider_wide_source.json()["data"]["policies"]["allowed_datasets"] is None
+
     created = await client.post(
         "/api/v1/admin/credentials",
         headers=owner,
