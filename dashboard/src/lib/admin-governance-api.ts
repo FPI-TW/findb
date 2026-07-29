@@ -6,6 +6,41 @@ const nullableDateTime = isoDateTime.nullable()
 export const adminRoleSchema = z.enum(["owner", "operator", "viewer"])
 export type AdminRole = z.infer<typeof adminRoleSchema>
 
+export const sourceProviderSchema = z.enum([
+  "twelve_data",
+  "finlab",
+  "bloomberg",
+])
+export type SourceProvider = z.infer<typeof sourceProviderSchema>
+
+export const SOURCE_PROVIDER_DATASETS: Record<
+  SourceProvider,
+  readonly string[]
+> = {
+  twelve_data: ["us_equity_eod"],
+  finlab: ["tw_equity_eod", "tw_etf_eod", "wtx_eod"],
+  bloomberg: [
+    "tw_equity_bloomberg_eod",
+    "hk_equity_eod",
+    "cn_equity_eod",
+    "tw_index_eod",
+    "hk_index_eod",
+    "cn_index_eod",
+    "fx_eod",
+    "macro_observation",
+    "us_stock_eod",
+    "us_stock_index_eod",
+    "global_stock_eod",
+    "hkchina_stock_eod",
+    "hkchina_mixed_eod",
+    "hkchina_index_eod",
+    "crypto_bloomberg_eod",
+    "fx_bloomberg_eod",
+    "macro_bloomberg_observation",
+    "wtx_eod",
+  ],
+}
+
 export const adminUserSchema = z.object({
   user_id: z.uuid(),
   username: z.string(),
@@ -128,43 +163,57 @@ export const credentialFiltersSchema = z.object({
 })
 export type CredentialFilters = z.infer<typeof credentialFiltersSchema>
 
-export const createCredentialSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("source"),
-    name: z.string().trim().min(1).max(200),
-    owner: z.string().trim().min(1).max(200),
-    description: optionalText,
-    source_name: z.string().trim().min(1).max(100),
-    allowed_datasets: z.array(z.string().trim().min(1).max(200)).optional(),
-    rate_limit_requests: optionalPositiveInteger,
-    rate_limit_window: optionalPositiveInteger,
-    expires_at: optionalExpiresAt,
-  }),
-  z.object({
-    kind: z.literal("serve"),
-    name: z.string().trim().min(1).max(200).optional(),
-    owner: z.string().trim().min(1).max(200),
-    description: optionalText,
-    tier: optionalText,
-    scopes: z.array(z.string().trim().min(1).max(200)).optional(),
-    rate_limit_requests: optionalPositiveInteger,
-    rate_limit_window: optionalPositiveInteger,
-    page_size_limit: optionalPositiveInteger,
-    expires_at: optionalExpiresAt,
-  }),
-  z.object({
-    kind: z.literal("admin"),
-    name: z.string().trim().min(1).max(200).optional(),
-    owner: z.string().trim().min(1).max(200),
-    description: optionalText,
-    role: adminRoleSchema,
-    scopes: z.array(z.string().trim().min(1).max(200)).optional(),
-    rate_limit_requests: optionalPositiveInteger,
-    rate_limit_window: optionalPositiveInteger,
-    page_size_limit: optionalPositiveInteger,
-    expires_at: optionalExpiresAt,
-  }),
-])
+export const createCredentialSchema = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("source"),
+      name: z.string().trim().min(1).max(200),
+      owner: z.string().trim().min(1).max(200),
+      description: optionalText,
+      source_name: sourceProviderSchema,
+      allowed_datasets: z.array(z.string().trim().min(1).max(200)).min(1),
+      rate_limit_requests: optionalPositiveInteger,
+      rate_limit_window: optionalPositiveInteger,
+      expires_at: optionalExpiresAt,
+    }),
+    z.object({
+      kind: z.literal("serve"),
+      name: z.string().trim().min(1).max(200).optional(),
+      owner: z.string().trim().min(1).max(200),
+      description: optionalText,
+      tier: optionalText,
+      scopes: z.array(z.string().trim().min(1).max(200)).optional(),
+      rate_limit_requests: optionalPositiveInteger,
+      rate_limit_window: optionalPositiveInteger,
+      page_size_limit: optionalPositiveInteger,
+      expires_at: optionalExpiresAt,
+    }),
+    z.object({
+      kind: z.literal("admin"),
+      name: z.string().trim().min(1).max(200).optional(),
+      owner: z.string().trim().min(1).max(200),
+      description: optionalText,
+      role: adminRoleSchema,
+      scopes: z.array(z.string().trim().min(1).max(200)).optional(),
+      rate_limit_requests: optionalPositiveInteger,
+      rate_limit_window: optionalPositiveInteger,
+      page_size_limit: optionalPositiveInteger,
+      expires_at: optionalExpiresAt,
+    }),
+  ])
+  .superRefine((credential, context) => {
+    if (credential.kind !== "source") return
+    const supported = new Set(SOURCE_PROVIDER_DATASETS[credential.source_name])
+    credential.allowed_datasets.forEach((dataset, index) => {
+      if (!supported.has(dataset)) {
+        context.addIssue({
+          code: "custom",
+          message: `${dataset} is not supported by ${credential.source_name}`,
+          path: ["allowed_datasets", index],
+        })
+      }
+    })
+  })
 export type CreateCredential = z.infer<typeof createCredentialSchema>
 
 export const credentialTargetSchema = z.object({

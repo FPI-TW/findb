@@ -81,9 +81,27 @@ describe("admin governance wire contracts", () => {
         name: "fetcher",
         owner: "data-platform",
         source_name: "twelve_data",
-        allowed_datasets: ["us.eod"],
+        allowed_datasets: ["us_equity_eod"],
       }).kind
     ).toBe("source")
+    expect(() =>
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "blocked-fetcher",
+        owner: "data-platform",
+        source_name: "twelve_data",
+        allowed_datasets: [],
+      })
+    ).toThrow()
+    expect(() =>
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "cross-provider",
+        owner: "data-platform",
+        source_name: "twelve_data",
+        allowed_datasets: ["tw_equity_eod"],
+      })
+    ).toThrow()
     expect(
       createCredentialSchema.parse({
         kind: "serve",

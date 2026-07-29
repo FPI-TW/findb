@@ -111,6 +111,7 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "twelve_data" },
     })
+    fireEvent.click(screen.getByLabelText("us_equity_eod"))
     fireEvent.click(screen.getByRole("button", { name: "簽發" }))
 
     expect(await screen.findByText("findb_src_one_time")).toBeInTheDocument()
@@ -121,10 +122,29 @@ describe("governance pages", () => {
         name: "fetcher",
         owner: "data-platform",
         source_name: "twelve_data",
+        allowed_datasets: ["us_equity_eod"],
       }),
     })
     fireEvent.click(screen.getByRole("button", { name: "關閉" }))
     expect(screen.queryByText("findb_src_one_time")).not.toBeInTheDocument()
+  })
+
+  it("offers provider-specific dataset checkboxes and clears stale scope", async () => {
+    render(<CredentialsPage role="owner" />)
+
+    await screen.findByText("lookup")
+    expect(screen.getByLabelText("us_equity_eod")).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText("us_equity_eod"))
+    expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
+
+    fireEvent.change(screen.getByLabelText("Source name"), {
+      target: { value: "finlab" },
+    })
+    expect(screen.queryByLabelText("us_equity_eod")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("tw_equity_eod")).toBeInTheDocument()
+    expect(screen.getByLabelText("tw_etf_eod")).toBeInTheDocument()
+    expect(screen.getByLabelText("wtx_eod")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "簽發" })).toBeDisabled()
   })
 
   it("rotates with one-time display and confirms immediate revocation", async () => {
