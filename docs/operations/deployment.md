@@ -90,12 +90,9 @@ production-fetcher
 | Secrets | `ADMIN_BREAK_GLASS_API_KEY` |
 | Secrets | `FINDB_LOOKUP_SERVE_API_KEY`、`FINDB_STATIC_CACHE_SERVE_API_KEY`（`SERVE_REQUIRE_AUTH=true`時必填且必須為不同的DB-backed keys） |
 | Optional legacy secrets | `SOURCE_API_KEY`、`ADMIN_API_KEY` |
-| Secrets | `CLOUDFLARE_R2_CONFIG_READ_API_TOKEN`（`Workers R2 Storage: Read`） |
-| Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`（bucket-scoped `Object Read & Write`） |
 | Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
 | Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
 | Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS` |
-| Variables | `CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
 
 ### `{staging|production}-fetcher`
 
@@ -120,13 +117,9 @@ Secrets Manager/Parameter Store前的明確過渡機制，不可使用
 設定必須維持Fetcher專屬，不能複製到FinDB。FinDB TLS private key若未來由workflow管理，只能加入
 對應的`{target}-findb`，不能跨環境或服務共用。
 
-R2 credentials依服務分層：Fetcher只持有指定bucket的`Object Read & Write` S3
-credentials；FinDB另外持有`Workers R2 Storage: Read` Bearer token供bucket
-configuration稽核，以及獨立的bucket-scoped `Object Read & Write` S3
-credentials。`Workers R2 Storage: Edit`不屬於任何application runtime；若需修改
-lifecycle或bucket lock，必須使用獨立、短效的管理credential。
-
-FinDB不設定全域R2 prefix；它以完整object reference或bucket inventory辨識物件。
+R2 credentials只屬於Fetcher；FinDB只接收不含credential的完整object reference與
+checksum，不持有R2 runtime credentials。R2 lifecycle、bucket lock或configuration
+稽核必須使用application runtime以外的獨立短效管理credential。
 Provider-specific prefix由各Fetcher application管理。目前
 `CLOUDFLARE_R2_PREFIX`只屬於Twelve Data Fetcher，未來新增provider時必須使用該
 provider自己的prefix或由provider identity確定性產生路徑，不能把單一prefix提升為
