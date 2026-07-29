@@ -27,7 +27,7 @@ normalizes into canonical tables, and exposes them through three HTTP surfaces.
 | --- | --- | --- | --- |
 | **Source API** | `/api/v1/source` | Write raw market payloads; FinDB normalizes them asynchronously. | `X-API-Key` **required**. IP allowlist enforced by nginx in prod. |
 | **Serve API** | `/api/v1/serve` | Read canonical instruments, EOD, corporate actions, macro, futures, calendar. | Optional — depends on `SERVE_REQUIRE_AUTH`. Read-only. |
-| **Admin API** | `/api/v1/admin` | Manual corrections, DQ-issue review, raw-payload inspection, instrument-cache. | `X-API-Key` **required**, no bypass. |
+| **Admin API** | `/api/v1/admin` | Manual corrections, DQ-issue review, raw-payload inspection, instrument-cache. | Named user session, DB-backed Admin machine key, or break-glass recovery credential; no bypass. |
 
 Base URLs:
 - Production: `https://findb.tingfong.com`
@@ -38,7 +38,7 @@ lookup UI: `<base>/instrument-lookup`.
 
 ## Authentication & nginx behaviour
 
-1. **Source API** — `X-API-Key: <SOURCE_API_KEY>` header is **required** on every
+1. **Source API** — a DB-backed Source client `X-API-Key` header is **required** on every
    request. In production the request must also originate from an IP listed in
    `SOURCE_ALLOWLIST_CIDRS` (the check happens at nginx, returning 403 before reaching
    FastAPI). If the service sits behind Cloudflare, the allowlist matches the real
@@ -48,8 +48,9 @@ lookup UI: `<base>/instrument-lookup`.
    shortcut**: same-origin requests from `/instrument-lookup` get `X-API-Key` injected
    by nginx based on `Referer`, so the static page calls Serve without exposing the
    key to the browser. Programmatic clients still need to send their own key.
-3. **Admin API** — `X-API-Key: <ADMIN_API_KEY>` always required; no DEBUG bypass.
-   Treat the admin key as separate from Source/Serve keys.
+3. **Admin API** — use a named user session, a DB-backed Admin machine
+   `X-API-Key`, or the break-glass recovery credential; there is no DEBUG bypass.
+   Keep Admin machine and break-glass keys separate from Source/Serve keys.
 
 Rate limit: ~100 requests / 60 seconds per `(API key + client IP)`; exceeding returns
 429.
@@ -196,7 +197,7 @@ total_pages }`. Iterate by incrementing `page` until `page > total_pages`.
 | `409` | Conflict (e.g. resolving an already-resolved DQ issue) |
 | `422` | Pydantic schema validation failure on request body |
 | `429` | Rate-limit (100 req / 60s per key+IP) exceeded |
-| `500` | Missing required env (e.g. `ADMIN_API_KEY` not set, `SOURCE_ALLOWLIST_CIDRS` unset in prod) |
+| `500` | Missing required runtime configuration (e.g. `SOURCE_ALLOWLIST_CIDRS` unset in prod) |
 
 Body shape on error: `{"detail": "<message>"}`. For the full Source/Admin error
 message table and how to interpret `completed_with_errors` runs (DQ flagged but data

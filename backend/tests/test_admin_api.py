@@ -10,17 +10,16 @@ from unittest.mock import patch
 from uuid import UUID
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.main import app
 from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.registry import APIKey, DatasetRegistry, DQIssue, IngestionRun
 from app.services import instrument_cache as instrument_cache_service
-from app.services.admin import build_correction_actor, eod_record_id
+from app.services.admin import eod_record_id
 from app.services.ingestion import IngestionService
 from app.utils import utc_now, uuid7
 
@@ -121,10 +120,6 @@ def _sample_instrument_cache() -> dict:
 def _write_instrument_cache(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-def _admin_api_client() -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
 # ── Auth Tests ─────────────────────────────────────────────────────────────────
@@ -295,11 +290,10 @@ class TestInstrumentCacheAdmin:
     async def test_get_instrument_cache_without_api_key_returns_401(
         self,
         cache_path: Path,
+        client: AsyncClient,
     ):
         _write_instrument_cache(cache_path, _sample_instrument_cache())
-
-        async with _admin_api_client() as client:
-            response = await client.get("/api/v1/admin/instrument-cache")
+        response = await client.get("/api/v1/admin/instrument-cache")
 
         assert response.status_code == 401
 
@@ -307,15 +301,12 @@ class TestInstrumentCacheAdmin:
     async def test_get_instrument_cache_returns_generated_json(
         self,
         cache_path: Path,
+        client: AsyncClient,
         admin_headers: dict,
     ):
         _write_instrument_cache(cache_path, _sample_instrument_cache())
 
-        async with _admin_api_client() as client:
-            response = await client.get(
-                "/api/v1/admin/instrument-cache",
-                headers=admin_headers,
-            )
+        response = await client.get("/api/v1/admin/instrument-cache", headers=admin_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -327,13 +318,10 @@ class TestInstrumentCacheAdmin:
     async def test_get_instrument_cache_missing_file_returns_404(
         self,
         cache_path: Path,
+        client: AsyncClient,
         admin_headers: dict,
     ):
-        async with _admin_api_client() as client:
-            response = await client.get(
-                "/api/v1/admin/instrument-cache",
-                headers=admin_headers,
-            )
+        response = await client.get("/api/v1/admin/instrument-cache", headers=admin_headers)
 
         assert response.status_code == 404
         assert str(cache_path) in response.json()["detail"]
@@ -342,18 +330,16 @@ class TestInstrumentCacheAdmin:
     async def test_put_instrument_cache_replaces_and_normalizes_json(
         self,
         cache_path: Path,
+        client: AsyncClient,
         admin_headers: dict,
     ):
         payload = _sample_instrument_cache()
         payload["total"] = 99
         payload["markets"] = ["WRONG"]
 
-        async with _admin_api_client() as client:
-            response = await client.put(
-                "/api/v1/admin/instrument-cache",
-                headers=admin_headers,
-                json=payload,
-            )
+        response = await client.put(
+            "/api/v1/admin/instrument-cache", headers=admin_headers, json=payload
+        )
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -371,16 +357,16 @@ class TestInstrumentCacheAdmin:
     async def test_patch_instrument_cache_item_updates_json(
         self,
         cache_path: Path,
+        client: AsyncClient,
         admin_headers: dict,
     ):
         _write_instrument_cache(cache_path, _sample_instrument_cache())
 
-        async with _admin_api_client() as client:
-            response = await client.patch(
-                "/api/v1/admin/instrument-cache/items/instrument-us-aapl",
-                headers=admin_headers,
-                json={"name": "Apple Inc.", "status": "inactive"},
-            )
+        response = await client.patch(
+            "/api/v1/admin/instrument-cache/items/instrument-us-aapl",
+            headers=admin_headers,
+            json={"name": "Apple Inc.", "status": "inactive"},
+        )
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -400,16 +386,16 @@ class TestInstrumentCacheAdmin:
     async def test_patch_instrument_cache_item_not_found_returns_404(
         self,
         cache_path: Path,
+        client: AsyncClient,
         admin_headers: dict,
     ):
         _write_instrument_cache(cache_path, _sample_instrument_cache())
 
-        async with _admin_api_client() as client:
-            response = await client.patch(
-                "/api/v1/admin/instrument-cache/items/missing-instrument",
-                headers=admin_headers,
-                json={"name": "Missing"},
-            )
+        response = await client.patch(
+            "/api/v1/admin/instrument-cache/items/missing-instrument",
+            headers=admin_headers,
+            json={"name": "Missing"},
+        )
 
         assert response.status_code == 404
 
@@ -417,16 +403,16 @@ class TestInstrumentCacheAdmin:
     async def test_patch_instrument_cache_item_without_fields_returns_400(
         self,
         cache_path: Path,
+        client: AsyncClient,
         admin_headers: dict,
     ):
         _write_instrument_cache(cache_path, _sample_instrument_cache())
 
-        async with _admin_api_client() as client:
-            response = await client.patch(
-                "/api/v1/admin/instrument-cache/items/instrument-us-aapl",
-                headers=admin_headers,
-                json={},
-            )
+        response = await client.patch(
+            "/api/v1/admin/instrument-cache/items/instrument-us-aapl",
+            headers=admin_headers,
+            json={},
+        )
 
         assert response.status_code == 400
         assert "No instrument fields" in response.json()["detail"]
@@ -929,8 +915,20 @@ class TestListCorrections:
         response = await client.get("/api/v1/admin/corrections", headers=admin_headers)
         assert response.status_code == 200
         item = response.json()["data"][0]
-        assert item["corrected_by"] == build_correction_actor("test-admin-key")
-        assert "admin-key" not in item["corrected_by"]
+        correction = (
+            (
+                await test_session.execute(
+                    CanonicalCorrection.__table__.select().where(
+                        CanonicalCorrection.id == UUID(item["id"])
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert item["corrected_by"] == correction["corrected_by"]
+        assert item["corrected_by"].startswith("machine:")
+        assert item["corrected_by"].endswith(":test-admin-machine")
 
     @pytest.mark.asyncio
     async def test_list_corrections_ordered_newest_first(
@@ -1047,21 +1045,20 @@ class TestBulkRerun:
 
 class TestRefreshInstrumentCache:
     @pytest.mark.asyncio
-    async def test_refresh_instrument_cache_without_api_key_returns_401(self):
-        async with _admin_api_client() as client:
-            response = await client.post("/api/v1/admin/instrument-cache/refresh")
+    async def test_refresh_instrument_cache_without_api_key_returns_401(self, client: AsyncClient):
+        response = await client.post("/api/v1/admin/instrument-cache/refresh")
         assert response.status_code == 401
 
     @pytest.mark.asyncio
     @patch("app.api.v1.admin.run_cache_generation")
-    async def test_refresh_instrument_cache_queues_task(self, mock_run_cache, admin_headers):
+    async def test_refresh_instrument_cache_queues_task(
+        self, mock_run_cache, client: AsyncClient, admin_headers: dict
+    ):
         mock_run_cache.return_value = 0
 
-        async with _admin_api_client() as client:
-            response = await client.post(
-                "/api/v1/admin/instrument-cache/refresh",
-                headers=admin_headers,
-            )
+        response = await client.post(
+            "/api/v1/admin/instrument-cache/refresh", headers=admin_headers
+        )
 
         assert response.status_code == 202
         data = response.json()

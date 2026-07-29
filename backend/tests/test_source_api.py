@@ -13,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 from app.api.v1.source import _resolve_twstock_dataset_key
 from app.config import get_settings
 from app.models.raw import RawMarketPayload
-from app.models.registry import DatasetRegistry, IngestionRun, NormalizationJob
+from app.models.registry import DatasetRegistry, IngestionRun, NormalizationJob, SourceClient
 from app.schemas.source import DirectIngestPayload, IngestRequest, TWStockDirectIngestPayload
 from app.services.normalization_queue import execute_normalization
 from app.utils import uuid7
@@ -135,6 +135,7 @@ class TestSourceAPI:
         self,
         client: AsyncClient,
         source_headers: dict,
+        test_session,
     ):
         response = await client.post(
             "/api/v1/source/ingest/crypto/direct",
@@ -165,6 +166,30 @@ class TestSourceAPI:
             "/api/v1/source/ingest/crypto/direct",
             headers=source_headers,
             json={"metadata": {"source": "bloomberg"}, "data": []},
+        )
+
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "30"
+
+    @pytest.mark.asyncio
+    async def test_source_credential_lookup_db_failure_returns_503(
+        self, client: AsyncClient, source_headers: dict, monkeypatch
+    ):
+        async def fail_credential_lookup(*args, **kwargs):
+            raise OperationalError("SELECT", {}, RuntimeError("database unavailable"))
+
+        monkeypatch.setattr("app.api.deps.find_active_source_client", fail_credential_lookup)
+        response = await client.post(
+            "/api/v1/source/ingest/crypto",
+            headers=source_headers,
+            json={
+                "dataset_key": "crypto_eod",
+                "source": "bloomberg",
+                "request_key": "credential-db-failure",
+                "idempotency_key": "credential-db-failure",
+                "payload": {"data": []},
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            },
         )
 
         assert response.status_code == 503
@@ -208,11 +233,16 @@ class TestSourceAPI:
         self,
         client: AsyncClient,
         source_headers: dict,
+        test_session,
     ):
         original_limit = settings.RATE_LIMIT_REQUESTS
         original_window = settings.RATE_LIMIT_WINDOW
         settings.RATE_LIMIT_REQUESTS = 1
         settings.RATE_LIMIT_WINDOW = 60
+        source_client = (await test_session.execute(select(SourceClient))).scalar_one()
+        source_client.rate_limit_requests = 1
+        source_client.rate_limit_window = 60
+        await test_session.commit()
 
         body = {
             "dataset_key": "unknown_dataset",

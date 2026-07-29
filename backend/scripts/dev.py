@@ -75,8 +75,6 @@ def _local_env() -> dict[str, str]:
     )
     env.update(os.environ)
     env.setdefault("DATABASE_URL", DEFAULT_DATABASE_URL)
-    env.setdefault("SOURCE_API_KEY", "dev-source-key")
-    env.setdefault("ADMIN_API_KEY", "dev-admin-key")
     return env
 
 
@@ -256,8 +254,6 @@ def cmd_test_db(_args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.setdefault("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     env["DEBUG"] = "true"
-    env["SOURCE_API_KEY"] = env.get("SOURCE_API_KEY", "test-source-key")
-    env["ADMIN_API_KEY"] = env.get("ADMIN_API_KEY", "test-admin-key")
     return _run(["uv", "run", "pytest", "--tb=short", "-q"], env=env)
 
 

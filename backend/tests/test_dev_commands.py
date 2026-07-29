@@ -11,8 +11,6 @@ def test_up_starts_complete_durable_ingestion_stack(monkeypatch, tmp_path):
     monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(dev, "BACKEND_ROOT", tmp_path / "backend")
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("SOURCE_API_KEY", raising=False)
-    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
     monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
 
     def fake_run(cmd, env=None):
@@ -45,52 +43,45 @@ def test_up_starts_complete_durable_ingestion_stack(monkeypatch, tmp_path):
     for _, env in calls:
         assert env is not None
         assert env["DATABASE_URL"] == dev.DEFAULT_DATABASE_URL
-        assert env["SOURCE_API_KEY"] == "dev-source-key"
-        assert env["ADMIN_API_KEY"] == "dev-admin-key"
+        assert "FINDB_QUEUE_HEALTH_ADMIN_API_KEY" not in env
 
 
 def test_local_env_loads_dotenv_before_applying_defaults(monkeypatch, tmp_path):
     backend_root = tmp_path / "backend"
     backend_root.mkdir()
-    (tmp_path / ".env").write_text(
-        "ADMIN_API_KEY=configured-admin-key\nSOURCE_API_KEY=configured-source-key\n"
-    )
+    (tmp_path / ".env").write_text("FINDB_API_BASE_URL=http://localhost:8080\n")
     monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
-    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
-    monkeypatch.delenv("SOURCE_API_KEY", raising=False)
 
     env = dev._local_env()
 
-    assert env["ADMIN_API_KEY"] == "configured-admin-key"
-    assert env["SOURCE_API_KEY"] == "configured-source-key"
+    assert env["FINDB_API_BASE_URL"] == "http://localhost:8080"
 
 
 def test_local_env_prefers_process_environment_over_dotenv(monkeypatch, tmp_path):
     backend_root = tmp_path / "backend"
     backend_root.mkdir()
-    (tmp_path / ".env").write_text("ADMIN_API_KEY=dotenv-admin-key\n")
+    (tmp_path / ".env").write_text("FINDB_API_BASE_URL=http://dotenv\n")
     monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
-    monkeypatch.setenv("ADMIN_API_KEY", "exported-admin-key")
+    monkeypatch.setenv("FINDB_API_BASE_URL", "http://exported")
 
     env = dev._local_env()
 
-    assert env["ADMIN_API_KEY"] == "exported-admin-key"
+    assert env["FINDB_API_BASE_URL"] == "http://exported"
 
 
 def test_local_env_ignores_backend_dotenv(monkeypatch, tmp_path):
     backend_root = tmp_path / "backend"
     backend_root.mkdir()
-    (tmp_path / ".env").write_text("ADMIN_API_KEY=root-admin-key\n")
-    (backend_root / ".env").write_text("ADMIN_API_KEY=backend-admin-key\n")
+    (tmp_path / ".env").write_text("FINDB_API_BASE_URL=http://root\n")
+    (backend_root / ".env").write_text("FINDB_API_BASE_URL=http://backend\n")
     monkeypatch.setattr(dev, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
-    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
 
     env = dev._local_env()
 
-    assert env["ADMIN_API_KEY"] == "root-admin-key"
+    assert env["FINDB_API_BASE_URL"] == "http://root"
 
 
 def test_up_stops_before_migration_when_dependency_start_fails(monkeypatch):

@@ -18,10 +18,8 @@
 - [ ] 以SSM/deployment service取代長效EC2 SSH key。
 - [ ] Runtime secrets搬至AWS Secrets Manager/Parameter Store。
 - [ ] 建立不同EC2 instance role與secret path/KMS policy。
-- [ ] 為每個Fetcher/provider簽發DB-backed source client key，移除legacy共享
-  `SOURCE_API_KEY`。
-- [ ] 完成一個完整排程週期的credential usage觀察後，移除 legacy
-  `ADMIN_API_KEY`。
+- [ ] 為每個Fetcher/provider簽發並輪替 DB-backed source client key。
+- [ ] 完成一個完整排程週期的 credential usage 觀察。
 
 ## P1：Ingress production readiness
 

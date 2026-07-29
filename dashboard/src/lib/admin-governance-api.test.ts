@@ -59,19 +59,17 @@ describe("admin governance wire contracts", () => {
     })
     expect(
       credentialsOverviewSchema.parse({
-        auth_mode: "db_with_legacy_fallback",
+        auth_mode: "db_only",
         serve_require_auth: true,
-        legacy: { admin: false, source: true },
         counts: {
           active: 1,
           expiring: 0,
           expired: 0,
           revoked: 0,
-          legacy: 1,
         },
         usage_updated_at: timestamp,
-      }).legacy.source
-    ).toBe(true)
+      }).auth_mode
+    ).toBe("db_only")
   })
 
   it("validates discriminated source, serve, and admin issue inputs", () => {

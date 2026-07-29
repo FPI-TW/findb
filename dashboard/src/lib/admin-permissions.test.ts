@@ -20,7 +20,6 @@ describe("Dashboard role and password-change guards", () => {
     expect(canIssueCredential("operator", "serve")).toBe(true)
     expect(canIssueCredential("operator", "admin")).toBe(false)
     expect(canManageCredential("viewer", "serve")).toBe(false)
-    expect(canManageCredential("owner", "legacy")).toBe(false)
   })
 
   it("blocks normal routes until a temporary password is changed", () => {

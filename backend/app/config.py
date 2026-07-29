@@ -32,8 +32,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     API_KEY_HEADER: str = "X-API-Key"
 
-    # Source API Key
-    SOURCE_API_KEY: str = ""
+    # Source API clients are DB-backed; no shared runtime credential exists.
     SOURCE_TRUST_PROXY_HEADERS: bool = False
     SOURCE_MAX_PAYLOAD_BYTES: int = 1_000_000
     SOURCE_MAX_DATA_ITEMS: int = 5_000
@@ -62,8 +61,7 @@ class Settings(BaseSettings):
     # Serve API access is provided only by DB-backed keys when enabled.
     SERVE_REQUIRE_AUTH: bool = False
 
-    # Admin API Key
-    ADMIN_API_KEY: str = ""
+    # Admin machine access is DB-backed. This key is bootstrap/recovery only.
     ADMIN_BREAK_GLASS_API_KEY: str = ""
     ADMIN_SESSION_HOURS: int = Field(default=8, ge=1, le=168)
     ADMIN_LOGIN_RATE_LIMIT_REQUESTS: int = Field(default=5, ge=1)

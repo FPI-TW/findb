@@ -147,8 +147,8 @@ findb/
 
 ## 安全性
 
-- Source API：需要 `X-API-Key` header，值需符合 `SOURCE_API_KEY`。
-- Admin API：需要 `X-API-Key` header，值需符合 `ADMIN_API_KEY`。
+- Source API：需要 DB-backed Source client 的 `X-API-Key` header。
+- Admin API：需要具名 user session、DB-backed Admin machine key，或僅供復原的 break-glass key。
 - Serve API：auth 可選，由 `SERVE_REQUIRE_AUTH` 控制；即使啟用 auth，Serve layer 仍必須保持唯讀。
 - IP allowlist：`SOURCE_ALLOWLIST_CIDRS` 是 CIDR comma-separated list；`DEBUG=false` 時必須設定，否則 app 拒絕啟動。
 - Rate limiting：in-process，keyed by API key + client IP；process restart 後狀態會重置。
@@ -158,7 +158,7 @@ findb/
 - 預設測試 DB 是 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`，可用 `TEST_DATABASE_URL` 覆蓋。
 - `backend/tests/conftest.py` 會在需要時建立 `findb_test` database。
 - 測試資料表由 function-scope fixture 建立與清理。
-- 測試 fixture 會設定 `SOURCE_API_KEY=test-source-key`、`ADMIN_API_KEY=test-admin-key`、`DEBUG=true`。
+- 測試 fixture 會在需要時建立 DB-backed Source/Admin credentials；`DEBUG=true`。
 - Preferred test runner 是 `uv --directory backend run python scripts/dev.py test-db` 或 `make test`，會先確保 DB container 已啟動。
 
 ## 常用命令

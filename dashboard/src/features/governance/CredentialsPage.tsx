@@ -1,12 +1,5 @@
 import { useServerFn } from "@tanstack/react-start"
-import {
-  KeyRound,
-  Plus,
-  RefreshCw,
-  RotateCw,
-  ShieldAlert,
-  Trash2,
-} from "lucide-react"
+import { KeyRound, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react"
 import { type FormEvent, useCallback, useEffect, useState } from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
@@ -69,7 +62,7 @@ function formatDate(value: string | null) {
 
 function statusVariant(status: Credential["status"]) {
   if (status === "active") return "default" as const
-  if (status === "expiring" || status === "legacy") return "warning" as const
+  if (status === "expiring") return "warning" as const
   if (status === "revoked" || status === "expired")
     return "destructive" as const
   return "secondary" as const
@@ -209,12 +202,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   }
 
   async function rotateItem(item: Credential) {
-    if (
-      !item.id ||
-      item.kind === "legacy" ||
-      !canManageCredential(role, item.kind)
-    )
-      return
+    if (!item.id || !canManageCredential(role, item.kind)) return
     setPending(true)
     try {
       const result = await rotate({ data: { kind: item.kind, id: item.id } })
@@ -237,7 +225,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   async function revokeItem(item: Credential) {
     if (
       !item.id ||
-      item.kind === "legacy" ||
       !canManageCredential(role, item.kind) ||
       !window.confirm(`確定立即撤銷「${item.name}」？撤銷後下一個請求即失效。`)
     )
@@ -257,8 +244,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     }
   }
 
-  const legacyConfigured =
-    overview && (overview.legacy.admin || overview.legacy.source)
   const mayIssue = canIssueCredential(role, kind)
 
   return (
@@ -279,15 +264,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
         <Alert variant="destructive">
           <AlertTitle>無法載入 Credential</AlertTitle>
           <AlertDescription>{loadError}</AlertDescription>
-        </Alert>
-      )}
-      {legacyConfigured && (
-        <Alert variant="warning">
-          <ShieldAlert size={18} />
-          <AlertTitle>仍有 legacy credential</AlertTitle>
-          <AlertDescription>
-            環境共享 key 仍可通過驗證；完成 consumer 遷移後應依序移除。
-          </AlertDescription>
         </Alert>
       )}
 
@@ -551,7 +527,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
               <option value="source">Source</option>
               <option value="serve">Serve</option>
               <option value="admin">Admin</option>
-              <option value="legacy">Legacy</option>
             </select>
             <select
               aria-label="Credential 狀態"
@@ -572,7 +547,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
               <option value="expiring">Expiring</option>
               <option value="expired">Expired</option>
               <option value="revoked">Revoked</option>
-              <option value="legacy">Legacy</option>
             </select>
             <Input
               aria-label="Credential owner"

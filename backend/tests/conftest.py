@@ -143,25 +143,6 @@ async def client(test_session: AsyncSession) -> AsyncGenerator[AsyncClient, None
     app.dependency_overrides.clear()
 
 
-@pytest.fixture
-def source_api_key() -> str:
-    """Get test source API key."""
-    return "test-source-key"
-
-
-@pytest.fixture(autouse=True)
-def configure_source_api_key(source_api_key: str):
-    """Ensure the Source API key is configured for tests."""
-    settings = get_settings()
-    original_key = settings.SOURCE_API_KEY
-    original_debug = settings.DEBUG
-    settings.SOURCE_API_KEY = source_api_key
-    settings.DEBUG = True
-    yield
-    settings.SOURCE_API_KEY = original_key
-    settings.DEBUG = original_debug
-
-
 @pytest.fixture(autouse=True)
 def reset_source_rate_limiter():
     reset_source_rate_limit_state()
@@ -169,31 +150,48 @@ def reset_source_rate_limiter():
     reset_source_rate_limit_state()
 
 
-@pytest.fixture
-def source_headers(source_api_key: str) -> dict:
-    """Get headers for source API requests."""
+@pytest_asyncio.fixture
+async def source_headers(request, test_session: AsyncSession) -> AsyncGenerator[dict, None]:
+    """Get a DB-backed Source client for the provider exercised by each suite."""
+    from app.services.source_clients import create_source_client
+
     settings = get_settings()
-    return {settings.API_KEY_HEADER: source_api_key}
+    node_name = request.node.name
+    provider = "bloomberg"
+    if request.node.fspath.basename == "test_canonical_ingest_api.py":
+        provider = "bloomberg" if "futures" in node_name else "finlab"
+    elif "twstock" in node_name:
+        provider = "finlab"
+    _, api_key = await create_source_client(
+        test_session,
+        name="test-source-client",
+        owner="tests",
+        source_name=provider,
+        allowed_datasets=None,
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        commit=False,
+    )
+    yield {settings.API_KEY_HEADER: api_key}
 
 
-@pytest.fixture
-def admin_api_key() -> str:
-    """Get test admin API key."""
-    return "test-admin-key"
+@pytest_asyncio.fixture
+async def admin_headers(test_session: AsyncSession) -> AsyncGenerator[dict, None]:
+    """Get a DB-backed Owner machine credential for Admin endpoint tests."""
+    from app.services.api_keys import create_api_key
 
-
-@pytest.fixture(autouse=True)
-def configure_admin_api_key(admin_api_key: str):
-    """Ensure the Admin API key is configured for tests."""
     settings = get_settings()
-    original_key = settings.ADMIN_API_KEY
-    settings.ADMIN_API_KEY = admin_api_key
-    yield
-    settings.ADMIN_API_KEY = original_key
-
-
-@pytest.fixture
-def admin_headers(admin_api_key: str) -> dict:
-    """Get headers for admin API requests."""
-    settings = get_settings()
-    return {settings.API_KEY_HEADER: admin_api_key}
+    _, api_key = await create_api_key(
+        test_session,
+        owner="tests",
+        tier="standard",
+        scopes=["admin"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        page_size_limit=1000,
+        kind="admin",
+        name="test-admin-machine",
+        role="owner",
+        commit=False,
+    )
+    yield {settings.API_KEY_HEADER: api_key}

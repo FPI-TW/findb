@@ -4,10 +4,7 @@ export function canViewUsers(role: AdminRole) {
   return role === "owner"
 }
 
-export function canIssueCredential(
-  role: AdminRole,
-  kind: Exclude<CredentialKind, "legacy">
-) {
+export function canIssueCredential(role: AdminRole, kind: CredentialKind) {
   return (
     role === "owner" ||
     (role === "operator" && (kind === "source" || kind === "serve"))
@@ -15,7 +12,7 @@ export function canIssueCredential(
 }
 
 export function canManageCredential(role: AdminRole, kind: CredentialKind) {
-  return kind !== "legacy" && canIssueCredential(role, kind)
+  return canIssueCredential(role, kind)
 }
 
 export function requiresPasswordChangeRedirect(

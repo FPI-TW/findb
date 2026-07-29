@@ -423,7 +423,7 @@
       },
       {
         "actors": [
-          "source_client_or_legacy_credential",
+          "source_client",
           "client_ip"
         ],
         "attempt_semantics": "not_created",

@@ -79,28 +79,6 @@ def present_api_key(row: APIKey) -> CredentialResponse:
     )
 
 
-def legacy_credentials() -> list[CredentialResponse]:
-    settings = get_settings()
-    rows: list[CredentialResponse] = []
-    values: list[tuple[str, bool]] = [
-        ("source", bool(settings.SOURCE_API_KEY.strip())),
-        ("admin", bool(settings.ADMIN_API_KEY.strip())),
-    ]
-    for name, configured in values:
-        if configured:
-            legacy_kind = name.split("-", 1)[0]
-            rows.append(
-                CredentialResponse(
-                    credential_ref=f"legacy:{name}",
-                    kind="legacy",
-                    name=f"Legacy {name} key",
-                    status="legacy",
-                    policies={"config_only": True, "legacy_kind": legacy_kind},
-                )
-            )
-    return rows
-
-
 async def list_credentials(
     db: AsyncSession,
     *,
@@ -112,7 +90,6 @@ async def list_credentials(
     keys = list((await db.execute(select(APIKey))).scalars().all())
     rows = [present_source(row) for row in sources]
     rows.extend(present_api_key(row) for row in keys)
-    rows.extend(legacy_credentials())
     if kind:
         rows = [row for row in rows if row.kind == kind]
     if status:
@@ -128,16 +105,12 @@ async def credential_overview(db: AsyncSession) -> dict[str, Any]:
         await db.execute(select(func.max(CredentialUsageRollup.updated_at)))
     ).scalar_one_or_none()
     settings = get_settings()
-    counts = {value: 0 for value in ("active", "expiring", "expired", "revoked", "legacy")}
+    counts = {value: 0 for value in ("active", "expiring", "expired", "revoked")}
     for row in rows:
         counts[row.status] += 1
     return {
-        "auth_mode": "db_with_legacy_fallback",
+        "auth_mode": "db_only",
         "serve_require_auth": settings.SERVE_REQUIRE_AUTH,
-        "legacy": {
-            "admin": bool(settings.ADMIN_API_KEY.strip()),
-            "source": bool(settings.SOURCE_API_KEY.strip()),
-        },
         "counts": counts,
         "auth_failure_counts": auth_failure_counts(),
         "usage_updated_at": usage_updated_at,
