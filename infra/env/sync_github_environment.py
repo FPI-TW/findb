@@ -87,7 +87,7 @@ SERVICE_CONFIGS: Final = {
             "FETCHER_EC2_HOST",
             "FETCHER_EC2_USER",
             "FETCHER_EC2_SSH_KEY",
-            "FETCHER_SOURCE_CLIENT_KEY",
+            "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
             "TWELVE_DATA_API_KEY",
             "CLOUDFLARE_R2_ACCESS_KEY_ID",
             "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
@@ -126,9 +126,7 @@ def _ensure_environment(environment: str) -> None:
             policy.get("protected_branches") is not False
             or policy.get("custom_branch_policies") is not True
         ):
-            raise RuntimeError(
-                f"{environment} must use custom deployment branch policies"
-            )
+            raise RuntimeError(f"{environment} must use custom deployment branch policies")
     elif "HTTP 404" in existing.stderr:
         payload = json.dumps(
             {
@@ -206,9 +204,7 @@ def main() -> int:
     if not source.is_file():
         parser.error(f"missing ignored source: {source}")
 
-    values = {
-        key: str(value or "").strip() for key, value in dotenv_values(source).items()
-    }
+    values = {key: str(value or "").strip() for key, value in dotenv_values(source).items()}
     required_secrets = list(config.secrets)
     if arguments.service == "findb" and values.get("SERVE_REQUIRE_AUTH") == "false":
         required_secrets = [
