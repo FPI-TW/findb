@@ -92,7 +92,10 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_ACCESS_KEY_ID",
             "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
         ),
-        optional_secrets=("CLOUDFLARE_R2_SESSION_TOKEN",),
+        optional_secrets=(
+            "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
+            "CLOUDFLARE_R2_SESSION_TOKEN",
+        ),
     ),
 }
 

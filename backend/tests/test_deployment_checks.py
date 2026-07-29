@@ -411,6 +411,7 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
 
     assert "FETCHER_EC2_HOST" in fetcher_cd
     assert "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY" in fetcher_cd
+    assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" not in fetcher_cd
     assert "FETCHER_SOURCE_CLIENT_KEY" not in fetcher_cd
     for forbidden in (
         "FINDB_EC2_",
