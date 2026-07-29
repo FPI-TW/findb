@@ -967,8 +967,8 @@ async def test_idempotency_key_cannot_be_reused_by_different_source(
     )
 
     assert first.status_code == 202
-    assert second.status_code == 409
-    assert second.json()["error"]["code"] == "IDEMPOTENCY_PAYLOAD_MISMATCH"
+    assert second.status_code == 403
+    assert second.json()["error"]["code"] == "SOURCE_IDENTITY_MISMATCH"
 
 
 @pytest.mark.asyncio

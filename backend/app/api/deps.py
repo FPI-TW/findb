@@ -46,16 +46,6 @@ class AdminPrincipal:
         return f"{self.actor_type}:{self.actor_id or self.display_name}:{self.display_name}"
 
 
-def get_source_api_key() -> str:
-    """Get the valid source API key."""
-    return settings.SOURCE_API_KEY.strip()
-
-
-def get_admin_api_key() -> str:
-    """Get the valid admin API key."""
-    return settings.ADMIN_API_KEY.strip()
-
-
 def get_admin_break_glass_api_key() -> str:
     return settings.ADMIN_BREAK_GLASS_API_KEY.strip()
 
@@ -163,8 +153,6 @@ async def verify_source_api_key(
     db: AsyncSession = Depends(get_db),
 ) -> str:
     """Verify API key for Source API endpoints."""
-    valid_key = get_source_api_key()
-
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -179,8 +167,7 @@ async def verify_source_api_key(
             detail="Ingestion is temporarily unavailable",
             headers={"Retry-After": "30"},
         )
-    is_legacy_key = bool(valid_key) and compare_digest(api_key, valid_key)
-    if source_client is None and not is_legacy_key:
+    if source_client is None:
         record_invalid_credential(
             "source",
             endpoint=request.url.path,
@@ -203,12 +190,6 @@ async def verify_source_api_key(
             limit=source_client.rate_limit_requests,
             window_seconds=source_client.rate_limit_window,
         )
-    else:
-        db.info["source_client_id"] = None
-        db.info["source_name"] = None
-        db.info["allowed_datasets"] = None
-        _enforce_source_rate_limit(sha256(api_key.encode("utf-8")).hexdigest(), client_ip)
-
     return api_key
 
 
@@ -246,10 +227,7 @@ async def verify_admin_api_key(
         raise HTTPException(status_code=401, detail="Missing admin credential")
 
     break_glass = get_admin_break_glass_api_key()
-    legacy = get_admin_api_key()
-    if (break_glass and compare_digest(api_key, break_glass)) or (
-        legacy and compare_digest(api_key, legacy)
-    ):
+    if break_glass and compare_digest(api_key, break_glass):
         return AdminPrincipal(
             "break_glass",
             sha256(api_key.encode("utf-8")).hexdigest()[:12],
@@ -262,7 +240,7 @@ async def verify_admin_api_key(
         return AdminPrincipal(
             "machine", str(db_key.key_id), db_key.name or db_key.owner, db_key.role or "viewer"
         )
-    if not break_glass and not legacy and not await has_active_admin_keys(db):
+    if not break_glass and not await has_active_admin_keys(db):
         raise HTTPException(status_code=500, detail="No admin credential configured")
     record_invalid_credential(
         "admin",

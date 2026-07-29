@@ -82,14 +82,14 @@ stable contract.
 | `409` | Conflict | Trying to resolve an already-resolved DQ issue |
 | `422` | Validation | Pydantic schema failure on request body (wrong type, missing required field) |
 | `429` | Rate limit | >100 requests / 60s for the same `(API key, client IP)` |
-| `500` | Server error | Required env var missing (`ADMIN_API_KEY` unset; `SOURCE_ALLOWLIST_CIDRS` unset in prod) |
+| `500` | Server error | Required runtime configuration missing (`SOURCE_ALLOWLIST_CIDRS` unset in prod) |
 
 ## Source API — known error messages
 
 | Message | Status | Cause |
 | --- | --- | --- |
 | `Missing API key` | 401 | `X-API-Key` header absent |
-| `Invalid API key` | 403 | Key value doesn't match `SOURCE_API_KEYS` |
+| `Invalid API key` | 403 | Key value does not match an active DB-backed Source client |
 | `Source API client IP not allowlisted` | 403 | Caller's real IP not in nginx allowlist; if behind Cloudflare, ensure nginx trusts `CF-Connecting-IP` |
 | `Rate limit exceeded` | 429 | Backoff; resets at next minute boundary |
 | `Dataset '<key>' not found` | 400 | Check `GET /source/datasets`; you may need to use the direct endpoint instead |
@@ -102,7 +102,7 @@ stable contract.
 | --- | --- | --- |
 | `Missing API key` | 401 | Header absent |
 | `Invalid API key` | 403 | Wrong admin key |
-| `No admin API key configured` | 500 | `ADMIN_API_KEY` env var not set on server |
+| `No admin credential configured` | 500 | No active DB-backed Admin key or break-glass credential is configured |
 | `EOD record not found...` | 404 | `(instrument_id, trade_date)` has no row |
 | `DQ issue ... not found` | 404 | Wrong `issue_id` |
 | `Raw payload not found` | 404 | Run's raw payload aged out (past `RAW_RETENTION_DAYS`) |

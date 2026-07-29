@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -21,16 +22,26 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import dotenv_values
 
-# Ensure project root is importable so we can pull SOURCE_API_KEY from app.config.
+# Ensure project root is importable for the application data types used below.
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = BACKEND_ROOT.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.config import get_settings  # noqa: E402
 
 QUERY_DATE_FIELD = "query_date"
 TRADE_DATE_FIELD = "date"
+
+
+def load_finlab_source_client_api_key() -> str:
+    """Read the FinLab DB-backed Source key, preferring an exported environment value."""
+    key_name = "FINLAB_SOURCE_CLIENT_API_KEY"
+    value = os.getenv(key_name)
+    if value is None:
+        value = dotenv_values(REPO_ROOT / ".env").get(key_name)
+    return (value or "").strip()
 
 
 @dataclass
@@ -577,14 +588,13 @@ async def run(args: argparse.Namespace) -> Path:
     chunk_results: list[ChunkOutcome] = []
     samples: list[dict[str, Any]] = []
 
-    settings = get_settings()
-    api_key = (settings.SOURCE_API_KEY or "").strip()
+    api_key = load_finlab_source_client_api_key()
     headers = {"X-API-Key": api_key} if api_key else {}
 
     if not args.skip_ingest:
         if not api_key:
             raise SystemExit(
-                "SOURCE_API_KEY 為空；請在 .env 設定後重試，或加 --skip-ingest 只跑報告。"
+                "FINLAB_SOURCE_CLIENT_API_KEY 為空；請在 .env 設定後重試，或加 --skip-ingest 只跑報告。"
             )
 
         query_time_iso = datetime.now(timezone.utc).isoformat()

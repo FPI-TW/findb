@@ -409,7 +409,7 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 "http_statuses": [429],
                 "public_codes": [],
                 "attempt_semantics": "not_created",
-                "actors": ["source_client_or_legacy_credential", "client_ip"],
+                "actors": ["source_client", "client_ip"],
             },
             {
                 "id": "request.client_ip.available",

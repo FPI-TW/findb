@@ -50,16 +50,13 @@ SERVICE_CONFIGS: Final = {
             "FINDB_EC2_SSH_KEY",
             "DATABASE_URL",
             "ADMIN_BREAK_GLASS_API_KEY",
+            "FINDB_QUEUE_HEALTH_ADMIN_API_KEY",
             "FINDB_LOOKUP_SERVE_API_KEY",
             "FINDB_STATIC_CACHE_SERVE_API_KEY",
             "CELERY_BROKER_URL",
             "RABBITMQ_DEFAULT_USER",
             "RABBITMQ_DEFAULT_PASS",
             "RABBITMQ_ERLANG_COOKIE",
-        ),
-        optional_secrets=(
-            "SOURCE_API_KEY",
-            "ADMIN_API_KEY",
         ),
     ),
     "fetcher": ServiceConfig(

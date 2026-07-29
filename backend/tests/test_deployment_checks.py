@@ -355,7 +355,7 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
         assert _secret_reference_paths(_load_workflow(path)) == []
 
 
-def test_findb_deployment_uses_dedicated_credentials_without_legacy_serve_key() -> None:
+def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> None:
     workflow = _load_workflow(FINDB_CD_WORKFLOW)
     validate = _named_step(workflow, "deploy", "Validate deployment configuration")
     render = _named_step(workflow, "deploy", "Render nginx configs")
@@ -371,11 +371,7 @@ def test_findb_deployment_uses_dedicated_credentials_without_legacy_serve_key() 
     )
 
     required_loop = next(line for line in validation_script.splitlines() if "for name in " in line)
-    for legacy_name in (
-        "SOURCE_API_KEY",
-        "ADMIN_API_KEY",
-    ):
-        assert legacy_name not in required_loop
+    assert "FINDB_QUEUE_HEALTH_ADMIN_API_KEY" in required_loop
 
     assert render["env"]["FINDB_LOOKUP_SERVE_API_KEY"] == (
         "${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}"
@@ -392,10 +388,26 @@ def test_findb_deployment_uses_dedicated_credentials_without_legacy_serve_key() 
         'ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:'
         "?ADMIN_BREAK_GLASS_API_KEY must be set"
     ) in compose
-    assert 'SOURCE_API_KEY: "${SOURCE_API_KEY:-}"' in compose
-    assert 'ADMIN_API_KEY: "${ADMIN_API_KEY:-}"' in compose
+    assert 'FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:' in compose
     assert "DASHBOARD_USERNAME" not in compose
     assert "DASHBOARD_PASSWORD" not in compose
+
+
+def test_retired_shared_credential_identifiers_are_absent_from_runtime_contracts() -> None:
+    retired = ("SOURCE" + "_API_KEY", "ADMIN" + "_API_KEY")
+    paths = (
+        REPO_ROOT / "docker-compose.yml",
+        PROD_COMPOSE,
+        FINDB_CI_WORKFLOW,
+        FINDB_CD_WORKFLOW,
+        REPO_ROOT / "infra/env/sync_github_environment.py",
+        REPO_ROOT / ".env.example",
+        REPO_ROOT / "infra/env/staging/findb/remote.env.example",
+        REPO_ROOT / "infra/env/production/findb/remote.env.example",
+    )
+    content = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    for identifier in retired:
+        assert re.search(rf"(?<![A-Za-z0-9_]){identifier}(?![A-Za-z0-9_])", content) is None
 
 
 def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
@@ -416,7 +428,6 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
         "DATABASE_URL",
         "CELERY_BROKER_URL",
         "RABBITMQ_",
-        "ADMIN_API_KEY",
         "DASHBOARD_PASSWORD",
         "DASHBOARD_SESSION_SECRET",
     ):

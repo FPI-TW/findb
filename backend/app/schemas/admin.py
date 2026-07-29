@@ -481,7 +481,7 @@ class CredentialResponse(BaseModel):
     name: str
     owner: Optional[str] = None
     description: Optional[str] = None
-    status: Literal["active", "expiring", "expired", "revoked", "legacy"]
+    status: Literal["active", "expiring", "expired", "revoked"]
     fingerprint: Optional[str] = None
     role: Optional[str] = None
     scopes: Optional[list[str]] = None
@@ -504,9 +504,8 @@ class CredentialListResponse(BaseModel):
 
 
 class CredentialOverviewResponse(BaseModel):
-    auth_mode: str
+    auth_mode: Literal["db_only"]
     serve_require_auth: bool
-    legacy: dict[str, bool]
     counts: dict[str, int]
     auth_failure_counts: dict[str, int] = Field(default_factory=dict)
     usage_updated_at: Optional[datetime] = None

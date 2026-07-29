@@ -285,7 +285,9 @@ async def lock_ingestion_idempotency_scope(
     idempotency_key: str,
 ) -> None:
     """Lock the exact PostgreSQL unique scope before canonical policy locks."""
-    client_scope = f"uuid:{source_client_id}" if source_client_id is not None else "legacy:null"
+    client_scope = (
+        f"uuid:{source_client_id}" if source_client_id is not None else "unattributed:null"
+    )
     scope = ":".join(("canonical-idempotency", client_scope, dataset_key, idempotency_key))
     await db.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),

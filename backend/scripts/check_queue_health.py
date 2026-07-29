@@ -167,9 +167,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
-    api_key = os.getenv("ADMIN_API_KEY", "").strip()
+    api_key = os.getenv("FINDB_QUEUE_HEALTH_ADMIN_API_KEY", "").strip()
     if not api_key:
-        print("error: ADMIN_API_KEY is required", file=sys.stderr)
+        print("error: FINDB_QUEUE_HEALTH_ADMIN_API_KEY is required", file=sys.stderr)
         return 2
     broker_url = os.getenv("CELERY_BROKER_URL", "").strip()
     if not broker_url:

@@ -10,19 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 @pytest.fixture(autouse=True)
-def configure_explicit_break_glass(admin_headers: dict):
+def configure_explicit_break_glass():
     from app.api.deps import settings
 
     original = settings.ADMIN_BREAK_GLASS_API_KEY
-    settings.ADMIN_BREAK_GLASS_API_KEY = admin_headers["X-API-Key"]
+    settings.ADMIN_BREAK_GLASS_API_KEY = "test-break-glass-key"
     yield
     settings.ADMIN_BREAK_GLASS_API_KEY = original
 
 
-async def _bootstrap(client: AsyncClient, admin_headers: dict) -> dict:
+async def _bootstrap(client: AsyncClient) -> dict:
     response = await client.post(
         "/api/v1/admin/auth/bootstrap",
-        headers=admin_headers,
+        headers={"X-API-Key": "test-break-glass-key"},
         json={
             "username": "Root.Owner",
             "display_name": "Root Owner",
@@ -34,15 +34,13 @@ async def _bootstrap(client: AsyncClient, admin_headers: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_requires_explicit_break_glass_and_one_credential(
-    client: AsyncClient, admin_headers: dict
-):
+async def test_bootstrap_requires_explicit_break_glass_and_one_credential(client: AsyncClient):
     from app.api.deps import settings
 
     settings.ADMIN_BREAK_GLASS_API_KEY = ""
     legacy_only = await client.post(
         "/api/v1/admin/auth/bootstrap",
-        headers=admin_headers,
+        headers={"X-API-Key": "test-break-glass-key"},
         json={
             "username": "legacy-owner",
             "display_name": "Legacy Owner",
@@ -71,7 +69,7 @@ async def test_bootstrap_requires_explicit_break_glass_and_one_credential(
 async def test_bootstrap_session_dual_credential_and_last_owner_protection(
     client: AsyncClient, admin_headers: dict
 ):
-    session = await _bootstrap(client, admin_headers)
+    session = await _bootstrap(client)
     bearer = {"Authorization": f"Bearer {session['access_token']}"}
 
     me = await client.get("/api/v1/admin/auth/me", headers=bearer)
@@ -81,7 +79,7 @@ async def test_bootstrap_session_dual_credential_and_last_owner_protection(
 
     duplicate = await client.post(
         "/api/v1/admin/auth/bootstrap",
-        headers=admin_headers,
+        headers={"X-API-Key": "test-break-glass-key"},
         json={
             "username": "other",
             "display_name": "Other",
@@ -107,11 +105,11 @@ async def test_bootstrap_session_dual_credential_and_last_owner_protection(
 
 @pytest.mark.asyncio
 async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
-    client: AsyncClient, admin_headers: dict, test_session: AsyncSession
+    client: AsyncClient, test_session: AsyncSession
 ):
     from app.models.registry import AdminAuditEvent
 
-    owner_session = await _bootstrap(client, admin_headers)
+    owner_session = await _bootstrap(client)
     owner = {"Authorization": f"Bearer {owner_session['access_token']}"}
 
     created_user = await client.post(
@@ -226,14 +224,12 @@ async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
     overview = await client.get("/api/v1/admin/credentials/overview", headers=owner)
     assert overview.status_code == 200
     assert overview.json()["counts"]["revoked"] >= 1
-    legacy = await client.get(
+    assert overview.json()["auth_mode"] == "db_only"
+    rejected_kind = await client.get(
         "/api/v1/admin/credentials?kind=legacy",
         headers=owner,
     )
-    assert legacy.status_code == 200
-    assert legacy.json()["data"]
-    assert all(item["kind"] == "legacy" for item in legacy.json()["data"])
-    assert all("legacy_kind" in item["policies"] for item in legacy.json()["data"])
+    assert rejected_kind.status_code == 422
     audit_rows = list(
         (
             await test_session.execute(
@@ -249,8 +245,8 @@ async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
 
 
 @pytest.mark.asyncio
-async def test_admin_machine_key_role_and_prefix(client: AsyncClient, admin_headers: dict):
-    owner_session = await _bootstrap(client, admin_headers)
+async def test_admin_machine_key_role_and_prefix(client: AsyncClient):
+    owner_session = await _bootstrap(client)
     owner = {"Authorization": f"Bearer {owner_session['access_token']}"}
     created = await client.post(
         "/api/v1/admin/credentials",
@@ -279,7 +275,7 @@ async def test_admin_machine_key_role_and_prefix(client: AsyncClient, admin_head
 async def test_invalid_key_is_counted_without_logging_key_material(
     client: AsyncClient, admin_headers: dict, caplog
 ):
-    owner_session = await _bootstrap(client, admin_headers)
+    owner_session = await _bootstrap(client)
     owner = {"Authorization": f"Bearer {owner_session['access_token']}"}
     secret = "must-never-appear-in-security-events"
     rejected = await client.get(
@@ -384,7 +380,7 @@ async def test_audit_failure_rolls_back_credential_mutation(
     from app.api.v1 import admin as admin_api
     from app.models.registry import APIKey
 
-    owner_session = await _bootstrap(client, admin_headers)
+    owner_session = await _bootstrap(client)
     owner = {"Authorization": f"Bearer {owner_session['access_token']}"}
 
     async def fail_audit(*_args, **_kwargs):

@@ -89,7 +89,7 @@ production-fetcher
 | Secrets | `DATABASE_URL`、`CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE` |
 | Secrets | `ADMIN_BREAK_GLASS_API_KEY` |
 | Secrets | `FINDB_LOOKUP_SERVE_API_KEY`、`FINDB_STATIC_CACHE_SERVE_API_KEY`（`SERVE_REQUIRE_AUTH=true`時必填且必須為不同的DB-backed keys） |
-| Optional legacy secrets | `SOURCE_API_KEY`、`ADMIN_API_KEY` |
+| Queue health secret | `FINDB_QUEUE_HEALTH_ADMIN_API_KEY`（DB-backed Admin viewer key） |
 | Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
 | Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
 | Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS` |
@@ -212,11 +212,10 @@ Fetcher使用Admin API簽發的DB-backed source client key：
 - 綁定固定 `source_name`、`allowed_datasets`與rate limit。
 - FinDB只保存hash；plaintext只在簽發時回傳一次。
 - Plaintext存入Fetcher的Secrets Manager path，不放FinDB runtime。
-- 切換完成後移除legacy共享 `SOURCE_API_KEY`。
 
 ## Credential bootstrap與分階段退場
 
-部署先維持雙軌驗證，但日常運作只使用DB-backed credentials：
+部署與日常運作均使用 DB-backed credentials：
 
 1. 設定一把高強度 `ADMIN_BREAK_GLASS_API_KEY`，只透過
    `POST /api/v1/admin/auth/bootstrap`建立第一位Owner；bootstrap完成後不得注入
@@ -227,8 +226,8 @@ Fetcher使用Admin API簽發的DB-backed source client key：
    `FINDB_STATIC_CACHE_SERVE_API_KEY`只供cache generator。兩者不可共用。
 4. `SERVE_REQUIRE_AUTH=true`時，FinDB CD會要求上述兩把專用DB-backed Serve key；
    部署前先確保兩把key已在DB建立且未撤銷。Serve不支援環境變數fallback。
-5. 後續逐一切換Source/Admin consumer並觀察Credentials頁的last-used/usage
-   freshness至少一個完整排程週期，再清除 `SOURCE_API_KEY`與legacy `ADMIN_API_KEY`。
+5. 後續逐一輪替 Source/Admin consumer 並觀察 Credentials 頁的 last-used/usage
+   freshness至少一個完整排程週期。
 
 Dashboard以DB-backed Admin user登入，後端簽發的opaque session只存在
 `HttpOnly + Secure + SameSite=Strict` cookie；不再讀取共享Dashboard帳密或Admin key。

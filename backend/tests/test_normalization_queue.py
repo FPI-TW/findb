@@ -22,6 +22,7 @@ from app.models.registry import (
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
+    SourceClient,
 )
 from app.services.normalization_queue import (
     _defer_for_lock_contention,
@@ -159,6 +160,9 @@ async def test_burst_requests_are_durably_accepted(
     settings = get_settings()
     original_limit = settings.RATE_LIMIT_REQUESTS
     settings.RATE_LIMIT_REQUESTS = 1_000
+    source_client = (await test_session.execute(select(SourceClient))).scalar_one()
+    source_client.rate_limit_requests = request_count
+    await test_session.commit()
     reset_source_rate_limit_state()
     app.dependency_overrides[get_db] = request_scoped_db
     try:

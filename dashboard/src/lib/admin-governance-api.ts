@@ -75,18 +75,12 @@ export const userMutationResponseSchema = z.object({
   temporary_password: z.string().min(1).optional(),
 })
 
-export const credentialKindSchema = z.enum([
-  "source",
-  "serve",
-  "admin",
-  "legacy",
-])
+export const credentialKindSchema = z.enum(["source", "serve", "admin"])
 export const credentialStatusSchema = z.enum([
   "active",
   "expiring",
   "expired",
   "revoked",
-  "legacy",
 ])
 export type CredentialKind = z.infer<typeof credentialKindSchema>
 export type CredentialStatus = z.infer<typeof credentialStatusSchema>
@@ -126,18 +120,13 @@ export const credentialRevokeResponseSchema = z
   .transform(value => ("data" in value ? value.data : value))
 
 export const credentialsOverviewSchema = z.object({
-  auth_mode: z.string(),
+  auth_mode: z.literal("db_only"),
   serve_require_auth: z.boolean(),
-  legacy: z.object({
-    admin: z.boolean(),
-    source: z.boolean(),
-  }),
   counts: z.object({
     active: z.number().int().nonnegative(),
     expiring: z.number().int().nonnegative(),
     expired: z.number().int().nonnegative(),
     revoked: z.number().int().nonnegative(),
-    legacy: z.number().int().nonnegative(),
   }),
   usage_updated_at: nullableDateTime,
 })

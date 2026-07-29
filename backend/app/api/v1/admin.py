@@ -355,10 +355,10 @@ async def reset_admin_user_password(
 
 @router.get("/credentials", response_model=CredentialListResponse)
 async def list_credentials_endpoint(
-    kind: Optional[Literal["source", "serve", "admin", "legacy"]] = None,
-    credential_status: Optional[
-        Literal["active", "expiring", "expired", "revoked", "legacy"]
-    ] = Query(None, alias="status"),
+    kind: Optional[Literal["source", "serve", "admin"]] = None,
+    credential_status: Optional[Literal["active", "expiring", "expired", "revoked"]] = Query(
+        None, alias="status"
+    ),
     owner: Optional[str] = None,
     principal: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),

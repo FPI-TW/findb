@@ -66,15 +66,13 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.loadCredentials.mockResolvedValue({ data: [credential] })
   mocks.loadCredentialsOverview.mockResolvedValue({
-    auth_mode: "db_with_legacy_fallback",
+    auth_mode: "db_only",
     serve_require_auth: true,
-    legacy: { admin: false, source: false },
     counts: {
       active: 1,
       expiring: 0,
       expired: 0,
       revoked: 0,
-      legacy: 0,
     },
     usage_updated_at: timestamp,
   })

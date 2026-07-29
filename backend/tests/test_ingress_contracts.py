@@ -358,13 +358,13 @@ def test_registry_dispatches_explicit_contract_version():
             "market_eod",
             "MarketEODIngressRequest",
             "market.currency.row_or_dataset_default",
-            "9b48d9aebf3d3d1f7e619d0a1fea4c86b72e0e046e58122dfa9ac359796781de",
+            "105724db35b63de90b42ab17a87c353ff221397d7d6ceb9506aabe3cbaca287f",
         ),
         (
             "futures_continuous_eod",
             "FuturesContinuousEODIngressRequest",
             "futures.currency.dataset_default_required",
-            "8d48f044b57bd529c9940e4373d76683159717f20e61df773a9a33c6f9daa3bd",
+            "0723034705a28890e0c38859bfbcc045ef537d5121c7c827b8c70e821ea580fb",
         ),
     ],
 )
@@ -463,7 +463,7 @@ def test_registry_publishes_versioned_deterministic_json_schema(
     }
     assert boundaries["authentication.api_key"]["attempt_semantics"] == "not_created"
     assert boundaries["rate_limit.credential_or_client_ip"]["actors"] == [
-        "source_client_or_legacy_credential",
+        "source_client",
         "client_ip",
     ]
     assert boundaries["dataset.existence"]["public_codes"] == ["DATASET_NOT_FOUND"]

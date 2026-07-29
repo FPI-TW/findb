@@ -13,7 +13,9 @@ from app.services.normalization_queue import execute_normalization
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session, test_engine):
+async def test_end_to_end_ingest_to_serve(
+    client: AsyncClient, source_headers: dict, test_session, test_engine
+):
     """Ingest raw payload and verify Serve API returns normalized data."""
     dataset = DatasetRegistry(
         dataset_key="crypto_eod",
@@ -65,7 +67,7 @@ async def test_end_to_end_ingest_to_serve(client: AsyncClient, test_session, tes
 
     response = await client.post(
         "/api/v1/source/ingest/crypto",
-        headers={"X-API-Key": "test-source-key"},
+        headers=source_headers,
         json=payload,
     )
     assert response.status_code == 202
