@@ -6,7 +6,6 @@ import {
   RotateCw,
   ShieldAlert,
   Trash2,
-  TriangleAlert,
 } from "lucide-react"
 import { type FormEvent, useCallback, useEffect, useState } from "react"
 
@@ -30,6 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table"
+import { toast } from "../../components/ui/toast"
 import type {
   AdminRole,
   Credential,
@@ -86,7 +86,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS)
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
-  const [error, setError] = useState("")
+  const [loadError, setLoadError] = useState("")
   const [secret, setSecret] = useState<{ title: string; value: string } | null>(
     null
   )
@@ -104,7 +104,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     async (nextFilters: CredentialFilters, initial = false) => {
       if (initial) setLoading(true)
       else setPending(true)
-      setError("")
+      setLoadError("")
       try {
         const [credentialResult, overviewResult] = await Promise.all([
           load({ data: nextFilters }),
@@ -113,9 +113,10 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
         setCredentials(credentialResult.data)
         setOverview(overviewResult)
       } catch (reason) {
-        setError(
+        const message =
           reason instanceof Error ? reason.message : "無法載入 credential。"
-        )
+        if (initial) setLoadError(message)
+        else toast.error("更新 Credential 失敗", { description: message })
       } finally {
         setLoading(false)
         setPending(false)
@@ -131,7 +132,6 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   async function submitIssue(event: FormEvent) {
     event.preventDefault()
     setPending(true)
-    setError("")
     const expiry = expiresAt ? new Date(expiresAt).toISOString() : undefined
     const split = (value: string) =>
       value
@@ -180,9 +180,14 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
       setAllowedDatasets([])
       setScopes("")
       setExpiresAt("")
+      toast.success("Credential 已簽發", {
+        description: `${result.data.name} 已建立，請立即保存密鑰。`,
+      })
       await refresh(filters)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "簽發失敗。")
+      toast.error("簽發 Credential 失敗", {
+        description: reason instanceof Error ? reason.message : "簽發失敗。",
+      })
       setPending(false)
     }
   }
@@ -195,16 +200,20 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     )
       return
     setPending(true)
-    setError("")
     try {
       const result = await rotate({ data: { kind: item.kind, id: item.id } })
       setSecret({
         title: `已輪替 ${result.data.name}`,
         value: result.api_key,
       })
+      toast.success("Credential 已輪替", {
+        description: `${result.data.name} 的新密鑰已產生，請立即保存。`,
+      })
       await refresh(filters)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "輪替失敗。")
+      toast.error("輪替 Credential 失敗", {
+        description: reason instanceof Error ? reason.message : "輪替失敗。",
+      })
       setPending(false)
     }
   }
@@ -218,12 +227,16 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     )
       return
     setPending(true)
-    setError("")
     try {
       await revoke({ data: { kind: item.kind, id: item.id } })
+      toast.success("Credential 已撤銷", {
+        description: `${item.name} 已立即失效。`,
+      })
       await refresh(filters)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "撤銷失敗。")
+      toast.error("撤銷 Credential 失敗", {
+        description: reason instanceof Error ? reason.message : "撤銷失敗。",
+      })
       setPending(false)
     }
   }
@@ -247,11 +260,10 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
         </p>
       </header>
 
-      {error && (
+      {loadError && (
         <Alert variant="destructive">
-          <TriangleAlert size={18} />
-          <AlertTitle>操作失敗</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
+          <AlertTitle>無法載入 Credential</AlertTitle>
+          <AlertDescription>{loadError}</AlertDescription>
         </Alert>
       )}
       {legacyConfigured && (

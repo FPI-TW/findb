@@ -9,6 +9,8 @@ import {
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { toast, Toaster } from "../../components/ui/toast"
+
 const mocks = vi.hoisted(() => ({
   loadCredentials: vi.fn(),
   loadCredentialsOverview: vi.fn(),
@@ -80,6 +82,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  toast.dismiss()
   cleanup()
   vi.restoreAllMocks()
 })
@@ -221,5 +224,24 @@ describe("governance pages", () => {
     expect(mocks.resetUserPassword).toHaveBeenCalledWith({
       data: { userId: user.user_id },
     })
+  })
+
+  it("shows mutation failures near the action as a toast", async () => {
+    mocks.updateUser.mockRejectedValue(new Error("角色不可變更。"))
+    render(
+      <>
+        <UsersPage />
+        <Toaster />
+      </>
+    )
+
+    await screen.findByText("Primary Owner")
+    fireEvent.change(screen.getByLabelText("owner 的角色"), {
+      target: { value: "viewer" },
+    })
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("角色更新失敗")
+    expect(screen.getByRole("alert")).toHaveTextContent("角色不可變更。")
+    expect(screen.queryByText("操作失敗")).not.toBeInTheDocument()
   })
 })

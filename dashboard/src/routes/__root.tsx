@@ -14,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../components/ui/card"
+import { Toaster } from "../components/ui/toast"
 import Footer from "../components/Footer"
 import Header from "../components/Header"
 
@@ -88,6 +89,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Header />
         {children}
         <Footer />
+        <Toaster />
         <Scripts />
       </body>
     </html>
