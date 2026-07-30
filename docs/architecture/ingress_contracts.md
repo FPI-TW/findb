@@ -77,7 +77,7 @@ Fetcher adapter。
 | 欄位                                        | 必填   | 說明                                         |
 | ------------------------------------------- | ------ | -------------------------------------------- |
 | `data_date`                                 | 是     | 主要業務日期                                 |
-| `delivery_mode`                             | 是     | `full_snapshot`、`incremental` 或 `backfill` |
+| `delivery_mode`                             | 是     | EOD 使用 `full_snapshot`、`incremental` 或 `backfill`；minute 固定 `sequenced_snapshot` |
 | `declared_record_count`                     | 是     | 必須等於 `len(data)`                         |
 | `coverage_start_date` / `coverage_end_date` | 條件式 | 跨多個業務日期時成對提供                     |
 | `source_raw_ref`                            | 否     | Provider 原始檔參照，不得包含 credentials    |
@@ -107,6 +107,15 @@ Fetcher adapter。
 - 必填：`symbol`、`trade_date`、`close`、`roll_rule`
 - 選填：`source_symbol`、`name`、`turnover`、`open_interest`、
   `active_contract_code`、`roll_adjustment`
+
+### `market_minute.v1`
+
+適用 `tw_equity_minute` 與 `tw_etf_minute` 的台灣一分鐘 bar contract。此版本僅發布
+schema 與驗證語意，尚未接上 Source 寫入或 normalizer。row 固定包含 UTC-aware
+`bar_start_time`、`bar_end_time`、`signal_time`、Taiwan-local `trade_date`、
+`market_timezone=Asia/Taipei`、OHLC 與 `price_adjustment=none`；`trade_count` 固定
+`null`。完整的 provider timestamp、單位、sequence、anomaly 與 archive 規則見
+[台灣一分鐘資料契約](tw-minute-data.md)。
 
 精確型別、長度與 additional-properties 規則以 machine-readable schema 為準：
 

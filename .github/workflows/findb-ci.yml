@@ -81,8 +81,10 @@ jobs:
       - name: Type check
         run: uv run mypy app
 
-      - name: Check published ingress contracts
-        run: uv run python scripts/export_ingress_contracts.py --check
+      - name: Check published contracts
+        run: |
+          uv run python scripts/export_ingress_contracts.py --check
+          uv run python scripts/export_archive_contracts.py --check
 
       - name: Run migration smoke test
         run: |

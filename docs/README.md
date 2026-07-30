@@ -9,6 +9,7 @@
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | [architecture/overview.md](architecture/overview.md)                             | 現行系統架構、資料流、服務角色與不可破壞的邊界。                           |
 | [architecture/ingress_contracts.md](architecture/ingress_contracts.md)           | Fetcher 與 FinDB 間的 versioned ingress contract。                         |
+| [architecture/tw-minute-data.md](architecture/tw-minute-data.md)                 | 台灣一分鐘 ingress/archive 契約，以及尚未實作的後續資料架構。              |
 | [architecture/service_boundaries.md](architecture/service_boundaries.md)         | Monorepo 內 FinDB、Fetcher、Dashboard 與下游服務的責任邊界。               |
 | [architecture/market_calendars.md](architecture/market_calendars.md)             | 市場年度日曆、Dashboard 管理流程與 Scheduler fail-closed 合約。            |
 | [api/api_usage_guide.md](api/api_usage_guide.md)                                 | Source、Serve、Admin API 的認證、主要端點與使用方式。                      |

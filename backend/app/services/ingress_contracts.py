@@ -11,18 +11,24 @@ from app.schemas.ingress import (
     FuturesContinuousEODIngressRequest,
     IngressRequestV1,
     MarketEODIngressRequest,
+    MarketMinuteIngressRequest,
 )
 from app.services.delivery_policy import DeliveryExpectation
 from app.vocabulary import normalize_asset_class, normalize_market
 
 ContractKey = tuple[str, int]
-ContractModel = type[MarketEODIngressRequest] | type[FuturesContinuousEODIngressRequest]
+ContractModel = (
+    type[MarketEODIngressRequest]
+    | type[FuturesContinuousEODIngressRequest]
+    | type[MarketMinuteIngressRequest]
+)
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
 _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
     {
         ("market_eod", 1): MarketEODIngressRequest,
         ("futures_continuous_eod", 1): FuturesContinuousEODIngressRequest,
+        ("market_minute", 1): MarketMinuteIngressRequest,
     }
 )
 
@@ -43,6 +49,8 @@ class DatasetContractDefaults(BaseModel):
     market: str
     asset_class: str
     currency: CurrencyCode | None = None
+    market_timezone: Literal["Asia/Taipei"] | None = None
+    price_adjustment: Literal["none"] | None = None
 
     @field_validator("market")
     @classmethod
@@ -75,6 +83,13 @@ class DatasetContractDeclaration(BaseModel):
             raise ValueError("accepted_schema_versions must not contain duplicates")
         if self.current_schema_version not in self.accepted_schema_versions:
             raise ValueError("current_schema_version must be accepted")
+        if self.schema_id == "market_minute" and (
+            self.defaults.market_timezone != "Asia/Taipei"
+            or self.defaults.price_adjustment != "none"
+        ):
+            raise ValueError(
+                "market_minute defaults require market_timezone=Asia/Taipei and price_adjustment=none"
+            )
         return self
 
 
@@ -225,7 +240,11 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "description": "delivery natural keys must be unique within the data array",
             "parameters": {
                 "operator": "unique_by",
-                "fields": ["symbol", "trade_date"],
+                "fields": (
+                    ["symbol", "bar_start_time"]
+                    if schema_id == "market_minute"
+                    else ["symbol", "trade_date"]
+                ),
             },
             "context_dependencies": [],
             "error_code": "DUPLICATE_DELIVERY_KEY",
@@ -306,22 +325,75 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 "error_code": "CURRENCY_REQUIRED",
             }
         )
-    row_string_paths = (
-        [
+    if schema_id == "market_minute":
+        semantic_rules.extend(
+            [
+                {
+                    "id": "minute.timestamps.one_minute_and_signal_end",
+                    "scope": "payload.data[*]",
+                    "description": "timestamps are timezone-aware UTC; end is start plus one minute and signal equals end",
+                    "parameters": {
+                        "bar_end_time": "bar_start_time + PT1M",
+                        "signal_time": "bar_end_time",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "minute.sequence.identity_and_governance",
+                    "scope": "payload.batch",
+                    "description": "snapshot, daily update, universe identity, checksum and sequence metadata are required",
+                    "parameters": {
+                        "delivery_mode": "sequenced_snapshot",
+                        "max_symbols": 50,
+                        "max_rows": 15000,
+                        "canonical_identity": "UTF-8 compact sorted-key JSON object {data_date: ISO-8601 date, dataset_key, sequence: integer, snapshot_id}",
+                        "request_key_format": "mmr:{sha256_hex(canonical_identity)}",
+                        "idempotency_key_format": "mms:{sha256_hex(canonical_identity)}",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "minute.status_and_anomaly.references",
+                    "scope": "payload",
+                    "description": "symbol outcomes and anomalies must reference valid rows; every null volume or turnover has exactly one anomaly and anomalies require null fields",
+                    "parameters": {
+                        "anomaly_key": ["symbol", "bar_start_time", "field"],
+                        "bidirectional_null_fields": ["volume", "turnover"],
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+            ]
+        )
+    row_string_paths = {
+        "market_eod": [
             "payload.data[*].symbol",
             "payload.data[*].source_symbol",
             "payload.data[*].name",
             "payload.data[*].currency",
-        ]
-        if schema_id == "market_eod"
-        else [
+        ],
+        "futures_continuous_eod": [
             "payload.data[*].symbol",
             "payload.data[*].source_symbol",
             "payload.data[*].name",
             "payload.data[*].active_contract_code",
             "payload.data[*].roll_rule",
-        ]
-    )
+        ],
+        "market_minute": [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.symbol_statuses[*].symbol",
+            "payload.symbol_statuses[*].reason",
+            "payload.batch.snapshot_id",
+            "payload.batch.daily_update_id",
+            "payload.batch.universe_id",
+            "payload.batch.anomalies[*].symbol",
+            "payload.batch.anomalies[*].raw_value",
+            "payload.batch.anomalies[*].reason",
+        ],
+    }[schema_id]
     transformations = [
         {
             "id": "normalization.strings.strip_whitespace",

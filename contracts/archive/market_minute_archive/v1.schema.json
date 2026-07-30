@@ -1,0 +1,298 @@
+{
+  "$defs": {
+    "ArchiveChunk": {
+      "additionalProperties": false,
+      "description": "A released chunk with a strict governance cap of 5,000 rows.",
+      "properties": {
+        "checksum_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Checksum Sha256",
+          "type": "string"
+        },
+        "chunk_count": {
+          "minimum": 1,
+          "title": "Chunk Count",
+          "type": "integer"
+        },
+        "chunk_sequence": {
+          "minimum": 1,
+          "title": "Chunk Sequence",
+          "type": "integer"
+        },
+        "object": {
+          "$ref": "#/$defs/ArchiveObject"
+        },
+        "row_count": {
+          "maximum": 5000,
+          "minimum": 1,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "snapshot_sequence": {
+          "minimum": 1,
+          "title": "Snapshot Sequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "snapshot_sequence",
+        "chunk_sequence",
+        "chunk_count",
+        "row_count",
+        "checksum_sha256",
+        "object"
+      ],
+      "title": "ArchiveChunk",
+      "type": "object"
+    },
+    "ArchiveObject": {
+      "additionalProperties": false,
+      "description": "One immutable object reference; URLs and credentials are forbidden.",
+      "properties": {
+        "byte_size": {
+          "minimum": 1,
+          "title": "Byte Size",
+          "type": "integer"
+        },
+        "object_key": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Object Key",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "object_key",
+        "sha256",
+        "byte_size"
+      ],
+      "title": "ArchiveObject",
+      "type": "object"
+    }
+  },
+  "$id": "urn:findb:archive-contract:market_minute_archive:v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Finalized immutable manifest for ``market_minute_archive.v1``.",
+  "properties": {
+    "checksum_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Checksum Sha256",
+      "type": "string"
+    },
+    "chunk_count": {
+      "minimum": 1,
+      "title": "Chunk Count",
+      "type": "integer"
+    },
+    "chunks": {
+      "items": {
+        "$ref": "#/$defs/ArchiveChunk"
+      },
+      "minItems": 1,
+      "title": "Chunks",
+      "type": "array"
+    },
+    "coverage_end_month": {
+      "format": "date",
+      "title": "Coverage End Month",
+      "type": "string"
+    },
+    "coverage_start_month": {
+      "format": "date",
+      "title": "Coverage Start Month",
+      "type": "string"
+    },
+    "covered_months": {
+      "items": {
+        "format": "date",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Covered Months",
+      "type": "array"
+    },
+    "covered_trading_dates": {
+      "items": {
+        "format": "date",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Covered Trading Dates",
+      "type": "array"
+    },
+    "dataset_key": {
+      "enum": [
+        "tw_equity_minute",
+        "tw_etf_minute"
+      ],
+      "title": "Dataset Key",
+      "type": "string"
+    },
+    "expected_trading_dates": {
+      "items": {
+        "format": "date",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Expected Trading Dates",
+      "type": "array"
+    },
+    "finalized_at": {
+      "format": "date-time",
+      "title": "Finalized At",
+      "type": "string"
+    },
+    "instruments": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "title": "Instruments",
+      "type": "array"
+    },
+    "instruments_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Instruments Sha256",
+      "type": "string"
+    },
+    "objects": {
+      "items": {
+        "$ref": "#/$defs/ArchiveObject"
+      },
+      "minItems": 1,
+      "title": "Objects",
+      "type": "array"
+    },
+    "overlap_precedence": {
+      "const": "direct_daily_shioaji",
+      "title": "Overlap Precedence",
+      "type": "string"
+    },
+    "release_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Release Id",
+      "type": "string"
+    },
+    "release_state": {
+      "const": "finalized",
+      "title": "Release State",
+      "type": "string"
+    },
+    "row_count": {
+      "minimum": 1,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "schema_id": {
+      "const": "market_minute_archive",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "sequence_count": {
+      "minimum": 1,
+      "title": "Sequence Count",
+      "type": "integer"
+    },
+    "source": {
+      "const": "tw_recorder_archive",
+      "title": "Source",
+      "type": "string"
+    },
+    "trading_calendar_checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Trading Calendar Checksum",
+      "type": "string"
+    },
+    "trading_dates_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Trading Dates Sha256",
+      "type": "string"
+    },
+    "upstream_source": {
+      "const": "shioaji",
+      "title": "Upstream Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "release_id",
+    "dataset_key",
+    "source",
+    "upstream_source",
+    "overlap_precedence",
+    "trading_calendar_checksum",
+    "coverage_start_month",
+    "coverage_end_month",
+    "covered_months",
+    "expected_trading_dates",
+    "covered_trading_dates",
+    "trading_dates_sha256",
+    "instruments",
+    "instruments_sha256",
+    "sequence_count",
+    "chunk_count",
+    "row_count",
+    "checksum_sha256",
+    "chunks",
+    "objects",
+    "release_state",
+    "finalized_at"
+  ],
+  "title": "MarketMinuteArchiveManifest",
+  "type": "object",
+  "x-findb-contract": {
+    "schema_id": "market_minute_archive",
+    "schema_version": 1
+  },
+  "x-findb-contract-scope": {
+    "artifact_kind": "immutable_archive_release_manifest",
+    "finalization": "publish objects first, then atomically publish this finalized manifest",
+    "runtime_ingest_support": "not_implemented"
+  },
+  "x-findb-semantic-rules": [
+    {
+      "description": "covered_months is continuous and equals declared coverage",
+      "id": "archive.coverage.continuous_months"
+    },
+    {
+      "description": "calendar revision checksum pins ascending expected dates that exactly equal covered dates across every covered month",
+      "id": "archive.trading_calendar.strict_no_gap_barrier"
+    },
+    {
+      "description": "archive source is tw_recorder_archive with Shioaji upstream and direct daily Shioaji overlap precedence",
+      "id": "archive.source.direct_daily_precedence"
+    },
+    {
+      "description": "chunk sequences are contiguous and count-matched",
+      "id": "archive.chunks.contiguous_sequences"
+    },
+    {
+      "description": "each chunk contains at most 5,000 rows",
+      "id": "archive.chunks.max_rows"
+    },
+    {
+      "description": "instrument and object checksums are immutable release evidence",
+      "id": "archive.checksums.instrument_and_object"
+    },
+    {
+      "description": "only finalized manifests are publishable",
+      "id": "archive.finalization.atomic_publication"
+    }
+  ]
+}

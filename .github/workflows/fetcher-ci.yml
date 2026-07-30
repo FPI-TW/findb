@@ -15,6 +15,7 @@ on:
       - "backend/pyproject.toml"
       - "backend/uv.lock"
       - "backend/scripts/export_ingress_contracts.py"
+      - "backend/scripts/export_archive_contracts.py"
       - "backend/tests/test_contract_artifacts.py"
       - ".github/workflows/fetcher-ci.yml"
       - ".github/workflows/fetcher-cd.yml"
@@ -57,7 +58,9 @@ jobs:
 
       - name: Check contract artifacts
         working-directory: backend
-        run: uv run --frozen python scripts/export_ingress_contracts.py --check
+        run: |
+          uv run --frozen python scripts/export_ingress_contracts.py --check
+          uv run --frozen python scripts/export_archive_contracts.py --check
 
       - name: Lint and format check
         run: |

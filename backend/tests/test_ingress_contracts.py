@@ -106,6 +106,17 @@ def test_market_eod_v1_accepts_provider_neutral_payload():
     assert request.payload.data[0].source_symbol == "2330 TT Equity"
 
 
+def test_eod_contracts_reject_minute_only_sequenced_snapshot_delivery_mode():
+    value = _market_eod_request()
+    value["payload"]["batch"]["delivery_mode"] = "sequenced_snapshot"
+
+    with pytest.raises(ValidationError):
+        MarketEODIngressRequest.model_validate(value)
+
+    schema = get_contract_json_schema("market_eod", 1)
+    assert "sequenced_snapshot" not in json.dumps(schema, sort_keys=True)
+
+
 def test_market_eod_v1_accepts_optional_scheduler_delivery_metadata():
     value = _market_eod_request()
     value["delivery"] = {
@@ -371,7 +382,11 @@ def test_registry_dispatches_explicit_contract_version():
     request = validate_ingress_request(_market_eod_request())
 
     assert isinstance(request, MarketEODIngressRequest)
-    assert supported_contracts() == (("futures_continuous_eod", 1), ("market_eod", 1))
+    assert supported_contracts() == (
+        ("futures_continuous_eod", 1),
+        ("market_eod", 1),
+        ("market_minute", 1),
+    )
 
 
 @pytest.mark.parametrize(

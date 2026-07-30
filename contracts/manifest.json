@@ -11,6 +11,12 @@
       "schema_id": "market_eod",
       "schema_version": 1,
       "sha256": "65b83567a8a8e37bc1835914c74d1a5d3770674494815d48b2914240dca4e781"
+    },
+    {
+      "path": "market_minute/v1.schema.json",
+      "schema_id": "market_minute",
+      "schema_version": 1,
+      "sha256": "cd474c441320103445c07998177e9438a59be6387cdeb4f70475c1ff29466ba2"
     }
   ],
   "manifest_version": 1

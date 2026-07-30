@@ -87,6 +87,15 @@ FinDB contract只帶不含credentials的`source_raw_ref`與checksum。
 - `source` 表示實際 provider。
 - Idempotency key 必須可由 Fetcher 穩定重建。
 
+## 已發布、尚未啟用的 minute 契約
+
+`market_minute.v1` 與 `market_minute_archive.v1` 已作為 machine-readable
+contract 發布，minute workflow/canonical DB 骨架亦已建立，但目前沒有 minute
+normalizer、runtime persistence、Serve query 或 Export API。RDS hot 61 monthly
+partitions automation、永久 Canonical R2 與 archive publication barrier 均屬後續實作；
+Serve 保持唯讀，未來 Export API 必須與 Serve 分離。細節見
+[台灣一分鐘資料契約](tw-minute-data.md)。
+
 ## 故障模型
 
 - RabbitMQ 中斷：Source API 仍可接受並寫入 outbox，恢復後補送。

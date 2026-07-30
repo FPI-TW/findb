@@ -1,0 +1,11 @@
+{
+  "contracts": [
+    {
+      "path": "market_minute_archive/v1.schema.json",
+      "schema_id": "market_minute_archive",
+      "schema_version": 1,
+      "sha256": "6cbc88afbf8a5b282b9b3887fd4bb3af32bc395c6ecf51a4e67b47acc30c87cb"
+    }
+  ],
+  "manifest_version": 1
+}
