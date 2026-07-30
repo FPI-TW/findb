@@ -16,10 +16,10 @@ describe("public API URL", () => {
     }
   )
 
-  it("keeps production requests on the same origin for nginx routing", () => {
+  it("keeps deployed requests on the same origin for nginx routing", () => {
     expect(
       resolvePublicApiUrl("/api/v1/serve/lookup/instruments", {
-        hostname: "findb.tingfong.com",
+        hostname: "findb-staging.tingfong.com",
         port: "",
         protocol: "https:",
       })

@@ -115,6 +115,7 @@ jobs:
       RAW_RETENTION_DAYS: ${{ vars.RAW_RETENTION_DAYS }}
       FINDB_STATIC_CACHE_BASE_URL: ${{ vars.FINDB_STATIC_CACHE_BASE_URL }}
       FINDB_LATEST_PRICE_WORKERS: ${{ vars.FINDB_LATEST_PRICE_WORKERS }}
+      FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -133,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_BREAK_GLASS_API_KEY FINDB_QUEUE_HEALTH_ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
+          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_BREAK_GLASS_API_KEY FINDB_QUEUE_HEALTH_ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
               missing=1
@@ -162,6 +163,10 @@ jobs:
           FINDB_LOOKUP_SERVE_API_KEY: ${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}
         run: |
           set -euo pipefail
+          python backend/scripts/render_nginx_public_host.py \
+            --host "$FINDB_PUBLIC_HOST" \
+            --template infra/nginx/nginx.conf \
+            --output infra/nginx/nginx.conf
           python backend/scripts/render_nginx_source_allowlist.py \
             --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
             --output infra/nginx/source-allowlist.conf
@@ -169,6 +174,7 @@ jobs:
             --output infra/nginx/cloudflare-real-ip.conf
           python backend/scripts/render_nginx_serve_key.py \
             --key "${FINDB_LOOKUP_SERVE_API_KEY:-}" \
+            --public-host "$FINDB_PUBLIC_HOST" \
             --output infra/nginx/serve-key.conf
 
       - name: Prepare deploy directories on EC2
