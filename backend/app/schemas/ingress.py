@@ -366,7 +366,7 @@ class MarketMinuteBatch(IngressBatch):
 
 
 class MarketMinutePayload(BaseModel):
-    """``market_minute.v1`` body only; a normalizer is not yet implemented."""
+    """``market_minute.v1`` body normalized into canonical minute bars."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -485,7 +485,7 @@ class FuturesContinuousEODIngressRequest(_IngressRequest):
 
 
 class MarketMinuteIngressRequest(_IngressRequest):
-    """Complete ``market_minute.v1`` request shape; runtime support is pending."""
+    """Complete ``market_minute.v1`` request shape with runtime normalization."""
 
     schema_id: Literal["market_minute"]
     schema_version: Literal[1]

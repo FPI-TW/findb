@@ -84,6 +84,16 @@ credentials 加到此 smoke container。
 一次 acquisition 的硬上限為 300 秒，涵蓋 cold cache 的 SDK metadata/data 初始化；逾時會
 終止隔離 child 並只輸出 generic `acquisition_failed`，不重試或啟用 scheduler。
 
+## Shioaji simulation acquisition smoke
+
+`shioaji==1.7.1` 是 optional dependency。`findb-fetch-shioaji-smoke` 只接受 staging
+allowlist 的單一 `2330` 與明確日期（最近 31 天內），以 `simulation=True` 取得一次 Kbars。
+它不會 delivery、寫 DB/R2 或啟用 scheduler；SDK 工作會在輸出靜音的 bounded child 執行，
+並保證登出。成功 stdout 僅包含版本、日期、symbol、筆數與 checksum。Shioaji `usage()` 的
+bytes/connections 不會被當成 request count；contract 中的 usage 是本地單調 request-attempt
+計數。Kbars `ts` 依 Asia/Taipei wall-clock 的 right-labelled bar end 轉換；13:30 close-auction
+仍是已知語意限制，須待 contract 決策後才可特例化。
+
 ## Twelve Data手動抓取
 
 本機開發將API key放在被Git忽略的`fetcher/.env`，不要加入版控。從

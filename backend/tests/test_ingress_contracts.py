@@ -24,6 +24,7 @@ from app.services.normalize import (
     FuturesContinuousEODContractNormalizer,
     FuturesContinuousNormalizer,
     MarketEODContractNormalizer,
+    MarketMinuteContractNormalizer,
 )
 from scripts.seed_data import DATASETS
 
@@ -663,6 +664,15 @@ def test_contract_normalizer_routing_requires_schema_id_and_version():
             schema_version=2,
         )
         is None
+    )
+    assert (
+        _select_normalizer_for_payload(
+            "tw_equity_minute",
+            {},
+            schema_id="market_minute",
+            schema_version=1,
+        )
+        is MarketMinuteContractNormalizer
     )
     assert (
         _select_normalizer_for_payload(

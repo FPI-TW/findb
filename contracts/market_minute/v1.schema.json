@@ -180,7 +180,7 @@
     },
     "MarketMinutePayload": {
       "additionalProperties": false,
-      "description": "``market_minute.v1`` body only; a normalizer is not yet implemented.",
+      "description": "``market_minute.v1`` body normalized into canonical minute bars.",
       "properties": {
         "batch": {
           "$ref": "#/$defs/MarketMinuteBatch"
@@ -499,7 +499,7 @@
   "$id": "urn:findb:ingress-contract:market_minute:v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Complete ``market_minute.v1`` request shape; runtime support is pending.",
+  "description": "Complete ``market_minute.v1`` request shape with runtime normalization.",
   "properties": {
     "dataset_key": {
       "maxLength": 50,

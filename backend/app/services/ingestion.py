@@ -61,6 +61,7 @@ from app.services.normalize import (
     MacroBloombergNormalizer,
     MacroNormalizer,
     MarketEODContractNormalizer,
+    MarketMinuteContractNormalizer,
     TWEquityNormalizer,
     TWETFFinlabNormalizer,
     TWIndexNormalizer,
@@ -129,6 +130,7 @@ _WTX_SOURCE_NORMALIZERS: dict[str, NormalizerFactory] = {
 
 CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
     ("market_eod", 1): MarketEODContractNormalizer,
+    ("market_minute", 1): MarketMinuteContractNormalizer,
     ("futures_continuous_eod", 1): FuturesContinuousEODContractNormalizer,
 }
 
@@ -989,7 +991,11 @@ class IngestionService:
                 schema_id=request.schema_id,
                 schema_version=request.schema_version,
                 batch_data_date=request.payload.batch.data_date,
-                delivery_mode=request.payload.batch.delivery_mode.value,
+                delivery_mode=getattr(
+                    request.payload.batch.delivery_mode,
+                    "value",
+                    request.payload.batch.delivery_mode,
+                ),
                 policy_outcome=policy_result.outcome,
                 policy_details=policy_details,
             )
@@ -1007,7 +1013,14 @@ class IngestionService:
                     )
                 )
             await self.create_normalization_job(run)
-            if request.payload.batch.delivery_mode.value == "full_snapshot":
+            if (
+                getattr(
+                    request.payload.batch.delivery_mode,
+                    "value",
+                    request.payload.batch.delivery_mode,
+                )
+                == "full_snapshot"
+            ):
                 await resolve_missing_delivery_for_run(
                     self.db,
                     dataset_key=request.dataset_key,

@@ -1,7 +1,8 @@
 # 台灣一分鐘資料契約與後續架構
 
 > 狀態：`market_minute.v1` ingress 與 `market_minute_archive.v1` archive manifest
-> 已發布為契約，且 workflow/canonical DB 骨架已建；尚未實作 Source runtime 寫入、normalizer、monthly partition automation 或 Serve 查詢。
+> 已發布為契約，workflow/canonical DB 骨架、Source routing、normalizer、DQ 與 canonical
+> 寫入均已建；production scheduler、monthly partition automation 與 Serve 查詢尚未實作。
 
 ## 範圍與單位
 
@@ -169,21 +170,20 @@ Staging、production 各用不同 Shioaji 帳號、limiter 與 Source client key
 只從環境 secrets/config 載入，不得進入 log、manifest、raw payload、文件或 generated
 contracts。Production 歷史回補不得向 Shioaji 跨日取得。
 
-Fetcher 實作前須 pin 並驗證 Shioaji SDK。既有參考專案使用 `1.3.3` legacy
-`api.Contracts`；`1.7` 改為 `api.contracts`，登入參數與 contract detail 取得方式亦有
-破壞性差異，因此必須用明確 compatibility layer 與真實 staging smoke，不能直接替換
-版本。
+Fetcher 已將 Shioaji 精確 pin 為 optional dependency `1.7.1`，並以 lazy gateway 使用
+lowercase `api.contracts.stocks` 與 `KBars.dict()`。credential-safe、單一 `2330` 的
+simulation smoke CLI 已實作；成功的真實 staging smoke 仍是 production activation 前的
+必要 gate，不得以 mock regression 取代。
 
 ## 後續工作（未實作）
 
 以下是已界定但未在本里程碑完成的架構，文件不代表 runtime 已支援：
 
-- provider adapter、credentialed login 與 live smoke；
-- scheduler／acquisition runtime；
+- credentialed staging smoke 的成功驗收；
+- production scheduler／universe coordination／acquisition runtime；
 - deployment 與 staging rollout；
 - production archive import；
 - RDS hot storage 的 61 個 monthly partitions automation；
 - 永久 Canonical R2 archive 與上述 publication barrier 的實際儲存流程；
-- minute normalizer、DQ、canonical 寫入與 dataset registry/runtime routing；
 - 保持唯讀的 Serve API minute query；
 - 與 Serve API 分離的 Export API。

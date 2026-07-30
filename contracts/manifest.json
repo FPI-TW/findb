@@ -16,7 +16,7 @@
       "path": "market_minute/v1.schema.json",
       "schema_id": "market_minute",
       "schema_version": 1,
-      "sha256": "cd474c441320103445c07998177e9438a59be6387cdeb4f70475c1ff29466ba2"
+      "sha256": "be67eab8ee1e8d8e6727bf7816420a438e6a510f715d869c7836471486631361"
     }
   ],
   "manifest_version": 1
