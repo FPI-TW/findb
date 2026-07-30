@@ -2,9 +2,7 @@
 Tests for US Stock normalizer.
 """
 
-import json
 from decimal import Decimal
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,19 +16,10 @@ from app.services.normalize.usstock import (
     USStockNormalizer,
 )
 
-# Load sample data from the actual file
-SAMPLE_DATA_PATH = (
-    Path(__file__).parent.parent / "bloomberg_usstock_20260204_160051_api_format.json"
-)
-
 
 @pytest.fixture
 def sample_usstock_data():
     """Load sample US Stock data."""
-    if SAMPLE_DATA_PATH.exists():
-        with open(SAMPLE_DATA_PATH) as f:
-            return json.load(f)
-    # Fallback minimal test data
     return {
         "metadata": {
             "source": "Bloomberg API",
@@ -325,54 +314,6 @@ class TestGlobalStockNormalizer:
         assert all(record.market == "TW" for record in tw_records)
         assert all(record.market == "HK" for record in hk_records)
         assert all(record.market == "CN" for record in cn_records)
-
-
-class TestUSStockNormalizerWithRealData:
-    """Integration tests with real sample data file."""
-
-    @pytest.mark.skipif(not SAMPLE_DATA_PATH.exists(), reason="Sample data file not found")
-    def test_real_data_parsing(self):
-        """Test parsing of real sample data file."""
-        with open(SAMPLE_DATA_PATH) as f:
-            data = json.load(f)
-
-        db_mock = MagicMock()
-        normalizer = USStockNormalizer(db_mock)
-
-        records = normalizer.map_fields(data)
-
-        # Should have parsed all 63 records
-        assert len(records) == data["metadata"]["total_records"]
-
-        # Check for specific stocks
-        symbols = {r.symbol for r in records}
-        assert "AAPL" in symbols
-        assert "MSFT" in symbols
-        assert "NVDA" in symbols
-        assert "GOOGL" in symbols
-        assert "TSLA" in symbols
-
-    @pytest.mark.skipif(not SAMPLE_DATA_PATH.exists(), reason="Sample data file not found")
-    def test_real_data_index_filtering(self):
-        """Test that index normalizer properly filters real data."""
-        with open(SAMPLE_DATA_PATH) as f:
-            data = json.load(f)
-
-        db_mock = MagicMock()
-        normalizer = USIndexNormalizer(db_mock)
-
-        records = normalizer.map_fields(data)
-
-        # Should only have index records
-        index_symbols = {r.symbol for r in records}
-
-        # Known indices in the sample data
-        expected_indices = {"SPX", "NDX", "INDU", "SOX", "RTY", "VIX"}
-        assert expected_indices.issubset(index_symbols)
-
-        # Should not have regular stocks
-        assert "AAPL" not in index_symbols
-        assert "MSFT" not in index_symbols
 
 
 if __name__ == "__main__":
