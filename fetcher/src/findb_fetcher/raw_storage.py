@@ -53,7 +53,7 @@ class RawStorageConfig:
     bucket: str
     access_key_id: str = field(repr=False)
     secret_access_key: str = field(repr=False)
-    prefix: str = "raw/twelve-data"
+    prefix: str = "raw"
     session_token: str | None = field(default=None, repr=False)
     max_object_bytes: int = 8 * 1024 * 1024
 
@@ -107,7 +107,7 @@ class RawStorageConfig:
             bucket=bucket,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
-            prefix=os.getenv("CLOUDFLARE_R2_PREFIX", "raw/twelve-data"),
+            prefix=os.getenv("CLOUDFLARE_R2_PREFIX", "raw"),
             session_token=os.getenv("CLOUDFLARE_R2_SESSION_TOKEN"),
             max_object_bytes=_positive_int_env("CLOUDFLARE_R2_MAX_OBJECT_BYTES", 8 * 1024 * 1024),
         )
