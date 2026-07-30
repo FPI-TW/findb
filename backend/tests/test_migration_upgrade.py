@@ -123,6 +123,13 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                     )
                 },
             )
+            await connection.execute(
+                text("""
+                    INSERT INTO trading_calendar (id, market, trade_date, is_open)
+                    VALUES (:id, 'TW', DATE '2026-01-01', false)
+                """),
+                {"id": uuid4()},
+            )
             for table_name in SOURCE_CONTROL_TABLES:
                 await connection.execute(
                     text(
@@ -249,6 +256,27 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                       AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
                     """)
             )
+            migrated_calendar = (
+                await connection.execute(
+                    text("""
+                        SELECT day_status, source_kind, revision
+                        FROM trading_calendar
+                        WHERE market = 'TW' AND trade_date = DATE '2026-01-01'
+                    """)
+                )
+            ).one()
+            calendar_market_count = await connection.scalar(
+                text("SELECT count(*) FROM calendar_market")
+            )
+            calendar_revision_timezone_column_count = await connection.scalar(
+                text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'calendar_year_revision'
+                      AND column_name = 'timezone'
+                    """)
+            )
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -268,6 +296,9 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert missing_alert_index_count == 2
         assert futures_contract_field_count == 3
         assert active_outbox_index_count == 1
+        assert migrated_calendar == ("closed", "observed_ingestion", 0)
+        assert calendar_market_count == 13
+        assert calendar_revision_timezone_column_count == 1
         expectation = contract_config["delivery_expectation"]
         assert expectation["freshness_hours"] == 72
         assert expectation["minimum_record_count"] == 1777

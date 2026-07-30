@@ -63,6 +63,10 @@ SERVICE_CONFIGS: Final = {
         variables=(
             "FETCHER_SCHEDULER_DESIRED_STATE",
             "FETCHER_SOURCE_API_URL",
+            "FETCHER_CALENDAR_MODE",
+            "FINDB_SERVE_BASE_URL",
+            "FETCHER_CALENDAR_TIMEOUT_SECONDS",
+            "FETCHER_CALENDAR_CACHE_TTL_SECONDS",
             "FETCHER_REQUEST_TIMEOUT_SECONDS",
             "FETCHER_MAX_ATTEMPTS",
             "FETCHER_MAX_RETRY_AFTER_SECONDS",
@@ -84,6 +88,7 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
         ),
         optional_secrets=(
+            "FETCHER_CALENDAR_SERVE_API_KEY",
             "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
             "FINLAB_API_TOKEN",
             "CLOUDFLARE_R2_SESSION_TOKEN",
@@ -211,6 +216,18 @@ def main() -> int:
                 "FINDB_STATIC_CACHE_SERVE_API_KEY",
             }
         ]
+    if arguments.service == "fetcher":
+        calendar_mode = values.get("FETCHER_CALENDAR_MODE")
+        if calendar_mode not in {"static", "remote"}:
+            print("FETCHER_CALENDAR_MODE must be static or remote")
+            return 1
+        if calendar_mode == "remote":
+            required_secrets.append("FETCHER_CALENDAR_SERVE_API_KEY")
+            if values.get("FETCHER_CALENDAR_SERVE_API_KEY") == values.get(
+                "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"
+            ):
+                print("Calendar Serve and Source credentials must be different")
+                return 1
     missing = sorted(
         name for name in (*config.variables, *required_secrets) if not values.get(name)
     )

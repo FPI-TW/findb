@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import ConfigError, FetcherConfig
+from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig
 from findb_fetcher.contracts import ContractError, ContractRegistry
+from findb_fetcher.market_calendar import MarketCalendarError, PublishedCalendarClient
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
@@ -96,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         if schedule.outputsize > universe.limits.max_records_per_symbol:
             raise ScheduleError("schedule outputsize exceeds universe limit")
         fetcher_config = FetcherConfig.from_env()
+        calendar_config = MarketCalendarConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
         raw_storage_config = RawStorageConfig.from_env()
         twelve_data_config = TwelveDataConfig.from_env()
@@ -110,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
         raw_store = R2RawPayloadStore(raw_storage_config)
 
         with ExitStack() as stack:
+            calendar = (
+                stack.enter_context(PublishedCalendarClient(calendar_config))
+                if calendar_config.mode == "remote"
+                else None
+            )
             provider = stack.enter_context(TwelveDataClient(twelve_data_config))
             source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
             executor = TwelveDataScheduledExecutor(
@@ -126,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                 universe=universe,
                 state=state,
                 executor=executor,
+                calendar=calendar,
             )
             if args.run_forever:
                 return _run_forever(service, schedule.poll_interval_seconds)
@@ -135,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         ConfigError,
         ContractError,
+        MarketCalendarError,
         ScheduleError,
         RawStorageError,
         SchedulerStateError,
@@ -189,6 +198,12 @@ def _emit_summary(execution: SchedulerRun) -> None:
                 }
                 for result in execution.results
             ],
+            **({"skip_reason": execution.skip_reason} if execution.skip_reason is not None else {}),
+            **(
+                {"calendar_revision": execution.calendar_revision}
+                if execution.calendar_revision is not None
+                else {}
+            ),
         },
         stream=sys.stdout,
     )

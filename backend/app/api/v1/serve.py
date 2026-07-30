@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import verify_serve_api_key
+from app.api.deps import require_serve_api_key, verify_serve_api_key
 from app.dependencies import get_db
 from app.models.canonical import (
     BondDetails,
@@ -51,10 +51,56 @@ from app.schemas.serve import (
     MacroSeriesResponse,
     MarketFreshnessSummaryListResponse,
     MarketFreshnessSummaryResponse,
+    PublishedCalendarYearEnvelope,
+    PublishedCalendarYearResponse,
 )
+from app.services.calendar_management import published_year
 from app.services.market_freshness import list_market_freshness
 
 router = APIRouter()
+
+
+@router.get("/calendar/years/{market}/{year}", response_model=PublishedCalendarYearEnvelope)
+async def get_published_calendar_year(
+    market: str,
+    year: int,
+    _: str = Depends(require_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Scheduler contract. Never returns observation-derived calendar rows."""
+    if year < 1900 or year > 2200:
+        raise HTTPException(status_code=422, detail="year must be between 1900 and 2200")
+    resolved = await published_year(db, market.upper(), year)
+    if resolved is None:
+        # A missing/incomplete/draft calendar is intentionally indistinguishable:
+        # consumers must fail closed rather than infer a trading day.
+        raise HTTPException(status_code=404, detail="Complete published calendar year not found")
+    revision, _market_config, days = resolved
+    return PublishedCalendarYearEnvelope(
+        data=PublishedCalendarYearResponse(
+            market=revision.market,
+            year=revision.year,
+            revision=revision.revision,
+            status="published",
+            coverage_complete=True,
+            timezone=revision.timezone,
+            expected_days=revision.expected_days,
+            actual_days=revision.actual_days,
+            days=[
+                CalendarResponse(
+                    market=revision.market,
+                    trade_date=day.trade_date,
+                    is_open=day.is_open,
+                    session_open=str(day.session_open) if day.session_open else None,
+                    session_close=str(day.session_close) if day.session_close else None,
+                    holiday_name=day.holiday_name,
+                    day_status=day.day_status,
+                    description=day.description,
+                )
+                for day in days
+            ],
+        )
+    )
 
 
 @router.get("/market-freshness", response_model=MarketFreshnessSummaryListResponse)
@@ -1206,6 +1252,8 @@ async def list_calendar(
                 session_open=str(cal.session_open) if cal.session_open else None,
                 session_close=str(cal.session_close) if cal.session_close else None,
                 holiday_name=cal.holiday_name,
+                day_status=cal.day_status,
+                description=cal.description,
             )
             for cal in calendar_records
         ],

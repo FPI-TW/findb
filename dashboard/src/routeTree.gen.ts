@@ -17,6 +17,7 @@ import { Route as SkillRouteImport } from './routes/skill'
 import { Route as AuthenticatedChangePasswordRouteImport } from './routes/_authenticated/change-password'
 import { Route as AuthenticatedOperationsRouteImport } from './routes/_authenticated/operations'
 import { Route as AuthenticatedOperationsIndexRouteImport } from './routes/_authenticated/operations.index'
+import { Route as AuthenticatedOperationsCalendarsRouteImport } from './routes/_authenticated/operations.calendars'
 import { Route as AuthenticatedOperationsCorrectionsRouteImport } from './routes/_authenticated/operations.corrections'
 import { Route as AuthenticatedOperationsCredentialsRouteImport } from './routes/_authenticated/operations.credentials'
 import { Route as AuthenticatedOperationsDeliveriesRouteImport } from './routes/_authenticated/operations.deliveries'
@@ -65,6 +66,12 @@ const AuthenticatedOperationsIndexRoute =
     path: '/',
     getParentRoute: () => AuthenticatedOperationsRoute,
   } as any)
+const AuthenticatedOperationsCalendarsRoute =
+  AuthenticatedOperationsCalendarsRouteImport.update({
+    id: '/calendars',
+    path: '/calendars',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
 const AuthenticatedOperationsCorrectionsRoute =
   AuthenticatedOperationsCorrectionsRouteImport.update({
     id: '/corrections',
@@ -109,6 +116,7 @@ export interface FileRoutesByFullPath {
   '/skill': typeof SkillRoute
   '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations': typeof AuthenticatedOperationsRouteWithChildren
+  '/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
   '/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
@@ -123,6 +131,7 @@ export interface FileRoutesByTo {
   '/lookup': typeof LookupRoute
   '/skill': typeof SkillRoute
   '/change-password': typeof AuthenticatedChangePasswordRoute
+  '/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
   '/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
@@ -140,6 +149,7 @@ export interface FileRoutesById {
   '/skill': typeof SkillRoute
   '/_authenticated/change-password': typeof AuthenticatedChangePasswordRoute
   '/_authenticated/operations': typeof AuthenticatedOperationsRouteWithChildren
+  '/_authenticated/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
   '/_authenticated/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
   '/_authenticated/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/_authenticated/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
@@ -157,6 +167,7 @@ export interface FileRouteTypes {
     | '/skill'
     | '/change-password'
     | '/operations'
+    | '/operations/calendars'
     | '/operations/corrections'
     | '/operations/credentials'
     | '/operations/deliveries'
@@ -171,6 +182,7 @@ export interface FileRouteTypes {
     | '/lookup'
     | '/skill'
     | '/change-password'
+    | '/operations/calendars'
     | '/operations/corrections'
     | '/operations/credentials'
     | '/operations/deliveries'
@@ -187,6 +199,7 @@ export interface FileRouteTypes {
     | '/skill'
     | '/_authenticated/change-password'
     | '/_authenticated/operations'
+    | '/_authenticated/operations/calendars'
     | '/_authenticated/operations/corrections'
     | '/_authenticated/operations/credentials'
     | '/_authenticated/operations/deliveries'
@@ -262,6 +275,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedOperationsIndexRouteImport
       parentRoute: typeof AuthenticatedOperationsRoute
     }
+    '/_authenticated/operations/calendars': {
+      id: '/_authenticated/operations/calendars'
+      path: '/calendars'
+      fullPath: '/operations/calendars'
+      preLoaderRoute: typeof AuthenticatedOperationsCalendarsRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
     '/_authenticated/operations/corrections': {
       id: '/_authenticated/operations/corrections'
       path: '/corrections'
@@ -308,6 +328,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedOperationsRouteChildren {
+  AuthenticatedOperationsCalendarsRoute: typeof AuthenticatedOperationsCalendarsRoute
   AuthenticatedOperationsCorrectionsRoute: typeof AuthenticatedOperationsCorrectionsRoute
   AuthenticatedOperationsCredentialsRoute: typeof AuthenticatedOperationsCredentialsRoute
   AuthenticatedOperationsDeliveriesRoute: typeof AuthenticatedOperationsDeliveriesRoute
@@ -319,6 +340,8 @@ interface AuthenticatedOperationsRouteChildren {
 
 const AuthenticatedOperationsRouteChildren: AuthenticatedOperationsRouteChildren =
   {
+    AuthenticatedOperationsCalendarsRoute:
+      AuthenticatedOperationsCalendarsRoute,
     AuthenticatedOperationsCorrectionsRoute:
       AuthenticatedOperationsCorrectionsRoute,
     AuthenticatedOperationsCredentialsRoute:

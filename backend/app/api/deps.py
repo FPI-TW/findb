@@ -334,3 +334,27 @@ async def verify_serve_api_key(
             detail="Authentication required but no API keys configured",
         )
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
+
+
+async def require_serve_api_key(
+    request: Request,
+    api_key: str = Security(api_key_header),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """Require an active DB-backed Serve key, regardless of optional Serve auth."""
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+        )
+    db_key = await find_active_api_key(db, api_key)
+    if db_key is None or db_key.kind != "serve":
+        record_invalid_credential(
+            "serve",
+            endpoint=request.url.path,
+            client_ip=_extract_client_ip(request),
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
+    _enforce_serve_api_key_policy(request, db_key)
+    request.state.credential_ref = ("serve", db_key.key_id)
+    return str(db_key.key_id)

@@ -330,8 +330,18 @@ async def test_calendar_close_grace_and_holiday_resolution(test_session: AsyncSe
             TradingCalendar(
                 market="TW", trade_date=date(2026, 7, 17), is_open=True, session_close=time(13, 30)
             ),
-            TradingCalendar(market="TW", trade_date=date(2026, 7, 18), is_open=False),
-            TradingCalendar(market="TW", trade_date=date(2026, 7, 19), is_open=False),
+            TradingCalendar(
+                market="TW",
+                trade_date=date(2026, 7, 18),
+                is_open=False,
+                day_status="closed",
+            ),
+            TradingCalendar(
+                market="TW",
+                trade_date=date(2026, 7, 19),
+                is_open=False,
+                day_status="closed",
+            ),
             TradingCalendar(
                 market="TW", trade_date=date(2026, 7, 20), is_open=True, session_close=time(13, 30)
             ),

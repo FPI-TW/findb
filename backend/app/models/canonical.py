@@ -4,7 +4,7 @@ Canonical Layer database models.
 
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from sqlalchemy import (
@@ -22,6 +22,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, NUMERIC
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -144,6 +145,14 @@ class TradingCalendar(Base):
     __tablename__ = "trading_calendar"
     __table_args__ = (
         CheckConstraint(sql_market_check("market"), name="calendar_market_valid"),
+        CheckConstraint(
+            "day_status IN ('open', 'closed', 'settlement_only')",
+            name="calendar_day_status_valid",
+        ),
+        CheckConstraint(
+            "is_open = (day_status = 'open')",
+            name="calendar_is_open_consistent",
+        ),
         UniqueConstraint("market", "trade_date", name="uq_calendar"),
         Index("idx_cal_market_date", "market", "trade_date"),
     )
@@ -152,9 +161,138 @@ class TradingCalendar(Base):
     market: Mapped[str] = mapped_column(String(10), nullable=False)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Existing ingestion rows are observational only.  A managed calendar row is
+    # associated with a published/draft CalendarYearRevision instead.
+    day_status: Mapped[Literal["open", "closed", "settlement_only"]] = mapped_column(
+        String(20), nullable=False, default="open"
+    )
     session_open: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     session_close: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     holiday_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_kind: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="observed_ingestion"
+    )
+    source_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    import_batch_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CalendarMarket(Base):
+    """Explicit, independently managed market defaults for annual calendars."""
+
+    __tablename__ = "calendar_market"
+    __table_args__ = (
+        CheckConstraint(sql_market_check("market"), name="calendar_market_code_valid"),
+    )
+
+    market: Mapped[str] = mapped_column(String(10), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    weekend_days: Mapped[list[int]] = mapped_column(JSONB, nullable=False, default=list)
+    default_session_open: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+    default_session_close: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CalendarYearRevision(Base):
+    """A complete market/year calendar revision, draft until explicitly published."""
+
+    __tablename__ = "calendar_year_revision"
+    __table_args__ = (
+        UniqueConstraint("market", "year", "revision", name="uq_calendar_year_revision"),
+        Index("idx_calendar_year_revision_lookup", "market", "year", "status"),
+        Index(
+            "uq_calendar_year_published",
+            "market",
+            "year",
+            unique=True,
+            postgresql_where=text("status = 'published'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[Literal["draft", "published", "superseded"]] = mapped_column(
+        String(20), nullable=False, default="draft"
+    )
+    expected_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CalendarRevisionDay(Base):
+    """Immutable day projection belonging to one managed annual revision."""
+
+    __tablename__ = "calendar_revision_day"
+    __table_args__ = (
+        UniqueConstraint("calendar_revision_id", "trade_date", name="uq_calendar_revision_day"),
+        Index("idx_calendar_revision_day_date", "calendar_revision_id", "trade_date"),
+        CheckConstraint(
+            "day_status IN ('open', 'closed', 'settlement_only')",
+            name="calendar_revision_day_status_valid",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    calendar_revision_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("calendar_year_revision.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    day_status: Mapped[Literal["open", "closed", "settlement_only"]] = mapped_column(
+        String(20), nullable=False
+    )
+    is_open: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    session_open: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+    session_close: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+    holiday_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+
+
+class CalendarImportBatch(Base):
+    """Short-lived, sanitized preview payload; raw uploaded bytes are never retained."""
+
+    __tablename__ = "calendar_import_batch"
+    __table_args__ = (Index("idx_calendar_import_batch_lookup", "market", "year", "status"),)
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_format: Mapped[str] = mapped_column(String(30), nullable=False)
+    detected_encoding: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    source_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    source_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    candidate_rows: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    warnings: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    errors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    base_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="previewed")
+    created_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MarketDataEOD(Base):

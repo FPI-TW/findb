@@ -1,14 +1,174 @@
 """Admin API 使用的 Pydantic schema。"""
 
+from base64 import b64decode
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Literal, Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import PaginatedResponse
 from app.utils import ensure_utc, utc_now
+
+# ── Managed trading calendars ───────────────────────────────────────────────
+
+
+CalendarDayStatus = Literal["open", "closed", "settlement_only"]
+
+
+class CalendarMarketRequest(BaseModel):
+    market: str = Field(min_length=1, max_length=10)
+    display_name: str = Field(min_length=1, max_length=100)
+    timezone: str = Field(min_length=1, max_length=64)
+    weekend_days: list[int] = Field(default_factory=lambda: [5, 6], max_length=7)
+    default_session_open: Optional[time] = None
+    default_session_close: Optional[time] = None
+    active: bool = True
+
+    @field_validator("weekend_days")
+    @classmethod
+    def validate_weekend_days(cls, value: list[int]) -> list[int]:
+        if any(day < 0 or day > 6 for day in value):
+            raise ValueError("weekend_days must contain ISO weekday indexes 0 through 6")
+        return sorted(set(value))
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
+
+
+class CalendarMarketResponse(CalendarMarketRequest):
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CalendarDayInput(BaseModel):
+    trade_date: date
+    status: CalendarDayStatus
+    holiday_name: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    session_open: Optional[time] = None
+    session_close: Optional[time] = None
+
+
+class CalendarJsonPreviewRequest(BaseModel):
+    market: str = Field(min_length=1, max_length=10)
+    year: int = Field(ge=1900, le=2200)
+    coverage_mode: Literal["exceptions", "full_year"] = "exceptions"
+    days: list[CalendarDayInput] = Field(max_length=366)
+    source_filename: Optional[str] = Field(default=None, max_length=255)
+
+
+class CalendarCsvPreviewRequest(BaseModel):
+    """Base64 transport avoids retaining multipart uploads and caps request size."""
+
+    market: str = Field(min_length=1, max_length=10)
+    year: int = Field(ge=1900, le=2200)
+    filename: str = Field(min_length=1, max_length=255)
+    content_base64: str = Field(min_length=1, max_length=1_400_000)
+
+    @field_validator("content_base64")
+    @classmethod
+    def validate_base64(cls, value: str) -> str:
+        try:
+            if len(b64decode(value, validate=True)) > 1_000_000:
+                raise ValueError("CSV exceeds 1 MiB")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("content_base64 must be valid base64") from exc
+        return value
+
+
+class CalendarPreviewResponse(BaseModel):
+    batch_id: UUID
+    market: str
+    year: int
+    input_format: str
+    detected_encoding: Optional[str] = None
+    base_revision: int
+    summary: dict[str, int]
+    warnings: list[str]
+    errors: list[str]
+    days: list[CalendarDayInput]
+    expires_at: datetime
+
+
+class CalendarApplyRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+class CalendarMutationRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    status: CalendarDayStatus
+    holiday_name: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    session_open: Optional[time] = None
+    session_close: Optional[time] = None
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class CalendarPublishRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+
+
+class CalendarRollbackRequest(BaseModel):
+    target_revision: int = Field(ge=1)
+    expected_revision: int = Field(ge=1)
+
+
+class CalendarRevisionResponse(BaseModel):
+    market: str
+    year: int
+    revision: int
+    status: Literal["draft", "published", "superseded"]
+    expected_days: int
+    actual_days: int
+    timezone: str
+    source_kind: str
+    source_filename: Optional[str] = None
+    published_at: Optional[datetime] = None
+    updated_at: datetime
+    coverage_complete: bool
+
+
+class CalendarManagedDayResponse(CalendarDayInput):
+    market: str
+    is_open: bool
+    revision: int
+    source_kind: str
+
+
+class CalendarYearResponse(BaseModel):
+    revision: CalendarRevisionResponse
+    days: list[CalendarManagedDayResponse]
+    published_revision: CalendarRevisionResponse | None = None
+
+
+class CalendarImportResponse(BaseModel):
+    id: UUID
+    market: str
+    year: int
+    input_format: str
+    source_filename: Optional[str] = None
+    source_sha256: Optional[str] = None
+    base_revision: int
+    status: str
+    revision: Optional[int] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    expires_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 # ── EOD Correction ────────────────────────────────────────────────────────────
 
