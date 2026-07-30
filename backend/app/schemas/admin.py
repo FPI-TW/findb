@@ -1,6 +1,6 @@
 """Admin API 使用的 Pydantic schema。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Literal, Optional
 from uuid import UUID
@@ -238,6 +238,47 @@ class MissingDeliveryAlertResponse(BaseModel):
 
 class MissingDeliveryAlertListResponse(PaginatedResponse[MissingDeliveryAlertResponse]):
     pass
+
+
+class MarketFreshnessFeedResponse(BaseModel):
+    dataset_key: str
+    source: str
+    schema_id: str
+    schema_version: int
+    expected_data_date: Optional[date] = None
+    latest_successful_data_date: Optional[date] = None
+    last_fetched_at: Optional[datetime] = None
+    last_completed_at: Optional[datetime] = None
+    last_run_id: Optional[UUID] = None
+    total_records: Optional[int] = None
+    success_records: Optional[int] = None
+    failed_records: Optional[int] = None
+    policy_outcome: Optional[str] = None
+    open_missing_delivery_alert: bool
+    last_failure_code: Optional[str] = None
+    status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
+
+
+class MarketFreshnessResponse(BaseModel):
+    market: str
+    slot_id: str
+    scheduled_local_time: time
+    timezone: str
+    status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
+    expected_data_date: Optional[date] = None
+    coverage_data_date: Optional[date] = None
+    last_successful_update_at: Optional[datetime] = None
+    last_complete_at: Optional[datetime] = None
+    next_scheduled_at: datetime
+    feed_count: int
+    fresh_feed_count: int
+    late_feed_count: int
+    feeds: list[MarketFreshnessFeedResponse] = Field(default_factory=list)
+
+
+class MarketFreshnessListResponse(BaseModel):
+    success: bool = True
+    data: list[MarketFreshnessResponse]
 
 
 # ── Instrument Cache ──────────────────────────────────────────────────────────

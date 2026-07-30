@@ -85,6 +85,7 @@ SERVICE_CONFIGS: Final = {
         ),
         optional_secrets=(
             "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
+            "FINLAB_API_TOKEN",
             "CLOUDFLARE_R2_SESSION_TOKEN",
         ),
     ),

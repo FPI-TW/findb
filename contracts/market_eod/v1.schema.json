@@ -115,6 +115,46 @@
       "title": "IngressBatch",
       "type": "object"
     },
+    "IngressDeliveryMetadata": {
+      "additionalProperties": false,
+      "description": "Optional scheduler context retained for run-level observability.",
+      "properties": {
+        "scheduled_for": {
+          "format": "date-time",
+          "title": "Scheduled For",
+          "type": "string"
+        },
+        "slot_id": {
+          "enum": [
+            "us_0600",
+            "global_0815",
+            "tw_1430",
+            "asia_1630"
+          ],
+          "title": "Slot Id",
+          "type": "string"
+        },
+        "target_data_date": {
+          "format": "date",
+          "title": "Target Data Date",
+          "type": "string"
+        },
+        "work_item_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Work Item Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot_id",
+        "scheduled_for",
+        "target_data_date",
+        "work_item_id"
+      ],
+      "title": "IngressDeliveryMetadata",
+      "type": "object"
+    },
     "MarketEODPayload": {
       "additionalProperties": false,
       "description": "Payload body for ``market_eod.v1``.",
@@ -323,6 +363,17 @@
       "pattern": "^[a-z0-9_]+$",
       "title": "Dataset Key",
       "type": "string"
+    },
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IngressDeliveryMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "fetched_at": {
       "format": "date-time",

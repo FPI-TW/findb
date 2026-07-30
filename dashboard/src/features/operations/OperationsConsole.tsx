@@ -3,6 +3,7 @@ import { useServerFn } from "@tanstack/react-start"
 import {
   AlertTriangle,
   Archive,
+  CalendarClock,
   CheckCircle2,
   Clock3,
   Database,
@@ -16,6 +17,7 @@ import {
   Users,
 } from "lucide-react"
 import {
+  Component,
   createContext,
   Fragment,
   type FormEvent,
@@ -23,6 +25,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react"
 
@@ -46,10 +49,13 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table"
-import type {
-  DashboardRequest,
-  DashboardResponse,
-  PanelResult,
+import {
+  mergeDashboardRefresh,
+  type DashboardRequest,
+  type DashboardResponse,
+  type FreshnessStatus,
+  type MarketFreshnessResponse,
+  type PanelResult,
 } from "../../lib/admin-api"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { canViewUsers } from "../../lib/admin-permissions"
@@ -68,6 +74,7 @@ const EMPTY_FILTERS: DashboardRequest["audit"] = {
 type OperationsContextValue = {
   data: DashboardResponse | null
   error: string
+  freshnessError: string
   pending: boolean
   initialLoading: boolean
   filters: DashboardRequest["audit"]
@@ -88,7 +95,37 @@ function formatDate(value: string | null) {
   return new Intl.DateTimeFormat("zh-TW", {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: "Asia/Taipei",
   }).format(new Date(value))
+}
+
+function formatRelativeDate(value: string | null) {
+  if (!value) return ""
+  const differenceSeconds = (new Date(value).getTime() - Date.now()) / 1000
+  const absoluteSeconds = Math.abs(differenceSeconds)
+  const [amount, unit] =
+    absoluteSeconds < 60
+      ? [differenceSeconds, "second" as const]
+      : absoluteSeconds < 3600
+        ? [differenceSeconds / 60, "minute" as const]
+        : absoluteSeconds < 86_400
+          ? [differenceSeconds / 3600, "hour" as const]
+          : [differenceSeconds / 86_400, "day" as const]
+  return new Intl.RelativeTimeFormat("zh-TW", {
+    numeric: "auto",
+  }).format(Math.round(amount), unit)
+}
+
+function DateWithRelative({ value }: { value: string | null }) {
+  if (!value) return <>—</>
+  return (
+    <span title={value}>
+      {formatDate(value)}
+      <span className="ml-1 text-xs text-muted">
+        （{formatRelativeDate(value)}）
+      </span>
+    </span>
+  )
 }
 
 function formatAge(seconds: number | null) {
@@ -307,8 +344,11 @@ export default function OperationsLayout({
   const navigate = useNavigate()
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [error, setError] = useState("")
+  const [freshnessError, setFreshnessError] = useState("")
   const [pending, setPending] = useState(true)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const filtersRef = useRef(filters)
+  filtersRef.current = filters
 
   const refresh = useCallback(
     async (nextFilters: DashboardRequest["audit"]) => {
@@ -316,7 +356,8 @@ export default function OperationsLayout({
       setError("")
       try {
         const result = await load({ data: { audit: nextFilters } })
-        setData(result)
+        setFreshnessError(result.freshness.ok ? "" : result.freshness.error)
+        setData(current => mergeDashboardRefresh(current, result).data)
       } catch (reason) {
         setError(
           reason instanceof Error ? reason.message : "無法連線至 FinDB API。"
@@ -330,6 +371,10 @@ export default function OperationsLayout({
 
   useEffect(() => {
     void refresh(EMPTY_FILTERS)
+    const interval = window.setInterval(() => {
+      void refresh(filtersRef.current)
+    }, 60_000)
+    return () => window.clearInterval(interval)
   }, [refresh])
 
   async function signOut() {
@@ -340,6 +385,7 @@ export default function OperationsLayout({
   const initialLoading = data === null && pending && error === ""
   const panelResults = data
     ? [
+        data.freshness,
         data.queue,
         data.deliveries,
         data.issues,
@@ -347,7 +393,9 @@ export default function OperationsLayout({
         data.rawPayloads,
       ]
     : []
-  const successfulPanels = panelResults.filter(result => result.ok).length
+  const successfulPanels =
+    panelResults.filter(result => result.ok).length -
+    (freshnessError && data?.freshness.ok ? 1 : 0)
   const connectionState =
     data === null
       ? pending
@@ -479,6 +527,7 @@ export default function OperationsLayout({
           value={{
             data,
             error,
+            freshnessError,
             pending,
             initialLoading,
             filters,
@@ -515,15 +564,266 @@ function PageIntro({
   )
 }
 
+const SLOT_ORDER = ["us_0600", "global_0815", "tw_1430", "asia_1630"]
+const SLOT_LABELS: Record<string, string> = {
+  us_0600: "06:00 美國與歐洲",
+  global_0815: "08:15 全球連續市場",
+  tw_1430: "14:30 台灣",
+  asia_1630: "16:30 亞洲",
+}
+const STATUS_LABELS: Record<FreshnessStatus, string> = {
+  not_due: "尚未到期",
+  fresh: "已更新",
+  partial: "部分完成",
+  late: "延遲",
+  failed: "失敗",
+  never_received: "從未收到",
+}
+
+function freshnessVariant(status: FreshnessStatus) {
+  if (status === "fresh") return "default" as const
+  if (status === "not_due" || status === "partial") return "warning" as const
+  return "destructive" as const
+}
+
+function FeedDetails({
+  feeds,
+}: {
+  feeds: MarketFreshnessResponse["data"][number]["feeds"]
+}) {
+  return (
+    <div className="mt-3 grid gap-2">
+      {feeds.map(feed => (
+        <div
+          key={`${feed.dataset_key}:${feed.source}:${feed.schema_id}:${feed.schema_version}`}
+          className="grid gap-2 rounded-lg border border-line bg-surface p-3 text-xs md:grid-cols-[minmax(0,1fr)_auto]"
+        >
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={freshnessVariant(feed.status)}>
+                {STATUS_LABELS[feed.status]}
+              </Badge>
+              <strong className="font-mono wrap-anywhere">
+                {feed.dataset_key}
+              </strong>
+              <span className="text-muted">
+                {feed.source} · {feed.schema_id}.v{feed.schema_version}
+              </span>
+            </div>
+            <p className="mt-2 mb-0 text-muted">
+              資料日 {feed.latest_successful_data_date ?? "—"} / 預期{" "}
+              {feed.expected_data_date ?? "—"} · 成功{" "}
+              {feed.success_records ?? "—"} / 總數 {feed.total_records ?? "—"} ·
+              policy {feed.policy_outcome ?? "—"}
+            </p>
+            {feed.last_failure_code && (
+              <p className="mt-1 mb-0 text-danger">
+                最後失敗：{feed.last_failure_code}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center justify-end">
+            {feed.status !== "fresh" && (
+              <Link
+                to={
+                  feed.open_missing_delivery_alert
+                    ? "/operations/deliveries"
+                    : "/operations/raw-payloads"
+                }
+                className="font-bold text-accent underline-offset-4 hover:underline"
+              >
+                {feed.open_missing_delivery_alert ? "查看缺漏" : "查看稽核"}
+              </Link>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+class MarketFreshnessErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <Alert className="mb-5" variant="destructive" role="alert">
+          <AlertTriangle size={18} />
+          <AlertTitle>市場更新面板無法顯示</AlertTitle>
+          <AlertDescription>
+            其他營運資料仍可使用；請重新整理後再試。
+          </AlertDescription>
+        </Alert>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function MarketFreshnessPanel({
+  result,
+  loading,
+  refreshError,
+}: {
+  result: PanelResult<MarketFreshnessResponse> | null
+  loading: boolean
+  refreshError: string
+}) {
+  const summaries = result?.ok ? result.data.data : []
+  const slots = [...new Set(summaries.map(summary => summary.slot_id))].sort(
+    (left, right) => {
+      const leftIndex = SLOT_ORDER.indexOf(left)
+      const rightIndex = SLOT_ORDER.indexOf(right)
+      return (
+        (leftIndex === -1 ? SLOT_ORDER.length : leftIndex) -
+          (rightIndex === -1 ? SLOT_ORDER.length : rightIndex) ||
+        left.localeCompare(right)
+      )
+    }
+  )
+
+  return (
+    <div className="mb-5">
+      <Panel
+        eyebrow="Market freshness"
+        title="市場資料更新"
+        icon={<CalendarClock size={19} />}
+        result={result}
+        loading={loading}
+      >
+        {refreshError && result?.ok && (
+          <Alert className="mb-4" variant="warning" role="status">
+            <AlertTriangle size={18} />
+            <AlertTitle>市場更新狀態暫時無法重新取得</AlertTitle>
+            <AlertDescription>
+              目前保留上次成功資料：{refreshError}
+            </AlertDescription>
+          </Alert>
+        )}
+        {result?.ok &&
+          (summaries.length === 0 ? (
+            <Alert variant="warning">
+              <AlertTriangle size={18} />
+              <AlertDescription>目前沒有已啟用的市場排程。</AlertDescription>
+            </Alert>
+          ) : (
+            <div className="grid gap-5">
+              {slots.map(slotId => {
+                const slotMarkets = summaries.filter(
+                  summary => summary.slot_id === slotId
+                )
+                return (
+                  <section key={slotId}>
+                    <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                      <h3 className="font-bold">
+                        {SLOT_LABELS[slotId] ?? slotId}
+                      </h3>
+                      <span className="font-mono text-xs text-muted">
+                        Asia/Taipei · {slotMarkets.length} 個市場
+                      </span>
+                    </div>
+                    <div className="grid gap-2 xl:grid-cols-2">
+                      {slotMarkets.map(summary => (
+                        <Card
+                          key={`${summary.slot_id}:${summary.market}`}
+                          className="gap-3 rounded-xl p-4 shadow-none"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <strong className="text-lg">
+                                {summary.market}
+                              </strong>
+                              <p className="mt-0.5 mb-0 text-xs text-muted">
+                                排程 {summary.scheduled_local_time.slice(0, 5)}{" "}
+                                · 下次{" "}
+                                <DateWithRelative
+                                  value={summary.next_scheduled_at}
+                                />
+                              </p>
+                            </div>
+                            <Badge variant={freshnessVariant(summary.status)}>
+                              {STATUS_LABELS[summary.status]}
+                            </Badge>
+                          </div>
+                          <dl className="grid grid-cols-2 gap-2 text-sm">
+                            <div>
+                              <dt className="text-xs text-muted">最後成功</dt>
+                              <dd className="mt-0.5">
+                                <DateWithRelative
+                                  value={summary.last_successful_update_at}
+                                />
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-xs text-muted">完整更新</dt>
+                              <dd className="mt-0.5">
+                                <DateWithRelative
+                                  value={summary.last_complete_at}
+                                />
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-xs text-muted">
+                                涵蓋日 / 預期日
+                              </dt>
+                              <dd className="mt-0.5 font-mono">
+                                {summary.coverage_data_date ?? "—"} /{" "}
+                                {summary.expected_data_date ?? "—"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-xs text-muted">Feed 完成</dt>
+                              <dd className="mt-0.5 font-mono">
+                                {summary.fresh_feed_count} /{" "}
+                                {summary.feed_count}
+                                {summary.late_feed_count > 0 &&
+                                  ` · ${summary.late_feed_count} 延遲`}
+                              </dd>
+                            </div>
+                          </dl>
+                          <details className="rounded-lg bg-surface-soft px-3 py-2">
+                            <summary className="cursor-pointer text-xs font-bold text-accent">
+                              Feed 明細（{summary.feeds.length}）
+                            </summary>
+                            <FeedDetails feeds={summary.feeds} />
+                          </details>
+                        </Card>
+                      ))}
+                    </div>
+                  </section>
+                )
+              })}
+            </div>
+          ))}
+      </Panel>
+    </div>
+  )
+}
+
 export function OperationsOverviewPage() {
-  const { data, initialLoading } = useOperations()
+  const { data, freshnessError, initialLoading } = useOperations()
   return (
     <>
       <PageIntro
         eyebrow="Ingestion health"
         title="導入概況"
-        description="檢查佇列、Worker heartbeat 與 outbox 的即時健康狀態。"
+        description="檢查市場資料更新、佇列、Worker heartbeat 與 outbox 的即時健康狀態。"
       />
+      <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
+        <MarketFreshnessPanel
+          result={data?.freshness ?? null}
+          loading={initialLoading}
+          refreshError={freshnessError}
+        />
+      </MarketFreshnessErrorBoundary>
       <Panel
         eyebrow="Queue and worker"
         title="佇列與 Worker"

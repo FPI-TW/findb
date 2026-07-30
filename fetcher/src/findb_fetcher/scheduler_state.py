@@ -18,10 +18,15 @@ from uuid import UUID
 from findb_fetcher.schedule import ScheduleConfig, ScheduleError
 from findb_fetcher.universe import SymbolUniverse
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _EXPECTED_COLUMNS = {
     "scheduled_job": {
         "job_key": ("TEXT", 0, 1),
+        "slot_id": ("TEXT", 1, 0),
+        "provider": ("TEXT", 1, 0),
+        "dataset_key": ("TEXT", 1, 0),
+        "work_item": ("TEXT", 1, 0),
+        "target_data_date": ("TEXT", 1, 0),
         "schedule_id": ("TEXT", 1, 0),
         "scheduled_date": ("TEXT", 1, 0),
         "universe_id": ("TEXT", 1, 0),
@@ -47,9 +52,11 @@ _EXPECTED_COLUMNS = {
         "completed_at": ("TEXT", 0, 0),
     },
     "symbol_checkpoint": {
-        "universe_id": ("TEXT", 1, 1),
-        "universe_version": ("INTEGER", 1, 2),
-        "symbol": ("TEXT", 1, 3),
+        "provider": ("TEXT", 1, 1),
+        "dataset_key": ("TEXT", 1, 2),
+        "universe_id": ("TEXT", 1, 3),
+        "universe_version": ("INTEGER", 1, 4),
+        "symbol": ("TEXT", 1, 5),
         "trade_date": ("TEXT", 1, 0),
         "updated_at": ("TEXT", 1, 0),
     },
@@ -74,6 +81,11 @@ class ScheduledJob:
     attempt_count: int
     checkpoint_before: date | None
     prepared_request: dict[str, Any] | None
+    slot_id: str = "legacy"
+    provider: str = "twelve_data"
+    dataset_key: str = "us_equity_eod"
+    work_item: str = ""
+    target_data_date: date | None = None
 
 
 class SchedulerState:
@@ -95,23 +107,60 @@ class SchedulerState:
         universe: SymbolUniverse,
         scheduled_date: date,
         *,
+        target_data_date: date | None = None,
         now: datetime,
     ) -> int:
         timestamp = _datetime_text(now)
+        target_date = target_data_date or scheduled_date
         inserted = 0
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if schedule.schedule_version == 2:
+                connection.execute(
+                    """
+                    UPDATE scheduled_job
+                    SET slot_id = ?,
+                        schedule_id = ?,
+                        work_item = symbol,
+                        target_data_date = scheduled_date,
+                        scheduled_date = CASE
+                            WHEN ? = 'us_0600' THEN date(scheduled_date, '+1 day')
+                            ELSE scheduled_date
+                        END,
+                        updated_at = ?
+                    WHERE slot_id = 'legacy'
+                      AND provider = ?
+                      AND dataset_key = ?
+                      AND universe_id = ?
+                      AND universe_version = ?
+                    """,
+                    (
+                        schedule.slot_id,
+                        schedule.schedule_id,
+                        schedule.slot_id,
+                        timestamp,
+                        schedule.provider,
+                        schedule.dataset_key,
+                        universe.universe_id,
+                        universe.universe_version,
+                    ),
+                )
             for member in universe.symbols:
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO scheduled_job (
-                        job_key, schedule_id, scheduled_date, universe_id,
+                        job_key, slot_id, provider, dataset_key, work_item, target_data_date, schedule_id, scheduled_date, universe_id,
                         universe_version, symbol, canonical_symbol, exchange,
                         status, attempt_count, next_attempt_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
                     """,
                     (
-                        _job_key(schedule.schedule_id, scheduled_date, member.symbol),
+                        _job_key(schedule, scheduled_date, member.symbol),
+                        schedule.slot_id,
+                        schedule.provider,
+                        schedule.dataset_key,
+                        member.symbol,
+                        target_date.isoformat(),
                         schedule.schedule_id,
                         scheduled_date.isoformat(),
                         universe.universe_id,
@@ -167,7 +216,7 @@ class SchedulerState:
             )
             rows = connection.execute(
                 """
-                SELECT job_key, schedule_id, scheduled_date, universe_id,
+                SELECT job_key, slot_id, provider, dataset_key, work_item, target_data_date, schedule_id, scheduled_date, universe_id,
                        universe_version, symbol, canonical_symbol, exchange,
                        status, attempt_count, prepared_request
                 FROM scheduled_job AS candidate
@@ -212,9 +261,15 @@ class SchedulerState:
                     """
                     SELECT trade_date
                     FROM symbol_checkpoint
-                    WHERE universe_id = ? AND universe_version = ? AND symbol = ?
+                    WHERE provider = ? AND dataset_key = ? AND universe_id = ? AND universe_version = ? AND symbol = ?
                     """,
-                    (row["universe_id"], row["universe_version"], row["symbol"]),
+                    (
+                        row["provider"],
+                        row["dataset_key"],
+                        row["universe_id"],
+                        row["universe_version"],
+                        row["symbol"],
+                    ),
                 ).fetchone()
                 jobs.append(
                     ScheduledJob(
@@ -232,6 +287,11 @@ class SchedulerState:
                             date.fromisoformat(checkpoint["trade_date"]) if checkpoint else None
                         ),
                         prepared_request=_optional_request(row["prepared_request"]),
+                        slot_id=row["slot_id"],
+                        provider=row["provider"],
+                        dataset_key=row["dataset_key"],
+                        work_item=row["work_item"],
+                        target_data_date=date.fromisoformat(row["target_data_date"]),
                     )
                 )
             connection.commit()
@@ -298,13 +358,15 @@ class SchedulerState:
                 connection.execute(
                     """
                     INSERT INTO symbol_checkpoint (
-                        universe_id, universe_version, symbol, trade_date, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT (universe_id, universe_version, symbol)
+                        provider, dataset_key, universe_id, universe_version, symbol, trade_date, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (provider, dataset_key, universe_id, universe_version, symbol)
                     DO UPDATE SET trade_date = excluded.trade_date, updated_at = excluded.updated_at
                     WHERE excluded.trade_date > symbol_checkpoint.trade_date
                     """,
                     (
+                        job.provider,
+                        job.dataset_key,
                         job.universe_id,
                         job.universe_version,
                         job.symbol,
@@ -356,7 +418,10 @@ class SchedulerState:
         attempt_id: UUID | None = None,
         run_id: UUID | None = None,
     ) -> str:
-        should_retry = retryable and job.attempt_count < schedule.max_attempts
+        inside_grace = schedule.schedule_version == 2 and now < schedule.grace_deadline(
+            job.scheduled_date
+        )
+        should_retry = retryable and (job.attempt_count < schedule.max_attempts or inside_grace)
         status = "retry_wait" if should_retry else "failed"
         next_attempt_at = (
             now + timedelta(seconds=schedule.retry_delay_seconds(job.attempt_count))
@@ -422,16 +487,22 @@ class SchedulerState:
                 """
                 SELECT trade_date
                 FROM symbol_checkpoint
-                WHERE universe_id = ? AND universe_version = ? AND symbol = ?
+                    WHERE provider = ? AND dataset_key = ? AND universe_id = ? AND universe_version = ? AND symbol = ?
                 """,
-                (universe.universe_id, universe.universe_version, symbol),
+                (
+                    universe.provider,
+                    universe.dataset_key,
+                    universe.universe_id,
+                    universe.universe_version,
+                    symbol,
+                ),
             ).fetchone()
         return date.fromisoformat(row["trade_date"]) if row else None
 
     def _initialize(self) -> None:
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, _SCHEMA_VERSION):
+            if version not in (0, 1, _SCHEMA_VERSION):
                 raise SchedulerStateError(
                     f"unsupported scheduler state schema {version}; expected {_SCHEMA_VERSION}"
                 )
@@ -480,6 +551,9 @@ class SchedulerState:
                     PRAGMA user_version = 1;
                 """)
                 connection.commit()
+                version = 1
+            if version == 1:
+                self._migrate_v1(connection)
             self._validate_schema(connection)
         try:
             os.chmod(self.path, 0o600)
@@ -487,6 +561,54 @@ class SchedulerState:
             raise SchedulerStateError(
                 f"unable to secure scheduler state file: {self.path}"
             ) from exc
+
+    def _migrate_v1(self, connection: sqlite3.Connection) -> None:
+        """Atomically retain v1 jobs, request snapshots, leases, and checkpoints."""
+        try:
+            self._validate_v1_schema(connection)
+            connection.executescript("""
+                BEGIN IMMEDIATE;
+                ALTER TABLE scheduled_job RENAME TO scheduled_job_v1;
+                ALTER TABLE symbol_checkpoint RENAME TO symbol_checkpoint_v1;
+                CREATE TABLE scheduled_job (
+                    job_key TEXT PRIMARY KEY, slot_id TEXT NOT NULL DEFAULT 'legacy', provider TEXT NOT NULL DEFAULT 'twelve_data',
+                    dataset_key TEXT NOT NULL DEFAULT 'us_equity_eod', work_item TEXT NOT NULL DEFAULT '', target_data_date TEXT NOT NULL DEFAULT '1970-01-01',
+                    schedule_id TEXT NOT NULL, scheduled_date TEXT NOT NULL, universe_id TEXT NOT NULL,
+                    universe_version INTEGER NOT NULL, symbol TEXT NOT NULL, canonical_symbol TEXT NOT NULL,
+                    exchange TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','running','retry_wait','completed','failed')),
+                    attempt_count INTEGER NOT NULL, next_attempt_at TEXT, lease_until TEXT, last_outcome TEXT,
+                    record_count INTEGER, checkpoint_before TEXT, checkpoint_after TEXT, attempt_id TEXT,
+                    run_id TEXT, request_key TEXT, idempotency_key TEXT, prepared_request TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
+                    UNIQUE(slot_id, provider, dataset_key, work_item, target_data_date)
+                );
+                INSERT INTO scheduled_job SELECT job_key, 'legacy', 'twelve_data', 'us_equity_eod', symbol, scheduled_date,
+                    schedule_id, scheduled_date, universe_id, universe_version, symbol, canonical_symbol, exchange,
+                    status, attempt_count, next_attempt_at, lease_until, last_outcome, record_count, checkpoint_before,
+                    checkpoint_after, attempt_id, run_id, request_key, idempotency_key, prepared_request, created_at, updated_at, completed_at
+                    FROM scheduled_job_v1;
+                CREATE TABLE symbol_checkpoint (
+                    provider TEXT NOT NULL, dataset_key TEXT NOT NULL, universe_id TEXT NOT NULL,
+                    universe_version INTEGER NOT NULL, symbol TEXT NOT NULL, trade_date TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(provider, dataset_key, universe_id, universe_version, symbol)
+                );
+                INSERT INTO symbol_checkpoint SELECT 'twelve_data', 'us_equity_eod', universe_id, universe_version, symbol, trade_date, updated_at FROM symbol_checkpoint_v1;
+                DROP TABLE scheduled_job_v1; DROP TABLE symbol_checkpoint_v1;
+                CREATE INDEX ix_scheduled_job_due ON scheduled_job (provider, dataset_key, slot_id, status, next_attempt_at, target_data_date);
+                PRAGMA user_version = 2;
+                COMMIT;
+            """)
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise SchedulerStateError("scheduler state v1 migration failed") from exc
+
+    def _validate_v1_schema(self, connection: sqlite3.Connection) -> None:
+        tables = {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")
+        }
+        if not {"scheduled_job", "symbol_checkpoint"} <= tables:
+            raise SchedulerStateError("scheduler state v1 schema is incomplete")
 
     def _validate_schema(self, connection: sqlite3.Connection) -> None:
         quick_check = [row[0] for row in connection.execute("PRAGMA quick_check").fetchall()]
@@ -535,10 +657,12 @@ class SchedulerState:
             False,
             False,
             (
-                ("schedule_id", False, "BINARY"),
+                ("provider", False, "BINARY"),
+                ("dataset_key", False, "BINARY"),
+                ("slot_id", False, "BINARY"),
                 ("status", False, "BINARY"),
                 ("next_attempt_at", False, "BINARY"),
-                ("scheduled_date", False, "BINARY"),
+                ("target_data_date", False, "BINARY"),
             ),
         ):
             raise SchedulerStateError("scheduler state due index is missing")
@@ -547,9 +671,11 @@ class SchedulerState:
             and not partial
             and key_columns
             == (
-                ("schedule_id", False, "BINARY"),
-                ("scheduled_date", False, "BINARY"),
-                ("symbol", False, "BINARY"),
+                ("slot_id", False, "BINARY"),
+                ("provider", False, "BINARY"),
+                ("dataset_key", False, "BINARY"),
+                ("work_item", False, "BINARY"),
+                ("target_data_date", False, "BINARY"),
             )
             for unique, partial, key_columns in scheduled_indexes.values()
         ):
@@ -561,6 +687,8 @@ class SchedulerState:
             and not partial
             and key_columns
             == (
+                ("provider", False, "BINARY"),
+                ("dataset_key", False, "BINARY"),
                 ("universe_id", False, "BINARY"),
                 ("universe_version", False, "BINARY"),
                 ("symbol", False, "BINARY"),
@@ -594,8 +722,8 @@ class SchedulerState:
             connection.close()
 
 
-def _job_key(schedule_id: str, scheduled_date: date, symbol: str) -> str:
-    identity = f"{schedule_id}:{scheduled_date.isoformat()}:{symbol}".encode()
+def _job_key(schedule: ScheduleConfig, scheduled_date: date, symbol: str) -> str:
+    identity = f"{schedule.slot_id}:{schedule.provider}:{schedule.dataset_key}:{symbol}:{scheduled_date.isoformat()}".encode()
     return hashlib.sha256(identity).hexdigest()
 
 

@@ -5,9 +5,11 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as clock_time
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from findb_fetcher.client import (
     PreparedDelivery,
@@ -115,26 +117,33 @@ class TwelveDataScheduledExecutor:
             request = job.prepared_request
             if request is None:
                 query: dict[str, Any]
+                mapping_after_date = job.checkpoint_before
+                target_date = job.target_data_date or job.scheduled_date
                 if job.checkpoint_before is None:
-                    query = {"outputsize": self._schedule.outputsize}
+                    if self._schedule.schedule_version == 2:
+                        query = {
+                            "start_date": target_date,
+                            "end_date": target_date,
+                        }
+                        mapping_after_date = target_date - timedelta(days=1)
+                    else:
+                        query = {"outputsize": self._schedule.outputsize}
                 else:
                     start_date = job.checkpoint_before + timedelta(days=1)
-                    if start_date > job.scheduled_date:
+                    if start_date > target_date:
                         return JobExecution(
                             outcome="up_to_date",
                             succeeded=True,
                             checkpoint_after=job.checkpoint_before,
                         )
-                    if (
-                        job.scheduled_date - start_date
-                    ).days > self._universe.limits.max_date_span_days:
+                    if (target_date - start_date).days > self._universe.limits.max_date_span_days:
                         return JobExecution(
                             outcome="checkpoint_gap_exceeded",
                             succeeded=False,
                         )
                     query = {
                         "start_date": start_date,
-                        "end_date": job.scheduled_date,
+                        "end_date": target_date,
                     }
                 response = self._provider.fetch_daily(
                     job.symbol,
@@ -154,7 +163,15 @@ class TwelveDataScheduledExecutor:
                     requested_exchange=job.exchange,
                     canonical_symbol=job.canonical_symbol,
                     allowed_instrument_types=(self._universe.instrument_type,),
-                    after_trade_date=job.checkpoint_before,
+                    after_trade_date=mapping_after_date,
+                    through_trade_date=(
+                        target_date if self._schedule.schedule_version == 2 else None
+                    ),
+                    delivery=(
+                        _delivery_metadata(self._schedule, job)
+                        if self._schedule.schedule_version == 2
+                        else None
+                    ),
                 )
                 attach_raw_object(request, raw_object)
             try:
@@ -171,6 +188,14 @@ class TwelveDataScheduledExecutor:
                 return JobExecution(
                     outcome="record_limit_exceeded",
                     succeeded=False,
+                )
+            checkpoint_after = _request_checkpoint(request)
+            target_date = job.target_data_date or job.scheduled_date
+            if self._schedule.schedule_version == 2 and checkpoint_after < target_date:
+                return JobExecution(
+                    outcome="target_not_ready",
+                    succeeded=False,
+                    retryable=True,
                 )
             if job.prepared_request is None and self._state is not None:
                 self._state.save_prepared_request(job, request, now=now)
@@ -200,7 +225,6 @@ class TwelveDataScheduledExecutor:
                     attempt_id=receipt.attempt_id,
                     run_id=run.run_id,
                 )
-            checkpoint_after = _request_checkpoint(request)
             return JobExecution(
                 outcome="completed",
                 succeeded=True,
@@ -211,6 +235,15 @@ class TwelveDataScheduledExecutor:
                 run_id=run.run_id,
             )
         except TwelveDataNoNewDataError:
+            target_date = job.target_data_date or job.scheduled_date
+            if self._schedule.schedule_version == 2 and (
+                job.checkpoint_before is None or job.checkpoint_before < target_date
+            ):
+                return JobExecution(
+                    outcome="target_not_ready",
+                    succeeded=False,
+                    retryable=True,
+                )
             return JobExecution(
                 outcome="up_to_date",
                 succeeded=True,
@@ -268,11 +301,13 @@ class SchedulerService:
         self._executor = executor
 
     def run_once(self, *, now: datetime) -> SchedulerRun:
-        scheduled_date = self._schedule.latest_due_date(now)
+        scheduled_date = self._schedule.scheduled_date(now)
+        target_data_date = self._schedule.target_date(now)
         enqueued = self._state.enqueue_due(
             self._schedule,
             self._universe,
             scheduled_date,
+            target_data_date=target_data_date,
             now=now,
         )
         jobs = self._state.claim_due(
@@ -342,6 +377,25 @@ def _request_checkpoint(request: dict[str, Any]) -> date:
     if not isinstance(raw, str):
         raise ValueError("validated request is missing checkpoint date")
     return date.fromisoformat(raw)
+
+
+def _delivery_metadata(schedule: ScheduleConfig, job: ScheduledJob) -> dict[str, str]:
+    """Stable scheduler identity carried to Source without changing v1 pilots."""
+    target_date = job.target_data_date or job.scheduled_date
+    clock = schedule.slot_id.rsplit("_", 1)[1]
+    hour = int(clock[:2])
+    minute = int(clock[2:])
+    scheduled = datetime.combine(
+        job.scheduled_date,
+        clock_time(hour, minute),
+        tzinfo=ZoneInfo(schedule.timezone_name),
+    )
+    return {
+        "slot_id": schedule.slot_id,
+        "scheduled_for": scheduled.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "target_data_date": target_date.isoformat(),
+        "work_item_id": job.work_item or job.symbol,
+    }
 
 
 def _wait_for_terminal(

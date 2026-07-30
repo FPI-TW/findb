@@ -1,0 +1,8 @@
+{
+  "manifest_version": 1,
+  "manifest_id": "finlab_tw_review_required",
+  "provider": "finlab",
+  "market": "TW",
+  "status": "disabled_pending_review",
+  "symbols": []
+}

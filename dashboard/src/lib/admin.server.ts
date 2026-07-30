@@ -5,6 +5,7 @@ import {
   correctionsSchema,
   dashboardResponseSchema,
   dqIssuesSchema,
+  marketFreshnessSchema,
   missingDeliveriesSchema,
   queueHealthSchema,
   rawPayloadsSchema,
@@ -79,8 +80,15 @@ export async function fetchDashboardData(
     page: data.audit.page.toString(),
     page_size: data.audit.pageSize.toString(),
   })
-  const [queue, deliveries, issues, corrections, rawPayloads] =
+  const [freshness, queue, deliveries, issues, corrections, rawPayloads] =
     await Promise.allSettled([
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        "/api/v1/admin/market-freshness",
+        marketFreshnessSchema,
+        fetchImplementation
+      ),
       fetchTarget(
         baseUrl,
         sessionToken,
@@ -120,6 +128,7 @@ export async function fetchDashboardData(
 
   return dashboardResponseSchema.parse({
     fetchedAt: new Date().toISOString(),
+    freshness: settled(freshness),
     queue: settled(queue),
     deliveries: settled(deliveries),
     issues: settled(issues),

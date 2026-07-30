@@ -16,11 +16,11 @@ Fetcher adapter。
 
 三種識別必須分開：
 
-| 欄位 | 意義 | 範例 |
-| --- | --- | --- |
-| `dataset_key` | 邏輯資料流與治理單位 | `tw_equity_eod` |
-| `schema_id` + `schema_version` | payload 欄位與語意 | `market_eod` + `1` |
-| `source` | 實際 provider | `finlab` |
+| 欄位                           | 意義                 | 範例               |
+| ------------------------------ | -------------------- | ------------------ |
+| `dataset_key`                  | 邏輯資料流與治理單位 | `tw_equity_eod`    |
+| `schema_id` + `schema_version` | payload 欄位與語意   | `market_eod` + `1` |
+| `source`                       | 實際 provider        | `finlab`           |
 
 ## Envelope
 
@@ -33,6 +33,12 @@ Fetcher adapter。
   "request_key": "finlab_tw_equity_eod_20260724_01",
   "idempotency_key": "finlab_tw_equity_eod_20260724",
   "fetched_at": "2026-07-24T08:00:00Z",
+  "delivery": {
+    "slot_id": "tw_1430",
+    "scheduled_for": "2026-07-24T06:30:00Z",
+    "target_data_date": "2026-07-24",
+    "work_item_id": "tw_equity_eod"
+  },
   "payload": {
     "batch": {
       "data_date": "2026-07-24",
@@ -61,18 +67,22 @@ Fetcher adapter。
 - 同一 source、dataset、idempotency key 與內容重送時回既有 run。
 - 相同 key 搭配不同 source、schema/version 或內容時回 `409`。
 - `request_key` 用於追蹤單次抓取；它不取代 idempotency key。
+- `delivery` 是 scheduler delivery 的完整識別；legacy producer 可省略整個
+  object，但只要提供就必須同時包含 `slot_id`、`scheduled_for`、
+  `target_data_date` 與 `work_item_id`。Backend 會將它保存到
+  `IngestionRun.metadata.delivery`，不參與 canonical row 欄位。
 
 ## Batch contract
 
-| 欄位 | 必填 | 說明 |
-| --- | --- | --- |
-| `data_date` | 是 | 主要業務日期 |
-| `delivery_mode` | 是 | `full_snapshot`、`incremental` 或 `backfill` |
-| `declared_record_count` | 是 | 必須等於 `len(data)` |
-| `coverage_start_date` / `coverage_end_date` | 條件式 | 跨多個業務日期時成對提供 |
-| `source_raw_ref` | 否 | Provider 原始檔參照，不得包含 credentials |
-| `source_raw_sha256` | 否 | 原始內容的 lowercase SHA-256 |
-| `sequence` / `sequence_count` | 否 | 分批 delivery 時成對提供 |
+| 欄位                                        | 必填   | 說明                                         |
+| ------------------------------------------- | ------ | -------------------------------------------- |
+| `data_date`                                 | 是     | 主要業務日期                                 |
+| `delivery_mode`                             | 是     | `full_snapshot`、`incremental` 或 `backfill` |
+| `declared_record_count`                     | 是     | 必須等於 `len(data)`                         |
+| `coverage_start_date` / `coverage_end_date` | 條件式 | 跨多個業務日期時成對提供                     |
+| `source_raw_ref`                            | 否     | Provider 原始檔參照，不得包含 credentials    |
+| `source_raw_sha256`                         | 否     | 原始內容的 lowercase SHA-256                 |
+| `sequence` / `sequence_count`               | 否     | 分批 delivery 時成對提供                     |
 
 `full_snapshot` 代表該資料日的完整 dataset universe；只送異動或部分 symbols 必須
 使用 `incremental`。`backfill` 可以跨日期，但 `data_date` 必須等於 coverage end。

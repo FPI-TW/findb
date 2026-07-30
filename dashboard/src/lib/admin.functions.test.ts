@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import type { DashboardRequest } from "./admin-api"
+import { type DashboardRequest, mergeDashboardRefresh } from "./admin-api"
 import { fetchDashboardData } from "./admin.server"
 
 const timestamp = "2026-07-23T02:00:00Z"
@@ -22,6 +22,46 @@ const request: DashboardRequest = {
 }
 
 const responses = {
+  "/api/v1/admin/market-freshness": {
+    success: true,
+    data: [
+      {
+        market: "TW",
+        slot_id: "tw_1430",
+        scheduled_local_time: "14:30:00",
+        timezone: "Asia/Taipei",
+        status: "partial",
+        expected_data_date: "2026-07-23",
+        coverage_data_date: "2026-07-22",
+        last_successful_update_at: timestamp,
+        last_complete_at: null,
+        next_scheduled_at: timestamp,
+        feed_count: 2,
+        fresh_feed_count: 1,
+        late_feed_count: 1,
+        feeds: [
+          {
+            dataset_key: "tw_equity_eod",
+            source: "finlab",
+            schema_id: "market_eod",
+            schema_version: 1,
+            expected_data_date: "2026-07-23",
+            latest_successful_data_date: "2026-07-23",
+            last_fetched_at: timestamp,
+            last_completed_at: timestamp,
+            last_run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+            total_records: 2100,
+            success_records: 2100,
+            failed_records: 0,
+            policy_outcome: "pass",
+            open_missing_delivery_alert: false,
+            last_failure_code: null,
+            status: "fresh",
+          },
+        ],
+      },
+    ],
+  },
   "/api/v1/admin/queue/health": {
     counts: { queued: 1 },
     oldest_queued_at: timestamp,
@@ -108,8 +148,9 @@ describe("FinDB Admin server boundary", () => {
       recordingFetch(calls)
     )
 
-    expect(calls).toHaveLength(5)
+    expect(calls).toHaveLength(6)
     expect(calls.map(call => call.url.pathname)).toEqual([
+      "/api/v1/admin/market-freshness",
       "/api/v1/admin/queue/health",
       "/api/v1/admin/missing-deliveries",
       "/api/v1/admin/dq-issues",
@@ -124,13 +165,14 @@ describe("FinDB Admin server boundary", () => {
         "Bearer operator-secret"
       )
     }
-    expect(calls[4]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
-    expect(calls[4]?.url.searchParams.get("page")).toBe("3")
-    expect(calls[4]?.url.searchParams.get("page_size")).toBe("100")
-    expect(calls[2]?.url.searchParams.get("resolved")).toBe("false")
-    expect(calls[2]?.url.searchParams.get("page")).toBe("3")
-    expect(calls[2]?.url.searchParams.get("page_size")).toBe("100")
-    expect(calls[2]?.url.searchParams.has("dataset_key")).toBe(false)
+    expect(calls[5]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
+    expect(calls[5]?.url.searchParams.get("page")).toBe("3")
+    expect(calls[5]?.url.searchParams.get("page_size")).toBe("100")
+    expect(calls[3]?.url.searchParams.get("resolved")).toBe("false")
+    expect(calls[3]?.url.searchParams.get("page")).toBe("3")
+    expect(calls[3]?.url.searchParams.get("page_size")).toBe("100")
+    expect(calls[3]?.url.searchParams.has("dataset_key")).toBe(false)
+    expect(result.freshness.ok).toBe(true)
     expect(result.rawPayloads.ok).toBe(true)
   })
 
@@ -143,6 +185,7 @@ describe("FinDB Admin server boundary", () => {
     )
 
     expect(result.queue.ok).toBe(true)
+    expect(result.freshness.ok).toBe(true)
     expect(result.deliveries.ok).toBe(true)
     expect(result.issues).toEqual({
       ok: false,
@@ -150,6 +193,27 @@ describe("FinDB Admin server boundary", () => {
     })
     expect(result.corrections.ok).toBe(true)
     expect(result.rawPayloads.ok).toBe(true)
+  })
+
+  it("retains the last successful freshness panel when polling fails", async () => {
+    const current = await fetchDashboardData(
+      request,
+      "operator-secret",
+      undefined,
+      recordingFetch([])
+    )
+    const next = await fetchDashboardData(
+      request,
+      "operator-secret",
+      undefined,
+      recordingFetch([], { "/api/v1/admin/market-freshness": 503 })
+    )
+
+    const merged = mergeDashboardRefresh(current, next)
+
+    expect(merged.data.freshness).toEqual(current.freshness)
+    expect(merged.data.queue).toEqual(next.queue)
+    expect(merged.freshnessError).toBe("FinDB API request failed (503)")
   })
 
   it("sanitizes authentication and upstream response bodies", async () => {

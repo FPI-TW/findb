@@ -124,6 +124,22 @@ def test_r2_store_key_is_collision_safe_for_content_and_symbol() -> None:
     assert len({first.ref, changed_content.ref, changed_symbol.ref}) == 3
 
 
+def test_r2_store_uses_explicit_provider_for_key_and_metadata() -> None:
+    client = FakeR2()
+    store = R2RawPayloadStore(_config(prefix="raw"), client=client)
+
+    raw_object = store.persist(
+        RAW_BYTES,
+        dataset_key="tw_equity_eod",
+        source_symbol="dataset_bundle",
+        provider="finlab",
+    )
+
+    assert "/raw/finlab/tw_equity_eod/" in raw_object.ref
+    assert client.calls[0]["Metadata"]["provider"] == "finlab"
+    assert client.calls[0]["Metadata"]["dataset"] == "tw_equity_eod"
+
+
 def test_r2_store_enforces_object_bound_and_wraps_client_failures() -> None:
     bounded = R2RawPayloadStore(
         _config(max_object_bytes=4),
@@ -252,6 +268,31 @@ def test_attach_provenance_is_all_or_none_and_changes_request_identity() -> None
         attach_raw_provenance(_request(), source_raw_ref=raw_object.ref, source_raw_sha256=None)
     with pytest.raises(RawStorageUploadError, match="supplied together"):
         attach_raw_provenance(_request(), source_raw_ref=None, source_raw_sha256=digest)
+
+
+def test_attach_provenance_uses_request_source_without_partial_mutation() -> None:
+    digest = hashlib.sha256(RAW_BYTES).hexdigest()
+    request = _request()
+    request["source"] = "finlab"
+
+    attach_raw_provenance(
+        request,
+        source_raw_ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/{digest}.json",
+        source_raw_sha256=digest,
+    )
+
+    assert request["request_key"].startswith("finlab:us_equity_eod:")
+    assert request["idempotency_key"].startswith("finlab:")
+
+    invalid = _request()
+    invalid["source"] = "FinLab"
+    with pytest.raises(RawStorageUploadError, match="provider identity"):
+        attach_raw_provenance(
+            invalid,
+            source_raw_ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/{digest}.json",
+            source_raw_sha256=digest,
+        )
+    assert invalid["payload"]["batch"] == {}
 
 
 @pytest.mark.parametrize(

@@ -68,6 +68,7 @@ docs/superpowers/
 fetcher/.state/
 datas/
 backend/seed/partial_dump/prod_partial_*/
+/reference/
 
 # Skills
 .agents/*

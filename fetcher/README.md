@@ -56,6 +56,34 @@ uv run mypy src
 docker build -f fetcher/Dockerfile -t findb-fetcher:local .
 ```
 
+## FinLab staging acquisition smoke
+
+FinLab 是隔離的 optional runtime，通用 Fetcher image 不安裝其 SDK。只為驗證部署端
+`FINLAB_API_TOKEN`能讀取資料時，建置獨立 image：
+
+```bash
+docker build -f fetcher/Dockerfile.finlab -t findb-fetcher-finlab:local .
+docker run --rm --read-only \
+  --tmpfs /home/fetcher:uid=10001,gid=10001,mode=0700 \
+  --env FINLAB_API_TOKEN \
+  findb-fetcher-finlab:local \
+  findb-fetch-finlab-smoke --target-date 2026-07-29 --symbols 2330,2317
+```
+
+此命令固定使用 `finlab==1.5.7` 和 `price:收盤價`，只接受已審核的 `2330`、`2317`
+（最多兩檔）及明確 ISO 日期。stdout 是不含價格、token、cache path 或 provider error
+的 bounded JSON，只包含狀態、SDK 版本、日期、symbols、筆數與內容 checksum。它不會
+寫 R2、呼叫 Source API、建立 scheduler state 或啟用排程。
+
+遠端只能透過 Fetcher CD 的手動 `workflow_dispatch` 設定 `run_finlab_smoke=true` 觸發，
+而且固定在 `staging-fetcher` Environment 執行；push 和一般 Fetcher deployment 永遠
+不會呼叫 FinLab。CD 建立 ephemeral、read-only、non-root container，僅注入
+`FINLAB_API_TOKEN`，並把 SDK cache 掛載至其專用目錄。不可把 Source、R2 或 Twelve Data
+credentials 加到此 smoke container。
+
+一次 acquisition 的硬上限為 300 秒，涵蓋 cold cache 的 SDK metadata/data 初始化；逾時會
+終止隔離 child 並只輸出 generic `acquisition_failed`，不重試或啟用 scheduler。
+
 ## Twelve Data手動抓取
 
 本機開發將API key放在被Git忽略的`fetcher/.env`，不要加入版控。從

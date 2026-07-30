@@ -340,6 +340,15 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
         workflow = _load_workflow(path)
         environment = f"${{{{ inputs.deployment_target || 'staging' }}}}-{service}"
         assert workflow["jobs"]["deploy"]["environment"] == environment
+        permitted_secret_jobs = {"deploy": environment}
+        if path == FETCHER_CD_WORKFLOW:
+            smoke = workflow["jobs"]["finlab-acquisition-smoke"]
+            assert smoke["environment"] == "staging-fetcher"
+            assert "github.event_name == 'workflow_dispatch'" in smoke["if"]
+            assert "inputs.run_finlab_smoke == true" in smoke["if"]
+            permitted_secret_jobs["finlab-acquisition-smoke"] = "staging-fetcher"
+
+        secret_jobs: set[str] = set()
         for reference_path in _secret_reference_paths(workflow):
             referenced_value: object = workflow
             for component in reference_path:
@@ -349,7 +358,12 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
                     referenced_value = referenced_value[component]
             if referenced_value == "${{ secrets.GITHUB_TOKEN }}":
                 continue
-            assert reference_path[:2] == ("jobs", "deploy")
+            assert reference_path[:1] == ("jobs",)
+            job_name = reference_path[1]
+            assert job_name in permitted_secret_jobs
+            assert workflow["jobs"][job_name]["environment"] == permitted_secret_jobs[job_name]
+            secret_jobs.add(job_name)
+        assert secret_jobs == set(permitted_secret_jobs)
 
     for path in (FINDB_CI_WORKFLOW, FETCHER_CI_WORKFLOW):
         assert _secret_reference_paths(_load_workflow(path)) == []

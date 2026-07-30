@@ -261,6 +261,8 @@ def build_market_eod_request(
     canonical_symbol: str | None = None,
     allowed_instrument_types: Sequence[str] = tuple(_DEFAULT_ALLOWED_TYPES),
     after_trade_date: date | None = None,
+    through_trade_date: date | None = None,
+    delivery: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map a successful daily response into a deterministic ``market_eod.v1`` request."""
 
@@ -354,8 +356,13 @@ def build_market_eod_request(
     dated_rows.sort(key=lambda item: item[0])
     if after_trade_date is not None:
         dated_rows = [item for item in dated_rows if item[0] > after_trade_date]
+    if through_trade_date is not None:
+        dated_rows = [item for item in dated_rows if item[0] <= through_trade_date]
+    if after_trade_date is not None or through_trade_date is not None:
         if not dated_rows:
-            raise TwelveDataNoNewDataError("Twelve Data response has no rows after checkpoint")
+            raise TwelveDataNoNewDataError(
+                "Twelve Data response has no rows in the requested checkpoint window"
+            )
     first_date = dated_rows[0][0]
     last_date = dated_rows[-1][0]
     rows = [row for _, row in dated_rows]
@@ -385,7 +392,7 @@ def build_market_eod_request(
     identity_digest = hashlib.sha256(identity).hexdigest()
     normalized_fetched_at = fetched_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    return {
+    request: dict[str, Any] = {
         "dataset_key": dataset_key,
         "schema_id": "market_eod",
         "schema_version": 1,
@@ -398,6 +405,10 @@ def build_market_eod_request(
             "data": rows,
         },
     }
+    if delivery is not None:
+        # The ingress contract owns validation; this is intentionally optional for v1 pilots.
+        request["delivery"] = dict(delivery)
+    return request
 
 
 def _positive_float_env(name: str, default: float) -> float:

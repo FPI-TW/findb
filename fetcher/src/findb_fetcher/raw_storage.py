@@ -24,6 +24,7 @@ _ACCOUNT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _BUCKET_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 _PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9!_.*'()/=-]{1,512}$")
 _DATASET_PATTERN = re.compile(r"^[a-z0-9_]{1,50}$")
+_PROVIDER_PATTERN = re.compile(r"^[a-z0-9_]{1,50}$")
 _SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_OBJECT_BYTES_HARD = 16 * 1024 * 1024
@@ -126,6 +127,7 @@ class RawPayloadStore(Protocol):
         *,
         dataset_key: str,
         source_symbol: str,
+        provider: str = "twelve_data",
     ) -> RawObject: ...
 
 
@@ -162,6 +164,7 @@ class R2RawPayloadStore:
         *,
         dataset_key: str,
         source_symbol: str,
+        provider: str = "twelve_data",
     ) -> RawObject:
         if not isinstance(raw_bytes, bytes):
             raise RawStorageUploadError("raw provider payload must be bytes")
@@ -171,6 +174,8 @@ class R2RawPayloadStore:
             raise RawStorageUploadError("raw provider payload exceeds object size limit")
         if _DATASET_PATTERN.fullmatch(dataset_key) is None:
             raise RawStorageUploadError("dataset_key is not safe for raw object metadata")
+        if _PROVIDER_PATTERN.fullmatch(provider) is None:
+            raise RawStorageUploadError("provider is not safe for raw object metadata")
         normalized_symbol = source_symbol.strip()
         if _SYMBOL_PATTERN.fullmatch(normalized_symbol) is None:
             raise RawStorageUploadError("source_symbol is not safe for raw object metadata")
@@ -178,7 +183,7 @@ class R2RawPayloadStore:
         digest_bytes = hashlib.sha256(raw_bytes).digest()
         digest = digest_bytes.hex()
         symbol_digest = hashlib.sha256(normalized_symbol.encode("utf-8")).hexdigest()[:16]
-        key = f"{self._config.prefix}/twelve_data/{dataset_key}/{symbol_digest}/{digest}.json"
+        key = f"{self._config.prefix}/{provider}/{dataset_key}/{symbol_digest}/{digest}.json"
         ref = f"r2://{self._config.account_id}/{self._config.bucket}/{key}"
         if len(ref) > _MAX_REF_LENGTH:
             raise RawStorageUploadError("raw object reference exceeds ingress contract limit")
@@ -192,7 +197,7 @@ class R2RawPayloadStore:
             "ChecksumSHA256": base64.b64encode(digest_bytes).decode("ascii"),
             "Metadata": {
                 "sha256": digest,
-                "provider": "twelve_data",
+                "provider": provider,
                 "dataset": dataset_key,
                 "source-symbol": normalized_symbol,
             },
@@ -272,10 +277,13 @@ def attach_raw_provenance(
     dataset_key = request.get("dataset_key")
     if not isinstance(dataset_key, str):
         raise RawStorageUploadError("validated request is missing dataset identity")
+    provider = request.get("source", "twelve_data")
+    if not isinstance(provider, str) or _PROVIDER_PATTERN.fullmatch(provider) is None:
+        raise RawStorageUploadError("validated request is missing provider identity")
     batch["source_raw_ref"] = source_raw_ref
     batch["source_raw_sha256"] = source_raw_sha256
-    request["request_key"] = f"twelve_data:{dataset_key}:{identity[:32]}"
-    request["idempotency_key"] = f"twelve_data:{identity}"
+    request["request_key"] = f"{provider}:{dataset_key}:{identity[:32]}"
+    request["idempotency_key"] = f"{provider}:{identity}"
 
 
 def require_raw_provenance(request: dict[str, Any]) -> None:

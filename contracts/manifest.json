@@ -4,13 +4,13 @@
       "path": "futures_continuous_eod/v1.schema.json",
       "schema_id": "futures_continuous_eod",
       "schema_version": 1,
-      "sha256": "b22712d62af4eeba668f1a10b0b5871f2d2526f849c1db767889f11a65e4c26e"
+      "sha256": "af2d2aa6901f172fa62fffcae74f8605a78bcad6cdc9789d1a189b0084deb7ff"
     },
     {
       "path": "market_eod/v1.schema.json",
       "schema_id": "market_eod",
       "schema_version": 1,
-      "sha256": "738e95ed6573af1446818d203315849f591d22dcdd2c001c5c36631e593bb2d9"
+      "sha256": "65b83567a8a8e37bc1835914c74d1a5d3770674494815d48b2914240dca4e781"
     }
   ],
   "manifest_version": 1
