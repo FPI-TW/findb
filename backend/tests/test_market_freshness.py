@@ -1,13 +1,13 @@
 """Read-only market freshness projection and endpoint behavior."""
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.models.canonical import TradingCalendar
+from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
 from app.schemas.serve import MarketFreshnessSummaryResponse
 from app.services.market_freshness import list_market_freshness
@@ -39,7 +39,11 @@ def _config(sources: list[str]) -> dict:
     }
 
 
-async def _setup(session, sources: list[str] = ["finlab"]) -> None:
+async def _setup(
+    session,
+    sources: list[str] = ["finlab"],
+    closed_calendar_days: set[date] | None = None,
+) -> None:
     session.add(
         DatasetRegistry(
             dataset_key="tw_equity_eod",
@@ -50,15 +54,65 @@ async def _setup(session, sources: list[str] = ["finlab"]) -> None:
             config=_config(sources),
         )
     )
-    session.add(
-        TradingCalendar(
-            market="TW",
-            trade_date=date(2026, 7, 22),
-            is_open=True,
-            session_close=time(13, 30),
-        )
+    await _seed_published_calendar_year(
+        session,
+        market="TW",
+        year=2026,
+        closed_calendar_days=closed_calendar_days,
     )
     await session.commit()
+
+
+async def _seed_published_calendar_year(
+    session,
+    *,
+    market: str,
+    year: int,
+    closed_calendar_days: set[date] | None = None,
+) -> None:
+    if await session.get(CalendarMarket, market) is None:
+        session.add(
+            CalendarMarket(
+                market=market,
+                display_name=market,
+                timezone="Asia/Taipei",
+                weekend_days=[5, 6],
+            )
+        )
+        await session.flush()
+    start = date(year, 1, 1)
+    count = (date(year, 12, 31) - start).days + 1
+    closed_calendar_days = closed_calendar_days or set()
+    revision = CalendarYearRevision(
+        market=market,
+        year=year,
+        revision=1,
+        status="published",
+        expected_days=count,
+        actual_days=count,
+        timezone="Asia/Taipei",
+        source_kind="test",
+    )
+    session.add(revision)
+    await session.flush()
+    session.add_all(
+        [
+            CalendarRevisionDay(
+                calendar_revision_id=revision.id,
+                trade_date=start + timedelta(days=offset),
+                is_open=(start + timedelta(days=offset)).weekday() < 5
+                and start + timedelta(days=offset) not in closed_calendar_days,
+                day_status=(
+                    "open"
+                    if (start + timedelta(days=offset)).weekday() < 5
+                    and start + timedelta(days=offset) not in closed_calendar_days
+                    else "closed"
+                ),
+                source_kind="test",
+            )
+            for offset in range(count)
+        ]
+    )
 
 
 def _run(source: str, data_date: date, status: str = "completed") -> IngestionRun:
@@ -125,7 +179,12 @@ async def test_freshness_aggregates_partial_late_failed_and_coverage(test_sessio
 
 @pytest.mark.asyncio
 async def test_not_due_and_open_alert_are_read_only(test_session):
-    await _setup(test_session)
+    await _setup(
+        test_session,
+        closed_calendar_days={
+            date(2026, 7, 22) - timedelta(days=offset) for offset in range(1, 32)
+        },
+    )
     test_session.add_all(
         [
             _run("finlab", date(2026, 7, 21)),

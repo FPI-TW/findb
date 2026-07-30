@@ -8,7 +8,7 @@ from calendar import isleap
 from datetime import date, time, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
@@ -359,6 +359,37 @@ async def revision_days(db: AsyncSession, revision_id: Any) -> list[CalendarRevi
     )
 
 
+def complete_published_revision_ids():
+    """Return revision IDs whose published day projection is complete.
+
+    This is deliberately based on managed revisions only.  ``TradingCalendar``
+    remains an observation written by normalizers and is never an authority for
+    scheduling or Serve calendar reads.
+    """
+    expected_year_days = case(
+        (
+            (CalendarYearRevision.year % 400 == 0)
+            | ((CalendarYearRevision.year % 4 == 0) & (CalendarYearRevision.year % 100 != 0)),
+            366,
+        ),
+        else_=365,
+    )
+    return (
+        select(CalendarYearRevision.id)
+        .outerjoin(
+            CalendarRevisionDay,
+            CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
+        )
+        .where(
+            CalendarYearRevision.status == "published",
+            CalendarYearRevision.actual_days == CalendarYearRevision.expected_days,
+            CalendarYearRevision.expected_days == expected_year_days,
+        )
+        .group_by(CalendarYearRevision.id, CalendarYearRevision.actual_days)
+        .having(func.count(CalendarRevisionDay.id) == CalendarYearRevision.expected_days)
+    )
+
+
 async def published_year(
     db: AsyncSession, market: str, year: int
 ) -> tuple[CalendarYearRevision, CalendarMarket, list[CalendarRevisionDay]] | None:
@@ -367,7 +398,7 @@ async def published_year(
             select(CalendarYearRevision).where(
                 CalendarYearRevision.market == market,
                 CalendarYearRevision.year == year,
-                CalendarYearRevision.status == "published",
+                CalendarYearRevision.id.in_(complete_published_revision_ids()),
             )
         )
     ).scalar_one_or_none()

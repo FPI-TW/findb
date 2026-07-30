@@ -106,6 +106,8 @@ def test_scheduler_modes_are_mutually_exclusive(arguments: list[str]) -> None:
 def _set_check_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOURCE_API_URL", "https://source.example.test")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "source-client-key")
+    monkeypatch.setenv("FINDB_SERVE_BASE_URL", "https://serve.example.test")
+    monkeypatch.setenv("FETCHER_CALENDAR_SERVE_API_KEY", "calendar-read-key")
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "provider-key")
     monkeypatch.setenv("CLOUDFLARE_R2_ACCOUNT_ID", "a" * 32)
     monkeypatch.setenv("CLOUDFLARE_R2_BUCKET", "findb-fetcher-raw-prod")
@@ -158,6 +160,20 @@ def test_check_fails_safely_when_runtime_config_is_missing(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert json.loads(captured.err) == {"error": "scheduler_configuration_failed"}
+
+
+def test_check_fails_when_published_calendar_configuration_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _set_check_env(monkeypatch)
+    monkeypatch.delenv("FINDB_SERVE_BASE_URL")
+
+    result = scheduler_cli.main(["--check", "--state-path", str(tmp_path / "state.sqlite3")])
+
+    assert result == scheduler_cli.EXIT_CONFIG_ERROR
+    assert json.loads(capsys.readouterr().err) == {"error": "scheduler_configuration_failed"}
 
 
 @pytest.mark.parametrize(

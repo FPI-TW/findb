@@ -15,9 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import TradingCalendar
+from app.models.canonical import CalendarRevisionDay
 from app.models.registry import IngestionRun
 from app.schemas.ingress import DeliveryMode, IngressRequestV1
+from app.services.calendar_management import published_year
 from app.services.feed_scope import lock_feed_scope
 from app.utils import utc_now
 from app.vocabulary import SOURCE_NAME_PATTERN
@@ -281,33 +282,32 @@ async def resolve_expected_data_date(
     zone = ZoneInfo(policy.timezone)
     local_now = now.astimezone(zone)
     today = local_now.date()
-    rows = list(
-        (
-            await db.execute(
-                select(TradingCalendar)
-                .where(
-                    TradingCalendar.market == policy.calendar_market,
-                    TradingCalendar.trade_date <= today,
-                )
-                .order_by(TradingCalendar.trade_date.desc())
-                .limit(32)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    current = await published_year(db, policy.calendar_market, today.year)
+    if current is None:
+        return None, "calendar_does_not_cover_evaluation_date"
+    rows: list[CalendarRevisionDay] = [day for day in current[2] if day.trade_date <= today]
+    year = today.year - 1
+    rows.sort(key=lambda row: row.trade_date, reverse=True)
     if not rows or rows[0].trade_date != today:
         return None, "calendar_does_not_cover_evaluation_date"
-    for row in rows:
-        if not row.is_open:
-            continue
-        close_at = row.session_close or policy.market_close_time
-        cutoff = datetime.combine(row.trade_date, close_at, tzinfo=zone) + timedelta(
-            minutes=policy.availability_grace_minutes
-        )
-        if local_now >= cutoff:
-            return row.trade_date, None
-    return None, "no_closed_open_session_in_calendar_window"
+    while True:
+        for row in rows[:32]:
+            if not row.is_open:
+                continue
+            close_at = row.session_close or policy.market_close_time
+            cutoff = datetime.combine(row.trade_date, close_at, tzinfo=zone) + timedelta(
+                minutes=policy.availability_grace_minutes
+            )
+            if local_now >= cutoff:
+                return row.trade_date, None
+        if len(rows) >= 32:
+            return None, "no_closed_open_session_in_calendar_window"
+        previous = await published_year(db, policy.calendar_market, year)
+        if previous is None:
+            return None, "calendar_does_not_cover_evaluation_date"
+        rows.extend(previous[2])
+        rows.sort(key=lambda row: row.trade_date, reverse=True)
+        year -= 1
 
 
 def _violation(

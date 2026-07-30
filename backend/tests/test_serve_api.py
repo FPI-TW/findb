@@ -2,7 +2,7 @@
 Tests for Serve API endpoints.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -12,6 +12,9 @@ from httpx import AsyncClient
 from app.models.canonical import (
     BondDetails,
     BondEOD,
+    CalendarMarket,
+    CalendarRevisionDay,
+    CalendarYearRevision,
     CorporateAction,
     FuturesContinuousEOD,
     FuturesContract,
@@ -331,14 +334,45 @@ async def test_eod_endpoints_return_total_ticks(client: AsyncClient, test_sessio
 
 @pytest.mark.asyncio
 async def test_list_calendar(client: AsyncClient, test_session):
-    """Ensure calendar endpoint returns trading days."""
-    calendar = TradingCalendar(
-        id=uuid7(),
+    """Only complete published managed days are exposed to Serve clients."""
+    market = CalendarMarket(market="CRYPTO", display_name="Crypto", timezone="UTC", weekend_days=[])
+    revision = CalendarYearRevision(
         market="CRYPTO",
-        trade_date=date(2026, 1, 16),
-        is_open=True,
+        year=2026,
+        revision=1,
+        status="published",
+        expected_days=365,
+        actual_days=365,
+        timezone="UTC",
+        source_kind="test",
     )
-    test_session.add(calendar)
+    test_session.add_all([market, revision])
+    await test_session.flush()
+    test_session.add_all(
+        [
+            CalendarRevisionDay(
+                calendar_revision_id=revision.id,
+                trade_date=date(2026, 1, 1) + timedelta(days=offset),
+                is_open=(date(2026, 1, 1) + timedelta(days=offset)).weekday() < 5,
+                day_status=(
+                    "open"
+                    if (date(2026, 1, 1) + timedelta(days=offset)).weekday() < 5
+                    else "closed"
+                ),
+                source_kind="test",
+            )
+            for offset in range(365)
+        ]
+        + [
+            TradingCalendar(
+                id=uuid7(),
+                market="CRYPTO",
+                trade_date=date(2026, 1, 16),
+                is_open=False,
+                day_status="closed",
+            ),
+        ]
+    )
     await test_session.commit()
 
     response = await client.get(
@@ -349,6 +383,84 @@ async def test_list_calendar(client: AsyncClient, test_session):
     assert payload["success"] is True
     assert len(payload["data"]) == 1
     assert payload["data"][0]["trade_date"] == "2026-01-16"
+    assert payload["data"][0]["is_open"] is True
+
+    open_response = await client.get(
+        "/api/v1/serve/calendar?market=CRYPTO&start_date=2026-01-15&end_date=2026-01-17&is_open=true"
+    )
+    assert open_response.status_code == 200
+    assert [row["trade_date"] for row in open_response.json()["data"]] == [
+        "2026-01-15",
+        "2026-01-16",
+    ]
+    first_page = await client.get("/api/v1/serve/calendar?market=CRYPTO&page=1&page_size=2")
+    second_page = await client.get("/api/v1/serve/calendar?market=CRYPTO&page=2&page_size=2")
+    assert first_page.status_code == second_page.status_code == 200
+    assert first_page.json()["pagination"] == {
+        "page": 1,
+        "page_size": 2,
+        "total_records": 365,
+        "total_pages": 183,
+        "next_cursor": None,
+    }
+    assert [row["trade_date"] for row in first_page.json()["data"]] == [
+        "2026-01-01",
+        "2026-01-02",
+    ]
+    assert [row["trade_date"] for row in second_page.json()["data"]] == [
+        "2026-01-03",
+        "2026-01-04",
+    ]
+
+    test_session.add_all(
+        [
+            CalendarMarket(
+                market="WTX", display_name="WTX", timezone="Asia/Taipei", weekend_days=[5, 6]
+            ),
+            CalendarYearRevision(
+                market="WTX",
+                year=2026,
+                revision=1,
+                status="draft",
+                expected_days=365,
+                actual_days=1,
+                timezone="Asia/Taipei",
+                source_kind="test",
+            ),
+            TradingCalendar(id=uuid7(), market="WTX", trade_date=date(2026, 1, 16), is_open=True),
+        ]
+    )
+    await test_session.commit()
+    wtx_response = await client.get(
+        "/api/v1/serve/calendar?market=WTX&start_date=2026-01-16&end_date=2026-01-16"
+    )
+    assert wtx_response.status_code == 200
+    assert wtx_response.json()["data"] == []
+
+    test_session.add_all(
+        [
+            CalendarMarket(
+                market="US", display_name="US", timezone="America/New_York", weekend_days=[5, 6]
+            ),
+            CalendarYearRevision(
+                market="US",
+                year=2026,
+                revision=1,
+                status="published",
+                expected_days=365,
+                actual_days=364,
+                timezone="America/New_York",
+                source_kind="test",
+            ),
+        ]
+    )
+    await test_session.commit()
+    incomplete_response = await client.get(
+        "/api/v1/serve/calendar?market=US&start_date=2026-01-16&end_date=2026-01-16"
+    )
+    assert incomplete_response.status_code == 200
+    assert incomplete_response.json()["pagination"]["total_records"] == 0
+    assert incomplete_response.json()["data"] == []
 
 
 @pytest.mark.asyncio

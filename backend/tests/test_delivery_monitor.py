@@ -1,14 +1,14 @@
 """Missing-delivery monitor persistence and resolution behavior."""
 
 import asyncio
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.canonical import TradingCalendar
+from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
 from app.services.delivery_monitor import resolve_missing_delivery_for_run, scan_missing_deliveries
 from app.services.delivery_policy import (
@@ -55,15 +55,47 @@ async def _seed_dataset(session, *, active: bool = True, config: dict | None = N
             config=config or _config(sources=["finlab"]),
         )
     )
-    session.add(
-        TradingCalendar(
-            market="TW",
-            trade_date=date(2026, 7, 22),
-            is_open=True,
-            session_close=time(13, 30),
-        )
-    )
+    await _seed_published_calendar_year(session, market="TW", year=2026)
     await session.commit()
+
+
+async def _seed_published_calendar_year(session, *, market: str, year: int) -> None:
+    if await session.get(CalendarMarket, market) is None:
+        session.add(
+            CalendarMarket(
+                market=market,
+                display_name=market,
+                timezone="America/New_York" if market == "US" else "Asia/Taipei",
+                weekend_days=[5, 6],
+            )
+        )
+        await session.flush()
+    start = date(year, 1, 1)
+    count = (date(year, 12, 31) - start).days + 1
+    revision = CalendarYearRevision(
+        market=market,
+        year=year,
+        revision=1,
+        status="published",
+        expected_days=count,
+        actual_days=count,
+        timezone="America/New_York" if market == "US" else "Asia/Taipei",
+        source_kind="test",
+    )
+    session.add(revision)
+    await session.flush()
+    session.add_all(
+        [
+            CalendarRevisionDay(
+                calendar_revision_id=revision.id,
+                trade_date=start + timedelta(days=offset),
+                is_open=(start + timedelta(days=offset)).weekday() < 5,
+                day_status=("open" if (start + timedelta(days=offset)).weekday() < 5 else "closed"),
+                source_kind="test",
+            )
+            for offset in range(count)
+        ]
+    )
 
 
 def test_missing_delivery_config_is_opt_in_and_validated() -> None:
@@ -94,7 +126,7 @@ def test_missing_delivery_config_is_opt_in_and_validated() -> None:
 
 @pytest.mark.asyncio
 async def test_public_calendar_resolver_honors_dst_and_grace(test_session) -> None:
-    test_session.add(TradingCalendar(market="US", trade_date=date(2026, 3, 9), is_open=True))
+    await _seed_published_calendar_year(test_session, market="US", year=2026)
     await test_session.commit()
     policy = LatestDatePolicy(
         calendar_market="US",
@@ -114,8 +146,8 @@ async def test_public_calendar_resolver_honors_dst_and_grace(test_session) -> No
         policy,
         datetime(2026, 3, 9, 21, 0, tzinfo=timezone.utc),
     )
-    assert before is None
-    assert before_reason == "no_closed_open_session_in_calendar_window"
+    assert before == date(2026, 3, 6)
+    assert before_reason is None
     assert after == date(2026, 3, 9)
     assert after_reason is None
 
@@ -129,15 +161,6 @@ async def test_scan_creates_once_refreshes_and_late_delivery_resolves(test_sessi
     assert first.created_or_refreshed == second.created_or_refreshed == 1
     assert await test_session.scalar(select(func.count()).select_from(MissingDeliveryAlert)) == 1
 
-    test_session.add(
-        TradingCalendar(
-            market="TW",
-            trade_date=date(2026, 7, 23),
-            is_open=True,
-            session_close=time(13, 30),
-        )
-    )
-    await test_session.commit()
     await scan_missing_deliveries(
         test_session,
         now=datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc),
@@ -253,7 +276,9 @@ async def test_disabled_inactive_and_calendar_unavailable_do_not_alert(test_sess
     )
 
     dataset.is_active = True
-    await test_session.delete((await test_session.execute(select(TradingCalendar))).scalar_one())
+    await test_session.delete(
+        (await test_session.execute(select(CalendarYearRevision))).scalar_one()
+    )
     await test_session.commit()
     unavailable = await scan_missing_deliveries(test_session, now=NOW)
     assert unavailable.created_or_refreshed == 0
