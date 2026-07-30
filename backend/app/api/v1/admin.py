@@ -53,6 +53,7 @@ from app.schemas.admin import (
     CalendarPreviewResponse,
     CalendarPublishRequest,
     CalendarRevisionResponse,
+    CalendarRollbackRequest,
     CalendarYearResponse,
     ChangePasswordRequest,
     CorrectionListResponse,
@@ -174,6 +175,7 @@ def _calendar_revision_response(row: CalendarYearRevision) -> CalendarRevisionRe
         status=row.status,
         expected_days=row.expected_days,
         actual_days=row.actual_days,
+        timezone=row.timezone,
         source_kind=row.source_kind,
         source_filename=row.source_filename,
         published_at=row.published_at,
@@ -1184,6 +1186,15 @@ async def get_managed_calendar_year(
     if row is None:
         raise HTTPException(status_code=404, detail="Managed calendar year not found")
     days = await revision_days(db, row.id)
+    published = (
+        await db.execute(
+            select(CalendarYearRevision).where(
+                CalendarYearRevision.market == row.market,
+                CalendarYearRevision.year == row.year,
+                CalendarYearRevision.status == "published",
+            )
+        )
+    ).scalar_one_or_none()
     return CalendarYearResponse(
         revision=_calendar_revision_response(row),
         days=[
@@ -1201,6 +1212,7 @@ async def get_managed_calendar_year(
             )
             for day in days
         ],
+        published_revision=_calendar_revision_response(published) if published else None,
     )
 
 
@@ -1453,7 +1465,7 @@ async def publish_calendar_year(
 async def rollback_calendar_year(
     market: str,
     year: int,
-    body: CalendarPublishRequest,
+    body: CalendarRollbackRequest,
     principal: AdminPrincipal = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1463,7 +1475,8 @@ async def rollback_calendar_year(
             db,
             market=normalize_market(market),
             year=year,
-            target_revision=body.expected_revision,
+            target_revision=body.target_revision,
+            expected_revision=body.expected_revision,
             published_by=principal.actor_id,
             commit=False,
         )
@@ -1479,7 +1492,8 @@ async def rollback_calendar_year(
         resource_id=f"{revision.market}:{year}",
         details={
             "revision": revision.revision,
-            "target_revision": body.expected_revision,
+            "target_revision": body.target_revision,
+            "expected_revision": body.expected_revision,
         },
     )
     return _calendar_revision_response(revision)

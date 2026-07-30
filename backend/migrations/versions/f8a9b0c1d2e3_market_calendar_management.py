@@ -78,6 +78,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(20), nullable=False),
         sa.Column("expected_days", sa.Integer(), nullable=False),
         sa.Column("actual_days", sa.Integer(), nullable=False),
+        sa.Column("timezone", sa.String(64), nullable=False),
         sa.Column("source_kind", sa.String(30), nullable=False),
         sa.Column("source_sha256", sa.String(64), nullable=True),
         sa.Column("source_filename", sa.String(255), nullable=True),

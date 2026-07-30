@@ -268,6 +268,15 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
             calendar_market_count = await connection.scalar(
                 text("SELECT count(*) FROM calendar_market")
             )
+            calendar_revision_timezone_column_count = await connection.scalar(
+                text("""
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'calendar_year_revision'
+                      AND column_name = 'timezone'
+                    """)
+            )
         assert column_count == len(SOURCE_CONTROL_TABLES) * 2
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
@@ -289,6 +298,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert active_outbox_index_count == 1
         assert migrated_calendar == ("closed", "observed_ingestion", 0)
         assert calendar_market_count == 13
+        assert calendar_revision_timezone_column_count == 1
         expectation = contract_config["delivery_expectation"]
         assert expectation["freshness_hours"] == 72
         assert expectation["minimum_record_count"] == 1777

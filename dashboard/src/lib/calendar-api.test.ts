@@ -4,6 +4,7 @@ import {
   calendarJsonPreviewRequestSchema,
   calendarManualEditPayload,
   calendarManualEditSchema,
+  calendarRollbackRequestSchema,
   calendarSelectionSchema,
   emptyCalendarYear,
   normalizeCalendarPreview,
@@ -53,6 +54,21 @@ describe("calendar API helpers", () => {
         reason: "x",
       }).success
     ).toBe(false)
+    expect(
+      calendarRollbackRequestSchema.safeParse({
+        market: "TW",
+        year: 2026,
+        target_revision: 1,
+        expected_revision: 3,
+      }).success
+    ).toBe(true)
+    expect(
+      calendarRollbackRequestSchema.safeParse({
+        market: "TW",
+        year: 2026,
+        target_revision: 1,
+      }).success
+    ).toBe(false)
   })
 
   it("normalizes backend days into an inspectable annual view", () => {
@@ -65,11 +81,26 @@ describe("calendar API helpers", () => {
           status: "draft",
           expected_days: 365,
           actual_days: 2,
+          timezone: "America/New_York",
           source_kind: "csv",
           source_filename: "holiday.csv",
           published_at: null,
           updated_at: "2026-01-01T00:00:00+00:00",
           coverage_complete: false,
+        },
+        published_revision: {
+          market: "TW",
+          year: 2026,
+          revision: 2,
+          status: "published",
+          expected_days: 365,
+          actual_days: 365,
+          timezone: "Asia/Taipei",
+          source_kind: "csv",
+          source_filename: "published.csv",
+          published_at: "2025-12-31T00:00:00+00:00",
+          updated_at: "2025-12-31T00:00:00+00:00",
+          coverage_complete: true,
         },
         days: [
           {
@@ -115,7 +146,9 @@ describe("calendar API helpers", () => {
       settlement_only: 0,
     })
     expect(value.days[1]?.session_close).toBe("13:30")
-    expect(value.timezone).toBe("Asia/Taipei")
+    expect(value.timezone).toBe("America/New_York")
+    expect(value.draft_revision?.revision).toBe(3)
+    expect(value.published_revision?.revision).toBe(2)
   })
 
   it("keeps import controls usable before a market year has a first revision", () => {

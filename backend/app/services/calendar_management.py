@@ -292,9 +292,11 @@ async def apply_preview(
         raise CalendarError("preview is unavailable or expired")
     # Serialise all mutations for a market before checking the optimistic revision.
     # This also covers the first revision, when there is no year row to lock yet.
-    await db.execute(
-        select(CalendarMarket).where(CalendarMarket.market == batch.market).with_for_update()
-    )
+    market_config = (
+        await db.execute(
+            select(CalendarMarket).where(CalendarMarket.market == batch.market).with_for_update()
+        )
+    ).scalar_one()
     current = await latest_revision(db, batch.market, batch.year)
     current_revision = current.revision if current else 0
     if expected_revision != batch.base_revision or current_revision != expected_revision:
@@ -308,6 +310,7 @@ async def apply_preview(
         status="draft",
         expected_days=_expected_days(batch.year),
         actual_days=len(batch.candidate_rows),
+        timezone=market_config.timezone,
         source_kind=batch.input_format,
         source_sha256=batch.source_sha256,
         source_filename=batch.source_filename,
@@ -431,6 +434,7 @@ async def clone_with_day_change(
         status="draft",
         expected_days=_expected_days(trade_date.year),
         actual_days=len(source_values),
+        timezone=market_config.timezone,
         source_kind="manual",
         created_at=utc_now(),
         updated_at=utc_now(),
@@ -531,14 +535,21 @@ async def rollback_revision(
     market: str,
     year: int,
     target_revision: int,
+    expected_revision: int,
     published_by: str | None,
     commit: bool = True,
 ) -> CalendarYearRevision:
     """Publish a new highest revision cloned from a prior complete revision."""
-    await db.execute(
-        select(CalendarMarket).where(CalendarMarket.market == market).with_for_update()
-    )
+    market_config = (
+        await db.execute(
+            select(CalendarMarket).where(CalendarMarket.market == market).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if market_config is None:
+        raise CalendarError("calendar market was not found")
     current = await latest_revision(db, market, year)
+    if current is None or current.revision != expected_revision:
+        raise RevisionConflictError("calendar changed before rollback")
     target = (
         await db.execute(
             select(CalendarYearRevision).where(
@@ -548,8 +559,10 @@ async def rollback_revision(
             )
         )
     ).scalar_one_or_none()
-    if current is None or target is None:
+    if target is None:
         raise RevisionConflictError("calendar rollback revision was not found")
+    if target.revision >= current.revision or target.status != "superseded":
+        raise CalendarError("rollback target must be an older published revision")
     target_days = await revision_days(db, target.id)
     if target.actual_days != _expected_days(year) or len(target_days) != _expected_days(year):
         raise CalendarError("cannot roll back to an incomplete calendar year")
@@ -576,6 +589,7 @@ async def rollback_revision(
         status="published",
         expected_days=_expected_days(year),
         actual_days=len(target_days),
+        timezone=target.timezone,
         source_kind="rollback",
         source_sha256=target.source_sha256,
         source_filename=target.source_filename,

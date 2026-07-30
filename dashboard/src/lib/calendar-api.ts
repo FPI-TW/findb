@@ -199,6 +199,7 @@ export const calendarPublishRequestSchema = calendarSelectionSchema.extend({
 
 export const calendarRollbackRequestSchema = calendarSelectionSchema.extend({
   target_revision: z.number().int().positive(),
+  expected_revision: z.number().int().positive(),
 })
 
 export function calendarStatusLabel(status: CalendarDayStatus) {
@@ -230,6 +231,7 @@ export const calendarRevisionResponseSchema = z.object({
   status: z.enum(["draft", "published", "superseded"]),
   expected_days: z.number().int().nonnegative(),
   actual_days: z.number().int().nonnegative(),
+  timezone: z.string().trim().min(1).max(64),
   source_kind: z.string(),
   source_filename: z.string().nullable().optional(),
   published_at: nullableDateTime.optional(),
@@ -240,6 +242,7 @@ export type CalendarRevision = z.infer<typeof calendarRevisionResponseSchema>
 
 export const calendarYearResponseSchema = z.object({
   revision: calendarRevisionResponseSchema,
+  published_revision: calendarRevisionResponseSchema.nullable().default(null),
   days: z
     .array(
       z.object({
@@ -285,7 +288,7 @@ export const calendarPreviewResponseSchema = z.object({
 
 export function normalizeCalendarYear(
   payload: z.infer<typeof calendarYearResponseSchema>,
-  market: CalendarMarket | undefined
+  _market: CalendarMarket | undefined
 ): CalendarYear {
   const revision = payload.revision
   const summary = summaryFromDays(payload.days)
@@ -298,12 +301,21 @@ export function normalizeCalendarYear(
     updated_at: revision.updated_at,
     published_at: revision.published_at,
   }
+  const published = payload.published_revision
+    ? {
+        revision: payload.published_revision.revision,
+        status: "published" as const,
+        updated_at: payload.published_revision.updated_at,
+        published_at: payload.published_revision.published_at,
+      }
+    : null
   return {
     market: revision.market,
     year: revision.year,
-    timezone: market?.timezone ?? "UTC",
+    timezone: revision.timezone,
     draft_revision: revision.status === "draft" ? detail : null,
-    published_revision: revision.status === "published" ? detail : null,
+    published_revision:
+      published ?? (revision.status === "published" ? detail : null),
     current_revision: revision.revision,
     coverage_complete: revision.coverage_complete,
     summary,

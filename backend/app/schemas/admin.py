@@ -120,6 +120,11 @@ class CalendarPublishRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class CalendarRollbackRequest(BaseModel):
+    target_revision: int = Field(ge=1)
+    expected_revision: int = Field(ge=1)
+
+
 class CalendarRevisionResponse(BaseModel):
     market: str
     year: int
@@ -127,6 +132,7 @@ class CalendarRevisionResponse(BaseModel):
     status: Literal["draft", "published", "superseded"]
     expected_days: int
     actual_days: int
+    timezone: str
     source_kind: str
     source_filename: Optional[str] = None
     published_at: Optional[datetime] = None
@@ -144,6 +150,7 @@ class CalendarManagedDayResponse(CalendarDayInput):
 class CalendarYearResponse(BaseModel):
     revision: CalendarRevisionResponse
     days: list[CalendarManagedDayResponse]
+    published_revision: CalendarRevisionResponse | None = None
 
 
 class CalendarImportResponse(BaseModel):

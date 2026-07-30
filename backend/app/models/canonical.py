@@ -22,6 +22,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, NUMERIC
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -209,6 +210,13 @@ class CalendarYearRevision(Base):
     __table_args__ = (
         UniqueConstraint("market", "year", "revision", name="uq_calendar_year_revision"),
         Index("idx_calendar_year_revision_lookup", "market", "year", "status"),
+        Index(
+            "uq_calendar_year_published",
+            "market",
+            "year",
+            unique=True,
+            postgresql_where=text("status = 'published'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
@@ -220,6 +228,7 @@ class CalendarYearRevision(Base):
     )
     expected_days: Mapped[int] = mapped_column(Integer, nullable=False)
     actual_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(30), nullable=False)
     source_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     source_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

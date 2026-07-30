@@ -96,6 +96,8 @@ function weekday(date: string) {
 function revisionText(year: CalendarYear) {
   const draft = year.draft_revision?.revision
   const published = year.published_revision?.revision
+  if (draft !== undefined && published !== undefined)
+    return `草稿 r${draft}；已發布 r${published}`
   if (draft !== undefined) return `草稿 r${draft}`
   if (published !== undefined) return `已發布 r${published}`
   return "尚未建立"
@@ -1086,6 +1088,7 @@ function CalendarHistory({
           market: calendar.market,
           year: calendar.year,
           target_revision: targetRevision,
+          expected_revision: calendar.current_revision,
         },
       })
       onRolledBack()
@@ -1155,7 +1158,7 @@ function CalendarHistory({
                           variant="secondary"
                           disabled={
                             rollingBack !== null ||
-                            item.revision === calendar.current_revision ||
+                            item.status !== "superseded" ||
                             !item.coverage_complete
                           }
                           onClick={() => void submit(item.revision)}

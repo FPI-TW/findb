@@ -201,11 +201,11 @@ export const rollbackCalendarYear = createServerFn({ method: "POST" })
   .validator(calendarRollbackRequestSchema)
   .handler(async ({ data }) => {
     assertSameOrigin()
-    const { market, year, target_revision } = data
+    const { market, year, target_revision, expected_revision } = data
     return calendarRevisionResponseSchema.parse(
       await calendarJsonRequest(
         `/api/v1/admin/calendars/${encodeURIComponent(market)}/${year}/rollback`,
-        { expected_revision: target_revision },
+        { target_revision, expected_revision },
         ["owner"]
       )
     )

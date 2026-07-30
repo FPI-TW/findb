@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import verify_serve_api_key
+from app.api.deps import require_serve_api_key, verify_serve_api_key
 from app.dependencies import get_db
 from app.models.canonical import (
     BondDetails,
@@ -64,7 +64,7 @@ router = APIRouter()
 async def get_published_calendar_year(
     market: str,
     year: int,
-    _: str = Depends(verify_serve_api_key),
+    _: str = Depends(require_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """Scheduler contract. Never returns observation-derived calendar rows."""
@@ -75,7 +75,7 @@ async def get_published_calendar_year(
         # A missing/incomplete/draft calendar is intentionally indistinguishable:
         # consumers must fail closed rather than infer a trading day.
         raise HTTPException(status_code=404, detail="Complete published calendar year not found")
-    revision, config, days = resolved
+    revision, _market_config, days = resolved
     return PublishedCalendarYearEnvelope(
         data=PublishedCalendarYearResponse(
             market=revision.market,
@@ -83,7 +83,7 @@ async def get_published_calendar_year(
             revision=revision.revision,
             status="published",
             coverage_complete=True,
-            timezone=config.timezone,
+            timezone=revision.timezone,
             expected_days=revision.expected_days,
             actual_days=revision.actual_days,
             days=[
