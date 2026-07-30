@@ -159,6 +159,17 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert target_input["options"] == ["staging", "production"]
 
 
+def test_fetcher_finlab_smoke_symbols_remain_a_quoted_comma_delimited_choice() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    symbols_input = workflow["on"]["workflow_dispatch"]["inputs"]["finlab_symbols"]
+    assert symbols_input["default"] == "2330,2317"
+    assert symbols_input["options"] == ["2330,2317"]
+
+    source = FETCHER_CD_WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(r'^\s+default: "2330,2317"$', source, re.MULTILINE)
+    assert re.search(r'^\s+- "2330,2317"$', source, re.MULTILINE)
+
+
 def test_main_push_runs_each_ci_workflow_only_through_its_cd_gate() -> None:
     for ci_path, cd_path, reusable_path in (
         (FINDB_CI_WORKFLOW, FINDB_CD_WORKFLOW, "./.github/workflows/findb-ci.yml"),

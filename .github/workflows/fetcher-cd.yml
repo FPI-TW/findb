@@ -29,10 +29,12 @@ on:
       finlab_symbols:
         description: Reviewed FinLab smoke symbols
         required: false
-        default: 2330,2317
+        # Keep comma-delimited symbols quoted. GitHub otherwise normalizes this
+        # choice to 23302317 before dispatching the workflow.
+        default: "2330,2317"
         type: choice
         options:
-          - 2330,2317
+          - "2330,2317"
 
 concurrency:
   group: ${{ inputs.deployment_target || 'staging' }}-fetcher
