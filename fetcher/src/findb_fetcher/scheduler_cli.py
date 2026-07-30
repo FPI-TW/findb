@@ -25,14 +25,19 @@ from findb_fetcher.raw_storage import (
     RawStorageConfig,
     RawStorageError,
 )
-from findb_fetcher.schedule import ScheduleError, load_schedule_config
+from findb_fetcher.schedule import (
+    ScheduleConfig,
+    ScheduleError,
+    load_schedule_config,
+    load_schedule_manifest,
+)
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.twelve_data_scheduler import (
     SchedulerRun,
     SchedulerService,
     TwelveDataScheduledExecutor,
 )
-from findb_fetcher.universe import UniverseError, load_symbol_universe
+from findb_fetcher.universe import SymbolUniverse, UniverseError, load_symbol_universe
 
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
@@ -54,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--state-path",
         type=Path,
         default=_default_state_path(),
+    )
+    parser.add_argument(
+        "--slot-id",
+        help="Run one v2 manifest slot. Required when a manifest contains multiple feeds.",
+    )
+    parser.add_argument(
+        "--dataset-key",
+        help="Select one dataset when a v2 slot contains multiple provider feeds.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -77,8 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        schedule = load_schedule_config(args.schedule_file)
+        schedule = _load_selected_schedule(args.schedule_file, args.slot_id, args.dataset_key)
         universe = load_symbol_universe(schedule.universe_file)
+        _validate_schedule_universe(schedule, universe)
         if schedule.outputsize > universe.limits.max_records_per_symbol:
             raise ScheduleError("schedule outputsize exceeds universe limit")
         fetcher_config = FetcherConfig.from_env()
@@ -220,6 +234,46 @@ def _default_schedule_file() -> Path:
 
 def _default_state_path() -> Path:
     return Path(os.getenv("FETCHER_STATE_PATH", "/var/lib/findb-fetcher/state.sqlite3"))
+
+
+def _load_selected_schedule(path: Path, slot_id: str | None, dataset_key: str | None):
+    manifest = load_schedule_manifest(path)
+    if manifest.schedule_version == 1:
+        if slot_id is not None or dataset_key is not None:
+            raise ScheduleError("--slot-id and --dataset-key are only valid for v2 manifests")
+        return load_schedule_config(path)
+    if slot_id is None:
+        raise ScheduleError("v2 manifests require --slot-id")
+    matches = [
+        feed
+        for feed in manifest.feeds
+        if feed.slot_id == slot_id and (dataset_key is None or feed.dataset_key == dataset_key)
+    ]
+    if len(matches) != 1:
+        raise ScheduleError("requested v2 feed is missing or ambiguous")
+    schedule = matches[0]
+    if schedule.provider != "twelve_data":
+        raise ScheduleError("FinLab scheduler adapter is not configured")
+    # Disabled entries are intentional backlog guards: do not guess a canonical mapping.
+    if not schedule.enabled:
+        raise ScheduleError("requested slot is disabled")
+    return schedule
+
+
+def _validate_schedule_universe(
+    schedule: ScheduleConfig,
+    universe: SymbolUniverse,
+) -> None:
+    if (
+        schedule.provider != universe.provider
+        or schedule.dataset_key != universe.dataset_key
+        or schedule.market != universe.market
+    ):
+        raise ScheduleError("schedule and universe identities do not match")
+    if universe.estimated_credits > schedule.max_credits_per_run:
+        raise ScheduleError("universe exceeds schedule credit limit")
+    if len(universe.symbols) * schedule.outputsize > schedule.max_records_per_run:
+        raise ScheduleError("universe exceeds schedule record limit")
 
 
 if __name__ == "__main__":

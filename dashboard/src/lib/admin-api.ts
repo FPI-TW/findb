@@ -41,6 +41,58 @@ export const queueHealthSchema = z.object({
   oldest_missing_delivery_age_seconds: z.number().nonnegative().nullable(),
 })
 
+export const freshnessStatusSchema = z.enum([
+  "not_due",
+  "fresh",
+  "partial",
+  "late",
+  "failed",
+  "never_received",
+])
+
+export const marketFreshnessSchema = z.object({
+  success: z.literal(true),
+  data: z.array(
+    z.object({
+      market: z.string(),
+      slot_id: z.string(),
+      scheduled_local_time: z.string(),
+      timezone: z.string(),
+      status: freshnessStatusSchema,
+      expected_data_date: z.iso.date().nullable(),
+      coverage_data_date: z.iso.date().nullable(),
+      last_successful_update_at: nullableDateTime,
+      last_complete_at: nullableDateTime,
+      next_scheduled_at: nullableDateTime,
+      feed_count: z.number().int().nonnegative(),
+      fresh_feed_count: z.number().int().nonnegative(),
+      late_feed_count: z.number().int().nonnegative(),
+      feeds: z
+        .array(
+          z.object({
+            dataset_key: z.string(),
+            source: z.string(),
+            schema_id: z.string(),
+            schema_version: z.number().int().positive(),
+            expected_data_date: z.iso.date().nullable(),
+            latest_successful_data_date: z.iso.date().nullable(),
+            last_fetched_at: nullableDateTime,
+            last_completed_at: nullableDateTime,
+            last_run_id: z.uuid().nullable(),
+            total_records: z.number().int().nonnegative().nullable(),
+            success_records: z.number().int().nonnegative().nullable(),
+            failed_records: z.number().int().nonnegative().nullable(),
+            policy_outcome: z.string().nullable(),
+            open_missing_delivery_alert: z.boolean(),
+            last_failure_code: z.string().nullable(),
+            status: freshnessStatusSchema,
+          })
+        )
+        .default([]),
+    })
+  ),
+})
+
 export const missingDeliveriesSchema = z.object({
   data: z.array(
     z.object({
@@ -125,6 +177,7 @@ function panelResultSchema<T extends z.ZodType>(schema: T) {
 
 export const dashboardResponseSchema = z.object({
   fetchedAt: isoDateTime,
+  freshness: panelResultSchema(marketFreshnessSchema),
   queue: panelResultSchema(queueHealthSchema),
   deliveries: panelResultSchema(missingDeliveriesSchema),
   issues: panelResultSchema(dqIssuesSchema),
@@ -133,8 +186,26 @@ export const dashboardResponseSchema = z.object({
 })
 
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>
+export type FreshnessStatus = z.infer<typeof freshnessStatusSchema>
+export type MarketFreshnessResponse = z.infer<typeof marketFreshnessSchema>
 export type PanelResult<T> =
   { ok: true; data: T } | { ok: false; error: string }
+
+export function mergeDashboardRefresh(
+  current: DashboardResponse | null,
+  next: DashboardResponse
+): { data: DashboardResponse; freshnessError: string } {
+  if (!next.freshness.ok && current?.freshness.ok) {
+    return {
+      data: { ...next, freshness: current.freshness },
+      freshnessError: next.freshness.error,
+    }
+  }
+  return {
+    data: next,
+    freshnessError: next.freshness.ok ? "" : next.freshness.error,
+  }
+}
 
 export function buildAuditSearch(filters: DashboardRequest["audit"]) {
   const params = new URLSearchParams({

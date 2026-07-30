@@ -76,6 +76,24 @@ class IngressBatch(BaseModel):
         return self
 
 
+class IngressDeliveryMetadata(BaseModel):
+    """Optional scheduler context retained for run-level observability."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    slot_id: Literal["us_0600", "global_0815", "tw_1430", "asia_1630"]
+    scheduled_for: datetime
+    target_data_date: date
+    work_item_id: str = Field(min_length=1, max_length=100)
+
+    @field_validator("scheduled_for")
+    @classmethod
+    def require_utc_aware_scheduled_for(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("scheduled_for must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
 class _IngressRow(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -215,6 +233,7 @@ class _IngressRequest(BaseModel):
     request_key: str = Field(min_length=1, max_length=100)
     idempotency_key: str = Field(min_length=1, max_length=100)
     fetched_at: datetime
+    delivery: Optional[IngressDeliveryMetadata] = None
 
     @field_validator("schema_version", mode="before")
     @classmethod

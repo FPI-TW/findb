@@ -1,8 +1,8 @@
 """Serve API 使用的 Pydantic schema。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -247,3 +247,26 @@ class CalendarListResponse(PaginatedResponse[CalendarResponse]):
     """分頁交易日曆回應。"""
 
     pass
+
+
+class MarketFreshnessSummaryResponse(BaseModel):
+    """Public, provider-free projection of configured market delivery health."""
+
+    market: str
+    slot_id: str
+    scheduled_local_time: time
+    timezone: str
+    status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
+    expected_data_date: Optional[date] = None
+    coverage_data_date: Optional[date] = None
+    last_successful_update_at: Optional[datetime] = None
+    last_complete_at: Optional[datetime] = None
+    next_scheduled_at: datetime
+    feed_count: int
+    fresh_feed_count: int
+    late_feed_count: int
+
+
+class MarketFreshnessSummaryListResponse(BaseModel):
+    success: bool = True
+    data: list[MarketFreshnessSummaryResponse]

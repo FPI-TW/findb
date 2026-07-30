@@ -959,6 +959,8 @@ class IngestionService:
             "schema_version": request.schema_version,
             "delivery_policy": policy_details,
         }
+        if request.delivery is not None:
+            metadata["delivery"] = request.delivery.model_dump(mode="json", exclude_none=True)
         legacy_request = IngestRequest(
             dataset_key=request.dataset_key,
             source=request.source,

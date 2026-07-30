@@ -14,6 +14,7 @@ import pytest
 from findb_fetcher.client import SourceAPIResponseError, SourceAPITransportError
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.providers.twelve_data import (
+    TwelveDataNoNewDataError,
     TwelveDataResponse,
     TwelveDataResponseError,
     build_market_eod_request,
@@ -205,6 +206,93 @@ def test_scheduler_uploads_before_prepare_and_delivery(contracts_dir: Path) -> N
     batch = source.requests[0]["payload"]["batch"]
     assert batch["source_raw_ref"] == (f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json")
     assert batch["source_raw_sha256"] == "a" * 64
+
+
+def test_v2_scheduler_delivery_carries_slot_identity(contracts_dir: Path) -> None:
+    source = FakeSource()
+    executor = _executor(contracts_dir, source=source)
+    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
+        executor._schedule,
+        schedule_version=2,
+        slot_id="us_0600",
+        timezone_name="Asia/Taipei",
+    )
+    executor.execute(
+        replace(
+            _job(scheduled_date=date(2024, 1, 6)),
+            target_data_date=date(2024, 1, 5),
+            work_item="AAPL",
+        ),
+        now=NOW,
+    )
+    assert source.requests[0]["delivery"] == {
+        "slot_id": "us_0600",
+        "scheduled_for": "2024-01-05T22:00:00Z",
+        "target_data_date": "2024-01-05",
+        "work_item_id": "AAPL",
+    }
+    assert source.requests[0]["payload"]["batch"]["delivery_mode"] == "incremental"
+    assert [row["trade_date"] for row in source.requests[0]["payload"]["data"]] == ["2024-01-05"]
+
+
+def test_v2_scheduler_retries_when_target_date_is_not_ready(
+    contracts_dir: Path,
+) -> None:
+    source = FakeSource()
+    executor = _executor(contracts_dir, source=source)
+    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
+        executor._schedule,
+        schedule_version=2,
+        slot_id="us_0600",
+        timezone_name="Asia/Taipei",
+    )
+
+    result = executor.execute(
+        replace(
+            _job(scheduled_date=date(2024, 1, 8)),
+            target_data_date=date(2024, 1, 8),
+        ),
+        now=NOW,
+    )
+
+    assert result == JobExecution(
+        outcome="target_not_ready",
+        succeeded=False,
+        retryable=True,
+    )
+    assert source.requests == []
+
+
+def test_v2_scheduler_retries_when_provider_has_no_target_data(
+    contracts_dir: Path,
+) -> None:
+    source = FakeSource()
+    executor = _executor(
+        contracts_dir,
+        provider=FakeProvider(TwelveDataNoNewDataError("not published")),
+        source=source,
+    )
+    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
+        executor._schedule,
+        schedule_version=2,
+        slot_id="us_0600",
+        timezone_name="Asia/Taipei",
+    )
+
+    result = executor.execute(
+        replace(
+            _job(scheduled_date=date(2024, 1, 8)),
+            target_data_date=date(2024, 1, 8),
+        ),
+        now=NOW,
+    )
+
+    assert result == JobExecution(
+        outcome="target_not_ready",
+        succeeded=False,
+        retryable=True,
+    )
+    assert source.requests == []
 
 
 @pytest.mark.parametrize("retryable", [False, True])

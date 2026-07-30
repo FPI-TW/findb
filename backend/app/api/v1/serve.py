@@ -49,9 +49,42 @@ from app.schemas.serve import (
     MacroObservationResponse,
     MacroSeriesListResponse,
     MacroSeriesResponse,
+    MarketFreshnessSummaryListResponse,
+    MarketFreshnessSummaryResponse,
 )
+from app.services.market_freshness import list_market_freshness
 
 router = APIRouter()
+
+
+@router.get("/market-freshness", response_model=MarketFreshnessSummaryListResponse)
+async def list_market_freshness_summary(
+    market: Optional[str] = Query(None, min_length=1, max_length=10),
+    _: str = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return provider-free configured market freshness summaries."""
+    rows = await list_market_freshness(db, market=market)
+    return MarketFreshnessSummaryListResponse(
+        data=[
+            MarketFreshnessSummaryResponse(
+                market=row.market,
+                slot_id=row.slot_id,
+                scheduled_local_time=row.scheduled_local_time,
+                timezone=row.timezone,
+                status=row.status,
+                expected_data_date=row.expected_data_date,
+                coverage_data_date=row.coverage_data_date,
+                last_successful_update_at=row.last_successful_update_at,
+                last_complete_at=row.last_complete_at,
+                next_scheduled_at=row.next_scheduled_at,
+                feed_count=row.feed_count,
+                fresh_feed_count=row.fresh_feed_count,
+                late_feed_count=row.late_feed_count,
+            )
+            for row in rows
+        ]
+    )
 
 
 def _instrument_cursor(instrument: Instrument) -> str:

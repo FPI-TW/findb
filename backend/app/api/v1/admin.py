@@ -56,6 +56,8 @@ from app.schemas.admin import (
     InstrumentCacheReplaceRequest,
     InstrumentCacheWriteResponse,
     LoginRequest,
+    MarketFreshnessListResponse,
+    MarketFreshnessResponse,
     MissingDeliveryAlertListResponse,
     MissingDeliveryAlertResponse,
     PasswordResetRequest,
@@ -120,6 +122,7 @@ from app.services.instrument_cache import (
     replace_instrument_cache,
     update_instrument_cache_item,
 )
+from app.services.market_freshness import list_market_freshness
 from app.services.normalization_queue import queue_health
 from app.services.source_clients import (
     create_source_client,
@@ -614,6 +617,41 @@ async def list_missing_deliveries_endpoint(
             total_pages=(total + page_size - 1) // page_size if total else 0,
         ),
     )
+
+
+@router.get("/market-freshness", response_model=MarketFreshnessListResponse)
+async def list_market_freshness_endpoint(
+    market: Optional[str] = Query(None, min_length=1, max_length=10),
+    slot_id: Optional[str] = Query(None, min_length=1, max_length=50),
+    freshness_status: Optional[
+        Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
+    ] = Query(None, alias="status"),
+    include_feeds: bool = Query(True),
+    api_key: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the configured market-delivery freshness projection."""
+    rows = await list_market_freshness(db, market=market, slot_id=slot_id, status=freshness_status)
+    data = []
+    for row in rows:
+        payload = {
+            "market": row.market,
+            "slot_id": row.slot_id,
+            "scheduled_local_time": row.scheduled_local_time,
+            "timezone": row.timezone,
+            "status": row.status,
+            "expected_data_date": row.expected_data_date,
+            "coverage_data_date": row.coverage_data_date,
+            "last_successful_update_at": row.last_successful_update_at,
+            "last_complete_at": row.last_complete_at,
+            "next_scheduled_at": row.next_scheduled_at,
+            "feed_count": row.feed_count,
+            "fresh_feed_count": row.fresh_feed_count,
+            "late_feed_count": row.late_feed_count,
+            "feeds": list(row.feeds) if include_feeds else [],
+        }
+        data.append(MarketFreshnessResponse.model_validate(payload))
+    return MarketFreshnessListResponse(data=data)
 
 
 @router.post("/api-keys", response_model=APIKeyCreateResponse)

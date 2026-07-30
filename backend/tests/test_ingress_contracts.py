@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from datetime import timezone
+from datetime import timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -104,6 +104,29 @@ def test_market_eod_v1_accepts_provider_neutral_payload():
     assert request.fetched_at.hour == 8
     assert request.payload.data[0].close == Decimal("1015.0")
     assert request.payload.data[0].source_symbol == "2330 TT Equity"
+
+
+def test_market_eod_v1_accepts_optional_scheduler_delivery_metadata():
+    value = _market_eod_request()
+    value["delivery"] = {
+        "slot_id": "tw_1430",
+        "scheduled_for": "2026-07-21T16:30:00+08:00",
+        "target_data_date": "2026-07-21",
+        "work_item_id": "tw-eod-20260721-finlab",
+    }
+    request = MarketEODIngressRequest.model_validate(value)
+
+    assert request.delivery is not None
+    assert request.delivery.scheduled_for == request.fetched_at + timedelta(minutes=30)
+    assert request.delivery.target_data_date.isoformat() == "2026-07-21"
+
+
+def test_market_eod_v1_rejects_partial_scheduler_delivery_metadata():
+    value = _market_eod_request()
+    value["delivery"] = {"slot_id": "tw_1430"}
+
+    with pytest.raises(ValidationError):
+        MarketEODIngressRequest.model_validate(value)
 
 
 @pytest.mark.parametrize("currency", ["USDT", "USDC"])
@@ -358,13 +381,13 @@ def test_registry_dispatches_explicit_contract_version():
             "market_eod",
             "MarketEODIngressRequest",
             "market.currency.row_or_dataset_default",
-            "105724db35b63de90b42ab17a87c353ff221397d7d6ceb9506aabe3cbaca287f",
+            "4fb5308382ebe6d4878a7757a67978332e20197beb267cfe6ca0286f7fb732e8",
         ),
         (
             "futures_continuous_eod",
             "FuturesContinuousEODIngressRequest",
             "futures.currency.dataset_default_required",
-            "0723034705a28890e0c38859bfbcc045ef537d5121c7c827b8c70e821ea580fb",
+            "67b4f6f7a7edd123c4095e776f10a66f0dc536d62fecc08737e3b34b208813d8",
         ),
     ],
 )

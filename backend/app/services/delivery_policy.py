@@ -123,6 +123,29 @@ class MissingDeliveryPolicy(BaseModel):
         return self
 
 
+class FreshnessSchedule(BaseModel):
+    """Operator-owned schedule used to group expected delivery feeds."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    slot_id: Literal["us_0600", "global_0815", "tw_1430", "asia_1630"]
+    local_time: time
+    timezone: Literal["Asia/Taipei"]
+    expected_sources: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("expected_sources")
+    @classmethod
+    def normalize_sources(cls, values: list[str]) -> list[str]:
+        return MissingDeliveryPolicy.normalize_sources(values)
+
+    @model_validator(mode="after")
+    def require_enabled_sources(self) -> "FreshnessSchedule":
+        if self.enabled and not self.expected_sources:
+            raise ValueError("expected_sources must be non-empty when schedule is enabled")
+        return self
+
+
 class DeliveryExpectation(BaseModel):
     """Typed dataset delivery policy with compatibility for the original flat config."""
 
@@ -136,6 +159,7 @@ class DeliveryExpectation(BaseModel):
     freshness: FreshnessPolicy = Field(default_factory=FreshnessPolicy)
     latest_date: LatestDatePolicy | None = None
     missing_delivery: MissingDeliveryPolicy = Field(default_factory=MissingDeliveryPolicy)
+    schedule: FreshnessSchedule | None = None
 
     @model_validator(mode="before")
     @classmethod

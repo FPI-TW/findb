@@ -3,6 +3,7 @@ Script to seed initial dataset registry and crypto instruments.
 """
 
 import asyncio
+import json
 import logging
 
 from sqlalchemy import cast, func, text
@@ -86,6 +87,13 @@ DATASETS = [
                     "market_close_time": "16:00:00",
                     "availability_grace_minutes": 120,
                     "action": "warn",
+                },
+                "schedule": {
+                    "enabled": True,
+                    "slot_id": "us_0600",
+                    "local_time": "06:00:00",
+                    "timezone": "Asia/Taipei",
+                    "expected_sources": ["twelve_data"],
                 },
             },
             "source_format": "bloomberg_equity_api",
@@ -174,6 +182,13 @@ DATASETS = [
                     "availability_grace_minutes": 120,
                     "action": "warn",
                 },
+                "schedule": {
+                    "enabled": True,
+                    "slot_id": "tw_1430",
+                    "local_time": "14:30:00",
+                    "timezone": "Asia/Taipei",
+                    "expected_sources": ["finlab"],
+                },
             },
             "source_format": "finlab_twstock_direct",
             "data_path": "data",
@@ -230,6 +245,13 @@ DATASETS = [
                     "market_close_time": "13:30:00",
                     "availability_grace_minutes": 120,
                     "action": "warn",
+                },
+                "schedule": {
+                    "enabled": True,
+                    "slot_id": "tw_1430",
+                    "local_time": "14:30:00",
+                    "timezone": "Asia/Taipei",
+                    "expected_sources": ["finlab"],
                 },
             },
             "source_format": "finlab_twstock_direct",
@@ -516,6 +538,13 @@ DATASETS = [
                     "availability_grace_minutes": 120,
                     "action": "warn",
                 },
+                "schedule": {
+                    "enabled": False,
+                    "slot_id": "tw_1430",
+                    "local_time": "14:30:00",
+                    "timezone": "Asia/Taipei",
+                    "expected_sources": [],
+                },
             },
             "data_path": "data",
             "symbol_field": "symbol",
@@ -758,6 +787,13 @@ DATASETS = [
                     "availability_grace_minutes": 120,
                     "action": "warn",
                 },
+                "schedule": {
+                    "enabled": True,
+                    "slot_id": "tw_1430",
+                    "local_time": "14:30:00",
+                    "timezone": "Asia/Taipei",
+                    "expected_sources": ["finlab"],
+                },
             },
             "source_format": "direct",
         },
@@ -868,6 +904,23 @@ async def seed_datasets(session: AsyncSession):
                       AND NOT (config->'delivery_expectation' ? 'missing_delivery')
                 """),
                 {"dataset_key": ds["dataset_key"]},
+            )
+        schedule = (ds["config"].get("delivery_expectation") or {}).get("schedule")
+        if schedule is not None:
+            await session.execute(
+                text("""
+                    UPDATE dataset_registry
+                    SET config = jsonb_set(
+                        config,
+                        '{delivery_expectation,schedule}',
+                        CAST(:schedule AS jsonb),
+                        true
+                    )
+                    WHERE dataset_key = :dataset_key
+                      AND jsonb_typeof(config->'delivery_expectation') = 'object'
+                      AND NOT (config->'delivery_expectation' ? 'schedule')
+                """),
+                {"dataset_key": ds["dataset_key"], "schedule": json.dumps(schedule)},
             )
 
     await session.commit()
