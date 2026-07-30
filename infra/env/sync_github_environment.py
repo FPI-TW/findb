@@ -43,6 +43,7 @@ SERVICE_CONFIGS: Final = {
             "RAW_RETENTION_DAYS",
             "FINDB_STATIC_CACHE_BASE_URL",
             "FINDB_LATEST_PRICE_WORKERS",
+            "FINDB_PUBLIC_HOST",
         ),
         secrets=(
             "FINDB_EC2_HOST",

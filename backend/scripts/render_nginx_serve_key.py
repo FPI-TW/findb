@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 DEFAULT_REFERER_REGEX = (
-    r"^https?://findb\.tingfong\.com/"
+    r"^https?://findb-staging\.tingfong\.com/"
     r"(?:instrument-lookup(?:[/?#]|$)|dashboard/lookup(?:[/?#]|$))"
 )
+
+
+def referer_regex_for_host(public_host: str) -> str:
+    host = public_host.strip().lower().rstrip(".")
+    if not re.fullmatch(
+        r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
+        host,
+    ):
+        raise ValueError("public host must be a valid DNS hostname")
+    return (
+        rf"^https?://{re.escape(host)}/"
+        r"(?:instrument-lookup(?:[/?#]|$)|dashboard/lookup(?:[/?#]|$))"
+    )
 
 
 def render_serve_key(lookup_key: str, allowed_referer_regex: str) -> str:
@@ -54,14 +68,25 @@ def main() -> None:
     )
     parser.add_argument(
         "--allowed-referer-regex",
-        default=DEFAULT_REFERER_REGEX,
         help="nginx-flavoured regex; Referers matching this get the injected key.",
+    )
+    parser.add_argument(
+        "--public-host",
+        help="Public DNS hostname used to derive the allowed lookup Referer regex.",
     )
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
+    if args.allowed_referer_regex and args.public_host:
+        parser.error("use either --allowed-referer-regex or --public-host, not both")
+    allowed_referer_regex = (
+        referer_regex_for_host(args.public_host)
+        if args.public_host
+        else args.allowed_referer_regex or DEFAULT_REFERER_REGEX
+    )
+
     args.output.write_text(
-        render_serve_key(args.key, args.allowed_referer_regex),
+        render_serve_key(args.key, allowed_referer_regex),
         encoding="utf-8",
     )
 
