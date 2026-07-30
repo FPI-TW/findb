@@ -86,3 +86,12 @@ jobs:
             echo "::warning title=Fetcher container build retry::Attempt ${attempt} failed; retrying in ${delay}s"
             sleep "$delay"
           done
+
+      - name: Build and inspect isolated FinLab smoke container
+        working-directory: .
+        run: |
+          generic_image="findb-fetcher:${{ github.sha }}"
+          finlab_image="findb-fetcher-finlab:${{ github.sha }}"
+          docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is None else 1)'
+          docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .
+          docker run --rm "$finlab_image" findb-fetch-finlab-smoke --help

@@ -1,5 +1,21 @@
 """Provider-specific fetch and mapping implementations."""
 
+from findb_fetcher.providers.finlab import (
+    FINLAB_SOURCE,
+    FinLabConfigError,
+    FinLabDatasetBundle,
+    FinLabDatasetConfig,
+    FinLabDatasetGateway,
+    FinLabDatasetTable,
+    FinLabError,
+    FinLabPayloadError,
+    FinLabSdkError,
+    FinLabSdkGateway,
+    FinLabSymbol,
+    build_finlab_dataset_bundle,
+    fetch_finlab_dataset_bundle,
+    prepare_market_eod_delivery,
+)
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
@@ -12,6 +28,17 @@ from findb_fetcher.providers.twelve_data import (
 )
 
 __all__ = [
+    "FINLAB_SOURCE",
+    "FinLabConfigError",
+    "FinLabDatasetBundle",
+    "FinLabDatasetConfig",
+    "FinLabDatasetGateway",
+    "FinLabDatasetTable",
+    "FinLabError",
+    "FinLabPayloadError",
+    "FinLabSdkError",
+    "FinLabSdkGateway",
+    "FinLabSymbol",
     "TwelveDataClient",
     "TwelveDataConfig",
     "TwelveDataConfigError",
@@ -19,5 +46,8 @@ __all__ = [
     "TwelveDataNoNewDataError",
     "TwelveDataPayloadError",
     "TwelveDataResponseError",
+    "build_finlab_dataset_bundle",
     "build_market_eod_request",
+    "fetch_finlab_dataset_bundle",
+    "prepare_market_eod_delivery",
 ]

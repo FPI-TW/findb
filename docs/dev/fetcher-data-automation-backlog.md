@@ -14,9 +14,9 @@ model 與產品口徑。排程時區固定為 `Asia/Taipei`：
 
 - Manifest v2 與 SQLite state v2 已有四 slot、provider/dataset/work-item/target
   date identity、v1 原地遷移與 delivery metadata；v1 pilot 保持相容。
-- `us_0600` 使用 manifest 內受治理的 2026 美國非交易日；超出 calendar
+- `us_0600` 引用受治理的 NYSE 2026–2028 calendar 檔；超出 calendar
   coverage 時排程會 fail closed，不能以 weekday 猜測交易日。Calendar 必須在
-  啟用下一年度前完成 review 與展延。
+  啟用 2029 年度前完成 review 與展延。
 - `scheduled_for` 表示 slot 實際觸發日，與可能因時區、週末或假日回推的
   `target_data_date` 分開保存；retryable miss 在 grace deadline 前不會耗盡。
 - 目前只有 `us_0600` 的 Twelve Data `AAPL`、`MSFT`、`NVDA` pilot 可執行。
@@ -27,6 +27,10 @@ model 與產品口徑。排程時區固定為 `Asia/Taipei`：
   公開知識或「約 N 檔」描述推導完整成分股。
 - 同一 canonical row 只能有一個權威來源；台股股票與 ETF OHLCV 以 FinLab
   為主，Twelve Data 只補明列標的。
+- FinLab SDK 以 `finlab==1.5.7` optional dependency 管理；官方 changelog
+  顯示 `1.5.8` 導入 Firebase／瀏覽器登入，因此固定在前一版，保留團隊帳號僅能使用
+  `FINLAB_API_TOKEN` 的 headless 流程。不得未經驗證升級；現行通用 Fetcher
+  image 不會自動安裝，之後只由獨立內部 FinLab runtime 顯式啟用。
 
 ## 第一階段 coverage matrix
 
@@ -41,7 +45,7 @@ model 與產品口徑。排程時區固定為 `Asia/Taipei`：
 | 商品              | Twelve Data `/quote`, `/time_series` | `XBR/USD`, `WTI/USD`, `XAU/USD`, `XAG/USD`, `HG1`                                                                                                                              | `us_0600`     | OHLC shape 可支援；spot／future identity 未定                   | slash symbol、spot/future、roll 口徑未決                                | 產品核准 identity；adapter fixture、currency/type、歷史深度與 quota 通過        |
 | 外匯與 DXY        | Twelve Data `/quote`, `/time_series` | `DXY`, `EUR/USD`, `USD/JPY`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/SEK`, `AUD/USD`, `USD/TWD`, `USD/CNH`, `USD/KRW`, `USD/SGD`, `AUD/JPY`, `BRL/JPY`                           | `global_0815` | 既有 FX direct canonical path；Fetcher contract/universe 未泛化 | 現有 universe 禁止 slash symbol 且只接受 US equity                      | 精確 14 項 fixture matrix、FX contract routing、credit hard cap、跨日測試       |
 | Crypto OHLCV      | Twelve Data `/quote`, `/time_series` | `BTC/USD`, `ETH/USD`, `XRP/USD`, `SOL/USD`, `ADA/USD`                                                                                                                          | `global_0815` | 既有 crypto direct canonical path；TD acquisition 未接          | slash symbol、provider mapping 待完成                                   | 五項真實 fixture、24/7 target-date policy、UTC/NY 日界測試                      |
-| 台股股票／ETF     | FinLab                               | 全市場股票與 ETF，來源必須由 FinLab governed dataset 產生                                                                                                                      | `tw_1430`     | `market_eod.v1`、`tw_equity_eod`、`tw_etf_eod`                  | Backend normalizer 已有；Fetcher adapter 與 production isolation 未完成 | FinLab adapter、獨立 Source client/R2/state/container、完整性閾值與五日 staging |
+| 台股股票／ETF     | FinLab                               | 全市場股票與 ETF，來源必須由 FinLab governed dataset 產生                                                                                                                      | `tw_1430`     | `market_eod.v1`、`tw_equity_eod`、`tw_etf_eod`                  | Backend normalizer、Fetcher SDK gateway 與 raw-first adapter boundary 已有；受審核 universe 與 isolation 未完成 | Sanitized fixture、獨立 Source client/R2/state/container、完整性閾值與五日 staging |
 | 台股補充標的      | Twelve Data、TWSE／TPEx API          | `TWII`, `TWB23`, `TWB28`, `0050&exchange=TWSE`, `SOX Index`；不得推導全部 `TWBxx`                                                                                              | `tw_1430`     | 部分 OHLC 可支援；法人／估值等不可硬塞 EOD                      | entitlement、TWSE/TPEx adapter、新 contract/model 待辦                  | 每個 endpoint fixture；與 FinLab 權威範圍互斥；無雙源覆寫                       |
 | WTX 日盤          | FinLab                               | `WTX`                                                                                                                                                                          | `tw_1430`     | `futures_continuous_eod.v1`、`wtx_eod`                          | Backend normalizer 已有；Fetcher adapter 未完成                         | 單一 FinLab feed、交易日與日盤完整性測試、無 legacy Bloomberg 雙源              |
 | 港股指數          | Twelve Data／Bloomberg               | `HSI`; `HSTECH Index`, `HSCEI Index`, `HSMSI Index`, `VHSI Index`; `HSCIIT`, `HSCICD`, `HSCICS`, `HSCIH`, `HSCIPC`, `HSCIMT`, `HSCIIN`, `HSCIFN`, `HSCIUT`, `HSCIEN`, `HSCITC` | `asia_1630`   | HK direct path 可支援；Fetcher provider 缺少                    | TD/Bloomberg entitlement 待驗證                                         | 明確 universe、真實 fixture、source ownership 與五日 staging                    |
@@ -53,7 +57,7 @@ model 與產品口徑。排程時區固定為 `Asia/Taipei`：
 
 | 項目                                         | 需要的能力                                                                                                                                                                                                                              | 阻礙                                                              | 驗收條件                                                                                     |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| FinLab production scheduler                  | Fetcher-owned adapter、headless login、freshness/completeness check、bounded retry                                                                                                                                                      | 尚無 adapter 與獨立 deployment wiring                             | 不記錄 credential；raw-first；獨立 Source key/R2 prefix/state/container；lease recovery 測試 |
+| FinLab production scheduler                  | 已有 `FINLAB_API_TOKEN` headless SDK gateway、deterministic acquisition bundle、`market_eod.v1` mapper 與 raw-first boundary；仍需 freshness/completeness check、bounded retry                                                            | 公開 SDK 只回傳 DataFrame，無 exact HTTP bytes；sanitized fixture、governed universe 與獨立 deployment wiring 尚未完成 | 不記錄 credential；明確標示 acquisition snapshot、raw-first；獨立 Source key/R2 prefix/state/container；lease recovery 測試 |
 | TWSE／TPEx                                   | `MI_INDEX`, `T86`, `STOCK_DAY_ALL`, `BWIBBU_ALL` 與 OTC fallback adapters                                                                                                                                                               | 法人、估值、類股不是 market EOD                                   | 先新增專用 contract、canonical model、Alembic、DQ 與 Serve schema                            |
 | Bloomberg                                    | HK/CN、macro、yield、credit series acquisition                                                                                                                                                                                          | Backend 有 direct normalizer，但 Fetcher 無 provider              | provider adapter、entitlement matrix、sanitized fixture、rate limit/retry                    |
 | Macro／yield                                 | `USGG3M`, `USGG2YR`, `USGG5YR`, `USGG10YR`, `USGG30YR`, `SOFRRATE`, `USGGBE02`, `PCE CYOY`, `MOVE`, `USYC2Y10`, `USYC3M10`, `SPX Index`, `IBXXAX73`, `IBXXAJ03`, `IBXXAJ32`, `C0A1 Index`, `C0A4 Index`, `LG30YW Index`, `BEBGYW Index` | bond entity vs macro scalar、direct OAS vs calculated spread 未決 | 核准 canonical identity／calculation owner，然後 contract、fixture 與 Serve 驗收             |

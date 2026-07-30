@@ -12,6 +12,12 @@ dependencies = [
 [project.scripts]
 findb-fetch-twelve-data = "findb_fetcher.twelve_data_cli:main"
 findb-fetch-scheduler = "findb_fetcher.scheduler_cli:main"
+findb-fetch-finlab-smoke = "findb_fetcher.finlab_smoke_cli:main"
+
+[project.optional-dependencies]
+finlab = [
+    "finlab==1.5.7",
+]
 
 [dependency-groups]
 dev = [

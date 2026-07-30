@@ -105,6 +105,7 @@ production-fetcher
 | Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
 | Secrets | `FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
 | Optional secrets | `FETCHER_FINLAB_SOURCE_CLIENT_KEY`（FinLab consumer上線前只保存於Environment，不注入Twelve Data container） |
+| Optional secrets | `FINLAB_API_TOKEN`（僅手動 staging acquisition smoke 注入隔離FinLab container；不注入Twelve scheduler） |
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime

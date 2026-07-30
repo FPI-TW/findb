@@ -35,9 +35,7 @@ _V2_FEED_KEYS = {
     "universe_file",
     "scheduled_time",
     "target_date_policy",
-    "calendar_start_date",
-    "calendar_end_date",
-    "non_trading_dates",
+    "calendar_file",
     "grace_seconds",
     "outputsize",
     "max_attempts",
@@ -50,6 +48,17 @@ _V2_FEED_KEYS = {
     "max_records_per_run",
     "enabled",
 }
+_CALENDAR_ROOT_KEYS = {
+    "calendar_version",
+    "calendar_id",
+    "market",
+    "timezone",
+    "coverage_start_date",
+    "coverage_end_date",
+    "non_trading_dates",
+    "source_url",
+    "reviewed_at",
+}
 _SLOT_TIMES = {"us_0600": "06:00", "global_0815": "08:15", "tw_1430": "14:30", "asia_1630": "16:30"}
 
 
@@ -59,6 +68,15 @@ class ScheduleError(ValueError):
 
 class _DuplicateJSONKeyError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _GovernedCalendar:
+    calendar_id: str
+    path: Path
+    coverage_start_date: date
+    coverage_end_date: date
+    non_trading_dates: tuple[date, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +103,8 @@ class ScheduleConfig:
     non_trading_dates: tuple[date, ...] = ()
     calendar_start_date: date | None = None
     calendar_end_date: date | None = None
+    calendar_file: Path | None = None
+    calendar_id: str | None = None
     max_credits_per_run: int = 5
     max_records_per_run: int = 10_000
     enabled: bool = True
@@ -234,6 +254,8 @@ def load_schedule_manifest(path: Path) -> ScheduleManifest:
     """Load strict v2 manifests, while exposing a v1 file as one legacy feed."""
     try:
         raw = path.read_bytes()
+        if len(raw) > _MAX_CONFIG_BYTES:
+            raise ScheduleError("schedule config exceeds size limit")
         value = json.loads(raw, object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, _DuplicateJSONKeyError) as exc:
         raise ScheduleError("schedule config must be valid UTF-8 JSON with unique keys") from exc
@@ -281,6 +303,12 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         policy = _required_string(item, "target_date_policy")
         if policy not in {"latest_weekday", "latest_trade_date"}:
             raise ScheduleError("target_date_policy is unsupported")
+        calendar = _load_calendar(
+            path,
+            item.get("calendar_file"),
+            feed_market=_required_string(item, "market"),
+            timezone_name=timezone_name,
+        )
         config = ScheduleConfig(
             schedule_version=2,
             schedule_id=f"{provider}_{slot_id}_{dataset_key}",
@@ -301,9 +329,11 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
             timezone_name=timezone_name,
             target_date_policy=policy,
             grace_seconds=_bounded_int(item, "grace_seconds", 0, 86400),
-            non_trading_dates=_date_list(item, "non_trading_dates"),
-            calendar_start_date=_optional_date(item, "calendar_start_date"),
-            calendar_end_date=_optional_date(item, "calendar_end_date"),
+            non_trading_dates=() if calendar is None else calendar.non_trading_dates,
+            calendar_start_date=None if calendar is None else calendar.coverage_start_date,
+            calendar_end_date=None if calendar is None else calendar.coverage_end_date,
+            calendar_file=None if calendar is None else calendar.path,
+            calendar_id=None if calendar is None else calendar.calendar_id,
             max_credits_per_run=_bounded_int(item, "max_credits_per_run", 1, 100000),
             max_records_per_run=_bounded_int(item, "max_records_per_run", 1, 100000),
             enabled=item["enabled"],
@@ -315,24 +345,8 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
             raise ScheduleError("v2 retry or lease bounds are invalid")
         if config.enabled is not True and config.enabled is not False:
             raise ScheduleError("enabled must be a boolean")
-        if (
-            config.target_date_policy == "latest_trade_date"
-            and config.enabled
-            and (config.calendar_start_date is None or config.calendar_end_date is None)
-        ):
-            raise ScheduleError("enabled trade-date policy requires calendar coverage")
-        if (
-            config.calendar_start_date is not None
-            and config.calendar_end_date is not None
-            and (
-                config.calendar_start_date > config.calendar_end_date
-                or any(
-                    holiday < config.calendar_start_date or holiday > config.calendar_end_date
-                    for holiday in config.non_trading_dates
-                )
-            )
-        ):
-            raise ScheduleError("market calendar date range is invalid")
+        if config.target_date_policy == "latest_trade_date" and config.enabled and calendar is None:
+            raise ScheduleError("enabled trade-date policy requires a governed calendar")
         feeds.append(config)
     if seen_slots != set(_SLOT_TIMES):
         raise ScheduleError("v2 manifest must declare each of the four slots")
@@ -356,6 +370,79 @@ def _universe_path(path: Path, universe_name: str) -> Path:
     ):
         raise ScheduleError("universe_file must be a JSON filename beside the schedule config")
     return path.parent / universe_path
+
+
+def _load_calendar(
+    manifest_path: Path,
+    calendar_name: Any,
+    *,
+    feed_market: str,
+    timezone_name: str,
+) -> _GovernedCalendar | None:
+    if calendar_name is None:
+        return None
+    if not isinstance(calendar_name, str) or not calendar_name.strip():
+        raise ScheduleError("calendar_file must be a non-empty JSON path or null")
+    calendar_path = _calendar_path(manifest_path, calendar_name.strip())
+    try:
+        raw = calendar_path.read_bytes()
+    except OSError as exc:
+        raise ScheduleError(f"unable to read governed calendar: {calendar_name}") from exc
+    if len(raw) > _MAX_CONFIG_BYTES:
+        raise ScheduleError("governed calendar exceeds size limit")
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJSONKeyError) as exc:
+        raise ScheduleError("governed calendar must be valid UTF-8 JSON with unique keys") from exc
+    if not isinstance(value, dict) or set(value) != _CALENDAR_ROOT_KEYS:
+        raise ScheduleError(f"governed calendar keys must be exactly {sorted(_CALENDAR_ROOT_KEYS)}")
+    if _bounded_int(value, "calendar_version", 1, 1) != 1:
+        raise ScheduleError("calendar_version must be 1")
+    if _required_string(value, "market") != feed_market:
+        raise ScheduleError("governed calendar market must match feed market")
+    if _required_string(value, "timezone") != timezone_name:
+        raise ScheduleError("governed calendar timezone must match manifest timezone")
+    coverage_start_date = _required_date(value, "coverage_start_date")
+    coverage_end_date = _required_date(value, "coverage_end_date")
+    source_url = _required_string(value, "source_url")
+    if not source_url.startswith("https://"):
+        raise ScheduleError("governed calendar source_url must use HTTPS")
+    _required_date(value, "reviewed_at")
+    non_trading_dates = _date_list(value, "non_trading_dates")
+    if coverage_start_date > coverage_end_date or any(
+        holiday < coverage_start_date or holiday > coverage_end_date
+        for holiday in non_trading_dates
+    ):
+        raise ScheduleError("governed calendar date range is invalid")
+    return _GovernedCalendar(
+        calendar_id=_identifier(value, "calendar_id"),
+        path=calendar_path,
+        coverage_start_date=coverage_start_date,
+        coverage_end_date=coverage_end_date,
+        non_trading_dates=non_trading_dates,
+    )
+
+
+def _calendar_path(manifest_path: Path, calendar_name: str) -> Path:
+    calendar_path = Path(calendar_name)
+    if (
+        calendar_path.is_absolute()
+        or calendar_path.suffix != ".json"
+        or len(calendar_path.parts) != 2
+        or calendar_path.parts[0] != "calendars"
+        or calendar_path.name != calendar_name.split("/", maxsplit=1)[-1]
+    ):
+        raise ScheduleError("calendar_file must be a JSON file under configs/calendars")
+    try:
+        manifest_directory = manifest_path.parent.resolve(strict=True)
+        governed_directory = manifest_directory / "calendars"
+        resolved_calendar_path = (manifest_directory / calendar_path).resolve(strict=True)
+        resolved_calendar_path.relative_to(governed_directory)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ScheduleError(
+            "calendar_file must resolve inside the governed configs/calendars directory"
+        ) from exc
+    return resolved_calendar_path
 
 
 def _utc_datetime(value: datetime) -> datetime:
@@ -401,6 +488,16 @@ def _optional_date(parent: dict[str, Any], key: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise ScheduleError(f"{key} must be an ISO date or null") from exc
+
+
+def _required_date(parent: dict[str, Any], key: str) -> date:
+    value = parent.get(key)
+    if not isinstance(value, str):
+        raise ScheduleError(f"{key} must be an ISO date")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ScheduleError(f"{key} must be an ISO date") from exc
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

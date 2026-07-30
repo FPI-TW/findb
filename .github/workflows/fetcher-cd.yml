@@ -16,6 +16,23 @@ on:
         options:
           - staging
           - production
+      run_finlab_smoke:
+        description: Run the isolated FinLab acquisition smoke on staging (never deploys data)
+        required: true
+        default: false
+        type: boolean
+      finlab_target_date:
+        description: Required ISO trade date for the FinLab smoke, for example 2026-07-29
+        required: false
+        default: ""
+        type: string
+      finlab_symbols:
+        description: Reviewed FinLab smoke symbols
+        required: false
+        default: 2330,2317
+        type: choice
+        options:
+          - 2330,2317
 
 concurrency:
   group: ${{ inputs.deployment_target || 'staging' }}-fetcher
@@ -26,6 +43,7 @@ permissions:
 
 env:
   FETCHER_IMAGE: ghcr.io/fpi-tw/findb-fetcher
+  FETCHER_FINLAB_IMAGE: ghcr.io/fpi-tw/findb-fetcher-finlab
   FETCHER_IMAGE_TAG: ${{ github.sha }}
 
 jobs:
@@ -65,8 +83,21 @@ jobs:
           cache-from: type=gha,scope=fetcher
           cache-to: type=gha,mode=max,scope=fetcher
 
+      - name: Build and push isolated FinLab smoke image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: fetcher/Dockerfile.finlab
+          push: true
+          tags: ${{ env.FETCHER_FINLAB_IMAGE }}:${{ env.FETCHER_IMAGE_TAG }}
+          cache-from: type=gha,scope=fetcher-finlab
+          cache-to: type=gha,mode=max,scope=fetcher-finlab
+
   deploy:
     needs: build-push
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.run_finlab_smoke != true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
@@ -348,3 +379,75 @@ jobs:
             fi
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             echo "Fetcher scheduler release completed"
+
+  finlab-acquisition-smoke:
+    needs: build-push
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_finlab_smoke == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # This job is intentionally staging-only, regardless of the regular deploy input.
+    environment: staging-fetcher
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Run bounded FinLab acquisition smoke on Fetcher staging EC2
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FINLAB_API_TOKEN: ${{ secrets.FINLAB_API_TOKEN }}
+          FINLAB_SMOKE_TARGET_DATE: ${{ inputs.finlab_target_date }}
+          FINLAB_SMOKE_SYMBOLS: ${{ inputs.finlab_symbols }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FINLAB_API_TOKEN,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS
+          script: |
+            set -euo pipefail
+
+            if [ -z "${FINLAB_API_TOKEN:-}" ]; then
+              echo "::error title=FinLab smoke configuration missing::FINLAB_API_TOKEN is not configured"
+              exit 1
+            fi
+            if [ -z "${FINLAB_SMOKE_TARGET_DATE:-}" ]; then
+              echo "::error title=FinLab smoke arguments missing::An explicit ISO target date is required"
+              exit 1
+            fi
+
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+            image="${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}"
+            docker pull "$image"
+
+            cache_dir=/var/lib/findb-finlab-smoke-cache
+            sudo mkdir -p "$cache_dir"
+            sudo chown 10001:10001 "$cache_dir"
+            sudo chmod 0700 "$cache_dir"
+            if [ "$(stat -c '%u:%g:%a' "$cache_dir")" != "10001:10001:700" ]; then
+              echo "::error title=FinLab smoke cache rejected::Provider cache ownership or mode is unsafe"
+              exit 1
+            fi
+
+            # This container receives only the provider token.  It has no Source,
+            # R2, scheduler, or durable Fetcher state credential/mount.
+            docker run --rm \
+              --name findb-finlab-acquisition-smoke \
+              --user 10001:10001 \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --mount "type=bind,src=$cache_dir,dst=/home/fetcher" \
+              --env FINLAB_API_TOKEN \
+              "$image" \
+              findb-fetch-finlab-smoke \
+              --target-date "$FINLAB_SMOKE_TARGET_DATE" \
+              --symbols "$FINLAB_SMOKE_SYMBOLS"
