@@ -239,6 +239,8 @@ class CalendarResponse(BaseModel):
     session_open: Optional[str] = None
     session_close: Optional[str] = None
     holiday_name: Optional[str] = None
+    day_status: Literal["open", "closed", "settlement_only"] = "open"
+    description: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -247,6 +249,25 @@ class CalendarListResponse(PaginatedResponse[CalendarResponse]):
     """分頁交易日曆回應。"""
 
     pass
+
+
+class PublishedCalendarYearResponse(BaseModel):
+    """Fail-closed scheduler contract: available only for complete published years."""
+
+    market: str
+    year: int
+    revision: int
+    status: Literal["published"]
+    coverage_complete: Literal[True]
+    timezone: str
+    expected_days: int
+    actual_days: int
+    days: list[CalendarResponse]
+
+
+class PublishedCalendarYearEnvelope(BaseModel):
+    success: Literal[True] = True
+    data: PublishedCalendarYearResponse
 
 
 class MarketFreshnessSummaryResponse(BaseModel):

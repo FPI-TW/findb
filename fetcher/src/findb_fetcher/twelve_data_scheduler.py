@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as clock_time
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -71,9 +71,13 @@ class SchedulerRun:
     credits_used: int
     status_counts: dict[str, int]
     results: tuple[ScheduledJobResult, ...]
+    skip_reason: str | None = None
+    calendar_revision: int | None = None
 
     @property
     def status(self) -> str:
+        if self.skip_reason is not None:
+            return "skipped"
         if self.status_counts.get("failed", 0):
             return "failed"
         if self.status_counts.get("retry_wait", 0) or self.status_counts.get("running", 0):
@@ -81,6 +85,12 @@ class SchedulerRun:
         if self.status_counts.get("pending", 0):
             return "pending"
         return "completed"
+
+
+class CalendarPreflight(Protocol):
+    """Minimum read contract required by scheduled execution."""
+
+    def get_day(self, market: str, value: date) -> tuple[Any, int]: ...
 
 
 class TwelveDataScheduledExecutor:
@@ -292,6 +302,7 @@ class SchedulerService:
         universe: SymbolUniverse,
         state: SchedulerState,
         executor: TwelveDataScheduledExecutor,
+        calendar: CalendarPreflight | None = None,
     ) -> None:
         if schedule.outputsize > universe.limits.max_records_per_symbol:
             raise ScheduleError("schedule outputsize exceeds universe per-symbol record limit")
@@ -299,10 +310,33 @@ class SchedulerService:
         self._universe = universe
         self._state = state
         self._executor = executor
+        self._calendar = calendar
 
     def run_once(self, *, now: datetime) -> SchedulerRun:
         scheduled_date = self._schedule.scheduled_date(now)
-        target_data_date = self._schedule.target_date(now)
+        calendar_revision: int | None = None
+        if self._calendar is None:
+            target_data_date = self._schedule.target_date(now)
+        else:
+            target_data_date = scheduled_date
+            if self._schedule.schedule_version == 2 and self._schedule.slot_id == "us_0600":
+                target_data_date -= timedelta(days=1)
+            day, calendar_revision = self._calendar.get_day(
+                self._schedule.market,
+                target_data_date,
+            )
+            if day.day_status != "open":
+                return SchedulerRun(
+                    schedule_id=self._schedule.schedule_id,
+                    scheduled_date=scheduled_date,
+                    enqueued=0,
+                    claimed=0,
+                    credits_used=0,
+                    status_counts={},
+                    results=(),
+                    skip_reason=f"calendar_{day.day_status}",
+                    calendar_revision=calendar_revision,
+                )
         enqueued = self._state.enqueue_due(
             self._schedule,
             self._universe,
@@ -365,6 +399,7 @@ class SchedulerService:
                 scheduled_date,
             ),
             results=tuple(results),
+            calendar_revision=calendar_revision,
         )
 
 

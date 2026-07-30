@@ -3,6 +3,7 @@ Admin API 端點。
 提供 canonical 層資料的人工修正與資料品質問題處理能力。
 """
 
+from base64 import b64decode
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Literal, Optional
@@ -24,6 +25,7 @@ from app.api.deps import (
 )
 from app.config import get_settings
 from app.dependencies import get_db
+from app.models.canonical import CalendarImportBatch, CalendarMarket, CalendarYearRevision
 from app.models.raw import RawMarketPayload
 from app.models.registry import AdminSession, AdminUser, APIKey, IngestionRun, SourceClient
 from app.schemas.admin import (
@@ -39,6 +41,19 @@ from app.schemas.admin import (
     BootstrapRequest,
     BulkRerunResponse,
     CacheTriggerResponse,
+    CalendarApplyRequest,
+    CalendarCsvPreviewRequest,
+    CalendarDayInput,
+    CalendarImportResponse,
+    CalendarJsonPreviewRequest,
+    CalendarManagedDayResponse,
+    CalendarMarketRequest,
+    CalendarMarketResponse,
+    CalendarMutationRequest,
+    CalendarPreviewResponse,
+    CalendarPublishRequest,
+    CalendarRevisionResponse,
+    CalendarYearResponse,
     ChangePasswordRequest,
     CorrectionListResponse,
     CorrectionResponse,
@@ -106,6 +121,19 @@ from app.services.api_keys import (
     revoke_api_key,
     rotate_api_key,
 )
+from app.services.calendar_management import (
+    CalendarError,
+    RevisionConflictError,
+    _apply_rows,
+    apply_preview,
+    clone_with_day_change,
+    create_preview,
+    latest_revision,
+    parse_twse_csv,
+    publish_revision,
+    revision_days,
+    rollback_revision,
+)
 from app.services.credentials import (
     credential_overview,
     list_credentials,
@@ -130,10 +158,28 @@ from app.services.source_clients import (
     revoke_source_client,
     rotate_source_client,
 )
+from app.utils import utc_now
+from app.vocabulary import normalize_market
 from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
 settings = get_settings()
+
+
+def _calendar_revision_response(row: CalendarYearRevision) -> CalendarRevisionResponse:
+    return CalendarRevisionResponse(
+        market=row.market,
+        year=row.year,
+        revision=row.revision,
+        status=row.status,
+        expected_days=row.expected_days,
+        actual_days=row.actual_days,
+        source_kind=row.source_kind,
+        source_filename=row.source_filename,
+        published_at=row.published_at,
+        updated_at=row.updated_at,
+        coverage_complete=row.actual_days == row.expected_days,
+    )
 
 
 def _session_response(user: AdminUser, session: AdminSession, token: str) -> SessionResponse:
@@ -1057,3 +1103,383 @@ async def refresh_instrument_cache(
     return CacheTriggerResponse(
         message="Cache generation task has been queued in the background.", status="accepted"
     )
+
+
+# ── Managed market/year calendars ───────────────────────────────────────────
+
+
+@router.get("/calendars/markets", response_model=list[CalendarMarketResponse])
+async def list_calendar_markets(
+    _: AdminPrincipal = Depends(require_viewer), db: AsyncSession = Depends(get_db)
+):
+    return (
+        (await db.execute(select(CalendarMarket).order_by(CalendarMarket.market))).scalars().all()
+    )
+
+
+@router.put("/calendars/markets/{market}", response_model=CalendarMarketResponse)
+async def upsert_calendar_market(
+    market: str,
+    body: CalendarMarketRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        normalized = normalize_market(market)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if normalized != normalize_market(body.market):
+        raise HTTPException(status_code=422, detail="market path and body must match")
+    row = await db.get(CalendarMarket, normalized)
+    if row is None:
+        row = CalendarMarket(
+            market=normalized,
+            **body.model_dump(exclude={"market"}),
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        db.add(row)
+        action = "create_calendar_market"
+    else:
+        for field, value in body.model_dump(exclude={"market"}).items():
+            setattr(row, field, value)
+        row.updated_at = utc_now()
+        action = "update_calendar_market"
+    await record_admin_audit(
+        db, principal, action=action, resource_type="calendar_market", resource_id=normalized
+    )
+    await db.refresh(row)
+    return row
+
+
+@router.get("/calendars/years", response_model=list[CalendarRevisionResponse])
+async def list_calendar_years(
+    market: str = Query(..., min_length=1, max_length=10),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    normalized = normalize_market(market)
+    rows = (
+        (
+            await db.execute(
+                select(CalendarYearRevision)
+                .where(CalendarYearRevision.market == normalized)
+                .order_by(CalendarYearRevision.year.desc(), CalendarYearRevision.revision.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_calendar_revision_response(row) for row in rows]
+
+
+@router.get("/calendars/days", response_model=CalendarYearResponse)
+async def get_managed_calendar_year(
+    market: str = Query(..., min_length=1, max_length=10),
+    year: int = Query(..., ge=1900, le=2200),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await latest_revision(db, normalize_market(market), year)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Managed calendar year not found")
+    days = await revision_days(db, row.id)
+    return CalendarYearResponse(
+        revision=_calendar_revision_response(row),
+        days=[
+            CalendarManagedDayResponse(
+                market=row.market,
+                trade_date=day.trade_date,
+                status=day.day_status,
+                is_open=day.is_open,
+                session_open=day.session_open,
+                session_close=day.session_close,
+                holiday_name=day.holiday_name,
+                description=day.description,
+                revision=row.revision,
+                source_kind=day.source_kind,
+            )
+            for day in days
+        ],
+    )
+
+
+@router.get("/calendars/imports", response_model=list[CalendarImportResponse])
+async def list_calendar_imports(
+    market: str = Query(..., min_length=1, max_length=10),
+    year: int = Query(..., ge=1900, le=2200),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = (
+        (
+            await db.execute(
+                select(CalendarImportBatch)
+                .where(
+                    CalendarImportBatch.market == normalize_market(market),
+                    CalendarImportBatch.year == year,
+                )
+                .order_by(CalendarImportBatch.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        CalendarImportResponse.model_validate(row).model_copy(
+            update={"revision": row.base_revision + 1 if row.status == "applied" else None}
+        )
+        for row in rows
+    ]
+
+
+def _preview_response(batch: CalendarImportBatch) -> CalendarPreviewResponse:
+    return CalendarPreviewResponse(
+        batch_id=batch.id,
+        market=batch.market,
+        year=batch.year,
+        input_format=batch.input_format,
+        detected_encoding=batch.detected_encoding,
+        base_revision=batch.base_revision,
+        summary=batch.summary,
+        warnings=batch.warnings,
+        errors=batch.errors,
+        days=[
+            CalendarDayInput(
+                trade_date=row["trade_date"],
+                status=row["status"],
+                holiday_name=row.get("holiday_name"),
+                description=row.get("description"),
+                session_open=row.get("session_open"),
+                session_close=row.get("session_close"),
+            )
+            for row in batch.candidate_rows
+        ],
+        expires_at=batch.expires_at,
+    )
+
+
+@router.post("/calendars/imports/json/preview", response_model=CalendarPreviewResponse)
+async def preview_calendar_json(
+    body: CalendarJsonPreviewRequest,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    market = await db.get(CalendarMarket, normalize_market(body.market))
+    if market is None or not market.active:
+        raise HTTPException(status_code=404, detail="Active calendar market not found")
+    try:
+        rows = _apply_rows(
+            year=body.year,
+            market=market,
+            rows=[item.model_dump(mode="json") for item in body.days],
+            coverage_mode=body.coverage_mode,
+        )
+    except CalendarError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    batch = await create_preview(
+        db,
+        market=market,
+        year=body.year,
+        input_format="json",
+        rows=rows,
+        source_bytes=None,
+        source_filename=body.source_filename,
+        detected_encoding=None,
+        created_by=principal.actor_id,
+        commit=False,
+    )
+    await record_admin_audit(
+        db,
+        principal,
+        action="preview_calendar_json",
+        resource_type="calendar_import",
+        resource_id=str(batch.id),
+        details={
+            "market": batch.market,
+            "year": batch.year,
+            "base_revision": batch.base_revision,
+            "actual_days": batch.summary.get("total"),
+        },
+    )
+    return _preview_response(batch)
+
+
+@router.post("/calendars/imports/preview", response_model=CalendarPreviewResponse)
+async def preview_twse_calendar_csv(
+    body: CalendarCsvPreviewRequest,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    market = await db.get(CalendarMarket, normalize_market(body.market))
+    if market is None or not market.active:
+        raise HTTPException(status_code=404, detail="Active calendar market not found")
+    try:
+        raw = b64decode(body.content_base64, validate=True)
+        rows, encoding = parse_twse_csv(raw, year=body.year, market=market)
+    except (ValueError, CalendarError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    batch = await create_preview(
+        db,
+        market=market,
+        year=body.year,
+        input_format="twse_csv",
+        rows=rows,
+        source_bytes=raw,
+        source_filename=body.filename,
+        detected_encoding=encoding,
+        created_by=principal.actor_id,
+        commit=False,
+    )
+    await record_admin_audit(
+        db,
+        principal,
+        action="preview_calendar_csv",
+        resource_type="calendar_import",
+        resource_id=str(batch.id),
+        details={
+            "market": batch.market,
+            "year": batch.year,
+            "base_revision": batch.base_revision,
+            "actual_days": batch.summary.get("total"),
+            "source_sha256": batch.source_sha256,
+        },
+    )
+    return _preview_response(batch)
+
+
+@router.post("/calendars/imports/{batch_id}/apply", response_model=CalendarRevisionResponse)
+async def apply_calendar_preview(
+    batch_id: UUID,
+    body: CalendarApplyRequest,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        revision = await apply_preview(
+            db,
+            batch_id=batch_id,
+            expected_revision=body.expected_revision,
+            actor=principal.actor_id,
+            commit=False,
+        )
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CalendarError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="apply_calendar_preview",
+        resource_type="calendar_year",
+        resource_id=f"{revision.market}:{revision.year}",
+        details={
+            "revision": revision.revision,
+            "batch_id": str(batch_id),
+            "actual_days": revision.actual_days,
+        },
+    )
+    return _calendar_revision_response(revision)
+
+
+@router.patch("/calendars/{market}/{trade_date}", response_model=CalendarRevisionResponse)
+async def edit_calendar_day(
+    market: str,
+    trade_date: date,
+    body: CalendarMutationRequest,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    normalized = normalize_market(market)
+    if await db.get(CalendarMarket, normalized) is None:
+        raise HTTPException(status_code=404, detail="Calendar market not found")
+    try:
+        revision = await clone_with_day_change(
+            db,
+            market=normalized,
+            trade_date=trade_date,
+            expected_revision=body.expected_revision,
+            replacement=body.model_dump(exclude={"expected_revision", "reason"}, mode="json"),
+            commit=False,
+        )
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CalendarError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="edit_calendar_day",
+        resource_type="calendar_day",
+        resource_id=f"{normalized}:{trade_date.isoformat()}",
+        details={"revision": revision.revision, "reason": body.reason},
+    )
+    return _calendar_revision_response(revision)
+
+
+@router.post("/calendars/{market}/{year}/publish", response_model=CalendarRevisionResponse)
+async def publish_calendar_year(
+    market: str,
+    year: int,
+    body: CalendarPublishRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        revision = await publish_revision(
+            db,
+            market=normalize_market(market),
+            year=year,
+            expected_revision=body.expected_revision,
+            published_by=principal.actor_id,
+            commit=False,
+        )
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CalendarError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="publish_calendar_year",
+        resource_type="calendar_year",
+        resource_id=f"{revision.market}:{year}",
+        details={"revision": revision.revision},
+    )
+    return _calendar_revision_response(revision)
+
+
+@router.post("/calendars/{market}/{year}/rollback", response_model=CalendarRevisionResponse)
+async def rollback_calendar_year(
+    market: str,
+    year: int,
+    body: CalendarPublishRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Publish a new highest revision cloned from a prior complete revision."""
+    try:
+        revision = await rollback_revision(
+            db,
+            market=normalize_market(market),
+            year=year,
+            target_revision=body.expected_revision,
+            published_by=principal.actor_id,
+            commit=False,
+        )
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CalendarError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="rollback_calendar_year",
+        resource_type="calendar_year",
+        resource_id=f"{revision.market}:{year}",
+        details={
+            "revision": revision.revision,
+            "target_revision": body.expected_revision,
+        },
+    )
+    return _calendar_revision_response(revision)

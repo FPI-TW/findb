@@ -154,6 +154,7 @@ Serve只讀 canonical tables。主要端點：
 | `GET /serve/bonds` | 債券 master |
 | `GET /serve/bonds/eod` | 債券 EOD |
 | `GET /serve/calendar` | 交易日曆 |
+| `GET /serve/calendar/years/{market}/{year}` | Scheduler 專用；只回傳完整已發布年度，否則404 |
 
 範例：
 
@@ -178,6 +179,7 @@ Admin API具有敏感讀寫能力，只供Dashboard與維運：
 - Raw payload查詢
 - Bulk rerun
 - Instrument cache管理
+- 市場交易日曆設定、JSON／TWSE CSV preview、草稿、發布與回滾
 
 Credential與登入主要端點：
 

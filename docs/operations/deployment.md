@@ -101,9 +101,11 @@ production-fetcher
 | Secrets | `FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY` |
 | Variables | `FETCHER_SCHEDULER_DESIRED_STATE`（只能為`running`或`stopped`；staging=`stopped`、production=`running`） |
 | Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
+| Variables | `FETCHER_CALENDAR_MODE`（預設`static`）、`FINDB_SERVE_BASE_URL`、`FETCHER_CALENDAR_TIMEOUT_SECONDS`、`FETCHER_CALENDAR_CACHE_TTL_SECONDS` |
 | Variables | `CLOUDFLARE_R2_PREFIX`、`CLOUDFLARE_R2_MAX_OBJECT_BYTES`、`TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
 | Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
 | Secrets | `FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
+| Conditional secret | `FETCHER_CALENDAR_SERVE_API_KEY`（calendar mode=`remote`時必填，且不得與Source key相同） |
 | Optional secrets | `FETCHER_FINLAB_SOURCE_CLIENT_KEY`（FinLab consumer上線前只保存於Environment，不注入Twelve Data container） |
 | Optional secrets | `FINLAB_API_TOKEN`（僅手動 staging acquisition smoke 注入隔離FinLab container；不注入Twelve scheduler） |
 | Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
@@ -117,6 +119,11 @@ Secrets Manager/Parameter Store前的明確過渡機制，不可使用
 `--env NAME=value`出現在command line。Fetcher的R2 credentials與未來OIDC/SSM
 設定必須維持Fetcher專屬，不能複製到FinDB。FinDB TLS private key若未來由workflow管理，只能加入
 對應的`{target}-findb`，不能跨環境或服務共用。
+
+`FETCHER_CALENDAR_MODE=static`保留既有受治理檔案行為；部署不會自動改成`remote`。
+切換前必須先在 FinDB 發布完整目標市場年度，建立專用 DB-backed Serve key，並於
+staging 驗證休市、僅結算與 API 失敗都不會 enqueue。Calendar preflight key只授權
+唯讀 Serve API，不可重用 Source client key。
 
 R2 credentials只屬於Fetcher；FinDB只接收不含credential的完整object reference與
 checksum，不持有R2 runtime credentials。R2 lifecycle、bucket lock或configuration

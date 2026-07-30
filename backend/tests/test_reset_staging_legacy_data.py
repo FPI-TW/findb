@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import Base
-from app.models.canonical import Instrument, MarketDataEOD, TradingCalendar
+from app.models.canonical import CalendarMarket, Instrument, MarketDataEOD, TradingCalendar
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     APIKey,
@@ -254,7 +254,17 @@ async def test_apply_truncates_mutable_tables_and_preserves_protected_tables(tes
             )
             now = utc_now()
             instrument = Instrument(asset_class="equity", market="US", symbol="RESET")
-            session.add(instrument)
+            session.add_all(
+                [
+                    instrument,
+                    CalendarMarket(
+                        market="US",
+                        display_name="美國",
+                        timezone="America/New_York",
+                        weekend_days=[5, 6],
+                    ),
+                ]
+            )
             await session.flush()
             session.add_all(
                 [
@@ -294,4 +304,5 @@ async def test_apply_truncates_mutable_tables_and_preserves_protected_tables(tes
             assert report.after["public.dataset_registry"] == 1
             assert report.after["public.source_client"] == 1
             assert report.after["public.api_key"] == 1
+            assert report.after["public.calendar_market"] == 1
             assert await connection.scalar(text("SELECT count(*) FROM dataset_registry")) == 1

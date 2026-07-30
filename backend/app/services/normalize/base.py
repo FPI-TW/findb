@@ -413,6 +413,9 @@ class BaseNormalizer(ABC):
                 market=calendar_market,
                 trade_date=trade_date_value,
                 is_open=True,
+                day_status="open",
+                source_kind="observed_ingestion",
+                revision=0,
             )
             .on_conflict_do_nothing(constraint="uq_calendar")
         )

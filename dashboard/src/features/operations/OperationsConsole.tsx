@@ -318,6 +318,12 @@ const navigation = [
     exact: false,
   },
   {
+    to: "/operations/calendars",
+    label: "交易日曆",
+    icon: CalendarClock,
+    exact: false,
+  },
+  {
     to: "/operations/credentials",
     label: "API Credentials",
     icon: KeyRound,

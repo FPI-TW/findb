@@ -69,8 +69,9 @@ Fetcher完整runtime完成後負責：
 - Stable idempotency key、retry、checkpoint與delivery status
 - 真實 fixtures與adapter mapping tests
 
-Fetcher 只能透過 HTTPS Source API 與 FinDB互動；不得取得 FinDB DB、RabbitMQ、
-Admin或Serve credentials。
+Fetcher 只能透過 HTTPS API 與 FinDB互動；不得取得 FinDB DB、RabbitMQ 或 Admin
+credentials。寫入只使用 provider-specific Source key；市場交易日 preflight 可使用
+另一把專用、唯讀的 Serve key，且只能讀取完整 published calendar year。
 
 目前已將Twelve Data列為固定資料來源之一，並落地其日線adapter、contract驗證、
 明確選用的manual delivery/wait CLI、受治理symbol universe、逐symbol獨立identity、

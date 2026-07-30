@@ -9,6 +9,7 @@ The reset deliberately preserves only schema/configuration/authentication data:
 * ``public.admin_user``
 * ``public.admin_session``
 * ``public.admin_audit_event``
+* ``public.calendar_market``
 * ``public.credential_usage_rollup``
 
 Every other current application data table is cleared, including canonical,
@@ -56,6 +57,7 @@ PROTECTED_TABLES = (
     "public.admin_user",
     "public.alembic_version",
     "public.api_key",
+    "public.calendar_market",
     "public.credential_usage_rollup",
     "public.dataset_registry",
     "public.source_client",
@@ -66,6 +68,9 @@ PROTECTED_TABLES = (
 TARGET_TABLES = (
     "public.bond_details",
     "public.bond_eod",
+    "public.calendar_import_batch",
+    "public.calendar_revision_day",
+    "public.calendar_year_revision",
     "public.canonical_correction",
     "public.corporate_action",
     "public.dq_issue",
