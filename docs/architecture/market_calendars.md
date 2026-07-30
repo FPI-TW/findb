@@ -37,8 +37,8 @@ TWSE CSV parser 支援 UTF-8、CP950／Big5，從標題解析民國年度，驗�
 Fetcher remote client 還會驗證 market/year/revision、IANA timezone、365／366 天、
 日期連續性及 `day_status`／`is_open` 一致性，任何錯誤都 fail closed。
 
-Fetcher 的 `FETCHER_CALENDAR_MODE` 預設為 `static`，部署本功能不會自動切換或啟動
-Scheduler。切換為 `remote` 前必須另外設定：
+Fetcher Scheduler 一律使用此 published-year 合約，沒有 static fallback；schedule-file
+中的 calendar 欄位只保留供向後相容的解析與測試，不能作為排程決策來源。部署前必須設定：
 
 - `FINDB_SERVE_BASE_URL`
 - `FETCHER_CALENDAR_SERVE_API_KEY`（專用 DB-backed Serve key，不可與 Source key共用）

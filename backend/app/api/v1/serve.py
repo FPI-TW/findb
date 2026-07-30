@@ -16,6 +16,8 @@ from app.dependencies import get_db
 from app.models.canonical import (
     BondDetails,
     BondEOD,
+    CalendarRevisionDay,
+    CalendarYearRevision,
     CorporateAction,
     FuturesContinuousEOD,
     FuturesContract,
@@ -25,7 +27,6 @@ from app.models.canonical import (
     MacroSeries,
     MarketDataEOD,
     RollRule,
-    TradingCalendar,
 )
 from app.schemas.common import PaginationInfo
 from app.schemas.serve import (
@@ -54,7 +55,7 @@ from app.schemas.serve import (
     PublishedCalendarYearEnvelope,
     PublishedCalendarYearResponse,
 )
-from app.services.calendar_management import published_year
+from app.services.calendar_management import complete_published_revision_ids, published_year
 from app.services.market_freshness import list_market_freshness
 
 router = APIRouter()
@@ -1209,23 +1210,42 @@ async def list_calendar(
     _: str = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """取得指定市場的交易日曆。"""
-    # Build query
-    query = select(TradingCalendar).where(TradingCalendar.market == market.upper())
-    count_query = select(func.count(TradingCalendar.id)).where(
-        TradingCalendar.market == market.upper()
+    """取得指定市場完整已發布 managed revision 的交易日曆。"""
+    base = (
+        select(CalendarRevisionDay, CalendarYearRevision.market)
+        .join(
+            CalendarYearRevision,
+            CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
+        )
+        .where(
+            CalendarYearRevision.market == market.upper(),
+            CalendarYearRevision.id.in_(complete_published_revision_ids()),
+        )
     )
+    count_base = (
+        select(func.count(CalendarRevisionDay.id))
+        .join(
+            CalendarYearRevision,
+            CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
+        )
+        .where(
+            CalendarYearRevision.market == market.upper(),
+            CalendarYearRevision.id.in_(complete_published_revision_ids()),
+        )
+    )
+    query = base
+    count_query = count_base
 
     # Apply filters
     if start_date:
-        query = query.where(TradingCalendar.trade_date >= start_date)
-        count_query = count_query.where(TradingCalendar.trade_date >= start_date)
+        query = query.where(CalendarRevisionDay.trade_date >= start_date)
+        count_query = count_query.where(CalendarRevisionDay.trade_date >= start_date)
     if end_date:
-        query = query.where(TradingCalendar.trade_date <= end_date)
-        count_query = count_query.where(TradingCalendar.trade_date <= end_date)
+        query = query.where(CalendarRevisionDay.trade_date <= end_date)
+        count_query = count_query.where(CalendarRevisionDay.trade_date <= end_date)
     if is_open is not None:
-        query = query.where(TradingCalendar.is_open == is_open)
-        count_query = count_query.where(TradingCalendar.is_open == is_open)
+        query = query.where(CalendarRevisionDay.is_open == is_open)
+        count_query = count_query.where(CalendarRevisionDay.is_open == is_open)
 
     # Get total count
     total_result = await db.execute(count_query)
@@ -1233,11 +1253,11 @@ async def list_calendar(
 
     # Apply pagination
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size).order_by(TradingCalendar.trade_date)
+    query = query.offset(offset).limit(page_size).order_by(CalendarRevisionDay.trade_date)
 
     # Execute query
     result = await db.execute(query)
-    calendar_records = result.scalars().all()
+    calendar_records = result.all()
 
     # Calculate total pages
     total_pages = (total_records + page_size - 1) // page_size if total_records else 0
@@ -1246,7 +1266,7 @@ async def list_calendar(
         success=True,
         data=[
             CalendarResponse(
-                market=cal.market,
+                market=market_code,
                 trade_date=cal.trade_date,
                 is_open=cal.is_open,
                 session_open=str(cal.session_open) if cal.session_open else None,
@@ -1255,7 +1275,7 @@ async def list_calendar(
                 day_status=cal.day_status,
                 description=cal.description,
             )
-            for cal in calendar_records
+            for cal, market_code in calendar_records
         ],
         pagination=PaginationInfo(
             page=page,

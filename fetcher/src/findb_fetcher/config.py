@@ -48,29 +48,18 @@ class FetcherConfig:
 
 @dataclass(frozen=True, slots=True)
 class MarketCalendarConfig:
-    """Optional read-only access to FinDB's published market calendar."""
+    """Required read-only access to FinDB's published market calendar."""
 
-    mode: str = "static"
-    serve_base_url: str | None = None
-    api_key: str | None = None
+    serve_base_url: str
+    api_key: str
     request_timeout_seconds: float = 10.0
     cache_ttl_seconds: float = 300.0
 
     @classmethod
     def from_env(cls) -> "MarketCalendarConfig":
-        mode = os.getenv("FETCHER_CALENDAR_MODE", "static").strip().lower()
-        if mode not in {"static", "remote"}:
-            raise ConfigError("FETCHER_CALENDAR_MODE must be static or remote")
         timeout = _positive_float_env("FETCHER_CALENDAR_TIMEOUT_SECONDS", 10.0)
         cache_ttl = _positive_float_env("FETCHER_CALENDAR_CACHE_TTL_SECONDS", 300.0)
-        if mode == "static":
-            return cls(
-                mode=mode,
-                request_timeout_seconds=timeout,
-                cache_ttl_seconds=cache_ttl,
-            )
         return cls(
-            mode=mode,
             serve_base_url=_https_origin_env("FINDB_SERVE_BASE_URL"),
             api_key=_required_env("FETCHER_CALENDAR_SERVE_API_KEY"),
             request_timeout_seconds=timeout,

@@ -60,8 +60,8 @@ class PublishedCalendarClient:
         client: httpx.Client | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if config.mode != "remote" or config.serve_base_url is None or config.api_key is None:
-            raise ValueError("remote market calendar configuration is required")
+        if not config.serve_base_url or not config.api_key:
+            raise ValueError("published market calendar configuration is required")
         self._config = config
         self._base_url = config.serve_base_url
         self._api_key = config.api_key

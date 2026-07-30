@@ -112,11 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_store = R2RawPayloadStore(raw_storage_config)
 
         with ExitStack() as stack:
-            calendar = (
-                stack.enter_context(PublishedCalendarClient(calendar_config))
-                if calendar_config.mode == "remote"
-                else None
-            )
+            calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
             provider = stack.enter_context(TwelveDataClient(twelve_data_config))
             source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
             executor = TwelveDataScheduledExecutor(

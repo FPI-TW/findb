@@ -6,7 +6,12 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import TradingCalendar
+from app.models.canonical import (
+    CalendarMarket,
+    CalendarRevisionDay,
+    CalendarYearRevision,
+    TradingCalendar,
+)
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.ingress import DeliveryMode
 from app.services.delivery_policy import (
@@ -88,6 +93,52 @@ def _expectation(
             "action": latest_action,
         }
     return DeliveryExpectation.model_validate(value)
+
+
+async def _add_published_calendar_year(
+    session: AsyncSession, *, market: str, year: int, overrides: dict[date, dict] | None = None
+) -> None:
+    if await session.get(CalendarMarket, market) is None:
+        session.add(
+            CalendarMarket(
+                market=market,
+                display_name=market,
+                timezone="Asia/Taipei",
+                weekend_days=[5, 6],
+            )
+        )
+        await session.flush()
+    start = date(year, 1, 1)
+    days = (date(year, 12, 31) - start).days + 1
+    revision = CalendarYearRevision(
+        market=market,
+        year=year,
+        revision=1,
+        status="published",
+        expected_days=days,
+        actual_days=days,
+        timezone="Asia/Taipei",
+        source_kind="manual",
+    )
+    session.add(revision)
+    await session.flush()
+    overrides = overrides or {}
+    for offset in range(days):
+        trade_date = start + timedelta(days=offset)
+        value = {
+            "is_open": trade_date.weekday() < 5,
+            "day_status": "open" if trade_date.weekday() < 5 else "closed",
+        }
+        value.update(overrides.get(trade_date, {}))
+        session.add(
+            CalendarRevisionDay(
+                calendar_revision_id=revision.id,
+                trade_date=trade_date,
+                source_kind="manual",
+                **value,
+            )
+        )
+    await session.commit()
 
 
 def test_flat_delivery_expectation_is_backward_compatible() -> None:
@@ -325,6 +376,30 @@ async def test_future_fetched_at_is_stale_payload_violation(test_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_calendar_close_grace_and_holiday_resolution(test_session: AsyncSession) -> None:
+    await _add_published_calendar_year(
+        test_session,
+        market="TW",
+        year=2026,
+        overrides={
+            date(2026, 7, 17): {
+                "is_open": True,
+                "day_status": "open",
+                "session_close": time(13, 30),
+            },
+            date(2026, 7, 18): {"is_open": False, "day_status": "closed"},
+            date(2026, 7, 19): {"is_open": False, "day_status": "closed"},
+            date(2026, 7, 20): {
+                "is_open": True,
+                "day_status": "open",
+                "session_close": time(13, 30),
+            },
+            date(2026, 7, 21): {
+                "is_open": True,
+                "day_status": "open",
+                "session_close": time(13, 30),
+            },
+        },
+    )
     test_session.add_all(
         [
             TradingCalendar(
@@ -379,6 +454,121 @@ async def test_calendar_close_grace_and_holiday_resolution(test_session: AsyncSe
     assert "LATEST_DATE_MISSING" not in {item.code for item in before_grace.violations}
     assert after_grace.primary_code == "LATEST_DATE_MISSING"
     assert after_grace.outcome == "reject"
+
+
+@pytest.mark.asyncio
+async def test_calendar_freshness_ignores_observations_and_crosses_year_boundary(
+    test_session: AsyncSession,
+) -> None:
+    await _add_published_calendar_year(
+        test_session,
+        market="TW",
+        year=2025,
+        overrides={
+            date(2025, 12, 31): {
+                "is_open": True,
+                "day_status": "open",
+                "session_close": time(13, 30),
+            }
+        },
+    )
+    await _add_published_calendar_year(
+        test_session,
+        market="TW",
+        year=2026,
+        overrides={
+            date(2026, 1, 1): {"is_open": False, "day_status": "closed"},
+            date(2026, 1, 2): {"is_open": False, "day_status": "closed"},
+        },
+    )
+    test_session.add(TradingCalendar(market="TW", trade_date=date(2026, 1, 1), is_open=True))
+    await test_session.commit()
+
+    result = await evaluate_delivery_policy(
+        test_session,
+        _request(data_date=date(2025, 12, 31)),
+        _expectation(latest_action="reject"),
+        now=datetime(2026, 1, 2, 8, tzinfo=timezone.utc),
+    )
+
+    assert "LATEST_DATE_MISSING" not in {item.code for item in result.violations}
+
+
+@pytest.mark.asyncio
+async def test_calendar_freshness_does_not_leak_wtx_or_use_tw_draft_observations(
+    test_session: AsyncSession,
+) -> None:
+    await _add_published_calendar_year(test_session, market="WTX", year=2026)
+    test_session.add_all(
+        [
+            CalendarMarket(
+                market="TW",
+                display_name="TW",
+                timezone="Asia/Taipei",
+                weekend_days=[5, 6],
+            ),
+            CalendarYearRevision(
+                market="TW",
+                year=2026,
+                revision=1,
+                status="draft",
+                expected_days=365,
+                actual_days=365,
+                timezone="Asia/Taipei",
+                source_kind="manual",
+            ),
+            TradingCalendar(market="TW", trade_date=date(2026, 7, 21), is_open=True),
+        ]
+    )
+    await test_session.commit()
+
+    result = await evaluate_delivery_policy(
+        test_session,
+        _request(data_date=date(2026, 7, 20)),
+        _expectation(latest_action="reject"),
+        now=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+    )
+
+    assert result.primary_code == "CALENDAR_UNAVAILABLE"
+    assert result.violations[0].reason == "calendar_does_not_cover_evaluation_date"
+
+
+@pytest.mark.asyncio
+async def test_calendar_freshness_rejects_incomplete_published_tw_revision(
+    test_session: AsyncSession,
+) -> None:
+    test_session.add_all(
+        [
+            CalendarMarket(
+                market="TW",
+                display_name="TW",
+                timezone="Asia/Taipei",
+                weekend_days=[5, 6],
+            ),
+            CalendarYearRevision(
+                market="TW",
+                year=2026,
+                revision=1,
+                status="published",
+                expected_days=365,
+                actual_days=364,
+                timezone="Asia/Taipei",
+                source_kind="manual",
+            ),
+            TradingCalendar(market="TW", trade_date=date(2026, 7, 21), is_open=True),
+        ]
+    )
+    await test_session.commit()
+
+    result = await evaluate_delivery_policy(
+        test_session,
+        _request(data_date=date(2026, 7, 20)),
+        _expectation(latest_action="reject"),
+        now=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+    )
+
+    assert result.primary_code == "CALENDAR_UNAVAILABLE"
+    assert result.violations[0].reason == "calendar_does_not_cover_evaluation_date"
 
 
 @pytest.mark.asyncio

@@ -51,7 +51,6 @@ def _payload(
 
 def _config() -> MarketCalendarConfig:
     return MarketCalendarConfig(
-        mode="remote",
         serve_base_url="https://serve.example.test",
         api_key="calendar-key",
         request_timeout_seconds=2.0,
@@ -59,10 +58,9 @@ def _config() -> MarketCalendarConfig:
     )
 
 
-def test_remote_config_requires_dedicated_serve_values(
+def test_config_requires_dedicated_serve_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("FETCHER_CALENDAR_MODE", "remote")
     monkeypatch.delenv("FINDB_SERVE_BASE_URL", raising=False)
     monkeypatch.delenv("FETCHER_CALENDAR_SERVE_API_KEY", raising=False)
 
