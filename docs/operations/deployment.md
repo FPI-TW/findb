@@ -128,10 +128,10 @@ staging 驗證休市、僅結算與 API 失敗都不會 enqueue。Calendar prefl
 R2 credentials只屬於Fetcher；FinDB只接收不含credential的完整object reference與
 checksum，不持有R2 runtime credentials。R2 lifecycle、bucket lock或configuration
 稽核必須使用application runtime以外的獨立短效管理credential。
-Provider-specific prefix由各Fetcher application管理。目前
-`CLOUDFLARE_R2_PREFIX`只屬於Twelve Data Fetcher，未來新增provider時必須使用該
-provider自己的prefix或由provider identity確定性產生路徑，不能把單一prefix提升為
-Backend全域設定。
+`CLOUDFLARE_R2_PREFIX`是Fetcher-owned、provider-neutral的object root，預設為`raw`。
+Raw storage會在root後確定性加入provider與dataset，形成
+`raw/{provider}/{dataset}/...`；不得把單一provider名稱寫進共用root，也不能把此設定
+提升為Backend全域設定。
 
 Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
 `0700`），以bind mount提供給preflight與scheduler。SQLite state保存schedule job、

@@ -337,7 +337,7 @@ Scheduler one-shot exit code：
 | `CLOUDFLARE_R2_ACCESS_KEY_ID` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API access key |
 | `CLOUDFLARE_R2_SECRET_ACCESS_KEY` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API secret |
 | `CLOUDFLARE_R2_SESSION_TOKEN` | 否 | — | 使用R2 temporary credentials時設定 |
-| `CLOUDFLARE_R2_PREFIX` | 否 | `raw/twelve-data` | 經驗證的object key prefix |
+| `CLOUDFLARE_R2_PREFIX` | 否 | `raw` | Provider-neutral object root；實際key會再加入provider與dataset |
 | `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，

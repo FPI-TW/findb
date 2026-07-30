@@ -126,7 +126,7 @@ def test_r2_store_key_is_collision_safe_for_content_and_symbol() -> None:
 
 def test_r2_store_uses_explicit_provider_for_key_and_metadata() -> None:
     client = FakeR2()
-    store = R2RawPayloadStore(_config(prefix="raw"), client=client)
+    store = R2RawPayloadStore(_config(), client=client)
 
     raw_object = store.persist(
         RAW_BYTES,
@@ -225,6 +225,7 @@ def test_raw_storage_config_reads_r2_credentials_from_env(
     monkeypatch.setenv("CLOUDFLARE_R2_ACCESS_KEY_ID", ACCESS_KEY_ID)
     monkeypatch.setenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY", SECRET_ACCESS_KEY)
     monkeypatch.setenv("CLOUDFLARE_R2_SESSION_TOKEN", "short-lived-token")
+    monkeypatch.delenv("CLOUDFLARE_R2_PREFIX", raising=False)
 
     config = RawStorageConfig.from_env()
 
@@ -233,6 +234,7 @@ def test_raw_storage_config_reads_r2_credentials_from_env(
     assert config.access_key_id == ACCESS_KEY_ID
     assert config.secret_access_key == SECRET_ACCESS_KEY
     assert config.session_token == "short-lived-token"
+    assert config.prefix == "raw"
 
 
 def test_attach_provenance_is_all_or_none_and_changes_request_identity() -> None:
