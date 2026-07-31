@@ -24,7 +24,7 @@ from findb_fetcher.providers.shioaji import (
 from findb_fetcher.raw_storage import RawStorageError, attach_raw_provenance
 
 MAX_BYTES = 1024 * 1024
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 _PAYLOAD_REASON_SQL = ",".join(f"'{reason}'" for reason in sorted(PAYLOAD_REASONS))
 EXPECTED_COLUMNS = {
     "meta": ("key", "value"),

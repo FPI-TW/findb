@@ -44,6 +44,7 @@ PAYLOAD_REASONS = frozenset(
         "ipc_transport",
         "ipc_schema",
         "snapshot",
+        "contract_access",
         "contract_mapping",
     }
 )
@@ -360,9 +361,7 @@ class ShioajiSdkGateway:
             # Shioaji 1.7.1 exposes lower-case contract categories.  Keep this
             # exact reviewed path rather than falling back to deprecated
             # ``api.Contracts`` aliases.
-            contract = api.contracts.stocks.get(symbol)
-            if contract is None:
-                raise ShioajiSdkError("shioaji contract unavailable", code="CONTRACT")
+            contract = _stock_contract(api, symbol)
             try:
                 raw = api.kbars(
                     contract,
@@ -646,46 +645,51 @@ def _utc_text(value: datetime) -> str:
 def _plain_kbars(raw: Mapping[str, object]) -> dict[str, tuple[object, ...]]:
     """Detach provider/numpy vectors into a bounded, SDK-free representation."""
     required = ("ts", "Open", "High", "Low", "Close", "Volume", "Amount")
-    if set(raw) != set(required):
+    try:
+        if set(raw) != set(required):
+            raise ShioajiSdkError(
+                "shioaji kbars fields are invalid", code="PAYLOAD", reason="kbars_shape"
+            )
+        result: dict[str, tuple[object, ...]] = {}
+        for name in required:
+            vector = raw.get(name)
+            if isinstance(vector, (str, bytes)) or not isinstance(vector, Iterable):
+                raise ShioajiSdkError(
+                    "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
+                )
+            values = tuple(vector)  # numpy arrays detach here.
+            if len(values) > MAX_ROWS:
+                raise ShioajiSdkError(
+                    "shioaji kbars exceeds bounded rows", code="PAYLOAD", reason="kbars_shape"
+                )
+            result[name] = tuple(_normalize_scalar(value, name) for value in values)
+        if len({len(vector) for vector in result.values()}) != 1:
+            raise ShioajiSdkError(
+                "shioaji kbars vectors have inconsistent lengths",
+                code="PAYLOAD",
+                reason="kbars_shape",
+            )
+        return result
+    except ShioajiSdkError:
+        raise
+    except Exception:
         raise ShioajiSdkError(
-            "shioaji kbars fields are invalid", code="PAYLOAD", reason="kbars_shape"
-        )
-    result: dict[str, tuple[object, ...]] = {}
-    for name in required:
-        vector = raw.get(name)
-        if isinstance(vector, (str, bytes)):
-            raise ShioajiSdkError(
-                "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
-            )
-        if not isinstance(vector, Iterable):
-            raise ShioajiSdkError(
-                "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
-            )
-        try:
-            values: tuple[object, ...] = tuple(vector)  # numpy arrays detach here.
-        except TypeError as exc:
-            raise ShioajiSdkError(
-                "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
-            ) from exc
-        if len(values) > MAX_ROWS:
-            raise ShioajiSdkError(
-                "shioaji kbars exceeds bounded rows", code="PAYLOAD", reason="kbars_shape"
-            )
-        result[name] = tuple(_normalize_scalar(value, name) for value in values)
-    if len({len(vector) for vector in result.values()}) != 1:
-        raise ShioajiSdkError(
-            "shioaji kbars vectors have inconsistent lengths",
+            "shioaji kbars vectors are invalid",
             code="PAYLOAD",
             reason="kbars_shape",
-        )
-    return result
+        ) from None
 
 
 def _kbars_mapping(raw: object) -> Mapping[str, object]:
     """Convert the Shioaji 1.7.1 ``KBars`` struct to its public dict form."""
     if isinstance(raw, Mapping):
         return raw
-    to_dict = getattr(raw, "dict", None)
+    try:
+        to_dict = getattr(raw, "dict", None)
+    except Exception:
+        raise ShioajiSdkError(
+            "shioaji kbars result is invalid", code="PAYLOAD", reason="kbars_shape"
+        ) from None
     if not callable(to_dict):
         raise ShioajiSdkError(
             "shioaji kbars result is invalid", code="PAYLOAD", reason="kbars_shape"
@@ -705,7 +709,12 @@ def _kbars_mapping(raw: object) -> Mapping[str, object]:
 
 def _normalize_scalar(value: object, field: str = "Open") -> object:
     """Convert numpy-like scalars without retaining provider-specific objects."""
-    item = getattr(value, "item", None)
+    try:
+        item = getattr(value, "item", None)
+    except Exception:
+        raise ShioajiSdkError(
+            "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
+        ) from None
     if callable(item):
         try:
             value = item()
@@ -734,6 +743,21 @@ def _normalize_scalar(value: object, field: str = "Open") -> object:
             "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
         )
     return _decimal_text(numeric) if isinstance(value, (Decimal, str)) else value
+
+
+def _stock_contract(api: Any, symbol: str) -> object:
+    """Read the reviewed lower-case contract path without SDK diagnostics."""
+    try:
+        contract = api.contracts.stocks.get(symbol)
+    except ShioajiError:
+        raise
+    except Exception:
+        raise ShioajiSdkError(
+            "shioaji contract access failed", code="PAYLOAD", reason="contract_access"
+        ) from None
+    if contract is None:
+        raise ShioajiSdkError("shioaji contract unavailable", code="CONTRACT")
+    return contract
 
 
 def _usage_bytes(api: object) -> int | None:

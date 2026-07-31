@@ -52,7 +52,10 @@ DQ 使用。這是雙向證據：每個 `null` 的 `volume` 或 `turnover` 必�
 離線 staging 的 `KBARS_PAYLOAD` 仍是 terminal、non-retryable 的公開 coarse failure，
 `stage` 仍為 `payload`。僅可附帶 nullable diagnostic enum：`kbars_shape`、
 `kbars_scalar`、`child_boundary`、`ipc_encode`、`ipc_size`、`ipc_transport`、
-`ipc_schema`、`snapshot`、`contract_mapping`。這個 enum 是受限的流程診斷，絕不可
+`ipc_schema`、`snapshot`、`contract_access`、`contract_mapping`。`contract_access` 是
+snapshot 之前存取 `api.contracts.stocks.get(symbol)` 的受限失敗分類；
+`contract_mapping` 則是 snapshot 成功後映射 ingress contract 的分類，兩者不可混用。
+這個 enum 是受限的流程診斷，絕不可
 包含 SDK/provider exception、raw value、secret、trace 或其他自由文字；它不是 provider
 診斷，也不是根本原因的證明。IPC 使用單次 JSON encoding 的同一 bytes 作為 size cap 與
 傳輸內容，任何無法安全編碼或驗證的 child/IPC 資料均 fail closed。

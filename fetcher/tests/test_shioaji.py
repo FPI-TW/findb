@@ -139,6 +139,105 @@ def test_sdk_shape_failures_are_terminal_payload_errors() -> None:
     assert scalar.value.reason == "kbars_scalar"
 
 
+def test_provider_protocol_failures_are_bounded_payload_reasons() -> None:
+    class SecretError(RuntimeError):
+        pass
+
+    class DictGetter:
+        @property
+        def dict(self) -> object:
+            raise SecretError("secret dict getter")
+
+    class DictCall:
+        def dict(self) -> object:
+            raise SecretError("secret dict call")
+
+    class BadKeys(dict[str, object]):
+        def __iter__(self):
+            raise SecretError("secret keys")
+
+    class BadGet(dict[str, object]):
+        def get(self, _key: object, _default: object = None) -> object:
+            raise SecretError("secret get")
+
+    class BadVector:
+        def __iter__(self):
+            raise SecretError("secret vector")
+
+    class ItemGetter:
+        @property
+        def item(self) -> object:
+            raise SecretError("secret item getter")
+
+    class ItemCall:
+        def item(self) -> object:
+            raise SecretError("secret item call")
+
+    for raw in (DictGetter(), DictCall()):
+        with pytest.raises(ShioajiSdkError) as caught:
+            shioaji._kbars_mapping(raw)
+        assert caught.value.reason == "kbars_shape" and "secret" not in str(caught.value)
+    for raw in (BadKeys(), BadGet(_kbars()), {**_kbars(), "Open": BadVector()}):
+        with pytest.raises(ShioajiSdkError) as caught:
+            shioaji._plain_kbars(raw)
+        assert caught.value.reason == "kbars_shape" and "secret" not in str(caught.value)
+    for scalar in (ItemGetter(), ItemCall()):
+        with pytest.raises(ShioajiSdkError) as caught:
+            shioaji._normalize_scalar(scalar)
+        assert caught.value.reason == "kbars_scalar" and "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("failure", ("contracts", "stocks", "get"))
+def test_contract_access_failures_are_secret_free_and_distinct(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    class SecretError(RuntimeError):
+        pass
+
+    class Stocks:
+        def get(self, _symbol: str) -> object:
+            if failure == "get":
+                raise SecretError("secret get")
+            return "contract"
+
+    class Contracts:
+        @property
+        def stocks(self) -> Stocks:
+            if failure == "stocks":
+                raise SecretError("secret stocks")
+            return Stocks()
+
+    class Api:
+        @property
+        def contracts(self) -> Contracts:
+            if failure == "contracts":
+                raise SecretError("secret contracts")
+            return Contracts()
+
+        def login(self, **_kwargs: object) -> None:
+            pass
+
+        def logout(self) -> None:
+            pass
+
+    class Sdk:
+        Shioaji = staticmethod(lambda **_: Api())
+
+    monkeypatch.setattr(
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+    )
+    with pytest.raises(ShioajiSdkError) as caught:
+        ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2330", date(2026, 7, 29))
+    assert (caught.value.code, caught.value.reason) == ("PAYLOAD", "contract_access")
+    assert "secret" not in str(caught.value) and "SecretError" not in str(caught.value)
+    wire = shioaji._isolated_error_wire(caught.value.code, caught.value.reason)
+    assert shioaji._decode_isolated_message(wire) == {
+        "code": "PAYLOAD",
+        "reason": "contract_access",
+    }
+    assert b"secret" not in wire and b"SecretError" not in wire
+
+
 def test_plain_kbars_canonicalizes_decimal_and_rejects_non_json_scalars() -> None:
     raw = _kbars()
     raw["Open"] = [Decimal("100.500")]
@@ -271,6 +370,14 @@ def test_isolated_gateway_ipc_accepts_only_exact_coarse_error_stage() -> None:
     assert shioaji._isolated_error_message("UNKNOWN") == {
         "code": "PAYLOAD",
         "stage": "payload",
+        "reason": "child_boundary",
+    }
+    assert shioaji._decode_isolated_message(shioaji._isolated_error_wire(object())) == {
+        "code": "PAYLOAD",
+        "reason": "child_boundary",
+    }
+    assert shioaji._decode_isolated_message(shioaji._isolated_error_wire("PAYLOAD")) == {
+        "code": "PAYLOAD",
         "reason": "child_boundary",
     }
 

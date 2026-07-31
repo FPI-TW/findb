@@ -156,6 +156,113 @@ def test_terminal_payload_reason_is_durable_and_old_schema_fails_closed(tmp_path
         ShioajiStagingState(legacy)
 
 
+def test_contract_access_is_durable_terminal_pre_snapshot_failure(tmp_path: Path) -> None:
+    class ContractAccessGateway:
+        calls = 0
+
+        def fetch_kbars(self, _symbol: str, _date: date) -> ShioajiKbarsSnapshot:
+            self.calls += 1
+            raise ShioajiSdkError(
+                "provider detail must not escape", code="PAYLOAD", reason="contract_access"
+            )
+
+    state = ShioajiStagingState(tmp_path / "contract-access.sqlite")
+    gateway = ContractAccessGateway()
+    result = Coordinator(
+        state,
+        _single_manifest(),
+        gateway,
+        now=_taipei_now,  # type: ignore[arg-type]
+    ).run(date(2026, 7, 29), preflight=True)
+    assert [(item.code, item.stage, item.reason, item.retryable) for item in result] == [
+        ("KBARS_PAYLOAD", "payload", "contract_access", False)
+    ]
+    assert state.db.execute(
+        "SELECT snapshot,raw_ref,raw_sha256,raw_size,prepared,prepared_sha256,"
+        "source_attempt_id,source_run_id,terminal_status,terminal_reason,status "
+        "FROM snapshot_sequences WHERE symbol='2330'"
+    ).fetchone() == (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "KBARS_PAYLOAD",
+        "contract_access",
+        "failed",
+    )
+    assert gateway.calls == 1
+    state.close()
+
+
+def test_contract_access_halts_full_preflight_plan_and_replays_without_provider(
+    tmp_path: Path,
+) -> None:
+    class ContractAccessGateway:
+        calls = 0
+
+        def fetch_kbars(self, _symbol: str, _date: date) -> ShioajiKbarsSnapshot:
+            self.calls += 1
+            raise ShioajiSdkError(
+                "provider detail must not escape",
+                code="PAYLOAD",
+                reason="contract_access",
+            )
+
+    manifest = {**_single_manifest(), "sequences": [dict(item) for item in EXPECTED]}
+    state_path = tmp_path / "contract-access-plan.sqlite"
+    state = ShioajiStagingState(state_path)
+    gateway = ContractAccessGateway()
+    first = Coordinator(
+        state,
+        manifest,  # type: ignore[arg-type]
+        gateway,
+        now=_taipei_now,
+    ).run(date(2026, 7, 29), preflight=True)
+    assert [(item.code, item.reason, item.symbol) for item in first] == [
+        ("KBARS_PAYLOAD", "contract_access", "2330")
+    ]
+    assert state.db.execute(
+        "SELECT symbol,attempts,terminal_reason FROM snapshot_sequences ORDER BY sequence_no,symbol"
+    ).fetchall() == [
+        ("0050", 0, None),
+        ("2330", 1, "contract_access"),
+        ("0056", 0, None),
+        ("006201", 0, None),
+    ]
+    assert state.db.execute(
+        "SELECT symbol,attempt_no,outcome,code,reason FROM provider_attempts"
+    ).fetchall() == [("2330", 1, "failed", "KBARS_PAYLOAD", "contract_access")]
+    state.close()
+
+    state = ShioajiStagingState(state_path)
+    replay = Coordinator(
+        state,
+        manifest,  # type: ignore[arg-type]
+        gateway,
+        now=_taipei_now,
+    ).run(date(2026, 7, 29), preflight=True)
+    assert [(item.code, item.stage, item.reason, item.symbol) for item in replay] == [
+        ("KBARS_PAYLOAD", "state", "contract_access", "2330")
+    ]
+    assert gateway.calls == 1
+    state.close()
+
+
+def test_v8_state_schema_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "v8.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute("INSERT INTO meta VALUES ('schema_version','8')")
+    db.commit()
+    db.close()
+    with pytest.raises(ShioajiStagingStateError):
+        ShioajiStagingState(path)
+
+
 def test_state_rejects_reason_for_non_payload_code(tmp_path: Path) -> None:
     state = ShioajiStagingState(tmp_path / "constraints.sqlite")
     state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
