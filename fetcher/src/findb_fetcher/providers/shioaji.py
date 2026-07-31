@@ -17,7 +17,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from math import isfinite
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -35,6 +34,19 @@ _ISOLATED_ERROR_STAGES = {
     "PAYLOAD": "payload",
     "ACQUISITION": "acquisition",
 }
+PAYLOAD_REASONS = frozenset(
+    {
+        "kbars_shape",
+        "kbars_scalar",
+        "child_boundary",
+        "ipc_encode",
+        "ipc_size",
+        "ipc_transport",
+        "ipc_schema",
+        "snapshot",
+        "contract_mapping",
+    }
+)
 
 
 class ShioajiError(RuntimeError):
@@ -46,8 +58,15 @@ class ShioajiConfigError(ShioajiError):
 
 
 class ShioajiSdkError(ShioajiError):
-    def __init__(self, message: str, *, code: str = "ACQUISITION") -> None:
+    def __init__(
+        self, message: str, *, code: str = "ACQUISITION", reason: str | None = None
+    ) -> None:
         self.code = code
+        self.reason = (
+            reason
+            if code == "PAYLOAD" and isinstance(reason, str) and reason in PAYLOAD_REASONS
+            else None
+        )
         super().__init__(message)
 
 
@@ -116,7 +135,9 @@ class IsolatedShioajiGateway:
         except (EOFError, OSError, ValueError):
             # A child that cannot produce one bounded reviewed message is an
             # invalid IPC payload, not a retryable provider acquisition.
-            raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD") from None
+            raise ShioajiSdkError(
+                "shioaji acquisition failed", code="PAYLOAD", reason="ipc_transport"
+            ) from None
         finally:
             parent.close()
             if proc.is_alive():
@@ -129,7 +150,11 @@ class IsolatedShioajiGateway:
                 proc.join()
         message = _decode_isolated_message(raw)
         if message["code"] != "OK":
-            raise ShioajiSdkError("shioaji acquisition failed", code=str(message["code"]))
+            raise ShioajiSdkError(
+                "shioaji acquisition failed",
+                code=str(message["code"]),
+                reason=message.get("reason"),
+            )
         kbars = message["kbars"]
         return ShioajiKbarsSnapshot(
             {key: tuple(value) for key, value in kbars.items()},
@@ -141,22 +166,27 @@ class IsolatedShioajiGateway:
 def _decode_isolated_message(raw: bytes) -> dict[str, Any]:
     """Decode only bounded JSON with a reviewed, diagnostic-free schema."""
     if not isinstance(raw, bytes) or not raw or len(raw) > MAX_ISOLATED_IPC_BYTES:
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema")
     try:
         value = json.loads(raw)
     except (TypeError, ValueError, UnicodeDecodeError):
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD") from None
+        raise ShioajiSdkError(
+            "shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema"
+        ) from None
     if not isinstance(value, dict):
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema")
     code = value.get("code")
-    if code in _ISOLATED_ERROR_STAGES:
-        if set(value) == {"code", "stage"} and value.get("stage") == _ISOLATED_ERROR_STAGES[code]:
-            return {"code": code}
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    if isinstance(code, str) and code in _ISOLATED_ERROR_STAGES:
+        allowed = {"code", "stage"} if code != "PAYLOAD" else {"code", "stage", "reason"}
+        if set(value) == allowed and value.get("stage") == _ISOLATED_ERROR_STAGES[code]:
+            reason = value.get("reason")
+            if code != "PAYLOAD" or (isinstance(reason, str) and reason in PAYLOAD_REASONS):
+                return {"code": code} if code != "PAYLOAD" else {"code": code, "reason": reason}
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema")
     if set(value) != {"code", "stage", "kbars", "before", "after"} or code != "OK":
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema")
     if value["stage"] != "payload" or not isinstance(value["kbars"], dict):
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema")
     kbars = value["kbars"]
     if (
         not kbars
@@ -171,25 +201,80 @@ def _decode_isolated_message(raw: bytes) -> dict[str, Any]:
             type(counter) is int and counter < 0 for counter in (value["before"], value["after"])
         )
     ):
-        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema")
+    try:
+        normalized = _plain_kbars(kbars)
+    except ShioajiSdkError:
+        raise ShioajiSdkError(
+            "shioaji acquisition failed", code="PAYLOAD", reason="ipc_schema"
+        ) from None
     return {
         "code": "OK",
-        "kbars": kbars,
+        "kbars": {key: list(items) for key, items in normalized.items()},
         "before": value["before"],
         "after": value["after"],
     }
 
 
-def _isolated_error_message(code: object) -> dict[str, str]:
+def _isolated_error_message(code: object, reason: object = None) -> dict[str, str]:
     """Map only reviewed child codes; unknown taxonomy is terminal payload."""
     reviewed = code if isinstance(code, str) and code in _ISOLATED_ERROR_STAGES else "PAYLOAD"
-    return {"code": reviewed, "stage": _ISOLATED_ERROR_STAGES[reviewed]}
+    message = {"code": reviewed, "stage": _ISOLATED_ERROR_STAGES[reviewed]}
+    if reviewed == "PAYLOAD":
+        message["reason"] = (
+            reason if isinstance(reason, str) and reason in PAYLOAD_REASONS else "child_boundary"
+        )
+    return message
+
+
+_STATIC_ERROR_WIRES = {
+    (code, reason): json.dumps(
+        _isolated_error_message(code, reason), separators=(",", ":"), allow_nan=False
+    ).encode()
+    for code, reason in (
+        ("CREDENTIALS", None),
+        ("LOGIN", None),
+        ("SDK", None),
+        ("CONTRACT", None),
+        ("ACQUISITION", None),
+        *(("PAYLOAD", reason) for reason in PAYLOAD_REASONS),
+    )
+}
+
+
+def _isolated_error_wire(code: object, reason: object = None) -> bytes:
+    reviewed = code if isinstance(code, str) and code in _ISOLATED_ERROR_STAGES else "PAYLOAD"
+    normalized_reason = (
+        reason if isinstance(reason, str) and reason in PAYLOAD_REASONS else "child_boundary"
+    )
+    return (
+        _STATIC_ERROR_WIRES[(reviewed, None)]
+        if reviewed != "PAYLOAD"
+        else _STATIC_ERROR_WIRES[("PAYLOAD", normalized_reason)]
+    )
+
+
+def _encode_isolated_success(message: dict[str, Any]) -> bytes:
+    """Encode the complete reviewed success envelope exactly once."""
+    return json.dumps(message, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _bounded_isolated_success_wire(message: dict[str, Any]) -> bytes:
+    """Return the exact success bytes or one static, bounded failure wire."""
+    try:
+        wire = _encode_isolated_success(message)
+    except Exception:
+        return _isolated_error_wire("PAYLOAD", "ipc_encode")
+    return (
+        wire if len(wire) <= MAX_ISOLATED_IPC_BYTES else _isolated_error_wire("PAYLOAD", "ipc_size")
+    )
 
 
 def _isolated_fetch_child(
     conn: object, api_key: str, secret_key: str, symbol: str, target: str
 ) -> None:
     # Python streams and native FD 1/2 are redirected before SDK import.
+    wire: bytes
     try:
         null = os.open(os.devnull, os.O_WRONLY)
         os.dup2(null, 1)
@@ -200,34 +285,22 @@ def _isolated_fetch_child(
         result = ShioajiSdkGateway(api_key, secret_key).fetch_kbars(
             symbol, date.fromisoformat(target)
         )
-        payload = {k: list(v) for k, v in result.kbars.items()}
-        encoded = json.dumps(
-            payload,
-            default=str,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-        message = (
-            {
-                "code": "OK",
-                "stage": "payload",
-                "kbars": payload,
-                "before": result.usage_bytes_before,
-                "after": result.usage_bytes_after,
-            }
-            if len(encoded) <= 1024 * 1024
-            else {"code": "PAYLOAD", "stage": "payload"}
-        )
+        message: dict[str, Any] = {
+            "code": "OK",
+            "stage": "payload",
+            "kbars": {k: list(v) for k, v in result.kbars.items()},
+            "before": result.usage_bytes_before,
+            "after": result.usage_bytes_after,
+        }
+        wire = _bounded_isolated_success_wire(message)
     except ShioajiConfigError:
-        message = _isolated_error_message("CREDENTIALS")
+        wire = _isolated_error_wire("CREDENTIALS")
     except ShioajiSdkError as exc:
-        message = _isolated_error_message(exc.code)
+        wire = _isolated_error_wire(exc.code, exc.reason)
     except Exception:
-        message = _isolated_error_message("PAYLOAD")
+        wire = _isolated_error_wire("PAYLOAD", "child_boundary")
     try:
-        wire = json.dumps(message, separators=(",", ":"), allow_nan=False).encode()
-        if len(wire) <= MAX_ISOLATED_IPC_BYTES:
-            conn.send_bytes(wire)  # type: ignore[attr-defined]
+        conn.send_bytes(wire)  # type: ignore[attr-defined]
     except Exception:
         pass
     try:
@@ -573,24 +646,37 @@ def _utc_text(value: datetime) -> str:
 def _plain_kbars(raw: Mapping[str, object]) -> dict[str, tuple[object, ...]]:
     """Detach provider/numpy vectors into a bounded, SDK-free representation."""
     required = ("ts", "Open", "High", "Low", "Close", "Volume", "Amount")
+    if set(raw) != set(required):
+        raise ShioajiSdkError(
+            "shioaji kbars fields are invalid", code="PAYLOAD", reason="kbars_shape"
+        )
     result: dict[str, tuple[object, ...]] = {}
     for name in required:
         vector = raw.get(name)
         if isinstance(vector, (str, bytes)):
-            raise ShioajiSdkError("shioaji kbars vectors are invalid", code="PAYLOAD")
+            raise ShioajiSdkError(
+                "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
+            )
         if not isinstance(vector, Iterable):
-            raise ShioajiSdkError("shioaji kbars vectors are invalid", code="PAYLOAD")
+            raise ShioajiSdkError(
+                "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
+            )
         try:
             values: tuple[object, ...] = tuple(vector)  # numpy arrays detach here.
         except TypeError as exc:
-            raise ShioajiSdkError("shioaji kbars vectors are invalid", code="PAYLOAD") from exc
+            raise ShioajiSdkError(
+                "shioaji kbars vectors are invalid", code="PAYLOAD", reason="kbars_shape"
+            ) from exc
         if len(values) > MAX_ROWS:
-            raise ShioajiSdkError("shioaji kbars exceeds bounded rows", code="PAYLOAD")
-        result[name] = tuple(_normalize_scalar(value) for value in values)
+            raise ShioajiSdkError(
+                "shioaji kbars exceeds bounded rows", code="PAYLOAD", reason="kbars_shape"
+            )
+        result[name] = tuple(_normalize_scalar(value, name) for value in values)
     if len({len(vector) for vector in result.values()}) != 1:
         raise ShioajiSdkError(
             "shioaji kbars vectors have inconsistent lengths",
             code="PAYLOAD",
+            reason="kbars_shape",
         )
     return result
 
@@ -601,33 +687,53 @@ def _kbars_mapping(raw: object) -> Mapping[str, object]:
         return raw
     to_dict = getattr(raw, "dict", None)
     if not callable(to_dict):
-        raise ShioajiSdkError("shioaji kbars result is invalid", code="PAYLOAD")
+        raise ShioajiSdkError(
+            "shioaji kbars result is invalid", code="PAYLOAD", reason="kbars_shape"
+        )
     try:
         mapped = to_dict()
     except Exception:
-        raise ShioajiSdkError("shioaji kbars result is invalid", code="PAYLOAD") from None
+        raise ShioajiSdkError(
+            "shioaji kbars result is invalid", code="PAYLOAD", reason="kbars_shape"
+        ) from None
     if not isinstance(mapped, Mapping):
-        raise ShioajiSdkError("shioaji kbars result is invalid", code="PAYLOAD")
+        raise ShioajiSdkError(
+            "shioaji kbars result is invalid", code="PAYLOAD", reason="kbars_shape"
+        )
     return mapped
 
 
-def _normalize_scalar(value: object) -> object:
+def _normalize_scalar(value: object, field: str = "Open") -> object:
     """Convert numpy-like scalars without retaining provider-specific objects."""
     item = getattr(value, "item", None)
     if callable(item):
         try:
             value = item()
         except Exception:
-            return "<invalid_scalar>"
-    if isinstance(value, float) and not isfinite(value):
-        return "<invalid_scalar>"
-    if isinstance(value, Decimal) and not value.is_finite():
-        return "<invalid_scalar>"
-    return (
-        value
-        if isinstance(value, (int, float, str, bool, Decimal)) or value is None
-        else "<invalid_scalar>"
-    )
+            raise ShioajiSdkError(
+                "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
+            ) from None
+    if field == "ts":
+        if type(value) is not int or value < 0:
+            raise ShioajiSdkError(
+                "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
+            )
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        raise ShioajiSdkError(
+            "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
+        )
+    try:
+        numeric = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ShioajiSdkError(
+            "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
+        ) from None
+    if not numeric.is_finite():
+        raise ShioajiSdkError(
+            "shioaji kbars scalar is invalid", code="PAYLOAD", reason="kbars_scalar"
+        )
+    return _decimal_text(numeric) if isinstance(value, (Decimal, str)) else value
 
 
 def _usage_bytes(api: object) -> int | None:

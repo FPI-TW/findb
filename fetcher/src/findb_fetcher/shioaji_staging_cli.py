@@ -101,6 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "request_id": x.request_id,
                         "run_id": x.run_id,
                         "symbol": x.symbol,
+                        "reason": x.reason,
                     }
                     for x in results
                 ],

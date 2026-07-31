@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -133,7 +134,105 @@ def test_sdk_shape_failures_are_terminal_payload_errors() -> None:
     with pytest.raises(ShioajiSdkError) as caught:
         shioaji._plain_kbars({"ts": ()})
     assert caught.value.code == "PAYLOAD"
-    assert shioaji._normalize_scalar(float("nan")) == "<invalid_scalar>"
+    with pytest.raises(ShioajiSdkError) as scalar:
+        shioaji._normalize_scalar(float("nan"))
+    assert scalar.value.reason == "kbars_scalar"
+
+
+def test_plain_kbars_canonicalizes_decimal_and_rejects_non_json_scalars() -> None:
+    raw = _kbars()
+    raw["Open"] = [Decimal("100.500")]
+    plain = shioaji._plain_kbars(raw)
+    assert plain["Open"] == ("100.5",)
+    assert json.loads(json.dumps({key: list(value) for key, value in plain.items()}))["Open"] == [
+        "100.5"
+    ]
+    raw["Close"] = [object()]
+    with pytest.raises(ShioajiSdkError) as caught:
+        shioaji._plain_kbars(raw)
+    assert caught.value.reason == "kbars_scalar"
+
+
+def test_isolated_ipc_fails_closed_for_unknown_reason_and_bad_success_scalar() -> None:
+    for raw in (
+        b'{"code":"PAYLOAD","stage":"payload","reason":"secret"}',
+        b'{"code":"PAYLOAD","stage":"payload","reason":[]}',
+        b'{"code":[],"stage":"payload"}',
+    ):
+        with pytest.raises(ShioajiSdkError) as unknown:
+            shioaji._decode_isolated_message(raw)
+        assert unknown.value.reason == "ipc_schema"
+    bad = {"code": "OK", "stage": "payload", "kbars": _kbars(), "before": None, "after": None}
+    bad["kbars"]["ts"] = [True]
+    with pytest.raises(ShioajiSdkError) as scalar:
+        shioaji._decode_isolated_message(json.dumps(bad).encode())
+    assert scalar.value.reason == "ipc_schema"
+    bad["kbars"] = {**_kbars(), "provider_extra": [1]}
+    with pytest.raises(ShioajiSdkError) as shape:
+        shioaji._decode_isolated_message(json.dumps(bad).encode())
+    assert shape.value.reason == "ipc_schema"
+
+
+def test_static_ipc_error_wires_are_bounded_and_secret_free() -> None:
+    for reason in ("ipc_encode", "ipc_size"):
+        wire = shioaji._isolated_error_wire("PAYLOAD", reason)
+        assert len(wire) <= shioaji.MAX_ISOLATED_IPC_BYTES
+        assert shioaji._decode_isolated_message(wire) == {"code": "PAYLOAD", "reason": reason}
+        assert "secret" not in wire.decode()
+
+
+def test_bounded_success_wire_uses_static_encode_and_size_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message: dict[str, object] = {
+        "code": "OK",
+        "stage": "payload",
+        "kbars": _kbars(),
+        "before": None,
+        "after": None,
+    }
+    exact = shioaji._encode_isolated_success(message)
+    monkeypatch.setattr(shioaji, "MAX_ISOLATED_IPC_BYTES", len(exact))
+    assert shioaji._bounded_isolated_success_wire(message) == exact
+    monkeypatch.setattr(shioaji, "MAX_ISOLATED_IPC_BYTES", len(exact) - 1)
+    assert shioaji._decode_isolated_message(shioaji._bounded_isolated_success_wire(message)) == {
+        "code": "PAYLOAD",
+        "reason": "ipc_size",
+    }
+
+    def fail(_message: object) -> bytes:
+        raise TypeError("secret provider scalar")
+
+    monkeypatch.setattr(shioaji, "_encode_isolated_success", fail)
+    wire = shioaji._bounded_isolated_success_wire(message)
+    assert b"secret" not in wire
+    assert shioaji._decode_isolated_message(wire) == {
+        "code": "PAYLOAD",
+        "reason": "ipc_encode",
+    }
+
+
+def test_success_wire_encodes_the_exact_complete_message_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message: dict[str, object] = {
+        "code": "OK",
+        "stage": "payload",
+        "kbars": {},
+        "before": None,
+        "after": None,
+    }
+    original = shioaji.json.dumps
+    calls: list[object] = []
+
+    def encode(value: object, **kwargs: object) -> str:
+        calls.append(value)
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(shioaji.json, "dumps", encode)
+    wire = shioaji._encode_isolated_success(message)
+    assert calls == [message]
+    assert wire == original(message, separators=(",", ":"), allow_nan=False).encode()
 
 
 def test_isolated_gateway_silences_child_and_returns_coarse_credentials_code(
@@ -172,6 +271,7 @@ def test_isolated_gateway_ipc_accepts_only_exact_coarse_error_stage() -> None:
     assert shioaji._isolated_error_message("UNKNOWN") == {
         "code": "PAYLOAD",
         "stage": "payload",
+        "reason": "child_boundary",
     }
 
 
@@ -212,6 +312,7 @@ def test_isolated_gateway_transport_failure_is_terminal_payload(
             date(2026, 7, 29),
         )
     assert caught.value.code == "PAYLOAD"
+    assert caught.value.reason == "ipc_transport"
 
 
 def test_isolated_gateway_timeout_terminates_then_kills(

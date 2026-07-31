@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from findb_fetcher.client import PreparedDelivery, SourceAPIDeadlineExceeded
 from findb_fetcher.contracts import ContractRegistry, ContractValidationError
 from findb_fetcher.providers.shioaji import (
+    PAYLOAD_REASONS,
     ShioajiGateway,
     ShioajiPayloadError,
     ShioajiSdkError,
@@ -25,7 +26,11 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
     require_raw_provenance,
 )
-from findb_fetcher.shioaji_staging_state import ShioajiStagingState, ShioajiStagingStateError
+from findb_fetcher.shioaji_staging_state import (
+    MAX_BYTES,
+    ShioajiStagingState,
+    ShioajiStagingStateError,
+)
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_MANIFEST_BYTES = 16 * 1024
@@ -107,7 +112,6 @@ def snapshot_bytes(kbars: dict[str, tuple[object, ...]]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
-        default=str,
     ).encode()
 
 
@@ -137,6 +141,15 @@ class Result:
     request_id: str | None = None
     run_id: str | None = None
     symbol: str = ""
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.code != "KBARS_PAYLOAD"
+            or not isinstance(self.reason, str)
+            or self.reason not in PAYLOAD_REASONS
+        ):
+            object.__setattr__(self, "reason", None)
 
 
 class Coordinator:
@@ -215,8 +228,20 @@ class Coordinator:
             )
         except ShioajiStagingStateError:
             return [Result("STATE_UNAVAILABLE", "state", symbol=str(rows[0]["symbol"]))]
-        if preflight and not self.state.preflight_is_fresh(daily_id, str(rows[0]["symbol"])):
-            return [Result("PREFLIGHT_NOT_FRESH", "state", symbol=str(rows[0]["symbol"]))]
+        first_symbol = str(rows[0]["symbol"])
+        if preflight and not self.state.preflight_is_fresh(daily_id, first_symbol):
+            terminal = self.state.get_terminal(daily_id, first_symbol)
+            if terminal is not None:
+                terminal_code, terminal_reason = terminal
+                return [
+                    Result(
+                        terminal_code,
+                        "state",
+                        symbol=first_symbol,
+                        reason=terminal_reason,
+                    )
+                ]
+            return [Result("PREFLIGHT_NOT_FRESH", "state", symbol=first_symbol)]
         if (
             not preflight
             and not deliver
@@ -230,8 +255,9 @@ class Coordinator:
             symbol = str(row["symbol"])
             terminal = self.state.get_terminal(daily_id, symbol)
             if terminal is not None:
-                out.append(Result(terminal, "state"))
-                if terminal in _GLOBAL_TERMINAL_CODES:
+                terminal_code, terminal_reason = terminal
+                out.append(Result(terminal_code, "state", reason=terminal_reason))
+                if terminal_code in _GLOBAL_TERMINAL_CODES:
                     break
                 continue
             snap = self.state.get_snapshot(daily_id, symbol)
@@ -268,6 +294,8 @@ class Coordinator:
                 try:
                     acquired = self.gateway.fetch_kbars(symbol, target)
                     snap = snapshot_bytes(dict(acquired.kbars))
+                    if len(snap) > MAX_BYTES:
+                        raise ShioajiPayloadError("acquisition snapshot exceeds limit")
                     decode_snapshot(snap)
                     self.state.complete_attempt_with_snapshot(
                         daily_id,
@@ -275,11 +303,25 @@ class Coordinator:
                         attempt,
                         snap,
                     )
-                except (ShioajiPayloadError, TypeError, ValueError):
+                except (
+                    ShioajiPayloadError,
+                    TypeError,
+                    ValueError,
+                    OverflowError,
+                ):
                     self.state.finish_attempt(
-                        daily_id, symbol, attempt, "failed", "KBARS_PAYLOAD", retryable=False
+                        daily_id,
+                        symbol,
+                        attempt,
+                        "failed",
+                        "KBARS_PAYLOAD",
+                        retryable=False,
+                        reason="snapshot",
                     )
-                    out.append(Result("KBARS_PAYLOAD", "payload"))
+                    out.append(Result("KBARS_PAYLOAD", "payload", reason="snapshot"))
+                    break
+                except ShioajiStagingStateError:
+                    out.append(Result("STATE_UNAVAILABLE", "state"))
                     break
                 except ShioajiSdkError as exc:
                     terminal_codes = {
@@ -301,12 +343,14 @@ class Coordinator:
                         "failed",
                         code,
                         retryable=retryable,
+                        reason=exc.reason if code == "KBARS_PAYLOAD" else None,
                     )
                     out.append(
                         Result(
                             code,
                             stage,
                             retryable=retryable,
+                            reason=exc.reason if code == "KBARS_PAYLOAD" else None,
                         )
                     )
                     # CREDENTIALS/LOGIN/SDK/CONTRACT/PAYLOAD are global
@@ -342,8 +386,10 @@ class Coordinator:
                 )
                 self.contracts.validate("market_minute", 1, request)
             except ShioajiPayloadError:
-                self.state.mark_terminal(daily_id, symbol, "KBARS_PAYLOAD")
-                out.append(Result("KBARS_PAYLOAD", "payload"))
+                self.state.mark_terminal(
+                    daily_id, symbol, "KBARS_PAYLOAD", reason="contract_mapping"
+                )
+                out.append(Result("KBARS_PAYLOAD", "payload", reason="contract_mapping"))
                 break
             except ContractValidationError:
                 self.state.mark_terminal(daily_id, symbol, "CONTRACT_INVALID")
@@ -405,25 +451,25 @@ class Coordinator:
                     self.state.save_prepared(daily_id, symbol, prepared_bytes)
                 prepared = _prepared(prepared_bytes)
                 receipt = self.source.deliver(prepared)
-                terminal = self._wait_terminal(receipt.run_id, prepared)
+                source_terminal = self._wait_terminal(receipt.run_id, prepared)
                 self.state.save_source(
                     daily_id,
                     symbol,
                     str(receipt.attempt_id),
                     str(receipt.run_id),
-                    None if terminal == "SOURCE_TERMINAL_TIMEOUT" else terminal,
+                    None if source_terminal == "SOURCE_TERMINAL_TIMEOUT" else source_terminal,
                 )
                 out.append(
                     Result(
-                        "DELIVERED" if terminal is None else terminal,
+                        "DELIVERED" if source_terminal is None else source_terminal,
                         "source",
                         len(request["payload"]["data"]),
-                        retryable=terminal == "SOURCE_TERMINAL_TIMEOUT",
+                        retryable=source_terminal == "SOURCE_TERMINAL_TIMEOUT",
                         request_id=str(receipt.attempt_id),
                         run_id=str(receipt.run_id),
                     )
                 )
-                if terminal == "DATASET_INACTIVE":
+                if source_terminal == "DATASET_INACTIVE":
                     break
             except SourceAPIDeadlineExceeded:
                 out.append(
@@ -455,6 +501,7 @@ class Coordinator:
                 request_id=item.request_id,
                 run_id=item.run_id,
                 symbol=item.symbol or str(processing_rows[index]["symbol"]),
+                reason=item.reason,
             )
             for index, item in enumerate(out)
         ]

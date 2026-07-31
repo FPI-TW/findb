@@ -47,6 +47,16 @@ DQ 使用。這是雙向證據：每個 `null` 的 `volume` 或 `turnover` 必�
 `null`，所以 non-null 欄位不可攜帶 anomaly。payload 不得包含 secret、API key、session
 或 credential。
 
+## Staging payload diagnostics
+
+離線 staging 的 `KBARS_PAYLOAD` 仍是 terminal、non-retryable 的公開 coarse failure，
+`stage` 仍為 `payload`。僅可附帶 nullable diagnostic enum：`kbars_shape`、
+`kbars_scalar`、`child_boundary`、`ipc_encode`、`ipc_size`、`ipc_transport`、
+`ipc_schema`、`snapshot`、`contract_mapping`。這個 enum 是受限的流程診斷，絕不可
+包含 SDK/provider exception、raw value、secret、trace 或其他自由文字；它不是 provider
+診斷，也不是根本原因的證明。IPC 使用單次 JSON encoding 的同一 bytes 作為 size cap 與
+傳輸內容，任何無法安全編碼或驗證的 child/IPC 資料均 fail closed。
+
 ## Maintained universe
 
 Production universe 採雙來源交集：

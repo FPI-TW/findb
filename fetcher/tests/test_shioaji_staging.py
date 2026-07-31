@@ -126,25 +126,56 @@ def test_rolling_limiter_survives_restart(tmp_path: Path) -> None:
         "d", "2330", now, max_requests=1, rolling_seconds=60, max_attempts=3
     )[0]
     state.close()
-
     state = ShioajiStagingState(path)
     assert not state.acquire_attempt(
-        "d",
-        "0050",
-        now + timedelta(seconds=59),
-        max_requests=1,
-        rolling_seconds=60,
-        max_attempts=3,
+        "d", "0050", now + timedelta(seconds=59), max_requests=1, rolling_seconds=60, max_attempts=3
     )[0]
     assert state.acquire_attempt(
-        "d",
-        "0050",
-        now + timedelta(seconds=61),
-        max_requests=1,
-        rolling_seconds=60,
-        max_attempts=3,
+        "d", "0050", now + timedelta(seconds=61), max_requests=1, rolling_seconds=60, max_attempts=3
     )[0]
     state.close()
+
+
+def test_terminal_payload_reason_is_durable_and_old_schema_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "reason.sqlite"
+    state = ShioajiStagingState(path)
+    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
+    state.mark_terminal("d", "2330", "KBARS_PAYLOAD", reason="contract_mapping")
+    assert state.get_terminal("d", "2330") == ("KBARS_PAYLOAD", "contract_mapping")
+    state.close()
+    reopened = ShioajiStagingState(path)
+    assert reopened.get_terminal("d", "2330") == ("KBARS_PAYLOAD", "contract_mapping")
+    reopened.close()
+    legacy = tmp_path / "legacy.sqlite"
+    db = sqlite3.connect(legacy)
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute("INSERT INTO meta VALUES ('schema_version','7')")
+    db.commit()
+    db.close()
+    with pytest.raises(ShioajiStagingStateError):
+        ShioajiStagingState(legacy)
+
+
+def test_state_rejects_reason_for_non_payload_code(tmp_path: Path) -> None:
+    state = ShioajiStagingState(tmp_path / "constraints.sqlite")
+    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
+    with pytest.raises(ShioajiStagingStateError):
+        state.mark_terminal("d", "2330", "CONTRACT_INVALID", reason="snapshot")
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    assert state.acquire_attempt(
+        "d", "2330", now, max_requests=1, rolling_seconds=60, max_attempts=3
+    )[0]
+    with pytest.raises(ShioajiStagingStateError):
+        state.finish_attempt(
+            "d", "2330", 1, "failed", "LOGIN_FAILED", retryable=False, reason="ipc_schema"
+        )
+    state.close()
+
+
+def test_result_reason_fails_closed_to_nullable_payload_enum() -> None:
+    assert Result("KBARS_PAYLOAD", "payload", reason="ipc_schema").reason == "ipc_schema"
+    assert Result("KBARS_PAYLOAD", "payload", reason="provider free text").reason is None
+    assert Result("LOGIN_FAILED", "login", reason="ipc_schema").reason is None
 
 
 class _Gateway:
@@ -487,6 +518,121 @@ def test_terminal_gateway_failures_halt_the_full_reviewed_plan(
     assert len(result) == gateway.calls == 1
     assert result[0].symbol == "2330"
     state.close()
+
+
+def test_payload_reason_is_persisted_and_replayed_without_another_provider_call(
+    tmp_path: Path,
+) -> None:
+    manifest = {**_single_manifest(), "sequences": [dict(item) for item in EXPECTED]}
+
+    class PayloadGateway:
+        calls = 0
+
+        def fetch_kbars(self, _symbol: str, _date: date) -> ShioajiKbarsSnapshot:
+            self.calls += 1
+            raise ShioajiSdkError(
+                "provider secret must not escape",
+                code="PAYLOAD",
+                reason="ipc_encode",
+            )
+
+    state_path = tmp_path / "payload-replay.sqlite"
+    state = ShioajiStagingState(state_path)
+    gateway = PayloadGateway()
+    first = Coordinator(
+        state,
+        manifest,  # type: ignore[arg-type]
+        gateway,
+        now=_taipei_now,
+    ).run(date(2026, 7, 29), preflight=True)
+    assert [(item.code, item.reason, item.symbol) for item in first] == [
+        ("KBARS_PAYLOAD", "ipc_encode", "2330")
+    ]
+    daily_id = "shioaji_tw_staging_v1:2026-07-29"
+    assert state.db.execute(
+        "SELECT outcome,code,reason FROM provider_attempts WHERE daily_id=? AND symbol='2330'",
+        (daily_id,),
+    ).fetchone() == ("failed", "KBARS_PAYLOAD", "ipc_encode")
+    assert state.db.execute(
+        "SELECT terminal_status,terminal_reason,snapshot,prepared,source_attempt_id "
+        "FROM snapshot_sequences WHERE daily_id=? AND symbol='2330'",
+        (daily_id,),
+    ).fetchone() == ("KBARS_PAYLOAD", "ipc_encode", None, None, None)
+    assert state.db.execute(
+        "SELECT count(*) FROM provider_attempts WHERE daily_id=?",
+        (daily_id,),
+    ).fetchone() == (1,)
+    state.close()
+
+    state = ShioajiStagingState(state_path)
+    replay = Coordinator(
+        state,
+        manifest,  # type: ignore[arg-type]
+        gateway,
+        now=_taipei_now,
+    ).run(date(2026, 7, 29), preflight=True)
+    assert [(item.code, item.stage, item.reason, item.symbol) for item in replay] == [
+        ("KBARS_PAYLOAD", "state", "ipc_encode", "2330")
+    ]
+    assert gateway.calls == 1
+    state.close()
+
+
+def test_snapshot_and_contract_mapping_reasons_record_their_distinct_boundaries(
+    tmp_path: Path,
+) -> None:
+    class SnapshotGateway:
+        def fetch_kbars(self, _symbol: str, _date: date) -> ShioajiKbarsSnapshot:
+            return ShioajiKbarsSnapshot(
+                {
+                    **_Gateway().fetch_kbars("2330", date(2026, 7, 29)).kbars,
+                    "Open": (object(),),
+                },
+                None,
+                None,
+            )
+
+    snapshot_state = ShioajiStagingState(tmp_path / "snapshot.sqlite")
+    snapshot_result = Coordinator(
+        snapshot_state,
+        _single_manifest(),  # type: ignore[arg-type]
+        SnapshotGateway(),
+        now=lambda: datetime(2026, 7, 29, 1, tzinfo=timezone.utc),
+    ).run(date(2026, 7, 29))
+    assert [(item.code, item.reason) for item in snapshot_result] == [("KBARS_PAYLOAD", "snapshot")]
+    assert snapshot_state.db.execute(
+        "SELECT snapshot,terminal_reason FROM snapshot_sequences WHERE symbol='2330'"
+    ).fetchone() == (None, "snapshot")
+    assert snapshot_state.db.execute(
+        "SELECT reason FROM provider_attempts WHERE symbol='2330'"
+    ).fetchone() == ("snapshot",)
+    snapshot_state.close()
+
+    class MappingGateway(_Gateway):
+        def fetch_kbars(self, symbol: str, target: date) -> ShioajiKbarsSnapshot:
+            result = super().fetch_kbars(symbol, target)
+            return ShioajiKbarsSnapshot(
+                {**result.kbars, "Open": (-1,)},
+                result.usage_bytes_before,
+                result.usage_bytes_after,
+            )
+
+    mapping_state = ShioajiStagingState(tmp_path / "mapping.sqlite")
+    mapping_result = Coordinator(
+        mapping_state,
+        _single_manifest(),  # type: ignore[arg-type]
+        MappingGateway(),
+        now=lambda: datetime(2026, 7, 29, 1, tzinfo=timezone.utc),
+    ).run(date(2026, 7, 29))
+    assert [(item.code, item.reason) for item in mapping_result] == [
+        ("KBARS_PAYLOAD", "contract_mapping")
+    ]
+    snapshot, terminal_reason = mapping_state.db.execute(
+        "SELECT snapshot,terminal_reason FROM snapshot_sequences WHERE symbol='2330'"
+    ).fetchone()
+    assert snapshot is not None
+    assert terminal_reason == "contract_mapping"
+    mapping_state.close()
 
 
 def test_attempt_is_committed_before_provider_call_and_empty_payload_fails_closed(
@@ -961,7 +1107,7 @@ def test_cli_returns_nonzero_for_non_successful_run(
             pass
 
         def run(self, *_args: object, **_kwargs: object) -> list[Result]:
-            return [Result("LOGIN_FAILED", "login")]
+            return [Result("KBARS_PAYLOAD", "payload", reason="ipc_schema")]
 
     monkeypatch.setattr(
         "findb_fetcher.shioaji_staging_cli.Coordinator",
@@ -983,5 +1129,7 @@ def test_cli_returns_nonzero_for_non_successful_run(
         == 1
     )
     output = capsys.readouterr()
-    assert json.loads(output.out)["code"] == "RUN_FAILED"
-    assert output.err == ""
+    value = json.loads(output.out)
+    assert value["code"] == "RUN_FAILED"
+    assert value["results"][0]["reason"] == "ipc_schema"
+    assert output.err == "" and "must-never-escape" not in output.out

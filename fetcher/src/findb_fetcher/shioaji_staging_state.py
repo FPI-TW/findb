@@ -17,13 +17,15 @@ from typing import Any
 
 from findb_fetcher.contracts import ContractError, ContractRegistry
 from findb_fetcher.providers.shioaji import (
+    PAYLOAD_REASONS,
     ShioajiPayloadError,
     build_market_minute_request,
 )
 from findb_fetcher.raw_storage import RawStorageError, attach_raw_provenance
 
 MAX_BYTES = 1024 * 1024
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
+_PAYLOAD_REASON_SQL = ",".join(f"'{reason}'" for reason in sorted(PAYLOAD_REASONS))
 EXPECTED_COLUMNS = {
     "meta": ("key", "value"),
     "daily_updates": (
@@ -53,6 +55,7 @@ EXPECTED_COLUMNS = {
         "source_attempt_id",
         "source_run_id",
         "terminal_status",
+        "terminal_reason",
         "status",
     ),
     "provider_attempts": (
@@ -62,6 +65,7 @@ EXPECTED_COLUMNS = {
         "created_at",
         "outcome",
         "code",
+        "reason",
     ),
     "limiter": ("used_at",),
 }
@@ -69,6 +73,14 @@ EXPECTED_COLUMNS = {
 
 class ShioajiStagingStateError(RuntimeError):
     pass
+
+
+def _validated_payload_reason(code: str, reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    if code != "KBARS_PAYLOAD" or not isinstance(reason, str) or reason not in PAYLOAD_REASONS:
+        raise ShioajiStagingStateError("payload reason is invalid")
+    return reason
 
 
 def _utc(value: datetime) -> str:
@@ -102,7 +114,7 @@ class ShioajiStagingState:
 
     def _init(self) -> None:
         self.db.executescript(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS daily_updates (
               daily_id TEXT PRIMARY KEY, target_date TEXT NOT NULL, universe_id TEXT NOT NULL,
@@ -131,6 +143,7 @@ class ShioajiStagingState:
               prepared_sha256 TEXT,
               source_attempt_id TEXT, source_run_id TEXT,
               terminal_status TEXT CHECK(terminal_status IS NULL OR length(terminal_status) BETWEEN 1 AND 64),
+              terminal_reason TEXT CHECK(terminal_reason IS NULL OR terminal_reason IN ({_PAYLOAD_REASON_SQL})),
               status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN (
                   'pending','acquiring','acquired','raw_uploading','raw_persisted',
@@ -147,6 +160,7 @@ class ShioajiStagingState:
                 OR (prepared IS NOT NULL AND length(prepared_sha256) = 64)
               ),
               CHECK((source_attempt_id IS NULL) = (source_run_id IS NULL)),
+              CHECK(terminal_reason IS NULL OR terminal_status='KBARS_PAYLOAD'),
               PRIMARY KEY(daily_id,symbol), UNIQUE(daily_id,dataset_key,sequence_no)
             );
             CREATE TABLE IF NOT EXISTS provider_attempts (
@@ -156,6 +170,8 @@ class ShioajiStagingState:
               outcome TEXT NOT NULL DEFAULT 'started'
                 CHECK(outcome IN ('started','success','failed')),
               code TEXT CHECK(code IS NULL OR length(code) BETWEEN 1 AND 64),
+              reason TEXT CHECK(reason IS NULL OR reason IN ({_PAYLOAD_REASON_SQL})),
+              CHECK(reason IS NULL OR code='KBARS_PAYLOAD'),
               PRIMARY KEY(daily_id,symbol,attempt_no),
               FOREIGN KEY(daily_id,symbol) REFERENCES snapshot_sequences(daily_id,symbol)
             );
@@ -258,14 +274,14 @@ class ShioajiStagingState:
         """Allow only a brand-new database and an untouched reviewed plan."""
         rows = self.db.execute(
             "SELECT symbol,attempts,lease_until,snapshot,raw_ref,raw_sha256,raw_size,"
-            "prepared,prepared_sha256,source_attempt_id,source_run_id,terminal_status,status "
+            "prepared,prepared_sha256,source_attempt_id,source_run_id,terminal_status,terminal_reason,status "
             "FROM snapshot_sequences WHERE daily_id=? ORDER BY sequence_no,symbol",
             (daily_id,),
         ).fetchall()
         untouched = (
             rows
             and any(row[0] == symbol for row in rows)
-            and all(row[1:] == (0,) + (None,) * 10 + ("pending",) for row in rows)
+            and all(row[1:] == (0,) + (None,) * 11 + ("pending",) for row in rows)
         )
         return bool(
             untouched
@@ -367,24 +383,46 @@ class ShioajiStagingState:
             raise
 
     def finish_attempt(
-        self, daily_id: str, symbol: str, attempt: int, outcome: str, code: str, *, retryable: bool
+        self,
+        daily_id: str,
+        symbol: str,
+        attempt: int,
+        outcome: str,
+        code: str,
+        *,
+        retryable: bool,
+        reason: str | None = None,
     ) -> None:
+        reason = _validated_payload_reason(code, reason)
         status = "acquired" if outcome == "success" else ("pending" if retryable else "failed")
         terminal_code = None if outcome == "success" or retryable else code
         self.db.execute("BEGIN IMMEDIATE")
         try:
             updated = self.db.execute(
-                "UPDATE provider_attempts SET outcome=?,code=? "
+                "UPDATE provider_attempts SET outcome=?,code=?,reason=? "
                 "WHERE daily_id=? AND symbol=? AND attempt_no=? AND outcome='started'",
-                (outcome, code, daily_id, symbol, attempt),
+                (
+                    outcome,
+                    code,
+                    reason,
+                    daily_id,
+                    symbol,
+                    attempt,
+                ),
             ).rowcount
             if updated != 1:
                 raise ShioajiStagingStateError("provider attempt identity changed")
             self.db.execute(
                 "UPDATE snapshot_sequences SET lease_until=NULL,status=?,"
-                "terminal_status=COALESCE(?,terminal_status) "
+                "terminal_status=COALESCE(?,terminal_status),terminal_reason=COALESCE(?,terminal_reason) "
                 "WHERE daily_id=? AND symbol=?",
-                (status, terminal_code, daily_id, symbol),
+                (
+                    status,
+                    terminal_code,
+                    reason,
+                    daily_id,
+                    symbol,
+                ),
             )
             self._refresh_statuses(daily_id)
             self.db.execute("COMMIT")
@@ -404,7 +442,7 @@ class ShioajiStagingState:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             updated = self.db.execute(
-                "UPDATE provider_attempts SET outcome='success',code='ACQUIRED' "
+                "UPDATE provider_attempts SET outcome='success',code='ACQUIRED',reason=NULL "
                 "WHERE daily_id=? AND symbol=? AND attempt_no=? AND outcome='started'",
                 (daily_id, symbol, attempt),
             ).rowcount
@@ -428,22 +466,34 @@ class ShioajiStagingState:
         ).fetchone()
         return row[0] if row else None
 
-    def mark_terminal(self, daily_id: str, symbol: str, code: str) -> None:
+    def mark_terminal(
+        self, daily_id: str, symbol: str, code: str, *, reason: str | None = None
+    ) -> None:
         if not code or len(code) > 64:
             raise ShioajiStagingStateError("terminal code is invalid")
+        reason = _validated_payload_reason(code, reason)
         self.db.execute(
-            "UPDATE snapshot_sequences SET terminal_status=?,status='terminal',"
+            "UPDATE snapshot_sequences SET terminal_status=?,terminal_reason=?,status='terminal',"
             "lease_until=NULL WHERE daily_id=? AND symbol=?",
-            (code, daily_id, symbol),
+            (
+                code,
+                reason,
+                daily_id,
+                symbol,
+            ),
         )
         self._refresh_statuses(daily_id)
 
-    def get_terminal(self, daily_id: str, symbol: str) -> str | None:
+    def get_terminal(self, daily_id: str, symbol: str) -> tuple[str, str | None] | None:
         row = self.db.execute(
-            "SELECT terminal_status FROM snapshot_sequences WHERE daily_id=? AND symbol=?",
+            "SELECT terminal_status,terminal_reason FROM snapshot_sequences WHERE daily_id=? AND symbol=?",
             (daily_id, symbol),
         ).fetchone()
-        return str(row[0]) if row and row[0] is not None else None
+        return (
+            (str(row[0]), str(row[1]) if row[1] is not None else None)
+            if row and row[0] is not None
+            else None
+        )
 
     def save_prepared(
         self,
