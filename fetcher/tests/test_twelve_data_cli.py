@@ -176,7 +176,7 @@ def test_single_symbol_delivery_persists_raw_before_contract_validation(
             events.append("upload")
             assert body == raw_bytes
             return RawObject(
-                ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+                ref=f"r2://{'a' * 32}/findb-fetcher-raw/a.json",
                 sha256="a" * 64,
                 size_bytes=len(body),
             )

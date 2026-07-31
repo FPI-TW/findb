@@ -44,6 +44,8 @@ SERVICE_CONFIGS: Final = {
             "FINDB_STATIC_CACHE_BASE_URL",
             "FINDB_LATEST_PRICE_WORKERS",
             "FINDB_PUBLIC_HOST",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_CANONICAL_BUCKET",
         ),
         secrets=(
             "FINDB_EC2_HOST",
@@ -58,6 +60,14 @@ SERVICE_CONFIGS: Final = {
             "RABBITMQ_DEFAULT_USER",
             "RABBITMQ_DEFAULT_PASS",
             "RABBITMQ_ERLANG_COOKIE",
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY",
+            "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY",
+        ),
+        optional_secrets=(
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN",
+            "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN",
         ),
     ),
     "fetcher": ServiceConfig(
@@ -74,8 +84,7 @@ SERVICE_CONFIGS: Final = {
             "TWELVE_DATA_TIMEOUT_SECONDS",
             "TWELVE_DATA_MAX_RESPONSE_BYTES",
             "CLOUDFLARE_R2_ACCOUNT_ID",
-            "CLOUDFLARE_R2_BUCKET",
-            "CLOUDFLARE_R2_PREFIX",
+            "CLOUDFLARE_R2_RAW_BUCKET",
             "CLOUDFLARE_R2_MAX_OBJECT_BYTES",
         ),
         secrets=(
@@ -85,13 +94,13 @@ SERVICE_CONFIGS: Final = {
             "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
             "FETCHER_CALENDAR_SERVE_API_KEY",
             "TWELVE_DATA_API_KEY",
-            "CLOUDFLARE_R2_ACCESS_KEY_ID",
-            "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+            "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
         ),
         optional_secrets=(
             "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
             "FINLAB_API_TOKEN",
-            "CLOUDFLARE_R2_SESSION_TOKEN",
+            "CLOUDFLARE_R2_RAW_SESSION_TOKEN",
         ),
     ),
 }
@@ -187,6 +196,72 @@ def _ensure_environment(environment: str) -> None:
         )
 
 
+def _validate_fetcher_bucket_contract(target: str, values: dict[str, str]) -> str | None:
+    """Return a secret-free configuration error for the target R2 contract."""
+    for forbidden in ("CLOUDFLARE_R2_CANONICAL_BUCKET",):
+        if values.get(forbidden):
+            return f"{target}-fetcher must not configure {forbidden}"
+    return None
+
+
+def _validate_findb_canonical_contract(target: str, values: dict[str, str]) -> str | None:
+    publisher_id = values.get("CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "")
+    publisher_secret = values.get("CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY", "")
+    reader_id = values.get("CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID", "")
+    reader_secret = values.get("CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY", "")
+    if publisher_id and reader_id and publisher_id == reader_id:
+        return f"{target}-findb canonical publisher and reader access key IDs must differ"
+    if publisher_secret and reader_secret and publisher_secret == reader_secret:
+        return f"{target}-findb canonical publisher and reader secrets must differ"
+    return None
+
+
+def _unexpected_r2_names(service: str, values: dict[str, str]) -> tuple[str, ...]:
+    config = SERVICE_CONFIGS[service]
+    allowed = {
+        name
+        for name in (*config.variables, *config.secrets, *config.optional_secrets)
+        if name.startswith("CLOUDFLARE_R2_")
+    }
+    return tuple(
+        sorted(name for name in values if name.startswith("CLOUDFLARE_R2_") and name not in allowed)
+    )
+
+
+def _remote_environment_r2_names(environment: str) -> tuple[str, ...]:
+    names: set[str] = set()
+    for endpoint in (
+        f"repos/{REPOSITORY}/environments/{environment}/variables?per_page=100",
+        f"repos/{REPOSITORY}/environments/{environment}/secrets?per_page=100",
+    ):
+        completed = subprocess.run(
+            ["gh", "api", endpoint],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            if "HTTP 404" in completed.stderr:
+                return ()
+            completed.check_returncode()
+        payload = json.loads(completed.stdout)
+        for item in payload.get("variables", payload.get("secrets", [])):
+            name = str(item.get("name") or "")
+            if name.startswith("CLOUDFLARE_R2_"):
+                names.add(name)
+    return tuple(sorted(names))
+
+
+def _unexpected_remote_r2_names(service: str, environment: str) -> tuple[str, ...]:
+    config = SERVICE_CONFIGS[service]
+    allowed = {
+        name
+        for name in (*config.variables, *config.secrets, *config.optional_secrets)
+        if name.startswith("CLOUDFLARE_R2_")
+    }
+    return tuple(name for name in _remote_environment_r2_names(environment) if name not in allowed)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("target", choices=DEPLOYMENT_TARGETS)
@@ -205,6 +280,10 @@ def main() -> int:
         parser.error(f"missing ignored source: {source}")
 
     values = {key: str(value or "").strip() for key, value in dotenv_values(source).items()}
+    unexpected_r2 = _unexpected_r2_names(arguments.service, values)
+    if unexpected_r2:
+        print(f"{environment} has unsupported R2 names: {', '.join(unexpected_r2)}")
+        return 1
     required_secrets = list(config.secrets)
     if arguments.service == "findb" and values.get("SERVE_REQUIRE_AUTH") == "false":
         required_secrets = [
@@ -222,9 +301,17 @@ def main() -> int:
         ):
             print("Calendar Serve and Source credentials must be different")
             return 1
-    missing = sorted(
-        name for name in (*config.variables, *required_secrets) if not values.get(name)
-    )
+        bucket_contract_error = _validate_fetcher_bucket_contract(arguments.target, values)
+        if bucket_contract_error:
+            print(bucket_contract_error)
+            return 1
+    if arguments.service == "findb":
+        canonical_contract_error = _validate_findb_canonical_contract(arguments.target, values)
+        if canonical_contract_error:
+            print(canonical_contract_error)
+            return 1
+    variables = config.variables
+    missing = sorted(name for name in (*variables, *required_secrets) if not values.get(name))
     if (
         arguments.service == "findb"
         and values.get("SERVE_REQUIRE_AUTH") == "true"
@@ -236,7 +323,7 @@ def main() -> int:
     print(f"service: {arguments.service}")
     print(f"environment: {environment}")
     print(f"source: {source}")
-    print(f"variables ({len(config.variables)}): {', '.join(config.variables)}")
+    print(f"variables ({len(variables)}): {', '.join(variables)}")
     print(f"secrets ({len(config.secrets)}): {', '.join(config.secrets)}")
     if missing:
         print(f"missing required values: {', '.join(missing)}")
@@ -245,8 +332,16 @@ def main() -> int:
         print("validation passed; rerun with --apply to publish")
         return 0
 
+    unexpected_remote_r2 = _unexpected_remote_r2_names(arguments.service, environment)
+    if unexpected_remote_r2:
+        print(f"{environment} has unsupported remote R2 names: {', '.join(unexpected_remote_r2)}")
+        return 1
+
     _ensure_environment(environment)
-    for name in config.variables:
+    # This synchronizer only creates or updates the target contract. It never
+    # deletes remote variables or secrets; operators must remove retired names
+    # explicitly after validating the target-specific predeploy gate.
+    for name in variables:
         _run(
             [
                 "gh",

@@ -377,11 +377,10 @@ Scheduler one-shot exit code：
 | `TWELVE_DATA_TIMEOUT_SECONDS` | 否 | `30` | Provider request timeout |
 | `TWELVE_DATA_MAX_RESPONSE_BYTES` | 否 | `8388608` | Provider response streaming上限，程式硬上限16 MiB |
 | `CLOUDFLARE_R2_ACCOUNT_ID` | Delivery/scheduler是 | — | 32字元Cloudflare account ID，用來建立固定R2 endpoint |
-| `CLOUDFLARE_R2_BUCKET` | Delivery/scheduler是 | — | Fetcher-owned private raw bucket |
-| `CLOUDFLARE_R2_ACCESS_KEY_ID` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API access key |
-| `CLOUDFLARE_R2_SECRET_ACCESS_KEY` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API secret |
-| `CLOUDFLARE_R2_SESSION_TOKEN` | 否 | — | 使用R2 temporary credentials時設定 |
-| `CLOUDFLARE_R2_PREFIX` | 否 | `raw` | Provider-neutral object root；實際key會再加入provider與dataset |
+| `CLOUDFLARE_R2_RAW_BUCKET` | Delivery/scheduler是 | — | 所有環境唯一支援的Fetcher-owned private raw bucket名稱 |
+| `CLOUDFLARE_R2_RAW_ACCESS_KEY_ID` | Delivery/scheduler是 | — | Raw bucket專屬的Object Read & Write R2 S3 API access key |
+| `CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY` | Delivery/scheduler是 | — | Raw bucket專屬的Object Read & Write R2 S3 API secret |
+| `CLOUDFLARE_R2_RAW_SESSION_TOKEN` | 否 | — | 使用Raw bucket temporary credentials時設定 |
 | `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，

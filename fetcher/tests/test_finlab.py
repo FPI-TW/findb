@@ -143,7 +143,7 @@ def test_prepare_persists_raw_bundle_before_request_provenance() -> None:
                 "finlab",
             )
             return RawObject(
-                "r2://0123456789abcdef0123456789abcdef/findb-fetcher-raw/raw/x.json",
+                "r2://0123456789abcdef0123456789abcdef/findb-fetcher-raw/x.json",
                 bundle.sha256,
                 len(raw_bytes),
             )
@@ -173,7 +173,7 @@ def test_prepare_rejects_raw_store_integrity_mismatch() -> None:
             provider: str = "twelve_data",
         ) -> RawObject:
             return RawObject(
-                "r2://0123456789abcdef0123456789abcdef/findb-fetcher-raw/raw/x.json",
+                "r2://0123456789abcdef0123456789abcdef/findb-fetcher-raw/x.json",
                 "0" * 64,
                 len(raw_bytes),
             )

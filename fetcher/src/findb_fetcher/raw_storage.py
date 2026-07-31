@@ -22,7 +22,6 @@ from botocore.exceptions import (
 
 _ACCOUNT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _BUCKET_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
-_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9!_.*'()/=-]{1,512}$")
 _DATASET_PATTERN = re.compile(r"^[a-z0-9_]{1,50}$")
 _PROVIDER_PATTERN = re.compile(r"^[a-z0-9_]{1,50}$")
 _SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
@@ -53,7 +52,6 @@ class RawStorageConfig:
     bucket: str
     access_key_id: str = field(repr=False)
     secret_access_key: str = field(repr=False)
-    prefix: str = "raw"
     session_token: str | None = field(default=None, repr=False)
     max_object_bytes: int = 8 * 1024 * 1024
 
@@ -62,24 +60,17 @@ class RawStorageConfig:
         bucket = self.bucket.strip()
         access_key_id = self.access_key_id.strip()
         secret_access_key = self.secret_access_key.strip()
-        prefix = self.prefix.strip().strip("/")
         session_token = self.session_token.strip() if self.session_token else None
         if _ACCOUNT_ID_PATTERN.fullmatch(account_id) is None:
             raise RawStorageConfigError(
                 "CLOUDFLARE_R2_ACCOUNT_ID must be a 32-character hexadecimal account ID"
             )
         if not _valid_bucket_name(bucket):
-            raise RawStorageConfigError("CLOUDFLARE_R2_BUCKET is not a safe R2 bucket name")
+            raise RawStorageConfigError("configured R2 raw bucket is not a safe R2 bucket name")
         if not access_key_id:
-            raise RawStorageConfigError("CLOUDFLARE_R2_ACCESS_KEY_ID is required")
+            raise RawStorageConfigError("CLOUDFLARE_R2_RAW_ACCESS_KEY_ID is required")
         if not secret_access_key:
-            raise RawStorageConfigError("CLOUDFLARE_R2_SECRET_ACCESS_KEY is required")
-        if (
-            _PREFIX_PATTERN.fullmatch(prefix) is None
-            or "//" in prefix
-            or any(segment in {".", ".."} for segment in prefix.split("/"))
-        ):
-            raise RawStorageConfigError("CLOUDFLARE_R2_PREFIX is not a safe object prefix")
+            raise RawStorageConfigError("CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY is required")
         if not 1 <= self.max_object_bytes <= _MAX_OBJECT_BYTES_HARD:
             raise RawStorageConfigError(
                 f"CLOUDFLARE_R2_MAX_OBJECT_BYTES must be between 1 and {_MAX_OBJECT_BYTES_HARD}"
@@ -89,26 +80,24 @@ class RawStorageConfig:
         object.__setattr__(self, "bucket", bucket)
         object.__setattr__(self, "access_key_id", access_key_id)
         object.__setattr__(self, "secret_access_key", secret_access_key)
-        object.__setattr__(self, "prefix", prefix)
         object.__setattr__(self, "session_token", session_token)
 
     @classmethod
     def from_env(cls) -> "RawStorageConfig":
         account_id = os.getenv("CLOUDFLARE_R2_ACCOUNT_ID", "")
-        bucket = os.getenv("CLOUDFLARE_R2_BUCKET", "")
-        access_key_id = os.getenv("CLOUDFLARE_R2_ACCESS_KEY_ID", "")
-        secret_access_key = os.getenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY", "")
+        bucket = os.getenv("CLOUDFLARE_R2_RAW_BUCKET", "")
+        access_key_id = os.getenv("CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "")
+        secret_access_key = os.getenv("CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY", "")
         if not bucket.strip():
             raise RawStorageConfigError(
-                "CLOUDFLARE_R2_BUCKET is required for Source delivery and scheduled execution"
+                "an R2 raw bucket is required for Source delivery and scheduled execution"
             )
         return cls(
             account_id=account_id,
             bucket=bucket,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
-            prefix=os.getenv("CLOUDFLARE_R2_PREFIX", "raw"),
-            session_token=os.getenv("CLOUDFLARE_R2_SESSION_TOKEN"),
+            session_token=os.getenv("CLOUDFLARE_R2_RAW_SESSION_TOKEN"),
             max_object_bytes=_positive_int_env("CLOUDFLARE_R2_MAX_OBJECT_BYTES", 8 * 1024 * 1024),
         )
 
@@ -183,7 +172,7 @@ class R2RawPayloadStore:
         digest_bytes = hashlib.sha256(raw_bytes).digest()
         digest = digest_bytes.hex()
         symbol_digest = hashlib.sha256(normalized_symbol.encode("utf-8")).hexdigest()[:16]
-        key = f"{self._config.prefix}/{provider}/{dataset_key}/{symbol_digest}/{digest}.json"
+        key = f"{provider}/{dataset_key}/{symbol_digest}/{digest}.json"
         ref = f"r2://{self._config.account_id}/{self._config.bucket}/{key}"
         if len(ref) > _MAX_REF_LENGTH:
             raise RawStorageUploadError("raw object reference exceeds ingress contract limit")

@@ -193,6 +193,42 @@ class ShioajiStagingState:
             raise ShioajiStagingStateError("staging state integrity check failed")
         self._validate_semantics()
 
+    def bind_raw_storage(self, account_id: str, bucket: str) -> None:
+        """Bind persisted delivery refs to one unambiguous Raw R2 location."""
+        if (
+            not isinstance(account_id, str)
+            or not isinstance(bucket, str)
+            or not account_id
+            or not bucket
+            or len(account_id) > 64
+            or len(bucket) > 128
+            or "\n" in account_id
+            or "\n" in bucket
+        ):
+            raise ShioajiStagingStateError("raw storage binding is invalid")
+        fingerprint = hashlib.sha256(f"{account_id}\n{bucket}".encode()).hexdigest()
+        key = "raw_storage_binding_sha256"
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            existing = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+            persisted = self.db.execute(
+                "SELECT 1 FROM snapshot_sequences "
+                "WHERE raw_ref IS NOT NULL OR prepared IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if persisted is not None and (existing is None or existing[0] != fingerprint):
+                raise ShioajiStagingStateError(
+                    "raw storage binding conflicts with persisted delivery"
+                )
+            self.db.execute(
+                "INSERT INTO meta(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, fingerprint),
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
     def ensure(
         self,
         daily_id: str,

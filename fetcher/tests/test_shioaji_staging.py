@@ -110,6 +110,40 @@ def test_state_persists_snapshot_identity_attempts_limit_and_lease(tmp_path: Pat
     state.close()
 
 
+def test_raw_storage_binding_rejects_legacy_delivery_refs_and_allows_safe_rebind(
+    tmp_path: Path,
+) -> None:
+    legacy = ShioajiStagingState(tmp_path / "legacy-binding.sqlite")
+    legacy.ensure("legacy", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
+    legacy.save_raw("legacy", "2330", "r2://account/raw-old/object", "a" * 64, 42)
+    with pytest.raises(ShioajiStagingStateError, match="raw storage binding conflicts"):
+        legacy.bind_raw_storage("a" * 32, "raw-new")
+    legacy.close()
+
+    state = ShioajiStagingState(tmp_path / "binding.sqlite")
+    state.bind_raw_storage("a" * 32, "raw-a")
+    state.bind_raw_storage("a" * 32, "raw-a")
+    state.bind_raw_storage("b" * 32, "raw-b")
+    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
+    state.save_raw("d", "2330", "r2://account/raw-a/object", "a" * 64, 42)
+    with pytest.raises(ShioajiStagingStateError, match="raw storage binding conflicts"):
+        state.bind_raw_storage("c" * 32, "raw-c")
+    state.bind_raw_storage("b" * 32, "raw-b")
+    state.close()
+
+
+def test_shioaji_delivery_cli_binds_raw_storage_before_constructing_coordinator() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "src/findb_fetcher/shioaji_staging_cli.py"
+    ).read_text(encoding="utf-8")
+    config = source.index("raw_storage_config = RawStorageConfig.from_env()")
+    bind = source.index(
+        "state.bind_raw_storage(raw_storage_config.account_id, raw_storage_config.bucket)"
+    )
+    coordinator = source.index("Coordinator(", config)
+    assert config < bind < coordinator
+
+
 def test_rolling_limiter_survives_restart(tmp_path: Path) -> None:
     path = tmp_path / "limiter.sqlite"
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)

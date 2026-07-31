@@ -51,6 +51,12 @@ services:
       FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://127.0.0.1:${PORT:?PORT must be set in GitHub Actions variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
       FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
+      # Canonical R2 reader credentials are intentionally limited to Serve.
+      CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in GitHub Actions variables}"
+      CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in GitHub Actions variables}"
+      CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID: "${CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID:?CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID must be set in GitHub Actions secrets}"
+      CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY: "${CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY must be set in GitHub Actions secrets}"
+      CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: "${CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN:-}"
     restart: unless-stopped
     healthcheck: *app-healthcheck
     command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
@@ -156,6 +162,12 @@ services:
     container_name: findb-worker
     environment:
       <<: *app-environment
+      # Canonical R2 publisher credentials are intentionally limited to Worker.
+      CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in GitHub Actions variables}"
+      CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in GitHub Actions variables}"
+      CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID:?CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID must be set in GitHub Actions secrets}"
+      CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY must be set in GitHub Actions secrets}"
+      CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN:-}"
     command: celery -A app.task_queue:celery_app worker --loglevel=INFO --queues=findb.normalize.v1 --pool=prefork --concurrency=2
     depends_on:
       rabbitmq-policy:

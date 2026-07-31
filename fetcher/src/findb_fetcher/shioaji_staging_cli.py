@@ -64,6 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 
                 config = FetcherConfig.from_env()
+                raw_storage_config = RawStorageConfig.from_env()
+                state.bind_raw_storage(raw_storage_config.account_id, raw_storage_config.bucket)
                 with SourceAPIClient(
                     config,
                     ContractRegistry(config.contracts_dir),
@@ -72,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         state,
                         m,
                         IsolatedShioajiGateway.from_env(),
-                        raw_store=R2RawPayloadStore(RawStorageConfig.from_env()),
+                        raw_store=R2RawPayloadStore(raw_storage_config),
                         source=source,
                     ).run(a.target_date, True)
             else:

@@ -110,9 +110,9 @@ def _set_check_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FETCHER_CALENDAR_SERVE_API_KEY", "calendar-read-key")
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "provider-key")
     monkeypatch.setenv("CLOUDFLARE_R2_ACCOUNT_ID", "a" * 32)
-    monkeypatch.setenv("CLOUDFLARE_R2_BUCKET", "findb-fetcher-raw-prod")
-    monkeypatch.setenv("CLOUDFLARE_R2_ACCESS_KEY_ID", "r2-access-key")
-    monkeypatch.setenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY", "r2-secret-key")
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_BUCKET", "findb-fetcher-raw-prod")
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "r2-access-key")
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY", "r2-secret-key")
     monkeypatch.setenv(
         "FETCHER_CONTRACTS_DIR",
         str(Path(__file__).resolve().parents[2] / "contracts"),
