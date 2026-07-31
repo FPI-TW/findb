@@ -179,6 +179,15 @@ simulation smoke CLI 已實作；成功的真實 staging smoke 仍是 production
 
 以下是已界定但未在本里程碑完成的架構，文件不代表 runtime 已支援：
 
+已新增一個不會啟用 production dataset 的 staging-only Shioaji Taiwan-minute
+one-shot coordinator。其 committed manifest 固定為 2330 equity 與 0050、0056、006201
+ETF 的四個 sequence；`--check` 完全離線，預設僅 acquisition/contract validation，只有
+明確 `--deliver` 才會建立 R2 與 Source client。它使用獨立 SQLite state 保存 rolling
+limit、attempt、lease、SDK-detached acquisition snapshot 及 prepared request；這不是
+production scheduler 或 universe/backfill 授權。R2 上傳前會先保存 durable intent；
+若程序在外部寫入與本機 checkpoint 之間中止，重啟會以
+`RAW_PERSIST_UNCERTAIN` fail closed，等待人工核對而不盲目重傳。
+
 - credentialed staging smoke 的成功驗收；
 - production scheduler／universe coordination／acquisition runtime；
 - deployment 與 staging rollout；

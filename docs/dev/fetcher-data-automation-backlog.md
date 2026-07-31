@@ -67,6 +67,9 @@ model 與產品口徑。排程時區固定為 `Asia/Taipei`：
 
 ## 上線順序與觀察
 
+Shioaji Taiwan-minute 的 staging coordinator 現為 bounded one-shot 驗證工具，production
+dataset activation、排程、部署、archive/backfill 與 Serve/Export publication 都仍在 backlog。
+
 1. 完成 provider-compatible universe、adapter、Source/R2/state/container 隔離。
 2. 在 staging 驗證 contract、target-date、DST／假日、grace、retry、late recovery
    與 1 MB request 上限。

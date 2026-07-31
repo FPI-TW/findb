@@ -240,12 +240,18 @@ class R2RawPayloadStore:
         return RawObject(ref=ref, sha256=digest, size_bytes=len(raw_bytes))
 
 
-def attach_raw_object(request: dict[str, Any], raw_object: RawObject) -> None:
+def attach_raw_object(
+    request: dict[str, Any],
+    raw_object: RawObject,
+    *,
+    preserve_identity: bool = False,
+) -> None:
     """Attach the credential-free immutable reference to an ingress batch."""
     attach_raw_provenance(
         request,
         source_raw_ref=raw_object.ref,
         source_raw_sha256=raw_object.sha256,
+        preserve_identity=preserve_identity,
     )
 
 
@@ -254,6 +260,7 @@ def attach_raw_provenance(
     *,
     source_raw_ref: str | None,
     source_raw_sha256: str | None,
+    preserve_identity: bool = False,
 ) -> None:
     """Attach an all-or-none provenance pair and derive a collision-safe identity."""
     if (source_raw_ref is None) != (source_raw_sha256 is None):
@@ -271,19 +278,28 @@ def attach_raw_provenance(
     base_idempotency_key = request.get("idempotency_key")
     if not isinstance(base_idempotency_key, str) or not base_idempotency_key:
         raise RawStorageUploadError("validated request is missing idempotency identity")
-    identity = hashlib.sha256(
-        (base_idempotency_key + "\n" + source_raw_ref + "\n" + source_raw_sha256).encode("utf-8")
-    ).hexdigest()
     dataset_key = request.get("dataset_key")
     if not isinstance(dataset_key, str):
         raise RawStorageUploadError("validated request is missing dataset identity")
     provider = request.get("source", "twelve_data")
     if not isinstance(provider, str) or _PROVIDER_PATTERN.fullmatch(provider) is None:
         raise RawStorageUploadError("validated request is missing provider identity")
+    if preserve_identity and (
+        request.get("schema_id") != "market_minute"
+        or request.get("schema_version") != 1
+        or dataset_key not in {"tw_equity_minute", "tw_etf_minute"}
+    ):
+        raise RawStorageUploadError("identity preservation is restricted to market_minute.v1")
     batch["source_raw_ref"] = source_raw_ref
     batch["source_raw_sha256"] = source_raw_sha256
-    request["request_key"] = f"{provider}:{dataset_key}:{identity[:32]}"
-    request["idempotency_key"] = f"{provider}:{identity}"
+    if not preserve_identity:
+        identity = hashlib.sha256(
+            (base_idempotency_key + "\n" + source_raw_ref + "\n" + source_raw_sha256).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        request["request_key"] = f"{provider}:{dataset_key}:{identity[:32]}"
+        request["idempotency_key"] = f"{provider}:{identity}"
 
 
 def require_raw_provenance(request: dict[str, Any]) -> None:

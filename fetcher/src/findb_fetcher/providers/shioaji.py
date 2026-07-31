@@ -10,11 +10,14 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import multiprocessing
 import os
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -34,7 +37,9 @@ class ShioajiConfigError(ShioajiError):
 
 
 class ShioajiSdkError(ShioajiError):
-    pass
+    def __init__(self, message: str, *, code: str = "ACQUISITION") -> None:
+        self.code = code
+        super().__init__(message)
 
 
 class ShioajiPayloadError(ShioajiError):
@@ -62,6 +67,117 @@ class ShioajiKbarsSnapshot:
 
 class ShioajiGateway(Protocol):
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot: ...
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedShioajiGateway:
+    """Run the credential-bearing SDK in a short-lived, silent child process.
+
+    IPC accepts only a small, SDK-detached Kbars representation and a coarse
+    code; neither provider diagnostics nor credentials can cross the boundary.
+    """
+
+    api_key: str = field(repr=False, compare=False)
+    secret_key: str = field(repr=False, compare=False)
+    timeout_seconds: float = 30.0
+
+    @classmethod
+    def from_env(cls) -> "IsolatedShioajiGateway":
+        return cls(os.getenv("SHIOAJI_API_KEY", ""), os.getenv("SHIOAJI_SECRET_KEY", ""))
+
+    def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
+        _validate_symbol(symbol)
+        parent, child = multiprocessing.Pipe(duplex=False)
+        proc = multiprocessing.Process(
+            target=_isolated_fetch_child,
+            args=(child, self.api_key, self.secret_key, symbol, target_date.isoformat()),
+            daemon=True,
+        )
+        proc.start()
+        child.close()
+        try:
+            if not parent.poll(self.timeout_seconds):
+                proc.terminate()
+                proc.join(2)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(2)
+                raise ShioajiSdkError("shioaji acquisition timed out")
+            message = parent.recv()
+        except (EOFError, OSError):
+            raise ShioajiSdkError("shioaji acquisition failed") from None
+        finally:
+            parent.close()
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(2)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(2)
+            else:
+                proc.join()
+        if not isinstance(message, dict) or set(message) - {"code", "kbars", "before", "after"}:
+            raise ShioajiSdkError("shioaji acquisition failed")
+        if message.get("code") != "OK":
+            # LOGIN is terminal to the coordinator; CONTRACT/PAYLOAD are not
+            # allowed to expose a provider message either.
+            code = str(message.get("code", "ACQUISITION"))
+            raise ShioajiSdkError("shioaji " + code.lower(), code=code)
+        kbars = message.get("kbars")
+        if not isinstance(kbars, dict):
+            raise ShioajiSdkError("shioaji payload")
+        return ShioajiKbarsSnapshot(
+            {str(k): tuple(v) for k, v in kbars.items() if isinstance(v, list)},
+            message.get("before") if type(message.get("before")) is int else None,
+            message.get("after") if type(message.get("after")) is int else None,
+        )
+
+
+def _isolated_fetch_child(
+    conn: object, api_key: str, secret_key: str, symbol: str, target: str
+) -> None:
+    # Python streams and native FD 1/2 are redirected before SDK import.
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+        sys.stdout = open(os.devnull, "w")
+        sys.stderr = open(os.devnull, "w")
+        result = ShioajiSdkGateway(api_key, secret_key).fetch_kbars(
+            symbol, date.fromisoformat(target)
+        )
+        payload = {k: list(v) for k, v in result.kbars.items()}
+        encoded = json.dumps(
+            payload,
+            default=str,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        message = (
+            {
+                "code": "OK",
+                "kbars": payload,
+                "before": result.usage_bytes_before,
+                "after": result.usage_bytes_after,
+            }
+            if len(encoded) <= 1024 * 1024
+            else {"code": "PAYLOAD"}
+        )
+    except ShioajiConfigError:
+        message = {"code": "CREDENTIALS"}
+    except ShioajiSdkError as exc:
+        message = {"code": exc.code}
+    except Exception:
+        message = {"code": "PAYLOAD"}
+    try:
+        conn.send(message)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        conn.close()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,22 +214,37 @@ class ShioajiSdkGateway:
             raise ShioajiConfigError("target date is invalid")
         try:
             if importlib.metadata.version("shioaji") != "1.7.1":
-                raise ShioajiSdkError("shioaji SDK version is unsupported")
+                raise ShioajiSdkError("shioaji SDK version is unsupported", code="SDK")
             sdk = self._sdk if self._sdk is not None else importlib.import_module("shioaji")
             factory = getattr(sdk, "Shioaji")
             api = factory(simulation=self.simulation)
+        except ShioajiSdkError:
+            raise
         except Exception:
-            raise ShioajiSdkError("shioaji login failed") from None
+            raise ShioajiSdkError("shioaji SDK is unavailable", code="SDK") from None
         try:
-            api.login(api_key=self.api_key, secret_key=self.secret_key, subscribe_trade=False)
+            try:
+                api.login(api_key=self.api_key, secret_key=self.secret_key, subscribe_trade=False)
+            except Exception:
+                raise ShioajiSdkError("shioaji login failed", code="LOGIN") from None
             usage_before = _usage_bytes(api)
             # Shioaji 1.7.1 exposes lower-case contract categories.  Keep this
             # exact reviewed path rather than falling back to deprecated
             # ``api.Contracts`` aliases.
             contract = api.contracts.stocks.get(symbol)
             if contract is None:
-                raise ShioajiSdkError("shioaji contract unavailable")
-            raw = api.kbars(contract, start=target_date.isoformat(), end=target_date.isoformat())
+                raise ShioajiSdkError("shioaji contract unavailable", code="CONTRACT")
+            try:
+                raw = api.kbars(
+                    contract,
+                    start=target_date.isoformat(),
+                    end=target_date.isoformat(),
+                )
+            except Exception:
+                raise ShioajiSdkError(
+                    "shioaji kbars retrieval failed",
+                    code="ACQUISITION",
+                ) from None
             usage_after = _usage_bytes(api)
             return ShioajiKbarsSnapshot(
                 _plain_kbars(_kbars_mapping(raw)),
@@ -123,7 +254,7 @@ class ShioajiSdkGateway:
         except ShioajiError:
             raise
         except Exception:
-            raise ShioajiSdkError("shioaji kbars retrieval failed") from None
+            raise ShioajiSdkError("shioaji payload invalid", code="PAYLOAD") from None
         finally:
             try:
                 api.logout()
@@ -144,6 +275,8 @@ def build_market_minute_request(
     snapshot_id: str,
     daily_update_id: str,
     universe_id: str,
+    sequence: int = 1,
+    sequence_count: int = 1,
 ) -> dict[str, Any]:
     """Map Shioaji Kbars to deterministic ``market_minute.v1``.
 
@@ -172,6 +305,16 @@ def build_market_minute_request(
         raise ShioajiPayloadError("usage snapshots must be non-negative integers")
     if usage_after_requests < usage_before_requests:
         raise ShioajiPayloadError("usage counter must be monotonic")
+    if (
+        type(sequence) is not int
+        or type(sequence_count) is not int
+        or sequence < 1
+        or sequence_count < 1
+        or sequence > 99_999
+        or sequence_count > 99_999
+        or sequence > sequence_count
+    ):
+        raise ShioajiPayloadError("sequence is invalid")
 
     columns = ("ts", "Open", "High", "Low", "Close", "Volume", "Amount")
     if not all(
@@ -261,13 +404,16 @@ def build_market_minute_request(
         rows.append(row)
     rows.sort(key=lambda item: item["bar_end_time"])
     symbols_digest = hashlib.sha256("\n".join(sorted(ordered_symbols)).encode()).hexdigest()
+    # This is the canonical backend ``minute_sequence_key_digest`` domain.
+    # In particular, sequence_count is deliberately *not* part of it.
+    identity_fields: dict[str, object] = {
+        "data_date": target_date.isoformat(),
+        "dataset_key": dataset_key,
+        "sequence": sequence,
+        "snapshot_id": snapshot_id,
+    }
     identity = json.dumps(
-        {
-            "data_date": target_date.isoformat(),
-            "dataset_key": dataset_key,
-            "sequence": 1,
-            "snapshot_id": snapshot_id,
-        },
+        identity_fields,
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
@@ -278,8 +424,8 @@ def build_market_minute_request(
         "declared_record_count": len(rows),
         "coverage_start_date": target_date.isoformat(),
         "coverage_end_date": target_date.isoformat(),
-        "sequence": 1,
-        "sequence_count": 1,
+        "sequence": sequence,
+        "sequence_count": sequence_count,
         "snapshot_id": snapshot_id,
         "daily_update_id": daily_update_id,
         "universe_id": universe_id,
@@ -375,18 +521,21 @@ def _plain_kbars(raw: Mapping[str, object]) -> dict[str, tuple[object, ...]]:
     for name in required:
         vector = raw.get(name)
         if isinstance(vector, (str, bytes)):
-            raise ShioajiSdkError("shioaji kbars vectors are invalid")
+            raise ShioajiSdkError("shioaji kbars vectors are invalid", code="PAYLOAD")
         if not isinstance(vector, Iterable):
-            raise ShioajiSdkError("shioaji kbars vectors are invalid")
+            raise ShioajiSdkError("shioaji kbars vectors are invalid", code="PAYLOAD")
         try:
             values: tuple[object, ...] = tuple(vector)  # numpy arrays detach here.
         except TypeError as exc:
-            raise ShioajiSdkError("shioaji kbars vectors are invalid") from exc
+            raise ShioajiSdkError("shioaji kbars vectors are invalid", code="PAYLOAD") from exc
         if len(values) > MAX_ROWS:
-            raise ShioajiSdkError("shioaji kbars exceeds bounded rows")
+            raise ShioajiSdkError("shioaji kbars exceeds bounded rows", code="PAYLOAD")
         result[name] = tuple(_normalize_scalar(value) for value in values)
     if len({len(vector) for vector in result.values()}) != 1:
-        raise ShioajiSdkError("shioaji kbars vectors have inconsistent lengths")
+        raise ShioajiSdkError(
+            "shioaji kbars vectors have inconsistent lengths",
+            code="PAYLOAD",
+        )
     return result
 
 
@@ -396,13 +545,13 @@ def _kbars_mapping(raw: object) -> Mapping[str, object]:
         return raw
     to_dict = getattr(raw, "dict", None)
     if not callable(to_dict):
-        raise ShioajiSdkError("shioaji kbars result is invalid")
+        raise ShioajiSdkError("shioaji kbars result is invalid", code="PAYLOAD")
     try:
         mapped = to_dict()
     except Exception:
-        raise ShioajiSdkError("shioaji kbars result is invalid") from None
+        raise ShioajiSdkError("shioaji kbars result is invalid", code="PAYLOAD") from None
     if not isinstance(mapped, Mapping):
-        raise ShioajiSdkError("shioaji kbars result is invalid")
+        raise ShioajiSdkError("shioaji kbars result is invalid", code="PAYLOAD")
     return mapped
 
 
@@ -414,6 +563,10 @@ def _normalize_scalar(value: object) -> object:
             value = item()
         except Exception:
             return "<invalid_scalar>"
+    if isinstance(value, float) and not isfinite(value):
+        return "<invalid_scalar>"
+    if isinstance(value, Decimal) and not value.is_finite():
+        return "<invalid_scalar>"
     return (
         value
         if isinstance(value, (int, float, str, bool, Decimal)) or value is None

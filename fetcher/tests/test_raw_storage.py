@@ -266,6 +266,18 @@ def test_attach_provenance_is_all_or_none_and_changes_request_identity() -> None
     assert first["idempotency_key"] == same["idempotency_key"]
     assert first["request_key"] == same["request_key"]
     assert first["idempotency_key"] != changed["idempotency_key"]
+    preserved = _request()
+    preserved.update(
+        dataset_key="tw_equity_minute",
+        schema_id="market_minute",
+        schema_version=1,
+        request_key="mmr:" + "c" * 64,
+        idempotency_key="mms:" + "c" * 64,
+    )
+    original_identity = (preserved["request_key"], preserved["idempotency_key"])
+    attach_raw_object(preserved, raw_object, preserve_identity=True)
+    assert (preserved["request_key"], preserved["idempotency_key"]) == original_identity
+    assert preserved["payload"]["batch"]["source_raw_ref"] == raw_object.ref
     with pytest.raises(RawStorageUploadError, match="supplied together"):
         attach_raw_provenance(_request(), source_raw_ref=raw_object.ref, source_raw_sha256=None)
     with pytest.raises(RawStorageUploadError, match="supplied together"):

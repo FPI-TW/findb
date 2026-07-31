@@ -94,6 +94,19 @@ bytes/connections 不會被當成 request count；contract 中的 usage 是本�
 計數。Kbars `ts` 依 Asia/Taipei wall-clock 的 right-labelled bar end 轉換；13:30 close-auction
 仍是已知語意限制，須待 contract 決策後才可特例化。
 
+## Shioaji Taiwan-minute staging coordinator
+
+`findb-fetch-shioaji-staging --check` validates only the committed four-symbol
+manifest and is fully offline. Without `--deliver`, the one-shot staging tool
+only acquires and validates; `--deliver` is the explicit raw-first path. Its
+SQLite state is controlled by `FETCHER_SHIOAJI_STAGING_STATE_PATH`. Stored raw
+bytes are an SDK-detached `shioaji_sdk_acquisition_snapshot.v1`, not exact HTTP
+provider response bytes. A durable upload intent is written before R2; if the
+process dies in the upload/checkpoint window, restart returns
+`RAW_PERSIST_UNCERTAIN` and requires reconciliation instead of uploading again.
+This remains staging-only: it does not activate a dataset, schedule work, or
+authorize production/backfill use.
+
 ## Twelve Data手動抓取
 
 本機開發將API key放在被Git忽略的`fetcher/.env`，不要加入版控。從

@@ -10,7 +10,9 @@ import pytest
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.providers import shioaji
 from findb_fetcher.providers.shioaji import (
+    IsolatedShioajiGateway,
     ShioajiPayloadError,
+    ShioajiSdkError,
     ShioajiSdkGateway,
     build_market_minute_request,
 )
@@ -107,6 +109,8 @@ def test_identity_is_deterministic_and_volume_amount_anomalies_are_bidirectional
 def test_rejects_non_monotonic_usage_and_known_close_auction_is_right_labelled() -> None:
     with pytest.raises(ShioajiPayloadError):
         _request(usage_before_requests=2, usage_after_requests=1)
+    with pytest.raises(ShioajiPayloadError):
+        _request(sequence=100_000, sequence_count=100_000)
     auction = _request(
         kbars={
             key: tuple(value)
@@ -123,6 +127,70 @@ def test_rejects_ohlc_cross_field_violation() -> None:
     invalid["High"] = (99,)
     with pytest.raises(ShioajiPayloadError, match="OHLC"):
         _request(kbars=invalid)
+
+
+def test_sdk_shape_failures_are_terminal_payload_errors() -> None:
+    with pytest.raises(ShioajiSdkError) as caught:
+        shioaji._plain_kbars({"ts": ()})
+    assert caught.value.code == "PAYLOAD"
+    assert shioaji._normalize_scalar(float("nan")) == "<invalid_scalar>"
+
+
+def test_isolated_gateway_silences_child_and_returns_coarse_credentials_code(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(ShioajiSdkError) as caught:
+        IsolatedShioajiGateway("", "", timeout_seconds=5).fetch_kbars(
+            "2330",
+            date(2026, 7, 29),
+        )
+    output = capfd.readouterr()
+    assert caught.value.code == "CREDENTIALS"
+    assert output.out == output.err == ""
+
+
+def test_isolated_gateway_timeout_terminates_then_kills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class Connection:
+        def poll(self, _timeout: float) -> bool:
+            return False
+
+        def close(self) -> None:
+            events.append("close")
+
+    class Process:
+        alive = True
+
+        def start(self) -> None:
+            events.append("start")
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def kill(self) -> None:
+            events.append("kill")
+            self.alive = False
+
+        def join(self, _timeout: float | None = None) -> None:
+            events.append("join")
+
+    parent = Connection()
+    child = Connection()
+    process = Process()
+    monkeypatch.setattr(shioaji.multiprocessing, "Pipe", lambda **_: (parent, child))
+    monkeypatch.setattr(shioaji.multiprocessing, "Process", lambda **_: process)
+    with pytest.raises(ShioajiSdkError, match="timed out"):
+        IsolatedShioajiGateway("key", "secret", timeout_seconds=0.01).fetch_kbars(
+            "2330",
+            date(2026, 7, 29),
+        )
+    assert "terminate" in events and "kill" in events
 
 
 def test_normalizes_numpy_like_scalars_and_keeps_usage_bytes_separate(
