@@ -80,7 +80,7 @@ def test_state_persists_snapshot_identity_attempts_limit_and_lease(tmp_path: Pat
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
     rows = [dict(x) for x in EXPECTED]
     state = ShioajiStagingState(path)
-    state.ensure("d", "2026-07-29", "u", "update", rows)
+    state.ensure("d", "2026-07-29", "u", "update", rows, "2026-07-30")
     equity = state.sequence("d", "2330")
     etf1 = state.sequence("d", "0050")
     etf2 = state.sequence("d", "0056")
@@ -114,7 +114,14 @@ def test_rolling_limiter_survives_restart(tmp_path: Path) -> None:
     path = tmp_path / "limiter.sqlite"
     now = datetime(2026, 7, 29, tzinfo=timezone.utc)
     state = ShioajiStagingState(path)
-    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0]), dict(EXPECTED[1])])
+    state.ensure(
+        "d",
+        "2026-07-29",
+        "u",
+        "update",
+        [dict(EXPECTED[0]), dict(EXPECTED[1])],
+        "2026-07-30",
+    )
     assert state.acquire_attempt(
         "d", "2330", now, max_requests=1, rolling_seconds=60, max_attempts=3
     )[0]
@@ -159,6 +166,157 @@ class _Gateway:
             None,
             None,
         )
+
+
+def test_preflight_only_acquires_2330_then_full_run_reuses_it(tmp_path: Path) -> None:
+    class OrderedGateway(_Gateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.symbols: list[str] = []
+
+        def fetch_kbars(self, symbol: str, target: date) -> ShioajiKbarsSnapshot:
+            self.symbols.append(symbol)
+            return super().fetch_kbars(symbol, target)
+
+    manifest = {
+        "governance": {
+            "max_requests": 50,
+            "rolling_seconds": 60,
+            "max_attempts_per_sequence": 3,
+            "cutoff": "17:00",
+            "timezone": "Asia/Taipei",
+        },
+        "universe_id": "shioaji_tw_staging_v1",
+        "sequences": [dict(item) for item in EXPECTED],
+    }
+
+    def now() -> datetime:
+        return datetime(2026, 7, 31, 9, tzinfo=timezone(timedelta(hours=8)))
+
+    state = ShioajiStagingState(tmp_path / "preflight.sqlite")
+    gateway = OrderedGateway()
+    first = Coordinator(state, manifest, gateway, now=now).run(date(2026, 7, 29), preflight=True)
+    assert [(item.code, item.symbol) for item in first] == [("VALIDATED", "2330")]
+    assert gateway.symbols == ["2330"]
+    full = Coordinator(state, manifest, gateway, now=now).run(date(2026, 7, 29))
+    assert [item.symbol for item in full] == ["2330", "0050", "0056", "006201"]
+    assert gateway.symbols == ["2330", "0050", "0056", "006201"]
+    assert (
+        Coordinator(state, manifest, gateway, now=now)
+        .run(date(2026, 7, 29), preflight=True)[0]
+        .code
+        == "PREFLIGHT_NOT_FRESH"
+    )
+    assert gateway.calls == 4
+    state.close()
+
+
+def test_full_phase_four_validation_requires_durable_preflight_marker(tmp_path: Path) -> None:
+    manifest = {
+        "governance": {
+            "max_requests": 50,
+            "rolling_seconds": 60,
+            "max_attempts_per_sequence": 3,
+            "cutoff": "17:00",
+            "timezone": "Asia/Taipei",
+        },
+        "universe_id": "shioaji_tw_staging_v1",
+        "sequences": [dict(item) for item in EXPECTED],
+    }
+    state = ShioajiStagingState(tmp_path / "gate.sqlite")
+    gateway = _Gateway()
+    result = Coordinator(state, manifest, gateway, now=_taipei_now).run(date(2026, 7, 29))
+    assert [(item.code, item.symbol) for item in result] == [("PREFLIGHT_REQUIRED", "2330")]
+    assert gateway.calls == 0
+    state.close()
+
+
+def test_preflight_rejects_when_any_reviewed_sequence_was_touched(tmp_path: Path) -> None:
+    manifest = {
+        "governance": {
+            "max_requests": 50,
+            "rolling_seconds": 60,
+            "max_attempts_per_sequence": 3,
+            "cutoff": "17:00",
+            "timezone": "Asia/Taipei",
+        },
+        "universe_id": "shioaji_tw_staging_v1",
+        "sequences": [dict(item) for item in EXPECTED],
+    }
+    now = datetime(2026, 7, 31, 9, tzinfo=timezone(timedelta(hours=8)))
+    target = date(2026, 7, 29)
+    daily_id = "shioaji_tw_staging_v1:2026-07-29"
+    daily_update_id = hashlib.sha256(f"{daily_id}\x1fdaily".encode()).hexdigest()[:32]
+    state = ShioajiStagingState(tmp_path / "not-fresh.sqlite")
+    state.ensure(
+        daily_id,
+        target.isoformat(),
+        "shioaji_tw_staging_v1",
+        daily_update_id,
+        manifest["sequences"],  # type: ignore[arg-type]
+        now.date().isoformat(),
+    )
+    assert state.acquire_attempt(
+        daily_id,
+        "0050",
+        now,
+        max_requests=50,
+        rolling_seconds=60,
+        max_attempts=3,
+    )[0]
+    gateway = _Gateway()
+    result = Coordinator(state, manifest, gateway, now=lambda: now).run(target, preflight=True)
+    assert result[0].code == "PREFLIGHT_NOT_FRESH"
+    assert gateway.calls == 0
+    state.close()
+
+
+def test_target_window_and_execution_date_fail_before_provider(tmp_path: Path) -> None:
+    state = ShioajiStagingState(tmp_path / "dates.sqlite")
+    gateway = _Gateway()
+    manifest = _single_manifest()
+
+    def now() -> datetime:
+        return datetime(2026, 7, 31, 9, tzinfo=timezone(timedelta(hours=8)))
+
+    assert (
+        Coordinator(state, manifest, gateway, now=now).run(date(2026, 6, 29))[0].code
+        == "TARGET_DATE_INVALID"
+    )
+    assert (
+        Coordinator(state, manifest, gateway, now=now).run(date(2026, 8, 1))[0].code
+        == "TARGET_DATE_INVALID"
+    )
+    assert gateway.calls == 0
+    assert state.db.execute("SELECT count(*) FROM daily_updates").fetchone()[0] == 0
+    assert (
+        Coordinator(state, manifest, gateway, now=now).run(date(2026, 7, 29))[0].code == "VALIDATED"
+    )
+
+    def later() -> datetime:
+        return datetime(2026, 8, 1, 9, tzinfo=timezone(timedelta(hours=8)))
+
+    assert (
+        Coordinator(state, manifest, gateway, now=later).run(date(2026, 7, 29))[0].code
+        == "STATE_UNAVAILABLE"
+    )
+    assert gateway.calls == 1
+    state.close()
+
+
+def test_naive_clock_fails_closed_before_state_or_provider(tmp_path: Path) -> None:
+    state = ShioajiStagingState(tmp_path / "naive.sqlite")
+    gateway = _Gateway()
+    result = Coordinator(
+        state,
+        _single_manifest(),
+        gateway,
+        now=lambda: datetime(2026, 7, 31, 9),
+    ).run(date(2026, 7, 29), preflight=True)
+    assert result[0].code == "CLOCK_INVALID"
+    assert gateway.calls == 0
+    assert state.db.execute("SELECT count(*) FROM daily_updates").fetchone()[0] == 0
+    state.close()
 
 
 def test_validate_only_does_not_construct_delivery_and_prepared_retries_do_not_refetch(
@@ -233,7 +391,7 @@ def test_state_rejects_schema_drift_and_persists_raw_checkpoint(tmp_path: Path) 
         ShioajiStagingState(path)
 
     state = ShioajiStagingState(tmp_path / "good.sqlite")
-    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])])
+    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
     state.save_raw("d", "2330", "r2://bucket/raw/object", "a" * 64, 42)
     state.close()
     state = ShioajiStagingState(tmp_path / "good.sqlite")
@@ -246,7 +404,7 @@ def test_state_rejects_semantic_corruption_and_prepared_identity_drift(
 ) -> None:
     path = tmp_path / "constraints.sqlite"
     state = ShioajiStagingState(path)
-    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])])
+    state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
     with pytest.raises(sqlite3.IntegrityError):
         state.db.execute(
             "UPDATE snapshot_sequences SET attempts=-1 WHERE daily_id='d' AND symbol='2330'"
@@ -282,6 +440,10 @@ def _single_manifest() -> dict[str, object]:
     }
 
 
+def _taipei_now() -> datetime:
+    return datetime(2026, 7, 31, 9, tzinfo=timezone(timedelta(hours=8)))
+
+
 def test_terminal_stage_is_not_retried_and_retryable_stops_after_three(
     tmp_path: Path,
 ) -> None:
@@ -306,6 +468,24 @@ def test_terminal_stage_is_not_retried_and_retryable_stops_after_three(
     ]
     assert coordinator.run(date(2026, 7, 29))[0].code == "ATTEMPT_BLOCKED"
     assert retryable.calls == 3
+    state.close()
+
+
+@pytest.mark.parametrize("failure", ["CREDENTIALS", "LOGIN", "SDK", "CONTRACT", "PAYLOAD"])
+def test_terminal_gateway_failures_halt_the_full_reviewed_plan(
+    tmp_path: Path, failure: str
+) -> None:
+    manifest = {**_single_manifest(), "sequences": [dict(item) for item in EXPECTED]}
+    state = ShioajiStagingState(tmp_path / f"{failure}.sqlite")
+    gateway = _FailingGateway(failure)
+    result = Coordinator(
+        state,
+        manifest,  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+        now=_taipei_now,
+    ).run(date(2026, 7, 29), preflight=True)
+    assert len(result) == gateway.calls == 1
+    assert result[0].symbol == "2330"
     state.close()
 
 
@@ -759,6 +939,16 @@ def test_cutoff_and_cli_fail_closed_with_valid_secret_free_json(
     output = capsys.readouterr()
     assert json.loads(output.out) == {"code": "CHECK_OK", "stage": "manifest", "count": 4}
     assert output.err == "" and not offline_state.exists()
+
+    missing_target_state = tmp_path / "missing-target.sqlite"
+    assert main(["--manifest", str(manifest), "--state-path", str(missing_target_state)]) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {
+        "code": "TARGET_DATE_INVALID",
+        "stage": "setup",
+        "count": 0,
+    }
+    assert output.err == "" and not missing_target_state.exists()
 
 
 def test_cli_returns_nonzero_for_non_successful_run(

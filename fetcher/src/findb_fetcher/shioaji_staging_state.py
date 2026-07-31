@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,7 @@ from findb_fetcher.providers.shioaji import (
 from findb_fetcher.raw_storage import RawStorageError, attach_raw_provenance
 
 MAX_BYTES = 1024 * 1024
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "7"
 EXPECTED_COLUMNS = {
     "meta": ("key", "value"),
     "daily_updates": (
@@ -31,6 +31,8 @@ EXPECTED_COLUMNS = {
         "target_date",
         "universe_id",
         "daily_update_id",
+        "execution_date",
+        "preflight_status",
         "status",
     ),
     "dataset_snapshots": ("daily_id", "dataset_key", "snapshot_id", "status"),
@@ -104,7 +106,9 @@ class ShioajiStagingState:
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS daily_updates (
               daily_id TEXT PRIMARY KEY, target_date TEXT NOT NULL, universe_id TEXT NOT NULL,
-              daily_update_id TEXT NOT NULL,
+              daily_update_id TEXT NOT NULL, execution_date TEXT NOT NULL,
+              preflight_status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(preflight_status IN ('pending','validated')),
               status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN ('pending','running','completed','failed'))
             );
@@ -180,18 +184,19 @@ class ShioajiStagingState:
         universe_id: str,
         daily_update_id: str,
         rows: list[dict[str, Any]],
+        execution_date: str,
     ) -> None:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             self.db.execute(
-                "INSERT OR IGNORE INTO daily_updates(daily_id,target_date,universe_id,daily_update_id) VALUES (?,?,?,?)",
-                (daily_id, target_date, universe_id, daily_update_id),
+                "INSERT OR IGNORE INTO daily_updates(daily_id,target_date,universe_id,daily_update_id,execution_date) VALUES (?,?,?,?,?)",
+                (daily_id, target_date, universe_id, daily_update_id, execution_date),
             )
             existing = self.db.execute(
-                "SELECT target_date,universe_id,daily_update_id FROM daily_updates WHERE daily_id=?",
+                "SELECT target_date,universe_id,daily_update_id,execution_date FROM daily_updates WHERE daily_id=?",
                 (daily_id,),
             ).fetchone()
-            if existing != (target_date, universe_id, daily_update_id):
+            if existing != (target_date, universe_id, daily_update_id, execution_date):
                 raise ShioajiStagingStateError("daily update identity changed")
             for row in rows:
                 ds = str(row["dataset_key"])
@@ -248,6 +253,66 @@ class ShioajiStagingState:
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+
+    def preflight_is_fresh(self, daily_id: str, symbol: str) -> bool:
+        """Allow only a brand-new database and an untouched reviewed plan."""
+        rows = self.db.execute(
+            "SELECT symbol,attempts,lease_until,snapshot,raw_ref,raw_sha256,raw_size,"
+            "prepared,prepared_sha256,source_attempt_id,source_run_id,terminal_status,status "
+            "FROM snapshot_sequences WHERE daily_id=? ORDER BY sequence_no,symbol",
+            (daily_id,),
+        ).fetchall()
+        untouched = (
+            rows
+            and any(row[0] == symbol for row in rows)
+            and all(row[1:] == (0,) + (None,) * 10 + ("pending",) for row in rows)
+        )
+        return bool(
+            untouched
+            and self.db.execute("SELECT count(*) FROM daily_updates").fetchone()[0] == 1
+            and self.db.execute(
+                "SELECT status FROM daily_updates WHERE daily_id=?", (daily_id,)
+            ).fetchone()
+            == ("pending",)
+            and all(
+                row == ("pending",)
+                for row in self.db.execute(
+                    "SELECT status FROM dataset_snapshots WHERE daily_id=?", (daily_id,)
+                )
+            )
+            and self.db.execute("SELECT count(*) FROM provider_attempts").fetchone()[0] == 0
+            and self.db.execute("SELECT count(*) FROM limiter").fetchone()[0] == 0
+        )
+
+    def preflight_validated(self, daily_id: str) -> bool:
+        return self.db.execute(
+            "SELECT preflight_status FROM daily_updates WHERE daily_id=?", (daily_id,)
+        ).fetchone() == ("validated",)
+
+    def mark_preflight_validated(self, daily_id: str, symbol: str) -> None:
+        """Persist the Phase 4 gate only after the 2330 snapshot validates."""
+        row = self.db.execute(
+            "SELECT attempts,snapshot,terminal_status,status FROM snapshot_sequences "
+            "WHERE daily_id=? AND symbol=?",
+            (daily_id, symbol),
+        ).fetchone()
+        if (
+            row is None
+            or row[0] != 1
+            or row[1] is None
+            or row[2] is not None
+            or row[3] != "acquired"
+        ):
+            raise ShioajiStagingStateError("preflight state is invalid")
+        if (
+            self.db.execute(
+                "UPDATE daily_updates SET preflight_status='validated' "
+                "WHERE daily_id=? AND preflight_status='pending'",
+                (daily_id,),
+            ).rowcount
+            != 1
+        ):
+            raise ShioajiStagingStateError("preflight state is invalid")
 
     def sequence(self, daily_id: str, symbol: str) -> sqlite3.Row | tuple[Any, ...] | None:
         return self.db.execute(
@@ -549,6 +614,16 @@ class ShioajiStagingState:
         )
 
     def _validate_semantics(self) -> None:
+        for target_date, execution_date in self.db.execute(
+            "SELECT target_date,execution_date FROM daily_updates"
+        ):
+            try:
+                parsed_target = date.fromisoformat(str(target_date))
+                parsed_execution = date.fromisoformat(str(execution_date))
+            except ValueError as exc:
+                raise ShioajiStagingStateError("staging state semantics are invalid") from exc
+            if not parsed_execution - timedelta(days=31) <= parsed_target <= parsed_execution:
+                raise ShioajiStagingStateError("staging state semantics are invalid")
         for (
             daily_id,
             symbol,

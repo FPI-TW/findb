@@ -149,6 +149,71 @@ def test_isolated_gateway_silences_child_and_returns_coarse_credentials_code(
     assert output.out == output.err == ""
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"not-json",
+        json.dumps({"code": "UNKNOWN", "stage": "login"}).encode(),
+        json.dumps({"code": "LOGIN", "stage": "payload"}).encode(),
+        json.dumps({"code": "OK", "stage": "payload"}).encode(),
+        b"x" * (shioaji.MAX_ISOLATED_IPC_BYTES + 1),
+    ],
+)
+def test_isolated_gateway_ipc_rejects_malformed_or_unreviewed_messages(raw: bytes) -> None:
+    with pytest.raises(ShioajiSdkError) as caught:
+        shioaji._decode_isolated_message(raw)
+    assert caught.value.code == "PAYLOAD"
+
+
+def test_isolated_gateway_ipc_accepts_only_exact_coarse_error_stage() -> None:
+    assert shioaji._decode_isolated_message(b'{"code":"LOGIN","stage":"login"}') == {
+        "code": "LOGIN"
+    }
+    assert shioaji._isolated_error_message("UNKNOWN") == {
+        "code": "PAYLOAD",
+        "stage": "payload",
+    }
+
+
+@pytest.mark.parametrize("transport_error", [EOFError(), OSError(), ValueError()])
+def test_isolated_gateway_transport_failure_is_terminal_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    transport_error: Exception,
+) -> None:
+    class Connection:
+        def poll(self, _timeout: float) -> bool:
+            return True
+
+        def recv_bytes(self, _max_length: int) -> bytes:
+            raise transport_error
+
+        def close(self) -> None:
+            pass
+
+    class Process:
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, _timeout: float | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(
+        shioaji.multiprocessing,
+        "Pipe",
+        lambda **_: (Connection(), Connection()),
+    )
+    monkeypatch.setattr(shioaji.multiprocessing, "Process", lambda **_: Process())
+    with pytest.raises(ShioajiSdkError) as caught:
+        IsolatedShioajiGateway("key", "secret").fetch_kbars(
+            "2330",
+            date(2026, 7, 29),
+        )
+    assert caught.value.code == "PAYLOAD"
+
+
 def test_isolated_gateway_timeout_terminates_then_kills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -6,11 +6,11 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Never, Sequence
 
-from findb_fetcher.shioaji_staging import Coordinator, load_manifest
+from findb_fetcher.shioaji_staging import TAIPEI, Coordinator, _valid_target_date, load_manifest
 from findb_fetcher.shioaji_staging_state import ShioajiStagingState
 
 MAX_OUTPUT = 4096
@@ -26,8 +26,10 @@ class _Parser(argparse.ArgumentParser):
 def main(argv: Sequence[str] | None = None) -> int:
     p = _Parser(add_help=False)
     p.add_argument("--check", action="store_true")
-    p.add_argument("--deliver", action="store_true")
-    p.add_argument("--target-date", type=date.fromisoformat, default=date.today())
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--deliver", action="store_true")
+    mode.add_argument("--preflight", action="store_true")
+    p.add_argument("--target-date", type=date.fromisoformat)
     p.add_argument(
         "--manifest",
         type=Path,
@@ -45,6 +47,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         m = load_manifest(a.manifest)
         if a.check:
             return _emit({"code": "CHECK_OK", "stage": "manifest", "count": len(m["sequences"])})
+        # Validate before opening SQLite or constructing a gateway.  This is
+        # deliberately repeated in Coordinator for direct callers.
+        if a.target_date is None or not _valid_target_date(
+            a.target_date, datetime.now(TAIPEI).date()
+        ):
+            return _emit({"code": "TARGET_DATE_INVALID", "stage": "setup", "count": 0}, 1)
         from findb_fetcher.providers.shioaji import IsolatedShioajiGateway
 
         state = ShioajiStagingState(a.state_path)
@@ -69,12 +77,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ).run(a.target_date, True)
             else:
                 results = Coordinator(state, m, IsolatedShioajiGateway.from_env()).run(
-                    a.target_date
+                    a.target_date, preflight=a.preflight
                 )
         finally:
             state.close()
         accepted = {"completed"} if a.deliver else {"VALIDATED"}
-        successful = bool(results) and all(result.code in accepted for result in results)
+        successful = (
+            bool(results)
+            and all(result.code in accepted for result in results)
+            and (not a.preflight or len(results) == 1 and results[0].code == "VALIDATED")
+        )
         return _emit(
             {
                 "code": "OK" if successful else "RUN_FAILED",
@@ -88,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "retryable": x.retryable,
                         "request_id": x.request_id,
                         "run_id": x.run_id,
+                        "symbol": x.symbol,
                     }
                     for x in results
                 ],

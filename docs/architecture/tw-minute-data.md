@@ -188,6 +188,14 @@ production scheduler 或 universe/backfill 授權。R2 上傳前會先保存 dur
 若程序在外部寫入與本機 checkpoint 之間中止，重啟會以
 `RAW_PERSIST_UNCERTAIN` fail closed，等待人工核對而不盲目重傳。
 
+Phase 4 的 credentialed acquisition 必須使用新的私有 SQLite state、31 天內已知的前一
+交易日，且在 Asia/Taipei 17:00 前執行：先以 `--preflight` 只取得並驗證 2330；成功後才可
+以相同 state 做一般 validate-only run，重用 2330 snapshot 並依序取得其餘三檔。state 綁定
+Taipei execution date，不能跨日恢復；此流程永遠不得使用 `--deliver`，也不會啟用 dataset。
+正常 four-symbol validate-only continuation 會先檢查同一 state 中、僅在 2330 acquisition
+與 local contract validation 均成功後寫入的 durable preflight marker；缺少 marker 時不得呼叫
+provider。
+
 - credentialed staging smoke 的成功驗收；
 - production scheduler／universe coordination／acquisition runtime；
 - deployment 與 staging rollout；

@@ -7,7 +7,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -25,7 +25,7 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
     require_raw_provenance,
 )
-from findb_fetcher.shioaji_staging_state import ShioajiStagingState
+from findb_fetcher.shioaji_staging_state import ShioajiStagingState, ShioajiStagingStateError
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_MANIFEST_BYTES = 16 * 1024
@@ -136,6 +136,7 @@ class Result:
     retryable: bool = False
     request_id: str | None = None
     run_id: str | None = None
+    symbol: str = ""
 
 
 class Coordinator:
@@ -174,23 +175,63 @@ class Coordinator:
             sleep,
         )
 
-    def run(self, target: date, deliver: bool = False) -> list[Result]:
+    def run(self, target: date, deliver: bool = False, *, preflight: bool = False) -> list[Result]:
         gov = self.manifest["governance"]
-        if _past_cutoff(self.now(), str(gov["cutoff"])):
-            return [Result("CUTOFF_REACHED", "acquisition")]
+        execution_now = self.now()
+        if execution_now.tzinfo is None:
+            return [
+                Result(
+                    "CLOCK_INVALID", "setup", symbol=str(self.manifest["sequences"][0]["symbol"])
+                )
+            ]
+        execution_date = execution_now.astimezone(TAIPEI).date()
+        if not _valid_target_date(target, execution_date):
+            return [
+                Result(
+                    "TARGET_DATE_INVALID",
+                    "setup",
+                    symbol=str(self.manifest["sequences"][0]["symbol"]),
+                )
+            ]
+        if _past_cutoff(execution_now, str(gov["cutoff"])):
+            return [
+                Result(
+                    "CUTOFF_REACHED",
+                    "acquisition",
+                    symbol=str(self.manifest["sequences"][0]["symbol"]),
+                )
+            ]
         daily_id = f"{self.manifest['universe_id']}:{target.isoformat()}"
         daily_update_id = _id(daily_id, "daily")
         rows = self.manifest["sequences"]
-        self.state.ensure(
-            daily_id, target.isoformat(), self.manifest["universe_id"], daily_update_id, rows
-        )
+        try:
+            self.state.ensure(
+                daily_id,
+                target.isoformat(),
+                self.manifest["universe_id"],
+                daily_update_id,
+                rows,
+                execution_date.isoformat(),
+            )
+        except ShioajiStagingStateError:
+            return [Result("STATE_UNAVAILABLE", "state", symbol=str(rows[0]["symbol"]))]
+        if preflight and not self.state.preflight_is_fresh(daily_id, str(rows[0]["symbol"])):
+            return [Result("PREFLIGHT_NOT_FRESH", "state", symbol=str(rows[0]["symbol"]))]
+        if (
+            not preflight
+            and not deliver
+            and rows == list(EXPECTED)
+            and not self.state.preflight_validated(daily_id)
+        ):
+            return [Result("PREFLIGHT_REQUIRED", "state", symbol=str(rows[0]["symbol"]))]
+        processing_rows = rows[:1] if preflight else rows
         out = []
-        for row in rows:
+        for row in processing_rows:
             symbol = str(row["symbol"])
             terminal = self.state.get_terminal(daily_id, symbol)
             if terminal is not None:
                 out.append(Result(terminal, "state"))
-                if terminal == "DATASET_INACTIVE":
+                if terminal in _GLOBAL_TERMINAL_CODES:
                     break
                 continue
             snap = self.state.get_snapshot(daily_id, symbol)
@@ -239,7 +280,7 @@ class Coordinator:
                         daily_id, symbol, attempt, "failed", "KBARS_PAYLOAD", retryable=False
                     )
                     out.append(Result("KBARS_PAYLOAD", "payload"))
-                    continue
+                    break
                 except ShioajiSdkError as exc:
                     terminal_codes = {
                         "CREDENTIALS": ("CREDENTIALS_UNAVAILABLE", "login"),
@@ -268,6 +309,10 @@ class Coordinator:
                             retryable=retryable,
                         )
                     )
+                    # CREDENTIALS/LOGIN/SDK/CONTRACT/PAYLOAD are global
+                    # fail-fast conditions: do not risk another provider call.
+                    if not retryable:
+                        break
                     continue
                 except Exception:
                     # Gateway implementations must already have stripped provider text.
@@ -299,12 +344,18 @@ class Coordinator:
             except ShioajiPayloadError:
                 self.state.mark_terminal(daily_id, symbol, "KBARS_PAYLOAD")
                 out.append(Result("KBARS_PAYLOAD", "payload"))
-                continue
+                break
             except ContractValidationError:
                 self.state.mark_terminal(daily_id, symbol, "CONTRACT_INVALID")
                 out.append(Result("CONTRACT_INVALID", "contract"))
-                continue
+                break
             if not deliver:
+                if preflight:
+                    try:
+                        self.state.mark_preflight_validated(daily_id, symbol)
+                    except ShioajiStagingStateError:
+                        out.append(Result("STATE_UNAVAILABLE", "state"))
+                        break
                 out.append(Result("VALIDATED", "payload", len(request["payload"]["data"])))
                 continue
             if self.raw_store is None or self.source is None:
@@ -393,7 +444,20 @@ class Coordinator:
                 out.append(Result(code, "source", retryable=code != "DATASET_INACTIVE"))
                 if code == "DATASET_INACTIVE":
                     break
-        return out
+        # Results intentionally expose only the reviewed universe symbol, never
+        # provider details.  A run emits at most one result per reviewed row.
+        return [
+            Result(
+                code=item.code,
+                stage=item.stage,
+                count=item.count,
+                retryable=item.retryable,
+                request_id=item.request_id,
+                run_id=item.run_id,
+                symbol=item.symbol or str(processing_rows[index]["symbol"]),
+            )
+            for index, item in enumerate(out)
+        ]
 
     def _wait_terminal(self, run_id: Any, prepared: PreparedDelivery) -> str | None:
         # A bounded poll is intentionally local to explicit --deliver only.
@@ -438,6 +502,22 @@ def _id(*parts: str) -> str:
 
 def _past_cutoff(now: datetime, cutoff: str) -> bool:
     return now.tzinfo is None or now.astimezone(TAIPEI).strftime("%H:%M") >= cutoff
+
+
+def _valid_target_date(target: date, execution_date: date) -> bool:
+    """Only permit a recent, non-future Taipei trading-date review."""
+    return execution_date - timedelta(days=31) <= target <= execution_date
+
+
+_GLOBAL_TERMINAL_CODES = {
+    "CREDENTIALS_UNAVAILABLE",
+    "LOGIN_FAILED",
+    "SDK_UNAVAILABLE",
+    "CONTRACT_UNAVAILABLE",
+    "KBARS_PAYLOAD",
+    "CONTRACT_INVALID",
+    "DATASET_INACTIVE",
+}
 
 
 def _contracts_dir() -> Path:

@@ -14,9 +14,11 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, NoReturn
 
-from findb_fetcher.contracts import ContractRegistry
+from findb_fetcher.contracts import ContractRegistry, ContractValidationError
 from findb_fetcher.providers.shioaji import (
     ShioajiConfigError,
+    ShioajiPayloadError,
+    ShioajiSdkError,
     ShioajiSdkGateway,
     build_market_minute_request,
 )
@@ -27,6 +29,17 @@ MAX_PROVIDER_WINDOW_DAYS = 31
 TIMEOUT_SECONDS = 60.0
 MAX_IPC_BYTES = 512
 MAX_OUTPUT_BYTES = 1024
+_CHILD_ERROR_STAGES = {
+    "credentials_unavailable": "credentials",
+    "sdk_unavailable": "sdk",
+    "sdk_version_mismatch": "sdk",
+    "login_failed": "login",
+    "contract_unavailable": "contract",
+    "acquisition_failed": "acquisition",
+    "payload_invalid": "payload",
+    "local_contract_invalid": "contract",
+    "internal": "internal",
+}
 
 
 class SmokeArgumentError(ValueError):
@@ -64,7 +77,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _error("credentials_unavailable", 3)
     result = _run_child(args.target_date, args.symbol)
     if result is None:
-        return _error("acquisition_failed", 4)
+        return _error("timeout", 4)
+    if result[0] == "error":
+        return _error(str(result[1]), 4)
     output: dict[str, object] = {
         "status": "ok",
         "sdk_version": version,
@@ -91,7 +106,7 @@ def _within_provider_window(target: date) -> bool:
     return today - timedelta(days=MAX_PROVIDER_WINDOW_DAYS) <= target <= today
 
 
-def _run_child(target: date, symbol: str) -> tuple[str, int, int | None] | None:
+def _run_child(target: date, symbol: str) -> tuple[str, int | str, int | None] | None:
     context = multiprocessing.get_context("fork")
     receive, send = context.Pipe(duplex=False)
     process = context.Process(target=_worker, args=(send, target, symbol))
@@ -120,7 +135,13 @@ def _worker(send: Connection, target: date, symbol: str) -> None:
         gateway = ShioajiSdkGateway.from_env(simulation=True)
         # This is a local monotonic attempt count; api.usage() bytes/connections
         # are intentionally never misrepresented as contract request counts.
-        snapshot = gateway.fetch_kbars(symbol, target)
+        try:
+            snapshot = gateway.fetch_kbars(symbol, target)
+        except (ShioajiPayloadError, ShioajiSdkError):
+            raise
+        except Exception:
+            _send_error(send, "acquisition_failed")
+            return
         request = build_market_minute_request(
             snapshot.kbars,
             dataset_key="tw_equity_minute",
@@ -144,8 +165,23 @@ def _worker(send: Connection, target: date, symbol: str) -> None:
                 "usage_bytes_delta": snapshot.usage_bytes_delta,
             },
         )
-    except BaseException:
-        _send(send, {"status": "error"})
+    except ShioajiConfigError:
+        _send_error(send, "credentials_unavailable")
+    except ShioajiSdkError as exc:
+        code = {
+            "LOGIN": "login_failed",
+            "SDK": "sdk_unavailable",
+            "CONTRACT": "contract_unavailable",
+            "CREDENTIALS": "credentials_unavailable",
+            "PAYLOAD": "payload_invalid",
+        }.get(exc.code, "acquisition_failed")
+        _send_error(send, code)
+    except ShioajiPayloadError:
+        _send_error(send, "payload_invalid")
+    except ContractValidationError:
+        _send_error(send, "local_contract_invalid")
+    except Exception:
+        _send_error(send, "internal")
 
 
 def _contracts_dir() -> Path:
@@ -189,19 +225,29 @@ def _send(send: Connection, value: dict[str, Any]) -> None:
         send.close()
 
 
-def _decode(raw: bytes) -> tuple[str, int, int | None] | None:
+def _send_error(send: Connection, code: str) -> None:
+    stage = _CHILD_ERROR_STAGES[code]
+    _send(send, {"status": "error", "code": code, "stage": stage})
+
+
+def _decode(raw: bytes) -> tuple[str, int | str, int | None] | None:
     if not isinstance(raw, bytes) or len(raw) > MAX_IPC_BYTES:
         return None
     try:
         value = json.loads(raw)
     except (TypeError, ValueError, UnicodeDecodeError):
         return None
-    if not isinstance(value, dict) or set(value) != {
-        "status",
-        "checksum",
-        "count",
-        "usage_bytes_delta",
-    }:
+    if not isinstance(value, dict):
+        return None
+    if set(value) == {"status", "code", "stage"}:
+        if (
+            value["status"] == "error"
+            and value["code"] in _CHILD_ERROR_STAGES
+            and value["stage"] == _CHILD_ERROR_STAGES[value["code"]]
+        ):
+            return "error", value["code"], None
+        return None
+    if set(value) != {"status", "checksum", "count", "usage_bytes_delta"}:
         return None
     checksum, count, usage_bytes_delta = (
         value["checksum"],

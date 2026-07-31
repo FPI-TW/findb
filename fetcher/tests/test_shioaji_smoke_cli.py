@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from findb_fetcher import shioaji_smoke_cli
-from findb_fetcher.providers.shioaji import ShioajiConfigError, ShioajiKbarsSnapshot
+from findb_fetcher.providers.shioaji import (
+    ShioajiConfigError,
+    ShioajiKbarsSnapshot,
+    ShioajiSdkError,
+)
 
 SECRET_MARKER = "credential-and-account-context-must-not-appear"
 
@@ -74,10 +78,33 @@ def test_success_output_is_bounded_and_excludes_payload(
 def test_worker_failures_and_malformed_child_messages_are_sanitized() -> None:
     assert shioaji_smoke_cli._decode(b'{"status":"error"}') is None
     assert (
+        shioaji_smoke_cli._decode(b'{"status":"error","code":"login_failed","stage":"payload"}')
+        is None
+    )
+    assert (
         shioaji_smoke_cli._decode(b'{"status":"ok","checksum":"a","count":1,"usage_bytes_delta":0}')
         is None
     )
     assert shioaji_smoke_cli._decode(b"x" * (shioaji_smoke_cli.MAX_IPC_BYTES + 1)) is None
+
+
+def test_worker_preserves_payload_failure_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PayloadGateway:
+        def fetch_kbars(self, _symbol: str, _target: date) -> ShioajiKbarsSnapshot:
+            raise ShioajiSdkError("provider detail must not escape", code="PAYLOAD")
+
+    monkeypatch.setattr(
+        shioaji_smoke_cli.ShioajiSdkGateway,
+        "from_env",
+        classmethod(lambda cls, **_: PayloadGateway()),
+    )
+    assert shioaji_smoke_cli._run_child(date.today(), "2330") == (
+        "error",
+        "payload_invalid",
+        None,
+    )
 
 
 def test_contract_path_uses_explicit_fetcher_environment(
@@ -192,4 +219,7 @@ def test_child_discards_python_and_direct_fd_provider_output(
     assert captured.out == ""
     assert captured.err == ""
     assert SECRET_MARKER not in captured.out + captured.err
-    assert (result is None) is fail
+    if fail:
+        assert result == ("error", "acquisition_failed", None)
+    else:
+        assert result is not None

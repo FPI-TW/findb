@@ -26,6 +26,15 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_SYMBOLS = 50
 MAX_ROWS = 15_000
 _SYMBOL_MAX = 50
+MAX_ISOLATED_IPC_BYTES = 1024 * 1024 + 1024
+_ISOLATED_ERROR_STAGES = {
+    "CREDENTIALS": "credentials",
+    "LOGIN": "login",
+    "SDK": "sdk",
+    "CONTRACT": "contract",
+    "PAYLOAD": "payload",
+    "ACQUISITION": "acquisition",
+}
 
 
 class ShioajiError(RuntimeError):
@@ -103,9 +112,11 @@ class IsolatedShioajiGateway:
                     proc.kill()
                     proc.join(2)
                 raise ShioajiSdkError("shioaji acquisition timed out")
-            message = parent.recv()
-        except (EOFError, OSError):
-            raise ShioajiSdkError("shioaji acquisition failed") from None
+            raw = parent.recv_bytes(MAX_ISOLATED_IPC_BYTES)
+        except (EOFError, OSError, ValueError):
+            # A child that cannot produce one bounded reviewed message is an
+            # invalid IPC payload, not a retryable provider acquisition.
+            raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD") from None
         finally:
             parent.close()
             if proc.is_alive():
@@ -116,21 +127,63 @@ class IsolatedShioajiGateway:
                 proc.join(2)
             else:
                 proc.join()
-        if not isinstance(message, dict) or set(message) - {"code", "kbars", "before", "after"}:
-            raise ShioajiSdkError("shioaji acquisition failed")
-        if message.get("code") != "OK":
-            # LOGIN is terminal to the coordinator; CONTRACT/PAYLOAD are not
-            # allowed to expose a provider message either.
-            code = str(message.get("code", "ACQUISITION"))
-            raise ShioajiSdkError("shioaji " + code.lower(), code=code)
-        kbars = message.get("kbars")
-        if not isinstance(kbars, dict):
-            raise ShioajiSdkError("shioaji payload")
+        message = _decode_isolated_message(raw)
+        if message["code"] != "OK":
+            raise ShioajiSdkError("shioaji acquisition failed", code=str(message["code"]))
+        kbars = message["kbars"]
         return ShioajiKbarsSnapshot(
-            {str(k): tuple(v) for k, v in kbars.items() if isinstance(v, list)},
-            message.get("before") if type(message.get("before")) is int else None,
-            message.get("after") if type(message.get("after")) is int else None,
+            {key: tuple(value) for key, value in kbars.items()},
+            message["before"],
+            message["after"],
         )
+
+
+def _decode_isolated_message(raw: bytes) -> dict[str, Any]:
+    """Decode only bounded JSON with a reviewed, diagnostic-free schema."""
+    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_ISOLATED_IPC_BYTES:
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD") from None
+    if not isinstance(value, dict):
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    code = value.get("code")
+    if code in _ISOLATED_ERROR_STAGES:
+        if set(value) == {"code", "stage"} and value.get("stage") == _ISOLATED_ERROR_STAGES[code]:
+            return {"code": code}
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    if set(value) != {"code", "stage", "kbars", "before", "after"} or code != "OK":
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    if value["stage"] != "payload" or not isinstance(value["kbars"], dict):
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    kbars = value["kbars"]
+    if (
+        not kbars
+        or any(
+            not isinstance(key, str) or not isinstance(items, list) for key, items in kbars.items()
+        )
+        or any(
+            type(counter) is not int and counter is not None
+            for counter in (value["before"], value["after"])
+        )
+        or any(
+            type(counter) is int and counter < 0 for counter in (value["before"], value["after"])
+        )
+    ):
+        raise ShioajiSdkError("shioaji acquisition failed", code="PAYLOAD")
+    return {
+        "code": "OK",
+        "kbars": kbars,
+        "before": value["before"],
+        "after": value["after"],
+    }
+
+
+def _isolated_error_message(code: object) -> dict[str, str]:
+    """Map only reviewed child codes; unknown taxonomy is terminal payload."""
+    reviewed = code if isinstance(code, str) and code in _ISOLATED_ERROR_STAGES else "PAYLOAD"
+    return {"code": reviewed, "stage": _ISOLATED_ERROR_STAGES[reviewed]}
 
 
 def _isolated_fetch_child(
@@ -157,21 +210,24 @@ def _isolated_fetch_child(
         message = (
             {
                 "code": "OK",
+                "stage": "payload",
                 "kbars": payload,
                 "before": result.usage_bytes_before,
                 "after": result.usage_bytes_after,
             }
             if len(encoded) <= 1024 * 1024
-            else {"code": "PAYLOAD"}
+            else {"code": "PAYLOAD", "stage": "payload"}
         )
     except ShioajiConfigError:
-        message = {"code": "CREDENTIALS"}
+        message = _isolated_error_message("CREDENTIALS")
     except ShioajiSdkError as exc:
-        message = {"code": exc.code}
+        message = _isolated_error_message(exc.code)
     except Exception:
-        message = {"code": "PAYLOAD"}
+        message = _isolated_error_message("PAYLOAD")
     try:
-        conn.send(message)  # type: ignore[attr-defined]
+        wire = json.dumps(message, separators=(",", ":"), allow_nan=False).encode()
+        if len(wire) <= MAX_ISOLATED_IPC_BYTES:
+            conn.send_bytes(wire)  # type: ignore[attr-defined]
     except Exception:
         pass
     try:

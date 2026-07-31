@@ -97,15 +97,23 @@ bytes/connections 不會被當成 request count；contract 中的 usage 是本�
 ## Shioaji Taiwan-minute staging coordinator
 
 `findb-fetch-shioaji-staging --check` validates only the committed four-symbol
-manifest and is fully offline. Without `--deliver`, the one-shot staging tool
-only acquires and validates; `--deliver` is the explicit raw-first path. Its
-SQLite state is controlled by `FETCHER_SHIOAJI_STAGING_STATE_PATH`. Stored raw
-bytes are an SDK-detached `shioaji_sdk_acquisition_snapshot.v1`, not exact HTTP
-provider response bytes. A durable upload intent is written before R2; if the
-process dies in the upload/checkpoint window, restart returns
-`RAW_PERSIST_UNCERTAIN` and requires reconciliation instead of uploading again.
-This remains staging-only: it does not activate a dataset, schedule work, or
-authorize production/backfill use.
+manifest and is fully offline. Phase 4 credentialed preflight uses a fresh,
+private `FETCHER_SHIOAJI_STAGING_STATE_PATH`, an explicit known prior trading
+date within 31 days, and must run before 17:00 Asia/Taipei. First run
+`--preflight` (only reviewed symbol `2330`); only after that command succeeds,
+run the normal validate-only command with the same state path to acquire the
+remaining three symbols. The saved 2330 snapshot is reused, so it is never
+re-fetched. Never use `--deliver` for this Phase 4 flow.
+
+The same state records a durable preflight-success marker only after 2330 has
+both been acquired and passed local contract validation. A normal four-symbol
+validate-only run without that marker fails before any provider call.
+
+The state is bound to the Taipei execution date and cannot resume on a later
+day. Stored bytes are an SDK-detached `shioaji_sdk_acquisition_snapshot.v1`,
+not exact HTTP provider response bytes. This remains staging-only: it does not
+activate a dataset, schedule work, authorize production/backfill use, or create
+R2/Source clients during preflight or normal validation.
 
 ## Twelve Data手動抓取
 
