@@ -13,10 +13,15 @@ dependencies = [
 findb-fetch-twelve-data = "findb_fetcher.twelve_data_cli:main"
 findb-fetch-scheduler = "findb_fetcher.scheduler_cli:main"
 findb-fetch-finlab-smoke = "findb_fetcher.finlab_smoke_cli:main"
+findb-fetch-shioaji-smoke = "findb_fetcher.shioaji_smoke_cli:main"
+findb-fetch-shioaji-staging = "findb_fetcher.shioaji_staging_cli:main"
 
 [project.optional-dependencies]
 finlab = [
     "finlab==1.5.7",
+]
+shioaji = [
+    "shioaji==1.7.1",
 ]
 
 [dependency-groups]

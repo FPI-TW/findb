@@ -9,6 +9,12 @@ import sys
 from pathlib import Path
 
 from app.services.ingress_contracts import get_contract_json_schema, supported_contracts
+from scripts.export_archive_contracts import (
+    check_artifacts as check_archive_artifacts,
+)
+from scripts.export_archive_contracts import (
+    export_artifacts as export_archive_artifacts,
+)
 from scripts.export_ingress_contracts import check_artifacts, export_artifacts
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -98,4 +104,38 @@ def test_check_rejects_unexpected_non_schema_files(tmp_path: Path) -> None:
     assert check_artifacts(output_dir) == (
         "unexpected artifact: nested/extra.json",
         "unexpected artifact: unexpected.txt",
+    )
+
+
+def test_check_ignores_os_metadata_and_independent_archive_artifacts(tmp_path: Path) -> None:
+    output_dir = tmp_path / "contracts"
+    export_artifacts(output_dir)
+    (output_dir / ".DS_Store").write_bytes(b"metadata")
+    archive_path = output_dir / "archive" / "market_minute_archive" / "v1.schema.json"
+    archive_path.parent.mkdir(parents=True)
+    archive_path.write_text("{}\n", encoding="utf-8")
+
+    assert check_artifacts(output_dir) == ()
+
+
+def test_archive_export_is_deterministic_and_reports_drift(tmp_path: Path) -> None:
+    output_dir = tmp_path / "archive"
+    export_archive_artifacts(output_dir)
+    first = {
+        path.relative_to(output_dir): path.read_bytes()
+        for path in output_dir.rglob("*")
+        if path.is_file()
+    }
+    export_archive_artifacts(output_dir)
+    second = {
+        path.relative_to(output_dir): path.read_bytes()
+        for path in output_dir.rglob("*")
+        if path.is_file()
+    }
+    assert first == second
+    assert check_archive_artifacts(output_dir) == ()
+
+    (output_dir / "market_minute_archive" / "v1.schema.json").write_text("{}\n", encoding="utf-8")
+    assert check_archive_artifacts(output_dir) == (
+        "artifact differs: market_minute_archive/v1.schema.json",
     )

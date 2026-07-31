@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "universe_id": "shioaji_tw_staging_v1",
+  "governance": {"max_requests": 50, "rolling_seconds": 60, "max_attempts_per_sequence": 3, "cutoff": "17:00", "timezone": "Asia/Taipei"},
+  "sequences": [
+    {"symbol": "2330", "dataset_key": "tw_equity_minute", "asset_class": "equity", "sequence": 1, "sequence_count": 1},
+    {"symbol": "0050", "dataset_key": "tw_etf_minute", "asset_class": "etf", "sequence": 1, "sequence_count": 3},
+    {"symbol": "0056", "dataset_key": "tw_etf_minute", "asset_class": "etf", "sequence": 2, "sequence_count": 3},
+    {"symbol": "006201", "dataset_key": "tw_etf_minute", "asset_class": "etf", "sequence": 3, "sequence_count": 3}
+  ]
+}

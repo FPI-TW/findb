@@ -16,6 +16,7 @@ from app.models.canonical import (
     MacroObservation,
     MacroSeries,
     MarketDataEOD,
+    MarketDataMinute,
     RollRule,
     TradingCalendar,
 )
@@ -36,6 +37,14 @@ from app.models.registry import (
     NormalizationOutbox,
     NormalizationWorkerHeartbeat,
     SourceClient,
+    TWMinuteArchiveChunk,
+    TWMinuteArchiveRelease,
+    TWMinuteDailyUpdate,
+    TWMinuteDatasetSnapshot,
+    TWMinutePublicationRevision,
+    TWMinuteSnapshotPart,
+    TWMinuteUniverseMember,
+    TWMinuteUniverseRelease,
 )
 
 __all__ = [
@@ -49,6 +58,7 @@ __all__ = [
     "CalendarYearRevision",
     "CalendarImportBatch",
     "MarketDataEOD",
+    "MarketDataMinute",
     "CorporateAction",
     "ETFDetails",
     "BondDetails",
@@ -72,5 +82,13 @@ __all__ = [
     "AdminSession",
     "AdminAuditEvent",
     "CredentialUsageRollup",
+    "TWMinuteUniverseRelease",
+    "TWMinuteUniverseMember",
+    "TWMinuteDailyUpdate",
+    "TWMinuteDatasetSnapshot",
+    "TWMinuteSnapshotPart",
+    "TWMinutePublicationRevision",
+    "TWMinuteArchiveRelease",
+    "TWMinuteArchiveChunk",
     "CanonicalCorrection",
 ]

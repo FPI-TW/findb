@@ -87,12 +87,14 @@ production-fetcher
 | --- | --- |
 | Secrets | `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY` |
 | Secrets | `DATABASE_URL`、`CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE` |
+| Secrets | `CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID`、`CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY`（Worker限定、Object Read & Write） |
+| Secrets | `CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID`、`CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY`（Serve限定、Object Read） |
 | Secrets | `ADMIN_BREAK_GLASS_API_KEY` |
 | Secrets | `FINDB_LOOKUP_SERVE_API_KEY`、`FINDB_STATIC_CACHE_SERVE_API_KEY`（`SERVE_REQUIRE_AUTH=true`時必填且必須為不同的DB-backed keys） |
 | Queue health secret | `FINDB_QUEUE_HEALTH_ADMIN_API_KEY`（DB-backed Admin viewer key） |
 | Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
 | Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
-| Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS`、`FINDB_PUBLIC_HOST`（此 target 對外的 DNS hostname） |
+| Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS`、`FINDB_PUBLIC_HOST`（此 target 對外的 DNS hostname）、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_CANONICAL_BUCKET` |
 
 ### `{staging|production}-fetcher`
 
@@ -100,15 +102,15 @@ production-fetcher
 | --- | --- |
 | Secrets | `FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY` |
 | Variables | `FETCHER_SCHEDULER_DESIRED_STATE`（只能為`running`或`stopped`；staging=`stopped`、production=`running`） |
-| Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_BUCKET` |
+| Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_RAW_BUCKET` |
 | Variables | `FINDB_SERVE_BASE_URL`、`FETCHER_CALENDAR_TIMEOUT_SECONDS`、`FETCHER_CALENDAR_CACHE_TTL_SECONDS` |
-| Variables | `CLOUDFLARE_R2_PREFIX`、`CLOUDFLARE_R2_MAX_OBJECT_BYTES`、`TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
+| Variables | `CLOUDFLARE_R2_MAX_OBJECT_BYTES`、`TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
 | Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
 | Secrets | `FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
 | Secrets | `FETCHER_CALENDAR_SERVE_API_KEY`（必填，且不得與Source key相同） |
 | Optional secrets | `FETCHER_FINLAB_SOURCE_CLIENT_KEY`（FinLab consumer上線前只保存於Environment，不注入Twelve Data container） |
 | Optional secrets | `FINLAB_API_TOKEN`（僅手動 staging acquisition smoke 注入隔離FinLab container；不注入Twelve scheduler） |
-| Secrets | `CLOUDFLARE_R2_ACCESS_KEY_ID`、`CLOUDFLARE_R2_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_SESSION_TOKEN` |
+| Secrets | `CLOUDFLARE_R2_RAW_ACCESS_KEY_ID`、`CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_RAW_SESSION_TOKEN` |
 
 `GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
 container。部署層使用provider-specific的
@@ -116,8 +118,9 @@ container。部署層使用provider-specific的
 `SOURCE_CLIENT_KEY`。現階段Source、Twelve Data與R2 secrets由對應的`{target}-fetcher` Environment
 逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
 Secrets Manager/Parameter Store前的明確過渡機制，不可使用
-`--env NAME=value`出現在command line。Fetcher的R2 credentials與未來OIDC/SSM
-設定必須維持Fetcher專屬，不能複製到FinDB。FinDB TLS private key若未來由workflow管理，只能加入
+`--env NAME=value`出現在command line。Fetcher Raw R2 credentials與未來OIDC/SSM
+設定必須維持Fetcher專屬，不能複製到FinDB。FinDB Canonical R2 credentials僅由Worker
+publisher及Serve reader各自持有，不能複製到ingest、dispatcher或raw-cleanup。FinDB TLS private key若未來由workflow管理，只能加入
 對應的`{target}-findb`，不能跨環境或服務共用。
 
 Fetcher 一律使用 FinDB complete published calendar；部署前必須先在 FinDB 發布完整
@@ -125,13 +128,56 @@ Fetcher 一律使用 FinDB complete published calendar；部署前必須先在 F
 失敗都不會 enqueue。Calendar preflight key只授權
 唯讀 Serve API，不可重用 Source client key。
 
-R2 credentials只屬於Fetcher；FinDB只接收不含credential的完整object reference與
-checksum，不持有R2 runtime credentials。R2 lifecycle、bucket lock或configuration
-稽核必須使用application runtime以外的獨立短效管理credential。
-`CLOUDFLARE_R2_PREFIX`是Fetcher-owned、provider-neutral的object root，預設為`raw`。
-Raw storage會在root後確定性加入provider與dataset，形成
-`raw/{provider}/{dataset}/...`；不得把單一provider名稱寫進共用root，也不能把此設定
-提升為Backend全域設定。
+Fetcher只持有Raw bucket的Object Read & Write credential；raw object key固定從
+`{provider}/{dataset}/...`開始，沒有可設定prefix，也不支援舊bucket相容。FinDB Canonical
+bucket使用完全獨立的兩套credential：Worker publisher為Object Read & Write，Serve reader為
+Object Read；R2 lifecycle、bucket lock或configuration稽核必須使用application runtime以外的
+獨立短效管理credential。
+
+### Staging R2 bucket split（部署前必做）
+
+建立兩個不同的staging bucket後，將raw bucket填入`staging-fetcher`的
+`CLOUDFLARE_R2_RAW_BUCKET`，將canonical bucket填入`staging-findb`的
+`CLOUDFLARE_R2_CANONICAL_BUCKET`。Fetcher Environment不得保存canonical bucket或其
+credentials。FinDB CD會要求publisher與reader兩套canonical credentials皆存在且access key
+ID與secret都不同，並只注入Worker或Serve。
+
+更新staging raw bucket後，必須同步換成僅對新raw bucket具Object Read & Write權限的
+`CLOUDFLARE_R2_RAW_ACCESS_KEY_ID`與`CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY`。執行
+`uv --directory backend run python ../infra/env/sync_github_environment.py staging fetcher`
+確認契約；再以
+`uv --directory backend run python ../infra/env/sync_github_environment.py staging fetcher --apply`
+發布；同樣執行`staging findb`發布canonical bucket與兩套FinDB credentials。此腳本只新增或
+更新，**不會刪除**GitHub Environment既有變數，operator應自行移除退休的prefix、legacy和
+跨服務R2設定。Fetcher與FinDB分屬不同GitHub Environment，系統無法程式驗證兩邊token
+是否重複；operator必須確保Fetcher Raw token不與任何FinDB Canonical token重用。
+
+Raw bucket切換**不遷移也不fallback**既有object或scheduler state。部署在重用
+`/var/lib/findb-fetcher/state.sqlite3`前會驗證同目錄的`raw-bucket.sha256` account+bucket binding marker；
+marker遺失或與新bucket不符會在container reconciliation與preflight前中止，避免送出指向舊
+bucket的prepared/raw reference。可回復的staging cutover程序為：
+
+1. 將scheduler desired state設為`stopped`並確認stable、candidate、previous containers已停止後移除。
+2. 在主機上建立受限權限的archive目錄，將`state.sqlite3`、存在時的`state.sqlite3-wal`與
+   `state.sqlite3-shm`移入該目錄；不要複製舊Raw objects。
+   同時 archive 或 reset `FETCHER_SHIOAJI_STAGING_STATE_PATH`及其`-wal`/`-shm`檔案；它的
+   persisted raw/prepared delivery refs同樣不可跨Raw account+bucket重用。
+3. 移除舊的`raw-bucket.sha256`，以UID/GID `10001:10001`、mode `0600`寫入新account+bucket SHA-256
+   binding；或保留state目錄空白讓下一次部署原子建立marker。若首次部署在建立marker後、建立
+   SQLite state前失敗，下一次部署會先驗證marker的owner/mode，並安全重用或原子更新它。重新驗證
+   state目錄為`0700`且同一owner。
+4. 以新bucket及新Raw credential redeploy，先保持`stopped`完成preflight，再視需要切為`running`。
+
+此程序刻意丟棄舊的prepared/raw refs；archive只提供人工復原或稽核，不得被新bucket runtime使用。
+
+Canonical R2目前僅完成bucket與credential wiring：Worker publisher R/W與Serve reader R/O
+credentials已分權注入，但Canonical publish、read與sign runtime尚未實作，因此本階段不能以
+staging進行Canonical R2資料流程實測。
+
+不要複製或「升級」既有raw objects；本次工作不做資料遷移。production尚未部署，
+因此沒有legacy migration或fallback；日後首次建立production環境時直接分別填入Fetcher Raw
+與FinDB Canonical bucket及其分離credentials。
+此程式碼變更本身沒有建立bucket、複製object、修改GitHub Environment或執行部署。
 
 Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
 `0700`），以bind mount提供給preflight與scheduler。SQLite state保存schedule job、

@@ -58,7 +58,7 @@ def _request() -> dict[str, Any]:
 def test_r2_store_uploads_exact_bytes_with_deterministic_metadata() -> None:
     client = FakeR2()
     store = R2RawPayloadStore(
-        _config(prefix="/immutable/provider/"),
+        _config(),
         client=client,
     )
 
@@ -70,7 +70,9 @@ def test_r2_store_uploads_exact_bytes_with_deterministic_metadata() -> None:
     assert first == second
     assert first.sha256 == digest
     assert first.size_bytes == len(RAW_BYTES)
-    assert first.ref.startswith(f"r2://{ACCOUNT_ID}/findb-fetcher-raw-prod/immutable/provider/")
+    assert first.ref.startswith(
+        f"r2://{ACCOUNT_ID}/findb-fetcher-raw-prod/twelve_data/us_equity_eod/"
+    )
     assert all(token not in first.ref for token in ("?", "#", "@"))
     assert client.calls[0]["Body"] == RAW_BYTES
     assert client.calls[0]["ContentLength"] == len(RAW_BYTES)
@@ -135,7 +137,7 @@ def test_r2_store_uses_explicit_provider_for_key_and_metadata() -> None:
         provider="finlab",
     )
 
-    assert "/raw/finlab/tw_equity_eod/" in raw_object.ref
+    assert "/finlab/tw_equity_eod/" in raw_object.ref
     assert client.calls[0]["Metadata"]["provider"] == "finlab"
     assert client.calls[0]["Metadata"]["dataset"] == "tw_equity_eod"
 
@@ -207,7 +209,6 @@ def test_r2_store_treats_missing_runtime_credentials_as_terminal() -> None:
         {"account_id": "not-an-account"},
         {"bucket": "192.168.1.1"},
         {"bucket": "Invalid_Bucket"},
-        {"bucket": "findb-fetcher-raw", "prefix": "raw/../private"},
         {"access_key_id": ""},
         {"secret_access_key": ""},
     ],
@@ -221,11 +222,11 @@ def test_raw_storage_config_reads_r2_credentials_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CLOUDFLARE_R2_ACCOUNT_ID", ACCOUNT_ID)
-    monkeypatch.setenv("CLOUDFLARE_R2_BUCKET", "findb-fetcher-raw-prod")
-    monkeypatch.setenv("CLOUDFLARE_R2_ACCESS_KEY_ID", ACCESS_KEY_ID)
-    monkeypatch.setenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY", SECRET_ACCESS_KEY)
-    monkeypatch.setenv("CLOUDFLARE_R2_SESSION_TOKEN", "short-lived-token")
-    monkeypatch.delenv("CLOUDFLARE_R2_PREFIX", raising=False)
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_BUCKET", "findb-fetcher-raw-prod")
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", ACCESS_KEY_ID)
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY", SECRET_ACCESS_KEY)
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_SESSION_TOKEN", "short-lived-token")
+    monkeypatch.delenv("CLOUDFLARE_R2_BUCKET", raising=False)
 
     config = RawStorageConfig.from_env()
 
@@ -234,13 +235,25 @@ def test_raw_storage_config_reads_r2_credentials_from_env(
     assert config.access_key_id == ACCESS_KEY_ID
     assert config.secret_access_key == SECRET_ACCESS_KEY
     assert config.session_token == "short-lived-token"
-    assert config.prefix == "raw"
+
+
+def test_raw_storage_config_does_not_accept_legacy_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLOUDFLARE_R2_ACCOUNT_ID", ACCOUNT_ID)
+    monkeypatch.setenv("CLOUDFLARE_R2_BUCKET", "findb-fetcher-raw")
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", ACCESS_KEY_ID)
+    monkeypatch.setenv("CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY", SECRET_ACCESS_KEY)
+    monkeypatch.delenv("CLOUDFLARE_R2_RAW_BUCKET", raising=False)
+
+    with pytest.raises(RawStorageConfigError, match="R2 raw bucket"):
+        RawStorageConfig.from_env()
 
 
 def test_attach_provenance_is_all_or_none_and_changes_request_identity() -> None:
     digest = hashlib.sha256(RAW_BYTES).hexdigest()
     raw_object = RawObject(
-        ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/{digest}.json",
+        ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/{digest}.json",
         sha256=digest,
         size_bytes=len(RAW_BYTES),
     )
@@ -253,7 +266,7 @@ def test_attach_provenance_is_all_or_none_and_changes_request_identity() -> None
     attach_raw_object(
         changed,
         RawObject(
-            ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/{'b' * 64}.json",
+            ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/{'b' * 64}.json",
             sha256="b" * 64,
             size_bytes=1,
         ),
@@ -266,6 +279,18 @@ def test_attach_provenance_is_all_or_none_and_changes_request_identity() -> None
     assert first["idempotency_key"] == same["idempotency_key"]
     assert first["request_key"] == same["request_key"]
     assert first["idempotency_key"] != changed["idempotency_key"]
+    preserved = _request()
+    preserved.update(
+        dataset_key="tw_equity_minute",
+        schema_id="market_minute",
+        schema_version=1,
+        request_key="mmr:" + "c" * 64,
+        idempotency_key="mms:" + "c" * 64,
+    )
+    original_identity = (preserved["request_key"], preserved["idempotency_key"])
+    attach_raw_object(preserved, raw_object, preserve_identity=True)
+    assert (preserved["request_key"], preserved["idempotency_key"]) == original_identity
+    assert preserved["payload"]["batch"]["source_raw_ref"] == raw_object.ref
     with pytest.raises(RawStorageUploadError, match="supplied together"):
         attach_raw_provenance(_request(), source_raw_ref=raw_object.ref, source_raw_sha256=None)
     with pytest.raises(RawStorageUploadError, match="supplied together"):
@@ -279,7 +304,7 @@ def test_attach_provenance_uses_request_source_without_partial_mutation() -> Non
 
     attach_raw_provenance(
         request,
-        source_raw_ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/{digest}.json",
+        source_raw_ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/{digest}.json",
         source_raw_sha256=digest,
     )
 
@@ -291,7 +316,7 @@ def test_attach_provenance_uses_request_source_without_partial_mutation() -> Non
     with pytest.raises(RawStorageUploadError, match="provider identity"):
         attach_raw_provenance(
             invalid,
-            source_raw_ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/{digest}.json",
+            source_raw_ref=f"r2://{ACCOUNT_ID}/findb-fetcher-raw/{digest}.json",
             source_raw_sha256=digest,
         )
     assert invalid["payload"]["batch"] == {}
@@ -300,12 +325,12 @@ def test_attach_provenance_uses_request_source_without_partial_mutation() -> Non
 @pytest.mark.parametrize(
     "ref",
     [
-        f"r2://user@{ACCOUNT_ID}/findb-fetcher-raw/raw/a.json",
+        f"r2://user@{ACCOUNT_ID}/findb-fetcher-raw/a.json",
         f"r2://{ACCOUNT_ID}",
-        f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/../private.json",
-        f"r2://{ACCOUNT_ID}/findb-fetcher-raw/raw/a.json?credential=secret",
-        "r2://not-an-account/findb-fetcher-raw/raw/a.json",
-        "https://findb-fetcher-raw/raw/a.json",
+        f"r2://{ACCOUNT_ID}/findb-fetcher-raw/../private.json",
+        f"r2://{ACCOUNT_ID}/findb-fetcher-raw/a.json?credential=secret",
+        "r2://not-an-account/findb-fetcher-raw/a.json",
+        "https://findb-fetcher-raw/a.json",
     ],
 )
 def test_attach_provenance_rejects_unsafe_r2_references(ref: str) -> None:

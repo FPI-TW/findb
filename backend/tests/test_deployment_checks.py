@@ -150,7 +150,13 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert isinstance(jobs, dict)
         assert jobs["verify"]["uses"] == ci_path
         assert jobs["build-push"]["needs"] == "verify"
-        assert jobs["deploy"]["needs"] == "build-push"
+        if service == "fetcher":
+            assert jobs["deploy"]["needs"] == [
+                "build-push",
+                "validate-r2-bucket-configuration",
+            ]
+        else:
+            assert jobs["deploy"]["needs"] == "build-push"
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
@@ -206,6 +212,77 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
             }
             documented_names = set((*config.variables, *config.secrets, *config.optional_secrets))
             assert configured_names == documented_names
+
+
+def test_fetcher_r2_sync_contract_is_raw_only() -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    fetcher = namespace["SERVICE_CONFIGS"]["fetcher"]
+
+    variables = set(fetcher.variables)
+
+    assert "CLOUDFLARE_R2_RAW_BUCKET" in variables
+    assert "CLOUDFLARE_R2_CANONICAL_BUCKET" not in variables
+
+
+@pytest.mark.parametrize("target", ("staging", "production"))
+def test_findb_sync_rejects_reused_canonical_credentials(target: str) -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    validate = namespace["_validate_findb_canonical_contract"]
+
+    error = validate(
+        target,
+        {
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID": "same-key",
+            "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID": "same-key",
+        },
+    )
+
+    assert error == f"{target}-findb canonical publisher and reader access key IDs must differ"
+
+
+@pytest.mark.parametrize("target", ("staging", "production"))
+def test_fetcher_sync_rejects_canonical_bucket(target: str) -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    validate = namespace["_validate_fetcher_bucket_contract"]
+
+    error = validate(target, {"CLOUDFLARE_R2_CANONICAL_BUCKET": "canonical-bucket"})
+
+    assert error == f"{target}-fetcher must not configure CLOUDFLARE_R2_CANONICAL_BUCKET"
+
+
+def test_sync_rejects_unallowlisted_r2_names_even_when_empty() -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    unexpected = namespace["_unexpected_r2_names"]
+
+    assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": "present"}) == (
+        "CLOUDFLARE_R2_UNRELATED",
+    )
+    assert unexpected("findb", {"CLOUDFLARE_R2_RAW_BUCKET": "present"}) == (
+        "CLOUDFLARE_R2_RAW_BUCKET",
+    )
+    assert unexpected("fetcher", {"CLOUDFLARE_R2_RAW_BUCKET": ""}) == ()
+    assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": ""}) == ("CLOUDFLARE_R2_UNRELATED",)
+
+
+def test_remote_r2_name_audit_reads_names_without_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    calls: list[list[str]] = []
+
+    def fake_run(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        if arguments[-1].endswith("/variables?per_page=100"):
+            output = '{"variables":[{"name":"CLOUDFLARE_R2_RAW_BUCKET"}]}'
+        else:
+            output = '{"secrets":[{"name":"CLOUDFLARE_R2_UNRELATED"}]}'
+        return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+
+    assert namespace["_unexpected_remote_r2_names"]("fetcher", "staging-fetcher") == (
+        "CLOUDFLARE_R2_UNRELATED",
+    )
+    assert len(calls) == 2
+    assert all("CLOUDFLARE_R2_" not in " ".join(call) for call in calls)
 
 
 def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
@@ -397,6 +474,16 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
 
     required_loop = next(line for line in validation_script.splitlines() if "for name in " in line)
     assert "FINDB_QUEUE_HEALTH_ADMIN_API_KEY" in required_loop
+    for name in (
+        "CLOUDFLARE_R2_ACCOUNT_ID",
+        "CLOUDFLARE_R2_CANONICAL_BUCKET",
+        "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY",
+        "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY",
+    ):
+        assert name in required_loop
+    assert "Canonical R2 credential reuse" in validation_script
 
     assert render["env"]["FINDB_LOOKUP_SERVE_API_KEY"] == (
         "${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}"
@@ -407,6 +494,8 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
     forwarded = set(deploy["with"]["envs"].split(","))
     assert "ADMIN_BREAK_GLASS_API_KEY" in forwarded
     assert "FINDB_LOOKUP_SERVE_API_KEY" not in forwarded
+    assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" in forwarded
+    assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" in forwarded
 
     compose = PROD_COMPOSE.read_text(encoding="utf-8")
     assert (
@@ -414,6 +503,17 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
         "?ADMIN_BREAK_GLASS_API_KEY must be set"
     ) in compose
     assert 'FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:' in compose
+    parsed_compose = yaml.safe_load(compose)
+    serve_env = parsed_compose["services"]["serve"]["environment"]
+    worker_env = parsed_compose["services"]["worker"]["environment"]
+    assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" in serve_env
+    assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" not in serve_env
+    assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" in worker_env
+    assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" not in worker_env
+    for service in ("ingest", "dispatcher", "raw-cleanup"):
+        environment = parsed_compose["services"][service]["environment"]
+        assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" not in environment
+        assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" not in environment
     assert "DASHBOARD_USERNAME" not in compose
     assert "DASHBOARD_PASSWORD" not in compose
 
@@ -479,16 +579,19 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
         "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
         "TWELVE_DATA_API_KEY",
         "CLOUDFLARE_R2_ACCOUNT_ID",
-        "CLOUDFLARE_R2_BUCKET",
-        "CLOUDFLARE_R2_ACCESS_KEY_ID",
-        "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+        "CLOUDFLARE_R2_RAW_BUCKET",
+        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
     }
     assert required_environment_values <= set(step_env)
     assert required_environment_values <= forwarded
-    assert step_env["CLOUDFLARE_R2_SESSION_TOKEN"] == ("${{ secrets.CLOUDFLARE_R2_SESSION_TOKEN }}")
+    assert step_env["CLOUDFLARE_R2_RAW_SESSION_TOKEN"] == (
+        "${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}"
+    )
     assert step_env["FETCHER_SCHEDULER_DESIRED_STATE"] == (
         "${{ vars.FETCHER_SCHEDULER_DESIRED_STATE }}"
     )
+    assert step_env["CLOUDFLARE_R2_RAW_BUCKET"] == "${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}"
 
     assert 'image="${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}"' in script
     assert 'docker pull "$image"' in script
@@ -507,10 +610,30 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
     assert "--log-opt max-file=3" in script
 
     preflight = script.index("findb-fetch-scheduler --check")
+    marker_binding = script.index('raw_bucket_marker="$state_dir/raw-bucket.sha256"')
+    reconciliation = script.index("# BEGIN FETCHER SCHEDULER RECONCILIATION")
     stop_old = script.rindex('docker stop --time 30 "$stable"')
     start_candidate = script.rindex("findb-fetch-scheduler --run-forever")
     promote = script.rindex('docker rename "$candidate" "$stable"')
-    assert preflight < stop_old < start_candidate < promote
+    assert marker_binding < reconciliation < preflight < stop_old < start_candidate < promote
+    assert "Existing durable state has no Raw bucket binding marker" in script
+    assert "Existing durable state belongs to a different Raw bucket" in script
+    assert "Invalid Fetcher R2 configuration::R2 account ID is unsafe" in script
+    assert "Invalid Fetcher R2 configuration::Raw bucket name is unsafe" in script
+    assert 'sudo test -e "$FETCHER_STATE_PATH"' in script
+    assert 'sudo test -f "$raw_bucket_marker"' in script
+    assert '$(sudo cat "$raw_bucket_marker")' in script
+    assert "sudo stat -c '%u:%g' \"$raw_bucket_marker\"" in script
+    assert 'sudo chmod 0600 "$marker_tmp"' in script
+    assert 'sudo mv "$marker_tmp" "$raw_bucket_marker"' in script
+    assert 'printf \'%s\\n%s\' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET"' in script
+    assert "A failed first deploy can leave only this marker" in script
+    marker_only_start = script.index('elif sudo test -e "$raw_bucket_marker"; then')
+    marker_only_end = script.index("# BEGIN FETCHER SCHEDULER RECONCILIATION", marker_only_start)
+    marker_only = script[marker_only_start:marker_only_end]
+    assert "validate_raw_bucket_marker_mode" in marker_only
+    assert 'if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then' in marker_only
+    assert "write_raw_bucket_marker" in marker_only
     assert "stable=findb-fetcher-scheduler" in script
     assert "candidate=findb-fetcher-scheduler-candidate" in script
     assert "previous=findb-fetcher-scheduler-previous" in script
@@ -554,14 +677,34 @@ def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> No
         "SOURCE_CLIENT_KEY",
         "TWELVE_DATA_API_KEY",
         "CLOUDFLARE_R2_ACCOUNT_ID",
-        "CLOUDFLARE_R2_BUCKET",
-        "CLOUDFLARE_R2_ACCESS_KEY_ID",
-        "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+        "CLOUDFLARE_R2_RAW_BUCKET",
+        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
     ):
         assert f"--env {name}" in runtime_block
         assert f"--env {name}=" not in runtime_block
     assert ".Config.Env" not in script
     assert "set -x" not in script
+    assert "CLOUDFLARE_R2_BUCKET" not in step_env
+    assert "CLOUDFLARE_R2_BUCKET" not in forwarded
+    assert "CLOUDFLARE_R2_BUCKET" not in runtime_block
+
+
+def test_fetcher_cd_validates_target_specific_r2_buckets_before_deploy() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    predeploy = workflow["jobs"]["validate-r2-bucket-configuration"]
+    deploy = workflow["jobs"]["deploy"]
+    script = predeploy["steps"][0]["run"]
+
+    assert predeploy["needs"] == "build-push"
+    assert "inputs.run_finlab_smoke != true" in predeploy["if"]
+    assert deploy["needs"] == ["build-push", "validate-r2-bucket-configuration"]
+    assert predeploy["env"] == {
+        "DEPLOYMENT_TARGET": "${{ inputs.deployment_target || 'staging' }}",
+        "R2_RAW_BUCKET": "${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}",
+    }
+    assert "staging|production)" in script
+    assert 'if [ -z "$R2_RAW_BUCKET" ]; then' in script
 
 
 @pytest.mark.parametrize(

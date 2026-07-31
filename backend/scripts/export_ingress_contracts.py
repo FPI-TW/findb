@@ -76,6 +76,9 @@ def export_artifacts(output_dir: Path) -> tuple[Path, ...]:
         if relative_path.name.endswith(".schema.json")
     }
     for existing_path in output_dir.glob("**/*.schema.json"):
+        relative_path = existing_path.relative_to(output_dir)
+        if relative_path.parts[:1] == ("archive",) or existing_path.name.startswith("."):
+            continue
         if existing_path not in expected_schema_paths:
             existing_path.unlink()
 
@@ -108,6 +111,8 @@ def check_artifacts(output_dir: Path) -> tuple[str, ...]:
             path.relative_to(output_dir).as_posix()
             for path in output_dir.rglob("*")
             if path.is_file()
+            and not path.name.startswith(".")
+            and path.relative_to(output_dir).parts[:1] != ("archive",)
         }
         for unexpected_path in sorted(actual_paths - expected_paths):
             diagnostics.append(f"unexpected artifact: {unexpected_path}")

@@ -84,6 +84,50 @@ credentials 加到此 smoke container。
 一次 acquisition 的硬上限為 300 秒，涵蓋 cold cache 的 SDK metadata/data 初始化；逾時會
 終止隔離 child 並只輸出 generic `acquisition_failed`，不重試或啟用 scheduler。
 
+## Shioaji simulation acquisition smoke
+
+`shioaji==1.7.1` 是 optional dependency。`findb-fetch-shioaji-smoke` 只接受 staging
+allowlist 的單一 `2330` 與明確日期（最近 31 天內），以 `simulation=True` 取得一次 Kbars。
+它不會 delivery、寫 DB/R2 或啟用 scheduler；SDK 工作會在輸出靜音的 bounded child 執行，
+並保證登出。成功 stdout 僅包含版本、日期、symbol、筆數與 checksum。Shioaji `usage()` 的
+bytes/connections 不會被當成 request count；contract 中的 usage 是本地單調 request-attempt
+計數。Kbars `ts` 依 Asia/Taipei wall-clock 的 right-labelled bar end 轉換；13:30 close-auction
+仍是已知語意限制，須待 contract 決策後才可特例化。
+
+## Shioaji Taiwan-minute staging coordinator
+
+`SHIOAJI_SIMULATION` controls the isolated staging child and is strict:
+`true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off` (case-insensitive) are
+accepted; an omitted value defaults to `true`, while any other value fails
+closed without echoing its content. This remains read-only Kbars acquisition;
+it never invokes order APIs.
+
+The reviewed staging symbols `2330`, `0050`, `0056`, and `006201` use the
+public `BaseContract(security_type="STK", exchange="TSE", code=..., region="TW")`
+route. It is a live-proven simulation workaround for Shioaji catalog
+initialization timeouts, so these four symbols bypass catalog access entirely.
+Other symbols retain the existing catalog path; this route does not infer an
+exchange for arbitrary symbols.
+
+`findb-fetch-shioaji-staging --check` validates only the committed four-symbol
+manifest and is fully offline. Phase 4 credentialed preflight uses a fresh,
+private `FETCHER_SHIOAJI_STAGING_STATE_PATH`, an explicit known prior trading
+date within 31 days, and must run before 17:00 Asia/Taipei. First run
+`--preflight` (only reviewed symbol `2330`); only after that command succeeds,
+run the normal validate-only command with the same state path to acquire the
+remaining three symbols. The saved 2330 snapshot is reused, so it is never
+re-fetched. Never use `--deliver` for this Phase 4 flow.
+
+The same state records a durable preflight-success marker only after 2330 has
+both been acquired and passed local contract validation. A normal four-symbol
+validate-only run without that marker fails before any provider call.
+
+The state is bound to the Taipei execution date and cannot resume on a later
+day. Stored bytes are an SDK-detached `shioaji_sdk_acquisition_snapshot.v1`,
+not exact HTTP provider response bytes. This remains staging-only: it does not
+activate a dataset, schedule work, authorize production/backfill use, or create
+R2/Source clients during preflight or normal validation.
+
 ## Twelve Data手動抓取
 
 本機開發將API key放在被Git忽略的`fetcher/.env`，不要加入版控。從
@@ -333,11 +377,10 @@ Scheduler one-shot exit code：
 | `TWELVE_DATA_TIMEOUT_SECONDS` | 否 | `30` | Provider request timeout |
 | `TWELVE_DATA_MAX_RESPONSE_BYTES` | 否 | `8388608` | Provider response streaming上限，程式硬上限16 MiB |
 | `CLOUDFLARE_R2_ACCOUNT_ID` | Delivery/scheduler是 | — | 32字元Cloudflare account ID，用來建立固定R2 endpoint |
-| `CLOUDFLARE_R2_BUCKET` | Delivery/scheduler是 | — | Fetcher-owned private raw bucket |
-| `CLOUDFLARE_R2_ACCESS_KEY_ID` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API access key |
-| `CLOUDFLARE_R2_SECRET_ACCESS_KEY` | Delivery/scheduler是 | — | Bucket-scoped R2 S3 API secret |
-| `CLOUDFLARE_R2_SESSION_TOKEN` | 否 | — | 使用R2 temporary credentials時設定 |
-| `CLOUDFLARE_R2_PREFIX` | 否 | `raw` | Provider-neutral object root；實際key會再加入provider與dataset |
+| `CLOUDFLARE_R2_RAW_BUCKET` | Delivery/scheduler是 | — | 所有環境唯一支援的Fetcher-owned private raw bucket名稱 |
+| `CLOUDFLARE_R2_RAW_ACCESS_KEY_ID` | Delivery/scheduler是 | — | Raw bucket專屬的Object Read & Write R2 S3 API access key |
+| `CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY` | Delivery/scheduler是 | — | Raw bucket專屬的Object Read & Write R2 S3 API secret |
+| `CLOUDFLARE_R2_RAW_SESSION_TOKEN` | 否 | — | 使用Raw bucket temporary credentials時設定 |
 | `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
 容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，

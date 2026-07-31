@@ -3,6 +3,7 @@ from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.contracts import (
     FuturesContinuousEODContractNormalizer,
     MarketEODContractNormalizer,
+    MarketMinuteContractNormalizer,
 )
 from app.services.normalize.corporate_actions import CorporateActionNormalizer
 from app.services.normalize.crypto import CryptoBloombergNormalizer, CryptoNormalizer
@@ -26,6 +27,7 @@ from app.services.normalize.types import (
     FuturesContractRecord,
     MacroObservationRecord,
     MappedRecord,
+    MarketMinuteRecord,
 )
 from app.services.normalize.usstock import (
     CNEquityNormalizer,
@@ -45,6 +47,7 @@ __all__ = [
     "BaseNormalizer",
     "NormalizeResult",
     "MappedRecord",
+    "MarketMinuteRecord",
     "CryptoNormalizer",
     "CryptoBloombergNormalizer",
     "CryptoIndexNormalizer",
@@ -58,6 +61,7 @@ __all__ = [
     "FuturesContractNormalizer",
     "FuturesContinuousNormalizer",
     "MarketEODContractNormalizer",
+    "MarketMinuteContractNormalizer",
     "FuturesContinuousEODContractNormalizer",
     "WTXBloombergNormalizer",
     "USStockNormalizer",

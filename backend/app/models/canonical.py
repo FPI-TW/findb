@@ -72,6 +72,7 @@ class Instrument(Base):
     # Relationships
     identifiers: Mapped[list["InstrumentIdentifier"]] = relationship(back_populates="instrument")
     eod_data: Mapped[list["MarketDataEOD"]] = relationship(back_populates="instrument")
+    minute_data: Mapped[list["MarketDataMinute"]] = relationship(back_populates="instrument")
     corporate_actions: Mapped[list["CorporateAction"]] = relationship(back_populates="instrument")
     futures_contracts: Mapped[list["FuturesContract"]] = relationship(back_populates="instrument")
     futures_continuous_eod: Mapped[list["FuturesContinuousEOD"]] = relationship(
@@ -353,6 +354,104 @@ event.listen(
     MarketDataEOD.__table__,
     "after_create",
     DDL("CREATE TABLE IF NOT EXISTS market_data_eod_default PARTITION OF market_data_eod DEFAULT"),
+)
+
+
+class MarketDataMinute(Base):
+    """Canonical one-minute bars.
+
+    ``volume`` is measured in shares and ``turnover`` is measured in TWD.  The
+    trade date is the Taiwan local trading date; timestamps are stored by
+    PostgreSQL as ``timestamptz`` and callers must supply UTC-aware values.
+    """
+
+    __tablename__ = "market_data_minute"
+    __table_args__ = (
+        CheckConstraint(
+            "bar_end_time = bar_start_time + interval '1 minute'",
+            name="market_data_minute_one_minute_interval",
+        ),
+        CheckConstraint(
+            "signal_time = bar_end_time",
+            name="market_data_minute_signal_at_bar_end",
+        ),
+        CheckConstraint(
+            "open >= 0 AND high >= 0 AND low >= 0 AND close >= 0 "
+            "AND low <= open AND low <= close AND low <= high "
+            "AND high >= open AND high >= close",
+            name="market_data_minute_ohlc_bounds",
+        ),
+        CheckConstraint(
+            "volume IS NULL OR volume >= 0",
+            name="market_data_minute_volume_nonnegative",
+        ),
+        CheckConstraint(
+            "turnover IS NULL OR turnover >= 0",
+            name="market_data_minute_turnover_nonnegative",
+        ),
+        CheckConstraint("trade_count IS NULL", name="market_data_minute_trade_count_null"),
+        CheckConstraint(
+            "price_adjustment = 'none'",
+            name="market_data_minute_price_adjustment_none",
+        ),
+        CheckConstraint(
+            "market_timezone = 'Asia/Taipei'",
+            name="market_data_minute_timezone_taipei",
+        ),
+        CheckConstraint(
+            "trade_date = (bar_start_time AT TIME ZONE 'Asia/Taipei')::date",
+            name="market_data_minute_local_trade_date",
+        ),
+        Index("idx_market_data_minute_instrument_bar", "instrument_id", "bar_start_time"),
+        Index("idx_market_data_minute_trade_date", "trade_date"),
+        {"postgresql_partition_by": "RANGE (trade_date)"},
+    )
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id"),
+        primary_key=True,
+        nullable=False,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True, nullable=False)
+    bar_start_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True, nullable=False
+    )
+    bar_end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    market_timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Taipei")
+    open: Mapped[Decimal] = mapped_column(NUMERIC(20, 8), nullable=False)
+    high: Mapped[Decimal] = mapped_column(NUMERIC(20, 8), nullable=False)
+    low: Mapped[Decimal] = mapped_column(NUMERIC(20, 8), nullable=False)
+    close: Mapped[Decimal] = mapped_column(NUMERIC(20, 8), nullable=False)
+    volume: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    turnover: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
+    trade_count: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    price_adjustment: Mapped[str] = mapped_column(String(10), nullable=False, default="none")
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="minute_data")
+
+
+event.listen(
+    MarketDataMinute.__table__,
+    "after_create",
+    DDL(
+        "CREATE TABLE IF NOT EXISTS market_data_minute_default "
+        "PARTITION OF market_data_minute DEFAULT"
+    ),
 )
 
 

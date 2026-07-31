@@ -150,6 +150,9 @@ dependencies = [
 finlab = [
     { name = "finlab" },
 ]
+shioaji = [
+    { name = "shioaji" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -164,8 +167,9 @@ requires-dist = [
     { name = "finlab", marker = "extra == 'finlab'", specifier = "==1.5.7" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.25.1,<5.0.0" },
+    { name = "shioaji", marker = "extra == 'shioaji'", specifier = "==1.7.1" },
 ]
-provides-extras = ["finlab"]
+provides-extras = ["finlab", "shioaji"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -826,6 +830,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/bb/73/eda39f7a2d306ff0ffc574afd13c0bbb6d10a603d9a413998ee269487a80/scipy-1.18.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:b6f758e35f12757b5d95c00bc6de2438e229c2664b7a92e96f205959d9f2dfa4", size = 37404785, upload-time = "2026-06-19T15:00:34.072Z" },
     { url = "https://files.pythonhosted.org/packages/b7/d2/ae881ee28d014f38e0ccbfd974a06a919ba9af34f1f74bf42b5301891d63/scipy-1.18.0-cp313-cp313-win_amd64.whl", hash = "sha256:1afac4a847207c7ff8efd321734a50b06d0280b3b2a2c0fc2f413101747ad7c7", size = 36554943, upload-time = "2026-06-19T15:00:36.903Z" },
     { url = "https://files.pythonhosted.org/packages/70/3a/21154e2d54eb3639c6bf4dbae2e531c68356bfe95990daa30df33b30d556/scipy-1.18.0-cp313-cp313-win_arm64.whl", hash = "sha256:c5dbddf60e58c2312316d097271a8e73d40eaf2eabfa4d95ed7d3695bbf2ce7b", size = 24350911, upload-time = "2026-06-19T15:00:40.062Z" },
+]
+
+[[package]]
+name = "shioaji"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/f5/e028140c5c317a19245f952494b5d39fde8067ae45f281f0e10fe3b14f26/shioaji-1.7.1-cp37-abi3-macosx_10_15_x86_64.whl", hash = "sha256:761c69f9f24fde9acc3de29a030866d9d28e9d952c3536856c504235406b95e8", size = 38535893, upload-time = "2026-07-30T07:37:50.041Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/00/f57c041b2b50470bbb251bc148c010dafd4f42ed6c4f4458a57c7afbcfc9/shioaji-1.7.1-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:4cf8da8ab17f726fe97e997b09e5b87b7e2e0590e809e5b399e898b12abec317", size = 35589106, upload-time = "2026-07-30T07:38:28.061Z" },
+    { url = "https://files.pythonhosted.org/packages/76/67/1fce6329a2aa5263aaec7ae475e8a0d72c3dcf17928aabf8a9fccfc37329/shioaji-1.7.1-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:09d77dbcce164939d93bbac3b150ca8288816f110f10c75fc6769ac35436d724", size = 40183563, upload-time = "2026-07-30T07:37:05.622Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/8d/28543f05380352d09bfefcadf6953f378b425f82cdd2925fb75c405d3baf/shioaji-1.7.1-cp37-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:9be89f9224932b4c6b67fefbbced98d61b6d1db27dc5b52296c7f7a1275ad397", size = 37683229, upload-time = "2026-07-30T07:38:46.203Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/f8/ab9ecbef5dc4e066e66da361792490187a22fb18f3ab1e2dbd7356b4017f/shioaji-1.7.1-cp37-abi3-win_amd64.whl", hash = "sha256:598741e14f5a44e3d31995507578790009e593f068c78e0e7b2a1012b8c472d6", size = 42510080, upload-time = "2026-07-30T07:37:18.574Z" },
 ]
 
 [[package]]

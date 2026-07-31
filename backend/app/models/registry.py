@@ -3,10 +3,12 @@ System registry and tracking models.
 """
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -19,7 +21,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, NUMERIC
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,6 +63,474 @@ class DatasetRegistry(Base):
 
     # Relationships
     ingestion_runs: Mapped[list["IngestionRun"]] = relationship(back_populates="dataset")
+
+
+class TWMinuteUniverseRelease(Base):
+    """Versioned maintained TW minute universe; members are never deleted."""
+
+    __tablename__ = "tw_minute_universe_release"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_key", "effective_date", "version", name="uq_tw_minute_universe_release"
+        ),
+        CheckConstraint(
+            "status IN ('candidate', 'published', 'superseded')",
+            name="tw_minute_universe_release_status_valid",
+        ),
+        CheckConstraint(
+            "change_ratio >= 0 AND change_ratio <= 1", name="tw_minute_universe_change_ratio"
+        ),
+        CheckConstraint("version >= 1", name="tw_minute_universe_version_positive"),
+        CheckConstraint(
+            "previous_member_count IS NULL OR previous_member_count >= 0",
+            name="tw_minute_universe_previous_count_nonnegative",
+        ),
+        CheckConstraint("member_count >= 0", name="tw_minute_universe_member_count_nonnegative"),
+        CheckConstraint(
+            "member_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_universe_member_checksum_valid",
+        ),
+        CheckConstraint("change_count >= 0", name="tw_minute_universe_change_count_nonnegative"),
+        CheckConstraint(
+            "change_count_threshold = 20", name="tw_minute_universe_count_threshold_fixed"
+        ),
+        CheckConstraint(
+            "change_ratio_threshold = 0.02", name="tw_minute_universe_ratio_threshold_fixed"
+        ),
+        CheckConstraint(
+            "status != 'published' OR COALESCE("
+            "jsonb_typeof(shioaji_eligibility_snapshot) = 'object' "
+            "AND shioaji_eligibility_snapshot <> '{}'::jsonb "
+            "AND shioaji_eligibility_snapshot->>'source' = 'shioaji' "
+            "AND shioaji_eligibility_snapshot ? 'eligibility' "
+            "AND jsonb_typeof(shioaji_eligibility_snapshot->'eligibility') IN ('array', 'object') "
+            "AND shioaji_eligibility_snapshot->'eligibility' NOT IN ('[]'::jsonb, '{}'::jsonb) "
+            "AND jsonb_typeof(official_membership_snapshot) = 'object' "
+            "AND official_membership_snapshot <> '{}'::jsonb "
+            "AND official_membership_snapshot->>'source' IN ('twse', 'tpex', 'twse_tpex') "
+            "AND official_membership_snapshot ? 'membership' "
+            "AND official_membership_snapshot ? 'classification' "
+            "AND jsonb_typeof(official_membership_snapshot->'membership') IN ('array', 'object') "
+            "AND official_membership_snapshot->'membership' NOT IN ('[]'::jsonb, '{}'::jsonb) "
+            "AND jsonb_typeof(official_membership_snapshot->'classification') IN ('array', 'object') "
+            "AND official_membership_snapshot->'classification' NOT IN ('[]'::jsonb, '{}'::jsonb) "
+            "AND shioaji_eligibility_checksum ~ '^[0-9a-f]{64}$' "
+            "AND official_membership_checksum ~ '^[0-9a-f]{64}$' "
+            "AND shioaji_eligibility_checksum <> official_membership_checksum "
+            "AND jsonb_typeof(change_audit) = 'object' AND change_audit <> '{}'::jsonb "
+            "AND change_audit ? 'decision' AND change_audit ? 'differences' "
+            "AND published_at IS NOT NULL, FALSE)",
+            name="tw_minute_universe_published_evidence",
+        ),
+        CheckConstraint(
+            "status != 'published' OR (change_count <= 20 AND change_ratio <= 0.02)",
+            name="tw_minute_universe_published_within_thresholds",
+        ),
+        Index("idx_tw_minute_universe_release_lookup", "dataset_key", "effective_date", "status"),
+    )
+
+    release_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"), nullable=False
+    )
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="candidate")
+    shioaji_eligibility_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    shioaji_eligibility_checksum: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    official_membership_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    official_membership_checksum: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    member_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_member_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    change_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    change_ratio: Mapped[Decimal] = mapped_column(NUMERIC(8, 6), nullable=False, default=0)
+    change_count_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    change_ratio_threshold: Mapped[Decimal] = mapped_column(
+        NUMERIC(8, 6), nullable=False, default=Decimal("0.02")
+    )
+    change_audit: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    members: Mapped[list["TWMinuteUniverseMember"]] = relationship(back_populates="release")
+
+
+class TWMinuteUniverseMember(Base):
+    """Historical membership closure is represented by ``ended_on``, never deletion."""
+
+    __tablename__ = "tw_minute_universe_member"
+    __table_args__ = (
+        UniqueConstraint("release_id", "instrument_id", name="uq_tw_minute_universe_member"),
+        CheckConstraint(
+            "ended_on IS NULL OR ended_on >= started_on", name="tw_minute_member_date_order"
+        ),
+        Index("idx_tw_minute_universe_member_instrument", "instrument_id", "ended_on"),
+    )
+
+    member_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    release_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tw_minute_universe_release.release_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(50), nullable=False)
+    started_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ended_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    source_symbol: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    release: Mapped["TWMinuteUniverseRelease"] = relationship(back_populates="members")
+
+
+class TWMinuteDailyUpdate(Base):
+    """One durable update control row per environment, market, and local trade date."""
+
+    __tablename__ = "tw_minute_daily_update"
+    __table_args__ = (
+        UniqueConstraint("environment", "market", "trade_date", name="uq_tw_minute_daily_update"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed', 'blocked', 'skipped_calendar')",
+            name="tw_minute_daily_update_status_valid",
+        ),
+        CheckConstraint("market = 'TW'", name="tw_minute_daily_update_market_tw"),
+        Index("idx_tw_minute_daily_update_status", "status", "trade_date"),
+    )
+
+    update_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    environment: Mapped[str] = mapped_column(String(30), nullable=False)
+    market: Mapped[str] = mapped_column(String(10), nullable=False, default="TW")
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class TWMinuteDatasetSnapshot(Base):
+    """Deterministic request plan for one dataset, date, and universe release."""
+
+    __tablename__ = "tw_minute_dataset_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "daily_update_id", "dataset_key", name="uq_tw_minute_snapshot_daily_dataset"
+        ),
+        UniqueConstraint(
+            "daily_update_id",
+            "dataset_key",
+            "trade_date",
+            "universe_release_id",
+            "symbols_checksum",
+            name="uq_tw_minute_snapshot_identity",
+        ),
+        CheckConstraint(
+            "status IN ('planned', 'running', 'completed', 'failed', 'partial')",
+            name="tw_minute_snapshot_status_valid",
+        ),
+        CheckConstraint(
+            "sequence_count >= 1 AND expected_rows >= 0 AND received_rows >= 0",
+            name="tw_minute_snapshot_counts_nonnegative",
+        ),
+        Index("idx_tw_minute_snapshot_update", "daily_update_id", "dataset_key"),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    daily_update_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tw_minute_daily_update.update_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"), nullable=False
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    universe_release_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tw_minute_universe_release.release_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    symbols_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    received_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="planned")
+    symbol_results: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class TWMinuteSnapshotPart(Base):
+    """A bounded request sequence and its optional Source API ingestion run."""
+
+    __tablename__ = "tw_minute_snapshot_part"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "sequence", name="uq_tw_minute_snapshot_part_sequence"),
+        CheckConstraint("sequence >= 1", name="tw_minute_snapshot_part_sequence_positive"),
+        CheckConstraint(
+            "request_count >= 0 AND received_rows >= 0",
+            name="tw_minute_snapshot_part_counts_nonnegative",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed')",
+            name="tw_minute_snapshot_part_status_valid",
+        ),
+    )
+
+    part_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    snapshot_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tw_minute_dataset_snapshot.snapshot_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    ingestion_run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    symbols: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    received_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    result_summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class TWMinutePublicationRevision(Base):
+    """Immutable publication manifest; service code may later promote one to latest."""
+
+    __tablename__ = "tw_minute_publication_revision"
+    __table_args__ = (
+        UniqueConstraint("daily_update_id", "revision", name="uq_tw_minute_publication_revision"),
+        CheckConstraint(
+            "status IN ('completed', 'completed_with_warnings', 'unresolved_gap')",
+            name="tw_minute_publication_status_valid",
+        ),
+        CheckConstraint("revision >= 1", name="tw_minute_publication_revision_positive"),
+        CheckConstraint(
+            "NOT (is_latest AND status = 'unresolved_gap')",
+            name="tw_minute_publication_latest_resolved",
+        ),
+        CheckConstraint(
+            "(status = 'completed_with_warnings' AND warning_kind IS NOT NULL "
+            "AND warning_kind = 'expected_no_data') "
+            "OR (status != 'completed_with_warnings' AND warning_kind IS NULL)",
+            name="tw_minute_publication_warning_kind_coherent",
+        ),
+        CheckConstraint(
+            "status != 'completed_with_warnings' OR COALESCE("
+            "jsonb_typeof(manifest) = 'object' "
+            "AND jsonb_typeof(manifest->'expected_no_data_symbols') = 'array' "
+            "AND jsonb_array_length(manifest->'expected_no_data_symbols') > 0, FALSE)",
+            name="tw_minute_publication_warning_manifest_evidence",
+        ),
+        CheckConstraint(
+            "NOT is_latest OR published_at IS NOT NULL",
+            name="tw_minute_publication_latest_published",
+        ),
+        Index(
+            "uq_tw_minute_publication_latest",
+            "daily_update_id",
+            unique=True,
+            postgresql_where=text("is_latest"),
+        ),
+    )
+
+    publication_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    daily_update_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tw_minute_daily_update.update_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    manifest_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    warning_kind: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    is_latest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TWMinuteArchiveRelease(Base):
+    """Permanent metadata for atomically finalized recorder archive imports."""
+
+    __tablename__ = "tw_minute_archive_release"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_key", "source", "manifest_checksum", name="uq_tw_minute_archive_manifest"
+        ),
+        CheckConstraint("source = 'tw_recorder_archive'", name="tw_minute_archive_source_valid"),
+        CheckConstraint(
+            "upstream_source = 'shioaji'", name="tw_minute_archive_upstream_source_valid"
+        ),
+        CheckConstraint(
+            "overlap_precedence = 'direct_daily_shioaji'",
+            name="tw_minute_archive_overlap_precedence_valid",
+        ),
+        CheckConstraint(
+            "trading_calendar_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_calendar_checksum_valid",
+        ),
+        CheckConstraint(
+            "release_key ~ '^[a-z0-9][a-z0-9._-]*$'",
+            name="tw_minute_archive_release_key_valid",
+        ),
+        CheckConstraint(
+            "content_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_content_checksum_valid",
+        ),
+        CheckConstraint(
+            "manifest_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_manifest_checksum_valid",
+        ),
+        CheckConstraint("coverage_start <= coverage_end", name="tw_minute_archive_coverage_order"),
+        CheckConstraint(
+            "status IN ('staged', 'finalized', 'failed')", name="tw_minute_archive_status_valid"
+        ),
+        CheckConstraint(
+            "instrument_count >= 1 AND row_count >= 1 AND sequence_count >= 1",
+            name="tw_minute_archive_counts_positive",
+        ),
+        CheckConstraint(
+            "(status = 'finalized') = (finalized_at IS NOT NULL)",
+            name="tw_minute_archive_finalized_timestamp",
+        ),
+        CheckConstraint(
+            "instruments_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_instruments_checksum_valid",
+        ),
+        CheckConstraint(
+            "trading_dates_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_dates_checksum_valid",
+        ),
+        CheckConstraint(
+            "expected_trading_date_count >= 1 AND covered_trading_date_count >= 1 AND chunk_count >= 1",
+            name="tw_minute_archive_manifest_counts_positive",
+        ),
+    )
+
+    release_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    release_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="tw_recorder_archive")
+    upstream_source: Mapped[str] = mapped_column(String(50), nullable=False, default="shioaji")
+    overlap_precedence: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="direct_daily_shioaji"
+    )
+    trading_calendar_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    instruments_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    trading_dates_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_trading_date_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_trading_date_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    coverage_start: Mapped[date] = mapped_column(Date, nullable=False)
+    coverage_end: Mapped[date] = mapped_column(Date, nullable=False)
+    instrument_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sequence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="staged")
+    finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TWMinuteArchiveChunk(Base):
+    """Contiguous monthly archive chunk belonging to one immutable release."""
+
+    __tablename__ = "tw_minute_archive_chunk"
+    __table_args__ = (
+        UniqueConstraint(
+            "release_id",
+            "snapshot_sequence",
+            "chunk_sequence",
+            name="uq_tw_minute_archive_chunk_sequence",
+        ),
+        CheckConstraint(
+            "snapshot_sequence >= 1 AND chunk_sequence >= 1 AND chunk_sequence <= chunk_count",
+            name="tw_minute_archive_chunk_sequence_valid",
+        ),
+        CheckConstraint(
+            "instrument_count >= 1", name="tw_minute_archive_chunk_instrument_positive"
+        ),
+        CheckConstraint(
+            "row_count >= 1 AND row_count <= 5000", name="tw_minute_archive_chunk_row_count_range"
+        ),
+        CheckConstraint(
+            "object_size_bytes >= 1", name="tw_minute_archive_chunk_object_size_positive"
+        ),
+        CheckConstraint(
+            "chunk_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_chunk_checksum_valid",
+        ),
+        CheckConstraint(
+            "object_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_chunk_object_checksum_valid",
+        ),
+        CheckConstraint(
+            "instrument_checksum ~ '^[0-9a-f]{64}$'",
+            name="tw_minute_archive_chunk_instrument_checksum_valid",
+        ),
+        CheckConstraint(
+            "coverage_start <= coverage_end", name="tw_minute_archive_chunk_coverage_order"
+        ),
+        CheckConstraint(
+            "date_trunc('month', coverage_start::timestamp)::date = coverage_start",
+            name="tw_minute_archive_chunk_start_month",
+        ),
+        CheckConstraint(
+            "date_trunc('month', coverage_end::timestamp)::date = coverage_end",
+            name="tw_minute_archive_chunk_end_month",
+        ),
+    )
+
+    chunk_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    release_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tw_minute_archive_release.release_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    coverage_start: Mapped[date] = mapped_column(Date, nullable=False)
+    coverage_end: Mapped[date] = mapped_column(Date, nullable=False)
+    instrument_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    instrument_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chunk_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    object_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class SourceClient(Base):

@@ -79,6 +79,7 @@ check-backend:
 	uv --directory backend run ruff format --check app tests scripts migrations
 	uv --directory backend run mypy app
 	uv --directory backend run python scripts/export_ingress_contracts.py --check
+	uv --directory backend run python scripts/export_archive_contracts.py --check
 	uv --directory backend run python scripts/dev.py test-db
 
 dashboard-install:
@@ -116,8 +117,10 @@ fetcher-build:
 
 contracts-export:
 	uv --directory backend run python scripts/export_ingress_contracts.py
+	uv --directory backend run python scripts/export_archive_contracts.py
 
 contracts-check:
 	uv --directory backend run python scripts/export_ingress_contracts.py --check
+	uv --directory backend run python scripts/export_archive_contracts.py --check
 
 check: check-backend dashboard-check fetcher-check dashboard-build

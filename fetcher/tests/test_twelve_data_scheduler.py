@@ -147,7 +147,7 @@ class RecordingRawStore:
         if self.failure:
             raise self.failure
         return RawObject(
-            ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+            ref=f"r2://{'a' * 32}/findb-fetcher-raw/a.json",
             sha256="a" * 64,
             size_bytes=len(raw_bytes),
         )
@@ -204,7 +204,7 @@ def test_scheduler_uploads_before_prepare_and_delivery(contracts_dir: Path) -> N
     assert result.succeeded
     assert events == ["fetch", "upload", "prepare", "deliver"]
     batch = source.requests[0]["payload"]["batch"]
-    assert batch["source_raw_ref"] == (f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json")
+    assert batch["source_raw_ref"] == (f"r2://{'a' * 32}/findb-fetcher-raw/a.json")
     assert batch["source_raw_sha256"] == "a" * 64
 
 
@@ -331,7 +331,7 @@ def test_scheduler_prepared_retry_does_not_refetch_or_reupload(
     attach_raw_object(
         request,
         RawObject(
-            ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+            ref=f"r2://{'a' * 32}/findb-fetcher-raw/a.json",
             sha256="a" * 64,
             size_bytes=1,
         ),
@@ -360,7 +360,7 @@ def test_scheduler_rejects_legacy_or_partial_prepared_raw_state(
     request = {
         "payload": {
             "batch": {
-                "source_raw_ref": f"r2://{'a' * 32}/findb-fetcher-raw/raw/a.json",
+                "source_raw_ref": f"r2://{'a' * 32}/findb-fetcher-raw/a.json",
             }
         }
     }

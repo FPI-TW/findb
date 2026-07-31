@@ -3,16 +3,17 @@ Data Quality validators.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CorporateAction, MarketDataEOD
-from app.services.normalize.types import EODLikeRecord
+from app.services.normalize.types import EODLikeRecord, MarketMinuteRecord
 
 
 @dataclass
@@ -85,6 +86,95 @@ class DQValidator:
         if issue:
             issues.append(issue)
 
+        return issues
+
+    def validate_minute(
+        self,
+        record: MarketMinuteRecord,
+        *,
+        seen_keys: set[tuple[str, str, datetime]],
+        anomaly_fields: set[str],
+    ) -> list[DQIssueRecord]:
+        """Validate minute-bar invariants independently from ingress validation."""
+        issues: list[DQIssueRecord] = []
+        trade_timestamp = record.bar_start_time
+
+        def error(issue_type: str, description: str) -> None:
+            issues.append(
+                DQIssueRecord(
+                    issue_type=issue_type,
+                    severity="error",
+                    description=description,
+                    trade_date=trade_timestamp,
+                    raw_data=record.raw_data,
+                )
+            )
+
+        if (
+            record.bar_start_time is None
+            or record.bar_end_time is None
+            or record.signal_time is None
+        ):
+            error("MINUTE_TIMESTAMP_INVALID", "bar timestamps must be timezone-aware UTC datetimes")
+        else:
+            if any(
+                value.tzinfo is None or value.utcoffset() is None
+                for value in (record.bar_start_time, record.bar_end_time, record.signal_time)
+            ):
+                error(
+                    "MINUTE_TIMESTAMP_INVALID",
+                    "bar timestamps must be timezone-aware UTC datetimes",
+                )
+            elif record.bar_end_time - record.bar_start_time != timedelta(minutes=1):
+                error(
+                    "MINUTE_INTERVAL_INVALID",
+                    "bar_end_time must be exactly one minute after bar_start_time",
+                )
+            elif record.signal_time != record.bar_end_time:
+                error("MINUTE_SIGNAL_INVALID", "signal_time must equal bar_end_time")
+
+        if record.market_timezone != "Asia/Taipei":
+            error("MINUTE_MARKET_TIMEZONE_INVALID", "market_timezone must be Asia/Taipei")
+        if record.price_adjustment != "none":
+            error("MINUTE_PRICE_ADJUSTMENT_INVALID", "price_adjustment must be none")
+        if not record.source:
+            error("MINUTE_SOURCE_INVALID", "contract ingestion source is required")
+        if record.trade_count is not None:
+            error("MINUTE_TRADE_COUNT_INVALID", "trade_count must be null")
+        if record.bar_start_time is not None:
+            taipei_date = record.bar_start_time.astimezone(ZoneInfo("Asia/Taipei")).date()
+            if record.trade_date != taipei_date:
+                error(
+                    "MINUTE_TRADE_DATE_INVALID",
+                    "trade_date must be the Taiwan-local bar_start_time date",
+                )
+            key = (str(record.market or "").upper(), record.symbol, record.bar_start_time)
+            if key in seen_keys:
+                error("DUPLICATE_KEY", "Duplicate instrument/bar_start_time in batch")
+            seen_keys.add(key)
+
+        if any(value is None for value in (record.open, record.high, record.low, record.close)):
+            error("MISSING_OHLC", "minute OHLC fields are required")
+        else:
+            assert record.open is not None
+            assert record.high is not None
+            assert record.low is not None
+            assert record.close is not None
+            if record.high < max(record.open, record.close):
+                error("OHLC_HIGH_CHECK", "High must be at least max(open, close)")
+            if record.low > min(record.open, record.close):
+                error("OHLC_LOW_CHECK", "Low must be at most min(open, close)")
+            if any(value < 0 for value in (record.open, record.high, record.low, record.close)):
+                error("MINUTE_OHLC_NEGATIVE", "minute OHLC fields must be nonnegative")
+        if record.volume is not None and record.volume < 0:
+            error("VOLUME_POSITIVE", "Volume must be non-negative")
+        if record.turnover is not None and record.turnover < 0:
+            error("TURNOVER_POSITIVE", "Turnover must be non-negative")
+        for field, value in (("volume", record.volume), ("turnover", record.turnover)):
+            if value is None and field not in anomaly_fields:
+                error(
+                    "MINUTE_NULL_WITHOUT_ANOMALY", f"null {field} requires adapter anomaly evidence"
+                )
         return issues
 
     def _check_ohlc_high(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:

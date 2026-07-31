@@ -66,7 +66,7 @@ class SuccessfulRawStore:
         **_kwargs: object,
     ) -> RawObject:
         return RawObject(
-            ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/{source_symbol}.json",
+            ref=f"r2://{'a' * 32}/findb-fetcher-raw/{source_symbol}.json",
             sha256="a" * 64,
             size_bytes=len(raw_bytes),
         )
@@ -202,7 +202,7 @@ def test_universe_delivery_attaches_complete_raw_pair(
         ) -> RawObject:
             assert raw_bytes
             return RawObject(
-                ref=f"r2://{'a' * 32}/findb-fetcher-raw/raw/{source_symbol}.json",
+                ref=f"r2://{'a' * 32}/findb-fetcher-raw/{source_symbol}.json",
                 sha256="a" * 64,
                 size_bytes=len(raw_bytes),
             )
@@ -226,7 +226,7 @@ def test_universe_delivery_attaches_complete_raw_pair(
     assert len(source.requests) == 3
     for request in registry.requests:
         batch = request["payload"]["batch"]
-        assert batch["source_raw_ref"].startswith(f"r2://{'a' * 32}/findb-fetcher-raw/raw/")
+        assert batch["source_raw_ref"].startswith(f"r2://{'a' * 32}/findb-fetcher-raw/")
         assert batch["source_raw_sha256"] == "a" * 64
 
 
