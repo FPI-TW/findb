@@ -96,6 +96,19 @@ bytes/connections 不會被當成 request count；contract 中的 usage 是本�
 
 ## Shioaji Taiwan-minute staging coordinator
 
+`SHIOAJI_SIMULATION` controls the isolated staging child and is strict:
+`true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off` (case-insensitive) are
+accepted; an omitted value defaults to `true`, while any other value fails
+closed without echoing its content. This remains read-only Kbars acquisition;
+it never invokes order APIs.
+
+The reviewed staging symbols `2330`, `0050`, `0056`, and `006201` use the
+public `BaseContract(security_type="STK", exchange="TSE", code=..., region="TW")`
+route. It is a live-proven simulation workaround for Shioaji catalog
+initialization timeouts, so these four symbols bypass catalog access entirely.
+Other symbols retain the existing catalog path; this route does not infer an
+exchange for arbitrary symbols.
+
 `findb-fetch-shioaji-staging --check` validates only the committed four-symbol
 manifest and is fully offline. Phase 4 credentialed preflight uses a fresh,
 private `FETCHER_SHIOAJI_STAGING_STATE_PATH`, an explicit known prior trading

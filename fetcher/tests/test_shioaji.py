@@ -222,12 +222,13 @@ def test_contract_access_failures_are_secret_free_and_distinct(
 
     class Sdk:
         Shioaji = staticmethod(lambda **_: Api())
+        BaseContract = staticmethod(lambda **_: "contract")
 
     monkeypatch.setattr(
         "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
     )
     with pytest.raises(ShioajiSdkError) as caught:
-        ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2330", date(2026, 7, 29))
+        ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("UNLISTED", date(2026, 7, 29))
     assert (caught.value.code, caught.value.reason) == ("PAYLOAD", "contract_access")
     assert "secret" not in str(caught.value) and "SecretError" not in str(caught.value)
     wire = shioaji._isolated_error_wire(caught.value.code, caught.value.reason)
@@ -236,6 +237,82 @@ def test_contract_access_failures_are_secret_free_and_distinct(
         "reason": "contract_access",
     }
     assert b"secret" not in wire and b"SecretError" not in wire
+
+
+def test_reviewed_symbols_use_exact_public_base_contract_without_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+
+    class Api:
+        @property
+        def contracts(self) -> object:
+            raise AssertionError("reviewed symbol must not access catalog")
+
+        def login(self, **_kwargs: object) -> None:
+            events.append("login")
+
+        def kbars(self, contract: object, **kwargs: object) -> dict[str, list[object]]:
+            events.append(("kbars", contract, kwargs))
+            return _kbars()
+
+        def logout(self) -> None:
+            events.append("logout")
+
+    def base_contract(**kwargs: object) -> object:
+        events.append(("BaseContract", kwargs))
+        return "reviewed-contract"
+
+    class Sdk:
+        Shioaji = staticmethod(lambda **_: Api())
+        BaseContract = staticmethod(base_contract)
+
+    monkeypatch.setattr(
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+    )
+    ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("006201", date(2026, 7, 29))
+    assert (
+        "BaseContract",
+        {"security_type": "STK", "exchange": "TSE", "code": "006201", "region": "TW"},
+    ) in events
+    assert events[-1] == "logout"
+
+
+def test_nonreviewed_symbol_preserves_catalog_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[object] = []
+
+    class Stocks:
+        def get(self, symbol: str) -> str:
+            events.append(("catalog", symbol))
+            return "catalog-contract"
+
+    class Api:
+        class Contracts:
+            stocks = Stocks()
+
+        contracts = Contracts()
+
+        def login(self, **_kwargs: object) -> None:
+            pass
+
+        def kbars(self, _contract: object, **_kwargs: object) -> dict[str, list[object]]:
+            return _kbars()
+
+        def logout(self) -> None:
+            pass
+
+    def base_contract(**_kwargs: object) -> object:
+        raise AssertionError("non-reviewed symbol must not build BaseContract")
+
+    class Sdk:
+        Shioaji = staticmethod(lambda **_: Api())
+        BaseContract = staticmethod(base_contract)
+
+    monkeypatch.setattr(
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+    )
+    ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("UNLISTED", date(2026, 7, 29))
+    assert events == [("catalog", "UNLISTED")]
 
 
 def test_plain_kbars_canonicalizes_decimal_and_rejects_non_json_scalars() -> None:
@@ -345,6 +422,62 @@ def test_isolated_gateway_silences_child_and_returns_coarse_credentials_code(
     output = capfd.readouterr()
     assert caught.value.code == "CREDENTIALS"
     assert output.out == output.err == ""
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("true", True), ("OFF", False), (" 1 ", True)])
+def test_isolated_simulation_env_uses_only_reviewed_boolean_spellings(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    monkeypatch.setenv("SHIOAJI_SIMULATION", raw)
+    gateway = IsolatedShioajiGateway.from_env()
+    assert gateway.simulation is expected
+
+
+@pytest.mark.parametrize("raw", ("enabled", "2", "not-a-bool"))
+def test_isolated_simulation_env_fails_closed_without_echoing_value(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("SHIOAJI_SIMULATION", raw)
+    with pytest.raises(shioaji.ShioajiConfigError) as caught:
+        IsolatedShioajiGateway.from_env()
+    assert raw not in str(caught.value)
+
+
+def test_isolated_gateway_passes_simulation_to_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Connection:
+        def poll(self, _timeout: float) -> bool:
+            return True
+
+        def recv_bytes(self, _max_length: int) -> bytes:
+            return shioaji._isolated_error_wire("LOGIN")
+
+        def close(self) -> None:
+            pass
+
+    class Process:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, _timeout: float | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(shioaji.multiprocessing, "Pipe", lambda **_: (Connection(), Connection()))
+    monkeypatch.setattr(shioaji.multiprocessing, "Process", lambda **kwargs: Process(**kwargs))
+    with pytest.raises(ShioajiSdkError) as caught:
+        IsolatedShioajiGateway("api-secret", "key-secret", simulation=False).fetch_kbars(
+            "2330", date(2026, 7, 29)
+        )
+    assert caught.value.code == "LOGIN"
+    assert captured["args"][-3:] == (False, "2330", "2026-07-29")  # type: ignore[index]
+    assert "api-secret" not in repr(IsolatedShioajiGateway("api-secret", "key-secret"))
 
 
 @pytest.mark.parametrize(
@@ -512,6 +645,7 @@ def test_normalizes_numpy_like_scalars_and_keeps_usage_bytes_separate(
 
     class Sdk:
         Shioaji = staticmethod(lambda **_: Api())
+        BaseContract = staticmethod(lambda **_: "contract")
 
     monkeypatch.setattr(
         "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
@@ -557,14 +691,15 @@ def test_gateway_uses_lowercase_contracts_and_always_logs_out(
 
         Shioaji = _factory
 
-    gateway = ShioajiSdkGateway("api-secret", "key-secret", _sdk=Sdk())
+    gateway = ShioajiSdkGateway("api-secret", "key-secret", simulation=False, _sdk=Sdk())
     monkeypatch.setattr(
         "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
     )
     assert "api-secret" not in repr(gateway) and "key-secret" not in repr(gateway)
     with pytest.raises(Exception) as exc:
-        gateway.fetch_kbars("2330", date(2026, 7, 29))
+        gateway.fetch_kbars("UNLISTED", date(2026, 7, 29))
     assert "secret" not in str(exc.value)
+    assert ("factory", False) in events
     assert events[-1] == "logout"
 
 

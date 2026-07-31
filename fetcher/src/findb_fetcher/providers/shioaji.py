@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -46,6 +47,18 @@ PAYLOAD_REASONS = frozenset(
         "snapshot",
         "contract_access",
         "contract_mapping",
+    }
+)
+_SIMULATION_TRUE = frozenset({"1", "true", "yes", "on"})
+_SIMULATION_FALSE = frozenset({"0", "false", "no", "off"})
+# These identities are the only catalog-free contracts reviewed against the
+# Shioaji 1.7.1 simulation API.  Do not infer an exchange for other symbols.
+_REVIEWED_BASE_CONTRACTS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
+    {
+        "2330": ("STK", "TSE", "TW"),
+        "0050": ("STK", "TSE", "TW"),
+        "0056": ("STK", "TSE", "TW"),
+        "006201": ("STK", "TSE", "TW"),
     }
 )
 
@@ -109,17 +122,29 @@ class IsolatedShioajiGateway:
     api_key: str = field(repr=False, compare=False)
     secret_key: str = field(repr=False, compare=False)
     timeout_seconds: float = 30.0
+    simulation: bool = True
 
     @classmethod
     def from_env(cls) -> "IsolatedShioajiGateway":
-        return cls(os.getenv("SHIOAJI_API_KEY", ""), os.getenv("SHIOAJI_SECRET_KEY", ""))
+        return cls(
+            os.getenv("SHIOAJI_API_KEY", ""),
+            os.getenv("SHIOAJI_SECRET_KEY", ""),
+            simulation=_simulation_from_env(),
+        )
 
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
         _validate_symbol(symbol)
         parent, child = multiprocessing.Pipe(duplex=False)
         proc = multiprocessing.Process(
             target=_isolated_fetch_child,
-            args=(child, self.api_key, self.secret_key, symbol, target_date.isoformat()),
+            args=(
+                child,
+                self.api_key,
+                self.secret_key,
+                self.simulation,
+                symbol,
+                target_date.isoformat(),
+            ),
             daemon=True,
         )
         proc.start()
@@ -272,7 +297,7 @@ def _bounded_isolated_success_wire(message: dict[str, Any]) -> bytes:
 
 
 def _isolated_fetch_child(
-    conn: object, api_key: str, secret_key: str, symbol: str, target: str
+    conn: object, api_key: str, secret_key: str, simulation: bool, symbol: str, target: str
 ) -> None:
     # Python streams and native FD 1/2 are redirected before SDK import.
     wire: bytes
@@ -283,7 +308,7 @@ def _isolated_fetch_child(
         os.close(null)
         sys.stdout = open(os.devnull, "w")
         sys.stderr = open(os.devnull, "w")
-        result = ShioajiSdkGateway(api_key, secret_key).fetch_kbars(
+        result = ShioajiSdkGateway(api_key, secret_key, simulation=simulation).fetch_kbars(
             symbol, date.fromisoformat(target)
         )
         message: dict[str, Any] = {
@@ -358,10 +383,9 @@ class ShioajiSdkGateway:
             except Exception:
                 raise ShioajiSdkError("shioaji login failed", code="LOGIN") from None
             usage_before = _usage_bytes(api)
-            # Shioaji 1.7.1 exposes lower-case contract categories.  Keep this
-            # exact reviewed path rather than falling back to deprecated
-            # ``api.Contracts`` aliases.
-            contract = _stock_contract(api, symbol)
+            contract = _reviewed_base_contract(sdk, symbol)
+            if contract is None:
+                contract = _stock_contract(api, symbol)
             try:
                 raw = api.kbars(
                     contract,
@@ -758,6 +782,44 @@ def _stock_contract(api: Any, symbol: str) -> object:
     if contract is None:
         raise ShioajiSdkError("shioaji contract unavailable", code="CONTRACT")
     return contract
+
+
+def _reviewed_base_contract(sdk: object, symbol: str) -> object | None:
+    """Build only the four live-proven public BaseContract identities.
+
+    This bypasses Shioaji catalog initialization, which can time out in
+    simulation.  Unknown symbols deliberately return ``None`` so their
+    established catalog behavior remains unchanged.
+    """
+    identity = _REVIEWED_BASE_CONTRACTS.get(symbol)
+    if identity is None:
+        return None
+    security_type, exchange, region = identity
+    try:
+        factory = getattr(sdk, "BaseContract")
+        return factory(
+            security_type=security_type,
+            exchange=exchange,
+            code=symbol,
+            region=region,
+        )
+    except Exception:
+        raise ShioajiSdkError(
+            "shioaji contract access failed", code="PAYLOAD", reason="contract_access"
+        ) from None
+
+
+def _simulation_from_env() -> bool:
+    """Read the isolated-flow simulation mode without exposing its raw value."""
+    raw = os.getenv("SHIOAJI_SIMULATION")
+    if raw is None:
+        return True
+    normalized = raw.strip().lower()
+    if normalized in _SIMULATION_TRUE:
+        return True
+    if normalized in _SIMULATION_FALSE:
+        return False
+    raise ShioajiConfigError("SHIOAJI_SIMULATION must be a boolean")
 
 
 def _usage_bytes(api: object) -> int | None:
