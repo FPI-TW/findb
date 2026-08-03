@@ -49,8 +49,6 @@ PAYLOAD_REASONS = frozenset(
         "contract_mapping",
     }
 )
-_SIMULATION_TRUE = frozenset({"1", "true", "yes", "on"})
-_SIMULATION_FALSE = frozenset({"0", "false", "no", "off"})
 # These identities are the only catalog-free contracts reviewed against the
 # Shioaji 1.7.1 simulation API.  Do not infer an exchange for other symbols.
 _REVIEWED_BASE_CONTRACTS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
@@ -810,16 +808,11 @@ def _reviewed_base_contract(sdk: object, symbol: str) -> object | None:
 
 
 def _simulation_from_env() -> bool:
-    """Read the isolated-flow simulation mode without exposing its raw value."""
+    """Force the data-only Shioaji account into simulation mode."""
     raw = os.getenv("SHIOAJI_SIMULATION")
-    if raw is None:
+    if raw is None or raw == "true":
         return True
-    normalized = raw.strip().lower()
-    if normalized in _SIMULATION_TRUE:
-        return True
-    if normalized in _SIMULATION_FALSE:
-        return False
-    raise ShioajiConfigError("SHIOAJI_SIMULATION must be a boolean")
+    raise ShioajiConfigError("SHIOAJI_SIMULATION must be true")
 
 
 def _usage_bytes(api: object) -> int | None:

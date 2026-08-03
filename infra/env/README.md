@@ -65,6 +65,8 @@ different DB-backed credentials.
 Fetcher Environments must set `FETCHER_SCHEDULER_DESIRED_STATE`,
 `FETCHER_FINLAB_SCHEDULER_DESIRED_STATE`, and
 `FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE` to exactly `running` or `stopped`.
+Fetcher Environments also set `SHIOAJI_SIMULATION=true`; the reviewed data-only
+account and scheduler reject production trading mode in every target.
 The same CD workflow preflights each provider image and its own durable SQLite
 state before converging that provider's isolated container. Staging keeps all
 three stopped by default; production runs the reviewed pilots. Calendar Serve

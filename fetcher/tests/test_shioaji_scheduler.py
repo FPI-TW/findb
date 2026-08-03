@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from findb_fetcher import shioaji_scheduler
 from findb_fetcher.client import PreparedDelivery
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot, ShioajiSdkError
 from findb_fetcher.shioaji_scheduler import (
@@ -27,6 +28,43 @@ from findb_fetcher.shioaji_staging_state import ShioajiStagingState
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MANIFEST = Path(__file__).resolve().parents[1] / "configs" / "shioaji_tw_pilot.v1.json"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, True),
+        ("true", True),
+        ("TRUE", False),
+        ("true ", False),
+        ("YES", False),
+        ("1", False),
+        ("false", False),
+        ("0", False),
+        ("invalid", False),
+    ],
+)
+def test_production_scheduler_forces_simulation_mode(
+    raw: str | None,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("SHIOAJI_SIMULATION", raising=False)
+    else:
+        monkeypatch.setenv("SHIOAJI_SIMULATION", raw)
+    assert shioaji_scheduler._simulation_is_true() is expected
+
+
+def test_production_runtime_rejects_live_trading_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHIOAJI_SIMULATION", "false")
+    with pytest.raises(
+        shioaji_scheduler.ProductionRuntimeError,
+        match="SHIOAJI_SIMULATION=true is required",
+    ):
+        shioaji_scheduler.validate_production_runtime()
 
 
 def test_exact_production_manifest_and_no_staging_identity(tmp_path: Path) -> None:

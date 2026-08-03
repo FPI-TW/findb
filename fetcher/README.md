@@ -122,10 +122,9 @@ bytes/connections 不會被當成 request count；contract 中的 usage 是本�
 ## Shioaji Taiwan-minute staging coordinator
 
 `SHIOAJI_SIMULATION` controls the isolated staging child and is strict:
-`true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off` (case-insensitive) are
-accepted; an omitted value defaults to `true`, while any other value fails
-closed without echoing its content. This remains read-only Kbars acquisition;
-it never invokes order APIs.
+an omitted value defaults to `true`, and an explicit value must be exactly
+`true`; every other value fails closed without echoing its content. This
+remains read-only Kbars acquisition and never invokes order APIs.
 
 The reviewed staging symbols `2330`, `0050`, `0056`, and `006201` use the
 public `BaseContract(security_type="STK", exchange="TSE", code=..., region="TW")`
@@ -166,8 +165,8 @@ uv run --env-file .env findb-fetch-shioaji-scheduler --check
 uv run --env-file .env findb-fetch-shioaji-scheduler --run-forever
 ```
 
-Production runtime強制`SHIOAJI_SIMULATION=false`並要求獨立Shioaji credentials、Source key、
-R2 binding與`/var/lib/findb-shioaji-fetcher/state.sqlite3`。不可把staging state搬入production。
+Production runtime強制`SHIOAJI_SIMULATION=true`並要求獨立Shioaji data-only credentials、Source key、
+R2 binding、writable provider cache與`/var/lib/findb-shioaji-fetcher/state.sqlite3`。不可把staging state搬入production。
 這是四檔reviewed pilot；完整市場universe、跨sequence publication barrier、archive與
 Serve minute仍屬下一階段。
 
@@ -423,7 +422,7 @@ Scheduler one-shot exit code：
 | `FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | Shioaji container desired state |
 | `FETCHER_SHIOAJI_STATE_PATH` | 否 | `/var/lib/findb-shioaji-fetcher/state.sqlite3` | Shioaji production專用durable SQLite state |
 | `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji是 | — | Production Shioaji帳號；不得與staging共用 |
-| `SHIOAJI_SIMULATION` | Shioaji production是 | — | Production scheduler只接受明確的`false`；staging未設定時仍fail-safe為simulation |
+| `SHIOAJI_SIMULATION` | Shioaji是 | `true` | 所有環境只接受simulation mode；明確的`false`會fail closed |
 | `TWELVE_DATA_API_KEY` | 是 | — | 固定資料來源Twelve Data的runtime secret |
 | `TWELVE_DATA_BASE_URL` | 否 | `https://api.twelvedata.com` | Twelve Data HTTPS origin |
 | `TWELVE_DATA_TIMEOUT_SECONDS` | 否 | `30` | Provider request timeout |

@@ -424,16 +424,19 @@ def test_isolated_gateway_silences_child_and_returns_coarse_credentials_code(
     assert output.out == output.err == ""
 
 
-@pytest.mark.parametrize(("raw", "expected"), [("true", True), ("OFF", False), (" 1 ", True)])
-def test_isolated_simulation_env_uses_only_reviewed_boolean_spellings(
-    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+@pytest.mark.parametrize("raw", (None, "true"))
+def test_isolated_simulation_env_forces_data_only_mode(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
 ) -> None:
-    monkeypatch.setenv("SHIOAJI_SIMULATION", raw)
+    if raw is None:
+        monkeypatch.delenv("SHIOAJI_SIMULATION", raising=False)
+    else:
+        monkeypatch.setenv("SHIOAJI_SIMULATION", raw)
     gateway = IsolatedShioajiGateway.from_env()
-    assert gateway.simulation is expected
+    assert gateway.simulation is True
 
 
-@pytest.mark.parametrize("raw", ("enabled", "2", "not-a-bool"))
+@pytest.mark.parametrize("raw", ("false", "OFF", "TRUE", "true ", "1", "enabled"))
 def test_isolated_simulation_env_fails_closed_without_echoing_value(
     monkeypatch: pytest.MonkeyPatch, raw: str
 ) -> None:

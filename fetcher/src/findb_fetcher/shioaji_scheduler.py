@@ -249,15 +249,15 @@ def open_production_state(path: Path) -> ShioajiStagingState:
         raise ProductionStateError("production state is incompatible") from exc
 
 
-def _simulation_is_false() -> bool:
+def _simulation_is_true() -> bool:
     value = os.getenv("SHIOAJI_SIMULATION")
-    return value is not None and value.strip().lower() in {"0", "false", "no", "off"}
+    return value is None or value == "true"
 
 
 def validate_production_runtime() -> tuple[FetcherConfig, MarketCalendarConfig, RawStorageConfig]:
     """Validate credentials/configuration without constructing network clients."""
-    if not _simulation_is_false():
-        raise ProductionRuntimeError("SHIOAJI_SIMULATION=false is required")
+    if not _simulation_is_true():
+        raise ProductionRuntimeError("SHIOAJI_SIMULATION=true is required")
     if (
         not os.getenv("SHIOAJI_API_KEY", "").strip()
         or not os.getenv("SHIOAJI_SECRET_KEY", "").strip()

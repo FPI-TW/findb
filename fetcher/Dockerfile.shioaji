@@ -13,17 +13,20 @@ COPY contracts ./contracts
 RUN uv sync --frozen --no-dev --extra shioaji
 
 RUN groupadd --system --gid 10001 fetcher \
-    && useradd --system --uid 10001 --gid fetcher --home-dir /nonexistent fetcher \
+    && useradd --system --uid 10001 --gid fetcher --create-home --home-dir /home/fetcher fetcher \
     && mkdir -p /var/lib/findb-shioaji-fetcher \
-    && chown fetcher:fetcher /var/lib/findb-shioaji-fetcher \
-    && chown -R fetcher:fetcher /app
+    && chown -R fetcher:fetcher /app /home/fetcher /var/lib/findb-shioaji-fetcher
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
+    HOME=/home/fetcher \
+    XDG_CACHE_HOME=/home/fetcher/.cache \
+    XDG_CONFIG_HOME=/home/fetcher/.config \
+    XDG_DATA_HOME=/home/fetcher/.local/share \
     FETCHER_CONTRACTS_DIR=/app/contracts \
     FETCHER_SHIOAJI_STATE_PATH=/var/lib/findb-shioaji-fetcher/state.sqlite3
 
-VOLUME ["/var/lib/findb-shioaji-fetcher"]
+VOLUME ["/home/fetcher", "/var/lib/findb-shioaji-fetcher"]
 
 USER fetcher
 

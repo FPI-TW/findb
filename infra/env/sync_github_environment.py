@@ -75,6 +75,7 @@ SERVICE_CONFIGS: Final = {
             "FETCHER_SCHEDULER_DESIRED_STATE",
             "FETCHER_FINLAB_SCHEDULER_DESIRED_STATE",
             "FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE",
+            "SHIOAJI_SIMULATION",
             "FETCHER_SOURCE_API_URL",
             "FINDB_SERVE_BASE_URL",
             "FETCHER_CALENDAR_TIMEOUT_SECONDS",
@@ -207,6 +208,13 @@ def _validate_fetcher_bucket_contract(target: str, values: dict[str, str]) -> st
     return None
 
 
+def _validate_fetcher_simulation_contract(target: str, values: dict[str, str]) -> str | None:
+    """Keep the data-only Shioaji account in simulation mode for every target."""
+    if values.get("SHIOAJI_SIMULATION") != "true":
+        return f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
+    return None
+
+
 def _validate_findb_canonical_contract(target: str, values: dict[str, str]) -> str | None:
     publisher_id = values.get("CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "")
     publisher_secret = values.get("CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY", "")
@@ -312,6 +320,10 @@ def main() -> int:
         bucket_contract_error = _validate_fetcher_bucket_contract(arguments.target, values)
         if bucket_contract_error:
             print(bucket_contract_error)
+            return 1
+        simulation_contract_error = _validate_fetcher_simulation_contract(arguments.target, values)
+        if simulation_contract_error:
+            print(simulation_contract_error)
             return 1
     if arguments.service == "findb":
         canonical_contract_error = _validate_findb_canonical_contract(arguments.target, values)
