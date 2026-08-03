@@ -53,8 +53,8 @@
       "scheduled_time": "14:30",
       "target_date_policy": "latest_weekday",
       "calendar_file": null,
-      "grace_seconds": 1800,
-      "outputsize": 20,
+      "grace_seconds": 9000,
+      "outputsize": 2,
       "max_attempts": 5,
       "retry_base_seconds": 60,
       "retry_max_seconds": 3600,
@@ -62,8 +62,8 @@
       "poll_interval_seconds": 30,
       "wait_timeout_seconds": 1800,
       "max_credits_per_run": 5,
-      "max_records_per_run": 10000,
-      "enabled": false
+      "max_records_per_run": 2,
+      "enabled": true
     },
     {
       "slot_id": "asia_1630",

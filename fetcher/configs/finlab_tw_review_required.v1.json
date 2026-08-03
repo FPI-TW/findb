@@ -2,7 +2,25 @@
   "manifest_version": 1,
   "manifest_id": "finlab_tw_review_required",
   "provider": "finlab",
+  "dataset": "tw_equity_eod",
   "market": "TW",
-  "status": "disabled_pending_review",
-  "symbols": []
+  "asset_class": "equity",
+  "currency": "TWD",
+  "field_datasets": {
+    "open": "price:開盤價",
+    "high": "price:最高價",
+    "low": "price:最低價",
+    "close": "price:收盤價",
+    "volume": "price:成交股數"
+  },
+  "symbols": [
+    {
+      "source_symbol": "2330",
+      "canonical_symbol": "2330"
+    },
+    {
+      "source_symbol": "2317",
+      "canonical_symbol": "2317"
+    }
+  ]
 }

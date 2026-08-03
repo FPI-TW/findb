@@ -14,14 +14,21 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - Versioned US Common Stock symbol universe與credit/record/date硬上限。
 - 每個symbol獨立identity與delivery的bounded multi-symbol orchestration。
 - Fetcher-owned SQLite scheduler state、persistent retry、lease recovery與逐symbol checkpoint。
+- FinLab `2330`、`2317` reviewed pilot 的dataset-level durable scheduler與完整
+  two-row canonical成功閘門。
+- Shioaji `2330`、`0050`、`0056`、`006201` reviewed pilot 的同日
+  `14:30`–`17:00 Asia/Taipei` production scheduler。
 - 安全的one-shot scheduler，以及需明確選用的常駐poll loop。
-- Exact-byte provider response寫入Fetcher-owned Cloudflare R2，delivery攜帶immutable ref與SHA-256。
+- Provider raw artifact先寫入Fetcher-owned Cloudflare R2，delivery攜帶immutable ref與SHA-256；
+  Twelve Data保存exact HTTP bytes，SDK providers保存deterministic detached snapshots。
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness與scheduler preflight入口；不會自動抓取或送出資料。
 
-Fetcher CD依Environment的`FETCHER_SCHEDULER_DESIRED_STATE`收斂scheduler：staging
-設定為`stopped`，每次部署會更新並停妥container；production設定為`running`並維持
-單一scheduler。兩種狀態使用相同immutable image、runtime config與SQLite state。
+Fetcher CD分別依Environment的`FETCHER_SCHEDULER_DESIRED_STATE`、
+`FETCHER_FINLAB_SCHEDULER_DESIRED_STATE`與
+`FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE`收斂三個隔離scheduler。Staging三者均為
+`stopped`；production三者均為`running`。每個provider使用獨立immutable image、
+Source client key、container與durable SQLite state，不能互相共用credential或state。
 R2 bucket與API
 token已由外部提供；raw object lifecycle為30天，bucket lock為7天，兩者由Cloudflare
 R2管理而非Fetcher scheduler。
@@ -84,6 +91,24 @@ credentials 加到此 smoke container。
 一次 acquisition 的硬上限為 300 秒，涵蓋 cold cache 的 SDK metadata/data 初始化；逾時會
 終止隔離 child 並只輸出 generic `acquisition_failed`，不重試或啟用 scheduler。
 
+## FinLab durable reviewed pilot
+
+FinLab production pilot固定在`tw_1430`抓取`2330`與`2317`的五個OHLCV datasets，組成
+單一`market_eod.v1` `full_snapshot` delivery。每一輪先保存deterministic SDK acquisition
+bundle至raw R2，再保存prepared Source request；重啟後直接重送相同request，不會再次
+呼叫SDK。只有Source run為`completed`且total/success均為2、failed為0時才推進checkpoint。
+
+本機preflight與常駐執行：
+
+```bash
+uv run --env-file .env findb-fetch-finlab-scheduler --check
+uv run --env-file .env findb-fetch-finlab-scheduler --run-forever
+```
+
+Preflight會驗證已啟用的`tw_1430` feed、exact two-symbol reviewed manifest、runtime config、
+contracts與state，但不建立provider、Source、calendar或R2 client。Production state預設為
+`/var/lib/findb-finlab-fetcher/state.sqlite3`；此pilot不是FinLab全市場授權。
+
 ## Shioaji simulation acquisition smoke
 
 `shioaji==1.7.1` 是 optional dependency。`findb-fetch-shioaji-smoke` 只接受 staging
@@ -127,6 +152,24 @@ day. Stored bytes are an SDK-detached `shioaji_sdk_acquisition_snapshot.v1`,
 not exact HTTP provider response bytes. This remains staging-only: it does not
 activate a dataset, schedule work, authorize production/backfill use, or create
 R2/Source clients during preflight or normal validation.
+
+## Shioaji durable reviewed pilot
+
+Production pilot固定使用`2330` equity與`0050`、`0056`、`006201` ETF。Scheduler只在
+published TW calendar標示當日開市時，於`14:30`後取得同一Taipei trade date；`17:00`
+後停止provider重試，而且不會在隔日自動補抓。Acquisition attempt、rolling rate-limit、
+SDK-detached snapshot、raw R2 intent/object、prepared Source request與terminal結果均保存在
+production專用SQLite state。只有Source `completed`且record counts完全一致才視為成功。
+
+```bash
+uv run --env-file .env findb-fetch-shioaji-scheduler --check
+uv run --env-file .env findb-fetch-shioaji-scheduler --run-forever
+```
+
+Production runtime強制`SHIOAJI_SIMULATION=false`並要求獨立Shioaji credentials、Source key、
+R2 binding與`/var/lib/findb-shioaji-fetcher/state.sqlite3`。不可把staging state搬入production。
+這是四檔reviewed pilot；完整市場universe、跨sequence publication barrier、archive與
+Serve minute仍屬下一階段。
 
 ## Twelve Data手動抓取
 
@@ -259,7 +302,7 @@ request一致後才建立contract。
 `tests/fixtures/twelve_data/aapl_1day_2024-01-02_2024-01-05.json`。Provider參數與
 限制應以[Twelve Data文件](https://twelvedata.com/docs/introduction/overview)為準。
 
-## Durable scheduler
+## Twelve Data durable scheduler
 
 Scheduler設定位於
 `configs/twelve_data_us_common_stocks_daily.v1.json`，固定引用同目錄的versioned
@@ -320,9 +363,11 @@ schedule date仍可重新嘗試該symbol。排程不內建交易所假日日曆�
 
 ## Provider raw storage（Cloudflare R2）
 
-Fetcher以streaming hard cap讀取Twelve Data response，要求`Accept-Encoding:
-identity`並拒絕其它content encoding。S3保存的是HTTP client實際收到、未重新
-序列化的response bytes；SHA-256直接從同一份bytes計算。
+Twelve Data以streaming hard cap讀取response，要求`Accept-Encoding: identity`並拒絕
+其它content encoding；R2保存HTTP client實際收到的exact bytes。FinLab保存
+deterministic SDK dataset bundle，Shioaji保存SDK-detached acquisition snapshot；後兩者
+不宣稱是provider HTTP bytes，但同樣在Source delivery前完成raw-first persistence與
+SHA-256 provenance。
 
 Raw-enabled執行順序固定為：
 
@@ -364,7 +409,7 @@ Scheduler one-shot exit code：
 | 變數 | 必填 | 預設 | 用途 |
 | --- | --- | --- | --- |
 | `SOURCE_API_URL` | 是 | — | FinDB Source API HTTPS origin；只允許root/trailing slash與有效optional port，不含credentials、path、query或fragment |
-| `SOURCE_CLIENT_KEY` | 是 | — | Fetcher專用DB-backed source client key |
+| `SOURCE_CLIENT_KEY` | 是 | — | 當前provider runtime專用DB-backed Source client key；三個provider不得共用 |
 | `FETCHER_CONTRACTS_DIR` | 否 | `/app/contracts` | Contract manifest目錄 |
 | `FETCHER_REQUEST_TIMEOUT_SECONDS` | 否 | `30` | 單次HTTP timeout |
 | `FETCHER_MAX_ATTEMPTS` | 否 | `3` | 包含首次呼叫的最大attempt數 |
@@ -372,6 +417,13 @@ Scheduler one-shot exit code：
 | `FETCHER_SCHEDULE_FILE` | 否 | `/app/configs/twelve_data_us_common_stocks_daily.v1.json` | Versioned scheduler設定 |
 | `FETCHER_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | 僅接受`running`或`stopped`；staging=`stopped`、production=`running` |
 | `FETCHER_STATE_PATH` | 否 | `/var/lib/findb-fetcher/state.sqlite3` | Fetcher-owned durable SQLite state |
+| `FETCHER_FINLAB_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | FinLab container desired state |
+| `FETCHER_FINLAB_STATE_PATH` | 否 | `/var/lib/findb-finlab-fetcher/state.sqlite3` | FinLab專用durable SQLite state |
+| `FINLAB_API_TOKEN` | FinLab是 | — | FinLab headless SDK token |
+| `FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | Shioaji container desired state |
+| `FETCHER_SHIOAJI_STATE_PATH` | 否 | `/var/lib/findb-shioaji-fetcher/state.sqlite3` | Shioaji production專用durable SQLite state |
+| `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji是 | — | Production Shioaji帳號；不得與staging共用 |
+| `SHIOAJI_SIMULATION` | Shioaji production是 | — | Production scheduler只接受明確的`false`；staging未設定時仍fail-safe為simulation |
 | `TWELVE_DATA_API_KEY` | 是 | — | 固定資料來源Twelve Data的runtime secret |
 | `TWELVE_DATA_BASE_URL` | 否 | `https://api.twelvedata.com` | Twelve Data HTTPS origin |
 | `TWELVE_DATA_TIMEOUT_SECONDS` | 否 | `30` | Provider request timeout |
@@ -383,9 +435,8 @@ Scheduler one-shot exit code：
 | `CLOUDFLARE_R2_RAW_SESSION_TOKEN` | 否 | — | 使用Raw bucket temporary credentials時設定 |
 | `CLOUDFLARE_R2_MAX_OBJECT_BYTES` | 否 | `8388608` | Raw object上限，程式硬上限16 MiB |
 
-容器預設執行 `python -m findb_fetcher`。它只驗證runtime設定與contracts後退出，
-不會呼叫provider或產生delivery。Staging CD會以
-`findb-fetch-scheduler --run-forever`覆蓋command並掛載durable state；rollout先用同一
-image與mount執行`--check`，通過後才停止舊container。候選container需持續存活且未重啟
-才會取得stable名稱，否則會移除候選並重新啟動舊container。若程序遭突然SIGTERM，
-執行中的job會留到lease到期後由scheduler回收，而非立即重派。
+通用、FinLab與Shioaji images各自提供安全的預設命令；部署時才以對應scheduler
+`--run-forever`覆蓋並掛載provider專用durable state。Rollout先以同一image、mount及
+runtime環境執行`--check`，通過後才替換舊container。候選container需持續存活且未重啟
+才會取得stable名稱，否則移除候選並復原舊container。若程序突然SIGTERM，執行中的job
+會留到lease到期後由scheduler回收，而非立即重派。

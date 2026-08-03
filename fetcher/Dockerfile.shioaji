@@ -1,0 +1,30 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir "uv==0.9.9"
+
+COPY fetcher/pyproject.toml fetcher/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project --extra shioaji
+
+COPY fetcher/src ./src
+COPY fetcher/configs ./configs
+COPY contracts ./contracts
+RUN uv sync --frozen --no-dev --extra shioaji
+
+RUN groupadd --system --gid 10001 fetcher \
+    && useradd --system --uid 10001 --gid fetcher --home-dir /nonexistent fetcher \
+    && mkdir -p /var/lib/findb-shioaji-fetcher \
+    && chown fetcher:fetcher /var/lib/findb-shioaji-fetcher \
+    && chown -R fetcher:fetcher /app
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    FETCHER_CONTRACTS_DIR=/app/contracts \
+    FETCHER_SHIOAJI_STATE_PATH=/var/lib/findb-shioaji-fetcher/state.sqlite3
+
+VOLUME ["/var/lib/findb-shioaji-fetcher"]
+
+USER fetcher
+
+CMD ["findb-fetch-shioaji-scheduler", "--help"]

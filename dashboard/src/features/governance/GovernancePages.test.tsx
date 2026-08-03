@@ -146,6 +146,14 @@ describe("governance pages", () => {
     expect(screen.getByLabelText("tw_etf_eod")).toBeInTheDocument()
     expect(screen.getByLabelText("wtx_eod")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "簽發" })).toBeDisabled()
+
+    expect(screen.getByRole("option", { name: "shioaji" })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Source name"), {
+      target: { value: "shioaji" },
+    })
+    expect(screen.queryByLabelText("tw_equity_eod")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("tw_equity_minute")).toBeInTheDocument()
+    expect(screen.getByLabelText("tw_etf_minute")).toBeInTheDocument()
   })
 
   it("issues a source credential for all current and future provider datasets", async () => {

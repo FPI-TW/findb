@@ -42,10 +42,89 @@ def test_tw_minute_migration_is_single_linear_head():
     config.set_main_option("script_location", str(backend_root / "migrations"))
     scripts = ScriptDirectory.from_config(config)
 
-    head = scripts.get_revision("a9b0c1d2e3f4")
-    assert head is not None
-    assert head.down_revision == "f8a9b0c1d2e3"
-    assert scripts.get_heads() == ["a9b0c1d2e3f4"]
+    foundation = scripts.get_revision("a9b0c1d2e3f4")
+    activation = scripts.get_revision("b0c1d2e3f4a5")
+    assert foundation is not None
+    assert foundation.down_revision == "f8a9b0c1d2e3"
+    assert activation is not None
+    assert activation.down_revision == "a9b0c1d2e3f4"
+    assert scripts.get_heads() == ["b0c1d2e3f4a5"]
+
+
+@pytest.mark.asyncio
+async def test_shioaji_pilot_activation_migration_is_reversible():
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_shioaji_activation_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+
+        await _run_alembic(database_url, "a9b0c1d2e3f4")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO dataset_registry (
+                        dataset_key, name, asset_class, market, frequency,
+                        is_active, config, created_at, updated_at
+                        ) VALUES (
+                            'tw_equity_minute', 'operator name', 'equity', 'TW', 'minute',
+                            false, CAST(:operator_config AS jsonb), now(), now()
+                        )
+                        """
+                ),
+                {"operator_config": json.dumps({"operator_owned": True})},
+            )
+
+        await _run_alembic(database_url, "b0c1d2e3f4a5")
+        async with target_engine.connect() as connection:
+            active = await connection.execute(
+                text(
+                    """
+                    SELECT dataset_key, is_active, config
+                    FROM dataset_registry
+                    WHERE dataset_key IN ('tw_equity_minute', 'tw_etf_minute')
+                    ORDER BY dataset_key
+                    """
+                )
+            )
+            rows = active.all()
+            assert rows[0] == ("tw_equity_minute", True, {"operator_owned": True})
+            assert rows[1][0:2] == ("tw_etf_minute", True)
+            assert rows[1][2]["schema_id"] == "market_minute"
+            assert rows[1][2]["source_format"] == "shioaji_tw_minute"
+
+        await _run_alembic(database_url, "a9b0c1d2e3f4", command="downgrade")
+        async with target_engine.connect() as connection:
+            inactive = await connection.execute(
+                text(
+                    """
+                    SELECT dataset_key, is_active
+                    FROM dataset_registry
+                    WHERE dataset_key IN ('tw_equity_minute', 'tw_etf_minute')
+                    ORDER BY dataset_key
+                    """
+                )
+            )
+            assert inactive.all() == [
+                ("tw_equity_minute", False),
+                ("tw_etf_minute", False),
+            ]
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        async with admin_engine.connect() as connection:
+            await connection.execute(
+                text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+            )
+        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio

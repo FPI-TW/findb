@@ -6,6 +6,7 @@ import {
   credentialMutationResponseSchema,
   credentialsOverviewSchema,
   credentialsResponseSchema,
+  SOURCE_PROVIDER_DATASETS,
   userMutationResponseSchema,
 } from "./admin-governance-api"
 
@@ -102,6 +103,19 @@ describe("admin governance wire contracts", () => {
     ).toMatchObject({
       kind: "source",
       allowed_datasets: null,
+    })
+    expect(
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "shioaji-fetcher",
+        owner: "data-platform",
+        source_name: "shioaji",
+        allowed_datasets: ["tw_equity_minute", "tw_etf_minute"],
+      })
+    ).toMatchObject({
+      kind: "source",
+      source_name: "shioaji",
+      allowed_datasets: SOURCE_PROVIDER_DATASETS.shioaji,
     })
     expect(() =>
       createCredentialSchema.parse({
