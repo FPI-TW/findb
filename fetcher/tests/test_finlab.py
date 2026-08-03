@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from findb_fetcher.contracts import ContractRegistry
+from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
     FinLabDatasetBundle,
@@ -76,6 +77,7 @@ def test_bundle_bytes_are_deterministic_and_request_is_reviewed_scope_only(
     ContractRegistry(contracts_dir).validate("market_eod", 1, request)
     assert request["source"] == "finlab"
     assert request["payload"]["batch"]["data_date"] == "2026-07-29"
+    assert request["payload"]["batch"]["delivery_mode"] == "full_snapshot"
     assert [row["symbol"] for row in request["payload"]["data"]] == ["2317", "2330"]
     assert all(row["volume"] is not None for row in request["payload"]["data"])
     assert len(json.dumps(request, ensure_ascii=False).encode("utf-8")) < 1024 * 1024
@@ -186,16 +188,20 @@ def test_prepare_rejects_raw_store_integrity_mismatch() -> None:
         )
 
 
-def test_disabled_manifest_uses_no_unreviewed_us_universe() -> None:
+def test_disabled_manifest_uses_only_the_reviewed_finlab_pilot_universe() -> None:
     configs = Path(__file__).parents[1] / "configs"
     schedule = json.loads((configs / "daily_scheduler.v2.json").read_text(encoding="utf-8"))
     finlab = next(feed for feed in schedule["feeds"] if feed["provider"] == "finlab")
 
-    assert finlab["enabled"] is False
+    assert finlab["enabled"] is True
     assert finlab["universe_file"] == "finlab_tw_review_required.v1.json"
-    placeholder = json.loads((configs / finlab["universe_file"]).read_text(encoding="utf-8"))
-    assert placeholder["provider"] == "finlab"
-    assert placeholder["symbols"] == []
+    universe = load_finlab_universe(configs / finlab["universe_file"])
+    assert universe.provider == "finlab"
+    assert universe.dataset == "tw_equity_eod"
+    assert universe.market == "TW"
+    assert universe.asset_class == "equity"
+    assert universe.currency == "TWD"
+    assert {item.source_symbol for item in universe.symbols} == {"2330", "2317"}
 
 
 def test_finlab_dependency_stays_on_token_compatible_release() -> None:

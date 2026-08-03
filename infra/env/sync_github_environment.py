@@ -73,6 +73,8 @@ SERVICE_CONFIGS: Final = {
     "fetcher": ServiceConfig(
         variables=(
             "FETCHER_SCHEDULER_DESIRED_STATE",
+            "FETCHER_FINLAB_SCHEDULER_DESIRED_STATE",
+            "FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE",
             "FETCHER_SOURCE_API_URL",
             "FINDB_SERVE_BASE_URL",
             "FETCHER_CALENDAR_TIMEOUT_SECONDS",
@@ -92,16 +94,17 @@ SERVICE_CONFIGS: Final = {
             "FETCHER_EC2_USER",
             "FETCHER_EC2_SSH_KEY",
             "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
+            "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
+            "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY",
             "FETCHER_CALENDAR_SERVE_API_KEY",
             "TWELVE_DATA_API_KEY",
+            "FINLAB_API_TOKEN",
+            "SHIOAJI_API_KEY",
+            "SHIOAJI_SECRET_KEY",
             "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
             "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
         ),
-        optional_secrets=(
-            "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
-            "FINLAB_API_TOKEN",
-            "CLOUDFLARE_R2_RAW_SESSION_TOKEN",
-        ),
+        optional_secrets=("CLOUDFLARE_R2_RAW_SESSION_TOKEN",),
     ),
 }
 
@@ -296,10 +299,15 @@ def main() -> int:
             }
         ]
     if arguments.service == "fetcher":
-        if values.get("FETCHER_CALENDAR_SERVE_API_KEY") == values.get(
-            "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"
-        ):
-            print("Calendar Serve and Source credentials must be different")
+        isolated_credentials = (
+            values.get("FETCHER_CALENDAR_SERVE_API_KEY"),
+            values.get("FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"),
+            values.get("FETCHER_FINLAB_SOURCE_CLIENT_KEY"),
+            values.get("FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"),
+        )
+        configured_credentials = tuple(value for value in isolated_credentials if value)
+        if len(configured_credentials) != len(set(configured_credentials)):
+            print("Calendar Serve and provider Source credentials must be distinct")
             return 1
         bucket_contract_error = _validate_fetcher_bucket_contract(arguments.target, values)
         if bucket_contract_error:

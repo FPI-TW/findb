@@ -62,9 +62,12 @@ before making remote changes and never prints values. Serve lookup/cache secrets
 are required only when `SERVE_REQUIRE_AUTH=true`; when enabled they must be
 different DB-backed credentials.
 
-Fetcher Environments must set `FETCHER_SCHEDULER_DESIRED_STATE` to exactly
-`running` or `stopped`. The same CD workflow always preflights the exact image
-and durable SQLite state, then converges its scheduler container to that state;
-staging uses `stopped`, while production uses `running`. Removing a local value
-does not delete an already-published GitHub Environment value: delete retired
-remote values explicitly before redeploying.
+Fetcher Environments must set `FETCHER_SCHEDULER_DESIRED_STATE`,
+`FETCHER_FINLAB_SCHEDULER_DESIRED_STATE`, and
+`FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE` to exactly `running` or `stopped`.
+The same CD workflow preflights each provider image and its own durable SQLite
+state before converging that provider's isolated container. Staging keeps all
+three stopped by default; production runs the reviewed pilots. Calendar Serve
+and all three provider Source credentials must be pairwise distinct. Removing a
+local value does not delete an already-published GitHub Environment value:
+delete retired remote values explicitly before redeploying.

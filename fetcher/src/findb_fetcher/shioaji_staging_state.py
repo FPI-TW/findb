@@ -382,6 +382,7 @@ class ShioajiStagingState:
         rolling_seconds: int,
         max_attempts: int,
         lease_seconds: int = 120,
+        terminal_on_exhaustion: bool = False,
     ) -> tuple[bool, int]:
         now_text = _utc(now)
         self.db.execute("BEGIN IMMEDIATE")
@@ -393,6 +394,25 @@ class ShioajiStagingState:
                 (daily_id, symbol),
             ).fetchone() or (-1, None, "blocked")
             used = self.db.execute("SELECT count(*) FROM limiter").fetchone()[0]
+            if (
+                terminal_on_exhaustion
+                and attempts >= max_attempts
+                and terminal is None
+                and not (lease and lease > now_text)
+            ):
+                # A recurring production poll must not leave a retryable
+                # sequence in an endless ATTEMPT_BLOCKED state.  Staging
+                # callers retain the historical blocked response unless they
+                # explicitly opt into this terminal transition.
+                self.db.execute(
+                    "UPDATE snapshot_sequences SET terminal_status=?,"
+                    "status='terminal',lease_until=NULL "
+                    "WHERE daily_id=? AND symbol=? AND terminal_status IS NULL",
+                    ("ACQUISITION_ATTEMPTS_EXHAUSTED", daily_id, symbol),
+                )
+                self._refresh_statuses(daily_id)
+                self.db.execute("COMMIT")
+                return False, max(attempts, 0)
             if (
                 attempts < 0
                 or terminal
@@ -530,6 +550,29 @@ class ShioajiStagingState:
             if row and row[0] is not None
             else None
         )
+
+    def mark_cutoff(self, daily_id: str) -> int:
+        """Atomically fail unfinished work when a same-day production window closes."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "UPDATE provider_attempts SET outcome='failed',code='CUTOFF_REACHED' "
+                "WHERE daily_id=? AND outcome='started'",
+                (daily_id,),
+            )
+            updated = self.db.execute(
+                "UPDATE snapshot_sequences SET terminal_status='CUTOFF_REACHED',"
+                "terminal_reason=NULL,status='terminal',lease_until=NULL "
+                "WHERE daily_id=? AND terminal_status IS NULL",
+                (daily_id,),
+            ).rowcount
+            if updated:
+                self._refresh_statuses(daily_id)
+            self.db.execute("COMMIT")
+            return updated
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
 
     def save_prepared(
         self,

@@ -165,6 +165,7 @@ class Coordinator:
         now: Callable[[], datetime] = lambda: datetime.now(TAIPEI),
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        terminal_on_exhaustion: bool = False,
     ) -> None:
         (
             self.state,
@@ -176,6 +177,7 @@ class Coordinator:
             self.now,
             self.monotonic,
             self.sleep,
+            self.terminal_on_exhaustion,
         ) = (
             state,
             manifest,
@@ -186,6 +188,7 @@ class Coordinator:
             now,
             monotonic,
             sleep,
+            terminal_on_exhaustion,
         )
 
     def run(self, target: date, deliver: bool = False, *, preflight: bool = False) -> list[Result]:
@@ -276,8 +279,22 @@ class Coordinator:
                     max_requests=gov["max_requests"],
                     rolling_seconds=gov["rolling_seconds"],
                     max_attempts=gov["max_attempts_per_sequence"],
+                    terminal_on_exhaustion=self.terminal_on_exhaustion,
                 )
                 if not ok:
+                    terminal = self.state.get_terminal(daily_id, symbol)
+                    if terminal is not None:
+                        terminal_code, terminal_reason = terminal
+                        out.append(
+                            Result(
+                                terminal_code,
+                                "state",
+                                reason=terminal_reason,
+                            )
+                        )
+                        if terminal_code in _GLOBAL_TERMINAL_CODES:
+                            break
+                        continue
                     out.append(Result("ATTEMPT_BLOCKED", "acquisition"))
                     continue
                 if _past_cutoff(self.now(), str(gov["cutoff"])):
@@ -336,6 +353,13 @@ class Coordinator:
                         ("ACQUISITION_FAILED", "acquisition"),
                     )
                     retryable = exc.code not in terminal_codes
+                    if (
+                        self.terminal_on_exhaustion
+                        and retryable
+                        and attempt >= int(gov["max_attempts_per_sequence"])
+                    ):
+                        code = "ACQUISITION_ATTEMPTS_EXHAUSTED"
+                        retryable = False
                     self.state.finish_attempt(
                         daily_id,
                         symbol,
@@ -355,15 +379,24 @@ class Coordinator:
                     )
                     # CREDENTIALS/LOGIN/SDK/CONTRACT/PAYLOAD are global
                     # fail-fast conditions: do not risk another provider call.
-                    if not retryable:
+                    if exc.code in terminal_codes:
                         break
                     continue
                 except Exception:
                     # Gateway implementations must already have stripped provider text.
-                    self.state.finish_attempt(
-                        daily_id, symbol, attempt, "failed", "ACQUISITION_FAILED", retryable=True
+                    exhausted = self.terminal_on_exhaustion and attempt >= int(
+                        gov["max_attempts_per_sequence"]
                     )
-                    out.append(Result("ACQUISITION_FAILED", "acquisition", retryable=True))
+                    code = "ACQUISITION_ATTEMPTS_EXHAUSTED" if exhausted else "ACQUISITION_FAILED"
+                    self.state.finish_attempt(
+                        daily_id,
+                        symbol,
+                        attempt,
+                        "failed",
+                        code,
+                        retryable=not exhausted,
+                    )
+                    out.append(Result(code, "acquisition", retryable=not exhausted))
                     continue
             now = self.now()
             try:

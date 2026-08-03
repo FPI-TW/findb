@@ -79,7 +79,7 @@ jobs:
           image="findb-fetcher:${{ github.sha }}"
           for attempt in 1 2 3; do
             if docker build -f fetcher/Dockerfile -t "$image" .; then
-              exit 0
+              break
             fi
             if [ "$attempt" -eq 3 ]; then
               echo "::error title=Fetcher container build failed::Docker build failed after 3 attempts"
@@ -89,12 +89,29 @@ jobs:
             echo "::warning title=Fetcher container build retry::Attempt ${attempt} failed; retrying in ${delay}s"
             sleep "$delay"
           done
+          docker run --rm "$image" findb-fetch-scheduler --help
 
-      - name: Build and inspect isolated FinLab smoke container
+      - name: Build and inspect isolated FinLab scheduler container
         working-directory: .
         run: |
           generic_image="findb-fetcher:${{ github.sha }}"
           finlab_image="findb-fetcher-finlab:${{ github.sha }}"
-          docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is None else 1)'
+          shioaji_image="findb-fetcher-shioaji:${{ github.sha }}"
+          # The generic runtime must not gain either optional provider SDK.
+          docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(name) is None for name in ("finlab", "shioaji")) else 1)'
           docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .
+          docker run --rm "$finlab_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is not None and importlib.util.find_spec("shioaji") is None else 1)'
+          docker run --rm "$finlab_image" findb-fetch-finlab-scheduler --help
           docker run --rm "$finlab_image" findb-fetch-finlab-smoke --help
+
+      - name: Build and inspect isolated Shioaji scheduler container
+        working-directory: .
+        run: |
+          generic_image="findb-fetcher:${{ github.sha }}"
+          finlab_image="findb-fetcher-finlab:${{ github.sha }}"
+          shioaji_image="findb-fetcher-shioaji:${{ github.sha }}"
+          docker build -f fetcher/Dockerfile.shioaji -t "$shioaji_image" .
+          # The Shioaji runtime carries only its explicitly requested optional
+          # SDK.  Keep the generic and FinLab images hermetic as well.
+          docker run --rm "$shioaji_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("shioaji") is not None and importlib.util.find_spec("finlab") is None else 1)'
+          docker run --rm "$shioaji_image" findb-fetch-shioaji-scheduler --help

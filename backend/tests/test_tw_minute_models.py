@@ -516,7 +516,7 @@ async def test_universe_thresholds_and_latest_warning_kind_are_fail_closed(test_
 
 
 @pytest.mark.asyncio
-async def test_minute_datasets_are_seeded_inactive_with_governance(test_session):
+async def test_minute_datasets_are_seeded_active_for_reviewed_pilot_with_governance(test_session):
     await seed_datasets(test_session)
     rows = (
         (
@@ -532,7 +532,7 @@ async def test_minute_datasets_are_seeded_inactive_with_governance(test_session)
 
     assert {row["dataset_key"] for row in rows} == {"tw_equity_minute", "tw_etf_minute"}
     for row in rows:
-        assert row["is_active"] is False
+        assert row["is_active"] is True
         assert row["config"]["schema_id"] == "market_minute"
         assert "universe_symbol_limit" not in row["config"]["governance"]
         assert row["config"]["governance"]["sequence_symbol_limit"] == 50

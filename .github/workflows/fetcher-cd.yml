@@ -46,6 +46,7 @@ permissions:
 env:
   FETCHER_IMAGE: ghcr.io/fpi-tw/findb-fetcher
   FETCHER_FINLAB_IMAGE: ghcr.io/fpi-tw/findb-fetcher-finlab
+  FETCHER_SHIOAJI_IMAGE: ghcr.io/fpi-tw/findb-fetcher-shioaji
   FETCHER_IMAGE_TAG: ${{ github.sha }}
 
 jobs:
@@ -85,7 +86,7 @@ jobs:
           cache-from: type=gha,scope=fetcher
           cache-to: type=gha,mode=max,scope=fetcher
 
-      - name: Build and push isolated FinLab smoke image
+      - name: Build and push FinLab Fetcher image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -94,6 +95,16 @@ jobs:
           tags: ${{ env.FETCHER_FINLAB_IMAGE }}:${{ env.FETCHER_IMAGE_TAG }}
           cache-from: type=gha,scope=fetcher-finlab
           cache-to: type=gha,mode=max,scope=fetcher-finlab
+
+      - name: Build and push Shioaji Fetcher image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: fetcher/Dockerfile.shioaji
+          push: true
+          tags: ${{ env.FETCHER_SHIOAJI_IMAGE }}:${{ env.FETCHER_IMAGE_TAG }}
+          cache-from: type=gha,scope=fetcher-shioaji
+          cache-to: type=gha,mode=max,scope=fetcher-shioaji
 
   validate-r2-bucket-configuration:
     needs: build-push
@@ -123,13 +134,57 @@ jobs:
             exit 1
           fi
 
-  deploy:
-    needs: [build-push, validate-r2-bucket-configuration]
+  validate-fetcher-credential-isolation:
+    needs: build-push
     if: >-
       github.event_name != 'workflow_dispatch' ||
       inputs.run_finlab_smoke != true
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
+    env:
+      FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
+      FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY: ${{ secrets.FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY }}
+      FETCHER_FINLAB_SOURCE_CLIENT_KEY: ${{ secrets.FETCHER_FINLAB_SOURCE_CLIENT_KEY }}
+      FETCHER_SHIOAJI_SOURCE_CLIENT_KEY: ${{ secrets.FETCHER_SHIOAJI_SOURCE_CLIENT_KEY }}
+    steps:
+      - name: Fail closed on Fetcher credential reuse
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            FETCHER_CALENDAR_SERVE_API_KEY \
+            FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY \
+            FETCHER_FINLAB_SOURCE_CLIENT_KEY \
+            FETCHER_SHIOAJI_SOURCE_CLIENT_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=Fetcher credential configuration missing::Required credential is not configured"
+              exit 1
+            fi
+          done
+          keys=(
+            "$FETCHER_CALENDAR_SERVE_API_KEY"
+            "$FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"
+            "$FETCHER_FINLAB_SOURCE_CLIENT_KEY"
+            "$FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"
+          )
+          for left in "${!keys[@]}"; do
+            for right in "${!keys[@]}"; do
+              if [ "$left" -lt "$right" ] && [ "${keys[$left]}" = "${keys[$right]}" ]; then
+                echo "::error title=Fetcher credential isolation failed::Calendar and provider Source credentials must be distinct"
+                exit 1
+              fi
+            done
+          done
+          echo "Fetcher credential isolation check passed without printing credential values"
+
+  deploy:
+    needs: [build-push, validate-r2-bucket-configuration, validate-fetcher-credential-isolation]
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.run_finlab_smoke != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
     environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
 
     permissions:
@@ -137,7 +192,7 @@ jobs:
       packages: read
 
     steps:
-      - name: Release and validate Fetcher image on Fetcher EC2
+      - name: Release and validate Twelve Data scheduler on Fetcher EC2
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -179,7 +234,6 @@ jobs:
                 exit 1
               fi
             }
-
             require_runtime_value source_api_url "${FETCHER_SOURCE_API_URL:-}"
             require_runtime_value twelve_data_source_client_key "${FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY:-}"
             require_runtime_value twelve_data_api_key "${TWELVE_DATA_API_KEY:-}"
@@ -196,131 +250,254 @@ jobs:
             case "${FETCHER_SCHEDULER_DESIRED_STATE:-}" in
               running|stopped) ;;
               *)
-                echo "::error title=Invalid Fetcher scheduler state::FETCHER_SCHEDULER_DESIRED_STATE must be running or stopped"
+                echo "::error title=Invalid Twelve Data scheduler state::FETCHER_SCHEDULER_DESIRED_STATE must be running or stopped"
                 exit 1
                 ;;
             esac
 
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-            image="${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}"
-
             export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
             export SOURCE_CLIENT_KEY="$FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"
             export FETCHER_STATE_PATH=/var/lib/findb-fetcher/state.sqlite3
+            export TWELVE_DATA_API_KEY TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES
 
-            state_dir=/var/lib/findb-fetcher
-            stable=findb-fetcher-scheduler
-            candidate=findb-fetcher-scheduler-candidate
-            previous=findb-fetcher-scheduler-previous
+            reconcile_scheduler() {
+              provider_id="$1"
+              desired_state="$2"
+              image="$3"
+              state_dir="$4"
+              state_path="$5"
+              stable="$6"
+              candidate="$7"
+              previous="$8"
+              preflight_name="$9"
+              cache_dir="${10}"
+              runtime_env_args="${11}"
+              shift 11
+              scheduler_command=("$@")
 
-            sudo mkdir -p "$state_dir"
-            sudo chown 10001:10001 "$state_dir"
-            sudo chmod 0700 "$state_dir"
-            if [ "$(stat -c '%u:%g' "$state_dir")" != "10001:10001" ] \
-              || [ "$(stat -c '%a' "$state_dir")" != "700" ]; then
-              echo "::error title=Fetcher state rejected::Durable state ownership or mode is unsafe"
-              exit 1
-            fi
-
-            # Durable scheduler state contains raw object references. It must
-            # never be reused with another Raw bucket. A missing marker next
-            # to an existing database requires the documented cutover instead
-            # of guessing whether its references remain valid.
-            raw_bucket_marker="$state_dir/raw-bucket.sha256"
-            if ! printf '%s' "$CLOUDFLARE_R2_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$'; then
-              echo "::error title=Invalid Fetcher R2 configuration::R2 account ID is unsafe" >&2
-              exit 1
-            fi
-            if ! printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' \
-              || printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^([0-9]{1,3}[.]){3}[0-9]{1,3}$'; then
-              echo "::error title=Invalid Fetcher R2 configuration::Raw bucket name is unsafe" >&2
-              exit 1
-            fi
-            raw_bucket_fingerprint="$(printf '%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" | sha256sum | cut -d ' ' -f1)"
-            write_raw_bucket_marker() {
-              marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
-              printf '%s\n' "$raw_bucket_fingerprint" | sudo tee "$marker_tmp" >/dev/null
-              sudo chown 10001:10001 "$marker_tmp"
-              sudo chmod 0600 "$marker_tmp"
-              sudo mv "$marker_tmp" "$raw_bucket_marker"
-            }
-            validate_raw_bucket_marker_mode() {
-              if ! sudo test -f "$raw_bucket_marker" \
-                || [ "$(sudo stat -c '%u:%g' "$raw_bucket_marker")" != "10001:10001" ] \
-                || [ "$(sudo stat -c '%a' "$raw_bucket_marker")" != "600" ]; then
-                echo "::error title=Fetcher state rejected::Raw bucket binding marker ownership or mode is unsafe" >&2
+              sudo mkdir -p "$state_dir"
+              sudo chown 10001:10001 "$state_dir"
+              sudo chmod 0700 "$state_dir"
+              if [ "$(sudo stat -c '%u:%g:%a' "$state_dir")" != "10001:10001:700" ]; then
+                echo "::error title=Fetcher state rejected::${provider_id} state directory ownership or mode is unsafe"
                 exit 1
               fi
-            }
-            if sudo test -e "$FETCHER_STATE_PATH"; then
-              if ! sudo test -f "$raw_bucket_marker"; then
-                echo "::error title=Fetcher raw bucket cutover required::Existing durable state has no Raw bucket binding marker" >&2
+              if [ -e "$state_path" ] && { [ ! -f "$state_path" ] || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; }; then
+                echo "::error title=Fetcher state rejected::${provider_id} SQLite ownership or mode is unsafe"
                 exit 1
               fi
-              validate_raw_bucket_marker_mode
-              marker_fingerprint="$(sudo cat "$raw_bucket_marker")"
-              if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then
-                echo "::error title=Fetcher raw bucket mismatch::Existing durable state belongs to a different Raw bucket" >&2
+              if [ "$cache_dir" != "-" ]; then
+                sudo mkdir -p "$cache_dir"
+                sudo chown 10001:10001 "$cache_dir"
+                sudo chmod 0700 "$cache_dir"
+                if [ "$(sudo stat -c '%u:%g:%a' "$cache_dir")" != "10001:10001:700" ]; then
+                  echo "::error title=Fetcher cache rejected::${provider_id} cache ownership or mode is unsafe"
+                  exit 1
+                fi
+              fi
+
+              raw_bucket_marker="$state_dir/raw-bucket.sha256"
+              if ! printf '%s' "$CLOUDFLARE_R2_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$'; then
+                echo "::error title=Invalid Fetcher R2 configuration::R2 account ID is unsafe" >&2
                 exit 1
               fi
-            elif sudo test -e "$raw_bucket_marker"; then
-              # A failed first deploy can leave only this marker. No state DB
-              # means no old raw references, so safely reuse or replace it.
-              validate_raw_bucket_marker_mode
-              marker_fingerprint="$(sudo cat "$raw_bucket_marker")"
-              if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then
+              if ! printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' \
+                || printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^([0-9]{1,3}[.]){3}[0-9]{1,3}$'; then
+                echo "::error title=Invalid Fetcher R2 configuration::Raw bucket name is unsafe" >&2
+                exit 1
+              fi
+              raw_bucket_fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$provider_id" | sha256sum | cut -d ' ' -f1)"
+              # Twelve Data used the account+bucket fingerprint before provider
+              # runtimes were isolated. Accept that exact legacy binding once,
+              # then atomically replace it with the provider-scoped marker.
+              legacy_twelve_raw_bucket_fingerprint="$(printf '%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" | sha256sum | cut -d ' ' -f1)"
+              write_raw_bucket_marker() {
+                marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
+                printf '%s\n' "$raw_bucket_fingerprint" | sudo tee "$marker_tmp" >/dev/null
+                sudo chown 10001:10001 "$marker_tmp"
+                sudo chmod 0600 "$marker_tmp"
+                sudo mv "$marker_tmp" "$raw_bucket_marker"
+              }
+              validate_raw_bucket_marker_mode() {
+                if ! sudo test -f "$raw_bucket_marker" \
+                  || [ "$(sudo stat -c '%u:%g:%a' "$raw_bucket_marker")" != "10001:10001:600" ]; then
+                  echo "::error title=Fetcher state rejected::${provider_id} raw bucket binding marker ownership or mode is unsafe" >&2
+                  exit 1
+                fi
+              }
+              if sudo test -e "$state_path"; then
+                if ! sudo test -f "$raw_bucket_marker"; then
+                  echo "::error title=Fetcher raw bucket cutover required::${provider_id} state has no binding marker" >&2
+                  exit 1
+                fi
+                validate_raw_bucket_marker_mode
+                marker_fingerprint="$(sudo cat "$raw_bucket_marker")"
+                if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then
+                  if [ "$provider_id" = "twelve" ] \
+                    && [ "$marker_fingerprint" = "$legacy_twelve_raw_bucket_fingerprint" ]; then
+                    write_raw_bucket_marker
+                  else
+                    echo "::error title=Fetcher raw bucket mismatch::${provider_id} state belongs to a different Raw bucket" >&2
+                    exit 1
+                  fi
+                fi
+              elif sudo test -e "$raw_bucket_marker"; then
+                validate_raw_bucket_marker_mode
+                marker_fingerprint="$(sudo cat "$raw_bucket_marker")"
+                if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then
+                  write_raw_bucket_marker
+                fi
+              else
                 write_raw_bucket_marker
               fi
-            else
-              write_raw_bucket_marker
-            fi
 
-            # BEGIN FETCHER SCHEDULER RECONCILIATION
-            reconciliation_failed() {
-              echo "::error title=Fetcher reconciliation failed::Scheduler state could not be reconciled" >&2
-              exit 1
-            }
-
-            # Resolve interrupted rollouts to the Environment's declared state.
-            # A stopped target must never be started merely by reconciliation.
-            if docker container inspect "$candidate" >/dev/null 2>&1; then
-              if docker container inspect "$stable" >/dev/null 2>&1 \
-                || docker container inspect "$previous" >/dev/null 2>&1; then
-                docker rm -f "$candidate" >/dev/null 2>&1 \
-                  || reconciliation_failed
-              else
-                docker rename "$candidate" "$stable" >/dev/null 2>&1 \
-                  || reconciliation_failed
+              # Resolve interrupted candidate/previous names without changing
+              # another provider or starting a stopped target.
+              if docker container inspect "$candidate" >/dev/null 2>&1; then
+                if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then
+                  docker rm -f "$candidate"
+                else
+                  docker rename "$candidate" "$stable"
+                fi
               fi
-            fi
-            if docker container inspect "$previous" >/dev/null 2>&1; then
+              if docker container inspect "$previous" >/dev/null 2>&1; then
+                if docker container inspect "$stable" >/dev/null 2>&1; then
+                  docker rm -f "$previous"
+                else
+                  docker rename "$previous" "$stable"
+                fi
+              fi
+
+              docker pull "$image"
+              if [ "$cache_dir" = "-" ]; then
+                cache_mount=""
+              else
+                cache_mount="--mount type=bind,src=$cache_dir,dst=/home/fetcher"
+              fi
+
+              # Provider-specific preflight is deliberately before the first
+              # stable stop. --check performs no provider or Source calls.
+              docker run --rm \
+                --name "$preflight_name" \
+                --user 10001:10001 \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+                --mount "type=bind,src=$state_dir,dst=$state_dir" \
+                $cache_mount \
+                $runtime_env_args \
+                "$image" \
+                "${scheduler_command[@]}" --check
+
+              recover_scheduler() {
+                original_status="$1"
+                [ "$original_status" -eq 0 ] && original_status=1
+                trap - ERR INT TERM HUP
+                set +e
+                recovery_failed=0
+                if docker container inspect "$candidate" >/dev/null 2>&1; then
+                  docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1
+                fi
+                if [ "$recovery_failed" -eq 0 ] && ! docker container inspect "$stable" >/dev/null 2>&1 \
+                  && docker container inspect "$previous" >/dev/null 2>&1; then
+                  docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1
+                fi
+                if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
+                  if [ "$desired_state" = "running" ]; then
+                    docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
+                  else
+                    docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1
+                  fi
+                fi
+                if [ "$recovery_failed" -ne 0 ]; then
+                  echo "::error title=Fetcher recovery failed::${provider_id} rollback did not complete" >&2
+                fi
+                exit "$original_status"
+              }
+              trap 'recover_scheduler "$?"' ERR
+              trap 'recover_scheduler 130' INT
+              trap 'recover_scheduler 143' TERM
+              trap 'recover_scheduler 129' HUP
+
+              had_previous=0
               if docker container inspect "$stable" >/dev/null 2>&1; then
-                docker rm -f "$previous" >/dev/null 2>&1 \
-                  || reconciliation_failed
-              else
-                docker rename "$previous" "$stable" >/dev/null 2>&1 \
-                  || reconciliation_failed
+                had_previous=1
+                docker stop --time 30 "$stable" >/dev/null
+                docker rename "$stable" "$previous"
               fi
-            fi
-            if docker container inspect "$stable" >/dev/null 2>&1; then
-              if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ]; then
-                docker start "$stable" >/dev/null 2>&1 || reconciliation_failed
-              else
-                docker stop --time 30 "$stable" >/dev/null 2>&1 || reconciliation_failed
-              fi
-              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")" \
-                || reconciliation_failed
-              if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ] && [ "$stable_running" != "true" ]; then
-                reconciliation_failed
-              fi
-              if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "stopped" ] && [ "$stable_running" != "false" ]; then
-                reconciliation_failed
-              fi
-            fi
-            # END FETCHER SCHEDULER RECONCILIATION
 
-            docker pull "$image"
+              common_runtime_args=(
+                --user 10001:10001
+                --restart unless-stopped
+                --read-only
+                --cap-drop ALL
+                --security-opt no-new-privileges
+                --log-opt max-size=10m
+                --log-opt max-file=3
+                --tmpfs /tmp:rw,noexec,nosuid,size=16m
+                --mount "type=bind,src=$state_dir,dst=$state_dir"
+              )
+              if [ -n "$cache_mount" ]; then
+                common_runtime_args+=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
+              fi
+              if [ "$desired_state" = "stopped" ]; then
+                docker create \
+                  --name "$candidate" \
+                  "${common_runtime_args[@]}" \
+                  $runtime_env_args \
+                  "$image" \
+                  "${scheduler_command[@]}" --run-forever >/dev/null
+                candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
+                candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
+                candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
+                if [ "$candidate_image" != "$image" ] || [ "$candidate_running" != "false" ] || [ "$candidate_user" != "10001:10001" ]; then
+                  echo "::error title=Fetcher stopped release rejected::${provider_id} candidate is not the exact stopped image" >&2
+                  false
+                fi
+                docker rename "$candidate" "$stable"
+                [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
+              else
+                docker run -d \
+                  --name "$candidate" \
+                  "${common_runtime_args[@]}" \
+                  $runtime_env_args \
+                  "$image" \
+                  "${scheduler_command[@]}" --run-forever >/dev/null
+                healthy=0
+                for attempt in $(seq 1 6); do
+                  status="$(docker inspect --format '{{.State.Status}}' "$candidate")"
+                  restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"
+                  if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then
+                    break
+                  fi
+                  if [ "$attempt" -eq 6 ]; then healthy=1; break; fi
+                  sleep 5
+                done
+                if [ "$healthy" -ne 1 ]; then
+                  docker inspect --format \
+                    "${provider_id} candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" \
+                    "$candidate" || true
+                  false
+                fi
+                docker rename "$candidate" "$stable"
+                [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
+              fi
+
+              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
+              if [ "$desired_state" = "running" ] && [ "$stable_running" != "true" ]; then
+                echo "::error title=Fetcher running release rejected::${provider_id} did not converge to running" >&2
+                false
+              fi
+              if [ "$desired_state" = "stopped" ] && [ "$stable_running" != "false" ]; then
+                echo "::error title=Fetcher stopped release rejected::${provider_id} did not converge to stopped" >&2
+                false
+              fi
+              trap - ERR INT TERM HUP
+              echo "Fetcher ${provider_id} scheduler release reconciled to ${desired_state}"
+            }
 
             runtime_env_args="\
               --env SOURCE_API_URL \
@@ -343,137 +520,302 @@ jobs:
               --env FETCHER_MAX_ATTEMPTS \
               --env FETCHER_MAX_RETRY_AFTER_SECONDS \
               --env FETCHER_STATE_PATH"
+            # BEGIN FETCHER TWELVE SCHEDULER RECONCILIATION
+            # Provider command contracts: findb-fetch-scheduler --check and findb-fetch-scheduler --run-forever.
+            reconcile_scheduler twelve "${FETCHER_SCHEDULER_DESIRED_STATE}" "${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}" \
+              /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
+              findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
+              findb-fetcher-scheduler-preflight - "$runtime_env_args" findb-fetch-scheduler
+            # END FETCHER TWELVE SCHEDULER RECONCILIATION
 
-            # Validate the exact image and the real durable state before stopping
-            # the current scheduler. Check mode performs no external calls.
-            docker run --rm \
-              --name findb-fetcher-scheduler-preflight \
-              --user 10001:10001 \
-              --read-only \
-              --cap-drop ALL \
-              --security-opt no-new-privileges \
-              --mount "type=bind,src=$state_dir,dst=/var/lib/findb-fetcher" \
-              $runtime_env_args \
-              "$image" \
-              findb-fetch-scheduler --check
-
-            recover_scheduler() {
-              original_status="$1"
-              if [ "$original_status" -eq 0 ]; then
-                original_status=1
+      - name: Release and validate FinLab scheduler on Fetcher EC2
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_FINLAB_SCHEDULER_DESIRED_STATE: ${{ vars.FETCHER_FINLAB_SCHEDULER_DESIRED_STATE }}
+          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
+          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
+          FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
+          FETCHER_FINLAB_SOURCE_CLIENT_KEY: ${{ secrets.FETCHER_FINLAB_SOURCE_CLIENT_KEY }}
+          FINLAB_API_TOKEN: ${{ secrets.FINLAB_API_TOKEN }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          CLOUDFLARE_R2_RAW_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_RAW_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_RAW_SESSION_TOKEN: ${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_FINLAB_SCHEDULER_DESIRED_STATE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_FINLAB_SOURCE_CLIENT_KEY,FINLAB_API_TOKEN,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          script: |
+            set -euo pipefail
+            require_runtime_value() {
+              if [ -z "$2" ]; then
+                echo "::error title=Missing FinLab Fetcher configuration::Required runtime setting is not configured"
+                exit 1
               fi
-              trap - ERR INT TERM HUP
-              set +e
-
-              recovery_failed=0
-              if docker container inspect "$candidate" >/dev/null 2>&1; then
-                docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1
-              fi
-              if [ "$recovery_failed" -eq 0 ] && ! docker container inspect "$stable" >/dev/null 2>&1 \
-                && docker container inspect "$previous" >/dev/null 2>&1; then
-                  docker rename "$previous" "$stable" >/dev/null 2>&1 \
-                    || recovery_failed=1
-              fi
-              if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
-                if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ]; then
-                  docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
-                else
-                  docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1
-                fi
-              fi
-              if [ "$recovery_failed" -ne 0 ]; then
-                echo "::error title=Fetcher recovery failed::Scheduler recovery did not complete" >&2
-              fi
-              exit "$original_status"
             }
-            trap 'recover_scheduler "$?"' ERR
-            trap 'recover_scheduler 130' INT
-            trap 'recover_scheduler 143' TERM
-            trap 'recover_scheduler 129' HUP
+            require_runtime_value source_api_url "${FETCHER_SOURCE_API_URL:-}"
+            require_runtime_value finlab_source_client_key "${FETCHER_FINLAB_SOURCE_CLIENT_KEY:-}"
+            require_runtime_value finlab_api_token "${FINLAB_API_TOKEN:-}"
+            require_runtime_value r2_account_id "${CLOUDFLARE_R2_ACCOUNT_ID:-}"
+            require_runtime_value r2_raw_bucket "${CLOUDFLARE_R2_RAW_BUCKET:-}"
+            require_runtime_value r2_raw_access_key_id "${CLOUDFLARE_R2_RAW_ACCESS_KEY_ID:-}"
+            require_runtime_value r2_raw_secret_access_key "${CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY:-}"
+            require_runtime_value serve_base_url "${FINDB_SERVE_BASE_URL:-}"
+            require_runtime_value calendar_serve_api_key "${FETCHER_CALENDAR_SERVE_API_KEY:-}"
+            for source_key in "$FETCHER_FINLAB_SOURCE_CLIENT_KEY"; do
+              if [ "$source_key" = "$FETCHER_CALENDAR_SERVE_API_KEY" ]; then
+                echo "::error title=Fetcher credential isolation failed::FinLab Source and calendar credentials must be different"
+                exit 1
+              fi
+            done
+            case "${FETCHER_FINLAB_SCHEDULER_DESIRED_STATE:-}" in
+              running|stopped) ;;
+              *)
+                echo "::error title=Invalid FinLab scheduler state::FETCHER_FINLAB_SCHEDULER_DESIRED_STATE must be running or stopped"
+                exit 1
+                ;;
+            esac
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+            export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
+            export SOURCE_CLIENT_KEY="$FETCHER_FINLAB_SOURCE_CLIENT_KEY"
+            export FETCHER_STATE_PATH=/var/lib/findb-finlab-fetcher/state.sqlite3
+            export FINLAB_API_TOKEN
 
-            had_previous=0
-            if docker container inspect "$stable" >/dev/null 2>&1; then
-              had_previous=1
-              docker stop --time 30 "$stable" >/dev/null
-              docker rename "$stable" "$previous"
-            fi
-
-            if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "stopped" ]; then
-              docker create \
-                --name "$candidate" \
-                --user 10001:10001 \
-                --restart unless-stopped \
-                --read-only \
-                --cap-drop ALL \
-                --security-opt no-new-privileges \
-                --log-opt max-size=10m \
-                --log-opt max-file=3 \
-                --mount "type=bind,src=$state_dir,dst=/var/lib/findb-fetcher" \
-                $runtime_env_args \
-                "$image" \
-                findb-fetch-scheduler --run-forever >/dev/null
-              candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
-              candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
-              if [ "$candidate_image" != "$image" ] || [ "$candidate_running" != "false" ]; then
-                echo "::error title=Fetcher stopped release rejected::Candidate is not the exact stopped image" >&2
+            reconcile_scheduler() {
+              provider_id="$1"; desired_state="$2"; image="$3"; state_dir="$4"; state_path="$5"
+              stable="$6"; candidate="$7"; previous="$8"; preflight_name="$9"; cache_dir="${10}"
+              runtime_env_args="${11}"; shift 11; scheduler_command=("$@")
+              sudo mkdir -p "$state_dir" "$cache_dir"
+              sudo chown 10001:10001 "$state_dir" "$cache_dir"
+              sudo chmod 0700 "$state_dir" "$cache_dir"
+              if [ "$(sudo stat -c '%u:%g:%a' "$state_dir")" != "10001:10001:700" ] || [ "$(sudo stat -c '%u:%g:%a' "$cache_dir")" != "10001:10001:700" ]; then
+                echo "::error title=FinLab state rejected::State or cache ownership/mode is unsafe"; exit 1
+              fi
+              if [ -e "$state_path" ] && { [ ! -f "$state_path" ] || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; }; then
+                echo "::error title=FinLab state rejected::SQLite ownership or mode is unsafe"; exit 1
+              fi
+              raw_bucket_marker="$state_dir/raw-bucket.sha256"
+              if ! printf '%s' "$CLOUDFLARE_R2_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$' || ! printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'; then
+                echo "::error title=Invalid FinLab R2 configuration::Raw bucket configuration is unsafe" >&2; exit 1
+              fi
+              raw_bucket_fingerprint="$(printf '%s\n%s\nfinlab' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" | sha256sum | cut -d ' ' -f1)"
+              write_raw_bucket_marker() {
+                marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
+                printf '%s\n' "$raw_bucket_fingerprint" | sudo tee "$marker_tmp" >/dev/null
+                sudo chown 10001:10001 "$marker_tmp"; sudo chmod 0600 "$marker_tmp"; sudo mv "$marker_tmp" "$raw_bucket_marker"
+              }
+              validate_raw_bucket_marker_mode() {
+                if ! sudo test -f "$raw_bucket_marker" || [ "$(sudo stat -c '%u:%g:%a' "$raw_bucket_marker")" != "10001:10001:600" ]; then
+                  echo "::error title=FinLab state rejected::Raw bucket binding marker ownership or mode is unsafe" >&2; exit 1
+                fi
+              }
+              if sudo test -e "$state_path"; then
+                sudo test -f "$raw_bucket_marker" || { echo "::error title=FinLab raw bucket cutover required::State has no binding marker" >&2; exit 1; }
+                validate_raw_bucket_marker_mode
+                [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || { echo "::error title=FinLab raw bucket mismatch::State belongs to a different Raw bucket" >&2; exit 1; }
+              elif sudo test -e "$raw_bucket_marker"; then
+                validate_raw_bucket_marker_mode
+                [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || write_raw_bucket_marker
+              else
+                write_raw_bucket_marker
+              fi
+              if docker container inspect "$candidate" >/dev/null 2>&1; then
+                if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then docker rm -f "$candidate"; else docker rename "$candidate" "$stable"; fi
+              fi
+              if docker container inspect "$previous" >/dev/null 2>&1; then
+                if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi
+              fi
+              docker pull "$image"
+              runtime_mounts="--mount type=bind,src=$state_dir,dst=$state_dir --mount type=bind,src=$cache_dir,dst=/home/fetcher"
+              # FinLab preflight happens before stopping its stable container.
+              docker run --rm --name "$preflight_name" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m $runtime_mounts $runtime_env_args "$image" "${scheduler_command[@]}" --check
+              recover_scheduler() {
+                original_status="$1"; [ "$original_status" -eq 0 ] && original_status=1; trap - ERR INT TERM HUP; set +e; recovery_failed=0
+                if docker container inspect "$candidate" >/dev/null 2>&1; then docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1; fi
+                if ! docker container inspect "$stable" >/dev/null 2>&1 && docker container inspect "$previous" >/dev/null 2>&1; then docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1; fi
+                if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
+                  if [ "$desired_state" = "running" ]; then docker start "$stable" >/dev/null 2>&1 || recovery_failed=1; else docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1; fi
+                fi
+                [ "$recovery_failed" -eq 0 ] || echo "::error title=FinLab recovery failed::Rollback did not complete" >&2
+                exit "$original_status"
+              }
+              trap 'recover_scheduler "$?"' ERR; trap 'recover_scheduler 130' INT; trap 'recover_scheduler 143' TERM; trap 'recover_scheduler 129' HUP
+              had_previous=0
+              if docker container inspect "$stable" >/dev/null 2>&1; then had_previous=1; docker stop --time 30 "$stable" >/dev/null; docker rename "$stable" "$previous"; fi
+              common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher")
+              if [ "$desired_state" = "stopped" ]; then
+                docker create --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null
+                [ "$(docker inspect --format '{{.Config.Image}}' "$candidate")" = "$image" ] || false
+                [ "$(docker inspect --format '{{.State.Running}}' "$candidate")" = "false" ] || false
+                [ "$(docker inspect --format '{{.Config.User}}' "$candidate")" = "10001:10001" ] || false
+              else
+                docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null
+                healthy=0
+                for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done
+                [ "$healthy" -eq 1 ] || { docker inspect --format "FinLab candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true; false; }
+              fi
+              docker rename "$candidate" "$stable"; [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
+              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
+              if [ "$desired_state" = "running" ] && [ "$stable_running" != "true" ]; then
+                echo "::error title=FinLab running release rejected::Scheduler did not converge to running" >&2
                 false
               fi
-              docker rename "$candidate" "$stable"
-              if [ "$had_previous" -eq 1 ]; then
-                docker rm "$previous" >/dev/null 2>&1 || false
-              fi
-              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$stable_running" != "false" ]; then
-                echo "::error title=Fetcher stopped release rejected::Stopped target has a running scheduler" >&2
+              if [ "$desired_state" = "stopped" ] && [ "$stable_running" != "false" ]; then
+                echo "::error title=FinLab stopped release rejected::Scheduler did not converge to stopped" >&2
                 false
               fi
               trap - ERR INT TERM HUP
-              trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-              echo "Fetcher scheduler release reconciled to stopped"
-              exit 0
-            fi
+              echo "FinLab scheduler release reconciled to ${desired_state}"
+            }
+            runtime_env_args="\
+              --env SOURCE_API_URL --env SOURCE_CLIENT_KEY --env FINDB_SERVE_BASE_URL \
+              --env FETCHER_CALENDAR_SERVE_API_KEY --env FETCHER_CALENDAR_TIMEOUT_SECONDS --env FETCHER_CALENDAR_CACHE_TTL_SECONDS \
+              --env FINLAB_API_TOKEN --env CLOUDFLARE_R2_ACCOUNT_ID --env CLOUDFLARE_R2_RAW_BUCKET \
+              --env CLOUDFLARE_R2_RAW_ACCESS_KEY_ID --env CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY --env CLOUDFLARE_R2_RAW_SESSION_TOKEN \
+              --env CLOUDFLARE_R2_MAX_OBJECT_BYTES --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_MAX_ATTEMPTS \
+              --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_STATE_PATH"
+            # BEGIN FETCHER FINLAB SCHEDULER RECONCILIATION
+            # Provider command contracts: findb-fetch-finlab-scheduler --check and findb-fetch-finlab-scheduler --run-forever.
+            reconcile_scheduler finlab "${FETCHER_FINLAB_SCHEDULER_DESIRED_STATE}" "${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}" \
+              /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
+              findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
+              findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache "$runtime_env_args" \
+              findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id tw_1430 --dataset-key tw_equity_eod
+            # END FETCHER FINLAB SCHEDULER RECONCILIATION
 
-            docker run -d \
-              --name "$candidate" \
-              --user 10001:10001 \
-              --restart unless-stopped \
-              --read-only \
-              --cap-drop ALL \
-              --security-opt no-new-privileges \
-              --log-opt max-size=10m \
-              --log-opt max-file=3 \
-              --mount "type=bind,src=$state_dir,dst=/var/lib/findb-fetcher" \
-              $runtime_env_args \
-              "$image" \
-              findb-fetch-scheduler --run-forever >/dev/null
-
-            healthy=0
-            for attempt in $(seq 1 6); do
-              status="$(docker inspect --format '{{.State.Status}}' "$candidate")"
-              restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"
-              if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then
-                break
+      - name: Release and validate Shioaji scheduler on Fetcher EC2
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          FETCHER_SHIOAJI_IMAGE: ${{ env.FETCHER_SHIOAJI_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE: ${{ vars.FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE }}
+          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
+          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
+          FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
+          FETCHER_SHIOAJI_SOURCE_CLIENT_KEY: ${{ secrets.FETCHER_SHIOAJI_SOURCE_CLIENT_KEY }}
+          SHIOAJI_API_KEY: ${{ secrets.SHIOAJI_API_KEY }}
+          SHIOAJI_SECRET_KEY: ${{ secrets.SHIOAJI_SECRET_KEY }}
+          SHIOAJI_SIMULATION: "false"
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          CLOUDFLARE_R2_RAW_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_RAW_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_RAW_SESSION_TOKEN: ${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_SHIOAJI_SOURCE_CLIENT_KEY,SHIOAJI_API_KEY,SHIOAJI_SECRET_KEY,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          script: |
+            set -euo pipefail
+            require_runtime_value() {
+              if [ -z "$2" ]; then
+                echo "::error title=Missing Shioaji Fetcher configuration::Required runtime setting is not configured"
+                exit 1
               fi
-              if [ "$attempt" -eq 6 ]; then
-                healthy=1
-                break
-              fi
-              sleep 5
-            done
-            if [ "$healthy" -ne 1 ]; then
-              docker inspect --format \
-                'Fetcher candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' \
-                "$candidate" || true
-              false
+            }
+            require_runtime_value source_api_url "${FETCHER_SOURCE_API_URL:-}"
+            require_runtime_value shioaji_source_client_key "${FETCHER_SHIOAJI_SOURCE_CLIENT_KEY:-}"
+            require_runtime_value shioaji_api_key "${SHIOAJI_API_KEY:-}"
+            require_runtime_value shioaji_secret_key "${SHIOAJI_SECRET_KEY:-}"
+            require_runtime_value r2_account_id "${CLOUDFLARE_R2_ACCOUNT_ID:-}"
+            require_runtime_value r2_raw_bucket "${CLOUDFLARE_R2_RAW_BUCKET:-}"
+            require_runtime_value r2_raw_access_key_id "${CLOUDFLARE_R2_RAW_ACCESS_KEY_ID:-}"
+            require_runtime_value r2_raw_secret_access_key "${CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY:-}"
+            require_runtime_value serve_base_url "${FINDB_SERVE_BASE_URL:-}"
+            require_runtime_value calendar_serve_api_key "${FETCHER_CALENDAR_SERVE_API_KEY:-}"
+            if [ "$FETCHER_CALENDAR_SERVE_API_KEY" = "$FETCHER_SHIOAJI_SOURCE_CLIENT_KEY" ]; then
+              echo "::error title=Fetcher credential isolation failed::Shioaji Source and calendar credentials must be different"; exit 1
             fi
-
-            docker rename "$candidate" "$stable"
-            trap - ERR INT TERM HUP
-            if [ "$had_previous" -eq 1 ]; then
-              docker rm "$previous" >/dev/null 2>&1 || false
+            if [ "${SHIOAJI_SIMULATION:-}" != "false" ]; then
+              echo "::error title=Shioaji safety configuration failed::SHIOAJI_SIMULATION must be false"; exit 1
             fi
+            case "${FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE:-}" in
+              running|stopped) ;;
+              *)
+                echo "::error title=Invalid Shioaji scheduler state::FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE must be running or stopped"
+                exit 1
+                ;;
+            esac
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-            echo "Fetcher scheduler release completed"
+            export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
+            export SOURCE_CLIENT_KEY="$FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"
+            export FETCHER_SHIOAJI_STATE_PATH=/var/lib/findb-shioaji-fetcher/state.sqlite3
+            export SHIOAJI_API_KEY SHIOAJI_SECRET_KEY SHIOAJI_SIMULATION
+
+            reconcile_scheduler() {
+              provider_id="$1"; desired_state="$2"; image="$3"; state_dir="$4"; state_path="$5"
+              stable="$6"; candidate="$7"; previous="$8"; preflight_name="$9"; runtime_env_args="${10}"; shift 10
+              scheduler_command=("$@")
+              sudo mkdir -p "$state_dir"; sudo chown 10001:10001 "$state_dir"; sudo chmod 0700 "$state_dir"
+              if [ "$(sudo stat -c '%u:%g:%a' "$state_dir")" != "10001:10001:700" ]; then echo "::error title=Shioaji state rejected::State ownership or mode is unsafe"; exit 1; fi
+              if [ -e "$state_path" ] && { [ ! -f "$state_path" ] || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; }; then echo "::error title=Shioaji state rejected::SQLite ownership or mode is unsafe"; exit 1; fi
+              raw_bucket_marker="$state_dir/raw-bucket.sha256"
+              if ! printf '%s' "$CLOUDFLARE_R2_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$' || ! printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'; then echo "::error title=Invalid Shioaji R2 configuration::Raw bucket configuration is unsafe" >&2; exit 1; fi
+              raw_bucket_fingerprint="$(printf '%s\n%s\nshioaji' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" | sha256sum | cut -d ' ' -f1)"
+              write_raw_bucket_marker() { marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"; printf '%s\n' "$raw_bucket_fingerprint" | sudo tee "$marker_tmp" >/dev/null; sudo chown 10001:10001 "$marker_tmp"; sudo chmod 0600 "$marker_tmp"; sudo mv "$marker_tmp" "$raw_bucket_marker"; }
+              validate_raw_bucket_marker_mode() { if ! sudo test -f "$raw_bucket_marker" || [ "$(sudo stat -c '%u:%g:%a' "$raw_bucket_marker")" != "10001:10001:600" ]; then echo "::error title=Shioaji state rejected::Raw bucket binding marker ownership or mode is unsafe" >&2; exit 1; fi; }
+              if sudo test -e "$state_path"; then sudo test -f "$raw_bucket_marker" || { echo "::error title=Shioaji raw bucket cutover required::State has no binding marker" >&2; exit 1; }; validate_raw_bucket_marker_mode; [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || { echo "::error title=Shioaji raw bucket mismatch::State belongs to a different Raw bucket" >&2; exit 1; }; elif sudo test -e "$raw_bucket_marker"; then validate_raw_bucket_marker_mode; [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || write_raw_bucket_marker; else write_raw_bucket_marker; fi
+              if docker container inspect "$candidate" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then docker rm -f "$candidate"; else docker rename "$candidate" "$stable"; fi; fi
+              if docker container inspect "$previous" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi; fi
+              docker pull "$image"
+              # Shioaji preflight is before its stable stop and validates the
+              # manifest, credentials, and the explicit simulation=false mode.
+              docker run --rm --name "$preflight_name" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" $runtime_env_args "$image" "${scheduler_command[@]}" --check
+              recover_scheduler() { original_status="$1"; [ "$original_status" -eq 0 ] && original_status=1; trap - ERR INT TERM HUP; set +e; recovery_failed=0; if docker container inspect "$candidate" >/dev/null 2>&1; then docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1; fi; if [ "$recovery_failed" -eq 0 ] && ! docker container inspect "$stable" >/dev/null 2>&1 && docker container inspect "$previous" >/dev/null 2>&1; then docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1; fi; if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then if [ "$desired_state" = "running" ]; then docker start "$stable" >/dev/null 2>&1 || recovery_failed=1; else docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1; fi; fi; [ "$recovery_failed" -eq 0 ] || echo "::error title=Shioaji recovery failed::Rollback did not complete" >&2; exit "$original_status"; }
+              trap 'recover_scheduler "$?"' ERR; trap 'recover_scheduler 130' INT; trap 'recover_scheduler 143' TERM; trap 'recover_scheduler 129' HUP
+              had_previous=0; if docker container inspect "$stable" >/dev/null 2>&1; then had_previous=1; docker stop --time 30 "$stable" >/dev/null; docker rename "$stable" "$previous"; fi
+              common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir")
+              if [ "$desired_state" = "stopped" ]; then docker create --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null; [ "$(docker inspect --format '{{.Config.Image}}' "$candidate")" = "$image" ] || false; [ "$(docker inspect --format '{{.State.Running}}' "$candidate")" = "false" ] || false; [ "$(docker inspect --format '{{.Config.User}}' "$candidate")" = "10001:10001" ] || false; else docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null; healthy=0; for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done; [ "$healthy" -eq 1 ] || { docker inspect --format "Shioaji candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true; false; }; fi
+              docker rename "$candidate" "$stable"; [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true; stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
+              if [ "$desired_state" = "running" ] && [ "$stable_running" != "true" ]; then
+                echo "::error title=Shioaji running release rejected::Scheduler did not converge to running" >&2
+                false
+              fi
+              if [ "$desired_state" = "stopped" ] && [ "$stable_running" != "false" ]; then
+                echo "::error title=Shioaji stopped release rejected::Scheduler did not converge to stopped" >&2
+                false
+              fi
+              trap - ERR INT TERM HUP; echo "Shioaji scheduler release reconciled to ${desired_state}"
+            }
+            runtime_env_args="\
+              --env SOURCE_API_URL --env SOURCE_CLIENT_KEY --env FINDB_SERVE_BASE_URL \
+              --env FETCHER_CALENDAR_SERVE_API_KEY --env FETCHER_CALENDAR_TIMEOUT_SECONDS --env FETCHER_CALENDAR_CACHE_TTL_SECONDS \
+              --env SHIOAJI_API_KEY --env SHIOAJI_SECRET_KEY --env SHIOAJI_SIMULATION \
+              --env CLOUDFLARE_R2_ACCOUNT_ID --env CLOUDFLARE_R2_RAW_BUCKET --env CLOUDFLARE_R2_RAW_ACCESS_KEY_ID \
+              --env CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY --env CLOUDFLARE_R2_RAW_SESSION_TOKEN --env CLOUDFLARE_R2_MAX_OBJECT_BYTES \
+              --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_MAX_ATTEMPTS --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_SHIOAJI_STATE_PATH"
+            # BEGIN FETCHER SHIOAJI SCHEDULER RECONCILIATION
+            # Provider command contracts: findb-fetch-shioaji-scheduler --check and findb-fetch-shioaji-scheduler --run-forever.
+            reconcile_scheduler shioaji "${FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE}" "${FETCHER_SHIOAJI_IMAGE}:${FETCHER_IMAGE_TAG}" \
+              /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
+              findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
+              findb-fetcher-shioaji-scheduler-preflight "$runtime_env_args" findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json
+            # END FETCHER SHIOAJI SCHEDULER RECONCILIATION
 
   finlab-acquisition-smoke:
     needs: build-push

@@ -16,14 +16,15 @@ RUN uv sync --frozen --no-dev --extra finlab
 # writable mount at runtime; no shell HOME override is used.
 RUN groupadd --system --gid 10001 fetcher \
     && useradd --system --uid 10001 --gid fetcher --create-home --home-dir /home/fetcher fetcher \
-    && chown -R fetcher:fetcher /app /home/fetcher
+    && mkdir -p /var/lib/findb-finlab-fetcher \
+    && chown -R fetcher:fetcher /app /home/fetcher /var/lib/findb-finlab-fetcher
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     FETCHER_CONTRACTS_DIR=/app/contracts
 
-VOLUME ["/home/fetcher"]
+VOLUME ["/home/fetcher", "/var/lib/findb-finlab-fetcher"]
 
 USER fetcher
 
-CMD ["findb-fetch-finlab-smoke", "--help"]
+CMD ["findb-fetch-finlab-scheduler", "--help"]

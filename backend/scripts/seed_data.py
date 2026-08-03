@@ -811,11 +811,11 @@ DATASETS = [
     {
         "dataset_key": "tw_equity_minute",
         "name": "台股股票分鐘 K — Shioaji",
-        "description": "台灣股票一分鐘 OHLCV 資料；production scheduler 與啟用驗收完成前保持停用。",
+        "description": "台灣股票一分鐘 OHLCV 資料；production scheduler 目前限已審核 pilot universe。",
         "asset_class": "equity",
         "market": "TW",
         "frequency": "minute",
-        "is_active": False,
+        "is_active": True,
         "config": {
             "schema_id": "market_minute",
             "accepted_schema_versions": [1],
@@ -851,11 +851,11 @@ DATASETS = [
     {
         "dataset_key": "tw_etf_minute",
         "name": "台股 ETF 分鐘 K — Shioaji",
-        "description": "台灣 ETF 一分鐘 OHLCV 資料；production scheduler 與啟用驗收完成前保持停用。",
+        "description": "台灣 ETF 一分鐘 OHLCV 資料；production scheduler 目前限已審核 pilot universe。",
         "asset_class": "etf",
         "market": "TW",
         "frequency": "minute",
-        "is_active": False,
+        "is_active": True,
         "config": {
             "schema_id": "market_minute",
             "accepted_schema_versions": [1],

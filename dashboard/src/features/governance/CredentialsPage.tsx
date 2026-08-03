@@ -31,6 +31,7 @@ import type {
   SourceProvider,
 } from "../../lib/admin-governance-api"
 import {
+  SOURCE_PROVIDERS,
   SOURCE_PROVIDER_DATASETS,
   credentialKindSchema,
   credentialStatusSchema,
@@ -348,9 +349,11 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                       }}
                       required
                     >
-                      <option value="twelve_data">twelve_data</option>
-                      <option value="finlab">finlab</option>
-                      <option value="bloomberg">bloomberg</option>
+                      {SOURCE_PROVIDERS.map(provider => (
+                        <option key={provider} value={provider}>
+                          {provider}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <fieldset className="grid gap-2 rounded-lg border border-line p-3 md:col-span-2 xl:col-span-3">

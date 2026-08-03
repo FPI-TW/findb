@@ -1,5 +1,6 @@
 """Tests for deployment gates."""
 
+import hashlib
 import os
 import re
 import runpy
@@ -154,6 +155,7 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
             assert jobs["deploy"]["needs"] == [
                 "build-push",
                 "validate-r2-bucket-configuration",
+                "validate-fetcher-credential-isolation",
             ]
         else:
             assert jobs["deploy"]["needs"] == "build-push"
@@ -435,6 +437,9 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
             assert "github.event_name == 'workflow_dispatch'" in smoke["if"]
             assert "inputs.run_finlab_smoke == true" in smoke["if"]
             permitted_secret_jobs["finlab-acquisition-smoke"] = "staging-fetcher"
+            isolation = workflow["jobs"]["validate-fetcher-credential-isolation"]
+            assert isolation["environment"] == environment
+            permitted_secret_jobs["validate-fetcher-credential-isolation"] = environment
 
         secret_jobs: set[str] = set()
         for reference_path in _secret_reference_paths(workflow):
@@ -546,7 +551,8 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
 
     assert "FETCHER_EC2_HOST" in fetcher_cd
     assert "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY" in fetcher_cd
-    assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" not in fetcher_cd
+    assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" in fetcher_cd
+    assert "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY" in fetcher_cd
     assert "FETCHER_SOURCE_CLIENT_KEY" not in fetcher_cd
     for forbidden in (
         "FINDB_EC2_",
@@ -562,268 +568,364 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
     assert "secrets: inherit" not in fetcher_cd
 
 
-def test_fetcher_cd_runs_one_durable_scheduler_with_isolated_runtime_env() -> None:
+def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None:
+    workflow = _load_workflow(FETCHER_CI_WORKFLOW)
+    test_job = workflow["jobs"]["test"]
+    build = _named_step(workflow, "test", "Build container")["run"]
+    finlab = _named_step(workflow, "test", "Build and inspect isolated FinLab scheduler container")[
+        "run"
+    ]
+    shioaji = _named_step(
+        workflow, "test", "Build and inspect isolated Shioaji scheduler container"
+    )["run"]
+
+    assert 'docker build -f fetcher/Dockerfile -t "$image" .' in build
+    assert "findb-fetch-scheduler --help" in build
+    assert "exit 0" not in build
+    assert 'docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .' in finlab
+    assert 'find_spec("finlab") is not None' in finlab
+    assert 'find_spec("shioaji") is None' in finlab
+    assert "findb-fetch-finlab-scheduler --help" in finlab
+    assert 'docker build -f fetcher/Dockerfile.shioaji -t "$shioaji_image" .' in shioaji
+    assert 'find_spec("shioaji") is not None' in shioaji
+    assert "findb-fetch-shioaji-scheduler --help" in shioaji
+    assert "Dockerfile.shioaji" in shioaji
+    assert str(test_job["timeout-minutes"]) == "15"
+
+
+def test_fetcher_cd_builds_and_pushes_three_immutable_images() -> None:
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    step = _named_step(
-        workflow,
-        "deploy",
-        "Release and validate Fetcher image on Fetcher EC2",
-    )
-    step_env = step["env"]
-    script = step["with"]["script"]
-    forwarded = set(step["with"]["envs"].split(","))
+    assert workflow["env"]["FETCHER_IMAGE"] == "ghcr.io/fpi-tw/findb-fetcher"
+    assert workflow["env"]["FETCHER_FINLAB_IMAGE"] == "ghcr.io/fpi-tw/findb-fetcher-finlab"
+    assert workflow["env"]["FETCHER_SHIOAJI_IMAGE"] == "ghcr.io/fpi-tw/findb-fetcher-shioaji"
+    assert workflow["env"]["FETCHER_IMAGE_TAG"] == "${{ github.sha }}"
 
-    required_environment_values = {
-        "FETCHER_SCHEDULER_DESIRED_STATE",
-        "FETCHER_SOURCE_API_URL",
-        "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
-        "TWELVE_DATA_API_KEY",
-        "CLOUDFLARE_R2_ACCOUNT_ID",
-        "CLOUDFLARE_R2_RAW_BUCKET",
-        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
-        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
+    expected = {
+        "Build and push Fetcher image": (
+            "fetcher/Dockerfile",
+            "${{ env.FETCHER_IMAGE }}:${{ env.FETCHER_IMAGE_TAG }}",
+        ),
+        "Build and push FinLab Fetcher image": (
+            "fetcher/Dockerfile.finlab",
+            "${{ env.FETCHER_FINLAB_IMAGE }}:${{ env.FETCHER_IMAGE_TAG }}",
+        ),
+        "Build and push Shioaji Fetcher image": (
+            "fetcher/Dockerfile.shioaji",
+            "${{ env.FETCHER_SHIOAJI_IMAGE }}:${{ env.FETCHER_IMAGE_TAG }}",
+        ),
     }
-    assert required_environment_values <= set(step_env)
-    assert required_environment_values <= forwarded
-    assert step_env["CLOUDFLARE_R2_RAW_SESSION_TOKEN"] == (
-        "${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}"
-    )
-    assert step_env["FETCHER_SCHEDULER_DESIRED_STATE"] == (
-        "${{ vars.FETCHER_SCHEDULER_DESIRED_STATE }}"
-    )
-    assert step_env["CLOUDFLARE_R2_RAW_BUCKET"] == "${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}"
-
-    assert 'image="${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}"' in script
-    assert 'docker pull "$image"' in script
-    assert "state_dir=/var/lib/findb-fetcher" in script
-    assert 'sudo chown 10001:10001 "$state_dir"' in script
-    assert 'sudo chmod 0700 "$state_dir"' in script
-    assert "stat -c '%u:%g'" in script
-    assert "stat -c '%a'" in script
-    assert "--user 10001:10001" in script
-    assert '--mount "type=bind,src=$state_dir,dst=/var/lib/findb-fetcher"' in script
-    assert "--restart unless-stopped" in script
-    assert "--read-only" in script
-    assert "--cap-drop ALL" in script
-    assert "--security-opt no-new-privileges" in script
-    assert "--log-opt max-size=10m" in script
-    assert "--log-opt max-file=3" in script
-
-    preflight = script.index("findb-fetch-scheduler --check")
-    marker_binding = script.index('raw_bucket_marker="$state_dir/raw-bucket.sha256"')
-    reconciliation = script.index("# BEGIN FETCHER SCHEDULER RECONCILIATION")
-    stop_old = script.rindex('docker stop --time 30 "$stable"')
-    start_candidate = script.rindex("findb-fetch-scheduler --run-forever")
-    promote = script.rindex('docker rename "$candidate" "$stable"')
-    assert marker_binding < reconciliation < preflight < stop_old < start_candidate < promote
-    assert "Existing durable state has no Raw bucket binding marker" in script
-    assert "Existing durable state belongs to a different Raw bucket" in script
-    assert "Invalid Fetcher R2 configuration::R2 account ID is unsafe" in script
-    assert "Invalid Fetcher R2 configuration::Raw bucket name is unsafe" in script
-    assert 'sudo test -e "$FETCHER_STATE_PATH"' in script
-    assert 'sudo test -f "$raw_bucket_marker"' in script
-    assert '$(sudo cat "$raw_bucket_marker")' in script
-    assert "sudo stat -c '%u:%g' \"$raw_bucket_marker\"" in script
-    assert 'sudo chmod 0600 "$marker_tmp"' in script
-    assert 'sudo mv "$marker_tmp" "$raw_bucket_marker"' in script
-    assert 'printf \'%s\\n%s\' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET"' in script
-    assert "A failed first deploy can leave only this marker" in script
-    marker_only_start = script.index('elif sudo test -e "$raw_bucket_marker"; then')
-    marker_only_end = script.index("# BEGIN FETCHER SCHEDULER RECONCILIATION", marker_only_start)
-    marker_only = script[marker_only_start:marker_only_end]
-    assert "validate_raw_bucket_marker_mode" in marker_only
-    assert 'if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then' in marker_only
-    assert "write_raw_bucket_marker" in marker_only
-    assert "stable=findb-fetcher-scheduler" in script
-    assert "candidate=findb-fetcher-scheduler-candidate" in script
-    assert "previous=findb-fetcher-scheduler-previous" in script
-    assert 'docker rm -f "$candidate"' in script
-    assert 'docker rename "$previous" "$stable"' in script
-    assert 'if [ "$FETCHER_SCHEDULER_DESIRED_STATE" = "running" ]; then' in script
-    assert "docker create \\" in script
-    assert "for attempt in $(seq 1 6)" in script
-    assert "{{.RestartCount}}" in script
-    assert "recover_scheduler()" in script
-
-    recovery_start = script.index("recover_scheduler()")
-    recovery_end = script.index("trap 'recover_scheduler \"$?\"' ERR")
-    recovery = script[recovery_start:recovery_end]
-    assert recovery_start < recovery_end < stop_old
-    assert "trap - ERR INT TERM HUP" in recovery
-    assert recovery.index('docker rm -f "$candidate"') < recovery.index(
-        'docker container inspect "$stable"'
-    )
-    assert 'docker container inspect "$stable"' in recovery
-    assert 'docker stop --time 30 "$stable"' in recovery
-    assert 'docker container inspect "$previous"' in recovery
-    assert 'docker rename "$previous" "$stable"' in recovery
-    assert '"$had_previous"' not in recovery
-    assert 'exit "$original_status"' in recovery
-    assert "Scheduler recovery did not complete" in recovery
-    assert "trap 'recover_scheduler \"$?\"' ERR" in script
-    assert "trap 'recover_scheduler 130' INT" in script
-    assert "trap 'recover_scheduler 143' TERM" in script
-    assert "trap 'recover_scheduler 129' HUP" in script
-    clear_recovery = script.rindex("trap - ERR INT TERM HUP")
-    assert promote < clear_recovery
-    assert "{{.State.Running}}" in script
-    assert "FETCHER_SCHEDULER_DESIRED_STATE must be running or stopped" in script
-
-    runtime_block = script[script.index('runtime_env_args="') : preflight]
-    assert "--env GITHUB_TOKEN" not in runtime_block
-    assert "--env GITHUB_ACTOR" not in runtime_block
-    for name in (
-        "SOURCE_API_URL",
-        "SOURCE_CLIENT_KEY",
-        "TWELVE_DATA_API_KEY",
-        "CLOUDFLARE_R2_ACCOUNT_ID",
-        "CLOUDFLARE_R2_RAW_BUCKET",
-        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
-        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
-    ):
-        assert f"--env {name}" in runtime_block
-        assert f"--env {name}=" not in runtime_block
-    assert ".Config.Env" not in script
-    assert "set -x" not in script
-    assert "CLOUDFLARE_R2_BUCKET" not in step_env
-    assert "CLOUDFLARE_R2_BUCKET" not in forwarded
-    assert "CLOUDFLARE_R2_BUCKET" not in runtime_block
+    for name, (dockerfile, tag) in expected.items():
+        step = _named_step(workflow, "build-push", name)
+        assert step["with"]["context"] == "."
+        assert step["with"]["file"] == dockerfile
+        assert str(step["with"]["push"]).lower() == "true"
+        assert step["with"]["tags"] == tag
 
 
-def test_fetcher_cd_validates_target_specific_r2_buckets_before_deploy() -> None:
+def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    predeploy = workflow["jobs"]["validate-r2-bucket-configuration"]
-    deploy = workflow["jobs"]["deploy"]
-    script = predeploy["steps"][0]["run"]
-
-    assert predeploy["needs"] == "build-push"
-    assert "inputs.run_finlab_smoke != true" in predeploy["if"]
-    assert deploy["needs"] == ["build-push", "validate-r2-bucket-configuration"]
-    assert predeploy["env"] == {
-        "DEPLOYMENT_TARGET": "${{ inputs.deployment_target || 'staging' }}",
-        "R2_RAW_BUCKET": "${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}",
+    providers = {
+        "twelve": (
+            "Release and validate Twelve Data scheduler on Fetcher EC2",
+            "FETCHER_SCHEDULER_DESIRED_STATE",
+            "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
+            {"TWELVE_DATA_API_KEY"},
+            {"FINLAB_API_TOKEN", "SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"},
+        ),
+        "finlab": (
+            "Release and validate FinLab scheduler on Fetcher EC2",
+            "FETCHER_FINLAB_SCHEDULER_DESIRED_STATE",
+            "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
+            {"FINLAB_API_TOKEN"},
+            {"TWELVE_DATA_API_KEY", "SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"},
+        ),
+        "shioaji": (
+            "Release and validate Shioaji scheduler on Fetcher EC2",
+            "FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE",
+            "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY",
+            {"SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"},
+            {"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN"},
+        ),
     }
-    assert "staging|production)" in script
-    assert 'if [ -z "$R2_RAW_BUCKET" ]; then' in script
+    for provider, (
+        step_name,
+        desired,
+        source_key,
+        own_credentials,
+        forbidden_credentials,
+    ) in providers.items():
+        step = _named_step(workflow, "deploy", step_name)
+        env = step["env"]
+        forwarded = set(step["with"]["envs"].split(","))
+        script = step["with"]["script"]
+        assert desired in env and desired in forwarded
+        assert source_key in env and source_key in forwarded
+        assert "FETCHER_CALENDAR_SERVE_API_KEY" in env
+        assert own_credentials <= set(env) and own_credentials <= forwarded
+        assert not forbidden_credentials & set(env)
+        assert not forbidden_credentials & forwarded
+        assert (
+            "DATABASE_URL" not in env
+            and "GITHUB_TOKEN"
+            not in script[script.index("runtime_env_args=") : script.index("reconcile_scheduler")]
+        )
+        assert "--env GITHUB_TOKEN" not in script
+        assert "--env GITHUB_ACTOR" not in script
+        assert "--read-only" in script
+        assert "--cap-drop ALL" in script
+        assert "--security-opt no-new-privileges" in script
+        assert "--log-opt max-size=10m" in script
+        assert "--log-opt max-file=3" in script
+        assert "--user 10001:10001" in script
+        assert "raw-bucket.sha256" in script
+        assert "recover_scheduler()" in script
+        assert "for attempt in $(seq 1 6)" in script
+        assert "{{.RestartCount}}" in script
+        assert "running|stopped" in script
+        assert "must be running or stopped" in script
+        preflight = script.index("--check")
+        stable_stop = script.index('docker stop --time 30 "$stable"', preflight)
+        assert preflight < stable_stop
+        assert 'docker rename "$candidate" "$stable"' in script
+        assert 'docker rename "$previous" "$stable"' in script
+        assert 'docker rm -f "$candidate"' in script
+
+        if provider == "twelve":
+            assert "/var/lib/findb-fetcher/state.sqlite3" in script
+            assert "findb-fetcher-scheduler-candidate" in script
+            assert "findb-fetch-scheduler --check" in script
+            assert "findb-fetch-scheduler --run-forever" in script
+        elif provider == "finlab":
+            assert "/var/lib/findb-finlab-fetcher/state.sqlite3" in script
+            assert "/var/lib/findb-finlab-fetcher/cache" in script
+            assert "dst=/home/fetcher" in script
+            assert "findb-fetcher-finlab-scheduler-candidate" in script
+            assert "findb-fetch-finlab-scheduler --check" in script
+            assert "--slot-id tw_1430 --dataset-key tw_equity_eod" in script
+        else:
+            assert "/var/lib/findb-shioaji-fetcher/state.sqlite3" in script
+            assert "findb-fetcher-shioaji-scheduler-candidate" in script
+            assert "findb-fetch-shioaji-scheduler --check" in script
+            assert "--manifest /app/configs/shioaji_tw_pilot.v1.json" in script
+            assert env["SHIOAJI_SIMULATION"] == "false"
 
 
-@pytest.mark.parametrize(
-    ("initial", "desired_state", "succeeds", "expected_running"),
-    [
-        ({"findb-fetcher-scheduler": "stopped"}, "running", True, 1),
-        ({"findb-fetcher-scheduler": "running"}, "stopped", True, 0),
+def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
+    """Return provider-specific function arguments for the shell state machine."""
+    return (
         (
-            {
-                "findb-fetcher-scheduler": "running",
-                "findb-fetcher-scheduler-candidate": "running",
-            },
-            "running",
-            True,
-            1,
+            "twelve",
+            "Release and validate Twelve Data scheduler on Fetcher EC2",
+            "findb-fetch-scheduler",
+            "findb-fetcher-scheduler",
+            "findb-fetcher-scheduler-candidate",
+            "findb-fetcher-scheduler-previous",
         ),
         (
-            {
-                "findb-fetcher-scheduler": "stopped",
-                "findb-fetcher-scheduler-previous": "stopped",
-            },
-            "stopped",
-            True,
-            0,
+            "finlab",
+            "Release and validate FinLab scheduler on Fetcher EC2",
+            "findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id tw_1430 --dataset-key tw_equity_eod",
+            "findb-fetcher-finlab-scheduler",
+            "findb-fetcher-finlab-scheduler-candidate",
+            "findb-fetcher-finlab-scheduler-previous",
         ),
-        ({"findb-fetcher-scheduler-candidate": "running"}, "stopped", True, 0),
-        ({"findb-fetcher-scheduler-previous": "stopped"}, "running", True, 1),
-        ({"findb-fetcher-scheduler": "start-fail"}, "running", False, 0),
-        ({"findb-fetcher-scheduler": "stop-fail"}, "stopped", False, 0),
-        ({}, "stopped", True, 0),
-    ],
-)
-def test_fetcher_scheduler_reconciliation_behavior(
-    tmp_path: Path,
-    initial: dict[str, str],
-    desired_state: str,
-    succeeds: bool,
-    expected_running: int,
-) -> None:
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    script = _named_step(
-        workflow,
-        "deploy",
-        "Release and validate Fetcher image on Fetcher EC2",
-    )["with"]["script"]
-    begin = "# BEGIN FETCHER SCHEDULER RECONCILIATION"
-    end = "# END FETCHER SCHEDULER RECONCILIATION"
-    reconciliation = script.split(begin, 1)[1].split(end, 1)[0]
-    assert script.index(end) < script.index('docker pull "$image"')
+        (
+            "shioaji",
+            "Release and validate Shioaji scheduler on Fetcher EC2",
+            "findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json",
+            "findb-fetcher-shioaji-scheduler",
+            "findb-fetcher-shioaji-scheduler-candidate",
+            "findb-fetcher-shioaji-scheduler-previous",
+        ),
+    )
 
-    state_dir = tmp_path / "state"
-    fake_bin = tmp_path / "bin"
-    state_dir.mkdir()
-    fake_bin.mkdir()
-    for name, status in initial.items():
-        (state_dir / name).write_text(status, encoding="utf-8")
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(
-        """#!/bin/sh
+
+_FAKE_DOCKER = """#!/bin/sh
 set -eu
+state_dir="${FAKE_DOCKER_STATE:?}"
+printf '%s\\n' "$1" >> "${FAKE_DOCKER_LOG:?}"
 operation="$1"
 shift
-printf '%s\\n' "$operation" >> "$FAKE_DOCKER_LOG"
 case "$operation" in
   container)
-    [ "$1" = "inspect" ]
-    [ -f "$FAKE_DOCKER_STATE/$2" ]
+    [ "$1" = inspect ]
+    [ -f "$state_dir/$2" ]
+    ;;
+  pull)
+    exit 0
     ;;
   rm)
-    [ "$1" = "-f" ]
-    rm -f "$FAKE_DOCKER_STATE/$2"
+    [ "$1" != "--name" ] || shift
+    [ "$1" != "-f" ] || shift
+    rm -f "$state_dir/$1"
     ;;
   rename)
-    mv "$FAKE_DOCKER_STATE/$1" "$FAKE_DOCKER_STATE/$2"
-    ;;
-  start)
-    if [ "$(cat "$FAKE_DOCKER_STATE/$1")" = "start-fail" ]; then
-      exit 1
-    fi
-    printf 'running\\n' > "$FAKE_DOCKER_STATE/$1"
+    mv "$state_dir/$1" "$state_dir/$2"
     ;;
   stop)
     [ "$1" = "--time" ]
-    if [ "$(cat "$FAKE_DOCKER_STATE/$3")" = "stop-fail" ]; then
-      exit 1
+    name="$3"
+    [ "$(cat "$state_dir/$name")" != stop-fail ] || exit 1
+    printf 'stopped\\n' > "$state_dir/$name"
+    ;;
+  start)
+    name="$1"
+    [ "$(cat "$state_dir/$name")" != start-fail ] || exit 1
+    printf 'running\\n' > "$state_dir/$name"
+    ;;
+  create)
+    [ "${FAKE_CREATE_FAIL:-0}" != 1 ]
+    name=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --name ]; then name="$argument"; fi
+      previous="$argument"
+    done
+    [ -n "$name" ]
+    printf 'created\\n' > "$state_dir/$name"
+    ;;
+  run)
+    detached=0
+    name=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$argument" = -d ]; then detached=1; fi
+      if [ "$previous" = --name ]; then name="$argument"; fi
+      previous="$argument"
+    done
+    if [ "$detached" -eq 1 ]; then
+      [ -n "$name" ]
+      printf '%s\\n' "${FAKE_CANDIDATE_STATUS:-running}" > "$state_dir/$name"
+    else
+      [ "${FAKE_PREFLIGHT_FAIL:-0}" != 1 ]
     fi
-    printf 'stopped\\n' > "$FAKE_DOCKER_STATE/$3"
     ;;
   inspect)
-    [ "$1" = "--format" ]
-    status="$(cat "$FAKE_DOCKER_STATE/$3")"
-    if [ "$status" = "running" ]; then
-      printf 'true\\n'
-    else
-      printf 'false\\n'
-    fi
+    [ "$1" = --format ]
+    format="$2"
+    name="$3"
+    status="$(cat "$state_dir/$name")"
+    case "$format" in
+      *Config.Image*) printf '%s\\n' "${FAKE_IMAGE:?}" ;;
+      *Config.User*) printf '10001:10001\\n' ;;
+      *State.Running*) [ "$status" = running ] && printf 'true\\n' || printf 'false\\n' ;;
+      *State.Status*) printf '%s\\n' "$status" ;;
+      *RestartCount*) printf '0\\n' ;;
+      *) printf '%s\\n' "$status" ;;
+    esac
     ;;
   *)
     exit 2
     ;;
 esac
-""",
+"""
+
+_FAKE_SUDO = """#!/bin/sh
+set -eu
+case "$1" in
+  chown|chmod)
+    exit 0
+    ;;
+  stat)
+    path="${4:?}"
+    case "$path" in
+      *.sqlite3|*.sha256|*.sha256.*) printf '10001:10001:600\\n' ;;
+      *) printf '10001:10001:700\\n' ;;
+    esac
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac
+"""
+
+
+def _run_fetcher_reconciliation(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+    *,
+    desired_state: str,
+    initial: dict[str, str],
+    candidate_status: str = "running",
+    preflight_fails: bool = False,
+    create_fails: bool = False,
+    legacy_raw_bucket_marker: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
+    provider_id, step_name, command, stable, candidate, previous = provider
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    script = _named_step(workflow, "deploy", step_name)["with"]["script"]
+    function_start = script.index("reconcile_scheduler() {")
+    function_end = script.index("\nruntime_env_args=", function_start)
+    function = script[function_start:function_end]
+
+    state_dir = tmp_path / provider_id / "state"
+    fake_bin = tmp_path / provider_id / "bin"
+    state_dir.mkdir(parents=True)
+    fake_bin.mkdir(parents=True)
+    for name, status in initial.items():
+        (state_dir / name).write_text(status + "\n", encoding="utf-8")
+    state_path = state_dir / "state.sqlite3"
+    state_path.write_text("durable-state\n", encoding="utf-8")
+    marker_components = "0123456789abcdef0123456789abcdef\nraw-bucket"
+    if not legacy_raw_bucket_marker:
+        marker_components += f"\n{provider_id}"
+    (state_dir / "raw-bucket.sha256").write_text(
+        hashlib.sha256(marker_components.encode()).hexdigest() + "\n",
         encoding="utf-8",
     )
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
     fake_docker.chmod(0o755)
-    harness = f"""
-set -euo pipefail
-stable=findb-fetcher-scheduler
-candidate=findb-fetcher-scheduler-candidate
-previous=findb-fetcher-scheduler-previous
-FETCHER_SCHEDULER_DESIRED_STATE={desired_state}
-{reconciliation}
-"""
-    environment = dict(os.environ)
-    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
-    environment["FAKE_DOCKER_STATE"] = str(state_dir)
-    log_path = tmp_path / "docker.log"
-    environment["FAKE_DOCKER_LOG"] = str(log_path)
+    fake_sudo = fake_bin / "sudo"
+    fake_sudo.write_text(_FAKE_SUDO, encoding="utf-8")
+    fake_sudo.chmod(0o755)
+    fake_sleep = fake_bin / "sleep"
+    fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_sleep.chmod(0o755)
 
+    image = "image:test"
+    if provider_id == "shioaji":
+        invocation = (
+            f"reconcile_scheduler {provider_id} {desired_state} {image} "
+            f"{state_dir} {state_path} {stable} {candidate} {previous} "
+            f'preflight "" {command}'
+        )
+    else:
+        cache_dir = state_dir / "cache" if provider_id == "finlab" else "-"
+        invocation = (
+            f"reconcile_scheduler {provider_id} {desired_state} {image} "
+            f"{state_dir} {state_path} {stable} {candidate} {previous} "
+            f'preflight {cache_dir} "" {command}'
+        )
+    harness = f"""set -euo pipefail
+SOURCE_API_URL=https://findb.example.com
+SOURCE_CLIENT_KEY=source-key
+FINDB_SERVE_BASE_URL=https://findb.example.com
+FETCHER_CALENDAR_SERVE_API_KEY=calendar-key
+CLOUDFLARE_R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+CLOUDFLARE_R2_RAW_BUCKET=raw-bucket
+FETCHER_STATE_PATH={state_path}
+FETCHER_SHIOAJI_STATE_PATH={state_path}
+SHIOAJI_SIMULATION=false
+export SOURCE_API_URL SOURCE_CLIENT_KEY FINDB_SERVE_BASE_URL FETCHER_CALENDAR_SERVE_API_KEY
+export CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET FETCHER_STATE_PATH FETCHER_SHIOAJI_STATE_PATH SHIOAJI_SIMULATION
+stable={stable}
+candidate={candidate}
+previous={previous}
+{function}
+{invocation}
+"""
+    log_path = tmp_path / provider_id / "docker.log"
+    environment = dict(os.environ)
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        FAKE_DOCKER_STATE=str(state_dir),
+        FAKE_DOCKER_LOG=str(log_path),
+        FAKE_IMAGE=image,
+        FAKE_CANDIDATE_STATUS=candidate_status,
+        FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
+        FAKE_CREATE_FAIL="1" if create_fails else "0",
+    )
     completed = subprocess.run(
         ["bash", "-c", harness],
         check=False,
@@ -831,86 +933,178 @@ FETCHER_SCHEDULER_DESIRED_STATE={desired_state}
         text=True,
         env=environment,
     )
+    statuses = {
+        path.name: path.read_text(encoding="utf-8").strip()
+        for path in state_dir.iterdir()
+        if path.is_file() and path.name not in {"state.sqlite3", "raw-bucket.sha256"}
+    }
+    operations = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
+    return completed, statuses, operations, state_path.read_text(encoding="utf-8")
 
-    assert (completed.returncode == 0) is succeeds
-    statuses = {path.name: path.read_text(encoding="utf-8").strip() for path in state_dir.iterdir()}
-    assert sum(status == "running" for status in statuses.values()) == expected_running
-    assert "findb-fetcher-scheduler-candidate" not in statuses
-    operations = log_path.read_text(encoding="utf-8").splitlines()
+
+def test_twelve_legacy_raw_bucket_marker_is_migrated_before_reconciliation(
+    tmp_path: Path,
+) -> None:
+    provider = _fetcher_scheduler_cases()[0]
+    stable = provider[3]
+
+    completed, statuses, _, durable_state = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        desired_state="running",
+        initial={stable: "running"},
+        legacy_raw_bucket_marker=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert statuses == {stable: "running"}
+    assert durable_state == "durable-state\n"
+    marker = (tmp_path / "twelve" / "state" / "raw-bucket.sha256").read_text(encoding="utf-8")
+    expected = hashlib.sha256(b"0123456789abcdef0123456789abcdef\nraw-bucket\ntwelve").hexdigest()
+    assert marker == f"{expected}\n"
+
+
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases()[1:], ids=lambda item: item[0])
+def test_new_providers_reject_legacy_twelve_raw_bucket_marker(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+) -> None:
+    stable = provider[3]
+
+    completed, statuses, _, durable_state = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        desired_state="running",
+        initial={stable: "running"},
+        legacy_raw_bucket_marker=True,
+    )
+
+    assert completed.returncode != 0
+    assert "raw bucket mismatch" in completed.stderr.lower()
+    assert statuses == {stable: "running"}
+    assert durable_state == "durable-state\n"
+
+
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+@pytest.mark.parametrize(
+    ("initial_status", "desired_state", "expected_status"),
+    (("stopped", "running", "running"), ("running", "stopped", "created")),
+)
+def test_fetcher_provider_reconciliation_converges_running_and_stopped(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+    initial_status: str,
+    desired_state: str,
+    expected_status: str,
+) -> None:
+    stable = provider[3]
+    completed, statuses, operations, _ = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        desired_state=desired_state,
+        initial={stable: initial_status},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert statuses == {stable: expected_status}
+    assert provider[4] not in statuses
+    assert provider[5] not in statuses
     if desired_state == "stopped":
         assert "start" not in operations
-    if succeeds:
-        assert "findb-fetcher-scheduler-previous" not in statuses
-        if expected_running == 1:
-            assert statuses == {"findb-fetcher-scheduler": "running"}
-        else:
-            assert statuses in ({}, {"findb-fetcher-scheduler": "stopped"})
-    else:
-        assert "Scheduler state could not be reconciled" in completed.stderr
 
 
-def test_fetcher_scheduler_recovery_keeps_stopped_target_stopped(tmp_path: Path) -> None:
-    script = _named_step(
-        _load_workflow(FETCHER_CD_WORKFLOW),
-        "deploy",
-        "Release and validate Fetcher image on Fetcher EC2",
-    )["with"]["script"]
-    recovery = script.split("recover_scheduler() {", 1)[1].split(
-        "trap 'recover_scheduler \"$?\"' ERR", 1
-    )[0]
-    state_dir = tmp_path / "state"
-    fake_bin = tmp_path / "bin"
-    state_dir.mkdir()
-    fake_bin.mkdir()
-    (state_dir / "findb-fetcher-scheduler").write_text("running", encoding="utf-8")
-    (state_dir / "findb-fetcher-scheduler-candidate").write_text("running", encoding="utf-8")
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(
-        """#!/bin/sh
-set -eu
-operation="$1"
-shift
-printf '%s\\n' "$operation" >> "$FAKE_DOCKER_LOG"
-case "$operation" in
-  container) [ "$1" = "inspect" ]; [ -f "$FAKE_DOCKER_STATE/$2" ] ;;
-  rm) [ "$1" = "-f" ]; rm -f "$FAKE_DOCKER_STATE/$2" ;;
-  stop) [ "$1" = "--time" ]; printf 'stopped\\n' > "$FAKE_DOCKER_STATE/$3" ;;
-  start) printf 'running\\n' > "$FAKE_DOCKER_STATE/$1" ;;
-  rename) mv "$FAKE_DOCKER_STATE/$1" "$FAKE_DOCKER_STATE/$2" ;;
-  *) exit 2 ;;
-esac
-""",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o755)
-    log_path = tmp_path / "docker.log"
-    environment = dict(os.environ)
-    environment.update(
-        PATH=f"{fake_bin}:{environment['PATH']}",
-        FAKE_DOCKER_STATE=str(state_dir),
-        FAKE_DOCKER_LOG=str(log_path),
-    )
-    completed = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f"""set -euo pipefail
-stable=findb-fetcher-scheduler
-candidate=findb-fetcher-scheduler-candidate
-previous=findb-fetcher-scheduler-previous
-FETCHER_SCHEDULER_DESIRED_STATE=stopped
-recover_scheduler() {{{recovery}
-recover_scheduler 1""",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+def test_fetcher_provider_reconciliation_cleans_interrupted_candidate(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+) -> None:
+    stable, candidate = provider[3], provider[4]
+    completed, statuses, operations, _ = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        desired_state="running",
+        initial={stable: "running", candidate: "stale-candidate"},
     )
 
-    assert completed.returncode == 1
-    assert (state_dir / "findb-fetcher-scheduler").read_text(encoding="utf-8") == "stopped\n"
-    assert "start" not in log_path.read_text(encoding="utf-8").splitlines()
+    assert completed.returncode == 0, completed.stderr
+    assert statuses == {stable: "running"}
+    assert candidate not in statuses
+    assert "rm" in operations
+
+
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+def test_fetcher_provider_candidate_failure_rolls_back_and_preserves_sqlite(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+) -> None:
+    stable, candidate, previous = provider[3], provider[4], provider[5]
+    completed, statuses, operations, durable_state = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        desired_state="running",
+        initial={stable: "running"},
+        candidate_status="exited",
+    )
+
+    assert completed.returncode != 0
+    assert statuses == {stable: "running"}
+    assert candidate not in statuses
+    assert previous not in statuses
+    assert "start" in operations
+    assert durable_state == "durable-state\n"
+
+
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+def test_fetcher_provider_stopped_recovery_never_starts_old_scheduler(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+) -> None:
+    stable, candidate = provider[3], provider[4]
+    completed, statuses, operations, _ = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        desired_state="stopped",
+        initial={stable: "running"},
+        create_fails=True,
+    )
+
+    assert completed.returncode != 0
+    assert statuses == {stable: "stopped"}
+    assert candidate not in statuses
+    assert "start" not in operations
+
+
+def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolation_before_deploy() -> (
+    None
+):
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    predeploy = workflow["jobs"]["validate-r2-bucket-configuration"]
+    isolation = workflow["jobs"]["validate-fetcher-credential-isolation"]
+    deploy = workflow["jobs"]["deploy"]
+    r2_script = predeploy["steps"][0]["run"]
+    isolation_script = isolation["steps"][0]["run"]
+
+    assert predeploy["needs"] == "build-push"
+    assert isolation["needs"] == "build-push"
+    assert "inputs.run_finlab_smoke != true" in predeploy["if"]
+    assert "inputs.run_finlab_smoke != true" in isolation["if"]
+    assert deploy["needs"] == [
+        "build-push",
+        "validate-r2-bucket-configuration",
+        "validate-fetcher-credential-isolation",
+    ]
+    assert predeploy["env"] == {
+        "DEPLOYMENT_TARGET": "${{ inputs.deployment_target || 'staging' }}",
+        "R2_RAW_BUCKET": "${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}",
+    }
+    assert "staging|production)" in r2_script
+    assert 'if [ -z "$R2_RAW_BUCKET" ]; then' in r2_script
+    assert "FETCHER_CALENDAR_SERVE_API_KEY" in isolation_script
+    assert "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY" in isolation_script
+    assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" in isolation_script
+    assert "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY" in isolation_script
+    assert "credential isolation failed" in isolation_script
+    assert "without printing credential values" in isolation_script
 
 
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:

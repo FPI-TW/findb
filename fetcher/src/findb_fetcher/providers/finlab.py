@@ -53,6 +53,10 @@ class FinLabSdkError(FinLabError):
     """The optional FinLab SDK is unavailable or returned an unsafe table."""
 
 
+class FinLabTargetNotReadyError(FinLabSdkError, FinLabPayloadError):
+    """The provider has not published the requested target trading date yet."""
+
+
 @dataclass(frozen=True, slots=True)
 class FinLabDatasetTable:
     """One provider dataset expressed without pandas or an SDK dependency."""
@@ -152,7 +156,9 @@ class FinLabSdkGateway:
                 reviewed_symbols=reviewed_symbols,
             )
         except FinLabSdkError as exc:
-            raise FinLabSdkError(str(exc)) from None
+            # Preserve the safe publication-miss subtype while discarding any
+            # provider traceback or credential-bearing context.
+            raise type(exc)(str(exc)) from None
         except Exception:
             raise FinLabSdkError("FinLab SDK dataset result failed validation") from None
 
@@ -163,6 +169,12 @@ class FinLabSymbol:
 
     source_symbol: str
     canonical_symbol: str
+
+    @property
+    def symbol(self) -> str:
+        """Generic-universe spelling for the provider symbol."""
+
+        return self.source_symbol
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,7 +346,10 @@ def build_market_eod_request(
         "payload": {
             "batch": {
                 "data_date": bundle.target_date.isoformat(),
-                "delivery_mode": "incremental",
+                # The reviewed FinLab bundle is a complete snapshot of its
+                # governed two-symbol universe.  It must never be interpreted
+                # as a partial/incremental update by Source normalization.
+                "delivery_mode": "full_snapshot",
                 "declared_record_count": len(rows),
             },
             "data": rows,
@@ -387,6 +402,8 @@ def _validate_table(
         raise FinLabPayloadError(f"{field} table date grid is invalid")
     if len(set(table.dates)) != len(table.dates):
         raise FinLabPayloadError(f"{field} table has duplicate dates")
+    if target_date.isoformat() not in table.dates:
+        raise FinLabTargetNotReadyError(f"{field} table does not match target date")
     if tuple(table.dates) != (target_date.isoformat(),):
         raise FinLabPayloadError(f"{field} table does not match target date")
     if not table.symbols or len(set(table.symbols)) != len(table.symbols):

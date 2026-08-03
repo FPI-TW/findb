@@ -2,7 +2,8 @@
 
 > 狀態：`market_minute.v1` ingress 與 `market_minute_archive.v1` archive manifest
 > 已發布為契約，workflow/canonical DB 骨架、Source routing、normalizer、DQ 與 canonical
-> 寫入均已建；production scheduler、monthly partition automation 與 Serve 查詢尚未實作。
+> 寫入均已建；四檔reviewed production-pilot scheduler已實作。完整market universe、
+> cross-sequence publication、monthly partition automation與Serve查詢尚未實作。
 
 ## 範圍與單位
 
@@ -76,8 +77,9 @@ identifier，否則建立新 instrument。
 單一 dataset 異動超過 20 檔或 2% 任一門檻時 fail closed。每個 published universe
 必須保留 Shioaji snapshot、官方來源版本、差異、checksum、判定與發布時間。
 
-Staging 固定只使用 `2330`、`0050`、`0056`、`006201`，不隨 production universe
-自動擴張；可以更新這四檔 metadata。
+Staging與目前production pilot都固定只使用`2330`、`0050`、`0056`、`006201`，但各自
+使用不同manifest identity、credentials與SQLite state。Pilot不會隨未完成的full-market
+universe自動擴張；可以review更新這四檔metadata。
 
 ## Daily update 與 publication barrier
 
@@ -188,18 +190,26 @@ lowercase `api.contracts.stocks` 與 `KBars.dict()`。credential-safe、單一 `
 simulation smoke CLI 已實作；成功的真實 staging smoke 仍是 production activation 前的
 必要 gate，不得以 mock regression 取代。
 
-## 後續工作（未實作）
+## Reviewed production pilot 與後續工作
 
-以下是已界定但未在本里程碑完成的架構，文件不代表 runtime 已支援：
+Fetcher已有production專用的四檔manifest與scheduler：published TW calendar開市日於
+`14:30 Asia/Taipei`開始抓取同一trade date，`17:00`後停止retry且不做跨日Shioaji
+catch-up。Production runtime強制`SHIOAJI_SIMULATION=false`，使用獨立Source key、
+Shioaji帳號、R2 binding、container與`/var/lib/findb-shioaji-fetcher/state.sqlite3`。
+Acquisition attempts、rolling limiter、SDK-detached raw snapshot、prepared Source request及
+terminal結果均durable；Source只有`completed`且record counts吻合才算sequence成功。
+兩個minute dataset registry rows已為此reviewed pilot啟用。
 
-已新增一個不會啟用 production dataset 的 staging-only Shioaji Taiwan-minute
-one-shot coordinator。其 committed manifest 固定為 2330 equity 與 0050、0056、006201
-ETF 的四個 sequence；`--check` 完全離線，預設僅 acquisition/contract validation，只有
-明確 `--deliver` 才會建立 R2 與 Source client。它使用獨立 SQLite state 保存 rolling
-limit、attempt、lease、SDK-detached acquisition snapshot 及 prepared request；這不是
-production scheduler 或 universe/backfill 授權。R2 上傳前會先保存 durable intent；
-若程序在外部寫入與本機 checkpoint 之間中止，重啟會以
-`RAW_PERSIST_UNCERTAIN` fail closed，等待人工核對而不盲目重傳。
+這個pilot仍是每symbol一個sequence，直接進入既有Source/normalizer/canonical流程；它
+不實作本文描述的full-market universe release與transactional cross-sequence publication
+barrier，因此不得視為完整market publication或backfill授權。
+
+原staging-only one-shot coordinator仍保留作credentialed驗證工具。其committed manifest
+同樣固定為2330 equity與0050、0056、006201 ETF，但identity與state不可和production共用；
+`--check`完全離線，預設僅acquisition/contract validation，只有明確`--deliver`才會建立
+R2與Source client。它使用SQLite state保存rolling limit、attempt、lease、SDK-detached
+snapshot及prepared request。R2上傳前保存durable intent；若程序在外部寫入與本機
+checkpoint之間中止，重啟會以`RAW_PERSIST_UNCERTAIN` fail closed，等待人工核對。
 
 Phase 4 的 credentialed acquisition 必須使用新的私有 SQLite state、31 天內已知的前一
 交易日，且在 Asia/Taipei 17:00 前執行：先以 `--preflight` 只取得並驗證 2330；成功後才可
@@ -209,9 +219,9 @@ Taipei execution date，不能跨日恢復；此流程永遠不得使用 `--deli
 與 local contract validation 均成功後寫入的 durable preflight marker；缺少 marker 時不得呼叫
 provider。
 
-- credentialed staging smoke 的成功驗收；
-- production scheduler／universe coordination／acquisition runtime；
-- deployment 與 staging rollout；
+- credentialed staging與production pilot的live成功驗收及至少兩個有效交易日觀察；
+- full-market universe coordination與canonical backend publication finalizer；
+- production deployment rollout與failure/rollback演練；
 - production archive import；
 - RDS hot storage 的 61 個 monthly partitions automation；
 - 永久 Canonical R2 archive 與上述 publication barrier 的實際儲存流程；
