@@ -194,8 +194,9 @@ simulation smoke CLI 已實作；成功的真實 staging smoke 仍是 production
 
 Fetcher已有production專用的四檔manifest與scheduler：published TW calendar開市日於
 `14:30 Asia/Taipei`開始抓取同一trade date，`17:00`後停止retry且不做跨日Shioaji
-catch-up。Production runtime強制`SHIOAJI_SIMULATION=false`，使用獨立Source key、
-Shioaji帳號、R2 binding、container與`/var/lib/findb-shioaji-fetcher/state.sqlite3`。
+catch-up。Production runtime強制`SHIOAJI_SIMULATION=true`，使用獨立data-only
+Shioaji帳號、Source key、R2 binding、writable provider cache、container與
+`/var/lib/findb-shioaji-fetcher/state.sqlite3`。
 Acquisition attempts、rolling limiter、SDK-detached raw snapshot、prepared Source request及
 terminal結果均durable；Source只有`completed`且record counts吻合才算sequence成功。
 兩個minute dataset registry rows已為此reviewed pilot啟用。

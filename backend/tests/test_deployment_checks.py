@@ -227,6 +227,19 @@ def test_fetcher_r2_sync_contract_is_raw_only() -> None:
 
 
 @pytest.mark.parametrize("target", ("staging", "production"))
+def test_fetcher_sync_forces_shioaji_simulation(target: str) -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    validate = namespace["_validate_fetcher_simulation_contract"]
+
+    assert validate(target, {"SHIOAJI_SIMULATION": "true"}) is None
+    for invalid in ("false", "TRUE", "true ", "1"):
+        assert validate(target, {"SHIOAJI_SIMULATION": invalid}) == (
+            f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
+        )
+    assert validate(target, {}) == f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
+
+
+@pytest.mark.parametrize("target", ("staging", "production"))
 def test_findb_sync_rejects_reused_canonical_credentials(target: str) -> None:
     namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
     validate = namespace["_validate_findb_canonical_contract"]
@@ -590,6 +603,10 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
     assert 'find_spec("shioaji") is not None' in shioaji
     assert "findb-fetch-shioaji-scheduler --help" in shioaji
     assert "Dockerfile.shioaji" in shioaji
+    shioaji_dockerfile = (REPO_ROOT / "fetcher" / "Dockerfile.shioaji").read_text(encoding="utf-8")
+    assert "--create-home --home-dir /home/fetcher" in shioaji_dockerfile
+    assert "HOME=/home/fetcher" in shioaji_dockerfile
+    assert 'VOLUME ["/home/fetcher", "/var/lib/findb-shioaji-fetcher"]' in (shioaji_dockerfile)
     assert str(test_job["timeout-minutes"]) == "15"
 
 
@@ -704,10 +721,13 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
             assert "--slot-id tw_1430 --dataset-key tw_equity_eod" in script
         else:
             assert "/var/lib/findb-shioaji-fetcher/state.sqlite3" in script
+            assert 'cache_dir="$state_dir/cache"' in script
+            assert "dst=/home/fetcher" in script
             assert "findb-fetcher-shioaji-scheduler-candidate" in script
             assert "findb-fetch-shioaji-scheduler --check" in script
             assert "--manifest /app/configs/shioaji_tw_pilot.v1.json" in script
-            assert env["SHIOAJI_SIMULATION"] == "false"
+            assert env["SHIOAJI_SIMULATION"] == "${{ vars.SHIOAJI_SIMULATION || 'true' }}"
+            assert "SHIOAJI_SIMULATION must be true" in script
 
 
 def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
@@ -906,7 +926,7 @@ CLOUDFLARE_R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef
 CLOUDFLARE_R2_RAW_BUCKET=raw-bucket
 FETCHER_STATE_PATH={state_path}
 FETCHER_SHIOAJI_STATE_PATH={state_path}
-SHIOAJI_SIMULATION=false
+SHIOAJI_SIMULATION=true
 export SOURCE_API_URL SOURCE_CLIENT_KEY FINDB_SERVE_BASE_URL FETCHER_CALENDAR_SERVE_API_KEY
 export CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET FETCHER_STATE_PATH FETCHER_SHIOAJI_STATE_PATH SHIOAJI_SIMULATION
 stable={stable}
