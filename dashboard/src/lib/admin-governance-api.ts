@@ -9,6 +9,7 @@ export type AdminRole = z.infer<typeof adminRoleSchema>
 export const SOURCE_PROVIDERS = [
   "twelve_data",
   "finlab",
+  "shioaji",
   "bloomberg",
 ] as const
 export const sourceProviderSchema = z.enum(SOURCE_PROVIDERS)
