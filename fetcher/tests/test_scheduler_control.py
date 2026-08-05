@@ -145,9 +145,7 @@ def test_control_client_parses_authoritative_scheduler_definition() -> None:
         key,
         client=httpx.Client(
             transport=httpx.MockTransport(
-                lambda request: httpx.Response(
-                    200, json=_definition_response(key), request=request
-                )
+                lambda request: httpx.Response(200, json=_definition_response(key), request=request)
             )
         ),
     )

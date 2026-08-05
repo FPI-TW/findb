@@ -245,6 +245,7 @@ def _run_forever(
             provider, dataset_keys, slot_id, scheduled_local_time, timezone_name = (
                 expected_definition
             )
+
             def validator(response: Any) -> None:
                 validate_scheduler_definition(
                     response,
@@ -254,6 +255,7 @@ def _run_forever(
                     scheduled_local_time=scheduled_local_time,
                     timezone_name=timezone_name,
                 )
+
         loop = (
             SchedulerControlLoop(control, definition_validator=validator)
             if validator is not None

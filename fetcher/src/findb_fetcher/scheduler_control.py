@@ -93,7 +93,10 @@ class SchedulerControlClient:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
-        if not isinstance(scheduler_key, str) or _SCHEDULER_KEY_PATTERN.fullmatch(scheduler_key) is None:
+        if (
+            not isinstance(scheduler_key, str)
+            or _SCHEDULER_KEY_PATTERN.fullmatch(scheduler_key) is None
+        ):
             raise ValueError("scheduler control key is invalid")
         self._config = config
         self.scheduler_key = scheduler_key
