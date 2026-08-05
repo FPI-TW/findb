@@ -157,6 +157,16 @@ def test_flat_delivery_expectation_is_backward_compatible() -> None:
     assert policy.freshness.maximum_fetch_age_hours == 48
 
 
+def test_policy_only_sequenced_snapshot_does_not_expand_eod_contract_enum() -> None:
+    policy = DeliveryExpectation.model_validate({"delivery_mode": "sequenced_snapshot"})
+    assert policy.delivery_mode.value == "sequenced_snapshot"
+
+    eod_value = _request().model_dump(mode="json")
+    eod_value["payload"]["batch"]["delivery_mode"] = "sequenced_snapshot"
+    with pytest.raises(ValidationError):
+        validate_ingress_request(eod_value)
+
+
 @pytest.mark.parametrize(
     "value",
     [

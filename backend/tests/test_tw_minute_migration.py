@@ -25,15 +25,17 @@ BASE_DATABASE_URL = os.getenv(
 async def _run_alembic(database_url: str, revision: str, command: str = "upgrade") -> None:
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
-    await asyncio.to_thread(
+    result = await asyncio.to_thread(
         subprocess.run,
         [sys.executable, "-m", "alembic", command, revision],
         cwd=BACKEND_ROOT,
         env=environment,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        pytest.fail(f"Alembic {command} {revision} failed:\n{result.stdout}\n{result.stderr}")
 
 
 def test_tw_minute_migration_is_single_linear_head():
@@ -47,6 +49,7 @@ def test_tw_minute_migration_is_single_linear_head():
     scheduler_control = scripts.get_revision("c1d2e3f4a5b6")
     scheduler_definition = scripts.get_revision("d2e3f4a5b6c7")
     finlab_policy = scripts.get_revision("e3f4a5b6c7d8")
+    minute_freshness = scripts.get_revision("f4a5b6c7d8e9")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -57,7 +60,265 @@ def test_tw_minute_migration_is_single_linear_head():
     assert scheduler_definition.down_revision == "c1d2e3f4a5b6"
     assert finlab_policy is not None
     assert finlab_policy.down_revision == "d2e3f4a5b6c7"
-    assert scripts.get_heads() == ["e3f4a5b6c7d8"]
+    assert minute_freshness is not None
+    assert minute_freshness.down_revision == "e3f4a5b6c7d8"
+    assert scripts.get_heads() == ["f4a5b6c7d8e9"]
+
+
+def test_minute_migration_downgrade_preserves_policy_provenance():
+    migration_path = (
+        BACKEND_ROOT / "migrations" / "versions" / "f4a5b6c7d8e9_add_minute_delivery_freshness.py"
+    )
+    migration_source = migration_path.read_text(encoding="utf-8")
+    assert "config #- '{delivery_expectation}'" not in migration_source
+    assert "policy provenance is not stored" in migration_source.lower()
+    assert "ADD COLUMN IF NOT EXISTS snapshot_id" in migration_source
+    assert "run.snapshot_id IS NULL" in migration_source
+    assert "DO $$" not in migration_source
+
+
+@pytest.mark.asyncio
+async def test_minute_identity_migration_backfills_legacy_runs_safely():
+    """The f4 upgrade recovers retained identity without blocking old runs."""
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_minute_identity_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    database_created = False
+
+    valid_with_raw_id = uuid4()
+    valid_with_run_id = uuid4()
+    legacy_without_raw = uuid4()
+    malformed_raw_run = uuid4()
+    non_minute_run = uuid4()
+    raw_with_raw_id = uuid4()
+    raw_with_run_id = uuid4()
+    malformed_raw_id = uuid4()
+
+    async def insert_run(connection, run_id, *, dataset_key, delivery_mode, raw_payload_id=None):
+        await connection.execute(
+            text(
+                """
+                INSERT INTO ingestion_run (
+                    run_id, dataset_key, source, raw_payload_id, request_key,
+                    schema_id, schema_version, batch_data_date, delivery_mode,
+                    raw_records, status, completed_at, total_records,
+                    success_records, failed_records, created_at
+                ) VALUES (
+                    :run_id, :dataset_key, 'shioaji', :raw_payload_id, :request_key,
+                    'market_minute', 1, '2026-07-22', :delivery_mode,
+                    1, 'completed', now(), 1, 1, 0, now()
+                )
+                """
+            ),
+            {
+                "run_id": run_id,
+                "dataset_key": dataset_key,
+                "raw_payload_id": raw_payload_id,
+                "request_key": f"migration:{run_id}",
+                "delivery_mode": delivery_mode,
+            },
+        )
+
+    async def insert_raw(connection, raw_id, run_id, payload, *, expired=False):
+        await connection.execute(
+            text(
+                """
+                INSERT INTO raw.market_payload (
+                    raw_payload_id, dataset_key, source, request_key,
+                    idempotency_key, schema_id, schema_version, payload,
+                    fetched_at, expire_at, run_id, created_at
+                ) VALUES (
+                    :raw_id, 'tw_equity_minute', 'shioaji', :request_key,
+                    :idempotency_key, 'market_minute', 1, CAST(:payload AS jsonb),
+                    now(), :expire_at, :run_id, now()
+                )
+                """
+            ),
+            {
+                "raw_id": raw_id,
+                "run_id": run_id,
+                "request_key": f"raw:{raw_id}",
+                "idempotency_key": f"raw:{raw_id}",
+                "payload": json.dumps(payload),
+                "expire_at": datetime(2020, 1, 1, tzinfo=timezone.utc)
+                if expired
+                else datetime(2030, 1, 1, tzinfo=timezone.utc),
+            },
+        )
+
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        database_created = True
+
+        await _run_alembic(database_url, "e3f4a5b6c7d8")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            # An operator-owned expectation is preserved byte-for-byte while
+            # the absent policy on the equity dataset receives the seed.
+            await connection.execute(
+                text(
+                    """
+                    UPDATE dataset_registry
+                    SET config = CAST(:config AS jsonb)
+                    WHERE dataset_key = 'tw_etf_minute'
+                    """
+                ),
+                {
+                    "config": json.dumps(
+                        {
+                            "operator_marker": "keep-me",
+                            "delivery_expectation": {
+                                "delivery_mode": "sequenced_snapshot",
+                                "missing_delivery": {"action": "disabled"},
+                            },
+                        }
+                    )
+                },
+            )
+            valid_batch = {
+                "delivery_mode": "sequenced_snapshot",
+                "snapshot_id": "staging-snapshot",
+                "daily_update_id": "staging-update",
+                "sequence": 1,
+                "sequence_count": 2,
+            }
+            await insert_raw(
+                connection,
+                raw_with_raw_id,
+                valid_with_raw_id,
+                {"batch": valid_batch},
+            )
+            await insert_run(
+                connection,
+                valid_with_raw_id,
+                dataset_key="tw_equity_minute",
+                delivery_mode="sequenced_snapshot",
+                raw_payload_id=raw_with_raw_id,
+            )
+            await insert_raw(
+                connection,
+                raw_with_run_id,
+                valid_with_run_id,
+                {"batch": {**valid_batch, "sequence": 2}},
+            )
+            await insert_run(
+                connection,
+                valid_with_run_id,
+                dataset_key="tw_equity_minute",
+                delivery_mode="sequenced_snapshot",
+            )
+            await insert_run(
+                connection,
+                legacy_without_raw,
+                dataset_key="tw_equity_minute",
+                delivery_mode="sequenced_snapshot",
+            )
+            await insert_raw(
+                connection,
+                malformed_raw_id,
+                malformed_raw_run,
+                {"batch": {"delivery_mode": "sequenced_snapshot", "sequence": "oops"}},
+                expired=True,
+            )
+            await insert_run(
+                connection,
+                malformed_raw_run,
+                dataset_key="tw_equity_minute",
+                delivery_mode="sequenced_snapshot",
+            )
+            await insert_run(
+                connection,
+                non_minute_run,
+                dataset_key="tw_equity_eod",
+                delivery_mode="full_snapshot",
+            )
+
+        await _run_alembic(database_url, "head")
+        # Re-running Alembic at head is a no-op; f4 SQL is also guarded by
+        # IF NOT EXISTS/NULL-only predicates for partial deploy recovery.
+        await _run_alembic(database_url, "head")
+
+        async with target_engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT run_id, snapshot_id, daily_update_id, sequence, sequence_count
+                        FROM ingestion_run
+                        WHERE run_id IN (:valid_one, :valid_two, :legacy, :malformed)
+                        ORDER BY run_id
+                        """
+                    ),
+                    {
+                        "valid_one": valid_with_raw_id,
+                        "valid_two": valid_with_run_id,
+                        "legacy": legacy_without_raw,
+                        "malformed": malformed_raw_run,
+                    },
+                )
+            ).all()
+            by_id = {row.run_id: row for row in rows}
+            assert by_id[valid_with_raw_id][1:] == (
+                "staging-snapshot",
+                "staging-update",
+                1,
+                2,
+            )
+            assert by_id[valid_with_run_id][1:] == (
+                "staging-snapshot",
+                "staging-update",
+                2,
+                2,
+            )
+            assert by_id[legacy_without_raw][1:] == (None, None, None, None)
+            assert by_id[malformed_raw_run][1:] == (None, None, None, None)
+
+            seeded_policy = await connection.scalar(
+                text(
+                    """
+                    SELECT config->'delivery_expectation'->>'delivery_mode'
+                    FROM dataset_registry
+                    WHERE dataset_key = 'tw_equity_minute'
+                    """
+                )
+            )
+            assert seeded_policy == "sequenced_snapshot"
+            operator_config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'tw_etf_minute'")
+            )
+            assert operator_config == {
+                "operator_marker": "keep-me",
+                "delivery_expectation": {
+                    "delivery_mode": "sequenced_snapshot",
+                    "missing_delivery": {"action": "disabled"},
+                },
+            }
+
+        with pytest.raises(DBAPIError):
+            async with target_engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE ingestion_run SET snapshot_id = 'partial' WHERE run_id = :run_id"),
+                    {"run_id": non_minute_run},
+                )
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        if database_created:
+            async with admin_engine.connect() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = :name"
+                    ),
+                    {"name": database_name},
+                )
+                await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio

@@ -730,6 +730,40 @@ class IngestionRun(Base):
         Index("idx_run_status", "status"),
         Index("idx_run_raw_payload", "raw_payload_id"),
         Index(
+            "idx_run_minute_sequence_group",
+            "dataset_key",
+            "source",
+            "schema_id",
+            "schema_version",
+            "batch_data_date",
+            "delivery_mode",
+            "daily_update_id",
+            "snapshot_id",
+            "sequence",
+            "sequence_count",
+            "is_rerun",
+        ),
+        CheckConstraint(
+            "(snapshot_id IS NULL AND daily_update_id IS NULL "
+            "AND sequence IS NULL AND sequence_count IS NULL) OR "
+            "(delivery_mode = 'sequenced_snapshot' AND snapshot_id IS NOT NULL "
+            "AND daily_update_id IS NOT NULL AND sequence IS NOT NULL "
+            "AND sequence_count IS NOT NULL)",
+            name="minute_identity_coherent",
+        ),
+        CheckConstraint(
+            "sequence IS NULL OR sequence >= 1",
+            name="minute_sequence_positive",
+        ),
+        CheckConstraint(
+            "sequence_count IS NULL OR sequence_count >= 1",
+            name="minute_sequence_count_positive",
+        ),
+        CheckConstraint(
+            "sequence IS NULL OR sequence_count IS NULL OR sequence <= sequence_count",
+            name="minute_sequence_order",
+        ),
+        Index(
             "idx_run_delivery_policy_baseline",
             "dataset_key",
             "source",
@@ -765,6 +799,15 @@ class IngestionRun(Base):
     schema_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     batch_data_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     delivery_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Minute sequenced snapshots carry durable identity on the run so freshness
+    # and missing-delivery monitoring never need to inspect retained raw JSON.
+    # New valid minute deliveries populate all four fields; legacy or
+    # unrecoverable runs may retain all four as NULL.  Partial identity is
+    # rejected by the coherence check below.
+    snapshot_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    daily_update_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    sequence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sequence_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     policy_outcome: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     policy_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     is_rerun: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

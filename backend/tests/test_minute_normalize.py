@@ -368,6 +368,12 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     )
     assert response.status_code == 202, response.text
     run_id = UUID(response.json()["run_id"])
+    persisted_run = await test_session.get(IngestionRun, run_id)
+    assert persisted_run is not None
+    assert persisted_run.snapshot_id == f"{dataset_key}-snapshot"
+    assert persisted_run.daily_update_id == f"{dataset_key}-update"
+    assert persisted_run.sequence == 1
+    assert persisted_run.sequence_count == 1
     job = (
         await test_session.execute(
             select(NormalizationJob).where(NormalizationJob.run_id == run_id)
@@ -393,3 +399,19 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     ).scalar_one()
     assert instrument.asset_class == asset_class
     assert minute.source == "bloomberg"
+
+    rerun_response = await client.post(
+        f"/api/v1/source/runs/{run_id}/rerun",
+        headers=source_headers,
+    )
+    assert rerun_response.status_code == 202, rerun_response.text
+    rerun_id = UUID(rerun_response.json()["run_id"])
+    rerun = await test_session.get(IngestionRun, rerun_id)
+    assert rerun is not None
+    assert rerun.is_rerun is True
+    assert rerun.batch_data_date == date(2026, 7, 30)
+    assert rerun.delivery_mode == "sequenced_snapshot"
+    assert rerun.snapshot_id == f"{dataset_key}-snapshot"
+    assert rerun.daily_update_id == f"{dataset_key}-update"
+    assert rerun.sequence == 1
+    assert rerun.sequence_count == 1

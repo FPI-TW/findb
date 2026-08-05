@@ -147,6 +147,116 @@ def _normalize_provider_key(value: Any) -> str | None:
     return source
 
 
+def _minute_sequence_identity(payload: Any) -> dict[str, Any]:
+    """Extract typed minute sequence identity without touching raw payload JSON.
+
+    Contract requests expose a validated ``MarketMinuteBatch`` object while
+    reruns pass a retained JSON document.  This small adapter keeps identity
+    population bounded and leaves every non-minute/legacy path NULL.
+    """
+    batch = getattr(payload, "batch", None)
+    if batch is None and isinstance(payload, dict):
+        batch = payload.get("batch")
+    mode = getattr(batch, "delivery_mode", None)
+    if mode is None and isinstance(batch, dict):
+        mode = batch.get("delivery_mode")
+    mode = getattr(mode, "value", mode)
+    if mode != "sequenced_snapshot":
+        return {}
+
+    def value(name: str) -> Any:
+        item = getattr(batch, name, None)
+        if item is None and isinstance(batch, dict):
+            item = batch.get(name)
+        return item
+
+    identity = {
+        "snapshot_id": value("snapshot_id"),
+        "daily_update_id": value("daily_update_id"),
+        "sequence": value("sequence"),
+        "sequence_count": value("sequence_count"),
+    }
+    if any(item is None for item in identity.values()):
+        return {}
+    return identity
+
+
+def _rerun_batch_metadata(
+    payload: Any,
+    *,
+    dataset_key: str,
+    schema_id: str | None = None,
+) -> dict[str, Any]:
+    """Extract bounded batch lineage from a retained raw contract payload.
+
+    Reruns do not pass through the request Pydantic model again.  Treat raw
+    metadata as untrusted: malformed values return an empty projection so the
+    legacy all-NULL run shape remains DB-compatible instead of creating a
+    partial sequenced identity.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    batch = payload.get("batch")
+    if not isinstance(batch, dict):
+        return {}
+
+    mode = batch.get("delivery_mode")
+    if not isinstance(mode, str):
+        return {}
+    mode = mode.strip()
+    data_date = batch.get("data_date")
+    if isinstance(data_date, date):
+        parsed_date = data_date
+    elif isinstance(data_date, str) and len(data_date) == 10:
+        try:
+            parsed_date = date.fromisoformat(data_date)
+        except ValueError:
+            return {}
+    else:
+        return {}
+
+    if mode in {"full_snapshot", "incremental", "backfill"}:
+        return {"batch_data_date": parsed_date, "delivery_mode": mode}
+    if mode != "sequenced_snapshot" or not (
+        schema_id == "market_minute" or dataset_key in {"tw_equity_minute", "tw_etf_minute"}
+    ):
+        return {}
+
+    def bounded_identifier(name: str) -> str | None:
+        value = batch.get(name)
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value if 1 <= len(value) <= 100 else None
+
+    def bounded_sequence(name: str) -> int | None:
+        value = batch.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 99_999:
+            return None
+        return value
+
+    snapshot_id = bounded_identifier("snapshot_id")
+    daily_update_id = bounded_identifier("daily_update_id")
+    sequence = bounded_sequence("sequence")
+    sequence_count = bounded_sequence("sequence_count")
+    if (
+        snapshot_id is None
+        or daily_update_id is None
+        or sequence is None
+        or sequence_count is None
+        or sequence > sequence_count
+    ):
+        return {}
+    return {
+        "batch_data_date": parsed_date,
+        "delivery_mode": mode,
+        "snapshot_id": snapshot_id,
+        "daily_update_id": daily_update_id,
+        "sequence": sequence,
+        "sequence_count": sequence_count,
+    }
+
+
 def _select_normalizer_for_payload(
     dataset_key: str,
     payload: dict,
@@ -534,6 +644,10 @@ class IngestionService:
         policy_outcome: str | None = None,
         policy_details: dict | None = None,
         is_rerun: bool = False,
+        snapshot_id: str | None = None,
+        daily_update_id: str | None = None,
+        sequence: int | None = None,
+        sequence_count: int | None = None,
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -547,6 +661,10 @@ class IngestionService:
             schema_version=schema_version,
             batch_data_date=batch_data_date,
             delivery_mode=delivery_mode,
+            snapshot_id=snapshot_id,
+            daily_update_id=daily_update_id,
+            sequence=sequence,
+            sequence_count=sequence_count,
             policy_outcome=policy_outcome,
             policy_details=policy_details,
             is_rerun=is_rerun,
@@ -686,6 +804,11 @@ class IngestionService:
             schema_id=raw_payload.schema_id,
             schema_version=raw_payload.schema_version,
             is_rerun=True,
+            **_rerun_batch_metadata(
+                raw_payload.payload,
+                dataset_key=raw_payload.dataset_key,
+                schema_id=raw_payload.schema_id,
+            ),
         )
         await self.create_normalization_job(run)
         await self.db.commit()
@@ -996,6 +1119,7 @@ class IngestionService:
                     "value",
                     request.payload.batch.delivery_mode,
                 ),
+                **_minute_sequence_identity(request.payload),
                 policy_outcome=policy_result.outcome,
                 policy_details=policy_details,
             )
