@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -277,7 +277,10 @@ class TestIngestionService:
             mock_raw.request_key = "req_123"
             mock_raw.idempotency_key = "idem_456"
             mock_raw.dataset_key = "us_equity_eod"
-            mock_raw.payload = {"data": [{"date": "2026-04-29", "close": 150}]}
+            mock_raw.payload = {
+                "batch": {"data_date": "2026-04-29", "delivery_mode": "full_snapshot"},
+                "data": [{"date": "2026-04-29", "close": 150}],
+            }
 
             service.get_raw_payload_by_run = AsyncMock(return_value=mock_raw)
 
@@ -306,6 +309,59 @@ class TestIngestionService:
             sent_metadata = kwargs.get("metadata")
             assert sent_metadata["rerun_from_run_id"] == str(old_run_id)
             assert sent_metadata["rerun_from_idempotency_key"] == "idem_456"
+            assert kwargs["batch_data_date"] == date(2026, 4, 29)
+            assert kwargs["delivery_mode"] == "full_snapshot"
+
+        @pytest.mark.asyncio
+        async def test_rerun_from_raw_minute_preserves_sequence_identity(self):
+            """A valid retained minute contract reruns without partial identity."""
+            mock_db = AsyncMock()
+            mock_db.add = MagicMock()
+            service = IngestionService(mock_db)
+            old_run_id = uuid4()
+
+            mock_raw = MagicMock(spec=RawMarketPayload)
+            mock_raw.source = "shioaji"
+            mock_raw.request_key = "minute-request"
+            mock_raw.idempotency_key = "minute-idempotency"
+            mock_raw.dataset_key = "tw_equity_minute"
+            mock_raw.schema_id = "market_minute"
+            mock_raw.schema_version = 1
+            mock_raw.payload = {
+                "batch": {
+                    "data_date": "2026-07-22",
+                    "delivery_mode": "sequenced_snapshot",
+                    "snapshot_id": "snapshot-20260722",
+                    "daily_update_id": "update-20260722",
+                    "sequence": 2,
+                    "sequence_count": 3,
+                },
+                "data": [{"trade_date": "2026-07-22", "symbol": "2330"}],
+            }
+            service.get_raw_payload_by_run = AsyncMock(return_value=mock_raw)
+
+            mock_dataset = MagicMock(spec=DatasetRegistry)
+            mock_dataset.dataset_key = "tw_equity_minute"
+            mock_dataset.asset_class = "equity"
+            mock_dataset.is_active = True
+            mock_dataset.config = {}
+            service.get_dataset = AsyncMock(return_value=mock_dataset)
+
+            new_run = MagicMock(spec=IngestionRun)
+            new_run.run_id = uuid4()
+            new_run.status = "queued"
+            service.create_ingestion_run = AsyncMock(return_value=new_run)
+
+            await service.rerun_from_raw(old_run_id)
+
+            kwargs = service.create_ingestion_run.call_args.kwargs
+            assert kwargs["is_rerun"] is True
+            assert kwargs["batch_data_date"] == date(2026, 7, 22)
+            assert kwargs["delivery_mode"] == "sequenced_snapshot"
+            assert kwargs["snapshot_id"] == "snapshot-20260722"
+            assert kwargs["daily_update_id"] == "update-20260722"
+            assert kwargs["sequence"] == 2
+            assert kwargs["sequence_count"] == 3
 
         @pytest.mark.asyncio
         async def test_rerun_from_raw_not_found(self):

@@ -99,6 +99,22 @@ run／job／outbox／queue 診斷，不應誤判為 provider 沒有送達。
 source-scoped override 將 minimum 設為 2 並停用 rolling baseline；其它 source 不繼承這個
 放寬。擴大 universe 前必須移除或重新校準 override，不能修改全域門檻規避驗證。
 
+### Shioaji 台股分鐘序列
+
+`tw_equity_minute` 與 `tw_etf_minute` 使用 policy-only 的
+`delivery_mode=sequenced_snapshot`。這不會擴張 EOD ingress contract 的
+`DeliveryMode`；minute contract 自己驗證 `snapshot_id`、`daily_update_id`、`sequence`
+與 `sequence_count`。這兩個資料集的預設 freshness 最大抓取年齡為 6 小時、台北時間
+13:30 收盤後 210 分鐘（17:00）才算到期，missing delivery 只監控 `shioaji`。
+
+每個 `ingestion_run` 會保存四個 nullable sequence identity 欄位。分鐘 feed 只有在同一
+`snapshot_id` + `daily_update_id`、同一資料日期且同一 `sequence_count` 的成功（非 rerun）
+run 完成完整 `1..sequence_count` 後才會顯示 fresh 或解除 missing alert；不同 snapshot
+不會拼接，部分或失敗群組會維持 partial/failed，補齊後才恢復。排查時直接查
+`ingestion_run` 的 identity、terminal status、normalization job/outbox，不依賴 raw JSON
+保留期限。f4 migration 會從仍保留且格式有效的 raw batch 回填舊 run；過期、缺 raw 或
+格式不完整的歷史 run 保留四欄 NULL，且不會阻塞 upgrade，也不會被視為完整 snapshot。
+
 ## 常見診斷
 
 | 現象 | 優先檢查 |
@@ -143,3 +159,5 @@ reconciliation重建。
 5. 修復後先以smoke client恢復，再逐一解除provider pause。
 
 Schema migration後不直接回退到不認得目前Alembic head的舊image；採forward fix。
+若必須回退分鐘序列 migration，只移除 sequence identity 的 schema objects；因為
+registry 沒有保存 policy provenance，downgrade 不會刪除 `delivery_expectation`。

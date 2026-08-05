@@ -18,6 +18,7 @@ from app.services.delivery_policy import (
 )
 from app.services.feed_scope import lock_feed_scope
 from app.services.ingress_contracts import DatasetContractDeclaration
+from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,29 @@ def _bounded_diagnostic(dataset_key: str, source: str, reason: str) -> dict[str,
         "source": source[:50],
         "reason": reason[:80],
     }
+
+
+async def _sequenced_snapshot_complete(
+    db: AsyncSession,
+    *,
+    dataset_key: str,
+    source: str,
+    schema_id: str,
+    schema_version: int,
+    data_date: date,
+) -> bool:
+    """Return whether one successful, coherent minute sequence group is done."""
+    groups = await list_sequenced_snapshot_groups(
+        db,
+        dataset_key=dataset_key,
+        source=source,
+        schema_id=schema_id,
+        schema_version=schema_version,
+        data_date=data_date,
+    )
+    # A stale complete snapshot cannot supersede a newer failed/partial
+    # coherent group for the same expected date.
+    return bool(groups and groups[0].complete)
 
 
 async def scan_missing_deliveries(
@@ -93,6 +117,7 @@ async def scan_missing_deliveries(
                 diagnostics.append(_bounded_diagnostic(dataset_key, source, "feed_scope_locked"))
                 continue
 
+            delivery_mode = expectation.delivery_mode.value
             resolved += await _resolve_open_alerts_for_feed(
                 db,
                 dataset_key=dataset_key,
@@ -100,8 +125,23 @@ async def scan_missing_deliveries(
                 schema_id=declaration.schema_id,
                 schema_version=declaration.current_schema_version,
                 resolved_at=evaluated_at,
+                delivery_mode=delivery_mode,
             )
-            expected_date, reason = await resolve_expected_data_date(db, latest, evaluated_at)
+            if delivery_mode == "sequenced_snapshot":
+                expected_date, reason = await resolve_expected_data_date(
+                    db,
+                    latest,
+                    evaluated_at,
+                    strict_current_session=True,
+                )
+            else:
+                # Keep the legacy call shape for downstream test/fixture
+                # adapters that wrap the resolver positionally.
+                expected_date, reason = await resolve_expected_data_date(
+                    db,
+                    latest,
+                    evaluated_at,
+                )
             if expected_date is None:
                 item = _bounded_diagnostic(dataset_key, source, reason or "calendar_unavailable")
                 diagnostics.append(item)
@@ -109,19 +149,31 @@ async def scan_missing_deliveries(
                 await db.commit()
                 continue
 
-            present = await db.scalar(
-                select(
-                    exists().where(
-                        IngestionRun.dataset_key == dataset_key,
-                        IngestionRun.source == source,
-                        IngestionRun.schema_id == declaration.schema_id,
-                        IngestionRun.schema_version == declaration.current_schema_version,
-                        IngestionRun.batch_data_date == expected_date,
-                        IngestionRun.delivery_mode == "full_snapshot",
-                        IngestionRun.is_rerun.is_(False),
+            if delivery_mode == "sequenced_snapshot":
+                present = await _sequenced_snapshot_complete(
+                    db,
+                    dataset_key=dataset_key,
+                    source=source,
+                    schema_id=declaration.schema_id,
+                    schema_version=declaration.current_schema_version,
+                    data_date=expected_date,
+                )
+            else:
+                present = bool(
+                    await db.scalar(
+                        select(
+                            exists().where(
+                                IngestionRun.dataset_key == dataset_key,
+                                IngestionRun.source == source,
+                                IngestionRun.schema_id == declaration.schema_id,
+                                IngestionRun.schema_version == declaration.current_schema_version,
+                                IngestionRun.batch_data_date == expected_date,
+                                IngestionRun.delivery_mode == delivery_mode,
+                                IngestionRun.is_rerun.is_(False),
+                            )
+                        )
                     )
                 )
-            )
             if present:
                 await db.commit()
                 continue
@@ -174,18 +226,55 @@ async def _resolve_open_alerts_for_feed(
     schema_id: str,
     schema_version: int,
     resolved_at: datetime,
+    delivery_mode: str = "full_snapshot",
 ) -> int:
-    delivered = exists(
-        select(IngestionRun.run_id).where(
-            IngestionRun.dataset_key == dataset_key,
-            IngestionRun.source == source,
-            IngestionRun.schema_id == schema_id,
-            IngestionRun.schema_version == schema_version,
-            IngestionRun.batch_data_date == MissingDeliveryAlert.expected_data_date,
-            IngestionRun.delivery_mode == "full_snapshot",
-            IngestionRun.is_rerun.is_(False),
+    if delivery_mode == "sequenced_snapshot":
+        alerts = (
+            await db.execute(
+                select(
+                    MissingDeliveryAlert.alert_id,
+                    MissingDeliveryAlert.expected_data_date,
+                ).where(
+                    MissingDeliveryAlert.status == "open",
+                    MissingDeliveryAlert.dataset_key == dataset_key,
+                    MissingDeliveryAlert.source == source,
+                    MissingDeliveryAlert.schema_id == schema_id,
+                    MissingDeliveryAlert.schema_version == schema_version,
+                )
+            )
+        ).all()
+        resolved_alert_ids = []
+        for alert_id, expected_data_date in alerts:
+            if await _sequenced_snapshot_complete(
+                db,
+                dataset_key=dataset_key,
+                source=source,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                data_date=expected_data_date,
+            ):
+                resolved_alert_ids.append(alert_id)
+        if not resolved_alert_ids:
+            return 0
+        resolution = await db.execute(
+            update(MissingDeliveryAlert)
+            .where(MissingDeliveryAlert.alert_id.in_(resolved_alert_ids))
+            .values(status="resolved", resolved_at=resolved_at)
+            .returning(MissingDeliveryAlert.alert_id)
         )
-    )
+        return len(resolution.scalars().all())
+    else:
+        delivered = exists(
+            select(IngestionRun.run_id).where(
+                IngestionRun.dataset_key == dataset_key,
+                IngestionRun.source == source,
+                IngestionRun.schema_id == schema_id,
+                IngestionRun.schema_version == schema_version,
+                IngestionRun.batch_data_date == MissingDeliveryAlert.expected_data_date,
+                IngestionRun.delivery_mode == delivery_mode,
+                IngestionRun.is_rerun.is_(False),
+            )
+        )
     resolution = await db.execute(
         update(MissingDeliveryAlert)
         .where(
@@ -211,8 +300,24 @@ async def resolve_missing_delivery_for_run(
     schema_version: int,
     data_date: date,
     resolved_at: datetime | None = None,
+    delivery_mode: str | None = None,
 ) -> int:
     """Resolve the exact alert inside the accepting ingress transaction."""
+    if delivery_mode is None:
+        dataset = await db.get(DatasetRegistry, dataset_key)
+        expectation = parse_delivery_expectation(dataset.config if dataset else None)
+        delivery_mode = expectation.delivery_mode.value if expectation else "full_snapshot"
+
+    if delivery_mode == "sequenced_snapshot" and not await _sequenced_snapshot_complete(
+        db,
+        dataset_key=dataset_key,
+        source=source,
+        schema_id=schema_id,
+        schema_version=schema_version,
+        data_date=data_date,
+    ):
+        return 0
+
     resolution = await db.execute(
         update(MissingDeliveryAlert)
         .where(

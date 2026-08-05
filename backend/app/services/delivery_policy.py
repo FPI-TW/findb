@@ -45,6 +45,26 @@ class PolicyAction(str, Enum):
     REJECT = "reject"
 
 
+class DeliveryExpectationMode(str, Enum):
+    """Delivery modes understood by a dataset policy.
+
+    ``sequenced_snapshot`` intentionally lives here rather than in the
+    provider-neutral EOD ingress ``DeliveryMode`` enum.  Minute contracts own
+    that discriminator while policy evaluation and monitoring need to retain
+    the mode in a typed registry projection.
+    """
+
+    FULL_SNAPSHOT = "full_snapshot"
+    INCREMENTAL = "incremental"
+    BACKFILL = "backfill"
+    SEQUENCED_SNAPSHOT = "sequenced_snapshot"
+
+
+# Keep a descriptive alias for callers that use the policy namespace rather
+# than the expectation model name.
+DeliveryPolicyMode = DeliveryExpectationMode
+
+
 class BaselinePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -180,7 +200,7 @@ class DeliveryExpectation(BaseModel):
     # in the previously untyped JSONB object.
     model_config = ConfigDict(extra="ignore")
 
-    delivery_mode: DeliveryMode = DeliveryMode.FULL_SNAPSHOT
+    delivery_mode: DeliveryExpectationMode = DeliveryExpectationMode.FULL_SNAPSHOT
     baseline: BaselinePolicy = Field(default_factory=BaselinePolicy)
     record_count: RecordCountPolicy = Field(default_factory=RecordCountPolicy)
     freshness: FreshnessPolicy = Field(default_factory=FreshnessPolicy)
@@ -363,6 +383,8 @@ async def resolve_expected_data_date(
     db: AsyncSession,
     policy: LatestDatePolicy,
     now: datetime,
+    *,
+    strict_current_session: bool = False,
 ) -> tuple[date | None, str | None]:
     zone = ZoneInfo(policy.timezone)
     local_now = now.astimezone(zone)
@@ -375,6 +397,16 @@ async def resolve_expected_data_date(
     rows.sort(key=lambda row: row.trade_date, reverse=True)
     if not rows or rows[0].trade_date != today:
         return None, "calendar_does_not_cover_evaluation_date"
+    if strict_current_session and rows[0].is_open:
+        close_at = rows[0].session_close or policy.market_close_time
+        cutoff = datetime.combine(rows[0].trade_date, close_at, tzinfo=zone) + timedelta(
+            minutes=policy.availability_grace_minutes
+        )
+        if local_now < cutoff:
+            # Before today's current session is due, retain the normal
+            # resolver semantics and evaluate the most recent prior open
+            # session instead of suppressing its expectation entirely.
+            rows = rows[1:]
     while True:
         for row in rows[:32]:
             if not row.is_open:
@@ -423,6 +455,7 @@ async def evaluate_delivery_policy(
 ) -> DeliveryPolicyResult:
     evaluated_at = (now or utc_now()).astimezone(timezone.utc)
     mode = request.payload.batch.delivery_mode
+    mode_value = getattr(mode, "value", mode)
     if expectation is None:
         return DeliveryPolicyResult(
             outcome="pass",
@@ -443,7 +476,7 @@ async def evaluate_delivery_policy(
     baseline_value: float | None = None
     effective_threshold: int | None = None
 
-    if mode == DeliveryMode.FULL_SNAPSHOT:
+    if mode_value == DeliveryMode.FULL_SNAPSHOT.value:
         count_policy = expectation.record_count
         effective_threshold = count_policy.minimum_record_count
         if count_policy.action == PolicyAction.DISABLED:
@@ -491,7 +524,11 @@ async def evaluate_delivery_policy(
                 if item:
                     violations.append(item)
 
-    if mode in {DeliveryMode.FULL_SNAPSHOT, DeliveryMode.INCREMENTAL}:
+    if mode_value in {
+        DeliveryMode.FULL_SNAPSHOT.value,
+        DeliveryMode.INCREMENTAL.value,
+        DeliveryExpectationMode.SEQUENCED_SNAPSHOT.value,
+    }:
         freshness = expectation.freshness
         age = evaluated_at - request.fetched_at
         if age > timedelta(hours=freshness.maximum_fetch_age_hours):
@@ -516,7 +553,14 @@ async def evaluate_delivery_policy(
                 violations.append(item)
 
     latest = expectation.latest_date
-    if mode == DeliveryMode.FULL_SNAPSHOT and latest is None:
+    if (
+        mode_value
+        in {
+            DeliveryMode.FULL_SNAPSHOT.value,
+            DeliveryExpectationMode.SEQUENCED_SNAPSHOT.value,
+        }
+        and latest is None
+    ):
         violations.append(
             PolicyViolation(
                 code="CALENDAR_UNAVAILABLE",
@@ -527,23 +571,31 @@ async def evaluate_delivery_policy(
             )
         )
     elif (
-        mode == DeliveryMode.FULL_SNAPSHOT
+        mode_value
+        in {
+            DeliveryMode.FULL_SNAPSHOT.value,
+            DeliveryExpectationMode.SEQUENCED_SNAPSHOT.value,
+        }
         and latest is not None
         and latest.action != PolicyAction.DISABLED
     ):
         expected_date, unavailable_reason = await resolve_expected_data_date(
-            db, latest, evaluated_at
+            db,
+            latest,
+            evaluated_at,
+            strict_current_session=mode_value == DeliveryExpectationMode.SEQUENCED_SNAPSHOT.value,
         )
         if expected_date is None:
-            violations.append(
-                PolicyViolation(
-                    code="CALENDAR_UNAVAILABLE",
-                    action="warn",
-                    reason=unavailable_reason or "calendar_unavailable",
-                    observed={"evaluation_date": evaluated_at.date().isoformat()},
-                    expected={"calendar_market": latest.calendar_market},
+            if unavailable_reason != "delivery_not_due":
+                violations.append(
+                    PolicyViolation(
+                        code="CALENDAR_UNAVAILABLE",
+                        action="warn",
+                        reason=unavailable_reason or "calendar_unavailable",
+                        observed={"evaluation_date": evaluated_at.date().isoformat()},
+                        expected={"calendar_market": latest.calendar_market},
+                    )
                 )
-            )
         else:
             row_dates = [row.trade_date for row in request.payload.data]
             maximum_row_date = max(row_dates) if row_dates else None

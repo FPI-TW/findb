@@ -25,6 +25,7 @@ from app.models.registry import (
 )
 from app.services.delivery_policy import DeliveryExpectation, resolve_expected_data_date
 from app.services.scheduler_control import list_scheduler_controls, scheduler_dataset_keys
+from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import ensure_utc, utc_now
 
 FreshnessStatus = Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
@@ -132,7 +133,11 @@ def _heartbeat_age(now: datetime, heartbeat: datetime | None) -> float | None:
     return max(0.0, (now - ensure_utc(heartbeat)).total_seconds())
 
 
-async def _runs_for_feed(db: AsyncSession, feed: _ConfiguredFeed):
+async def _runs_for_feed(
+    db: AsyncSession,
+    feed: _ConfiguredFeed,
+    expected: date | None = None,
+):
     criteria = [
         IngestionRun.dataset_key == feed.dataset.dataset_key,
         IngestionRun.source == feed.source,
@@ -146,6 +151,13 @@ async def _runs_for_feed(db: AsyncSession, feed: _ConfiguredFeed):
     if delivery_mode is not None:
         criteria.append(IngestionRun.delivery_mode == delivery_mode)
 
+    latest_group = None
+    last_criteria = list(criteria)
+    if delivery_mode == "sequenced_snapshot" and expected is not None:
+        # A strict minute session may evaluate the prior trading date before
+        # today's 17:00 cutoff; future current-session attempts must not alter
+        # that status.
+        last_criteria.append(IngestionRun.batch_data_date <= expected)
     last_row = (
         await db.execute(
             select(IngestionRun, RawMarketPayload.fetched_at)
@@ -154,33 +166,84 @@ async def _runs_for_feed(db: AsyncSession, feed: _ConfiguredFeed):
                 (RawMarketPayload.raw_payload_id == IngestionRun.raw_payload_id)
                 | (RawMarketPayload.run_id == IngestionRun.run_id),
             )
-            .where(*criteria)
+            .where(*last_criteria)
             .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
             .limit(1)
         )
     ).first()
-    latest_success = await db.scalar(
-        select(IngestionRun)
-        .where(
-            *criteria,
-            IngestionRun.status == "completed",
-            IngestionRun.batch_data_date.is_not(None),
+    if delivery_mode == "sequenced_snapshot":
+        latest_success = None
+        latest_group = None
+        if feed.schema_id is not None and feed.schema_version is not None:
+            groups = await list_sequenced_snapshot_groups(
+                db,
+                dataset_key=feed.dataset.dataset_key,
+                source=feed.source,
+                schema_id=feed.schema_id,
+                schema_version=feed.schema_version,
+            )
+            eligible_groups = (
+                [group for group in groups if group.data_date <= expected]
+                if expected is not None
+                else groups
+            )
+            latest_group = eligible_groups[0] if eligible_groups else None
+            latest_complete = next((group for group in eligible_groups if group.complete), None)
+            if latest_complete is not None:
+                latest_success = await db.scalar(
+                    select(IngestionRun)
+                    .where(
+                        *criteria,
+                        IngestionRun.batch_data_date == latest_complete.data_date,
+                        IngestionRun.snapshot_id == latest_complete.snapshot_id,
+                        IngestionRun.daily_update_id == latest_complete.daily_update_id,
+                        IngestionRun.status == "completed",
+                    )
+                    .order_by(
+                        IngestionRun.completed_at.desc().nullslast(),
+                        IngestionRun.created_at.desc(),
+                        IngestionRun.run_id.desc(),
+                    )
+                    .limit(1)
+                )
+    else:
+        latest_success = await db.scalar(
+            select(IngestionRun)
+            .where(
+                *criteria,
+                IngestionRun.status == "completed",
+                IngestionRun.batch_data_date.is_not(None),
+            )
+            .order_by(
+                IngestionRun.batch_data_date.desc(),
+                IngestionRun.completed_at.desc(),
+                IngestionRun.created_at.desc(),
+            )
+            .limit(1)
         )
-        .order_by(
-            IngestionRun.batch_data_date.desc(),
-            IngestionRun.completed_at.desc(),
-            IngestionRun.created_at.desc(),
+    failure_criteria = list(criteria)
+    if delivery_mode == "sequenced_snapshot" and expected is not None:
+        failure_criteria.append(IngestionRun.batch_data_date <= expected)
+    if latest_group is not None and latest_group.failed:
+        failure_criteria.extend(
+            [
+                IngestionRun.batch_data_date == latest_group.data_date,
+                IngestionRun.snapshot_id == latest_group.snapshot_id,
+                IngestionRun.daily_update_id == latest_group.daily_update_id,
+            ]
         )
-        .limit(1)
-    )
     latest_failure = await db.scalar(
         select(IngestionRun)
-        .where(*criteria, IngestionRun.status == "failed")
+        .where(*failure_criteria, IngestionRun.status == "failed")
         .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
         .limit(1)
     )
     last_run, last_fetched_at = last_row if last_row else (None, None)
-    return last_run, last_fetched_at, latest_success, latest_failure
+    partial_group = bool(
+        latest_group is not None and not latest_group.complete and not latest_group.failed
+    )
+    failed_group = bool(latest_group is not None and latest_group.failed)
+    return last_run, last_fetched_at, latest_success, latest_failure, partial_group, failed_group
 
 
 async def _open_alert_exists(
@@ -209,7 +272,9 @@ async def _feed_freshness(
     feed: _ConfiguredFeed,
     expected: date | None,
 ) -> FreshnessFeed:
-    last_run, last_fetched_at, latest, failure = await _runs_for_feed(db, feed)
+    last_run, last_fetched_at, latest, failure, partial_group, failed_group = await _runs_for_feed(
+        db, feed, expected
+    )
     alert_open = await _open_alert_exists(db, feed, expected)
     config_error = "; ".join(feed.configuration_errors) if feed.configuration_errors else None
 
@@ -220,14 +285,16 @@ async def _feed_freshness(
         state = "never_received"
     elif expected is None:
         state = "not_due"
-    elif latest is not None and latest.batch_data_date >= expected:
-        state = "fresh"
-    elif (
+    elif failed_group or (
         last_run is not None
         and last_run.status == "failed"
         and (last_run.batch_data_date is None or last_run.batch_data_date >= expected)
     ):
         state = "failed"
+    elif latest is not None and latest.batch_data_date >= expected:
+        state = "fresh"
+    elif partial_group:
+        state = "partial"
     else:
         state = "late"
 
@@ -445,6 +512,9 @@ async def _build_scheduler_freshness(
                     db,
                     effective_expectation.latest_date,
                     evaluated_at,
+                    strict_current_session=(
+                        effective_expectation.delivery_mode.value == "sequenced_snapshot"
+                    ),
                 )
             except (ValueError, ZoneInfoNotFoundError):
                 reason = "latest_date_policy_invalid"
@@ -464,7 +534,7 @@ async def _build_scheduler_freshness(
 
     states = [feed.status for feed in feed_rows]
     fresh_count = states.count("fresh")
-    late_count = sum(value in {"late", "never_received"} for value in states)
+    late_count = sum(value in {"late", "partial", "never_received"} for value in states)
     configured_errors = [feed.configuration_error for feed in feed_rows if feed.configuration_error]
     if not feed_rows:
         group_status: FreshnessStatus = "not_due"
@@ -478,6 +548,8 @@ async def _build_scheduler_freshness(
         group_status = "not_due"
     elif "failed" in states:
         group_status = "failed"
+    elif "partial" in states:
+        group_status = "partial"
     elif fresh_count == len(feed_rows):
         group_status = "fresh"
     elif fresh_count:

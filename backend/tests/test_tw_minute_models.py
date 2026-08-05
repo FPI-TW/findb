@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.canonical import Instrument, MarketDataMinute
 from app.models.registry import (
+    IngestionRun,
     TWMinuteArchiveChunk,
     TWMinuteArchiveRelease,
     TWMinuteDailyUpdate,
@@ -17,6 +18,26 @@ from app.models.registry import (
 )
 from app.utils import uuid7
 from scripts.seed_data import seed_datasets
+
+
+def test_ingestion_run_has_durable_minute_sequence_identity_guards() -> None:
+    index_names = {index.name for index in IngestionRun.__table__.indexes}
+    constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in IngestionRun.__table__.constraints
+        if isinstance(constraint, CheckConstraint) and constraint.name
+    }
+    constraint_names = set(constraints)
+    assert "idx_run_minute_sequence_group" in index_names
+    assert "ck_ingestion_run_minute_identity_coherent" in constraint_names
+    assert "ck_ingestion_run_minute_sequence_positive" in constraint_names
+    assert "ck_ingestion_run_minute_sequence_count_positive" in constraint_names
+    assert "ck_ingestion_run_minute_sequence_order" in constraint_names
+    assert "snapshot_id IS NULL" in constraints["ck_ingestion_run_minute_identity_coherent"]
+    assert (
+        "delivery_mode = 'sequenced_snapshot'"
+        in constraints["ck_ingestion_run_minute_identity_coherent"]
+    )
 
 
 @pytest.mark.asyncio
@@ -548,3 +569,28 @@ async def test_minute_datasets_are_seeded_active_for_reviewed_pilot_with_governa
             "fail_when_either_exceeded": True,
         }
         assert row["config"]["governance"]["schedule"]["acquisition_start"] == "14:30:00"
+        expectation = row["config"]["delivery_expectation"]
+        assert expectation["delivery_mode"] == "sequenced_snapshot"
+        assert expectation["baseline"]["enabled"] is False
+        assert expectation["record_count"] == {
+            "minimum_record_count": 0,
+            "maximum_count_drop_ratio": 0.0,
+            "action": "disabled",
+        }
+        assert expectation["freshness"] == {
+            "maximum_fetch_age_hours": 6,
+            "allowed_clock_skew_minutes": 5,
+            "action": "warn",
+        }
+        assert expectation["latest_date"] == {
+            "calendar_market": "TW",
+            "timezone": "Asia/Taipei",
+            "market_close_time": "13:30:00",
+            "availability_grace_minutes": 210,
+            "action": "warn",
+        }
+        assert expectation["missing_delivery"] == {
+            "action": "warn",
+            "expected_sources": ["shioaji"],
+        }
+        assert expectation["schedule"]["expected_sources"] == ["shioaji"]

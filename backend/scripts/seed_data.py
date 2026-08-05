@@ -32,6 +32,50 @@ FINLAB_PILOT_OVERRIDE_JSON = json.dumps(
 )
 
 
+def _minute_delivery_expectation() -> dict:
+    """Return the bounded Shioaji minute policy for both minute datasets."""
+    return {
+        "delivery_mode": "sequenced_snapshot",
+        "baseline": {
+            "enabled": False,
+            "strategy": "rolling_median",
+            "scope": "dataset_source_schema",
+            "window_size": 7,
+            "minimum_history": 3,
+        },
+        "record_count": {
+            "minimum_record_count": 0,
+            "maximum_count_drop_ratio": 0.0,
+            "action": "disabled",
+        },
+        "freshness": {
+            "maximum_fetch_age_hours": 6,
+            "allowed_clock_skew_minutes": 5,
+            "action": "warn",
+        },
+        "latest_date": {
+            "calendar_market": "TW",
+            "timezone": "Asia/Taipei",
+            "market_close_time": "13:30:00",
+            "availability_grace_minutes": 210,
+            "action": "warn",
+        },
+        "missing_delivery": {
+            "action": "warn",
+            "expected_sources": ["shioaji"],
+        },
+        # This remains compatibility metadata.  SchedulerControl and its
+        # association rows are the scheduler authority.
+        "schedule": {
+            "enabled": True,
+            "slot_id": "tw_1430",
+            "local_time": "14:30:00",
+            "timezone": "Asia/Taipei",
+            "expected_sources": ["shioaji"],
+        },
+    }
+
+
 # Initial dataset configurations
 DATASETS = [
     {
@@ -864,6 +908,7 @@ DATASETS = [
                     "retry_deadline": "17:00:00",
                 },
             },
+            "delivery_expectation": _minute_delivery_expectation(),
             "source_format": "shioaji_tw_minute",
         },
     },
@@ -904,6 +949,7 @@ DATASETS = [
                     "retry_deadline": "17:00:00",
                 },
             },
+            "delivery_expectation": _minute_delivery_expectation(),
             "source_format": "shioaji_tw_minute",
         },
     },
