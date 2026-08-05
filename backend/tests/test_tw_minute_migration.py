@@ -44,11 +44,14 @@ def test_tw_minute_migration_is_single_linear_head():
 
     foundation = scripts.get_revision("a9b0c1d2e3f4")
     activation = scripts.get_revision("b0c1d2e3f4a5")
+    scheduler_control = scripts.get_revision("c1d2e3f4a5b6")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
     assert activation.down_revision == "a9b0c1d2e3f4"
-    assert scripts.get_heads() == ["b0c1d2e3f4a5"]
+    assert scheduler_control is not None
+    assert scheduler_control.down_revision == "b0c1d2e3f4a5"
+    assert scripts.get_heads() == ["c1d2e3f4a5b6"]
 
 
 @pytest.mark.asyncio
