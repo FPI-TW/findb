@@ -27,6 +27,10 @@ class FetcherConfig:
     request_timeout_seconds: float = 30.0
     max_attempts: int = 3
     max_retry_after_seconds: float = 30.0
+    # The control-plane cadence is intentionally shared by every production
+    # scheduler.  Provider/schedule polling settings must not be able to
+    # bypass the operator's desired-state heartbeat contract.
+    scheduler_control_poll_seconds: float = 30.0
 
     @classmethod
     def from_env(cls) -> "FetcherConfig":
@@ -36,6 +40,12 @@ class FetcherConfig:
         request_timeout_seconds = _positive_float_env("FETCHER_REQUEST_TIMEOUT_SECONDS", 30.0)
         max_attempts = _positive_int_env("FETCHER_MAX_ATTEMPTS", 3)
         max_retry_after_seconds = _non_negative_float_env("FETCHER_MAX_RETRY_AFTER_SECONDS", 30.0)
+        scheduler_control_poll_seconds = _bounded_positive_float_env(
+            "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS",
+            30.0,
+            minimum=1.0,
+            maximum=30.0,
+        )
         return cls(
             source_api_url=source_api_url,
             source_client_key=source_client_key,
@@ -43,6 +53,7 @@ class FetcherConfig:
             request_timeout_seconds=request_timeout_seconds,
             max_attempts=max_attempts,
             max_retry_after_seconds=max_retry_after_seconds,
+            scheduler_control_poll_seconds=scheduler_control_poll_seconds,
         )
 
 
@@ -165,4 +176,17 @@ def _non_negative_float_env(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a number") from exc
     if not isfinite(value) or value < 0:
         raise ConfigError(f"{name} must be a finite, non-negative number")
+    return value
+
+
+def _bounded_positive_float_env(
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = _positive_float_env(name, default)
+    if value < minimum or value > maximum:
+        raise ConfigError(f"{name} must be between {minimum:g} and {maximum:g}")
     return value

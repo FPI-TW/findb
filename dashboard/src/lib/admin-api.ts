@@ -41,6 +41,49 @@ export const queueHealthSchema = z.object({
   oldest_missing_delivery_age_seconds: z.number().nonnegative().nullable(),
 })
 
+export const schedulerDesiredStateSchema = z.enum(["running", "stopped"])
+export type SchedulerDesiredState = z.infer<typeof schedulerDesiredStateSchema>
+
+export const schedulerSchema = z.object({
+  scheduler_key: z.string().trim().min(1).max(200),
+  provider: z.string().trim().min(1).max(100),
+  dataset_keys: z.array(z.string().trim().min(1).max(200)),
+  desired_state: schedulerDesiredStateSchema,
+  observed_state: schedulerDesiredStateSchema,
+  revision: z.number().int().nonnegative(),
+  last_heartbeat_at: nullableDateTime,
+  last_cycle_started_at: nullableDateTime,
+  last_cycle_completed_at: nullableDateTime,
+  last_error: z.string().nullable(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+  heartbeat_age_seconds: z.number().nonnegative().nullable(),
+})
+export type Scheduler = z.infer<typeof schedulerSchema>
+
+export const schedulersResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.array(schedulerSchema),
+})
+export type SchedulersResponse = z.infer<typeof schedulersResponseSchema>
+
+export const schedulerMutationRequestSchema = z.object({
+  schedulerKey: z.string().trim().min(1).max(200),
+  desiredState: schedulerDesiredStateSchema,
+  expectedRevision: z.number().int().nonnegative(),
+})
+export type SchedulerMutationRequest = z.infer<
+  typeof schedulerMutationRequestSchema
+>
+
+export const schedulerMutationResponseSchema = z.object({
+  success: z.literal(true),
+  data: schedulerSchema,
+})
+export type SchedulerMutationResponse = z.infer<
+  typeof schedulerMutationResponseSchema
+>
+
 export const freshnessStatusSchema = z.enum([
   "not_due",
   "fresh",
@@ -179,6 +222,7 @@ export const dashboardResponseSchema = z.object({
   fetchedAt: isoDateTime,
   freshness: panelResultSchema(marketFreshnessSchema),
   queue: panelResultSchema(queueHealthSchema),
+  schedulers: panelResultSchema(schedulersResponseSchema),
   deliveries: panelResultSchema(missingDeliveriesSchema),
   issues: panelResultSchema(dqIssuesSchema),
   corrections: panelResultSchema(correctionsSchema),
@@ -194,16 +238,27 @@ export type PanelResult<T> =
 export function mergeDashboardRefresh(
   current: DashboardResponse | null,
   next: DashboardResponse
-): { data: DashboardResponse; freshnessError: string } {
-  if (!next.freshness.ok && current?.freshness.ok) {
-    return {
-      data: { ...next, freshness: current.freshness },
-      freshnessError: next.freshness.error,
-    }
+): {
+  data: DashboardResponse
+  freshnessError: string
+  schedulersError: string
+} {
+  const retainFreshness = !next.freshness.ok && current?.freshness.ok === true
+  const retainSchedulers =
+    !next.schedulers.ok && current?.schedulers.ok === true
+  const nextFreshnessError = next.freshness.ok ? "" : next.freshness.error
+  const nextSchedulersError = next.schedulers.ok ? "" : next.schedulers.error
+  const freshnessError = retainFreshness ? nextFreshnessError : ""
+  const schedulersError = retainSchedulers ? nextSchedulersError : ""
+  const data = {
+    ...next,
+    ...(retainFreshness && current ? { freshness: current.freshness } : {}),
+    ...(retainSchedulers && current ? { schedulers: current.schedulers } : {}),
   }
   return {
-    data: next,
-    freshnessError: next.freshness.ok ? "" : next.freshness.error,
+    data,
+    freshnessError: freshnessError || nextFreshnessError,
+    schedulersError: schedulersError || nextSchedulersError,
   }
 }
 

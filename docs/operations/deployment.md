@@ -36,10 +36,10 @@ validation、readiness、Source API delivery client、具整體deadline的manual
 delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，以及
 Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
 Cloudflare R2 persistence。Fetcher CD會用exact SHA image執行無外部呼叫的scheduler
-preflight，並依各Environment的`FETCHER_SCHEDULER_DESIRED_STATE`收斂container。
-`running`維持單一`findb-fetcher-scheduler --run-forever`；`stopped`更新同一個
-container到exact image與runtime config、保留SQLite state，並保證沒有scheduler在運行。
-它不會建立R2 bucket/API token。staging固定使用`stopped`，production使用`running`。
+preflight，並讓三個隔離的`--run-forever` container保持常駐。Container只輪詢FinDB
+Source control endpoint；DB desired state為`stopped`時不建立新provider cycle，但仍保留
+SQLite state並回報heartbeat。Migration在每個environment先建立`stopped` rows，owner
+於Dashboard完成驗證後再逐一啟用。它不會建立R2 bucket/API token。
 
 Remote migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
 Serve若與新schema相容，可以持續提供查詢。
@@ -62,8 +62,8 @@ Staging可以用bounded fixtures或pilot rows驗證：
 Staging禁止完整universe導入、production-scale歷史backfill，以及未經核准擴大
 symbol、日期或record caps。例外必須針對具名run另行授權，並事前記錄config/image
 SHA、symbol/date/row上限、預估provider credits、rollback/cleanup方案與operator。
-Deployment不會覆蓋Environment宣告的scheduler期望狀態，因此staging deploy後會
-自動停妥而不需人工SSH關閉。data-producing one-shot acceptance可作為後續受控
+Deployment不會改寫DB scheduler desired state，因此staging deploy後仍依資料庫控制
+停妥而不需人工SSH關閉。data-producing one-shot acceptance可作為後續受控
 operation；在提供前不得藉由CD改成常駐執行。任何具名觀察窗口均不得放寬上述caps。
 
 ## Deployment isolation
@@ -101,10 +101,10 @@ production-fetcher
 | 類型 | Environment設定名稱 |
 | --- | --- |
 | Secrets | `FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY` |
-| Variables | `FETCHER_SCHEDULER_DESIRED_STATE`（只能為`running`或`stopped`；staging=`stopped`、production=`running`） |
 | Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_RAW_BUCKET` |
 | Variables | `FINDB_SERVE_BASE_URL`、`FETCHER_CALENDAR_TIMEOUT_SECONDS`、`FETCHER_CALENDAR_CACHE_TTL_SECONDS` |
-| Variables | `CLOUDFLARE_R2_MAX_OBJECT_BYTES`、`TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
+| Variables | `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS`（預設`30`，限制`1`–`30`秒）、`CLOUDFLARE_R2_MAX_OBJECT_BYTES` |
+| Variables | `TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
 | Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
 | Secrets | `FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
 | Secrets | `FETCHER_CALENDAR_SERVE_API_KEY`（必填，且不得與Source key相同） |

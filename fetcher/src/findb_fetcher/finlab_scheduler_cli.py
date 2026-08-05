@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import sys
-import time
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +32,7 @@ from findb_fetcher.schedule import (
     ScheduleError,
     load_schedule_manifest,
 )
+from findb_fetcher.scheduler_control import SchedulerControlClient, SchedulerControlLoop
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.twelve_data_scheduler import SchedulerRun
 
@@ -43,6 +43,7 @@ EXIT_SCHEDULE_FAILED = 9
 MAX_OUTPUT_BYTES = 2048
 DEFAULT_SLOT_ID = "tw_1430"
 DEFAULT_DATASET_KEY = "tw_equity_eod"
+SCHEDULER_CONTROL_KEY = "finlab_tw_1430_tw_equity_eod"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,7 +93,6 @@ def main(argv: list[str] | None = None) -> int:
         # clients.  Client construction and all side effects are below it.
         fetcher_config = FetcherConfig.from_env()
         calendar_config = MarketCalendarConfig.from_env()
-        raw_storage_config = RawStorageConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
         state = SchedulerState(args.state_path)
         if not os.getenv("FINLAB_API_TOKEN", "").strip():
@@ -111,6 +111,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_OK
 
+        if args.run_forever:
+            return _run_forever(
+                fetcher_config,
+                lambda: _run_cycle(
+                    schedule=schedule,
+                    universe=universe,
+                    state=state,
+                    registry=registry,
+                    fetcher_config=fetcher_config,
+                    calendar_config=calendar_config,
+                ),
+            )
+
+        raw_storage_config = RawStorageConfig.from_env()
         with ExitStack() as stack:
             calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
             provider = FinLabSdkGateway.from_env()
@@ -126,8 +140,6 @@ def main(argv: list[str] | None = None) -> int:
                 raw_store=raw_store,
                 calendar=calendar,
             )
-            if args.run_forever:
-                return _run_forever(service, schedule.poll_interval_seconds)
             execution = service.run_once(now=args.as_of or datetime.now(timezone.utc))
         _emit_summary(execution)
         return _exit_code(execution)
@@ -201,12 +213,47 @@ def _validate_schedule_universe(
     return state_universe
 
 
-def _run_forever(service: FinLabSchedulerService, poll_interval_seconds: int) -> int:
-    while True:
+def _run_forever(
+    config: FetcherConfig,
+    cycle_factory: Any,
+    *,
+    stop_event: Any = None,
+) -> int:
+    with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
+        loop = SchedulerControlLoop(control)
+        return loop.run(cycle_factory, stop_event=stop_event)
+
+
+def _run_cycle(
+    *,
+    schedule: ScheduleConfig,
+    universe: FinLabPilotUniverse,
+    state: SchedulerState,
+    registry: ContractRegistry,
+    fetcher_config: FetcherConfig,
+    calendar_config: MarketCalendarConfig,
+) -> None:
+    """Construct FinLab/Source resources only after a running acknowledgement."""
+
+    raw_storage_config = RawStorageConfig.from_env()
+    with ExitStack() as stack:
+        calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
+        provider = FinLabSdkGateway.from_env()
+        source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
+        raw_store = R2RawPayloadStore(raw_storage_config)
+        service = FinLabSchedulerService(
+            schedule=schedule,
+            universe=universe,
+            state=state,
+            provider=provider,
+            source=source,
+            registry=registry,
+            raw_store=raw_store,
+            calendar=calendar,
+        )
         execution = service.run_once(now=datetime.now(timezone.utc))
-        if execution.enqueued or execution.claimed:
-            _emit_summary(execution)
-        time.sleep(poll_interval_seconds)
+    if execution.enqueued or execution.claimed:
+        _emit_summary(execution)
 
 
 def _exit_code(execution: SchedulerRun) -> int:

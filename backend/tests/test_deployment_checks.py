@@ -644,29 +644,33 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
     providers = {
         "twelve": (
             "Release and validate Twelve Data scheduler on Fetcher EC2",
-            "FETCHER_SCHEDULER_DESIRED_STATE",
             "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
             {"TWELVE_DATA_API_KEY"},
             {"FINLAB_API_TOKEN", "SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"},
         ),
         "finlab": (
             "Release and validate FinLab scheduler on Fetcher EC2",
-            "FETCHER_FINLAB_SCHEDULER_DESIRED_STATE",
             "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
             {"FINLAB_API_TOKEN"},
             {"TWELVE_DATA_API_KEY", "SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"},
         ),
         "shioaji": (
             "Release and validate Shioaji scheduler on Fetcher EC2",
-            "FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE",
             "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY",
             {"SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"},
             {"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN"},
         ),
     }
+    workflow_text = FETCHER_CD_WORKFLOW.read_text(encoding="utf-8")
+    for desired_state_name in (
+        "FETCHER_SCHEDULER_DESIRED_STATE",
+        "FETCHER_FINLAB_SCHEDULER_DESIRED_STATE",
+        "FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE",
+    ):
+        assert desired_state_name not in workflow_text
+
     for provider, (
         step_name,
-        desired,
         source_key,
         own_credentials,
         forbidden_credentials,
@@ -675,8 +679,10 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         env = step["env"]
         forwarded = set(step["with"]["envs"].split(","))
         script = step["with"]["script"]
-        assert desired in env and desired in forwarded
         assert source_key in env and source_key in forwarded
+        assert "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS" in env
+        assert "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS" in forwarded
+        assert "--env FETCHER_SCHEDULER_CONTROL_POLL_SECONDS" in script
         assert "FETCHER_CALENDAR_SERVE_API_KEY" in env
         assert own_credentials <= set(env) and own_credentials <= forwarded
         assert not forbidden_credentials & set(env)
@@ -698,8 +704,12 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         assert "recover_scheduler()" in script
         assert "for attempt in $(seq 1 6)" in script
         assert "{{.RestartCount}}" in script
-        assert "running|stopped" in script
-        assert "must be running or stopped" in script
+        assert "desired_state" not in script
+        assert "running|stopped" not in script
+        assert "docker create" not in script
+        assert "docker run -d" in script
+        assert "--run-forever" in script
+        assert 'docker start "$stable"' in script
         preflight = script.index("--check")
         stable_stop = script.index('docker stop --time 30 "$stable"', preflight)
         assert preflight < stable_stop
@@ -793,17 +803,6 @@ case "$operation" in
     [ "$(cat "$state_dir/$name")" != start-fail ] || exit 1
     printf 'running\\n' > "$state_dir/$name"
     ;;
-  create)
-    [ "${FAKE_CREATE_FAIL:-0}" != 1 ]
-    name=""
-    previous=""
-    for argument in "$@"; do
-      if [ "$previous" = --name ]; then name="$argument"; fi
-      previous="$argument"
-    done
-    [ -n "$name" ]
-    printf 'created\\n' > "$state_dir/$name"
-    ;;
   run)
     detached=0
     name=""
@@ -864,11 +863,9 @@ def _run_fetcher_reconciliation(
     tmp_path: Path,
     provider: tuple[str, str, str, str, str, str],
     *,
-    desired_state: str,
     initial: dict[str, str],
     candidate_status: str = "running",
     preflight_fails: bool = False,
-    create_fails: bool = False,
     legacy_raw_bucket_marker: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
     provider_id, step_name, command, stable, candidate, previous = provider
@@ -906,14 +903,14 @@ def _run_fetcher_reconciliation(
     image = "image:test"
     if provider_id == "shioaji":
         invocation = (
-            f"reconcile_scheduler {provider_id} {desired_state} {image} "
+            f"reconcile_scheduler {provider_id} {image} "
             f"{state_dir} {state_path} {stable} {candidate} {previous} "
             f'preflight "" {command}'
         )
     else:
         cache_dir = state_dir / "cache" if provider_id == "finlab" else "-"
         invocation = (
-            f"reconcile_scheduler {provider_id} {desired_state} {image} "
+            f"reconcile_scheduler {provider_id} {image} "
             f"{state_dir} {state_path} {stable} {candidate} {previous} "
             f'preflight {cache_dir} "" {command}'
         )
@@ -944,7 +941,6 @@ previous={previous}
         FAKE_IMAGE=image,
         FAKE_CANDIDATE_STATUS=candidate_status,
         FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
-        FAKE_CREATE_FAIL="1" if create_fails else "0",
     )
     completed = subprocess.run(
         ["bash", "-c", harness],
@@ -971,7 +967,6 @@ def test_twelve_legacy_raw_bucket_marker_is_migrated_before_reconciliation(
     completed, statuses, _, durable_state = _run_fetcher_reconciliation(
         tmp_path,
         provider,
-        desired_state="running",
         initial={stable: "running"},
         legacy_raw_bucket_marker=True,
     )
@@ -994,7 +989,6 @@ def test_new_providers_reject_legacy_twelve_raw_bucket_marker(
     completed, statuses, _, durable_state = _run_fetcher_reconciliation(
         tmp_path,
         provider,
-        desired_state="running",
         initial={stable: "running"},
         legacy_raw_bucket_marker=True,
     )
@@ -1006,31 +1000,24 @@ def test_new_providers_reject_legacy_twelve_raw_bucket_marker(
 
 
 @pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
-@pytest.mark.parametrize(
-    ("initial_status", "desired_state", "expected_status"),
-    (("stopped", "running", "running"), ("running", "stopped", "created")),
-)
-def test_fetcher_provider_reconciliation_converges_running_and_stopped(
+@pytest.mark.parametrize("initial_status", ("stopped", "running"))
+def test_fetcher_provider_reconciliation_always_converges_to_running(
     tmp_path: Path,
     provider: tuple[str, str, str, str, str, str],
     initial_status: str,
-    desired_state: str,
-    expected_status: str,
 ) -> None:
     stable = provider[3]
     completed, statuses, operations, _ = _run_fetcher_reconciliation(
         tmp_path,
         provider,
-        desired_state=desired_state,
         initial={stable: initial_status},
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert statuses == {stable: expected_status}
+    assert statuses == {stable: "running"}
     assert provider[4] not in statuses
     assert provider[5] not in statuses
-    if desired_state == "stopped":
-        assert "start" not in operations
+    assert "run" in operations
 
 
 @pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
@@ -1042,7 +1029,6 @@ def test_fetcher_provider_reconciliation_cleans_interrupted_candidate(
     completed, statuses, operations, _ = _run_fetcher_reconciliation(
         tmp_path,
         provider,
-        desired_state="running",
         initial={stable: "running", candidate: "stale-candidate"},
     )
 
@@ -1061,8 +1047,7 @@ def test_fetcher_provider_candidate_failure_rolls_back_and_preserves_sqlite(
     completed, statuses, operations, durable_state = _run_fetcher_reconciliation(
         tmp_path,
         provider,
-        desired_state="running",
-        initial={stable: "running"},
+        initial={stable: "stopped"},
         candidate_status="exited",
     )
 
@@ -1072,26 +1057,6 @@ def test_fetcher_provider_candidate_failure_rolls_back_and_preserves_sqlite(
     assert previous not in statuses
     assert "start" in operations
     assert durable_state == "durable-state\n"
-
-
-@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
-def test_fetcher_provider_stopped_recovery_never_starts_old_scheduler(
-    tmp_path: Path,
-    provider: tuple[str, str, str, str, str, str],
-) -> None:
-    stable, candidate = provider[3], provider[4]
-    completed, statuses, operations, _ = _run_fetcher_reconciliation(
-        tmp_path,
-        provider,
-        desired_state="stopped",
-        initial={stable: "running"},
-        create_fails=True,
-    )
-
-    assert completed.returncode != 0
-    assert statuses == {stable: "stopped"}
-    assert candidate not in statuses
-    assert "start" not in operations
 
 
 def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolation_before_deploy() -> (

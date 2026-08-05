@@ -10,6 +10,7 @@ from app.schemas.payload_limits import (
     ensure_data_items_count_within_limit,
     ensure_payload_size_within_limit,
 )
+from app.utils import ensure_utc
 
 
 class IngestRequest(BaseModel):
@@ -225,6 +226,34 @@ class IngestResponse(BaseModel):
     run_id: UUID
     status: str
     message: str
+
+
+class SchedulerControlPollRequest(BaseModel):
+    """Fetcher heartbeat and observed-state report."""
+
+    observed_state: Literal["running", "stopped"]
+    cycle_started_at: Optional[datetime] = None
+    cycle_completed_at: Optional[datetime] = None
+    last_error: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("cycle_started_at", "cycle_completed_at")
+    @classmethod
+    def normalize_timestamps(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        return ensure_utc(value)
+
+
+class SchedulerControlPollResponse(BaseModel):
+    success: Literal[True] = True
+    scheduler_key: str
+    desired_state: Literal["running", "stopped"]
+    revision: int
+    server_time: datetime
+
+
+# Alias retained for callers that refer to this operation as a heartbeat.
+SchedulerHeartbeatRequest = SchedulerControlPollRequest
 
 
 class CanonicalIngestResponse(BaseModel):

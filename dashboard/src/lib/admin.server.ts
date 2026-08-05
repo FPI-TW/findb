@@ -9,7 +9,10 @@ import {
   missingDeliveriesSchema,
   queueHealthSchema,
   rawPayloadsSchema,
+  schedulerMutationResponseSchema,
+  schedulersResponseSchema,
   type DashboardRequest,
+  type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
 
@@ -80,59 +83,120 @@ export async function fetchDashboardData(
     page: data.audit.page.toString(),
     page_size: data.audit.pageSize.toString(),
   })
-  const [freshness, queue, deliveries, issues, corrections, rawPayloads] =
-    await Promise.allSettled([
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        "/api/v1/admin/market-freshness",
-        marketFreshnessSchema,
-        fetchImplementation
-      ),
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        "/api/v1/admin/queue/health",
-        queueHealthSchema,
-        fetchImplementation
-      ),
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
-        missingDeliveriesSchema,
-        fetchImplementation
-      ),
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        `/api/v1/admin/dq-issues?${issuesSearch.toString()}`,
-        dqIssuesSchema,
-        fetchImplementation
-      ),
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        "/api/v1/admin/corrections?page=1&page_size=50",
-        correctionsSchema,
-        fetchImplementation
-      ),
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        `/api/v1/admin/raw-payloads?${auditSearch.toString()}`,
-        rawPayloadsSchema,
-        fetchImplementation
-      ),
-    ])
+  const [
+    freshness,
+    queue,
+    schedulers,
+    deliveries,
+    issues,
+    corrections,
+    rawPayloads,
+  ] = await Promise.allSettled([
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      "/api/v1/admin/market-freshness",
+      marketFreshnessSchema,
+      fetchImplementation
+    ),
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      "/api/v1/admin/queue/health",
+      queueHealthSchema,
+      fetchImplementation
+    ),
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      "/api/v1/admin/schedulers",
+      schedulersResponseSchema,
+      fetchImplementation
+    ),
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
+      missingDeliveriesSchema,
+      fetchImplementation
+    ),
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      `/api/v1/admin/dq-issues?${issuesSearch.toString()}`,
+      dqIssuesSchema,
+      fetchImplementation
+    ),
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      "/api/v1/admin/corrections?page=1&page_size=50",
+      correctionsSchema,
+      fetchImplementation
+    ),
+    fetchTarget(
+      baseUrl,
+      sessionToken,
+      `/api/v1/admin/raw-payloads?${auditSearch.toString()}`,
+      rawPayloadsSchema,
+      fetchImplementation
+    ),
+  ])
 
   return dashboardResponseSchema.parse({
     fetchedAt: new Date().toISOString(),
     freshness: settled(freshness),
     queue: settled(queue),
+    schedulers: settled(schedulers),
     deliveries: settled(deliveries),
     issues: settled(issues),
     corrections: settled(corrections),
     rawPayloads: settled(rawPayloads),
   })
+}
+
+function safeSchedulerPath(schedulerKey: string) {
+  return `/api/v1/admin/schedulers/${encodeURIComponent(schedulerKey)}`
+}
+
+export async function patchSchedulerData(
+  data: SchedulerMutationRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  const baseUrl = safeBaseUrl(baseUrlValue)
+  const url = new URL(safeSchedulerPath(data.schedulerKey), baseUrl)
+  let response: Response
+  try {
+    response = await fetchImplementation(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        desired_state: data.desiredState,
+        expected_revision: data.expectedRevision,
+      }),
+      cache: "no-store",
+    })
+  } catch {
+    throw new Error("Unable to reach FinDB API")
+  }
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("Dashboard session was rejected")
+    }
+    if (response.status === 409) {
+      throw new Error("Scheduler revision is stale; refresh and retry")
+    }
+    throw new Error(`FinDB API request failed (${response.status})`)
+  }
+  try {
+    return schedulerMutationResponseSchema.parse(await response.json())
+  } catch {
+    throw new Error("FinDB API returned an unexpected response")
+  }
 }

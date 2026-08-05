@@ -622,6 +622,46 @@ class SuccessResponse(BaseModel):
     success: bool = True
 
 
+class SchedulerControlResponse(BaseModel):
+    """A persisted scheduler control row plus its current heartbeat age."""
+
+    scheduler_key: str
+    provider: str
+    dataset_keys: list[str]
+    desired_state: Literal["running", "stopped"]
+    observed_state: Literal["running", "stopped"]
+    revision: int
+    last_heartbeat_at: Optional[datetime] = None
+    last_cycle_started_at: Optional[datetime] = None
+    last_cycle_completed_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    heartbeat_age_seconds: Optional[float] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SchedulerControlListResponse(BaseModel):
+    success: bool = True
+    data: list[SchedulerControlResponse]
+
+
+class SchedulerControlMutationResponse(BaseModel):
+    success: bool = True
+    data: SchedulerControlResponse
+
+
+class SchedulerControlUpdateRequest(BaseModel):
+    desired_state: Literal["running", "stopped"]
+    expected_revision: int = Field(ge=0)
+
+
+# Short aliases make the control-plane schemas convenient for callers while
+# preserving the explicit names used by the API handlers.
+SchedulerUpdateRequest = SchedulerControlUpdateRequest
+
+
 class AdminUserCreateRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=100)
     display_name: str = Field(..., min_length=1, max_length=100)

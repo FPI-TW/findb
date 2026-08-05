@@ -65,6 +65,62 @@ class DatasetRegistry(Base):
     ingestion_runs: Mapped[list["IngestionRun"]] = relationship(back_populates="dataset")
 
 
+class SchedulerControl(Base):
+    """Durable desired/observed state for a provider-owned scheduler."""
+
+    __tablename__ = "scheduler_control"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(scheduler_key)) > 0",
+            name="scheduler_key_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(provider)) > 0",
+            name="provider_nonempty",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(dataset_keys) = 'array' AND jsonb_array_length(dataset_keys) > 0",
+            name="dataset_keys_array",
+        ),
+        CheckConstraint(
+            "desired_state IN ('running', 'stopped')",
+            name="desired_state_valid",
+        ),
+        CheckConstraint(
+            "observed_state IN ('running', 'stopped')",
+            name="observed_state_valid",
+        ),
+        CheckConstraint(
+            "revision >= 1",
+            name="revision_positive",
+        ),
+        Index("idx_scheduler_control_provider", "provider"),
+        Index("idx_scheduler_control_state", "desired_state", "observed_state"),
+        Index("idx_scheduler_control_heartbeat", "last_heartbeat_at"),
+    )
+
+    scheduler_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    dataset_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    desired_state: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
+    observed_state: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_cycle_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_cycle_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class TWMinuteUniverseRelease(Base):
     """Versioned maintained TW minute universe; members are never deleted."""
 

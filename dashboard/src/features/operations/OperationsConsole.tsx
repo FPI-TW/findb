@@ -10,6 +10,7 @@ import {
   Gauge,
   KeyRound,
   LogOut,
+  Power,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -56,11 +57,16 @@ import {
   type FreshnessStatus,
   type MarketFreshnessResponse,
   type PanelResult,
+  type Scheduler,
+  type SchedulerDesiredState,
+  type SchedulerMutationResponse,
+  type SchedulersResponse,
 } from "../../lib/admin-api"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { canViewUsers } from "../../lib/admin-permissions"
-import { loadDashboard } from "../../lib/admin.functions"
+import { loadDashboard, updateScheduler } from "../../lib/admin.functions"
 import { logout } from "../../lib/auth.functions"
+import { toast } from "../../components/ui/toast"
 
 const EMPTY_FILTERS: DashboardRequest["audit"] = {
   datasetKey: "",
@@ -75,8 +81,11 @@ type OperationsContextValue = {
   data: DashboardResponse | null
   error: string
   freshnessError: string
+  schedulersError: string
   pending: boolean
   initialLoading: boolean
+  role: AdminRole
+  applyScheduler: (response: SchedulerMutationResponse) => void
   filters: DashboardRequest["audit"]
   setFilters: (filters: DashboardRequest["audit"]) => void
   refresh: (filters: DashboardRequest["audit"]) => Promise<void>
@@ -133,6 +142,47 @@ function formatAge(seconds: number | null) {
   if (seconds < 60) return `${Math.round(seconds)} 秒`
   if (seconds < 3600) return `${Math.round(seconds / 60)} 分鐘`
   return `${Math.round(seconds / 3600)} 小時`
+}
+
+function formatSchedulerState(value: string) {
+  if (value === "running") return "執行中"
+  if (value === "stopped") return "已停止"
+  if (value === "idle") return "閒置"
+  if (value === "unknown") return "未知"
+  return value
+}
+
+function schedulerStateVariant(value: string) {
+  if (value === "running") return "default" as const
+  if (value === "stopped" || value === "idle") return "secondary" as const
+  return "warning" as const
+}
+
+function schedulerIsStale(scheduler: Scheduler) {
+  return (
+    scheduler.heartbeat_age_seconds === null ||
+    scheduler.heartbeat_age_seconds > 90
+  )
+}
+
+function schedulerErrorMessage(reason: unknown) {
+  if (typeof reason === "object" && reason !== null && "status" in reason) {
+    const status = (reason as { status?: unknown }).status
+    if (status === 409) {
+      return "排程版本已被其他使用者更新，請先重新整理後再試。"
+    }
+  }
+  if (reason instanceof Error) {
+    if (
+      reason.message.toLowerCase().includes("revision") ||
+      reason.message.includes("版本") ||
+      reason.message.includes("409")
+    ) {
+      return "排程版本已被其他使用者更新，請先重新整理後再試。"
+    }
+    return reason.message
+  }
+  return "排程狀態更新失敗，請稍後再試。"
 }
 
 function getVisiblePages(currentPage: number, totalPages: number) {
@@ -351,10 +401,33 @@ export default function OperationsLayout({
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [error, setError] = useState("")
   const [freshnessError, setFreshnessError] = useState("")
+  const [schedulersError, setSchedulersError] = useState("")
   const [pending, setPending] = useState(true)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const dataRef = useRef<DashboardResponse | null>(null)
+  dataRef.current = data
   const filtersRef = useRef(filters)
   filtersRef.current = filters
+  const applyScheduler = useCallback((response: SchedulerMutationResponse) => {
+    const current = dataRef.current
+    if (!current || !current.schedulers.ok) return
+    const next = {
+      ...current,
+      schedulers: {
+        ok: true as const,
+        data: {
+          ...current.schedulers.data,
+          data: current.schedulers.data.data.map(scheduler =>
+            scheduler.scheduler_key === response.data.scheduler_key
+              ? response.data
+              : scheduler
+          ),
+        },
+      },
+    }
+    dataRef.current = next
+    setData(next)
+  }, [])
 
   const refresh = useCallback(
     async (nextFilters: DashboardRequest["audit"]) => {
@@ -362,8 +435,11 @@ export default function OperationsLayout({
       setError("")
       try {
         const result = await load({ data: { audit: nextFilters } })
-        setFreshnessError(result.freshness.ok ? "" : result.freshness.error)
-        setData(current => mergeDashboardRefresh(current, result).data)
+        const merged = mergeDashboardRefresh(dataRef.current, result)
+        setFreshnessError(merged.freshnessError)
+        setSchedulersError(merged.schedulersError)
+        dataRef.current = merged.data
+        setData(merged.data)
       } catch (reason) {
         setError(
           reason instanceof Error ? reason.message : "無法連線至 FinDB API。"
@@ -393,6 +469,7 @@ export default function OperationsLayout({
     ? [
         data.freshness,
         data.queue,
+        data.schedulers,
         data.deliveries,
         data.issues,
         data.corrections,
@@ -401,7 +478,8 @@ export default function OperationsLayout({
     : []
   const successfulPanels =
     panelResults.filter(result => result.ok).length -
-    (freshnessError && data?.freshness.ok ? 1 : 0)
+    (freshnessError && data?.freshness.ok ? 1 : 0) -
+    (schedulersError && data?.schedulers.ok ? 1 : 0)
   const connectionState =
     data === null
       ? pending
@@ -534,8 +612,11 @@ export default function OperationsLayout({
             data,
             error,
             freshnessError,
+            schedulersError,
             pending,
             initialLoading,
+            role,
+            applyScheduler,
             filters,
             setFilters,
             refresh,
@@ -814,8 +895,239 @@ function MarketFreshnessPanel({
   )
 }
 
+export function SchedulerPanel({
+  result,
+  loading,
+  pending,
+  refreshError,
+  role,
+  applyScheduler: applySchedulerProp,
+}: {
+  result: PanelResult<SchedulersResponse> | null
+  loading: boolean
+  pending: boolean
+  refreshError: string
+  role: AdminRole
+  applyScheduler?: (response: SchedulerMutationResponse) => void
+}) {
+  const update = useServerFn(updateScheduler)
+  const context = useContext(OperationsContext)
+  const applyScheduler = applySchedulerProp ?? context?.applyScheduler
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
+  const schedulers = result?.ok ? result.data.data : []
+
+  async function toggleScheduler(scheduler: Scheduler) {
+    if (pendingKeys.has(scheduler.scheduler_key)) return
+    const desiredState: SchedulerDesiredState =
+      scheduler.desired_state === "running" ? "stopped" : "running"
+    setPendingKeys(current => {
+      const next = new Set(current)
+      next.add(scheduler.scheduler_key)
+      return next
+    })
+    setActionErrors(current => {
+      const next = { ...current }
+      delete next[scheduler.scheduler_key]
+      return next
+    })
+    try {
+      const response = await update({
+        data: {
+          schedulerKey: scheduler.scheduler_key,
+          desiredState,
+          expectedRevision: scheduler.revision,
+        },
+      })
+      applyScheduler?.(response)
+      toast.success(
+        `${scheduler.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
+      )
+    } catch (reason) {
+      const message = schedulerErrorMessage(reason)
+      setActionErrors(current => ({
+        ...current,
+        [scheduler.scheduler_key]: message,
+      }))
+      toast.error("排程狀態更新失敗", { description: message })
+    } finally {
+      setPendingKeys(current => {
+        const next = new Set(current)
+        next.delete(scheduler.scheduler_key)
+        return next
+      })
+    }
+  }
+
+  return (
+    <Panel
+      eyebrow="Scheduler control"
+      title="資料抓取排程"
+      icon={<Power size={19} />}
+      result={result}
+      loading={loading}
+    >
+      {pending && !loading && (
+        <p className="mb-4 text-xs text-muted" role="status" aria-live="polite">
+          正在更新排程狀態…目前資料仍可操作。
+        </p>
+      )}
+      {refreshError && result?.ok && (
+        <Alert className="mb-4" variant="warning" role="status">
+          <AlertTriangle size={18} />
+          <AlertTitle>排程狀態暫時無法重新取得</AlertTitle>
+          <AlertDescription>
+            目前保留上次成功資料：{refreshError}
+          </AlertDescription>
+        </Alert>
+      )}
+      {result?.ok &&
+        (schedulers.length === 0 ? (
+          <Alert variant="warning" role="status">
+            <AlertTriangle size={18} />
+            <AlertDescription>目前沒有已註冊的資料抓取排程。</AlertDescription>
+          </Alert>
+        ) : (
+          <div className="grid gap-3">
+            {schedulers.map(scheduler => {
+              const stale = schedulerIsStale(scheduler)
+              const pending = pendingKeys.has(scheduler.scheduler_key)
+              const nextState =
+                scheduler.desired_state === "running" ? "stopped" : "running"
+              return (
+                <article
+                  className="grid gap-4 rounded-xl border border-line bg-surface p-4"
+                  key={scheduler.scheduler_key}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="m-0 font-mono text-sm font-bold wrap-anywhere">
+                        {scheduler.scheduler_key}
+                      </h3>
+                      <p className="mt-1 mb-0 text-xs text-muted">
+                        Provider：{scheduler.provider} · Dataset：
+                        {scheduler.dataset_keys.join(", ") || "—"}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      <Badge
+                        variant={schedulerStateVariant(scheduler.desired_state)}
+                      >
+                        期望：{formatSchedulerState(scheduler.desired_state)}
+                      </Badge>
+                      <Badge
+                        variant={schedulerStateVariant(
+                          scheduler.observed_state
+                        )}
+                      >
+                        實際：{formatSchedulerState(scheduler.observed_state)}
+                      </Badge>
+                      {stale && (
+                        <Badge variant="destructive">
+                          <TriangleAlert aria-hidden="true" />
+                          Heartbeat stale
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <dt className="text-xs text-muted">Heartbeat</dt>
+                      <dd className="mt-0.5">
+                        {formatAge(scheduler.heartbeat_age_seconds)}
+                        <span className="mx-1 text-muted">·</span>
+                        <DateWithRelative value={scheduler.last_heartbeat_at} />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">最近 cycle 開始</dt>
+                      <dd className="mt-0.5">
+                        <DateWithRelative
+                          value={scheduler.last_cycle_started_at}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">最近 cycle 完成</dt>
+                      <dd className="mt-0.5">
+                        <DateWithRelative
+                          value={scheduler.last_cycle_completed_at}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">Revision</dt>
+                      <dd className="mt-0.5 font-mono">
+                        r{scheduler.revision}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  {scheduler.last_error && (
+                    <Alert variant="warning" role="status">
+                      <TriangleAlert size={17} />
+                      <AlertDescription>
+                        <span className="font-semibold">最近錯誤：</span>
+                        {scheduler.last_error}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+                    {role === "owner" ? (
+                      <Button
+                        type="button"
+                        variant={
+                          scheduler.desired_state === "running"
+                            ? "destructive"
+                            : "default"
+                        }
+                        onClick={() => void toggleScheduler(scheduler)}
+                        disabled={pending}
+                        aria-busy={pending}
+                        aria-label={`${scheduler.provider} 設為${nextState === "running" ? "執行中" : "已停止"}`}
+                      >
+                        <Power aria-hidden="true" />
+                        {pending
+                          ? "更新中…"
+                          : nextState === "running"
+                            ? "啟用排程"
+                            : "停止排程"}
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted" role="note">
+                        唯讀：只有 owner 可以變更排程狀態。
+                      </span>
+                    )}
+                    {actionErrors[scheduler.scheduler_key] && (
+                      <p
+                        className="m-0 text-xs text-danger"
+                        role="alert"
+                        aria-live="polite"
+                      >
+                        {actionErrors[scheduler.scheduler_key]}
+                      </p>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        ))}
+    </Panel>
+  )
+}
+
 export function OperationsOverviewPage() {
-  const { data, freshnessError, initialLoading } = useOperations()
+  const {
+    data,
+    freshnessError,
+    schedulersError,
+    initialLoading,
+    pending,
+    role,
+  } = useOperations()
   return (
     <>
       <PageIntro
@@ -830,6 +1142,13 @@ export function OperationsOverviewPage() {
           refreshError={freshnessError}
         />
       </MarketFreshnessErrorBoundary>
+      <SchedulerPanel
+        result={data?.schedulers ?? null}
+        loading={initialLoading}
+        pending={pending}
+        refreshError={schedulersError}
+        role={role}
+      />
       <Panel
         eyebrow="Queue and worker"
         title="佇列與 Worker"

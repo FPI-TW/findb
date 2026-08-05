@@ -17,6 +17,7 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
     NormalizationWorkerHeartbeat,
+    SchedulerControl,
     SourceClient,
 )
 from app.utils import utc_now, uuid7
@@ -99,6 +100,11 @@ async def _seed_protected_rows(session: AsyncSession) -> tuple[DatasetRegistry, 
             dataset,
             source_client,
             APIKey(key_hash="b" * 64, owner="staging-test"),
+            SchedulerControl(
+                scheduler_key="staging-reset-test",
+                provider="test-provider",
+                dataset_keys=["test.eod"],
+            ),
         ]
     )
     await session.flush()
@@ -302,7 +308,9 @@ async def test_apply_truncates_mutable_tables_and_preserves_protected_tables(tes
             assert report.before["raw.market_payload"] == 1
             assert all(report.after[table_name] == 0 for table_name in TARGET_TABLES)
             assert report.after["public.dataset_registry"] == 1
+            assert report.after["public.scheduler_control"] == 1
             assert report.after["public.source_client"] == 1
             assert report.after["public.api_key"] == 1
             assert report.after["public.calendar_market"] == 1
             assert await connection.scalar(text("SELECT count(*) FROM dataset_registry")) == 1
+            assert await connection.scalar(text("SELECT count(*) FROM scheduler_control")) == 1
