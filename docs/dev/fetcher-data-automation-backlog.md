@@ -83,5 +83,7 @@ Serve/Export publication仍在backlog。
    有效交易日，全數啟用後再觀察一個完整交易週。
 
 Reviewed pilots以外的項目，只有在entitlement/fixture、canonical mapping、DQ、API
-freshness、alert、rollback與observability同時通過後，才能把manifest `enabled`改為
-`true`；既有pilots的實際Environment activation仍須完成上述live觀察。
+freshness、alert、rollback與observability同時通過，且已建立受審核的 DB scheduler
+definition／dataset mapping後，owner才能將 DB `desired_state`改為`running`。Manifest 的
+`enabled`與`scheduled_time`不是執行權威；既有pilots的實際Environment activation仍須
+完成上述live觀察。

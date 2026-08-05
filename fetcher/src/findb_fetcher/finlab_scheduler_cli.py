@@ -32,7 +32,11 @@ from findb_fetcher.schedule import (
     ScheduleError,
     load_schedule_manifest,
 )
-from findb_fetcher.scheduler_control import SchedulerControlClient, SchedulerControlLoop
+from findb_fetcher.scheduler_control import (
+    SchedulerControlClient,
+    SchedulerControlLoop,
+    validate_scheduler_definition,
+)
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.twelve_data_scheduler import SchedulerRun
 
@@ -84,7 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        schedule = _load_selected_schedule(args.schedule_file, args.slot_id, args.dataset_key)
+        schedule = _load_selected_schedule(
+            args.schedule_file,
+            args.slot_id,
+            args.dataset_key,
+            reject_disabled=not args.run_forever,
+        )
         universe = load_finlab_universe(schedule.universe_file)
         state_universe = _validate_schedule_universe(schedule, universe)
 
@@ -121,6 +130,13 @@ def main(argv: list[str] | None = None) -> int:
                     registry=registry,
                     fetcher_config=fetcher_config,
                     calendar_config=calendar_config,
+                ),
+                expected_definition=(
+                    "finlab",
+                    (DEFAULT_DATASET_KEY,),
+                    DEFAULT_SLOT_ID,
+                    "14:30:00",
+                    "Asia/Taipei",
                 ),
             )
 
@@ -163,6 +179,8 @@ def _load_selected_schedule(
     path: Path,
     slot_id: str | None = DEFAULT_SLOT_ID,
     dataset_key: str | None = DEFAULT_DATASET_KEY,
+    *,
+    reject_disabled: bool = True,
 ) -> ScheduleConfig:
     manifest = load_schedule_manifest(path)
     if manifest.schedule_version != 2:
@@ -183,10 +201,11 @@ def _load_selected_schedule(
         or schedule.dataset_key != DEFAULT_DATASET_KEY
     ):
         raise ScheduleError("requested v2 feed is not the governed FinLab TW pilot")
-    if not schedule.enabled:
-        # Disabled entries are backlog guards; fail closed before any runtime
-        # environment, SDK, R2, Source, or calendar client is constructed.
+    if reject_disabled and not schedule.enabled:
         raise ScheduleError("requested FinLab slot is disabled")
+    # ``enabled`` is retained as a local manifest hint only for one-shot
+    # configuration checks. DB desired_state is the sole authority for a
+    # long-running cycle.
     return schedule
 
 
@@ -218,9 +237,28 @@ def _run_forever(
     cycle_factory: Any,
     *,
     stop_event: Any = None,
+    expected_definition: tuple[str, tuple[str, ...], str, str, str] | None = None,
 ) -> int:
     with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
-        loop = SchedulerControlLoop(control)
+        validator = None
+        if expected_definition is not None:
+            provider, dataset_keys, slot_id, scheduled_local_time, timezone_name = (
+                expected_definition
+            )
+            def validator(response: Any) -> None:
+                validate_scheduler_definition(
+                    response,
+                    provider=provider,
+                    dataset_keys=dataset_keys,
+                    slot_id=slot_id,
+                    scheduled_local_time=scheduled_local_time,
+                    timezone_name=timezone_name,
+                )
+        loop = (
+            SchedulerControlLoop(control, definition_validator=validator)
+            if validator is not None
+            else SchedulerControlLoop(control)
+        )
         return loop.run(cycle_factory, stop_event=stop_event)
 
 

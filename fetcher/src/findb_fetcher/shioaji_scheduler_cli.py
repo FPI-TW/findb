@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Never, Sequence
 
-from findb_fetcher.scheduler_control import SchedulerControlClient, SchedulerControlLoop
+from findb_fetcher.scheduler_control import (
+    SchedulerControlClient,
+    SchedulerControlLoop,
+    validate_scheduler_definition,
+)
 from findb_fetcher.shioaji_scheduler import (
     MAX_OUTPUT_BYTES,
     SchedulerRun,
@@ -76,6 +80,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         raw_config=raw_config,
                         contracts=contracts,
                     ),
+                    expected_definition=(
+                        "shioaji",
+                        ("tw_equity_minute", "tw_etf_minute"),
+                        "tw_1430",
+                        "14:30:00",
+                        "Asia/Taipei",
+                    ),
                 )
             scheduler, clients = build_runtime(
                 manifest,
@@ -106,9 +117,28 @@ def _run_forever(
     cycle_factory: Any,
     *,
     stop_event: Any = None,
+    expected_definition: tuple[str, tuple[str, ...], str, str, str] | None = None,
 ) -> int:
     with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
-        loop = SchedulerControlLoop(control)
+        validator = None
+        if expected_definition is not None:
+            provider, dataset_keys, slot_id, scheduled_local_time, timezone_name = (
+                expected_definition
+            )
+            def validator(response: Any) -> None:
+                validate_scheduler_definition(
+                    response,
+                    provider=provider,
+                    dataset_keys=dataset_keys,
+                    slot_id=slot_id,
+                    scheduled_local_time=scheduled_local_time,
+                    timezone_name=timezone_name,
+                )
+        loop = (
+            SchedulerControlLoop(control, definition_validator=validator)
+            if validator is not None
+            else SchedulerControlLoop(control)
+        )
         return loop.run(cycle_factory, stop_event=stop_event)
 
 

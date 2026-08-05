@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -45,13 +45,264 @@ def test_tw_minute_migration_is_single_linear_head():
     foundation = scripts.get_revision("a9b0c1d2e3f4")
     activation = scripts.get_revision("b0c1d2e3f4a5")
     scheduler_control = scripts.get_revision("c1d2e3f4a5b6")
+    scheduler_definition = scripts.get_revision("d2e3f4a5b6c7")
+    finlab_policy = scripts.get_revision("e3f4a5b6c7d8")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
     assert activation.down_revision == "a9b0c1d2e3f4"
     assert scheduler_control is not None
     assert scheduler_control.down_revision == "b0c1d2e3f4a5"
-    assert scripts.get_heads() == ["c1d2e3f4a5b6"]
+    assert scheduler_definition is not None
+    assert scheduler_definition.down_revision == "c1d2e3f4a5b6"
+    assert finlab_policy is not None
+    assert finlab_policy.down_revision == "d2e3f4a5b6c7"
+    assert scripts.get_heads() == ["e3f4a5b6c7d8"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
+    """The scheduler definition migration is a lossless control-plane upgrade."""
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_scheduler_definition_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    database_created = False
+
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        database_created = True
+
+        await _run_alembic(database_url, "c1d2e3f4a5b6")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            # Force the fresh-install shape: c1 has no EOD registry targets yet
+            # (the seed runs after migrations).  d2 must materialize them before
+            # creating the normalized FK association.
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM dataset_registry
+                    WHERE dataset_key IN ('us_equity_eod', 'tw_equity_eod')
+                    """
+                )
+            )
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM dataset_registry
+                    WHERE dataset_key IN ('us_equity_eod', 'tw_equity_eod')
+                    """
+                    )
+                )
+                == 0
+            )
+            heartbeat = datetime(2026, 8, 4, 5, 0, tzinfo=timezone.utc)
+            cycle_started = datetime(2026, 8, 4, 5, 1, tzinfo=timezone.utc)
+            cycle_completed = datetime(2026, 8, 4, 5, 4, tzinfo=timezone.utc)
+            await connection.execute(
+                text(
+                    """
+                    UPDATE scheduler_control
+                    SET desired_state = 'running',
+                        observed_state = 'running',
+                        revision = 42,
+                        last_heartbeat_at = :heartbeat,
+                        last_cycle_started_at = :cycle_started,
+                        last_cycle_completed_at = :cycle_completed,
+                        last_error = 'operator test failure'
+                    WHERE scheduler_key = 'shioaji_tw_pilot_v1'
+                    """
+                ),
+                {
+                    "heartbeat": heartbeat,
+                    "cycle_started": cycle_started,
+                    "cycle_completed": cycle_completed,
+                },
+            )
+            state_before = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, provider, dataset_keys,
+                               desired_state, observed_state, revision,
+                               last_heartbeat_at, last_cycle_started_at,
+                               last_cycle_completed_at, last_error,
+                               created_at, updated_at
+                        FROM scheduler_control
+                        ORDER BY scheduler_key
+                        """
+                    )
+                )
+            ).all()
+
+        await _run_alembic(database_url, "head")
+        async with target_engine.connect() as connection:
+            definitions = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, provider, slot_id,
+                               scheduled_local_time, timezone
+                        FROM scheduler_control
+                        ORDER BY scheduler_key
+                        """
+                    )
+                )
+            ).all()
+            assert definitions == [
+                (
+                    "finlab_tw_1430_tw_equity_eod",
+                    "finlab",
+                    "tw_1430",
+                    time(14, 30),
+                    "Asia/Taipei",
+                ),
+                (
+                    "shioaji_tw_pilot_v1",
+                    "shioaji",
+                    "tw_1430",
+                    time(14, 30),
+                    "Asia/Taipei",
+                ),
+                (
+                    "twelve_data_us_common_stocks_daily_v1",
+                    "twelve_data",
+                    "us_0600",
+                    time(6),
+                    "Asia/Taipei",
+                ),
+            ]
+
+            mappings = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, dataset_key
+                        FROM scheduler_dataset
+                        ORDER BY scheduler_key, dataset_key
+                        """
+                    )
+                )
+            ).all()
+            assert mappings == [
+                ("finlab_tw_1430_tw_equity_eod", "tw_equity_eod"),
+                ("shioaji_tw_pilot_v1", "tw_equity_minute"),
+                ("shioaji_tw_pilot_v1", "tw_etf_minute"),
+                ("twelve_data_us_common_stocks_daily_v1", "us_equity_eod"),
+            ]
+
+            registry_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT dataset_key, asset_class, market, frequency, is_active, config
+                        FROM dataset_registry
+                        WHERE dataset_key IN ('us_equity_eod', 'tw_equity_eod')
+                        ORDER BY dataset_key
+                        """
+                    )
+                )
+            ).all()
+            assert registry_rows == [
+                (
+                    "tw_equity_eod",
+                    "equity",
+                    "TW",
+                    "daily",
+                    True,
+                    {"source_format": "finlab_twstock_direct"},
+                ),
+                (
+                    "us_equity_eod",
+                    "equity",
+                    "US",
+                    "daily",
+                    True,
+                    {"source_format": "bloomberg_equity_api"},
+                ),
+            ]
+
+            state_after = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, provider, dataset_keys,
+                               desired_state, observed_state, revision,
+                               last_heartbeat_at, last_cycle_started_at,
+                               last_cycle_completed_at, last_error,
+                               created_at, updated_at
+                        FROM scheduler_control
+                        ORDER BY scheduler_key
+                        """
+                    )
+                )
+            ).all()
+            assert state_after == state_before
+
+        await _run_alembic(database_url, "c1d2e3f4a5b6", command="downgrade")
+        async with target_engine.connect() as connection:
+            legacy_state = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, provider, dataset_keys,
+                               desired_state, observed_state, revision,
+                               last_heartbeat_at, last_cycle_started_at,
+                               last_cycle_completed_at, last_error,
+                               created_at, updated_at
+                        FROM scheduler_control
+                        ORDER BY scheduler_key
+                        """
+                    )
+                )
+            ).all()
+            assert legacy_state == state_before
+            assert (
+                await connection.scalar(text("SELECT to_regclass('public.scheduler_dataset')"))
+                is None
+            )
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'scheduler_control'
+                      AND column_name IN ('slot_id', 'scheduled_local_time', 'timezone')
+                    """
+                    )
+                )
+                == 0
+            )
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM dataset_registry
+                    WHERE dataset_key IN ('us_equity_eod', 'tw_equity_eod')
+                    """
+                    )
+                )
+                == 2
+            )
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        if database_created:
+            async with admin_engine.connect() as connection:
+                await connection.execute(
+                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+                )
+        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio

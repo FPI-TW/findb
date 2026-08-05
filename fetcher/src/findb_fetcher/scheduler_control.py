@@ -16,9 +16,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from datetime import time as clock_time
 from email.utils import parsedate_to_datetime
 from math import isfinite
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -27,6 +29,7 @@ from findb_fetcher.config import FetcherConfig
 _MAX_RESPONSE_BYTES = 64 * 1024
 _MAX_ERROR_CHARS = 512
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+_SCHEDULER_KEY_PATTERN = re.compile(r"^[a-z0-9_]{1,100}$")
 _SCHEDULER_KEYS = frozenset(
     {
         "twelve_data_us_common_stocks_daily_v1",
@@ -62,6 +65,11 @@ class SchedulerControlResponse:
     """Validated desired state returned by one control poll."""
 
     scheduler_key: str
+    provider: str
+    dataset_keys: tuple[str, ...]
+    slot_id: str
+    scheduled_local_time: clock_time
+    timezone: str
     desired_state: _CONTROL_VALUE
     revision: int
     server_time: datetime
@@ -85,8 +93,8 @@ class SchedulerControlClient:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
-        if scheduler_key not in _SCHEDULER_KEYS:
-            raise ValueError("unsupported scheduler control key")
+        if not isinstance(scheduler_key, str) or _SCHEDULER_KEY_PATTERN.fullmatch(scheduler_key) is None:
+            raise ValueError("scheduler control key is invalid")
         self._config = config
         self.scheduler_key = scheduler_key
         self._client = client or httpx.Client(timeout=config.request_timeout_seconds)
@@ -135,11 +143,31 @@ class SchedulerControlClient:
         if desired not in ("running", "stopped"):
             raise SchedulerControlProtocolError("scheduler control desired state was invalid")
         revision = payload.get("revision")
-        if type(revision) is not int or revision < 0:
+        if type(revision) is not int or revision < 1:
             raise SchedulerControlProtocolError("scheduler control revision was invalid")
+        provider = payload.get("provider")
+        if not isinstance(provider, str) or not provider.strip():
+            raise SchedulerControlProtocolError("scheduler control provider was invalid")
+        dataset_keys = _parse_dataset_keys(payload.get("dataset_keys"))
+        slot_id = payload.get("slot_id")
+        if not isinstance(slot_id, str) or not slot_id.strip():
+            raise SchedulerControlProtocolError("scheduler control slot_id was invalid")
+        scheduled_local_time = _parse_local_time(payload.get("scheduled_local_time"))
+        timezone_name = payload.get("timezone")
+        if not isinstance(timezone_name, str) or not timezone_name.strip():
+            raise SchedulerControlProtocolError("scheduler control timezone was invalid")
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise SchedulerControlProtocolError("scheduler control timezone was invalid") from exc
         server_time = _parse_utc_datetime(payload.get("server_time"), "server_time")
         return SchedulerControlResponse(
             scheduler_key=self.scheduler_key,
+            provider=provider,
+            dataset_keys=dataset_keys,
+            slot_id=slot_id,
+            scheduled_local_time=scheduled_local_time,
+            timezone=timezone_name,
             desired_state=desired,
             revision=revision,
             server_time=server_time,
@@ -245,6 +273,7 @@ class SchedulerControlLoop:
         interval_seconds: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        definition_validator: Callable[[SchedulerControlResponse], None] | None = None,
     ) -> None:
         self.client = client
         configured_interval = client._config.scheduler_control_poll_seconds
@@ -253,6 +282,7 @@ class SchedulerControlLoop:
         )
         self._sleep = sleep
         self._now = now
+        self._definition_validator = definition_validator
 
     def run(
         self,
@@ -308,6 +338,17 @@ class SchedulerControlLoop:
                 # No provider/runtime factory has been touched yet.
                 self._wait(stopper)
                 continue
+
+            if self._definition_validator is not None:
+                try:
+                    self._definition_validator(preflight)
+                except Exception as exc:
+                    # A local manifest/provider mapping drift is a safe setup
+                    # failure.  Do not construct a provider or enter a cycle;
+                    # leave a bounded diagnostic for the next control poll.
+                    pending_error = _bound_error(f"definition drift: {type(exc).__name__}: {exc}")
+                    self._wait(stopper)
+                    continue
 
             heartbeat_stop = threading.Event()
             heartbeat = _Heartbeat(
@@ -431,6 +472,56 @@ def _utc_now(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _parse_dataset_keys(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise SchedulerControlProtocolError("scheduler control dataset_keys was invalid")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise SchedulerControlProtocolError("scheduler control dataset_keys was invalid")
+    if len(set(value)) != len(value):
+        raise SchedulerControlProtocolError("scheduler control dataset_keys was duplicated")
+    return tuple(value)
+
+
+def _parse_local_time(value: object) -> clock_time:
+    if not isinstance(value, str):
+        raise SchedulerControlProtocolError("scheduler control scheduled_local_time was invalid")
+    for format_value in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(value, format_value).time()
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            return parsed
+    raise SchedulerControlProtocolError("scheduler control scheduled_local_time was invalid")
+
+
+def validate_scheduler_definition(
+    response: SchedulerControlResponse,
+    *,
+    provider: str,
+    dataset_keys: tuple[str, ...] | list[str],
+    slot_id: str,
+    scheduled_local_time: clock_time | str,
+    timezone_name: str,
+) -> None:
+    """Fail closed when local execution config drifts from DB definition."""
+    expected_time = (
+        _parse_local_time(scheduled_local_time)
+        if isinstance(scheduled_local_time, str)
+        else scheduled_local_time
+    )
+    if response.provider != provider:
+        raise SchedulerControlProtocolError("scheduler control provider drifted")
+    if tuple(sorted(response.dataset_keys)) != tuple(sorted(dataset_keys)):
+        raise SchedulerControlProtocolError("scheduler control dataset mapping drifted")
+    if response.slot_id != slot_id:
+        raise SchedulerControlProtocolError("scheduler control slot drifted")
+    if response.scheduled_local_time != expected_time:
+        raise SchedulerControlProtocolError("scheduler control scheduled time drifted")
+    if response.timezone != timezone_name:
+        raise SchedulerControlProtocolError("scheduler control timezone drifted")
+
+
 def _parse_utc_datetime(value: object, field: str) -> datetime:
     if not isinstance(value, str):
         raise SchedulerControlProtocolError(f"scheduler control {field} was invalid")
@@ -509,4 +600,5 @@ __all__ = [
     "SchedulerControlResponseError",
     "SchedulerControlTransportError",
     "scheduler_control_keys",
+    "validate_scheduler_definition",
 ]

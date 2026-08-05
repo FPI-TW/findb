@@ -11,7 +11,14 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +48,9 @@ class PolicyAction(str, Enum):
 class BaselinePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # A source-specific pilot may opt out of the rolling baseline while still
+    # retaining the same typed policy shape as the global dataset policy.
+    enabled: bool = True
     strategy: Literal["rolling_median"] = "rolling_median"
     scope: Literal["dataset_source_schema"] = "dataset_source_schema"
     window_size: int = Field(default=7, ge=3, le=31)
@@ -124,6 +134,22 @@ class MissingDeliveryPolicy(BaseModel):
         return self
 
 
+class SourcePolicyOverride(BaseModel):
+    """Typed source/provider-scoped delivery policy overrides.
+
+    Every section is optional and inherits the dataset-wide policy when it is
+    omitted.  ``baseline.enabled=False`` is the explicit, bounded way to
+    bypass historical rolling-baseline comparisons for a pilot feed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    baseline: BaselinePolicy | None = None
+    record_count: RecordCountPolicy | None = None
+    freshness: FreshnessPolicy | None = None
+    latest_date: LatestDatePolicy | None = None
+
+
 class FreshnessSchedule(BaseModel):
     """Operator-owned schedule used to group expected delivery feeds."""
 
@@ -161,6 +187,16 @@ class DeliveryExpectation(BaseModel):
     latest_date: LatestDatePolicy | None = None
     missing_delivery: MissingDeliveryPolicy = Field(default_factory=MissingDeliveryPolicy)
     schedule: FreshnessSchedule | None = None
+    source_overrides: dict[str, SourcePolicyOverride] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices(
+            "source_overrides",
+            "provider_overrides",
+            "source_policy_overrides",
+            "provider_policy_overrides",
+        ),
+        serialization_alias="source_overrides",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -181,6 +217,55 @@ class DeliveryExpectation(BaseModel):
         if freshness:
             migrated["freshness"] = freshness
         return migrated
+
+    @field_validator("source_overrides", mode="before")
+    @classmethod
+    def normalize_source_overrides(cls, value: Any) -> Any:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("source_overrides must be an object keyed by source")
+        normalized: dict[str, Any] = {}
+        for source, override in value.items():
+            if not isinstance(source, str):
+                raise ValueError("source_overrides keys must be stable lowercase source names")
+            key = source.strip().lower()
+            if not key or re.fullmatch(SOURCE_NAME_PATTERN, key) is None:
+                raise ValueError("source_overrides keys must be stable lowercase source names")
+            if key in normalized:
+                raise ValueError("source_overrides keys must be unique after normalization")
+            normalized[key] = override
+        return normalized
+
+    @model_validator(mode="after")
+    def normalize_provider_alias(self) -> "DeliveryExpectation":
+        # ``provider_overrides`` is accepted as a backwards-compatible input
+        # alias via ``validation_alias``.  Keep the canonical field stable for
+        # deterministic policy serialization and audit evidence.
+        self.source_overrides = {
+            key.strip().lower(): value for key, value in self.source_overrides.items()
+        }
+        return self
+
+    def for_source(self, source: str | None) -> "DeliveryExpectation":
+        """Return an effective policy with a source-scoped override applied."""
+        key = source.strip().lower() if isinstance(source, str) else ""
+        override = self.source_overrides.get(key)
+        if override is None:
+            return self
+        values = self.model_dump(mode="python", by_alias=False)
+        for section in ("baseline", "record_count", "freshness", "latest_date"):
+            value = getattr(override, section)
+            if value is not None:
+                values[section] = value.model_dump(mode="python")
+        # Preserve the source map in the shaped result; this is useful for
+        # audit serialization while evaluation itself only consumes sections.
+        return type(self).model_validate(values)
+
+    @property
+    def provider_overrides(self) -> dict[str, SourcePolicyOverride]:
+        """Compatibility name for callers that call providers instead of sources."""
+        return self.source_overrides
 
 
 class PolicyViolation(BaseModel):
@@ -345,6 +430,11 @@ async def evaluate_delivery_policy(
             evaluated_at=evaluated_at,
         )
 
+    # Apply a stable source/provider-specific override without mutating the
+    # registry object.  The global policy remains the default for every source
+    # that has no explicit override.
+    expectation = expectation.for_source(request.source)
+
     violations: list[PolicyViolation] = []
     baseline_status: Literal["disabled", "cold_start", "active", "not_applicable"] = (
         "not_applicable"
@@ -355,12 +445,27 @@ async def evaluate_delivery_policy(
 
     if mode == DeliveryMode.FULL_SNAPSHOT:
         count_policy = expectation.record_count
+        effective_threshold = count_policy.minimum_record_count
         if count_policy.action == PolicyAction.DISABLED:
             baseline_status = "disabled"
+        elif not expectation.baseline.enabled:
+            # A pilot can bypass historical rolling comparisons while keeping
+            # its explicit absolute minimum record count.
+            baseline_status = "disabled"
+            observed_count = len(request.payload.data)
+            if observed_count < effective_threshold:
+                item = _violation(
+                    code="BATCH_RECORD_COUNT_DROP",
+                    action=count_policy.action,
+                    reason="absolute_minimum",
+                    observed={"record_count": observed_count},
+                    expected={"minimum_record_count": effective_threshold},
+                )
+                if item:
+                    violations.append(item)
         else:
             baseline_runs = await _baseline_runs(db, request, expectation.baseline)
             observed_count = len(request.payload.data)
-            effective_threshold = count_policy.minimum_record_count
             if len(baseline_runs) >= expectation.baseline.minimum_history:
                 baseline_status = "active"
                 baseline_value = float(median([run.raw_records for run in baseline_runs]))

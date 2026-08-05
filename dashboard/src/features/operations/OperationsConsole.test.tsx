@@ -11,6 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { toast, Toaster } from "../../components/ui/toast"
 import type {
+  DashboardResponse,
+  DQIssue,
+  MarketFreshness,
   Scheduler,
   SchedulerMutationResponse,
   SchedulersResponse,
@@ -34,7 +37,13 @@ vi.mock("@tanstack/react-start", () => ({
 
 vi.mock("../../lib/admin.functions", () => mocks)
 
-import { SchedulerPanel } from "./OperationsConsole"
+import {
+  IngestionOverviewPanel,
+  OperationsContext,
+  QualityPage,
+  SchedulerPanel,
+  type OperationsContextValue,
+} from "./OperationsConsole"
 
 const timestamp = "2026-08-04T02:00:00Z"
 
@@ -43,6 +52,9 @@ function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
     scheduler_key: "twelve_data_us_common_stocks_daily_v1",
     provider: "twelve_data",
     dataset_keys: ["us_equity_eod"],
+    slot_id: "us_0600",
+    scheduled_local_time: "06:00:00",
+    timezone: "America/New_York",
     desired_state: "stopped",
     observed_state: "stopped",
     revision: 1,
@@ -62,6 +74,167 @@ function panelResult(rows: Scheduler[]): {
   data: SchedulersResponse
 } {
   return { ok: true, data: { success: true, data: rows } }
+}
+
+function makeFreshness(
+  overrides: Partial<MarketFreshness> = {}
+): MarketFreshness {
+  return {
+    market: "TW",
+    scheduler_key: "finlab_tw_1430_tw_equity_eod",
+    provider: "finlab",
+    dataset_keys: ["tw_equity_eod"],
+    slot_id: "tw_1430",
+    scheduled_local_time: "14:30:00",
+    timezone: "Asia/Taipei",
+    desired_state: "running",
+    observed_state: "running",
+    revision: 4,
+    last_heartbeat_at: timestamp,
+    last_cycle_started_at: timestamp,
+    last_cycle_completed_at: timestamp,
+    last_error: null,
+    heartbeat_age_seconds: 5,
+    configuration_status: "ready",
+    configuration_errors: [],
+    status: "fresh",
+    expected_data_date: "2026-08-04",
+    coverage_data_date: "2026-08-04",
+    last_fetched_at: timestamp,
+    last_successful_update_at: timestamp,
+    last_complete_at: timestamp,
+    next_scheduled_at: timestamp,
+    feed_count: 1,
+    fresh_feed_count: 1,
+    late_feed_count: 0,
+    feeds: [
+      {
+        dataset_key: "tw_equity_eod",
+        source: "finlab",
+        schema_id: "market_eod",
+        schema_version: 1,
+        expected_data_date: "2026-08-04",
+        latest_successful_data_date: "2026-08-04",
+        last_fetched_at: timestamp,
+        last_completed_at: timestamp,
+        last_run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+        total_records: 100,
+        success_records: 100,
+        failed_records: 0,
+        policy_outcome: "pass",
+        open_missing_delivery_alert: false,
+        last_failure_code: null,
+        configuration_error: null,
+        status: "fresh",
+      },
+    ],
+    ...overrides,
+  }
+}
+
+function freshnessResult(rows: MarketFreshness[]) {
+  return {
+    ok: true as const,
+    data: { success: true as const, data: rows },
+  }
+}
+
+function qualityIssue(): DQIssue {
+  return {
+    id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+    run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe98",
+    instrument_id: null,
+    trade_date: "2026-08-04",
+    issue_type: "price_gap",
+    severity: "error",
+    description: "close differs from policy",
+    source: "source-api",
+    provider: "finlab",
+    dataset_key: "tw_equity_eod",
+    schema_id: "market_eod",
+    schema_version: 1,
+    raw_payload_id: "019565d2-f838-7c91-85c1-72d4d7bbbe99",
+    raw_available: true,
+    fetched_at: "2026-08-04T02:00:00Z",
+    request_key: "req-bounded-1",
+    batch_data_date: "2026-08-04",
+    policy_detail: {
+      code: "close_gap",
+      action: "quarantine",
+      reason: "provider close differs from expected close",
+      observed: 101,
+      expected: 100,
+      violations: [
+        {
+          code: "close_gap",
+          action: "quarantine",
+          reason: "close differs",
+          observed: 101,
+          expected: 100,
+          secret: "raw-payload-secret-must-not-render",
+        },
+        {
+          code: "volume_gap",
+          action: "review",
+          reason: "volume differs",
+          observed: 8,
+          expected: 10,
+        },
+      ],
+      violation_count: 12,
+      truncated: true,
+      raw_payload: { secret: "raw-payload-secret-2" },
+    },
+    resolved: false,
+    created_at: "2026-08-04T02:01:00Z",
+  }
+}
+
+function qualityDashboardData(issue: DQIssue): DashboardResponse {
+  return {
+    fetchedAt: timestamp,
+    freshness: { ok: false, error: "fixture" },
+    queue: { ok: false, error: "fixture" },
+    schedulers: { ok: false, error: "fixture" },
+    deliveries: { ok: false, error: "fixture" },
+    issues: {
+      ok: true,
+      data: {
+        data: [issue],
+        pagination: {
+          page: 1,
+          page_size: 25,
+          total_records: 1,
+          total_pages: 1,
+        },
+      },
+    },
+    corrections: { ok: false, error: "fixture" },
+    rawPayloads: { ok: false, error: "fixture" },
+  }
+}
+
+function qualityContextValue(issue: DQIssue): OperationsContextValue {
+  return {
+    data: qualityDashboardData(issue),
+    error: "",
+    freshnessError: "",
+    schedulersError: "",
+    pending: false,
+    initialLoading: false,
+    role: "viewer",
+    applyScheduler: vi.fn(),
+    filters: {
+      datasetKey: "",
+      runId: "",
+      dateFrom: "",
+      dateTo: "",
+      page: 1,
+      pageSize: 25,
+    },
+    setFilters: vi.fn(),
+    refresh: vi.fn().mockResolvedValue(undefined),
+  }
 }
 
 function renderPanel(
@@ -202,5 +375,108 @@ describe("scheduler operations panel", () => {
     expect(screen.getByText("r1")).toBeInTheDocument()
     expect(applyScheduler).not.toHaveBeenCalled()
     expect(screen.getByText("排程狀態更新失敗")).toBeInTheDocument()
+  })
+})
+
+describe("unified ingestion overview", () => {
+  it("groups one card per scheduler and keeps schedule/fetch/normalization timestamps visible", () => {
+    render(
+      <IngestionOverviewPanel
+        freshnessResult={freshnessResult([
+          makeFreshness(),
+          makeFreshness({
+            scheduler_key: "finlab_tw_stopped",
+            desired_state: "stopped",
+            observed_state: "stopped",
+            status: "fresh",
+          }),
+          makeFreshness({
+            scheduler_key: "finlab_tw_stale",
+            heartbeat_age_seconds: 180,
+          }),
+          makeFreshness({
+            scheduler_key: "finlab_tw_delayed",
+            last_fetched_at: "2026-08-04T03:00:00Z",
+            last_complete_at: "2026-08-04T02:00:00Z",
+          }),
+          makeFreshness({
+            scheduler_key: "finlab_tw_partial",
+            status: "partial",
+            last_fetched_at: null,
+          }),
+          makeFreshness({
+            scheduler_key: "finlab_tw_never",
+            status: "never_received",
+            last_fetched_at: null,
+            last_successful_update_at: null,
+            last_complete_at: null,
+          }),
+          makeFreshness({
+            scheduler_key: "finlab_tw_config_error",
+            configuration_status: "error",
+            configuration_errors: ["schema_id_missing"],
+          }),
+        ])}
+        schedulersResult={null}
+        loading={false}
+        pending={false}
+        freshnessError=""
+        schedulersError=""
+        role="viewer"
+      />
+    )
+
+    expect(
+      screen.getAllByText("每日排程 14:30 · Asia/Taipei · Slot tw_1430")
+    ).toHaveLength(7)
+    expect(screen.getAllByText("Provider fetched")).toHaveLength(7)
+    expect(screen.getAllByText("Normalization completed")).toHaveLength(7)
+    expect(screen.getAllByText("已更新").length).toBeGreaterThan(0)
+    expect(screen.getByText("已停止")).toBeInTheDocument()
+    expect(screen.getByText("Heartbeat 過期")).toBeInTheDocument()
+    expect(screen.getByText("已抓取，標準化延遲")).toBeInTheDocument()
+    expect(screen.getByText("部分完成")).toBeInTheDocument()
+    expect(screen.getByText("尚未抓取")).toBeInTheDocument()
+    expect(screen.getByText("設定錯誤")).toBeInTheDocument()
+    expect(screen.getByText("schema_id_missing")).toBeInTheDocument()
+  })
+})
+
+describe("DQ quality provenance", () => {
+  it("renders bounded policy provenance and raw reference without raw payload content", () => {
+    const issue = qualityIssue()
+    render(
+      <OperationsContext.Provider value={qualityContextValue(issue)}>
+        <QualityPage />
+      </OperationsContext.Provider>
+    )
+
+    expect(
+      screen.getByText(/Provider：finlab · Source：source-api/)
+    ).toBeInTheDocument()
+    expect(screen.getByText("Dataset：tw_equity_eod")).toBeInTheDocument()
+    expect(
+      screen.getByText("Run：019565d2-f838-7c91-85c1-72d4d7bbbe98")
+    ).toBeInTheDocument()
+    expect(screen.getByText("Schema：market_eod.v1")).toBeInTheDocument()
+    expect(screen.getByText("批次資料日：2026-08-04")).toBeInTheDocument()
+    expect(screen.getByText("Raw：可取得")).toBeInTheDocument()
+    expect(
+      screen.getByText("Raw payload ID：019565d2-f838-7c91-85c1-72d4d7bbbe99")
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Fetched：/)).toBeInTheDocument()
+    expect(screen.getByText(/code：close_gap/)).toBeInTheDocument()
+    expect(screen.getByText(/action：quarantine/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/reason：provider close differs from expected close/)
+    ).toBeInTheDocument()
+    expect(screen.getByText(/observed：101/)).toBeInTheDocument()
+    expect(screen.getByText(/expected：100/)).toBeInTheDocument()
+    expect(screen.getByText(/12 個 policy violation/)).toBeInTheDocument()
+    expect(screen.getByText(/truncated／已截斷/)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/raw-payload-secret-must-not-render/)
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/raw-payload-secret-2/)).not.toBeInTheDocument()
   })
 })

@@ -1,6 +1,6 @@
 """Source API 使用的 Pydantic schema。"""
 
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any, Literal, Optional
 from uuid import UUID
 
@@ -247,6 +247,11 @@ class SchedulerControlPollRequest(BaseModel):
 class SchedulerControlPollResponse(BaseModel):
     success: Literal[True] = True
     scheduler_key: str
+    provider: str
+    dataset_keys: list[str]
+    slot_id: str
+    scheduled_local_time: time
+    timezone: str
     desired_state: Literal["running", "stopped"]
     revision: int
     server_time: datetime

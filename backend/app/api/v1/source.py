@@ -57,6 +57,7 @@ from app.services.scheduler_control import (
     SchedulerControlNotFoundError,
     SchedulerControlScopeError,
     poll_scheduler_control,
+    scheduler_dataset_keys,
 )
 from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
@@ -108,6 +109,11 @@ async def poll_scheduler(
 
     return SchedulerControlPollResponse(
         scheduler_key=row.scheduler_key,
+        provider=row.provider,
+        dataset_keys=scheduler_dataset_keys(row),
+        slot_id=row.slot_id,
+        scheduled_local_time=row.scheduled_local_time,
+        timezone=row.timezone,
         desired_state=cast(Literal["running", "stopped"], row.desired_state),
         revision=row.revision,
         server_time=server_time,

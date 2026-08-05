@@ -4,6 +4,7 @@ import {
   auditFiltersSchema,
   buildAuditSearch,
   dashboardRequestSchema,
+  dqIssuesSchema,
   schedulerMutationRequestSchema,
   schedulerSchema,
   schedulersResponseSchema,
@@ -53,6 +54,9 @@ describe("admin API request helpers", () => {
       scheduler_key: "twelve_data_us_common_stocks_daily_v1",
       provider: "twelve_data",
       dataset_keys: ["us_equity_eod"],
+      slot_id: "us_0600",
+      scheduled_local_time: "06:00:00",
+      timezone: "America/New_York",
       desired_state: "running",
       observed_state: "running",
       revision: 2,
@@ -81,5 +85,53 @@ describe("admin API request helpers", () => {
         expectedRevision: scheduler.revision,
       }).success
     ).toBe(false)
+  })
+
+  it("keeps DQ provenance and bounded policy details without raw payloads", () => {
+    const parsed = dqIssuesSchema.parse({
+      data: [
+        {
+          id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+          run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe98",
+          instrument_id: null,
+          trade_date: "2026-08-04",
+          issue_type: "price_gap",
+          severity: "warning",
+          description: "close differs from provider policy",
+          provider: "finlab",
+          source: "finlab",
+          dataset_key: "tw_equity_eod",
+          schema_id: "market_eod",
+          schema_version: 1,
+          raw_payload_id: null,
+          raw_available: true,
+          fetched_at: "2026-08-04T02:00:00Z",
+          request_key: "request-1",
+          batch_data_date: "2026-08-04",
+          policy_detail: {
+            code: "close_gap",
+            action: "review",
+            violations: [{ observed: 101, expected: 100 }],
+            violation_count: 1,
+            truncated: false,
+          },
+          raw_data: { secret: "must never cross the API boundary" },
+          resolved: false,
+          created_at: "2026-08-04T02:01:00Z",
+        },
+      ],
+      pagination: {
+        page: 1,
+        page_size: 25,
+        total_records: 1,
+        total_pages: 1,
+      },
+    })
+
+    const issue = parsed.data[0]
+    expect(issue?.provider).toBe("finlab")
+    expect(issue?.dataset_key).toBe("tw_equity_eod")
+    expect(issue?.policy_detail?.code).toBe("close_gap")
+    expect(issue).not.toHaveProperty("raw_data")
   })
 })

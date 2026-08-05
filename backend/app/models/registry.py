@@ -2,7 +2,7 @@
 System registry and tracking models.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -63,6 +64,7 @@ class DatasetRegistry(Base):
 
     # Relationships
     ingestion_runs: Mapped[list["IngestionRun"]] = relationship(back_populates="dataset")
+    scheduler_datasets: Mapped[list["SchedulerDataset"]] = relationship(back_populates="dataset")
 
 
 class SchedulerControl(Base):
@@ -77,6 +79,14 @@ class SchedulerControl(Base):
         CheckConstraint(
             "length(trim(provider)) > 0",
             name="provider_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(slot_id)) > 0",
+            name="slot_id_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(timezone)) > 0",
+            name="timezone_nonempty",
         ),
         CheckConstraint(
             "jsonb_typeof(dataset_keys) = 'array' AND jsonb_array_length(dataset_keys) > 0",
@@ -101,6 +111,12 @@ class SchedulerControl(Base):
 
     scheduler_key: Mapped[str] = mapped_column(String(100), primary_key=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    # ``slot_id``, ``scheduled_local_time`` and ``timezone`` are the durable
+    # scheduler definition.  The Python defaults keep legacy ORM fixtures
+    # insertable while the definition migration backfills production rows.
+    slot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="legacy")
+    scheduled_local_time: Mapped[time] = mapped_column(Time(), nullable=False, default=time(0, 0))
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     dataset_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     desired_state: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
     observed_state: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
@@ -119,6 +135,37 @@ class SchedulerControl(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+    scheduler_datasets: Mapped[list["SchedulerDataset"]] = relationship(
+        back_populates="scheduler",
+        cascade="all, delete-orphan",
+        order_by="SchedulerDataset.dataset_key",
+    )
+
+
+class SchedulerDataset(Base):
+    """Normalized scheduler-to-dataset scope mapping.
+
+    ``SchedulerControl.dataset_keys`` remains as a compatibility projection for
+    older clients.  New scope checks and scheduler definition consumers use
+    this association table so a stale JSON projection cannot widen authority.
+    """
+
+    __tablename__ = "scheduler_dataset"
+    __table_args__ = (Index("idx_scheduler_dataset_dataset", "dataset_key"),)
+
+    scheduler_key: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("scheduler_control.scheduler_key", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dataset_key: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+    scheduler: Mapped["SchedulerControl"] = relationship(back_populates="scheduler_datasets")
+    dataset: Mapped["DatasetRegistry"] = relationship(back_populates="scheduler_datasets")
 
 
 class TWMinuteUniverseRelease(Base):

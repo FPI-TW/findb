@@ -54,7 +54,9 @@ import {
   mergeDashboardRefresh,
   type DashboardRequest,
   type DashboardResponse,
+  type DQIssue,
   type FreshnessStatus,
+  type MarketFreshness,
   type MarketFreshnessResponse,
   type PanelResult,
   type Scheduler,
@@ -77,7 +79,7 @@ const EMPTY_FILTERS: DashboardRequest["audit"] = {
   pageSize: 25,
 }
 
-type OperationsContextValue = {
+export type OperationsContextValue = {
   data: DashboardResponse | null
   error: string
   freshnessError: string
@@ -91,7 +93,9 @@ type OperationsContextValue = {
   refresh: (filters: DashboardRequest["audit"]) => Promise<void>
 }
 
-const OperationsContext = createContext<OperationsContextValue | null>(null)
+export const OperationsContext = createContext<OperationsContextValue | null>(
+  null
+)
 
 function useOperations() {
   const context = useContext(OperationsContext)
@@ -158,7 +162,7 @@ function schedulerStateVariant(value: string) {
   return "warning" as const
 }
 
-function schedulerIsStale(scheduler: Scheduler) {
+function schedulerIsStale(scheduler: Pick<Scheduler, "heartbeat_age_seconds">) {
   return (
     scheduler.heartbeat_age_seconds === null ||
     scheduler.heartbeat_age_seconds > 90
@@ -410,10 +414,10 @@ export default function OperationsLayout({
   filtersRef.current = filters
   const applyScheduler = useCallback((response: SchedulerMutationResponse) => {
     const current = dataRef.current
-    if (!current || !current.schedulers.ok) return
-    const next = {
-      ...current,
-      schedulers: {
+    if (!current) return
+    const next: DashboardResponse = { ...current }
+    if (current.schedulers.ok) {
+      next.schedulers = {
         ok: true as const,
         data: {
           ...current.schedulers.data,
@@ -423,7 +427,23 @@ export default function OperationsLayout({
               : scheduler
           ),
         },
-      },
+      }
+    }
+    // Market freshness is the unified overview source.  Keep the card in
+    // sync immediately after a successful owner mutation rather than waiting
+    // for the next poll; feed freshness fields remain untouched.
+    if (current.freshness.ok) {
+      next.freshness = {
+        ok: true as const,
+        data: {
+          ...current.freshness.data,
+          data: current.freshness.data.data.map(summary =>
+            summary.scheduler_key === response.data.scheduler_key
+              ? { ...summary, ...response.data }
+              : summary
+          ),
+        },
+      }
     }
     dataRef.current = next
     setData(next)
@@ -673,11 +693,7 @@ function freshnessVariant(status: FreshnessStatus) {
   return "destructive" as const
 }
 
-function FeedDetails({
-  feeds,
-}: {
-  feeds: MarketFreshnessResponse["data"][number]["feeds"]
-}) {
+function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
   return (
     <div className="mt-3 grid gap-2">
       {feeds.map(feed => (
@@ -694,7 +710,8 @@ function FeedDetails({
                 {feed.dataset_key}
               </strong>
               <span className="text-muted">
-                {feed.source} · {feed.schema_id}.v{feed.schema_version}
+                {feed.source} · {feed.schema_id ?? "schema 未設定"}
+                {feed.schema_version ? `.v${feed.schema_version}` : ""}
               </span>
             </div>
             <p className="mt-2 mb-0 text-muted">
@@ -703,9 +720,21 @@ function FeedDetails({
               {feed.success_records ?? "—"} / 總數 {feed.total_records ?? "—"} ·
               policy {feed.policy_outcome ?? "—"}
             </p>
+            <p className="mt-1 mb-0 text-muted">
+              Provider fetched：
+              <DateWithRelative value={feed.last_fetched_at} />
+              <span className="mx-1">·</span>
+              Normalization completed：
+              <DateWithRelative value={feed.last_completed_at} />
+            </p>
             {feed.last_failure_code && (
               <p className="mt-1 mb-0 text-danger">
                 最後失敗：{feed.last_failure_code}
+              </p>
+            )}
+            {feed.configuration_error && (
+              <p className="mt-1 mb-0 text-danger">
+                設定錯誤：{feed.configuration_error}
               </p>
             )}
           </div>
@@ -755,7 +784,8 @@ class MarketFreshnessErrorBoundary extends Component<
   }
 }
 
-function MarketFreshnessPanel({
+/** @deprecated The overview uses IngestionOverviewPanel; kept for compatibility. */
+export function MarketFreshnessPanel({
   result,
   loading,
   refreshError,
@@ -892,6 +922,462 @@ function MarketFreshnessPanel({
           ))}
       </Panel>
     </div>
+  )
+}
+
+function formatScheduledTime(value: string) {
+  const [hour, minute] = value.split(":")
+  if (!hour || !minute) return value
+  return `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`
+}
+
+type SchedulerCardControl = Pick<
+  Scheduler,
+  | "scheduler_key"
+  | "provider"
+  | "dataset_keys"
+  | "slot_id"
+  | "scheduled_local_time"
+  | "timezone"
+  | "desired_state"
+  | "observed_state"
+  | "revision"
+  | "last_heartbeat_at"
+  | "last_cycle_started_at"
+  | "last_cycle_completed_at"
+  | "last_error"
+  | "heartbeat_age_seconds"
+>
+
+type IngestionCard = {
+  control: SchedulerCardControl
+  freshness: MarketFreshness | null
+}
+
+function controlFromFreshness(summary: MarketFreshness): SchedulerCardControl {
+  return {
+    scheduler_key:
+      summary.scheduler_key || `legacy:${summary.market}:${summary.slot_id}`,
+    provider: summary.provider || summary.feeds[0]?.source || "—",
+    dataset_keys: summary.dataset_keys,
+    slot_id: summary.slot_id,
+    scheduled_local_time: summary.scheduled_local_time,
+    timezone: summary.timezone,
+    desired_state: summary.desired_state,
+    observed_state: summary.observed_state,
+    revision: summary.revision,
+    last_heartbeat_at: summary.last_heartbeat_at,
+    last_cycle_started_at: summary.last_cycle_started_at,
+    last_cycle_completed_at: summary.last_cycle_completed_at,
+    last_error: summary.last_error,
+    heartbeat_age_seconds: summary.heartbeat_age_seconds,
+  }
+}
+
+function buildIngestionCards(
+  freshnessResult: PanelResult<MarketFreshnessResponse> | null,
+  schedulersResult: PanelResult<SchedulersResponse> | null
+): IngestionCard[] {
+  const freshnessRows = freshnessResult?.ok ? freshnessResult.data.data : []
+  const schedulerRows = schedulersResult?.ok ? schedulersResult.data.data : []
+  const schedulerByKey = new Map(
+    schedulerRows.map(row => [row.scheduler_key, row] as const)
+  )
+  const cards = new Map<string, IngestionCard>()
+
+  freshnessRows.forEach(summary => {
+    const control =
+      schedulerByKey.get(summary.scheduler_key) ?? controlFromFreshness(summary)
+    cards.set(control.scheduler_key, { control, freshness: summary })
+  })
+  schedulerRows.forEach(control => {
+    if (!cards.has(control.scheduler_key)) {
+      cards.set(control.scheduler_key, { control, freshness: null })
+    }
+  })
+  return [...cards.values()].sort((left, right) =>
+    left.control.scheduler_key.localeCompare(right.control.scheduler_key)
+  )
+}
+
+type IngestionCardStatus =
+  | "configuration_error"
+  | "stopped"
+  | "stale_heartbeat"
+  | "never_received"
+  | "normalization_delay"
+  | FreshnessStatus
+
+const INGESTION_STATUS_LABELS: Record<IngestionCardStatus, string> = {
+  configuration_error: "設定錯誤",
+  stopped: "已停止",
+  stale_heartbeat: "Heartbeat 過期",
+  never_received: "尚未抓取",
+  normalization_delay: "已抓取，標準化延遲",
+  not_due: "尚未到期",
+  fresh: "已更新",
+  partial: "部分完成",
+  late: "延遲",
+  failed: "失敗",
+}
+
+function ingestionStatusVariant(status: IngestionCardStatus) {
+  if (status === "fresh") return "default" as const
+  if (status === "stopped" || status === "not_due") return "secondary" as const
+  if (
+    status === "partial" ||
+    status === "late" ||
+    status === "stale_heartbeat" ||
+    status === "normalization_delay"
+  ) {
+    return "warning" as const
+  }
+  return "destructive" as const
+}
+
+function isNormalizationDelayed(freshness: MarketFreshness | null) {
+  if (!freshness?.last_fetched_at) return false
+  const normalizationCompleted =
+    freshness.last_complete_at ?? freshness.last_successful_update_at
+  if (!normalizationCompleted) return true
+  return (
+    new Date(freshness.last_fetched_at).getTime() >
+    new Date(normalizationCompleted).getTime()
+  )
+}
+
+function ingestionCardStatus(card: IngestionCard): IngestionCardStatus {
+  const { control, freshness } = card
+  if (
+    freshness?.configuration_status === "error" ||
+    (freshness?.configuration_errors.length ?? 0) > 0
+  ) {
+    return "configuration_error"
+  }
+  if (
+    control.desired_state === "stopped" ||
+    control.observed_state === "stopped"
+  ) {
+    return "stopped"
+  }
+  if (schedulerIsStale(control)) return "stale_heartbeat"
+  if (freshness?.status === "never_received") return "never_received"
+  if (isNormalizationDelayed(freshness)) return "normalization_delay"
+  return freshness?.status ?? "not_due"
+}
+
+type IngestionOverviewData = { cards: IngestionCard[] }
+
+function buildIngestionOverviewResult(
+  freshnessResult: PanelResult<MarketFreshnessResponse> | null,
+  schedulersResult: PanelResult<SchedulersResponse> | null
+): PanelResult<IngestionOverviewData> | null {
+  if (!freshnessResult && !schedulersResult) return null
+  if (freshnessResult?.ok || schedulersResult?.ok) {
+    return {
+      ok: true,
+      data: { cards: buildIngestionCards(freshnessResult, schedulersResult) },
+    }
+  }
+  return {
+    ok: false,
+    error:
+      freshnessResult?.error ??
+      schedulersResult?.error ??
+      "暫時無法顯示導入概況",
+  }
+}
+
+export function IngestionOverviewPanel({
+  freshnessResult,
+  schedulersResult,
+  loading,
+  pending,
+  freshnessError,
+  schedulersError,
+  role,
+  applyScheduler: applySchedulerProp,
+}: {
+  freshnessResult: PanelResult<MarketFreshnessResponse> | null
+  schedulersResult: PanelResult<SchedulersResponse> | null
+  loading: boolean
+  pending: boolean
+  freshnessError: string
+  schedulersError: string
+  role: AdminRole
+  applyScheduler?: (response: SchedulerMutationResponse) => void
+}) {
+  const update = useServerFn(updateScheduler)
+  const context = useContext(OperationsContext)
+  const applyScheduler = applySchedulerProp ?? context?.applyScheduler
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
+  const result = buildIngestionOverviewResult(freshnessResult, schedulersResult)
+  const cards = result?.ok ? result.data.cards : []
+
+  async function toggleScheduler(control: SchedulerCardControl) {
+    if (pendingKeys.has(control.scheduler_key)) return
+    const desiredState: SchedulerDesiredState =
+      control.desired_state === "running" ? "stopped" : "running"
+    setPendingKeys(current => {
+      const next = new Set(current)
+      next.add(control.scheduler_key)
+      return next
+    })
+    setActionErrors(current => {
+      const next = { ...current }
+      delete next[control.scheduler_key]
+      return next
+    })
+    try {
+      const response = await update({
+        data: {
+          schedulerKey: control.scheduler_key,
+          desiredState,
+          expectedRevision: control.revision,
+        },
+      })
+      applyScheduler?.(response)
+      toast.success(
+        `${control.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
+      )
+    } catch (reason) {
+      const message = schedulerErrorMessage(reason)
+      setActionErrors(current => ({
+        ...current,
+        [control.scheduler_key]: message,
+      }))
+      toast.error("排程狀態更新失敗", { description: message })
+    } finally {
+      setPendingKeys(current => {
+        const next = new Set(current)
+        next.delete(control.scheduler_key)
+        return next
+      })
+    }
+  }
+
+  return (
+    <Panel
+      eyebrow="Ingestion overview"
+      title="導入與排程"
+      icon={<CalendarClock size={19} />}
+      result={result}
+      loading={loading}
+    >
+      {(freshnessError || schedulersError) && result?.ok && (
+        <Alert className="mb-4" variant="warning" role="status">
+          <AlertTriangle size={18} />
+          <AlertTitle>部分導入狀態暫時無法重新取得</AlertTitle>
+          <AlertDescription>
+            目前保留上次成功資料：
+            {[freshnessError, schedulersError].filter(Boolean).join("；")}
+          </AlertDescription>
+        </Alert>
+      )}
+      {pending && !loading && (
+        <p className="mb-4 text-xs text-muted" role="status" aria-live="polite">
+          正在更新導入狀態…目前資料仍可操作。
+        </p>
+      )}
+      {result?.ok &&
+        (cards.length === 0 ? (
+          <Alert variant="warning" role="status">
+            <AlertTriangle size={18} />
+            <AlertDescription>目前沒有已註冊的資料抓取排程。</AlertDescription>
+          </Alert>
+        ) : (
+          <div className="grid gap-3">
+            {cards.map(card => {
+              const { control, freshness } = card
+              const status = ingestionCardStatus(card)
+              const pendingAction = pendingKeys.has(control.scheduler_key)
+              const nextState =
+                control.desired_state === "running" ? "stopped" : "running"
+              const normalizationCompleted =
+                freshness?.last_complete_at ??
+                freshness?.last_successful_update_at ??
+                null
+              const canToggle = !control.scheduler_key.startsWith("legacy:")
+              return (
+                <article
+                  className="grid gap-4 rounded-xl border border-line bg-surface p-4"
+                  key={control.scheduler_key}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="m-0 font-mono text-sm font-bold wrap-anywhere">
+                        {control.scheduler_key}
+                      </h3>
+                      <p className="mt-1 mb-0 text-xs text-muted">
+                        Provider：{control.provider} · Dataset：
+                        {control.dataset_keys.join(", ") || "—"}
+                      </p>
+                      <p className="mt-1 mb-0 text-xs text-muted">
+                        每日排程{" "}
+                        {formatScheduledTime(control.scheduled_local_time)} ·{" "}
+                        {control.timezone} · Slot {control.slot_id}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      <Badge variant={ingestionStatusVariant(status)}>
+                        {INGESTION_STATUS_LABELS[status]}
+                      </Badge>
+                      <Badge
+                        variant={schedulerStateVariant(control.desired_state)}
+                      >
+                        期望：{formatSchedulerState(control.desired_state)}
+                      </Badge>
+                      <Badge
+                        variant={schedulerStateVariant(control.observed_state)}
+                      >
+                        實際：{formatSchedulerState(control.observed_state)}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <dt className="text-xs text-muted">Provider fetched</dt>
+                      <dd className="mt-0.5">
+                        <DateWithRelative
+                          value={freshness?.last_fetched_at ?? null}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">
+                        Normalization completed
+                      </dt>
+                      <dd className="mt-0.5">
+                        <DateWithRelative value={normalizationCompleted} />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">Heartbeat</dt>
+                      <dd className="mt-0.5">
+                        {formatAge(control.heartbeat_age_seconds)}
+                        <span className="mx-1 text-muted">·</span>
+                        <DateWithRelative value={control.last_heartbeat_at} />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">Revision</dt>
+                      <dd className="mt-0.5 font-mono">r{control.revision}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">最近 cycle 開始</dt>
+                      <dd className="mt-0.5">
+                        <DateWithRelative
+                          value={control.last_cycle_started_at}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted">最近 cycle 完成</dt>
+                      <dd className="mt-0.5">
+                        <DateWithRelative
+                          value={control.last_cycle_completed_at}
+                        />
+                      </dd>
+                    </div>
+                    {freshness && (
+                      <>
+                        <div>
+                          <dt className="text-xs text-muted">Feed 完成</dt>
+                          <dd className="mt-0.5 font-mono">
+                            {freshness.fresh_feed_count} /{" "}
+                            {freshness.feed_count}
+                            {freshness.late_feed_count > 0 &&
+                              ` · ${freshness.late_feed_count} 延遲`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-muted">
+                            涵蓋日 / 預期日
+                          </dt>
+                          <dd className="mt-0.5 font-mono">
+                            {freshness.coverage_data_date ?? "—"} /{" "}
+                            {freshness.expected_data_date ?? "—"}
+                          </dd>
+                        </div>
+                      </>
+                    )}
+                  </dl>
+
+                  {freshness?.configuration_errors.length ? (
+                    <Alert variant="warning" role="status">
+                      <TriangleAlert size={17} />
+                      <AlertDescription>
+                        <span className="font-semibold">設定錯誤：</span>
+                        {freshness.configuration_errors.slice(0, 4).join("；")}
+                        {freshness.configuration_errors.length > 4 && "；…"}
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                  {control.last_error && (
+                    <Alert variant="warning" role="status">
+                      <TriangleAlert size={17} />
+                      <AlertDescription>
+                        <span className="font-semibold">最近錯誤：</span>
+                        {control.last_error}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {freshness && (
+                    <details className="rounded-lg bg-surface-soft px-3 py-2">
+                      <summary className="cursor-pointer text-xs font-bold text-accent">
+                        Feed 明細（{freshness.feeds.length}）
+                      </summary>
+                      <FeedDetails feeds={freshness.feeds} />
+                    </details>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+                    {role === "owner" && canToggle ? (
+                      <Button
+                        type="button"
+                        variant={
+                          control.desired_state === "running"
+                            ? "destructive"
+                            : "default"
+                        }
+                        onClick={() => void toggleScheduler(control)}
+                        disabled={pendingAction}
+                        aria-busy={pendingAction}
+                        aria-label={`${control.provider} 設為${nextState === "running" ? "執行中" : "已停止"}`}
+                      >
+                        <Power aria-hidden="true" />
+                        {pendingAction
+                          ? "更新中…"
+                          : nextState === "running"
+                            ? "啟用排程"
+                            : "停止排程"}
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted" role="note">
+                        {role === "owner"
+                          ? "此舊版排程僅供檢視。"
+                          : "唯讀：只有 owner 可以變更排程狀態。"}
+                      </span>
+                    )}
+                    {actionErrors[control.scheduler_key] && (
+                      <p
+                        className="m-0 text-xs text-danger"
+                        role="alert"
+                        aria-live="polite"
+                      >
+                        {actionErrors[control.scheduler_key]}
+                      </p>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        ))}
+    </Panel>
   )
 }
 
@@ -1136,47 +1622,56 @@ export function OperationsOverviewPage() {
         description="檢查市場資料更新、佇列、Worker heartbeat 與 outbox 的即時健康狀態。"
       />
       <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
-        <MarketFreshnessPanel
-          result={data?.freshness ?? null}
+        <IngestionOverviewPanel
+          freshnessResult={data?.freshness ?? null}
+          schedulersResult={data?.schedulers ?? null}
           loading={initialLoading}
-          refreshError={freshnessError}
+          pending={pending}
+          freshnessError={freshnessError}
+          schedulersError={schedulersError}
+          role={role}
         />
       </MarketFreshnessErrorBoundary>
-      <SchedulerPanel
-        result={data?.schedulers ?? null}
-        loading={initialLoading}
-        pending={pending}
-        refreshError={schedulersError}
-        role={role}
-      />
       <Panel
         eyebrow="Queue and worker"
-        title="佇列與 Worker"
+        title="Source ingest 後的佇列與 Worker"
         icon={<Database size={19} />}
         result={data?.queue ?? null}
         loading={initialLoading}
       >
         {data?.queue.ok && (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Metric label="排隊中" value={data.queue.data.counts.queued ?? 0} />
-            <Metric
-              label="處理中"
-              value={data.queue.data.counts.processing ?? 0}
-            />
-            <Metric label="重試耗盡" value={data.queue.data.retry_exhausted} />
-            <Metric label="過期租約" value={data.queue.data.expired_leases} />
-            <Metric
-              wide
-              label="Worker heartbeat"
-              value={formatAge(data.queue.data.worker_heartbeat_age_seconds)}
-              detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
-            />
-            <Metric
-              wide
-              label="未發布 outbox"
-              value={data.queue.data.unpublished_outbox}
-            />
-          </div>
+          <>
+            <p className="mb-3 text-xs text-muted">
+              Source ingest 已寫入 durable queue 後，這裡顯示 dispatcher、outbox
+              與 normalization worker 的處理狀態。
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Metric
+                label="排隊中"
+                value={data.queue.data.counts.queued ?? 0}
+              />
+              <Metric
+                label="處理中"
+                value={data.queue.data.counts.processing ?? 0}
+              />
+              <Metric
+                label="重試耗盡"
+                value={data.queue.data.retry_exhausted}
+              />
+              <Metric label="過期租約" value={data.queue.data.expired_leases} />
+              <Metric
+                wide
+                label="Worker heartbeat"
+                value={formatAge(data.queue.data.worker_heartbeat_age_seconds)}
+                detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
+              />
+              <Metric
+                wide
+                label="未發布 outbox"
+                value={data.queue.data.unpublished_outbox}
+              />
+            </div>
+          </>
         )}
       </Panel>
       <Alert className="mt-5" variant="subtle" role="note">
@@ -1242,6 +1737,95 @@ export function DeliveriesPage() {
           ))}
       </Panel>
     </>
+  )
+}
+
+function boundedPolicyValue(value: unknown, maxLength = 180) {
+  if (value === null || value === undefined) return "—"
+  let text: string
+  if (typeof value === "string") {
+    text = value
+  } else if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    text = String(value)
+  } else {
+    try {
+      text = JSON.stringify(value)
+    } catch {
+      text = "[無法顯示]"
+    }
+  }
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+}
+
+const POLICY_VIOLATION_FIELDS = [
+  "code",
+  "action",
+  "reason",
+  "observed",
+  "expected",
+] as const
+
+function boundedPolicyField(value: unknown) {
+  return typeof value === "object" && value !== null
+    ? "[bounded object]"
+    : boundedPolicyValue(value)
+}
+
+function boundedPolicyViolation(value: unknown) {
+  if (value === null || value === undefined) return "—"
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return boundedPolicyValue(value)
+  }
+  const record = value as Record<string, unknown>
+  const fields = POLICY_VIOLATION_FIELDS.filter(field => field in record)
+  if (fields.length === 0) return "[violation detail]"
+  return fields
+    .map(field => `${field}=${boundedPolicyField(record[field])}`)
+    .join(" · ")
+}
+
+function DQPolicyDetails({ detail }: { detail: DQIssue["policy_detail"] }) {
+  if (!detail) return <span>—</span>
+  const violations = Array.isArray(detail.violations) ? detail.violations : []
+  const violationCount =
+    typeof detail.violation_count === "number"
+      ? detail.violation_count
+      : typeof detail.count === "number"
+        ? detail.count
+        : violations.length
+  const summaryEntries = POLICY_VIOLATION_FIELDS.filter(key => key in detail)
+  const visibleViolations = violations.slice(0, 3)
+  const truncated = detail.truncated === true || violations.length > 3
+
+  return (
+    <div className="grid max-w-xl gap-1 text-xs">
+      <span className="font-semibold">
+        {violationCount > 0
+          ? `${violationCount} 個 policy violation`
+          : "Policy detail"}
+        {truncated ? "（truncated／已截斷）" : ""}
+      </span>
+      {summaryEntries.map(key => (
+        <span className="text-muted" key={key}>
+          {key}：{boundedPolicyField(detail[key])}
+        </span>
+      ))}
+      {visibleViolations.map((violation, index) => (
+        <span
+          className="text-muted wrap-anywhere"
+          key={`${index}:${boundedPolicyValue(violation, 40)}`}
+        >
+          violation {index + 1}：{boundedPolicyViolation(violation)}
+        </span>
+      ))}
+      {truncated && visibleViolations.length === 0 && (
+        <span className="text-muted">其餘細節未顯示。</span>
+      )}
+    </div>
   )
 }
 
@@ -1326,7 +1910,9 @@ export function QualityPage() {
                     <TableRow>
                       <TableHead>嚴重度</TableHead>
                       <TableHead>類型</TableHead>
-                      <TableHead>交易日</TableHead>
+                      <TableHead>來源 / Dataset / Run</TableHead>
+                      <TableHead>批次 / Schema</TableHead>
+                      <TableHead>Policy detail</TableHead>
                       <TableHead>說明</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1347,7 +1933,48 @@ export function QualityPage() {
                         <TableCell className="font-mono wrap-anywhere">
                           {issue.issue_type}
                         </TableCell>
-                        <TableCell>{issue.trade_date ?? "—"}</TableCell>
+                        <TableCell className="whitespace-normal">
+                          <div className="grid gap-1 text-xs">
+                            <span>
+                              Provider：{issue.provider ?? "—"}
+                              {issue.source ? ` · Source：${issue.source}` : ""}
+                            </span>
+                            <span className="font-mono wrap-anywhere">
+                              Dataset：{issue.dataset_key ?? "—"}
+                            </span>
+                            <span className="font-mono wrap-anywhere">
+                              Run：{issue.run_id ?? "—"}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="whitespace-normal">
+                          <div className="grid gap-1 text-xs">
+                            <span>交易日：{issue.trade_date ?? "—"}</span>
+                            <span>
+                              批次資料日：{issue.batch_data_date ?? "—"}
+                            </span>
+                            <span>
+                              Schema：{issue.schema_id ?? "—"}
+                              {issue.schema_version
+                                ? `.v${issue.schema_version}`
+                                : ""}
+                            </span>
+                            <span>
+                              Raw：{issue.raw_available ? "可取得" : "不可用"}
+                            </span>
+                            <span className="font-mono wrap-anywhere">
+                              Raw payload ID：
+                              {boundedPolicyValue(issue.raw_payload_id, 64)}
+                            </span>
+                            <span>Fetched：{formatDate(issue.fetched_at)}</span>
+                            <span className="font-mono wrap-anywhere">
+                              Request：{issue.request_key ?? "—"}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="whitespace-normal">
+                          <DQPolicyDetails detail={issue.policy_detail} />
+                        </TableCell>
                         <TableCell className="whitespace-normal">
                           {issue.description ?? "—"}
                         </TableCell>

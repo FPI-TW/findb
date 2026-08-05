@@ -31,7 +31,11 @@ from findb_fetcher.schedule import (
     load_schedule_config,
     load_schedule_manifest,
 )
-from findb_fetcher.scheduler_control import SchedulerControlClient, SchedulerControlLoop
+from findb_fetcher.scheduler_control import (
+    SchedulerControlClient,
+    SchedulerControlLoop,
+    validate_scheduler_definition,
+)
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.twelve_data_scheduler import (
     SchedulerRun,
@@ -92,7 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        schedule = _load_selected_schedule(args.schedule_file, args.slot_id, args.dataset_key)
+        schedule = _load_selected_schedule(
+            args.schedule_file,
+            args.slot_id,
+            args.dataset_key,
+            reject_disabled=not args.run_forever,
+        )
         universe = load_symbol_universe(schedule.universe_file)
         _validate_schedule_universe(schedule, universe)
         if schedule.outputsize > universe.limits.max_records_per_symbol:
@@ -119,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                     fetcher_config=fetcher_config,
                     calendar_config=calendar_config,
                 ),
+                expected_definition=_expected_definition(schedule),
             )
 
         raw_storage_config = RawStorageConfig.from_env()
@@ -168,12 +178,53 @@ def _run_forever(
     cycle_factory: Any,
     *,
     stop_event: Any = None,
+    expected_definition: tuple[str, tuple[str, ...], str, str, str] | None = None,
 ) -> int:
     """Run the DB-controlled loop, constructing provider clients per cycle."""
 
     with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
-        loop = SchedulerControlLoop(control)
+        validator = None
+        if expected_definition is not None:
+            provider, dataset_keys, slot_id, scheduled_local_time, timezone_name = (
+                expected_definition
+            )
+            def validator(response: Any) -> None:
+                validate_scheduler_definition(
+                    response,
+                    provider=provider,
+                    dataset_keys=dataset_keys,
+                    slot_id=slot_id,
+                    scheduled_local_time=scheduled_local_time,
+                    timezone_name=timezone_name,
+                )
+        loop = (
+            SchedulerControlLoop(control, definition_validator=validator)
+            if validator is not None
+            else SchedulerControlLoop(control)
+        )
         return loop.run(cycle_factory, stop_event=stop_event)
+
+
+def _expected_definition(
+    schedule: ScheduleConfig,
+) -> tuple[str, tuple[str, ...], str, str, str]:
+    """Return the Twelve Data execution identity expected from DB control."""
+    slot_id = schedule.slot_id if schedule.slot_id != "legacy" else "us_0600"
+    scheduled_local_time = {
+        "us_0600": "06:00:00",
+        "global_0815": "08:15:00",
+        "tw_1430": "14:30:00",
+        "asia_1630": "16:30:00",
+    }.get(slot_id)
+    if scheduled_local_time is None:
+        raise ScheduleError("unsupported scheduler slot")
+    return (
+        schedule.provider,
+        (schedule.dataset_key,),
+        slot_id,
+        scheduled_local_time,
+        "Asia/Taipei",
+    )
 
 
 def _run_cycle(
@@ -302,7 +353,13 @@ def _default_state_path() -> Path:
     return Path(os.getenv("FETCHER_STATE_PATH", "/var/lib/findb-fetcher/state.sqlite3"))
 
 
-def _load_selected_schedule(path: Path, slot_id: str | None, dataset_key: str | None):
+def _load_selected_schedule(
+    path: Path,
+    slot_id: str | None,
+    dataset_key: str | None,
+    *,
+    reject_disabled: bool = True,
+):
     manifest = load_schedule_manifest(path)
     if manifest.schedule_version == 1:
         if slot_id is not None or dataset_key is not None:
@@ -320,9 +377,11 @@ def _load_selected_schedule(path: Path, slot_id: str | None, dataset_key: str | 
     schedule = matches[0]
     if schedule.provider != "twelve_data":
         raise ScheduleError("FinLab scheduler adapter is not configured")
-    # Disabled entries are intentional backlog guards: do not guess a canonical mapping.
-    if not schedule.enabled:
+    if reject_disabled and not schedule.enabled:
         raise ScheduleError("requested slot is disabled")
+    # ``enabled`` is retained as a local manifest hint only for one-shot
+    # configuration checks. DB desired_state is the sole authority for a
+    # long-running cycle.
     return schedule
 
 

@@ -48,6 +48,9 @@ export const schedulerSchema = z.object({
   scheduler_key: z.string().trim().min(1).max(200),
   provider: z.string().trim().min(1).max(100),
   dataset_keys: z.array(z.string().trim().min(1).max(200)),
+  slot_id: z.string().trim().min(1).max(100),
+  scheduled_local_time: z.string().trim().min(1).max(32),
+  timezone: z.string().trim().min(1).max(100),
   desired_state: schedulerDesiredStateSchema,
   observed_state: schedulerDesiredStateSchema,
   revision: z.number().int().nonnegative(),
@@ -98,12 +101,26 @@ export const marketFreshnessSchema = z.object({
   data: z.array(
     z.object({
       market: z.string(),
-      slot_id: z.string(),
-      scheduled_local_time: z.string(),
-      timezone: z.string(),
+      scheduler_key: z.string().trim().min(1).max(200),
+      provider: z.string().trim().min(1).max(100),
+      dataset_keys: z.array(z.string().trim().min(1).max(200)),
+      slot_id: z.string().trim().min(1).max(100),
+      scheduled_local_time: z.string().trim().min(1).max(32),
+      timezone: z.string().trim().min(1).max(100),
+      desired_state: schedulerDesiredStateSchema,
+      observed_state: schedulerDesiredStateSchema,
+      revision: z.number().int().nonnegative(),
+      last_heartbeat_at: nullableDateTime,
+      last_cycle_started_at: nullableDateTime,
+      last_cycle_completed_at: nullableDateTime,
+      last_error: z.string().nullable(),
+      heartbeat_age_seconds: z.number().nonnegative().nullable(),
+      configuration_status: z.enum(["ready", "error"]),
+      configuration_errors: z.array(z.string()),
       status: freshnessStatusSchema,
       expected_data_date: z.iso.date().nullable(),
       coverage_data_date: z.iso.date().nullable(),
+      last_fetched_at: nullableDateTime,
       last_successful_update_at: nullableDateTime,
       last_complete_at: nullableDateTime,
       next_scheduled_at: nullableDateTime,
@@ -115,8 +132,8 @@ export const marketFreshnessSchema = z.object({
           z.object({
             dataset_key: z.string(),
             source: z.string(),
-            schema_id: z.string(),
-            schema_version: z.number().int().positive(),
+            schema_id: z.string().nullable(),
+            schema_version: z.number().int().positive().nullable(),
             expected_data_date: z.iso.date().nullable(),
             latest_successful_data_date: z.iso.date().nullable(),
             last_fetched_at: nullableDateTime,
@@ -128,6 +145,7 @@ export const marketFreshnessSchema = z.object({
             policy_outcome: z.string().nullable(),
             open_missing_delivery_alert: z.boolean(),
             last_failure_code: z.string().nullable(),
+            configuration_error: z.string().nullable(),
             status: freshnessStatusSchema,
           })
         )
@@ -135,6 +153,8 @@ export const marketFreshnessSchema = z.object({
     })
   ),
 })
+export type MarketFreshnessResponse = z.infer<typeof marketFreshnessSchema>
+export type MarketFreshness = MarketFreshnessResponse["data"][number]
 
 export const missingDeliveriesSchema = z.object({
   data: z.array(
@@ -164,12 +184,34 @@ export const dqIssuesSchema = z.object({
       issue_type: z.string(),
       severity: z.string(),
       description: z.string().nullable(),
+      source: z.string().nullable().optional().default(null),
+      provider: z.string().nullable().optional().default(null),
+      dataset_key: z.string().nullable().optional().default(null),
+      schema_id: z.string().nullable().optional().default(null),
+      schema_version: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .default(null),
+      raw_payload_id: z.uuid().nullable().optional().default(null),
+      raw_available: z.boolean().default(false),
+      fetched_at: nullableDateTime.optional().default(null),
+      request_key: z.string().nullable().optional().default(null),
+      batch_data_date: z.iso.date().nullable().optional().default(null),
+      policy_detail: z
+        .record(z.string(), z.json())
+        .nullable()
+        .optional()
+        .default(null),
       resolved: z.boolean(),
       created_at: isoDateTime,
     })
   ),
   pagination: paginationSchema,
 })
+export type DQIssue = z.infer<typeof dqIssuesSchema>["data"][number]
 
 export const correctionsSchema = z.object({
   data: z.array(
@@ -231,7 +273,6 @@ export const dashboardResponseSchema = z.object({
 
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>
 export type FreshnessStatus = z.infer<typeof freshnessStatusSchema>
-export type MarketFreshnessResponse = z.infer<typeof marketFreshnessSchema>
 export type PanelResult<T> =
   { ok: true; data: T } | { ok: false; error: string }
 
