@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminPrincipal
 from app.models.registry import SchedulerControl
@@ -42,13 +43,22 @@ def _normalize_timestamp(value: datetime | None) -> datetime | None:
 
 async def list_scheduler_controls(db: AsyncSession) -> list[SchedulerControl]:
     """Return all registered schedulers in stable key order."""
-    result = await db.execute(select(SchedulerControl).order_by(SchedulerControl.scheduler_key))
+    result = await db.execute(
+        select(SchedulerControl)
+        .options(selectinload(SchedulerControl.scheduler_datasets))
+        .order_by(SchedulerControl.scheduler_key)
+    )
     return list(result.scalars().all())
 
 
 async def get_scheduler_control(db: AsyncSession, scheduler_key: str) -> SchedulerControl | None:
     """Load one scheduler without acquiring a mutation lock."""
-    return await db.get(SchedulerControl, scheduler_key)
+    result = await db.execute(
+        select(SchedulerControl)
+        .options(selectinload(SchedulerControl.scheduler_datasets))
+        .where(SchedulerControl.scheduler_key == scheduler_key)
+    )
+    return result.scalar_one_or_none()
 
 
 async def update_scheduler_desired_state(
@@ -63,6 +73,7 @@ async def update_scheduler_desired_state(
     """Atomically update desired state and append its Admin audit event."""
     result = await db.execute(
         select(SchedulerControl)
+        .options(selectinload(SchedulerControl.scheduler_datasets))
         .where(SchedulerControl.scheduler_key == scheduler_key)
         .with_for_update()
     )
@@ -92,7 +103,9 @@ async def update_scheduler_desired_state(
     )
     if commit:
         await db.commit()
-        await db.refresh(row)
+        refreshed = await get_scheduler_control(db, scheduler_key)
+        if refreshed is not None:
+            row = refreshed
     return row
 
 
@@ -109,13 +122,48 @@ def _source_scope(db: AsyncSession) -> tuple[str | None, list[str] | None]:
     return source_name, allowed_datasets
 
 
+def _loaded_scheduler_dataset_keys(row: SchedulerControl) -> list[str] | None:
+    """Return normalized mappings without triggering an async lazy load."""
+    try:
+        loaded = inspect(row).attrs.scheduler_datasets.loaded_value
+    except (AttributeError, KeyError):
+        return None
+    if not isinstance(loaded, (list, tuple)):
+        return None
+    return [
+        item.dataset_key for item in loaded if isinstance(getattr(item, "dataset_key", None), str)
+    ]
+
+
+def scheduler_dataset_keys(row: SchedulerControl, *, require_normalized: bool = False) -> list[str]:
+    """Return normalized scope mappings, retaining the legacy JSON projection.
+
+    Migrated rows must have at least one association row.  A missing mapping
+    therefore produces an empty list for Source scope checks (fail closed).
+    Legacy ORM fixtures with the compatibility ``slot_id=legacy`` default may
+    continue to use ``dataset_keys`` until they are migrated.
+    """
+    normalized = _loaded_scheduler_dataset_keys(row)
+    if normalized:
+        return normalized
+    if row.slot_id != "legacy":
+        return []
+    if require_normalized:
+        # Legacy rows are retained solely for backwards-compatible callers;
+        # migrated production rows never take this branch.
+        return list(row.dataset_keys) if isinstance(row.dataset_keys, list) else []
+    return list(row.dataset_keys) if isinstance(row.dataset_keys, list) else []
+
+
 def _check_source_scope(db: AsyncSession, row: SchedulerControl) -> None:
     source_name, allowed_datasets = _source_scope(db)
     provider_matches = (
         isinstance(source_name, str) and source_name.strip().lower() == row.provider.strip().lower()
     )
-    datasets_match = allowed_datasets is None or all(
-        dataset_key in allowed_datasets for dataset_key in row.dataset_keys
+    normalized_datasets = scheduler_dataset_keys(row, require_normalized=True)
+    datasets_match = bool(normalized_datasets) and (
+        allowed_datasets is None
+        or all(dataset_key in allowed_datasets for dataset_key in normalized_datasets)
     )
     if not provider_matches or not datasets_match:
         raise SchedulerControlScopeError("Source credential is not authorized for this scheduler")
@@ -152,7 +200,9 @@ async def poll_scheduler_control(
     row.updated_at = server_time
     if commit:
         await db.commit()
-        await db.refresh(row)
+        refreshed = await get_scheduler_control(db, scheduler_key)
+        if refreshed is not None:
+            row = refreshed
     return row, server_time
 
 
@@ -166,7 +216,10 @@ def present_scheduler_control(
     return {
         "scheduler_key": row.scheduler_key,
         "provider": row.provider,
-        "dataset_keys": list(row.dataset_keys),
+        "dataset_keys": scheduler_dataset_keys(row),
+        "slot_id": row.slot_id,
+        "scheduled_local_time": row.scheduled_local_time,
+        "timezone": row.timezone,
         "desired_state": row.desired_state,
         "observed_state": row.observed_state,
         "revision": row.revision,
@@ -192,5 +245,6 @@ __all__ = [
     "list_scheduler_controls",
     "poll_scheduler_control",
     "present_scheduler_control",
+    "scheduler_dataset_keys",
     "update_scheduler_desired_state",
 ]

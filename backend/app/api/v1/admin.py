@@ -738,19 +738,56 @@ async def list_market_freshness_endpoint(
     for row in rows:
         payload = {
             "market": row.market,
+            "scheduler_key": row.scheduler_key,
+            "provider": row.provider,
+            "dataset_keys": list(row.dataset_keys),
             "slot_id": row.slot_id,
             "scheduled_local_time": row.scheduled_local_time,
             "timezone": row.timezone,
+            "desired_state": row.desired_state,
+            "observed_state": row.observed_state,
+            "revision": row.revision,
+            "last_heartbeat_at": row.last_heartbeat_at,
+            "last_cycle_started_at": row.last_cycle_started_at,
+            "last_cycle_completed_at": row.last_cycle_completed_at,
+            "last_error": row.last_error,
+            "heartbeat_age_seconds": row.heartbeat_age_seconds,
+            "configuration_status": row.configuration_status,
+            "configuration_errors": list(row.configuration_errors),
             "status": row.status,
             "expected_data_date": row.expected_data_date,
             "coverage_data_date": row.coverage_data_date,
+            "last_fetched_at": row.last_fetched_at,
             "last_successful_update_at": row.last_successful_update_at,
             "last_complete_at": row.last_complete_at,
             "next_scheduled_at": row.next_scheduled_at,
             "feed_count": row.feed_count,
             "fresh_feed_count": row.fresh_feed_count,
             "late_feed_count": row.late_feed_count,
-            "feeds": list(row.feeds) if include_feeds else [],
+            "feeds": [
+                {
+                    "dataset_key": feed.dataset_key,
+                    "source": feed.source,
+                    "schema_id": feed.schema_id,
+                    "schema_version": feed.schema_version,
+                    "expected_data_date": feed.expected_data_date,
+                    "latest_successful_data_date": feed.latest_successful_data_date,
+                    "last_fetched_at": feed.last_fetched_at,
+                    "last_completed_at": feed.last_completed_at,
+                    "last_run_id": feed.last_run_id,
+                    "total_records": feed.total_records,
+                    "success_records": feed.success_records,
+                    "failed_records": feed.failed_records,
+                    "policy_outcome": feed.policy_outcome,
+                    "open_missing_delivery_alert": feed.open_missing_delivery_alert,
+                    "last_failure_code": feed.last_failure_code,
+                    "configuration_error": feed.configuration_error,
+                    "status": feed.status,
+                }
+                for feed in row.feeds
+            ]
+            if include_feeds
+            else [],
         }
         data.append(MarketFreshnessResponse.model_validate(payload))
     return MarketFreshnessListResponse(data=data)

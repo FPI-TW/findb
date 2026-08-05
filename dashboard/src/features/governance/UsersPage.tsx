@@ -84,14 +84,15 @@ export function UsersPage() {
     event.preventDefault()
     setPending(true)
     try {
+      const body = {
+        username,
+        display_name: displayName,
+        role,
+        must_change_password: true,
+        ...(password ? { password } : {}),
+      }
       const result = await create({
-        data: {
-          username,
-          display_name: displayName,
-          role,
-          password: password || undefined,
-          must_change_password: true,
-        },
+        data: body,
       })
       if (result.temporary_password) {
         setSecret({
@@ -207,6 +208,7 @@ export function UsersPage() {
         <CardContent className="px-0">
           <form
             className="grid gap-3 md:grid-cols-2 xl:grid-cols-5"
+            autoComplete="off"
             onSubmit={submit}
           >
             <div className="grid gap-1.5">
@@ -215,6 +217,7 @@ export function UsersPage() {
                 id="new-username"
                 value={username}
                 onChange={event => setUsername(event.target.value)}
+                autoComplete="off"
                 required
               />
             </div>
@@ -247,6 +250,7 @@ export function UsersPage() {
                 type="password"
                 value={password}
                 onChange={event => setPassword(event.target.value)}
+                autoComplete="new-password"
               />
             </div>
             <div className="flex items-end">

@@ -86,6 +86,19 @@ Delivery policy以最近同source、dataset、schema/version的合格delivery建
 `warn`階段只產生可觀測訊號；切到 `reject`前必須先用真實feed校準count、freshness、
 coverage與missing-delivery時間窗。
 
+Scheduler 的執行時間、timezone 與 dataset mapping 以 `scheduler_control` 和
+`scheduler_dataset` 為唯一權威；dataset 的 `delivery_expectation` 只描述該 feed 的資料日期
+與完整性政策。現行 Fetcher 會把 DB definition 與 reviewed executable workload 嚴格比對，
+不一致時 fail closed；調整 definition 必須同步部署相符 workload。Operations 的 ingestion
+overview 每個 scheduler 一張卡，應同時核對 DB
+設定時間、desired／observed state、heartbeat、provider raw `fetched_at`、normalization
+completion 與 feed freshness。看到 raw 已抓取但 normalization 未完成時，應沿 downstream
+run／job／outbox／queue 診斷，不應誤判為 provider 沒有送達。
+
+`tw_equity_eod` 的全域 minimum record count 仍為 2,100。FinLab 兩檔 pilot 只透過
+source-scoped override 將 minimum 設為 2 並停用 rolling baseline；其它 source 不繼承這個
+放寬。擴大 universe 前必須移除或重新校準 override，不能修改全域門檻規避驗證。
+
 ## 常見診斷
 
 | 現象 | 優先檢查 |
@@ -96,7 +109,7 @@ coverage與missing-delivery時間窗。
 | Run pending過久 | Outbox是否發布、queue depth、worker heartbeat |
 | Run processing過久 | Lease、worker logs、dataset advisory lock、DB pressure |
 | Canonical缺資料 | Run terminal state、DQ errors、source precedence |
-| Missing delivery | Scheduler/provider是否送達、data date與expected source |
+| Missing delivery | DB scheduler definition/provider是否送達、per-feed expected data date |
 | Raw存在但無canonical | Job state、DQ issue、normalizer transaction |
 
 不要只看HTTP `202`判斷資料完成。

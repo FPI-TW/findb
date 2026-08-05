@@ -21,6 +21,16 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+FINLAB_PILOT_OVERRIDE_JSON = json.dumps(
+    {
+        "finlab": {
+            "baseline": {"enabled": False},
+            "record_count": {"minimum_record_count": 2},
+        }
+    },
+    separators=(",", ":"),
+)
+
 
 # Initial dataset configurations
 DATASETS = [
@@ -169,6 +179,15 @@ DATASETS = [
                     "minimum_record_count": 2100,
                     "maximum_count_drop_ratio": 0.1,
                     "action": "warn",
+                },
+                # FinLab's pilot contract intentionally carries only a small
+                # bounded sample.  Keep the global full-market threshold above
+                # intact and scope this exception to the lowercase provider.
+                "source_overrides": {
+                    "finlab": {
+                        "baseline": {"enabled": False},
+                        "record_count": {"minimum_record_count": 2},
+                    }
                 },
                 "freshness": {
                     "maximum_fetch_age_hours": 36,
@@ -927,7 +946,12 @@ CRYPTO_INSTRUMENTS = [
 
 
 async def seed_datasets(session: AsyncSession):
-    """Seed dataset registry."""
+    """Seed dataset registry without mutating operator scheduler authority.
+
+    Scheduler enabled state and trigger definitions live in ``scheduler_control``;
+    this seed keeps existing dataset delivery metadata intact and never
+    backfills a schedule block into an operator-managed registry row.
+    """
     logger.info("Seeding datasets...")
 
     for ds in DATASETS:
@@ -985,24 +1009,40 @@ async def seed_datasets(session: AsyncSession):
                 """),
                 {"dataset_key": ds["dataset_key"]},
             )
-        schedule = (ds["config"].get("delivery_expectation") or {}).get("schedule")
-        if schedule is not None:
+
+        # Nested JSONB objects are operator-owned.  Add the FinLab pilot
+        # override only when the operator has not supplied one yet; this keeps
+        # unrelated policy keys and explicit source overrides untouched.
+        if ds["dataset_key"] == "tw_equity_eod":
             await session.execute(
                 text("""
                     UPDATE dataset_registry
                     SET config = jsonb_set(
                         config,
-                        '{delivery_expectation,schedule}',
-                        CAST(:schedule AS jsonb),
+                        '{delivery_expectation,source_overrides}',
+                        CASE
+                          WHEN jsonb_typeof(config->'delivery_expectation'->'source_overrides') = 'object'
+                            THEN config->'delivery_expectation'->'source_overrides'
+                              || CAST(:finlab_override AS jsonb)
+                          ELSE CAST(:finlab_override AS jsonb)
+                        END,
                         true
                     )
                     WHERE dataset_key = :dataset_key
                       AND jsonb_typeof(config->'delivery_expectation') = 'object'
-                      AND NOT (config->'delivery_expectation' ? 'schedule')
+                      AND (
+                        NOT (config->'delivery_expectation' ? 'source_overrides')
+                        OR (
+                          jsonb_typeof(config->'delivery_expectation'->'source_overrides') = 'object'
+                          AND NOT (config->'delivery_expectation'->'source_overrides' ? 'finlab')
+                        )
+                      )
                 """),
-                {"dataset_key": ds["dataset_key"], "schedule": json.dumps(schedule)},
+                {
+                    "dataset_key": ds["dataset_key"],
+                    "finlab_override": FINLAB_PILOT_OVERRIDE_JSON,
+                },
             )
-
     await session.commit()
     logger.info(f"Seeded {len(DATASETS)} datasets")
 

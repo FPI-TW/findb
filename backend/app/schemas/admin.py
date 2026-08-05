@@ -216,12 +216,22 @@ class DQIssueResponse(BaseModel):
     issue_type: str
     severity: str
     description: Optional[str] = None
-    raw_data: Optional[dict] = None
+    source: Optional[str] = None
+    provider: Optional[str] = None
+    dataset_key: Optional[str] = None
+    schema_id: Optional[str] = None
+    schema_version: Optional[int] = None
+    raw_payload_id: Optional[UUID] = None
+    raw_available: bool = False
+    fetched_at: Optional[datetime] = None
+    request_key: Optional[str] = None
+    batch_data_date: Optional[date] = None
+    policy_detail: Optional[dict[str, Any]] = None
     resolved: bool
     resolved_at: Optional[datetime] = None
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class DQIssueListResponse(PaginatedResponse[DQIssueResponse]):
@@ -403,8 +413,8 @@ class MissingDeliveryAlertListResponse(PaginatedResponse[MissingDeliveryAlertRes
 class MarketFreshnessFeedResponse(BaseModel):
     dataset_key: str
     source: str
-    schema_id: str
-    schema_version: int
+    schema_id: Optional[str] = None
+    schema_version: Optional[int] = None
     expected_data_date: Optional[date] = None
     latest_successful_data_date: Optional[date] = None
     last_fetched_at: Optional[datetime] = None
@@ -416,17 +426,32 @@ class MarketFreshnessFeedResponse(BaseModel):
     policy_outcome: Optional[str] = None
     open_missing_delivery_alert: bool
     last_failure_code: Optional[str] = None
+    configuration_error: Optional[str] = None
     status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
 
 
 class MarketFreshnessResponse(BaseModel):
     market: str
+    scheduler_key: str
+    provider: str
+    dataset_keys: list[str] = Field(default_factory=list)
     slot_id: str
     scheduled_local_time: time
     timezone: str
+    desired_state: Literal["running", "stopped"]
+    observed_state: Literal["running", "stopped"]
+    revision: int
+    last_heartbeat_at: Optional[datetime] = None
+    last_cycle_started_at: Optional[datetime] = None
+    last_cycle_completed_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    heartbeat_age_seconds: Optional[float] = None
+    configuration_status: Literal["ready", "error"] = "ready"
+    configuration_errors: list[str] = Field(default_factory=list)
     status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
     expected_data_date: Optional[date] = None
     coverage_data_date: Optional[date] = None
+    last_fetched_at: Optional[datetime] = None
     last_successful_update_at: Optional[datetime] = None
     last_complete_at: Optional[datetime] = None
     next_scheduled_at: datetime
@@ -628,6 +653,9 @@ class SchedulerControlResponse(BaseModel):
     scheduler_key: str
     provider: str
     dataset_keys: list[str]
+    slot_id: str
+    scheduled_local_time: time
+    timezone: str
     desired_state: Literal["running", "stopped"]
     observed_state: Literal["running", "stopped"]
     revision: int

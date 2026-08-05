@@ -3,7 +3,7 @@ Tests for Admin API endpoints.
 """
 
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
+from app.models.raw import RawMarketPayload
 from app.models.registry import APIKey, DatasetRegistry, DQIssue, IngestionRun
 from app.services import instrument_cache as instrument_cache_service
 from app.services.admin import eod_record_id
@@ -769,6 +770,7 @@ class TestListCorrections:
     async def test_list_corrections_empty(self, client: AsyncClient, admin_headers: dict):
         response = await client.get("/api/v1/admin/corrections", headers=admin_headers)
         assert response.status_code == 200
+
         data = response.json()
         assert data["success"] is True
         assert data["data"] == []
@@ -971,6 +973,164 @@ class TestListCorrections:
         assert len(items) == 2
         assert items[0]["correction_reason"] == "Second"
         assert items[1]["correction_reason"] == "First"
+
+
+class TestDQIssueProvenance:
+    @pytest.mark.asyncio
+    async def test_dq_list_shapes_expired_raw_and_bounds_policy_evidence(
+        self,
+        client: AsyncClient,
+        test_session: AsyncSession,
+        admin_headers: dict,
+    ):
+        test_session.add(
+            DatasetRegistry(
+                dataset_key="tw_equity_eod",
+                name="TW Equity",
+                asset_class="equity",
+                market="TW",
+                frequency="daily",
+                is_active=True,
+                config={},
+            )
+        )
+        run = IngestionRun(
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            request_key="dq-request",
+            batch_data_date=date(2026, 7, 21),
+            raw_records=2,
+            policy_details={
+                "primary_code": "BATCH_RECORD_COUNT_DROP",
+                "violations": [
+                    {
+                        "code": "BATCH_RECORD_COUNT_DROP",
+                        "action": "warn",
+                        "reason": "x" * 1000,
+                        "observed": {"record_count": 2, "secret": "do-not-return"},
+                        "expected": {"minimum_record_count": 2100},
+                    }
+                ]
+                * 12,
+                "baseline_status": "disabled",
+                "baseline_counts": list(range(20)),
+            },
+        )
+        test_session.add(run)
+        await test_session.flush()
+        raw = RawMarketPayload(
+            raw_payload_id=uuid7(),
+            source_client_id=None,
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            request_key="dq-request",
+            idempotency_key="dq-idem",
+            schema_id="market_eod",
+            schema_version=1,
+            payload={"secret": "full payload must never be listed"},
+            fetched_at=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+            expire_at=datetime.now(timezone.utc) - timedelta(days=1),
+            run_id=run.run_id,
+        )
+        test_session.add(raw)
+        run.raw_payload_id = raw.raw_payload_id
+        issue = DQIssue(
+            id=uuid7(),
+            run_id=run.run_id,
+            issue_type="INGRESS_DELIVERY_POLICY_WARNING",
+            severity="warning",
+            description="bounded policy warning",
+        )
+        test_session.add(issue)
+        await test_session.commit()
+
+        response = await client.get("/api/v1/admin/dq-issues?page_size=1", headers=admin_headers)
+        assert response.status_code == 200
+        item = response.json()["data"][0]
+        assert item["source"] == "finlab"
+        assert item["provider"] == "finlab"
+        assert item["raw_available"] is False
+        assert item["fetched_at"] is None
+        assert "raw_data" not in item
+        assert "secret" not in str(item)
+        detail = item["policy_detail"]
+        assert len(detail["violations"]) <= 8
+        assert detail["violation_count"] == 12
+        assert detail["violations_truncated"] is True
+        assert detail["baseline_counts_truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_dq_pagination_remains_unique_with_multiple_legacy_raw_rows(
+        self,
+        client: AsyncClient,
+        test_session: AsyncSession,
+        admin_headers: dict,
+    ):
+        test_session.add(
+            DatasetRegistry(
+                dataset_key="tw_equity_eod",
+                name="TW Equity",
+                asset_class="equity",
+                market="TW",
+                frequency="daily",
+                is_active=True,
+                config={},
+            )
+        )
+        runs = [
+            IngestionRun(
+                run_id=uuid7(),
+                dataset_key="tw_equity_eod",
+                source="finlab",
+                status="failed",
+                request_key=f"page-request-{index}",
+            )
+            for index in (1, 2)
+        ]
+        test_session.add_all(runs)
+        await test_session.flush()
+        for index, run in enumerate(runs, start=1):
+            for duplicate in (1, 2):
+                test_session.add(
+                    RawMarketPayload(
+                        raw_payload_id=uuid7(),
+                        source_client_id=None,
+                        dataset_key="tw_equity_eod",
+                        source="finlab",
+                        request_key=f"page-request-{index}-{duplicate}",
+                        idempotency_key=f"page-idem-{index}-{duplicate}",
+                        payload={"data": []},
+                        fetched_at=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+                        expire_at=datetime.now(timezone.utc) + timedelta(days=1),
+                        run_id=run.run_id,
+                    )
+                )
+            test_session.add(
+                DQIssue(
+                    id=uuid7(),
+                    run_id=run.run_id,
+                    issue_type="MISSING_OHLC",
+                    severity="warning",
+                    description=f"page issue {index}",
+                )
+            )
+        await test_session.commit()
+
+        first = await client.get(
+            "/api/v1/admin/dq-issues?page=1&page_size=1", headers=admin_headers
+        )
+        second = await client.get(
+            "/api/v1/admin/dq-issues?page=2&page_size=1", headers=admin_headers
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_id = first.json()["data"][0]["id"]
+        second_id = second.json()["data"][0]["id"]
+        assert first_id != second_id
+        assert first.json()["pagination"]["total_records"] == 2
+        assert second.json()["pagination"]["total_records"] == 2
 
 
 # ── Bulk rerun Tests ──────────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ The reset deliberately preserves only schema/configuration/authentication data:
 * ``public.alembic_version``
 * ``public.dataset_registry``
 * ``public.scheduler_control``
+* ``public.scheduler_dataset``
 * ``public.source_client``
 * ``public.api_key``
 * ``public.admin_user``
@@ -62,6 +63,9 @@ PROTECTED_TABLES = (
     "public.credential_usage_rollup",
     "public.dataset_registry",
     "public.scheduler_control",
+    # Normalized scheduler-to-dataset authority.  This is configuration, not
+    # mutable delivery state, and must remain aligned with scheduler_control.
+    "public.scheduler_dataset",
     "public.source_client",
 )
 

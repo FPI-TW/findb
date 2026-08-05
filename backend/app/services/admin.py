@@ -3,18 +3,22 @@ Admin service for canonical data corrections.
 """
 
 import hashlib
+import json
+import math
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
-from app.models.registry import DQIssue
+from app.models.raw import RawMarketPayload
+from app.models.registry import DQIssue, IngestionRun
 from app.schemas.admin import PatchEODRequest, ResolveDQIssueRequest
 from app.utils import utc_now, uuid7
 
@@ -33,6 +37,33 @@ class AlreadyResolvedError(ValueError):
 
 class InvalidCorrectionError(ValueError):
     """Raised when a correction would violate blocking data-quality rules."""
+
+
+@dataclass(frozen=True)
+class DQIssueView:
+    """Bounded, joined projection used by the Admin DQ list endpoint."""
+
+    id: UUID
+    run_id: UUID | None
+    instrument_id: UUID | None
+    trade_date: date | None
+    issue_type: str
+    severity: str
+    description: str | None
+    source: str | None
+    provider: str | None
+    dataset_key: str | None
+    schema_id: str | None
+    schema_version: int | None
+    raw_payload_id: UUID | None
+    raw_available: bool
+    fetched_at: datetime | None
+    request_key: str | None
+    batch_data_date: date | None
+    policy_detail: dict[str, Any] | None
+    resolved: bool
+    resolved_at: datetime | None
+    created_at: datetime
 
 
 _CORRECTABLE_EOD_FIELDS = {
@@ -295,6 +326,140 @@ async def resolve_dq_issue(
     return correction, issue
 
 
+_POLICY_EVIDENCE_KEYS = {
+    "record_count",
+    "minimum_record_count",
+    "maximum_count_drop_ratio",
+    "fetched_at",
+    "maximum_fetch_age_hours",
+    "allowed_clock_skew_minutes",
+    "batch_data_date",
+    "maximum_row_date",
+    "data_date",
+    "calendar_market",
+    "evaluation_date",
+}
+_POLICY_CODES = {
+    "BATCH_RECORD_COUNT_DROP",
+    "STALE_PAYLOAD",
+    "LATEST_DATE_MISSING",
+    "CALENDAR_UNAVAILABLE",
+}
+_POLICY_ACTIONS = {"warn", "reject"}
+_MAX_POLICY_DETAIL_BYTES = 8_192
+_MAX_POLICY_STRING = 200
+_MAX_POLICY_VIOLATIONS = 8
+_MAX_POLICY_COUNTS = 8
+
+
+def _bounded_policy_scalar(value: Any) -> str | int | float | bool | None:
+    """Keep only finite scalar evidence with a strict string bound."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return value[:_MAX_POLICY_STRING]
+    return None
+
+
+def _bounded_policy_evidence(value: Any) -> dict[str, str | int | float | bool | None]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: bounded
+        for key, raw in value.items()
+        if key in _POLICY_EVIDENCE_KEYS
+        and isinstance(key, str)
+        and (bounded := _bounded_policy_scalar(raw)) is not None
+    }
+
+
+def _bounded_policy_detail(value: Any) -> dict[str, Any] | None:
+    """Shape aggregate policy evidence without returning arbitrary raw JSON."""
+    if not isinstance(value, dict):
+        return None
+    candidate = value.get("delivery_policy")
+    if isinstance(candidate, dict):
+        value = candidate
+    violations = value.get("violations")
+    if not isinstance(violations, list):
+        return None
+
+    bounded_violations: list[dict[str, Any]] = []
+    for item in violations[:_MAX_POLICY_VIOLATIONS]:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("code")
+        action = item.get("action")
+        reason = item.get("reason")
+        if not isinstance(code, str) or code not in _POLICY_CODES:
+            continue
+        if not isinstance(action, str) or action not in _POLICY_ACTIONS:
+            continue
+        if not isinstance(reason, str):
+            reason = ""
+        bounded_violations.append(
+            {
+                "code": code,
+                "action": action,
+                "reason": reason[:_MAX_POLICY_STRING],
+                "observed": _bounded_policy_evidence(item.get("observed")),
+                "expected": _bounded_policy_evidence(item.get("expected")),
+            }
+        )
+
+    primary_code = value.get("primary_code")
+    if not isinstance(primary_code, str) or primary_code not in _POLICY_CODES:
+        primary_code = None
+    baseline_status = value.get("baseline_status")
+    if baseline_status not in {"disabled", "cold_start", "active", "not_applicable"}:
+        baseline_status = None
+    raw_counts = value.get("baseline_counts")
+    baseline_counts = (
+        [item for item in raw_counts if isinstance(item, int) and item >= 0][:_MAX_POLICY_COUNTS]
+        if isinstance(raw_counts, list)
+        else []
+    )
+    violation_count = len(violations)
+    baseline_count = len(raw_counts) if isinstance(raw_counts, list) else 0
+    detail: dict[str, Any] = {
+        "primary_code": primary_code,
+        "violations": bounded_violations,
+        "violation_count": violation_count,
+        "violations_truncated": violation_count > _MAX_POLICY_VIOLATIONS,
+        "baseline_status": baseline_status,
+        "baseline_counts": baseline_counts,
+        "baseline_count": baseline_count,
+        "baseline_counts_truncated": baseline_count > _MAX_POLICY_COUNTS,
+    }
+    threshold = value.get("effective_count_threshold")
+    if isinstance(threshold, int) and threshold >= 0:
+        detail["effective_count_threshold"] = threshold
+    # A malformed or unexpectedly large aggregate is represented by a safe
+    # minimal detail rather than being allowed to approach the response cap.
+    try:
+        if (
+            len(json.dumps(detail, ensure_ascii=False, separators=(",", ":")))
+            > _MAX_POLICY_DETAIL_BYTES
+        ):
+            return {
+                "primary_code": primary_code,
+                "violations": [],
+                "violation_count": violation_count,
+                "violations_truncated": True,
+                "baseline_status": baseline_status,
+                "baseline_counts": [],
+                "baseline_count": baseline_count,
+                "baseline_counts_truncated": True,
+            }
+    except (TypeError, ValueError):
+        return None
+    return detail
+
+
 async def list_dq_issues(
     db: AsyncSession,
     resolved: Optional[bool],
@@ -302,8 +467,8 @@ async def list_dq_issues(
     severity: Optional[str],
     page: int,
     page_size: int,
-) -> tuple[list[DQIssue], int]:
-    """Return a paginated, newest-first list of DQ issues."""
+) -> tuple[list[DQIssueView], int]:
+    """Return a paginated joined DQ projection with bounded policy evidence."""
     filters = []
     if resolved is not None:
         filters.append(DQIssue.resolved == resolved)
@@ -316,15 +481,104 @@ async def list_dq_issues(
     total = (await db.execute(count_stmt)).scalar_one()
 
     offset = (page - 1) * page_size
+    # Paginate the issue/run relation first.  Joining raw rows here would make
+    # one issue occupy multiple SQL rows when a legacy run has more than one
+    # raw payload, causing duplicates or skipped issues across pages.
     rows_stmt = (
-        select(DQIssue)
+        select(DQIssue, IngestionRun)
+        .outerjoin(IngestionRun, IngestionRun.run_id == DQIssue.run_id)
         .where(*filters)
-        .order_by(DQIssue.created_at.desc())
+        .order_by(DQIssue.created_at.desc(), DQIssue.id.desc())
         .offset(offset)
         .limit(page_size)
     )
-    rows = list((await db.execute(rows_stmt)).scalars().all())
-    return rows, total
+    joined_rows = (await db.execute(rows_stmt)).all()
+    now = utc_now()
+
+    # Look up raw payloads only for the bounded page.  Exact run linkage wins;
+    # the run-id fallback is used only for legacy rows with no raw_payload_id,
+    # and its newest payload is selected deterministically.
+    exact_run_ids: dict[UUID, UUID] = {
+        run.raw_payload_id: run.run_id
+        for _, run in joined_rows
+        if run is not None and run.raw_payload_id is not None
+    }
+    fallback_run_ids = {
+        run.run_id for _, run in joined_rows if run is not None and run.raw_payload_id is None
+    }
+    raw_by_run: dict[UUID, RawMarketPayload] = {}
+    if exact_run_ids or fallback_run_ids:
+        raw_filters = []
+        if exact_run_ids:
+            raw_filters.append(RawMarketPayload.raw_payload_id.in_(exact_run_ids))
+        if fallback_run_ids:
+            raw_filters.append(RawMarketPayload.run_id.in_(fallback_run_ids))
+        raw_stmt = (
+            select(RawMarketPayload)
+            .where(or_(*raw_filters))
+            .order_by(RawMarketPayload.created_at.desc(), RawMarketPayload.raw_payload_id.desc())
+        )
+        raw_rows = list((await db.execute(raw_stmt)).scalars().all())
+        for raw_row in raw_rows:
+            exact_run_id = exact_run_ids.get(raw_row.raw_payload_id)
+            if exact_run_id is not None:
+                # The exact raw_payload_id is authoritative even when expired.
+                raw_by_run[exact_run_id] = raw_row
+            elif raw_row.run_id in fallback_run_ids and raw_row.run_id not in raw_by_run:
+                raw_by_run[raw_row.run_id] = raw_row
+
+    views: list[DQIssueView] = []
+    for issue, run in joined_rows:
+        raw = raw_by_run.get(run.run_id) if run is not None else None
+        raw_available = bool(raw is not None and raw.expire_at > now)
+        raw_payload_id = run.raw_payload_id if run is not None else None
+        if raw is not None:
+            raw_payload_id = raw.raw_payload_id
+        fetched_at = raw.fetched_at if raw is not None and raw_available else None
+        source = run.source if run is not None else (raw.source if raw else None)
+        dataset_key = run.dataset_key if run is not None else (raw.dataset_key if raw else None)
+        schema_id = run.schema_id if run is not None else (raw.schema_id if raw else None)
+        schema_version = (
+            run.schema_version if run is not None else (raw.schema_version if raw else None)
+        )
+        request_key = run.request_key if run is not None else (raw.request_key if raw else None)
+        run_id = issue.run_id or (run.run_id if run is not None else None)
+        trade_date = (
+            issue.trade_date.date() if isinstance(issue.trade_date, datetime) else issue.trade_date
+        )
+        policy_evidence = None
+        if issue.issue_type == "INGRESS_DELIVERY_POLICY_WARNING":
+            policy_evidence = _bounded_policy_detail(
+                run.policy_details
+                if run is not None and run.policy_details is not None
+                else issue.raw_data
+            )
+        views.append(
+            DQIssueView(
+                id=issue.id,
+                run_id=run_id,
+                instrument_id=issue.instrument_id,
+                trade_date=trade_date,
+                issue_type=issue.issue_type,
+                severity=issue.severity,
+                description=issue.description[:1_000] if issue.description else None,
+                source=source,
+                provider=source,
+                dataset_key=dataset_key,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                raw_payload_id=raw_payload_id,
+                raw_available=raw_available,
+                fetched_at=fetched_at,
+                request_key=request_key,
+                batch_data_date=run.batch_data_date if run is not None else None,
+                policy_detail=policy_evidence,
+                resolved=issue.resolved,
+                resolved_at=issue.resolved_at,
+                created_at=issue.created_at,
+            )
+        )
+    return views, total
 
 
 async def list_corrections(

@@ -1,6 +1,6 @@
 """Read-only market freshness projection and endpoint behavior."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -8,7 +8,14 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
-from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
+from app.models.raw import RawMarketPayload
+from app.models.registry import (
+    DatasetRegistry,
+    IngestionRun,
+    MissingDeliveryAlert,
+    SchedulerControl,
+    SchedulerDataset,
+)
 from app.schemas.serve import MarketFreshnessSummaryResponse
 from app.services.market_freshness import list_market_freshness
 from app.utils import uuid7
@@ -150,6 +157,51 @@ async def test_configured_market_without_runs_is_never_received(test_session):
 
 
 @pytest.mark.asyncio
+async def test_registered_stopped_scheduler_and_invalid_dataset_stay_visible(test_session):
+    """Scheduler definitions remain visible even when feed config is unusable."""
+    session = test_session
+    session.add(
+        DatasetRegistry(
+            dataset_key="tw_equity_eod",
+            name="TW",
+            asset_class="equity",
+            market="TW",
+            is_active=True,
+            config={"schema_id": "market_eod"},
+        )
+    )
+    session.add(
+        SchedulerControl(
+            scheduler_key="finlab_tw_1430_tw_equity_eod",
+            provider="finlab",
+            slot_id="tw_1430",
+            scheduled_local_time=time(14, 30),
+            timezone="Asia/Taipei",
+            dataset_keys=["tw_equity_eod"],
+            desired_state="stopped",
+            observed_state="stopped",
+            revision=4,
+        )
+    )
+    await session.flush()
+    session.add(
+        SchedulerDataset(scheduler_key="finlab_tw_1430_tw_equity_eod", dataset_key="tw_equity_eod")
+    )
+    await _seed_published_calendar_year(session, market="TW", year=2026)
+    await session.commit()
+
+    rows = await list_market_freshness(session, now=NOW)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.scheduler_key == "finlab_tw_1430_tw_equity_eod"
+    assert row.desired_state == "stopped"
+    assert row.observed_state == "stopped"
+    assert row.configuration_status == "error"
+    assert row.feeds[0].configuration_error is not None
+    assert row.feeds[0].expected_data_date is None
+
+
+@pytest.mark.asyncio
 async def test_freshness_aggregates_partial_late_failed_and_coverage(test_session):
     await _setup(test_session, ["finlab", "bloomberg"])
     test_session.add_all(
@@ -175,6 +227,39 @@ async def test_freshness_aggregates_partial_late_failed_and_coverage(test_sessio
     recovered = (await list_market_freshness(test_session, now=NOW))[0]
     assert recovered.status == "fresh"
     assert recovered.last_complete_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_freshness_keeps_raw_fetched_at_distinct_from_normalization_completion(
+    test_session,
+):
+    await _setup(test_session)
+    run = _run("finlab", date(2026, 7, 22))
+    test_session.add(run)
+    await test_session.flush()
+    raw = RawMarketPayload(
+        raw_payload_id=uuid7(),
+        source_client_id=None,
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        request_key="freshness-raw",
+        idempotency_key="freshness-raw-idem",
+        schema_id="market_eod",
+        schema_version=1,
+        payload={"data": []},
+        fetched_at=datetime(2026, 7, 22, 7, tzinfo=timezone.utc),
+        expire_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
+        run_id=run.run_id,
+    )
+    test_session.add(raw)
+    run.raw_payload_id = raw.raw_payload_id
+    await test_session.commit()
+
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.last_fetched_at == raw.fetched_at
+    assert row.last_successful_update_at == NOW
+    assert row.feeds[0].last_fetched_at == raw.fetched_at
+    assert row.feeds[0].last_completed_at == NOW
 
 
 @pytest.mark.asyncio

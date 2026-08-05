@@ -234,6 +234,46 @@ async def test_dataset_seed_preserves_existing_operator_config(
     }
 
 
+@pytest.mark.asyncio
+async def test_dataset_seed_preserves_operator_finlab_override(test_session: AsyncSession) -> None:
+    test_session.add(
+        DatasetRegistry(
+            dataset_key="tw_equity_eod",
+            name="Operator Name",
+            asset_class="equity",
+            market="TW",
+            frequency="daily",
+            is_active=True,
+            config={
+                "operator_note": "keep",
+                "delivery_expectation": {
+                    "record_count": {"minimum_record_count": 2100},
+                    "source_overrides": {
+                        "finlab": {
+                            "baseline": {"enabled": True},
+                            "record_count": {"minimum_record_count": 99},
+                        },
+                        "other": {"record_count": {"minimum_record_count": 17}},
+                    },
+                },
+            },
+        )
+    )
+    await test_session.commit()
+
+    await seed_datasets(test_session)
+
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    assert dataset.config["operator_note"] == "keep"
+    assert dataset.config["delivery_expectation"]["source_overrides"]["finlab"] == {
+        "baseline": {"enabled": True},
+        "record_count": {"minimum_record_count": 99},
+    }
+    assert dataset.config["delivery_expectation"]["source_overrides"]["other"] == {
+        "record_count": {"minimum_record_count": 17}
+    }
+
+
 async def _seed_dataset(session: AsyncSession) -> None:
     session.add(
         DatasetRegistry(
@@ -327,6 +367,44 @@ async def test_cold_start_uses_absolute_minimum_only(test_session: AsyncSession)
     assert result.outcome == "pass"
     assert result.baseline_status == "cold_start"
     assert result.effective_count_threshold == 75
+
+
+@pytest.mark.asyncio
+async def test_finlab_source_override_isolated_from_global_record_threshold(
+    test_session: AsyncSession,
+) -> None:
+    """The two-row FinLab pilot bypasses baseline while other sources keep 2,100."""
+    await _seed_dataset(test_session)
+    expectation = DeliveryExpectation.model_validate(
+        {
+            **_expectation(minimum=2100).model_dump(mode="python"),
+            "source_overrides": {
+                "finlab": {
+                    "baseline": {"enabled": False},
+                    "record_count": {"minimum_record_count": 2},
+                }
+            },
+        }
+    )
+
+    finlab = await evaluate_delivery_policy(
+        test_session,
+        _request(count=2, source="finlab"),
+        expectation,
+        now=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+    )
+    other_source = await evaluate_delivery_policy(
+        test_session,
+        _request(count=2, source="operator_feed"),
+        expectation,
+        now=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+    )
+
+    assert "BATCH_RECORD_COUNT_DROP" not in {item.code for item in finlab.violations}
+    assert finlab.baseline_status == "disabled"
+    assert "BATCH_RECORD_COUNT_DROP" in {item.code for item in other_source.violations}
+    assert other_source.effective_count_threshold == 2100
+    assert expectation.record_count.minimum_record_count == 2100
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,7 +26,9 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
     SchedulerControlProtocolError,
+    SchedulerControlResponse,
     SchedulerControlTransportError,
+    validate_scheduler_definition,
 )
 from findb_fetcher.shioaji_scheduler_cli import (
     SCHEDULER_CONTROL_KEY as SHIOAJI_CONTROL_KEY,
@@ -56,6 +58,17 @@ def _response(key: str, desired: str = "running", revision: int = 1) -> dict[str
         "desired_state": desired,
         "revision": revision,
         "server_time": "2026-08-04T00:00:00Z",
+    }
+
+
+def _definition_response(key: str, desired: str = "running") -> dict[str, object]:
+    return {
+        **_response(key, desired),
+        "provider": "twelve_data",
+        "dataset_keys": ["us_equity_eod"],
+        "slot_id": "us_0600",
+        "scheduled_local_time": "06:00:00",
+        "timezone": "Asia/Taipei",
     }
 
 
@@ -123,6 +136,48 @@ def test_control_client_rejects_protocol_identity_and_sends_safe_payload() -> No
     assert body["cycle_started_at"].endswith("Z")
     assert len(body["last_error"]) <= 512
     assert "super-secret" not in body["last_error"]
+
+
+def test_control_client_parses_authoritative_scheduler_definition() -> None:
+    key = TWELVE_CONTROL_KEY
+    client = SchedulerControlClient(
+        _config(),
+        key,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=_definition_response(key), request=request)
+            )
+        ),
+    )
+    response = client.poll(observed_state="stopped")
+    assert response.provider == "twelve_data"
+    assert response.dataset_keys == ("us_equity_eod",)
+    assert response.slot_id == "us_0600"
+    assert response.scheduled_local_time == time(6)
+    assert response.timezone == "Asia/Taipei"
+
+
+def test_definition_drift_is_rejected_before_cycle() -> None:
+    response = SchedulerControlResponse(
+        scheduler_key=TWELVE_CONTROL_KEY,
+        provider="twelve_data",
+        dataset_keys=("other_dataset",),
+        slot_id="us_0600",
+        scheduled_local_time=time(6),
+        timezone="Asia/Taipei",
+        desired_state="running",
+        revision=1,
+        server_time=datetime(2026, 8, 4, tzinfo=UTC),
+    )
+    with pytest.raises(SchedulerControlProtocolError):
+        validate_scheduler_definition(
+            response,
+            provider="twelve_data",
+            dataset_keys=("us_equity_eod",),
+            slot_id="us_0600",
+            scheduled_local_time="06:00:00",
+            timezone_name="Asia/Taipei",
+        )
 
 
 def test_disabled_idle_never_constructs_or_invokes_cycle() -> None:

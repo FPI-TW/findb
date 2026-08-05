@@ -2,28 +2,47 @@
 
 ## 摘要
 
-三個 scheduler（Twelve Data、FinLab、Shioaji）的啟停狀態由 FinDB DB 保存，Dashboard
-只允許 owner 修改。Fetcher 不直接連 DB，而是使用 provider-scoped Source API 每 30 秒
-poll desired state 並回報 heartbeat；Fetcher 的 SQLite 只保存 checkpoint、retry 與 lease。
+三個 scheduler（Twelve Data、FinLab、Shioaji）的執行定義與啟停狀態由 FinDB DB 保存，
+Dashboard 只允許 owner 修改 desired state。Fetcher 不直接連 DB，而是使用
+provider-scoped Source API 每 30 秒 poll definition 與 desired state，並回報 heartbeat；
+Fetcher 的 SQLite 只保存 checkpoint、retry 與 lease。
 
 停止採優雅暫停：完成當前 cycle 後不啟動下一輪。Source API 控制面失聯時 fail-closed，
 Fetcher 不開始新 cycle，並持續 retry。
 
 ## 已實作範圍
 
-- Alembic 建立 `scheduler_control` registry table，並以 stopped 狀態建立三筆初始資料：
+- `scheduler_control` 保存 provider、slot、每日本地時間、IANA timezone、desired／observed
+  state、revision、heartbeat 與 cycle 狀態；`desired_state` 是唯一啟停權威。
+- `scheduler_dataset` 以 FK 正規化 scheduler 與 dataset 的授權 mapping；舊
+  `scheduler_control.dataset_keys` JSON 只保留相容投影，不可擴大 Source credential scope。
+- Alembic 以 stopped 狀態建立並驗證三筆初始 definition：
   - `twelve_data_us_common_stocks_daily_v1`
+    - `us_0600`、`06:00`、`Asia/Taipei`、`us_equity_eod`
   - `finlab_tw_1430_tw_equity_eod`
+    - `tw_1430`、`14:30`、`Asia/Taipei`、`tw_equity_eod`
   - `shioaji_tw_pilot_v1`
+    - `tw_1430`、`14:30`、`Asia/Taipei`、`tw_equity_minute`、`tw_etf_minute`
 - Admin API：`GET /api/v1/admin/schedulers` viewer 以上可讀；
   `PATCH /api/v1/admin/schedulers/{scheduler_key}` owner-only、revision conflict、audit event。
 - Source API：`POST /api/v1/source/scheduler-controls/{scheduler_key}/poll`，以 Source
-  credential 的 `source_name` 與 `allowed_datasets` 驗證 provider scope，並更新 observed
-  state、heartbeat、cycle 時間與最近錯誤。
+  credential 的 `source_name` 與 `allowed_datasets` 驗證 provider scope，回傳完整
+  definition，並更新 observed state、heartbeat、cycle 時間與最近錯誤。未知或不相符的
+  provider、mapping、slot、時間或 timezone 一律 fail closed。
 - Fetcher 共用 control client/loop：stopped 時保持 container 常駐但不建立 provider
   工作；cycle 中收到停止狀態時完成當前 cycle，再停止下一輪；控制 API 失聯時禁止新 cycle。
-- Dashboard Operations 概況提供 desired、observed、heartbeat age、最近 cycle、stale
-  heartbeat、loading、pending、error 與 owner-only toggle。
+- 現行 reviewed pilots 以 poll 回傳的 provider、dataset mapping、slot、時間與 timezone
+  嚴格驗證 executable workload；任何不一致都 fail closed。變更 DB definition 時必須同步
+  部署相符的 Fetcher workload，不能把這個驗證模式解讀成無需部署即可動態改排程。
+- Admin market freshness 由 `scheduler_control`／`scheduler_dataset` 投影，一個 scheduler
+  一張卡；`DatasetRegistry.delivery_expectation` 只負責各 feed 的 expected data date、
+  completeness 與 freshness policy，不再是執行時程權威。未停止、未收過資料、heartbeat
+  stale、raw 已抓取但 normalization 尚未完成，以及 definition／feed policy 錯誤必須分開顯示。
+- Dashboard Operations 統一顯示 definition、desired／observed、heartbeat age、最近 cycle、
+  provider `fetched_at`、normalization completion、feed freshness、configuration error 與
+  owner-only toggle；queue／worker 指標是 Source commit 後的 downstream pipeline。
+- Admin DQ 列表只回傳 bounded run/provider/dataset/schema/raw-reference provenance 與白名單
+  policy violation 摘要；不直接回傳 raw payload 或任意 `raw_data`。
 - Fetcher CD 三個 scheduler container 一律使用 `--run-forever` 常駐，不再讀取
   `FETCHER_*_SCHEDULER_DESIRED_STATE`。
 
@@ -44,10 +63,14 @@ Fetcher 不開始新 cycle，並持續 retry。
 ## 預設假設與驗收
 
 - 三個 deployment environment 使用獨立資料庫，因此 table 不增加 environment 欄位。
-- 啟用後只執行既有 scheduler 的 due/checkpoint 邏輯，不新增歷史 backfill。
+- 啟用後只執行通過 DB definition 一致性驗證的 slot／時間與既有 checkpoint 邏輯，不新增
+  歷史 backfill；本機 manifest 的 `enabled`／`scheduled_time` 不得覆寫 DB 或在 definition
+  不一致時繼續執行。
 - 30 秒是 control poll 預設值，可由 `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS` 調整，
   但此設定不控制啟停。
-- Backend 驗證 migration、constraint、角色權限、revision conflict、audit、scope 與 heartbeat。
+- Backend 驗證 migration/backfill、constraint、mapping scope、角色權限、revision conflict、
+  audit、heartbeat、per-feed expected date，以及 raw fetched time 與 normalization completion
+  分離。
 - Fetcher 驗證 disabled idle、enabled cycle、graceful stop、fail-closed 與長 cycle heartbeat。
 - Dashboard 驗證 schema、owner/唯讀角色、成功/失敗/stale/loading/pending UI。
 - Deployment 驗證 CD 不再依賴 desired-state environment variables，stopped row 只讓常駐

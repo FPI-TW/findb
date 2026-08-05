@@ -257,6 +257,42 @@ describe("governance pages", () => {
     )
   })
 
+  it("uses non-login autocomplete tokens and omits an empty password", async () => {
+    mocks.createUser.mockResolvedValue({
+      data: { ...user, username: "viewer", role: "viewer" },
+      temporary_password: "generated-once",
+    })
+    render(<UsersPage />)
+
+    await screen.findByText("Primary Owner")
+    const usernameInput = screen.getByLabelText("Username")
+    const passwordInput = screen.getByLabelText("指定密碼（留空自動產生）")
+    expect(usernameInput).toHaveAttribute("autocomplete", "off")
+    expect(passwordInput).toHaveAttribute("autocomplete", "new-password")
+    expect(usernameInput.closest("form")).toHaveAttribute("autocomplete", "off")
+
+    fireEvent.change(usernameInput, { target: { value: "viewer" } })
+    fireEvent.change(screen.getByLabelText("顯示名稱"), {
+      target: { value: "Read Only" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "建立" }))
+
+    await waitFor(() =>
+      expect(mocks.createUser).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          username: "viewer",
+          display_name: "Read Only",
+          role: "viewer",
+          must_change_password: true,
+        }),
+      })
+    )
+    const request = mocks.createUser.mock.calls.at(-1)?.[0] as {
+      data?: { password?: string }
+    }
+    expect(request.data).not.toHaveProperty("password")
+  })
+
   it("confirms password reset and shows the returned temporary password", async () => {
     mocks.resetUserPassword.mockResolvedValue({
       data: { ...user, must_change_password: true },
