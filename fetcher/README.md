@@ -24,11 +24,11 @@ versioned contracts，不import backend，也不持有FinDB DB、RabbitMQ或Admi
 - 由去識別化真實response fixture覆蓋的provider mapping與mock Source API整合測試。
 - 安全的container readiness與scheduler preflight入口；不會自動抓取或送出資料。
 
-Fetcher CD分別依Environment的`FETCHER_SCHEDULER_DESIRED_STATE`、
-`FETCHER_FINLAB_SCHEDULER_DESIRED_STATE`與
-`FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE`收斂三個隔離scheduler。Staging三者均為
-`stopped`；production三者均為`running`。每個provider使用獨立immutable image、
-Source client key、container與durable SQLite state，不能互相共用credential或state。
+Backend migration會以`stopped`建立三筆scheduler-control資料；Fetcher CD只負責讓三個
+`--run-forever` container保持常駐，不再控制desired state。每個runtime以對應的固定
+scheduler key輪詢Source control endpoint，並只在owner透過Dashboard授權`running`後
+建立provider cycle。每個provider使用獨立immutable image、Source client key、container
+與durable SQLite state，不能互相共用credential或state。
 R2 bucket與API
 token已由外部提供；raw object lifecycle為30天，bucket lock為7天，兩者由Cloudflare
 R2管理而非Fetcher scheduler。
@@ -413,13 +413,11 @@ Scheduler one-shot exit code：
 | `FETCHER_REQUEST_TIMEOUT_SECONDS` | 否 | `30` | 單次HTTP timeout |
 | `FETCHER_MAX_ATTEMPTS` | 否 | `3` | 包含首次呼叫的最大attempt數 |
 | `FETCHER_MAX_RETRY_AFTER_SECONDS` | 否 | `30` | Retry-After與backoff上限 |
+| `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS` | 否 | `30` | scheduler control輪詢與heartbeat間隔；限制為`1`–`30`秒，確保90秒stale門檻至少涵蓋三次heartbeat |
 | `FETCHER_SCHEDULE_FILE` | 否 | `/app/configs/twelve_data_us_common_stocks_daily.v1.json` | Versioned scheduler設定 |
-| `FETCHER_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | 僅接受`running`或`stopped`；staging=`stopped`、production=`running` |
 | `FETCHER_STATE_PATH` | 否 | `/var/lib/findb-fetcher/state.sqlite3` | Fetcher-owned durable SQLite state |
-| `FETCHER_FINLAB_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | FinLab container desired state |
 | `FETCHER_FINLAB_STATE_PATH` | 否 | `/var/lib/findb-finlab-fetcher/state.sqlite3` | FinLab專用durable SQLite state |
 | `FINLAB_API_TOKEN` | FinLab是 | — | FinLab headless SDK token |
-| `FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE` | CD Environment是 | — | Shioaji container desired state |
 | `FETCHER_SHIOAJI_STATE_PATH` | 否 | `/var/lib/findb-shioaji-fetcher/state.sqlite3` | Shioaji production專用durable SQLite state |
 | `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji是 | — | Production Shioaji帳號；不得與staging共用 |
 | `SHIOAJI_SIMULATION` | Shioaji是 | `true` | 所有環境只接受simulation mode；明確的`false`會fail closed |

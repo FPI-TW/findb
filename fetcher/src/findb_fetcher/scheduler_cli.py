@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import sys
-import time
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +31,7 @@ from findb_fetcher.schedule import (
     load_schedule_config,
     load_schedule_manifest,
 )
+from findb_fetcher.scheduler_control import SchedulerControlClient, SchedulerControlLoop
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
 from findb_fetcher.twelve_data_scheduler import (
     SchedulerRun,
@@ -45,6 +45,7 @@ EXIT_CONFIG_ERROR = 2
 EXIT_RETRY_PENDING = 8
 EXIT_SCHEDULE_FAILED = 9
 MAX_OUTPUT_BYTES = 2048
+SCHEDULER_CONTROL_KEY = "twelve_data_us_common_stocks_daily_v1"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,8 +100,6 @@ def main(argv: list[str] | None = None) -> int:
         fetcher_config = FetcherConfig.from_env()
         calendar_config = MarketCalendarConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
-        raw_storage_config = RawStorageConfig.from_env()
-        twelve_data_config = TwelveDataConfig.from_env()
         state = SchedulerState(args.state_path)
         if args.check:
             _emit_json(
@@ -109,8 +108,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_OK
 
-        raw_store = R2RawPayloadStore(raw_storage_config)
+        if args.run_forever:
+            return _run_forever(
+                fetcher_config,
+                lambda: _run_cycle(
+                    schedule=schedule,
+                    universe=universe,
+                    state=state,
+                    registry=registry,
+                    fetcher_config=fetcher_config,
+                    calendar_config=calendar_config,
+                ),
+            )
 
+        raw_storage_config = RawStorageConfig.from_env()
+        twelve_data_config = TwelveDataConfig.from_env()
+        raw_store = R2RawPayloadStore(raw_storage_config)
         with ExitStack() as stack:
             calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
             provider = stack.enter_context(TwelveDataClient(twelve_data_config))
@@ -131,8 +144,6 @@ def main(argv: list[str] | None = None) -> int:
                 executor=executor,
                 calendar=calendar,
             )
-            if args.run_forever:
-                return _run_forever(service, schedule.poll_interval_seconds)
             execution = service.run_once(now=args.as_of or datetime.now(timezone.utc))
         _emit_summary(execution)
         return _exit_code(execution)
@@ -152,12 +163,56 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CONFIG_ERROR
 
 
-def _run_forever(service: SchedulerService, poll_interval_seconds: int) -> int:
-    while True:
+def _run_forever(
+    config: FetcherConfig,
+    cycle_factory: Any,
+    *,
+    stop_event: Any = None,
+) -> int:
+    """Run the DB-controlled loop, constructing provider clients per cycle."""
+
+    with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
+        loop = SchedulerControlLoop(control)
+        return loop.run(cycle_factory, stop_event=stop_event)
+
+
+def _run_cycle(
+    *,
+    schedule: ScheduleConfig,
+    universe: SymbolUniverse,
+    state: SchedulerState,
+    registry: ContractRegistry,
+    fetcher_config: FetcherConfig,
+    calendar_config: MarketCalendarConfig,
+) -> None:
+    """Construct and tear down all provider resources for one enabled cycle."""
+
+    raw_storage_config = RawStorageConfig.from_env()
+    twelve_data_config = TwelveDataConfig.from_env()
+    raw_store = R2RawPayloadStore(raw_storage_config)
+    with ExitStack() as stack:
+        calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
+        provider = stack.enter_context(TwelveDataClient(twelve_data_config))
+        source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
+        executor = TwelveDataScheduledExecutor(
+            schedule=schedule,
+            universe=universe,
+            provider=provider,
+            source=source,
+            registry=registry,
+            raw_store=raw_store,
+            state=state,
+        )
+        service = SchedulerService(
+            schedule=schedule,
+            universe=universe,
+            state=state,
+            executor=executor,
+            calendar=calendar,
+        )
         execution = service.run_once(now=datetime.now(timezone.utc))
-        if execution.enqueued or execution.claimed:
-            _emit_summary(execution)
-        time.sleep(poll_interval_seconds)
+    if execution.enqueued or execution.claimed:
+        _emit_summary(execution)
 
 
 def _exit_code(execution: SchedulerRun) -> int:

@@ -72,9 +72,7 @@ SERVICE_CONFIGS: Final = {
     ),
     "fetcher": ServiceConfig(
         variables=(
-            "FETCHER_SCHEDULER_DESIRED_STATE",
-            "FETCHER_FINLAB_SCHEDULER_DESIRED_STATE",
-            "FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE",
+            "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS",
             "SHIOAJI_SIMULATION",
             "FETCHER_SOURCE_API_URL",
             "FINDB_SERVE_BASE_URL",

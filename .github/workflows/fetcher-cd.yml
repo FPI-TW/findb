@@ -199,7 +199,6 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           FETCHER_IMAGE: ${{ env.FETCHER_IMAGE }}
           FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
-          FETCHER_SCHEDULER_DESIRED_STATE: ${{ vars.FETCHER_SCHEDULER_DESIRED_STATE }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
@@ -217,6 +216,7 @@ jobs:
           CLOUDFLARE_R2_RAW_SESSION_TOKEN: ${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}
           CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
           FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
           FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
           FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
         with:
@@ -224,7 +224,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SCHEDULER_DESIRED_STATE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY,TWELVE_DATA_API_KEY,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY,TWELVE_DATA_API_KEY,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
 
@@ -247,14 +247,6 @@ jobs:
               echo "::error title=Fetcher credential isolation failed::Calendar Serve and Source credentials must be different"
               exit 1
             fi
-            case "${FETCHER_SCHEDULER_DESIRED_STATE:-}" in
-              running|stopped) ;;
-              *)
-                echo "::error title=Invalid Twelve Data scheduler state::FETCHER_SCHEDULER_DESIRED_STATE must be running or stopped"
-                exit 1
-                ;;
-            esac
-
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
@@ -264,17 +256,16 @@ jobs:
 
             reconcile_scheduler() {
               provider_id="$1"
-              desired_state="$2"
-              image="$3"
-              state_dir="$4"
-              state_path="$5"
-              stable="$6"
-              candidate="$7"
-              previous="$8"
-              preflight_name="$9"
-              cache_dir="${10}"
-              runtime_env_args="${11}"
-              shift 11
+              image="$2"
+              state_dir="$3"
+              state_path="$4"
+              stable="$5"
+              candidate="$6"
+              previous="$7"
+              preflight_name="$8"
+              cache_dir="${9}"
+              runtime_env_args="${10}"
+              shift 10
               scheduler_command=("$@")
 
               sudo mkdir -p "$state_dir"
@@ -354,7 +345,7 @@ jobs:
               fi
 
               # Resolve interrupted candidate/previous names without changing
-              # another provider or starting a stopped target.
+              # another provider's container.
               if docker container inspect "$candidate" >/dev/null 2>&1; then
                 if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then
                   docker rm -f "$candidate"
@@ -377,8 +368,8 @@ jobs:
                 cache_mount="--mount type=bind,src=$cache_dir,dst=/home/fetcher"
               fi
 
-              # Provider-specific preflight is deliberately before the first
-              # stable stop. --check performs no provider or Source calls.
+              # Provider-specific preflight is deliberately before replacing
+              # the stable container. --check performs no provider or Source calls.
               docker run --rm \
                 --name "$preflight_name" \
                 --user 10001:10001 \
@@ -406,11 +397,7 @@ jobs:
                   docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1
                 fi
                 if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
-                  if [ "$desired_state" = "running" ]; then
-                    docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
-                  else
-                    docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1
-                  fi
+                  docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
                 fi
                 if [ "$recovery_failed" -ne 0 ]; then
                   echo "::error title=Fetcher recovery failed::${provider_id} rollback did not complete" >&2
@@ -443,60 +430,40 @@ jobs:
               if [ -n "$cache_mount" ]; then
                 common_runtime_args+=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
               fi
-              if [ "$desired_state" = "stopped" ]; then
-                docker create \
-                  --name "$candidate" \
-                  "${common_runtime_args[@]}" \
-                  $runtime_env_args \
-                  "$image" \
-                  "${scheduler_command[@]}" --run-forever >/dev/null
-                candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
-                candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
-                candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
-                if [ "$candidate_image" != "$image" ] || [ "$candidate_running" != "false" ] || [ "$candidate_user" != "10001:10001" ]; then
-                  echo "::error title=Fetcher stopped release rejected::${provider_id} candidate is not the exact stopped image" >&2
-                  false
+              docker run -d \
+                --name "$candidate" \
+                "${common_runtime_args[@]}" \
+                $runtime_env_args \
+                "$image" \
+                "${scheduler_command[@]}" --run-forever >/dev/null
+              candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
+              candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
+              healthy=0
+              for attempt in $(seq 1 6); do
+                status="$(docker inspect --format '{{.State.Status}}' "$candidate")"
+                restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"
+                if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then
+                  break
                 fi
-                docker rename "$candidate" "$stable"
-                [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
-              else
-                docker run -d \
-                  --name "$candidate" \
-                  "${common_runtime_args[@]}" \
-                  $runtime_env_args \
-                  "$image" \
-                  "${scheduler_command[@]}" --run-forever >/dev/null
-                healthy=0
-                for attempt in $(seq 1 6); do
-                  status="$(docker inspect --format '{{.State.Status}}' "$candidate")"
-                  restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"
-                  if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then
-                    break
-                  fi
-                  if [ "$attempt" -eq 6 ]; then healthy=1; break; fi
-                  sleep 5
-                done
-                if [ "$healthy" -ne 1 ]; then
-                  docker inspect --format \
-                    "${provider_id} candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" \
-                    "$candidate" || true
-                  false
-                fi
-                docker rename "$candidate" "$stable"
-                [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
-              fi
-
-              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$desired_state" = "running" ] && [ "$stable_running" != "true" ]; then
-                echo "::error title=Fetcher running release rejected::${provider_id} did not converge to running" >&2
+                if [ "$attempt" -eq 6 ]; then healthy=1; break; fi
+                sleep 5
+              done
+              if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] || [ "$healthy" -ne 1 ]; then
+                docker inspect --format \
+                  "${provider_id} candidate failed: image={{.Config.Image}} user={{.Config.User}} status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" \
+                  "$candidate" || true
                 false
               fi
-              if [ "$desired_state" = "stopped" ] && [ "$stable_running" != "false" ]; then
-                echo "::error title=Fetcher stopped release rejected::${provider_id} did not converge to stopped" >&2
+              docker rename "$candidate" "$stable"
+              [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
+
+              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
+              if [ "$stable_running" != "true" ]; then
+                echo "::error title=Fetcher release rejected::${provider_id} did not converge to running" >&2
                 false
               fi
               trap - ERR INT TERM HUP
-              echo "Fetcher ${provider_id} scheduler release reconciled to ${desired_state}"
+              echo "Fetcher ${provider_id} scheduler release reconciled to running"
             }
 
             runtime_env_args="\
@@ -517,12 +484,13 @@ jobs:
               --env CLOUDFLARE_R2_RAW_SESSION_TOKEN \
               --env CLOUDFLARE_R2_MAX_OBJECT_BYTES \
               --env FETCHER_REQUEST_TIMEOUT_SECONDS \
+              --env FETCHER_SCHEDULER_CONTROL_POLL_SECONDS \
               --env FETCHER_MAX_ATTEMPTS \
               --env FETCHER_MAX_RETRY_AFTER_SECONDS \
               --env FETCHER_STATE_PATH"
             # BEGIN FETCHER TWELVE SCHEDULER RECONCILIATION
             # Provider command contracts: findb-fetch-scheduler --check and findb-fetch-scheduler --run-forever.
-            reconcile_scheduler twelve "${FETCHER_SCHEDULER_DESIRED_STATE}" "${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}" \
+            reconcile_scheduler twelve "${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}" \
               /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
               findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
               findb-fetcher-scheduler-preflight - "$runtime_env_args" findb-fetch-scheduler
@@ -535,7 +503,6 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
           FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
-          FETCHER_FINLAB_SCHEDULER_DESIRED_STATE: ${{ vars.FETCHER_FINLAB_SCHEDULER_DESIRED_STATE }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
@@ -550,6 +517,7 @@ jobs:
           CLOUDFLARE_R2_RAW_SESSION_TOKEN: ${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}
           CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
           FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
           FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
           FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
         with:
@@ -557,7 +525,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_FINLAB_SCHEDULER_DESIRED_STATE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_FINLAB_SOURCE_CLIENT_KEY,FINLAB_API_TOKEN,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_FINLAB_SOURCE_CLIENT_KEY,FINLAB_API_TOKEN,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
             require_runtime_value() {
@@ -581,13 +549,6 @@ jobs:
                 exit 1
               fi
             done
-            case "${FETCHER_FINLAB_SCHEDULER_DESIRED_STATE:-}" in
-              running|stopped) ;;
-              *)
-                echo "::error title=Invalid FinLab scheduler state::FETCHER_FINLAB_SCHEDULER_DESIRED_STATE must be running or stopped"
-                exit 1
-                ;;
-            esac
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
@@ -596,9 +557,9 @@ jobs:
             export FINLAB_API_TOKEN
 
             reconcile_scheduler() {
-              provider_id="$1"; desired_state="$2"; image="$3"; state_dir="$4"; state_path="$5"
-              stable="$6"; candidate="$7"; previous="$8"; preflight_name="$9"; cache_dir="${10}"
-              runtime_env_args="${11}"; shift 11; scheduler_command=("$@")
+              provider_id="$1"; image="$2"; state_dir="$3"; state_path="$4"
+              stable="$5"; candidate="$6"; previous="$7"; preflight_name="$8"; cache_dir="${9}"
+              runtime_env_args="${10}"; shift 10; scheduler_command=("$@")
               sudo mkdir -p "$state_dir" "$cache_dir"
               sudo chown 10001:10001 "$state_dir" "$cache_dir"
               sudo chmod 0700 "$state_dir" "$cache_dir"
@@ -641,14 +602,14 @@ jobs:
               fi
               docker pull "$image"
               runtime_mounts="--mount type=bind,src=$state_dir,dst=$state_dir --mount type=bind,src=$cache_dir,dst=/home/fetcher"
-              # FinLab preflight happens before stopping its stable container.
+              # FinLab preflight happens before replacing its stable container.
               docker run --rm --name "$preflight_name" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m $runtime_mounts $runtime_env_args "$image" "${scheduler_command[@]}" --check
               recover_scheduler() {
                 original_status="$1"; [ "$original_status" -eq 0 ] && original_status=1; trap - ERR INT TERM HUP; set +e; recovery_failed=0
                 if docker container inspect "$candidate" >/dev/null 2>&1; then docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1; fi
                 if ! docker container inspect "$stable" >/dev/null 2>&1 && docker container inspect "$previous" >/dev/null 2>&1; then docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1; fi
                 if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
-                  if [ "$desired_state" = "running" ]; then docker start "$stable" >/dev/null 2>&1 || recovery_failed=1; else docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1; fi
+                  docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
                 fi
                 [ "$recovery_failed" -eq 0 ] || echo "::error title=FinLab recovery failed::Rollback did not complete" >&2
                 exit "$original_status"
@@ -657,40 +618,34 @@ jobs:
               had_previous=0
               if docker container inspect "$stable" >/dev/null 2>&1; then had_previous=1; docker stop --time 30 "$stable" >/dev/null; docker rename "$stable" "$previous"; fi
               common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher")
-              if [ "$desired_state" = "stopped" ]; then
-                docker create --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null
-                [ "$(docker inspect --format '{{.Config.Image}}' "$candidate")" = "$image" ] || false
-                [ "$(docker inspect --format '{{.State.Running}}' "$candidate")" = "false" ] || false
-                [ "$(docker inspect --format '{{.Config.User}}' "$candidate")" = "10001:10001" ] || false
-              else
-                docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null
-                healthy=0
-                for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done
-                [ "$healthy" -eq 1 ] || { docker inspect --format "FinLab candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true; false; }
+              docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null
+              candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
+              candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
+              healthy=0
+              for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done
+              if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] || [ "$healthy" -ne 1 ]; then
+                docker inspect --format "FinLab candidate failed: image={{.Config.Image}} user={{.Config.User}} status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true
+                false
               fi
               docker rename "$candidate" "$stable"; [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
               stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$desired_state" = "running" ] && [ "$stable_running" != "true" ]; then
-                echo "::error title=FinLab running release rejected::Scheduler did not converge to running" >&2
-                false
-              fi
-              if [ "$desired_state" = "stopped" ] && [ "$stable_running" != "false" ]; then
-                echo "::error title=FinLab stopped release rejected::Scheduler did not converge to stopped" >&2
+              if [ "$stable_running" != "true" ]; then
+                echo "::error title=FinLab release rejected::Scheduler did not converge to running" >&2
                 false
               fi
               trap - ERR INT TERM HUP
-              echo "FinLab scheduler release reconciled to ${desired_state}"
+              echo "FinLab scheduler release reconciled to running"
             }
             runtime_env_args="\
               --env SOURCE_API_URL --env SOURCE_CLIENT_KEY --env FINDB_SERVE_BASE_URL \
               --env FETCHER_CALENDAR_SERVE_API_KEY --env FETCHER_CALENDAR_TIMEOUT_SECONDS --env FETCHER_CALENDAR_CACHE_TTL_SECONDS \
               --env FINLAB_API_TOKEN --env CLOUDFLARE_R2_ACCOUNT_ID --env CLOUDFLARE_R2_RAW_BUCKET \
               --env CLOUDFLARE_R2_RAW_ACCESS_KEY_ID --env CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY --env CLOUDFLARE_R2_RAW_SESSION_TOKEN \
-              --env CLOUDFLARE_R2_MAX_OBJECT_BYTES --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_MAX_ATTEMPTS \
+              --env CLOUDFLARE_R2_MAX_OBJECT_BYTES --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_SCHEDULER_CONTROL_POLL_SECONDS --env FETCHER_MAX_ATTEMPTS \
               --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_STATE_PATH"
             # BEGIN FETCHER FINLAB SCHEDULER RECONCILIATION
             # Provider command contracts: findb-fetch-finlab-scheduler --check and findb-fetch-finlab-scheduler --run-forever.
-            reconcile_scheduler finlab "${FETCHER_FINLAB_SCHEDULER_DESIRED_STATE}" "${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}" \
+            reconcile_scheduler finlab "${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}" \
               /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
               findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
               findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache "$runtime_env_args" \
@@ -704,7 +659,6 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           FETCHER_SHIOAJI_IMAGE: ${{ env.FETCHER_SHIOAJI_IMAGE }}
           FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
-          FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE: ${{ vars.FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
@@ -721,6 +675,7 @@ jobs:
           CLOUDFLARE_R2_RAW_SESSION_TOKEN: ${{ secrets.CLOUDFLARE_R2_RAW_SESSION_TOKEN }}
           CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
           FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
           FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
           FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
         with:
@@ -728,7 +683,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_SHIOAJI_SOURCE_CLIENT_KEY,SHIOAJI_API_KEY,SHIOAJI_SECRET_KEY,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_SHIOAJI_SOURCE_CLIENT_KEY,SHIOAJI_API_KEY,SHIOAJI_SECRET_KEY,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
             require_runtime_value() {
@@ -753,13 +708,6 @@ jobs:
             if [ "${SHIOAJI_SIMULATION:-}" != "true" ]; then
               echo "::error title=Shioaji safety configuration failed::SHIOAJI_SIMULATION must be true"; exit 1
             fi
-            case "${FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE:-}" in
-              running|stopped) ;;
-              *)
-                echo "::error title=Invalid Shioaji scheduler state::FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE must be running or stopped"
-                exit 1
-                ;;
-            esac
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
@@ -768,8 +716,8 @@ jobs:
             export SHIOAJI_API_KEY SHIOAJI_SECRET_KEY SHIOAJI_SIMULATION
 
             reconcile_scheduler() {
-              provider_id="$1"; desired_state="$2"; image="$3"; state_dir="$4"; state_path="$5"
-              stable="$6"; candidate="$7"; previous="$8"; preflight_name="$9"; runtime_env_args="${10}"; shift 10
+              provider_id="$1"; image="$2"; state_dir="$3"; state_path="$4"
+              stable="$5"; candidate="$6"; previous="$7"; preflight_name="$8"; runtime_env_args="${9}"; shift 9
               scheduler_command=("$@")
               cache_dir="$state_dir/cache"
               sudo mkdir -p "$state_dir" "$cache_dir"; sudo chown 10001:10001 "$state_dir" "$cache_dir"; sudo chmod 0700 "$state_dir" "$cache_dir"
@@ -785,24 +733,20 @@ jobs:
               if docker container inspect "$candidate" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then docker rm -f "$candidate"; else docker rename "$candidate" "$stable"; fi; fi
               if docker container inspect "$previous" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi; fi
               docker pull "$image"
-              # Shioaji preflight is before its stable stop and validates the
+              # Shioaji preflight is before replacing its stable container and validates the
               # manifest, credentials, and the explicit simulation=true mode.
               docker run --rm --name "$preflight_name" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher" $runtime_env_args "$image" "${scheduler_command[@]}" --check
-              recover_scheduler() { original_status="$1"; [ "$original_status" -eq 0 ] && original_status=1; trap - ERR INT TERM HUP; set +e; recovery_failed=0; if docker container inspect "$candidate" >/dev/null 2>&1; then docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1; fi; if [ "$recovery_failed" -eq 0 ] && ! docker container inspect "$stable" >/dev/null 2>&1 && docker container inspect "$previous" >/dev/null 2>&1; then docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1; fi; if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then if [ "$desired_state" = "running" ]; then docker start "$stable" >/dev/null 2>&1 || recovery_failed=1; else docker stop --time 30 "$stable" >/dev/null 2>&1 || recovery_failed=1; fi; fi; [ "$recovery_failed" -eq 0 ] || echo "::error title=Shioaji recovery failed::Rollback did not complete" >&2; exit "$original_status"; }
+              recover_scheduler() { original_status="$1"; [ "$original_status" -eq 0 ] && original_status=1; trap - ERR INT TERM HUP; set +e; recovery_failed=0; if docker container inspect "$candidate" >/dev/null 2>&1; then docker rm -f "$candidate" >/dev/null 2>&1 || recovery_failed=1; fi; if [ "$recovery_failed" -eq 0 ] && ! docker container inspect "$stable" >/dev/null 2>&1 && docker container inspect "$previous" >/dev/null 2>&1; then docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1; fi; if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then docker start "$stable" >/dev/null 2>&1 || recovery_failed=1; fi; [ "$recovery_failed" -eq 0 ] || echo "::error title=Shioaji recovery failed::Rollback did not complete" >&2; exit "$original_status"; }
               trap 'recover_scheduler "$?"' ERR; trap 'recover_scheduler 130' INT; trap 'recover_scheduler 143' TERM; trap 'recover_scheduler 129' HUP
               had_previous=0; if docker container inspect "$stable" >/dev/null 2>&1; then had_previous=1; docker stop --time 30 "$stable" >/dev/null; docker rename "$stable" "$previous"; fi
               common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher")
-              if [ "$desired_state" = "stopped" ]; then docker create --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null; [ "$(docker inspect --format '{{.Config.Image}}' "$candidate")" = "$image" ] || false; [ "$(docker inspect --format '{{.State.Running}}' "$candidate")" = "false" ] || false; [ "$(docker inspect --format '{{.Config.User}}' "$candidate")" = "10001:10001" ] || false; else docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null; healthy=0; for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done; [ "$healthy" -eq 1 ] || { docker inspect --format "Shioaji candidate failed: status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true; false; }; fi
+              docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null; candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"; candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"; healthy=0; for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done; if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] || [ "$healthy" -ne 1 ]; then docker inspect --format "Shioaji candidate failed: image={{.Config.Image}} user={{.Config.User}} status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true; false; fi
               docker rename "$candidate" "$stable"; [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true; stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$desired_state" = "running" ] && [ "$stable_running" != "true" ]; then
-                echo "::error title=Shioaji running release rejected::Scheduler did not converge to running" >&2
+              if [ "$stable_running" != "true" ]; then
+                echo "::error title=Shioaji release rejected::Scheduler did not converge to running" >&2
                 false
               fi
-              if [ "$desired_state" = "stopped" ] && [ "$stable_running" != "false" ]; then
-                echo "::error title=Shioaji stopped release rejected::Scheduler did not converge to stopped" >&2
-                false
-              fi
-              trap - ERR INT TERM HUP; echo "Shioaji scheduler release reconciled to ${desired_state}"
+              trap - ERR INT TERM HUP; echo "Shioaji scheduler release reconciled to running"
             }
             runtime_env_args="\
               --env SOURCE_API_URL --env SOURCE_CLIENT_KEY --env FINDB_SERVE_BASE_URL \
@@ -810,10 +754,10 @@ jobs:
               --env SHIOAJI_API_KEY --env SHIOAJI_SECRET_KEY --env SHIOAJI_SIMULATION \
               --env CLOUDFLARE_R2_ACCOUNT_ID --env CLOUDFLARE_R2_RAW_BUCKET --env CLOUDFLARE_R2_RAW_ACCESS_KEY_ID \
               --env CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY --env CLOUDFLARE_R2_RAW_SESSION_TOKEN --env CLOUDFLARE_R2_MAX_OBJECT_BYTES \
-              --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_MAX_ATTEMPTS --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_SHIOAJI_STATE_PATH"
+              --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_SCHEDULER_CONTROL_POLL_SECONDS --env FETCHER_MAX_ATTEMPTS --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_SHIOAJI_STATE_PATH"
             # BEGIN FETCHER SHIOAJI SCHEDULER RECONCILIATION
             # Provider command contracts: findb-fetch-shioaji-scheduler --check and findb-fetch-shioaji-scheduler --run-forever.
-            reconcile_scheduler shioaji "${FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE}" "${FETCHER_SHIOAJI_IMAGE}:${FETCHER_IMAGE_TAG}" \
+            reconcile_scheduler shioaji "${FETCHER_SHIOAJI_IMAGE}:${FETCHER_IMAGE_TAG}" \
               /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
               findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
               findb-fetcher-shioaji-scheduler-preflight "$runtime_env_args" findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json

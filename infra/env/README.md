@@ -62,14 +62,15 @@ before making remote changes and never prints values. Serve lookup/cache secrets
 are required only when `SERVE_REQUIRE_AUTH=true`; when enabled they must be
 different DB-backed credentials.
 
-Fetcher Environments must set `FETCHER_SCHEDULER_DESIRED_STATE`,
-`FETCHER_FINLAB_SCHEDULER_DESIRED_STATE`, and
-`FETCHER_SHIOAJI_SCHEDULER_DESIRED_STATE` to exactly `running` or `stopped`.
-Fetcher Environments also set `SHIOAJI_SIMULATION=true`; the reviewed data-only
+Fetcher Environments set `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS` (default `30`,
+valid range `1`–`30`) for the DB control poll/heartbeat cadence. Desired state
+is not an Environment variable; it is stored in FinDB DB and changed by an
+owner through Dashboard. Fetcher Environments also set `SHIOAJI_SIMULATION=true`;
+the reviewed data-only
 account and scheduler reject production trading mode in every target.
 The same CD workflow preflights each provider image and its own durable SQLite
-state before converging that provider's isolated container. Staging keeps all
-three stopped by default; production runs the reviewed pilots. Calendar Serve
+state before converging that provider's isolated container. Scheduler rows are
+created stopped in each environment and enabled only after controlled rollout. Calendar Serve
 and all three provider Source credentials must be pairwise distinct. Removing a
 local value does not delete an already-published GitHub Environment value:
 delete retired remote values explicitly before redeploying.

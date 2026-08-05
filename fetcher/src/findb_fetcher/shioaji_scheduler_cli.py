@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Never, Sequence
 
+from findb_fetcher.scheduler_control import SchedulerControlClient, SchedulerControlLoop
 from findb_fetcher.shioaji_scheduler import (
     MAX_OUTPUT_BYTES,
     SchedulerRun,
@@ -28,6 +27,7 @@ EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
 EXIT_RETRY_PENDING = 8
 EXIT_SCHEDULE_FAILED = 9
+SCHEDULER_CONTROL_KEY = "shioaji_tw_pilot_v1"
 
 
 class _Parser(argparse.ArgumentParser):
@@ -65,6 +65,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         state = open_production_state(args.state_path)
         try:
+            if args.run_forever:
+                return _run_forever(
+                    fetcher,
+                    lambda: _run_cycle(
+                        manifest,
+                        state,
+                        fetcher=fetcher,
+                        calendar_config=calendar_config,
+                        raw_config=raw_config,
+                        contracts=contracts,
+                    ),
+                )
             scheduler, clients = build_runtime(
                 manifest,
                 state,
@@ -73,8 +85,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raw_config=raw_config,
                 contracts=contracts,
             )
-            if args.run_forever:
-                return _run_forever(scheduler)
             execution = scheduler.run_once(
                 now=datetime.now(timezone.utc),
             )
@@ -91,21 +101,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
 
-def _run_forever(scheduler: Any, poll_interval_seconds: int | None = None) -> int:
-    while True:
+def _run_forever(
+    config: Any,
+    cycle_factory: Any,
+    *,
+    stop_event: Any = None,
+) -> int:
+    with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
+        loop = SchedulerControlLoop(control)
+        return loop.run(cycle_factory, stop_event=stop_event)
+
+
+def _run_cycle(
+    manifest: dict[str, Any],
+    state: Any,
+    *,
+    fetcher: Any,
+    calendar_config: Any,
+    raw_config: Any,
+    contracts: Any,
+) -> None:
+    """Build provider/runtime clients only after control grants a cycle."""
+
+    scheduler, clients = build_runtime(
+        manifest,
+        state,
+        fetcher=fetcher,
+        calendar_config=calendar_config,
+        raw_config=raw_config,
+        contracts=contracts,
+    )
+    try:
         execution = scheduler.run_once(now=datetime.now(timezone.utc))
         _emit_run(execution)
-        time.sleep(poll_interval_seconds or _poll_seconds())
-
-
-def _poll_seconds() -> int:
-    raw = os.getenv("FETCHER_SHIOAJI_POLL_SECONDS")
-    if raw is None:
-        return 60
-    value = int(raw)
-    if not 1 <= value <= 3600:
-        raise ValueError("FETCHER_SHIOAJI_POLL_SECONDS is outside bounds")
-    return value
+    finally:
+        # Source and calendar own HTTP clients; R2's boto client has no
+        # required lifecycle hook and is intentionally not touched here.
+        _close_clients(clients)
 
 
 def _close_clients(clients: object) -> None:

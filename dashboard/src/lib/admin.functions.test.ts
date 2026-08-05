@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { type DashboardRequest, mergeDashboardRefresh } from "./admin-api"
-import { fetchDashboardData } from "./admin.server"
+import { fetchDashboardData, patchSchedulerData } from "./admin.server"
 
 const timestamp = "2026-07-23T02:00:00Z"
 const pagination = {
@@ -77,6 +77,56 @@ const responses = {
     oldest_missing_delivery_at: null,
     oldest_missing_delivery_age_seconds: null,
   },
+  "/api/v1/admin/schedulers": {
+    success: true,
+    data: [
+      {
+        scheduler_key: "twelve_data_us_common_stocks_daily_v1",
+        provider: "twelve_data",
+        dataset_keys: ["us_equity_eod"],
+        desired_state: "running",
+        observed_state: "running",
+        revision: 3,
+        last_heartbeat_at: timestamp,
+        last_cycle_started_at: timestamp,
+        last_cycle_completed_at: timestamp,
+        last_error: null,
+        created_at: timestamp,
+        updated_at: timestamp,
+        heartbeat_age_seconds: 2,
+      },
+      {
+        scheduler_key: "finlab_tw_1430_tw_equity_eod",
+        provider: "finlab",
+        dataset_keys: ["tw_equity_eod"],
+        desired_state: "stopped",
+        observed_state: "stopped",
+        revision: 4,
+        last_heartbeat_at: null,
+        last_cycle_started_at: null,
+        last_cycle_completed_at: null,
+        last_error: null,
+        created_at: timestamp,
+        updated_at: timestamp,
+        heartbeat_age_seconds: null,
+      },
+      {
+        scheduler_key: "shioaji_tw_pilot_v1",
+        provider: "shioaji",
+        dataset_keys: ["tw_equity_minute", "tw_etf_minute"],
+        desired_state: "stopped",
+        observed_state: "running",
+        revision: 1,
+        last_heartbeat_at: timestamp,
+        last_cycle_started_at: timestamp,
+        last_cycle_completed_at: null,
+        last_error: "provider timeout",
+        created_at: timestamp,
+        updated_at: timestamp,
+        heartbeat_age_seconds: 120,
+      },
+    ],
+  },
   "/api/v1/admin/missing-deliveries": {
     data: [],
     pagination,
@@ -148,10 +198,11 @@ describe("FinDB Admin server boundary", () => {
       recordingFetch(calls)
     )
 
-    expect(calls).toHaveLength(6)
+    expect(calls).toHaveLength(7)
     expect(calls.map(call => call.url.pathname)).toEqual([
       "/api/v1/admin/market-freshness",
       "/api/v1/admin/queue/health",
+      "/api/v1/admin/schedulers",
       "/api/v1/admin/missing-deliveries",
       "/api/v1/admin/dq-issues",
       "/api/v1/admin/corrections",
@@ -165,15 +216,16 @@ describe("FinDB Admin server boundary", () => {
         "Bearer operator-secret"
       )
     }
-    expect(calls[5]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
-    expect(calls[5]?.url.searchParams.get("page")).toBe("3")
-    expect(calls[5]?.url.searchParams.get("page_size")).toBe("100")
-    expect(calls[3]?.url.searchParams.get("resolved")).toBe("false")
-    expect(calls[3]?.url.searchParams.get("page")).toBe("3")
-    expect(calls[3]?.url.searchParams.get("page_size")).toBe("100")
-    expect(calls[3]?.url.searchParams.has("dataset_key")).toBe(false)
+    expect(calls[6]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
+    expect(calls[6]?.url.searchParams.get("page")).toBe("3")
+    expect(calls[6]?.url.searchParams.get("page_size")).toBe("100")
+    expect(calls[4]?.url.searchParams.get("resolved")).toBe("false")
+    expect(calls[4]?.url.searchParams.get("page")).toBe("3")
+    expect(calls[4]?.url.searchParams.get("page_size")).toBe("100")
+    expect(calls[4]?.url.searchParams.has("dataset_key")).toBe(false)
     expect(result.freshness.ok).toBe(true)
     expect(result.rawPayloads.ok).toBe(true)
+    expect(result.schedulers.ok).toBe(true)
   })
 
   it("keeps successful panels when one endpoint fails", async () => {
@@ -259,5 +311,69 @@ describe("FinDB Admin server boundary", () => {
       error: "FinDB API returned an unexpected response",
     })
     expect(JSON.stringify(result)).not.toContain("sensitive response value")
+  })
+
+  it("patches a scheduler with the expected revision and no-store auth", async () => {
+    const calls: RecordedCall[] = []
+    const scheduler = responses["/api/v1/admin/schedulers"].data[0]
+    const result = await patchSchedulerData(
+      {
+        schedulerKey: scheduler.scheduler_key,
+        desiredState: "stopped",
+        expectedRevision: scheduler.revision,
+      },
+      "owner-secret",
+      "https://findb.internal:8443",
+      async (input, init) => {
+        calls.push({
+          url: new URL(input instanceof Request ? input.url : input.toString()),
+          init,
+        })
+        return Response.json({ success: true, data: scheduler })
+      }
+    )
+
+    expect(result.data.scheduler_key).toBe(scheduler.scheduler_key)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url.pathname).toBe(
+      `/api/v1/admin/schedulers/${scheduler.scheduler_key}`
+    )
+    expect(calls[0]?.init?.method).toBe("PATCH")
+    expect(calls[0]?.init?.cache).toBe("no-store")
+    expect(new Headers(calls[0]?.init?.headers).get("Authorization")).toBe(
+      "Bearer owner-secret"
+    )
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      desired_state: "stopped",
+      expected_revision: scheduler.revision,
+    })
+  })
+
+  it("maps scheduler revision conflicts and auth failures without leaking upstream bodies", async () => {
+    await expect(
+      patchSchedulerData(
+        {
+          schedulerKey: "finlab_tw_1430_tw_equity_eod",
+          desiredState: "running",
+          expectedRevision: 4,
+        },
+        "owner-secret",
+        undefined,
+        async () => new Response("sensitive conflict body", { status: 409 })
+      )
+    ).rejects.toThrow("Scheduler revision is stale; refresh and retry")
+
+    await expect(
+      patchSchedulerData(
+        {
+          schedulerKey: "finlab_tw_1430_tw_equity_eod",
+          desiredState: "running",
+          expectedRevision: 4,
+        },
+        "owner-secret",
+        undefined,
+        async () => new Response("sensitive auth body", { status: 403 })
+      )
+    ).rejects.toThrow("Dashboard session was rejected")
   })
 })

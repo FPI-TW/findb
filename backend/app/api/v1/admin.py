@@ -27,7 +27,13 @@ from app.config import get_settings
 from app.dependencies import get_db
 from app.models.canonical import CalendarImportBatch, CalendarMarket, CalendarYearRevision
 from app.models.raw import RawMarketPayload
-from app.models.registry import AdminSession, AdminUser, APIKey, IngestionRun, SourceClient
+from app.models.registry import (
+    AdminSession,
+    AdminUser,
+    APIKey,
+    IngestionRun,
+    SourceClient,
+)
 from app.schemas.admin import (
     AdminUserCreateRequest,
     AdminUserEnvelope,
@@ -84,6 +90,10 @@ from app.schemas.admin import (
     RawPayloadResponse,
     ResolveDQIssueRequest,
     ResolveDQIssueResponse,
+    SchedulerControlListResponse,
+    SchedulerControlMutationResponse,
+    SchedulerControlResponse,
+    SchedulerControlUpdateRequest,
     SessionResponse,
     SourceClientCreateRequest,
     SourceClientCreateResponse,
@@ -153,6 +163,13 @@ from app.services.instrument_cache import (
 )
 from app.services.market_freshness import list_market_freshness
 from app.services.normalization_queue import queue_health
+from app.services.scheduler_control import (
+    SchedulerControlNotFoundError,
+    SchedulerControlRevisionConflictError,
+    list_scheduler_controls,
+    present_scheduler_control,
+    update_scheduler_desired_state,
+)
 from app.services.source_clients import (
     create_source_client,
     list_source_clients,
@@ -279,6 +296,43 @@ async def logout_admin(
     if principal.session_id:
         await revoke_session(db, UUID(principal.session_id))
     return SuccessResponse()
+
+
+@router.get("/schedulers", response_model=SchedulerControlListResponse)
+async def list_schedulers(
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    """List durable scheduler state for Dashboard and operations tooling."""
+    rows = await list_scheduler_controls(db)
+    return SchedulerControlListResponse(
+        data=[SchedulerControlResponse(**present_scheduler_control(row)) for row in rows]
+    )
+
+
+@router.patch("/schedulers/{scheduler_key}", response_model=SchedulerControlMutationResponse)
+async def patch_scheduler(
+    scheduler_key: str,
+    body: SchedulerControlUpdateRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change desired scheduler state with optimistic revision control."""
+    try:
+        row = await update_scheduler_desired_state(
+            db,
+            scheduler_key=scheduler_key,
+            desired_state=body.desired_state,
+            expected_revision=body.expected_revision,
+            principal=principal,
+        )
+    except SchedulerControlNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Scheduler not found") from exc
+    except SchedulerControlRevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return SchedulerControlMutationResponse(
+        data=SchedulerControlResponse(**present_scheduler_control(row))
+    )
 
 
 @router.post("/auth/change-password", response_model=SuccessResponse)

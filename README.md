@@ -212,9 +212,9 @@ deployment unit建置backend與Dashboard images，並透過
 - `nginx`
 - `raw-cleanup`
 
-Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並交付獨立target；scheduler
-是否運行由各Environment的`FETCHER_SCHEDULER_DESIRED_STATE`宣告。staging固定
-為`stopped`，production預設為`running`；兩者使用同一CD流程與runtime設定。
+Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並讓三個scheduler container在獨立
+target常駐；scheduler是否開始新cycle由FinDB DB控制，owner透過Dashboard變更。
+Migration在各environment都以`stopped`建立控制資料，再於受控部署驗證後逐一啟用。
 
 Staging只用於有明確symbol、日期與筆數上限的端到端功能驗證，不導入完整
 universe或production-scale歷史資料。完整限制與例外核准方式見

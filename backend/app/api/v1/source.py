@@ -7,7 +7,7 @@ import copy
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -30,6 +30,8 @@ from app.schemas.source import (
     IngressErrorDetail,
     IngressErrorResponse,
     RunStatusResponse,
+    SchedulerControlPollRequest,
+    SchedulerControlPollResponse,
     TWStockDirectIngestPayload,
 )
 from app.services.canonical_ingestion import (
@@ -50,6 +52,11 @@ from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     UnsupportedIngressContractError,
     get_contract_json_schema,
+)
+from app.services.scheduler_control import (
+    SchedulerControlNotFoundError,
+    SchedulerControlScopeError,
+    poll_scheduler_control,
 )
 from app.utils import utc_now
 from app.utils.datetime_utils import parse_datetime
@@ -72,6 +79,39 @@ async def get_ingress_contract_schema(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
+
+@router.post(
+    "/scheduler-controls/{scheduler_key}/poll",
+    response_model=SchedulerControlPollResponse,
+)
+async def poll_scheduler(
+    scheduler_key: str,
+    body: SchedulerControlPollRequest,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return desired state and record a provider-scoped scheduler heartbeat."""
+    try:
+        row, server_time = await poll_scheduler_control(
+            db,
+            scheduler_key=scheduler_key,
+            observed_state=body.observed_state,
+            cycle_started_at=body.cycle_started_at,
+            cycle_completed_at=body.cycle_completed_at,
+            last_error=body.last_error,
+        )
+    except SchedulerControlNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Scheduler not found") from exc
+    except SchedulerControlScopeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    return SchedulerControlPollResponse(
+        scheduler_key=row.scheduler_key,
+        desired_state=cast(Literal["running", "stopped"], row.desired_state),
+        revision=row.revision,
+        server_time=server_time,
+    )
 
 
 def _ingress_error_response(
