@@ -361,6 +361,8 @@ jobs:
                 fi
               fi
 
+              echo "Pruning unused Docker images before pulling ${provider_id}"
+              docker image prune -af
               docker pull "$image"
               if [ "$cache_dir" = "-" ]; then
                 cache_mount=""
@@ -600,6 +602,8 @@ jobs:
               if docker container inspect "$previous" >/dev/null 2>&1; then
                 if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi
               fi
+              echo "Pruning unused Docker images before pulling ${provider_id}"
+              docker image prune -af
               docker pull "$image"
               runtime_mounts="--mount type=bind,src=$state_dir,dst=$state_dir --mount type=bind,src=$cache_dir,dst=/home/fetcher"
               # FinLab preflight happens before replacing its stable container.
@@ -732,6 +736,8 @@ jobs:
               if sudo test -e "$state_path"; then sudo test -f "$raw_bucket_marker" || { echo "::error title=Shioaji raw bucket cutover required::State has no binding marker" >&2; exit 1; }; validate_raw_bucket_marker_mode; [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || { echo "::error title=Shioaji raw bucket mismatch::State belongs to a different Raw bucket" >&2; exit 1; }; elif sudo test -e "$raw_bucket_marker"; then validate_raw_bucket_marker_mode; [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || write_raw_bucket_marker; else write_raw_bucket_marker; fi
               if docker container inspect "$candidate" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then docker rm -f "$candidate"; else docker rename "$candidate" "$stable"; fi; fi
               if docker container inspect "$previous" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi; fi
+              echo "Pruning unused Docker images before pulling ${provider_id}"
+              docker image prune -af
               docker pull "$image"
               # Shioaji preflight is before replacing its stable container and validates the
               # manifest, credentials, and the explicit simulation=true mode.
@@ -809,6 +815,8 @@ jobs:
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             image="${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}"
+            echo "Pruning unused Docker images before pulling FinLab smoke image"
+            docker image prune -af
             docker pull "$image"
 
             cache_dir=/var/lib/findb-finlab-smoke-cache

@@ -716,6 +716,12 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         assert 'docker rename "$candidate" "$stable"' in script
         assert 'docker rename "$previous" "$stable"' in script
         assert 'docker rm -f "$candidate"' in script
+        image_prune = script.index("docker image prune -af")
+        image_pull = script.index('docker pull "$image"')
+        assert image_prune < image_pull
+        assert script.count("docker image prune -af") == 1
+        assert "docker system prune" not in script
+        assert "docker volume prune" not in script
 
         if provider == "twelve":
             assert "/var/lib/findb-fetcher/state.sqlite3" in script
@@ -738,6 +744,23 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
             assert "--manifest /app/configs/shioaji_tw_pilot.v1.json" in script
             assert env["SHIOAJI_SIMULATION"] == "${{ vars.SHIOAJI_SIMULATION || 'true' }}"
             assert "SHIOAJI_SIMULATION must be true" in script
+
+
+def test_fetcher_smoke_prunes_only_unused_images_before_pull() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    step = _named_step(
+        workflow,
+        "finlab-acquisition-smoke",
+        "Run bounded FinLab acquisition smoke on Fetcher staging EC2",
+    )
+    script = step["with"]["script"]
+
+    image_prune = script.index("docker image prune -af")
+    image_pull = script.index('docker pull "$image"')
+    assert image_prune < image_pull
+    assert script.count("docker image prune -af") == 1
+    assert "docker system prune" not in script
+    assert "docker volume prune" not in script
 
 
 def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
@@ -780,6 +803,10 @@ case "$operation" in
   container)
     [ "$1" = inspect ]
     [ -f "$state_dir/$2" ]
+    ;;
+  image)
+    [ "$1" = prune ]
+    [ "$2" = -af ]
     ;;
   pull)
     exit 0
