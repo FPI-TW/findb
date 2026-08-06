@@ -31,6 +31,16 @@ import {
 } from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../../components/ui/alert-dialog"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import {
@@ -1088,6 +1098,60 @@ function buildIngestionOverviewResult(
   }
 }
 
+type SchedulerMutationTarget = Pick<
+  Scheduler,
+  "scheduler_key" | "provider" | "desired_state" | "revision"
+>
+
+type SchedulerConfirmationTarget = SchedulerMutationTarget
+
+function SchedulerConfirmationDialog({
+  target,
+  onCancel,
+  onConfirm,
+}: {
+  target: SchedulerConfirmationTarget | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const desiredState =
+    target?.desired_state === "running" ? "stopped" : "running"
+  const actionLabel = desiredState === "running" ? "啟用" : "停止"
+
+  return (
+    <AlertDialog
+      open={target !== null}
+      onOpenChange={open => {
+        if (!open) onCancel()
+      }}
+    >
+      {target && (
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>確認{actionLabel}排程？</AlertDialogTitle>
+            <AlertDialogDescription>
+              確定要{actionLabel} {target.provider} 的排程「
+              {target.scheduler_key}」嗎？
+              {desiredState === "running"
+                ? "啟用後系統會依照設定時間執行資料抓取。"
+                : "停止後系統將不再依排程自動抓取資料。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant={desiredState === "running" ? "default" : "destructive"}
+              onClick={onConfirm}
+            >
+              確認{actionLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      )}
+    </AlertDialog>
+  )
+}
+
 export function IngestionOverviewPanel({
   freshnessResult,
   schedulersResult,
@@ -1112,10 +1176,12 @@ export function IngestionOverviewPanel({
   const applyScheduler = applySchedulerProp ?? context?.applyScheduler
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
+  const [confirmationTarget, setConfirmationTarget] =
+    useState<SchedulerConfirmationTarget | null>(null)
   const result = buildIngestionOverviewResult(freshnessResult, schedulersResult)
   const cards = result?.ok ? result.data.cards : []
 
-  async function toggleScheduler(control: SchedulerCardControl) {
+  async function toggleScheduler(control: SchedulerMutationTarget) {
     if (pendingKeys.has(control.scheduler_key)) return
     const desiredState: SchedulerDesiredState =
       control.desired_state === "running" ? "stopped" : "running"
@@ -1155,6 +1221,11 @@ export function IngestionOverviewPanel({
         return next
       })
     }
+  }
+
+  function requestToggleScheduler(control: SchedulerMutationTarget) {
+    if (pendingKeys.has(control.scheduler_key)) return
+    setConfirmationTarget(control)
   }
 
   return (
@@ -1343,7 +1414,7 @@ export function IngestionOverviewPanel({
                             ? "destructive"
                             : "default"
                         }
-                        onClick={() => void toggleScheduler(control)}
+                        onClick={() => requestToggleScheduler(control)}
                         disabled={pendingAction}
                         aria-busy={pendingAction}
                         aria-label={`${control.provider} 設為${nextState === "running" ? "執行中" : "已停止"}`}
@@ -1377,6 +1448,15 @@ export function IngestionOverviewPanel({
             })}
           </div>
         ))}
+      <SchedulerConfirmationDialog
+        target={confirmationTarget}
+        onCancel={() => setConfirmationTarget(null)}
+        onConfirm={() => {
+          const target = confirmationTarget
+          setConfirmationTarget(null)
+          if (target) void toggleScheduler(target)
+        }}
+      />
     </Panel>
   )
 }
@@ -1401,9 +1481,11 @@ export function SchedulerPanel({
   const applyScheduler = applySchedulerProp ?? context?.applyScheduler
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
+  const [confirmationTarget, setConfirmationTarget] =
+    useState<SchedulerConfirmationTarget | null>(null)
   const schedulers = result?.ok ? result.data.data : []
 
-  async function toggleScheduler(scheduler: Scheduler) {
+  async function toggleScheduler(scheduler: SchedulerMutationTarget) {
     if (pendingKeys.has(scheduler.scheduler_key)) return
     const desiredState: SchedulerDesiredState =
       scheduler.desired_state === "running" ? "stopped" : "running"
@@ -1443,6 +1525,11 @@ export function SchedulerPanel({
         return next
       })
     }
+  }
+
+  function requestToggleScheduler(scheduler: SchedulerMutationTarget) {
+    if (pendingKeys.has(scheduler.scheduler_key)) return
+    setConfirmationTarget(scheduler)
   }
 
   return (
@@ -1569,7 +1656,7 @@ export function SchedulerPanel({
                             ? "destructive"
                             : "default"
                         }
-                        onClick={() => void toggleScheduler(scheduler)}
+                        onClick={() => requestToggleScheduler(scheduler)}
                         disabled={pending}
                         aria-busy={pending}
                         aria-label={`${scheduler.provider} 設為${nextState === "running" ? "執行中" : "已停止"}`}
@@ -1601,6 +1688,15 @@ export function SchedulerPanel({
             })}
           </div>
         ))}
+      <SchedulerConfirmationDialog
+        target={confirmationTarget}
+        onCancel={() => setConfirmationTarget(null)}
+        onConfirm={() => {
+          const target = confirmationTarget
+          setConfirmationTarget(null)
+          if (target) void toggleScheduler(target)
+        }}
+      />
     </Panel>
   )
 }
@@ -1621,59 +1717,66 @@ export function OperationsOverviewPage() {
         title="導入概況"
         description="檢查市場資料更新、佇列、Worker heartbeat 與 outbox 的即時健康狀態。"
       />
-      <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
-        <IngestionOverviewPanel
-          freshnessResult={data?.freshness ?? null}
-          schedulersResult={data?.schedulers ?? null}
+      <div className="grid gap-5">
+        <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
+          <IngestionOverviewPanel
+            freshnessResult={data?.freshness ?? null}
+            schedulersResult={data?.schedulers ?? null}
+            loading={initialLoading}
+            pending={pending}
+            freshnessError={freshnessError}
+            schedulersError={schedulersError}
+            role={role}
+          />
+        </MarketFreshnessErrorBoundary>
+        <Panel
+          eyebrow="Queue and worker"
+          title="Source ingest 後的佇列與 Worker"
+          icon={<Database size={19} />}
+          result={data?.queue ?? null}
           loading={initialLoading}
-          pending={pending}
-          freshnessError={freshnessError}
-          schedulersError={schedulersError}
-          role={role}
-        />
-      </MarketFreshnessErrorBoundary>
-      <Panel
-        eyebrow="Queue and worker"
-        title="Source ingest 後的佇列與 Worker"
-        icon={<Database size={19} />}
-        result={data?.queue ?? null}
-        loading={initialLoading}
-      >
-        {data?.queue.ok && (
-          <>
-            <p className="mb-3 text-xs text-muted">
-              Source ingest 已寫入 durable queue 後，這裡顯示 dispatcher、outbox
-              與 normalization worker 的處理狀態。
-            </p>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Metric
-                label="排隊中"
-                value={data.queue.data.counts.queued ?? 0}
-              />
-              <Metric
-                label="處理中"
-                value={data.queue.data.counts.processing ?? 0}
-              />
-              <Metric
-                label="重試耗盡"
-                value={data.queue.data.retry_exhausted}
-              />
-              <Metric label="過期租約" value={data.queue.data.expired_leases} />
-              <Metric
-                wide
-                label="Worker heartbeat"
-                value={formatAge(data.queue.data.worker_heartbeat_age_seconds)}
-                detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
-              />
-              <Metric
-                wide
-                label="未發布 outbox"
-                value={data.queue.data.unpublished_outbox}
-              />
-            </div>
-          </>
-        )}
-      </Panel>
+        >
+          {data?.queue.ok && (
+            <>
+              <p className="mb-3 text-xs text-muted">
+                Source ingest 已寫入 durable queue 後，這裡顯示
+                dispatcher、outbox 與 normalization worker 的處理狀態。
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Metric
+                  label="排隊中"
+                  value={data.queue.data.counts.queued ?? 0}
+                />
+                <Metric
+                  label="處理中"
+                  value={data.queue.data.counts.processing ?? 0}
+                />
+                <Metric
+                  label="重試耗盡"
+                  value={data.queue.data.retry_exhausted}
+                />
+                <Metric
+                  label="過期租約"
+                  value={data.queue.data.expired_leases}
+                />
+                <Metric
+                  wide
+                  label="Worker heartbeat"
+                  value={formatAge(
+                    data.queue.data.worker_heartbeat_age_seconds
+                  )}
+                  detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
+                />
+                <Metric
+                  wide
+                  label="未發布 outbox"
+                  value={data.queue.data.unpublished_outbox}
+                />
+              </div>
+            </>
+          )}
+        </Panel>
+      </div>
       <Alert className="mt-5" variant="subtle" role="note">
         <AlertTitle>目前限制</AlertTitle>
         <AlertDescription>
