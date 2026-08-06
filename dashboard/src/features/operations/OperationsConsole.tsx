@@ -1717,59 +1717,66 @@ export function OperationsOverviewPage() {
         title="導入概況"
         description="檢查市場資料更新、佇列、Worker heartbeat 與 outbox 的即時健康狀態。"
       />
-      <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
-        <IngestionOverviewPanel
-          freshnessResult={data?.freshness ?? null}
-          schedulersResult={data?.schedulers ?? null}
+      <div className="grid gap-5">
+        <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
+          <IngestionOverviewPanel
+            freshnessResult={data?.freshness ?? null}
+            schedulersResult={data?.schedulers ?? null}
+            loading={initialLoading}
+            pending={pending}
+            freshnessError={freshnessError}
+            schedulersError={schedulersError}
+            role={role}
+          />
+        </MarketFreshnessErrorBoundary>
+        <Panel
+          eyebrow="Queue and worker"
+          title="Source ingest 後的佇列與 Worker"
+          icon={<Database size={19} />}
+          result={data?.queue ?? null}
           loading={initialLoading}
-          pending={pending}
-          freshnessError={freshnessError}
-          schedulersError={schedulersError}
-          role={role}
-        />
-      </MarketFreshnessErrorBoundary>
-      <Panel
-        eyebrow="Queue and worker"
-        title="Source ingest 後的佇列與 Worker"
-        icon={<Database size={19} />}
-        result={data?.queue ?? null}
-        loading={initialLoading}
-      >
-        {data?.queue.ok && (
-          <>
-            <p className="mb-3 text-xs text-muted">
-              Source ingest 已寫入 durable queue 後，這裡顯示 dispatcher、outbox
-              與 normalization worker 的處理狀態。
-            </p>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Metric
-                label="排隊中"
-                value={data.queue.data.counts.queued ?? 0}
-              />
-              <Metric
-                label="處理中"
-                value={data.queue.data.counts.processing ?? 0}
-              />
-              <Metric
-                label="重試耗盡"
-                value={data.queue.data.retry_exhausted}
-              />
-              <Metric label="過期租約" value={data.queue.data.expired_leases} />
-              <Metric
-                wide
-                label="Worker heartbeat"
-                value={formatAge(data.queue.data.worker_heartbeat_age_seconds)}
-                detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
-              />
-              <Metric
-                wide
-                label="未發布 outbox"
-                value={data.queue.data.unpublished_outbox}
-              />
-            </div>
-          </>
-        )}
-      </Panel>
+        >
+          {data?.queue.ok && (
+            <>
+              <p className="mb-3 text-xs text-muted">
+                Source ingest 已寫入 durable queue 後，這裡顯示
+                dispatcher、outbox 與 normalization worker 的處理狀態。
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Metric
+                  label="排隊中"
+                  value={data.queue.data.counts.queued ?? 0}
+                />
+                <Metric
+                  label="處理中"
+                  value={data.queue.data.counts.processing ?? 0}
+                />
+                <Metric
+                  label="重試耗盡"
+                  value={data.queue.data.retry_exhausted}
+                />
+                <Metric
+                  label="過期租約"
+                  value={data.queue.data.expired_leases}
+                />
+                <Metric
+                  wide
+                  label="Worker heartbeat"
+                  value={formatAge(
+                    data.queue.data.worker_heartbeat_age_seconds
+                  )}
+                  detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
+                />
+                <Metric
+                  wide
+                  label="未發布 outbox"
+                  value={data.queue.data.unpublished_outbox}
+                />
+              </div>
+            </>
+          )}
+        </Panel>
+      </div>
       <Alert className="mt-5" variant="subtle" role="note">
         <AlertTitle>目前限制</AlertTitle>
         <AlertDescription>
