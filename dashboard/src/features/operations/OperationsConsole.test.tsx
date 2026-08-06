@@ -338,6 +338,9 @@ describe("scheduler operations panel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "twelve_data 設為執行中" })
     )
+    expect(mocks.updateScheduler).not.toHaveBeenCalled()
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("確認啟用排程？")
+    fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
     expect(
       screen.getByRole("button", { name: "twelve_data 設為執行中" })
     ).toBeDisabled()
@@ -366,6 +369,7 @@ describe("scheduler operations panel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "twelve_data 設為執行中" })
     )
+    fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
 
     await waitFor(() =>
       expect(
@@ -376,9 +380,66 @@ describe("scheduler operations panel", () => {
     expect(applyScheduler).not.toHaveBeenCalled()
     expect(screen.getByText("排程狀態更新失敗")).toBeInTheDocument()
   })
+
+  it("requires confirmation before stopping a scheduler", async () => {
+    const response: SchedulerMutationResponse = {
+      success: true,
+      data: makeScheduler({
+        desired_state: "stopped",
+        observed_state: "stopped",
+        revision: 2,
+      }),
+    }
+    mocks.updateScheduler.mockResolvedValue(response)
+    renderPanel([
+      makeScheduler({ desired_state: "running", observed_state: "running" }),
+    ])
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "twelve_data 設為已停止" })
+    )
+    expect(mocks.updateScheduler).not.toHaveBeenCalled()
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("確認停止排程？")
+
+    fireEvent.click(screen.getByRole("button", { name: "確認停止" }))
+
+    await waitFor(() =>
+      expect(mocks.updateScheduler).toHaveBeenCalledWith({
+        data: {
+          schedulerKey: "twelve_data_us_common_stocks_daily_v1",
+          desiredState: "stopped",
+          expectedRevision: 1,
+        },
+      })
+    )
+  })
 })
 
 describe("unified ingestion overview", () => {
+  it("requires confirmation before changing a scheduler from the overview", () => {
+    render(
+      <IngestionOverviewPanel
+        freshnessResult={freshnessResult([
+          makeFreshness({
+            desired_state: "stopped",
+            observed_state: "stopped",
+          }),
+        ])}
+        schedulersResult={null}
+        loading={false}
+        pending={false}
+        freshnessError=""
+        schedulersError=""
+        role="owner"
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "finlab 設為執行中" }))
+
+    expect(mocks.updateScheduler).not.toHaveBeenCalled()
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("確認啟用排程？")
+  })
+
   it("groups one card per scheduler and keeps schedule/fetch/normalization timestamps visible", () => {
     render(
       <IngestionOverviewPanel
