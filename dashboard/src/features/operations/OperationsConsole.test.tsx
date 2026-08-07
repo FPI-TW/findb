@@ -353,6 +353,39 @@ describe("scheduler operations panel", () => {
     ).toBeInTheDocument()
   })
 
+  it("reserves refresh status space when the scheduler data is not pending", () => {
+    const { container, rerender } = render(
+      <SchedulerPanel
+        result={panelResult([makeScheduler()])}
+        loading={false}
+        pending={false}
+        refreshError=""
+        role="owner"
+      />
+    )
+
+    expect(container.querySelector('[aria-live="polite"]')).toHaveClass(
+      "min-h-4"
+    )
+
+    rerender(
+      <SchedulerPanel
+        result={panelResult([makeScheduler()])}
+        loading={false}
+        pending
+        refreshError=""
+        role="owner"
+      />
+    )
+
+    expect(container.querySelector('[aria-live="polite"]')).toHaveClass(
+      "min-h-4"
+    )
+    expect(
+      screen.getByText("正在更新排程狀態…目前資料仍可操作。")
+    ).toBeInTheDocument()
+  })
+
   it("shows stale heartbeat and read-only affordance for non-owners", () => {
     renderPanel(
       [
