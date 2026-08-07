@@ -293,12 +293,14 @@ describe("FinDB Admin server boundary", () => {
   })
 
   it("sanitizes authentication and upstream response bodies", async () => {
-    const authResult = await fetchDashboardData(
-      request,
-      "operator-secret",
-      undefined,
-      recordingFetch([], { "/api/v1/admin/queue/health": 401 })
-    )
+    await expect(
+      fetchDashboardData(
+        request,
+        "operator-secret",
+        undefined,
+        recordingFetch([], { "/api/v1/admin/queue/health": 401 })
+      )
+    ).rejects.toThrow("Dashboard authentication required")
     const upstreamResult = await fetchDashboardData(
       request,
       "operator-secret",
@@ -306,20 +308,14 @@ describe("FinDB Admin server boundary", () => {
       recordingFetch([], { "/api/v1/admin/queue/health": 500 })
     )
 
-    expect(authResult.queue).toEqual({
-      ok: false,
-      error: "Dashboard session was rejected",
-    })
     expect(upstreamResult.queue).toEqual({
       ok: false,
       error: "FinDB API request failed (500)",
     })
-    expect(JSON.stringify([authResult, upstreamResult])).not.toContain(
+    expect(JSON.stringify(upstreamResult)).not.toContain(
       "sensitive upstream body"
     )
-    expect(JSON.stringify([authResult, upstreamResult])).not.toContain(
-      "operator-secret"
-    )
+    expect(JSON.stringify(upstreamResult)).not.toContain("operator-secret")
   })
 
   it("rejects malformed endpoint responses without exposing their body", async () => {
@@ -398,6 +394,6 @@ describe("FinDB Admin server boundary", () => {
         undefined,
         async () => new Response("sensitive auth body", { status: 403 })
       )
-    ).rejects.toThrow("Dashboard session was rejected")
+    ).rejects.toThrow("Dashboard authentication required")
   })
 })

@@ -77,6 +77,7 @@ import {
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { canViewUsers } from "../../lib/admin-permissions"
 import { loadDashboard, updateScheduler } from "../../lib/admin.functions"
+import { isDashboardAuthenticationError } from "../../lib/auth-errors"
 import { logout } from "../../lib/auth.functions"
 import { toast } from "../../components/ui/toast"
 
@@ -471,6 +472,10 @@ export default function OperationsLayout({
         dataRef.current = merged.data
         setData(merged.data)
       } catch (reason) {
+        if (isDashboardAuthenticationError(reason)) {
+          await navigate({ to: "/login", replace: true })
+          return
+        }
         setError(
           reason instanceof Error ? reason.message : "無法連線至 FinDB API。"
         )
@@ -478,7 +483,7 @@ export default function OperationsLayout({
         setPending(false)
       }
     },
-    [load]
+    [load, navigate]
   )
 
   useEffect(() => {
@@ -1010,70 +1015,86 @@ function buildIngestionCards(
   )
 }
 
-type IngestionCardStatus =
+export type SchedulerRuntimeStatus =
   | "configuration_error"
+  | "not_reported"
+  | "stale"
+  | "stopping"
   | "stopped"
-  | "stale_heartbeat"
-  | "never_received"
-  | "normalization_delay"
-  | FreshnessStatus
+  | "running"
+  | "unknown"
 
-const INGESTION_STATUS_LABELS: Record<IngestionCardStatus, string> = {
-  configuration_error: "設定錯誤",
-  stopped: "已停止",
-  stale_heartbeat: "Heartbeat 過期",
-  never_received: "尚未抓取",
-  normalization_delay: "已抓取，標準化延遲",
-  not_due: "尚未到期",
-  fresh: "已更新",
-  partial: "部分完成",
-  late: "延遲",
-  failed: "失敗",
+type SchedulerRuntimeStatusVariant =
+  "default" | "secondary" | "warning" | "destructive"
+
+type SchedulerRuntimeStatusMeta = {
+  label: string
+  variant: SchedulerRuntimeStatusVariant
 }
 
-function ingestionStatusVariant(status: IngestionCardStatus) {
-  if (status === "fresh") return "default" as const
-  if (status === "stopped" || status === "not_due") return "secondary" as const
-  if (
-    status === "partial" ||
-    status === "late" ||
-    status === "stale_heartbeat" ||
-    status === "normalization_delay"
-  ) {
-    return "warning" as const
-  }
-  return "destructive" as const
+export const SCHEDULER_RUNTIME_STATUS_META = {
+  configuration_error: { label: "設定錯誤", variant: "destructive" },
+  not_reported: { label: "尚未回報", variant: "warning" },
+  stale: { label: "心跳過期", variant: "warning" },
+  stopping: { label: "停止中", variant: "warning" },
+  stopped: { label: "停止", variant: "secondary" },
+  running: { label: "執行中", variant: "default" },
+  unknown: { label: "未知錯誤", variant: "destructive" },
+} satisfies Record<SchedulerRuntimeStatus, SchedulerRuntimeStatusMeta>
+
+type SchedulerRuntimeSelectorInput = {
+  control: Pick<
+    SchedulerCardControl,
+    | "desired_state"
+    | "observed_state"
+    | "heartbeat_age_seconds"
+    | "last_heartbeat_at"
+  >
+  freshness: Pick<
+    MarketFreshness,
+    "configuration_status" | "configuration_errors"
+  > | null
 }
 
-function isNormalizationDelayed(freshness: MarketFreshness | null) {
-  if (!freshness?.last_fetched_at) return false
-  const normalizationCompleted =
-    freshness.last_complete_at ?? freshness.last_successful_update_at
-  if (!normalizationCompleted) return true
-  return (
-    new Date(freshness.last_fetched_at).getTime() >
-    new Date(normalizationCompleted).getTime()
-  )
-}
-
-function ingestionCardStatus(card: IngestionCard): IngestionCardStatus {
-  const { control, freshness } = card
+/**
+ * Select the scheduler's runtime state independently from feed freshness.
+ * The order here is intentional: configuration and heartbeat health take
+ * precedence before desired/observed state reconciliation.
+ */
+export function selectSchedulerRuntimeStatus({
+  control,
+  freshness,
+}: SchedulerRuntimeSelectorInput): SchedulerRuntimeStatus {
   if (
     freshness?.configuration_status === "error" ||
     (freshness?.configuration_errors.length ?? 0) > 0
   ) {
     return "configuration_error"
   }
-  if (
-    control.desired_state === "stopped" ||
-    control.observed_state === "stopped"
-  ) {
-    return "stopped"
+
+  if (!control.last_heartbeat_at || control.heartbeat_age_seconds === null) {
+    return "not_reported"
   }
-  if (schedulerIsStale(control)) return "stale_heartbeat"
-  if (freshness?.status === "never_received") return "never_received"
-  if (isNormalizationDelayed(freshness)) return "normalization_delay"
-  return freshness?.status ?? "not_due"
+
+  if (!Number.isFinite(control.heartbeat_age_seconds)) return "unknown"
+  if (control.heartbeat_age_seconds > 90) return "stale"
+
+  if (control.desired_state === "stopped") {
+    if (control.observed_state === "running") return "stopping"
+    if (control.observed_state === "stopped") return "stopped"
+    return "unknown"
+  }
+  if (control.desired_state === "running") return "running"
+  return "unknown"
+}
+
+const SCHEDULER_CYCLE_LABELS: Record<Scheduler["observed_state"], string> = {
+  running: "Cycle：執行中",
+  stopped: "Cycle：閒置",
+}
+
+function schedulerCycleLabel(value: Scheduler["observed_state"]) {
+  return SCHEDULER_CYCLE_LABELS[value] ?? "Cycle：未知"
 }
 
 type IngestionOverviewData = { cards: IngestionCard[] }
@@ -1172,6 +1193,7 @@ export function IngestionOverviewPanel({
   applyScheduler?: (response: SchedulerMutationResponse) => void
 }) {
   const update = useServerFn(updateScheduler)
+  const navigate = useNavigate()
   const context = useContext(OperationsContext)
   const applyScheduler = applySchedulerProp ?? context?.applyScheduler
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
@@ -1208,6 +1230,10 @@ export function IngestionOverviewPanel({
         `${control.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
       )
     } catch (reason) {
+      if (isDashboardAuthenticationError(reason)) {
+        await navigate({ to: "/login", replace: true })
+        return
+      }
       const message = schedulerErrorMessage(reason)
       setActionErrors(current => ({
         ...current,
@@ -1261,7 +1287,12 @@ export function IngestionOverviewPanel({
           <div className="grid gap-3">
             {cards.map(card => {
               const { control, freshness } = card
-              const status = ingestionCardStatus(card)
+              const runtimeStatus = selectSchedulerRuntimeStatus({
+                control,
+                freshness,
+              })
+              const runtimeStatusMeta =
+                SCHEDULER_RUNTIME_STATUS_META[runtimeStatus]
               const pendingAction = pendingKeys.has(control.scheduler_key)
               const nextState =
                 control.desired_state === "running" ? "stopped" : "running"
@@ -1290,24 +1321,20 @@ export function IngestionOverviewPanel({
                         {control.timezone} · Slot {control.slot_id}
                       </p>
                     </div>
-                    <div className="flex flex-wrap items-center justify-end gap-1.5">
-                      <Badge variant={ingestionStatusVariant(status)}>
-                        {INGESTION_STATUS_LABELS[status]}
-                      </Badge>
-                      <Badge
-                        variant={schedulerStateVariant(control.desired_state)}
-                      >
-                        期望：{formatSchedulerState(control.desired_state)}
-                      </Badge>
-                      <Badge
-                        variant={schedulerStateVariant(control.observed_state)}
-                      >
-                        實際：{formatSchedulerState(control.observed_state)}
-                      </Badge>
-                    </div>
                   </div>
 
                   <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <dt className="text-xs text-muted">Scheduler 狀態</dt>
+                      <dd className="mt-0.5 flex flex-wrap items-center gap-2">
+                        <Badge variant={runtimeStatusMeta.variant}>
+                          {runtimeStatusMeta.label}
+                        </Badge>
+                        <span className="text-xs text-muted">
+                          {schedulerCycleLabel(control.observed_state)}
+                        </span>
+                      </dd>
+                    </div>
                     <div>
                       <dt className="text-xs text-muted">Provider fetched</dt>
                       <dd className="mt-0.5">
@@ -1477,6 +1504,7 @@ export function SchedulerPanel({
   applyScheduler?: (response: SchedulerMutationResponse) => void
 }) {
   const update = useServerFn(updateScheduler)
+  const navigate = useNavigate()
   const context = useContext(OperationsContext)
   const applyScheduler = applySchedulerProp ?? context?.applyScheduler
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
@@ -1512,6 +1540,10 @@ export function SchedulerPanel({
         `${scheduler.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
       )
     } catch (reason) {
+      if (isDashboardAuthenticationError(reason)) {
+        await navigate({ to: "/login", replace: true })
+        return
+      }
       const message = schedulerErrorMessage(reason)
       setActionErrors(current => ({
         ...current,

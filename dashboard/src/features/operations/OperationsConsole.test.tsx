@@ -7,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { toast, Toaster } from "../../components/ui/toast"
@@ -21,7 +22,14 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
+  navigate: vi.fn(),
   updateScheduler: vi.fn(),
+}))
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Outlet: () => null,
+  useNavigate: () => mocks.navigate,
 }))
 
 vi.mock("@tanstack/react-start", () => ({
@@ -38,10 +46,13 @@ vi.mock("@tanstack/react-start", () => ({
 vi.mock("../../lib/admin.functions", () => mocks)
 
 import {
+  default as OperationsLayout,
   IngestionOverviewPanel,
   OperationsContext,
   QualityPage,
   SchedulerPanel,
+  SCHEDULER_RUNTIME_STATUS_META,
+  selectSchedulerRuntimeStatus,
   type OperationsContextValue,
 } from "./OperationsConsole"
 
@@ -273,6 +284,44 @@ afterEach(() => {
   cleanup()
 })
 
+describe("operations authentication", () => {
+  it("returns to login when a dashboard refresh reports an expired session", async () => {
+    mocks.loadDashboard.mockRejectedValue(
+      new Error("Dashboard authentication required")
+    )
+
+    render(<OperationsLayout username="operator" role="operator" />)
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith({
+        to: "/login",
+        replace: true,
+      })
+    )
+    expect(screen.queryByText("無法更新營運資料")).not.toBeInTheDocument()
+  })
+
+  it("returns to login when a scheduler mutation reports an expired session", async () => {
+    mocks.updateScheduler.mockRejectedValue(
+      new Error("Dashboard authentication required")
+    )
+    renderPanel([makeScheduler()])
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "twelve_data 設為執行中" })
+    )
+    fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith({
+        to: "/login",
+        replace: true,
+      })
+    )
+    expect(screen.queryByText("排程狀態更新失敗")).not.toBeInTheDocument()
+  })
+})
+
 describe("scheduler operations panel", () => {
   it("shows an explicit initial skeleton and preserves data during refresh", () => {
     const { rerender } = render(
@@ -416,6 +465,104 @@ describe("scheduler operations panel", () => {
 })
 
 describe("unified ingestion overview", () => {
+  function selectRuntimeStatus(
+    schedulerOverrides: Partial<Scheduler> = {},
+    freshnessOverrides: Partial<MarketFreshness> = {}
+  ) {
+    return selectSchedulerRuntimeStatus({
+      control: makeScheduler(schedulerOverrides),
+      freshness: makeFreshness(freshnessOverrides),
+    })
+  }
+
+  it("selects scheduler runtime status with explicit precedence", () => {
+    expect(
+      SCHEDULER_RUNTIME_STATUS_META[
+        selectRuntimeStatus({
+          desired_state: "running",
+          observed_state: "stopped",
+        })
+      ].label
+    ).toBe("執行中")
+    expect(
+      SCHEDULER_RUNTIME_STATUS_META[
+        selectRuntimeStatus({
+          desired_state: "stopped",
+          observed_state: "running",
+        })
+      ].label
+    ).toBe("停止中")
+    expect(
+      SCHEDULER_RUNTIME_STATUS_META[
+        selectRuntimeStatus({
+          desired_state: "stopped",
+          observed_state: "stopped",
+        })
+      ].label
+    ).toBe("停止")
+    expect(
+      SCHEDULER_RUNTIME_STATUS_META[
+        selectRuntimeStatus({
+          heartbeat_age_seconds: null,
+          last_heartbeat_at: null,
+        })
+      ].label
+    ).toBe("尚未回報")
+    expect(
+      SCHEDULER_RUNTIME_STATUS_META[
+        selectRuntimeStatus({ heartbeat_age_seconds: 91 })
+      ].label
+    ).toBe("心跳過期")
+    expect(
+      SCHEDULER_RUNTIME_STATUS_META[
+        selectRuntimeStatus(
+          { heartbeat_age_seconds: null, last_heartbeat_at: null },
+          { configuration_status: "error" }
+        )
+      ].label
+    ).toBe("設定錯誤")
+    expect(
+      selectRuntimeStatus(
+        {
+          desired_state: "running",
+          observed_state: "stopped",
+          last_error: "provider unavailable",
+        },
+        { status: "late" }
+      )
+    ).toBe("running")
+  })
+
+  it("keeps scheduler runtime status separate from freshness and recent errors", () => {
+    render(
+      <IngestionOverviewPanel
+        freshnessResult={freshnessResult([
+          makeFreshness({
+            desired_state: "running",
+            observed_state: "stopped",
+            status: "late",
+            last_error: "provider unavailable",
+          }),
+        ])}
+        schedulersResult={null}
+        loading={false}
+        pending={false}
+        freshnessError=""
+        schedulersError=""
+        role="viewer"
+      />
+    )
+
+    expect(screen.getByText("Scheduler 狀態")).toBeInTheDocument()
+    expect(screen.getByText("執行中")).toBeInTheDocument()
+    expect(screen.getByText("Cycle：閒置")).toBeInTheDocument()
+    expect(screen.getByText("最近錯誤：")).toBeInTheDocument()
+    expect(screen.getByText("provider unavailable")).toBeInTheDocument()
+    expect(screen.queryByText("期望：執行中")).not.toBeInTheDocument()
+    expect(screen.queryByText("實際：閒置")).not.toBeInTheDocument()
+    expect(screen.queryByText("延遲")).not.toBeInTheDocument()
+  })
+
   it("requires confirmation before changing a scheduler from the overview", () => {
     render(
       <IngestionOverviewPanel
@@ -493,11 +640,12 @@ describe("unified ingestion overview", () => {
     expect(screen.getAllByText("Provider fetched")).toHaveLength(7)
     expect(screen.getAllByText("Normalization completed")).toHaveLength(7)
     expect(screen.getAllByText("已更新").length).toBeGreaterThan(0)
-    expect(screen.getByText("已停止")).toBeInTheDocument()
-    expect(screen.getByText("Heartbeat 過期")).toBeInTheDocument()
-    expect(screen.getByText("已抓取，標準化延遲")).toBeInTheDocument()
-    expect(screen.getByText("部分完成")).toBeInTheDocument()
-    expect(screen.getByText("尚未抓取")).toBeInTheDocument()
+    expect(screen.getByText("停止")).toBeInTheDocument()
+    expect(screen.getByText("心跳過期")).toBeInTheDocument()
+    expect(screen.getAllByText("執行中").length).toBeGreaterThan(0)
+    expect(screen.queryByText("部分完成")).not.toBeInTheDocument()
+    expect(screen.queryByText("尚未抓取")).not.toBeInTheDocument()
+    expect(screen.queryByText("已抓取，標準化延遲")).not.toBeInTheDocument()
     expect(screen.getByText("設定錯誤")).toBeInTheDocument()
     expect(screen.getByText("schema_id_missing")).toBeInTheDocument()
   })

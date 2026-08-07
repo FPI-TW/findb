@@ -15,6 +15,10 @@ import {
   type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
+import {
+  DashboardAuthenticationError,
+  isDashboardAuthenticationError,
+} from "./auth-errors"
 
 type FetchImplementation = typeof fetch
 
@@ -50,7 +54,7 @@ async function fetchTarget<T extends z.ZodType>(
   }
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error("Dashboard session was rejected")
+      throw new DashboardAuthenticationError()
     }
     throw new Error(`FinDB API request failed (${response.status})`)
   }
@@ -143,6 +147,25 @@ export async function fetchDashboardData(
     ),
   ])
 
+  const results = [
+    freshness,
+    queue,
+    schedulers,
+    deliveries,
+    issues,
+    corrections,
+    rawPayloads,
+  ]
+  if (
+    results.some(
+      result =>
+        result.status === "rejected" &&
+        isDashboardAuthenticationError(result.reason)
+    )
+  ) {
+    throw new DashboardAuthenticationError()
+  }
+
   return dashboardResponseSchema.parse({
     fetchedAt: new Date().toISOString(),
     freshness: settled(freshness),
@@ -187,7 +210,7 @@ export async function patchSchedulerData(
   }
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error("Dashboard session was rejected")
+      throw new DashboardAuthenticationError()
     }
     if (response.status === 409) {
       throw new Error("Scheduler revision is stale; refresh and retry")
