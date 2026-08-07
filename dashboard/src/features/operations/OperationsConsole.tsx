@@ -319,6 +319,24 @@ function LoadingState({ label = "正在載入資料" }: { label?: string }) {
   )
 }
 
+function RefreshStatus({
+  pending,
+  label,
+}: {
+  pending: boolean
+  label: string
+}) {
+  return (
+    <div className="mb-4 min-h-4" aria-live="polite">
+      {pending && (
+        <p className="m-0 text-xs text-muted" role="status">
+          {label}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ConnectionIndicator({
   state,
 }: {
@@ -1272,10 +1290,11 @@ export function IngestionOverviewPanel({
           </AlertDescription>
         </Alert>
       )}
-      {pending && !loading && (
-        <p className="mb-4 text-xs text-muted" role="status" aria-live="polite">
-          正在更新導入狀態…目前資料仍可操作。
-        </p>
+      {!loading && (
+        <RefreshStatus
+          pending={pending}
+          label="正在更新導入狀態…目前資料仍可操作。"
+        />
       )}
       {result?.ok &&
         (cards.length === 0 ? (
@@ -1572,10 +1591,11 @@ export function SchedulerPanel({
       result={result}
       loading={loading}
     >
-      {pending && !loading && (
-        <p className="mb-4 text-xs text-muted" role="status" aria-live="polite">
-          正在更新排程狀態…目前資料仍可操作。
-        </p>
+      {!loading && (
+        <RefreshStatus
+          pending={pending}
+          label="正在更新排程狀態…目前資料仍可操作。"
+        />
       )}
       {refreshError && result?.ok && (
         <Alert className="mb-4" variant="warning" role="status">
