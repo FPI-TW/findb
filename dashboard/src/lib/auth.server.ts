@@ -14,6 +14,7 @@ import {
   adminSessionUserSchema,
   type AdminSessionUser,
 } from "./admin-governance-api"
+import { DashboardAuthenticationError } from "./auth-errors"
 
 const SESSION_COOKIE = "findb_dashboard_session"
 const SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -213,11 +214,11 @@ export async function changeDashboardPassword(
 
 export async function requireDashboardSession() {
   const token = getDashboardSessionToken()
-  if (!token) throw new Error("Unauthorized")
+  if (!token) throw new DashboardAuthenticationError()
   const user = await fetchDashboardSession(token)
   if (!user) {
     clearDashboardSession()
-    throw new Error("Unauthorized")
+    throw new DashboardAuthenticationError()
   }
   return { token, user }
 }

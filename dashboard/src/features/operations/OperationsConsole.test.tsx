@@ -7,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { toast, Toaster } from "../../components/ui/toast"
@@ -21,7 +22,14 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
+  navigate: vi.fn(),
   updateScheduler: vi.fn(),
+}))
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Outlet: () => null,
+  useNavigate: () => mocks.navigate,
 }))
 
 vi.mock("@tanstack/react-start", () => ({
@@ -38,6 +46,7 @@ vi.mock("@tanstack/react-start", () => ({
 vi.mock("../../lib/admin.functions", () => mocks)
 
 import {
+  default as OperationsLayout,
   IngestionOverviewPanel,
   OperationsContext,
   QualityPage,
@@ -273,6 +282,44 @@ beforeEach(() => {
 afterEach(() => {
   toast.dismiss()
   cleanup()
+})
+
+describe("operations authentication", () => {
+  it("returns to login when a dashboard refresh reports an expired session", async () => {
+    mocks.loadDashboard.mockRejectedValue(
+      new Error("Dashboard authentication required")
+    )
+
+    render(<OperationsLayout username="operator" role="operator" />)
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith({
+        to: "/login",
+        replace: true,
+      })
+    )
+    expect(screen.queryByText("無法更新營運資料")).not.toBeInTheDocument()
+  })
+
+  it("returns to login when a scheduler mutation reports an expired session", async () => {
+    mocks.updateScheduler.mockRejectedValue(
+      new Error("Dashboard authentication required")
+    )
+    renderPanel([makeScheduler()])
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "twelve_data 設為執行中" })
+    )
+    fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
+
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledWith({
+        to: "/login",
+        replace: true,
+      })
+    )
+    expect(screen.queryByText("排程狀態更新失敗")).not.toBeInTheDocument()
+  })
 })
 
 describe("scheduler operations panel", () => {

@@ -77,6 +77,7 @@ import {
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { canViewUsers } from "../../lib/admin-permissions"
 import { loadDashboard, updateScheduler } from "../../lib/admin.functions"
+import { isDashboardAuthenticationError } from "../../lib/auth-errors"
 import { logout } from "../../lib/auth.functions"
 import { toast } from "../../components/ui/toast"
 
@@ -471,6 +472,10 @@ export default function OperationsLayout({
         dataRef.current = merged.data
         setData(merged.data)
       } catch (reason) {
+        if (isDashboardAuthenticationError(reason)) {
+          await navigate({ to: "/login", replace: true })
+          return
+        }
         setError(
           reason instanceof Error ? reason.message : "無法連線至 FinDB API。"
         )
@@ -478,7 +483,7 @@ export default function OperationsLayout({
         setPending(false)
       }
     },
-    [load]
+    [load, navigate]
   )
 
   useEffect(() => {
@@ -1188,6 +1193,7 @@ export function IngestionOverviewPanel({
   applyScheduler?: (response: SchedulerMutationResponse) => void
 }) {
   const update = useServerFn(updateScheduler)
+  const navigate = useNavigate()
   const context = useContext(OperationsContext)
   const applyScheduler = applySchedulerProp ?? context?.applyScheduler
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
@@ -1224,6 +1230,10 @@ export function IngestionOverviewPanel({
         `${control.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
       )
     } catch (reason) {
+      if (isDashboardAuthenticationError(reason)) {
+        await navigate({ to: "/login", replace: true })
+        return
+      }
       const message = schedulerErrorMessage(reason)
       setActionErrors(current => ({
         ...current,
@@ -1494,6 +1504,7 @@ export function SchedulerPanel({
   applyScheduler?: (response: SchedulerMutationResponse) => void
 }) {
   const update = useServerFn(updateScheduler)
+  const navigate = useNavigate()
   const context = useContext(OperationsContext)
   const applyScheduler = applySchedulerProp ?? context?.applyScheduler
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
@@ -1529,6 +1540,10 @@ export function SchedulerPanel({
         `${scheduler.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
       )
     } catch (reason) {
+      if (isDashboardAuthenticationError(reason)) {
+        await navigate({ to: "/login", replace: true })
+        return
+      }
       const message = schedulerErrorMessage(reason)
       setActionErrors(current => ({
         ...current,
