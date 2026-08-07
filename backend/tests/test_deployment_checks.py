@@ -728,13 +728,17 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
             assert "findb-fetcher-scheduler-candidate" in script
             assert "findb-fetch-scheduler --check" in script
             assert "findb-fetch-scheduler --run-forever" in script
+            assert (
+                "--schedule-file /app/configs/daily_scheduler.v2.json "
+                "--slot-id western_markets_window --dataset-key us_equity_eod" in script
+            )
         elif provider == "finlab":
             assert "/var/lib/findb-finlab-fetcher/state.sqlite3" in script
             assert "/var/lib/findb-finlab-fetcher/cache" in script
             assert "dst=/home/fetcher" in script
             assert "findb-fetcher-finlab-scheduler-candidate" in script
             assert "findb-fetch-finlab-scheduler --check" in script
-            assert "--slot-id tw_1430 --dataset-key tw_equity_eod" in script
+            assert "--slot-id taiwan_market_window --dataset-key tw_equity_eod" in script
         else:
             assert "/var/lib/findb-shioaji-fetcher/state.sqlite3" in script
             assert 'cache_dir="$state_dir/cache"' in script

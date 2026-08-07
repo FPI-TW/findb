@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import PaginatedResponse
+from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc, utc_now
 
 # ── Managed trading calendars ───────────────────────────────────────────────
@@ -435,7 +436,7 @@ class MarketFreshnessResponse(BaseModel):
     scheduler_key: str
     provider: str
     dataset_keys: list[str] = Field(default_factory=list)
-    slot_id: str
+    slot_id: CanonicalSlotId
     scheduled_local_time: time
     timezone: str
     desired_state: Literal["running", "stopped"]
@@ -653,7 +654,7 @@ class SchedulerControlResponse(BaseModel):
     scheduler_key: str
     provider: str
     dataset_keys: list[str]
-    slot_id: str
+    slot_id: CanonicalSlotId
     scheduled_local_time: time
     timezone: str
     desired_state: Literal["running", "stopped"]

@@ -129,8 +129,29 @@ def test_market_eod_v1_accepts_optional_scheduler_delivery_metadata():
     request = MarketEODIngressRequest.model_validate(value)
 
     assert request.delivery is not None
+    assert request.delivery.slot_id == "taiwan_market_window"
     assert request.delivery.scheduled_for == request.fetched_at + timedelta(minutes=30)
     assert request.delivery.target_data_date.isoformat() == "2026-07-21"
+
+
+def test_global_slot_uses_market_semantics_and_normalizes_legacy_id():
+    value = _market_eod_request()
+    value["delivery"] = {
+        "slot_id": "global_0815",
+        "scheduled_for": "2026-07-21T08:15:00+08:00",
+        "target_data_date": "2026-07-21",
+        "work_item_id": "global-eod-20260721",
+    }
+
+    request = MarketEODIngressRequest.model_validate(value)
+    slot_enum = get_contract_json_schema("market_eod", 1)["$defs"]["IngressDeliveryMetadata"][
+        "properties"
+    ]["slot_id"]["enum"]
+
+    assert request.delivery is not None
+    assert request.delivery.slot_id == "global_markets_window"
+    assert "global_markets_window" in slot_enum
+    assert "continuous_markets_window" not in slot_enum
 
 
 def test_market_eod_v1_rejects_partial_scheduler_delivery_metadata():
@@ -397,13 +418,13 @@ def test_registry_dispatches_explicit_contract_version():
             "market_eod",
             "MarketEODIngressRequest",
             "market.currency.row_or_dataset_default",
-            "4fb5308382ebe6d4878a7757a67978332e20197beb267cfe6ca0286f7fb732e8",
+            "d92e6e032bf6c0f77d1ff516f18d6c04bedf4c57c61c864edfffc74bc42c3b02",
         ),
         (
             "futures_continuous_eod",
             "FuturesContinuousEODIngressRequest",
             "futures.currency.dataset_default_required",
-            "67b4f6f7a7edd123c4095e776f10a66f0dc536d62fecc08737e3b34b208813d8",
+            "5215549de365d59e8e005e7c3ca3d14028b6183fa85cb983039f60ba0b31d19d",
         ),
     ],
 )

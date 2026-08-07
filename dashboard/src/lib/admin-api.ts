@@ -44,11 +44,19 @@ export const queueHealthSchema = z.object({
 export const schedulerDesiredStateSchema = z.enum(["running", "stopped"])
 export type SchedulerDesiredState = z.infer<typeof schedulerDesiredStateSchema>
 
+export const canonicalSlotIdSchema = z.enum([
+  "western_markets_window",
+  "global_markets_window",
+  "taiwan_market_window",
+  "asia_pacific_markets_window",
+])
+export type CanonicalSlotId = z.infer<typeof canonicalSlotIdSchema>
+
 export const schedulerSchema = z.object({
   scheduler_key: z.string().trim().min(1).max(200),
   provider: z.string().trim().min(1).max(100),
   dataset_keys: z.array(z.string().trim().min(1).max(200)),
-  slot_id: z.string().trim().min(1).max(100),
+  slot_id: canonicalSlotIdSchema,
   scheduled_local_time: z.string().trim().min(1).max(32),
   timezone: z.string().trim().min(1).max(100),
   desired_state: schedulerDesiredStateSchema,
@@ -104,7 +112,7 @@ export const marketFreshnessSchema = z.object({
       scheduler_key: z.string().trim().min(1).max(200),
       provider: z.string().trim().min(1).max(100),
       dataset_keys: z.array(z.string().trim().min(1).max(200)),
-      slot_id: z.string().trim().min(1).max(100),
+      slot_id: canonicalSlotIdSchema,
       scheduled_local_time: z.string().trim().min(1).max(32),
       timezone: z.string().trim().min(1).max(100),
       desired_state: schedulerDesiredStateSchema,

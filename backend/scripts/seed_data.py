@@ -3,7 +3,6 @@ Script to seed initial dataset registry and crypto instruments.
 """
 
 import asyncio
-import json
 import logging
 
 from sqlalchemy import cast, func, text
@@ -20,16 +19,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
-
-FINLAB_PILOT_OVERRIDE_JSON = json.dumps(
-    {
-        "finlab": {
-            "baseline": {"enabled": False},
-            "record_count": {"minimum_record_count": 2},
-        }
-    },
-    separators=(",", ":"),
-)
 
 
 def _minute_delivery_expectation() -> dict:
@@ -57,18 +46,19 @@ def _minute_delivery_expectation() -> dict:
             "calendar_market": "TW",
             "timezone": "Asia/Taipei",
             "market_close_time": "13:30:00",
-            "availability_grace_minutes": 210,
+            "availability_grace_minutes": 60,
             "action": "warn",
         },
         "missing_delivery": {
             "action": "warn",
             "expected_sources": ["shioaji"],
+            "deadline_local_time": "17:00:00",
         },
         # This remains compatibility metadata.  SchedulerControl and its
         # association rows are the scheduler authority.
         "schedule": {
             "enabled": True,
-            "slot_id": "tw_1430",
+            "slot_id": "taiwan_market_window",
             "local_time": "14:30:00",
             "timezone": "Asia/Taipei",
             "expected_sources": ["shioaji"],
@@ -144,8 +134,8 @@ DATASETS = [
                 },
                 "schedule": {
                     "enabled": True,
-                    "slot_id": "us_0600",
-                    "local_time": "06:00:00",
+                    "slot_id": "western_markets_window",
+                    "local_time": "06:30:00",
                     "timezone": "Asia/Taipei",
                     "expected_sources": ["twelve_data"],
                 },
@@ -224,15 +214,6 @@ DATASETS = [
                     "maximum_count_drop_ratio": 0.1,
                     "action": "warn",
                 },
-                # FinLab's pilot contract intentionally carries only a small
-                # bounded sample.  Keep the global full-market threshold above
-                # intact and scope this exception to the lowercase provider.
-                "source_overrides": {
-                    "finlab": {
-                        "baseline": {"enabled": False},
-                        "record_count": {"minimum_record_count": 2},
-                    }
-                },
                 "freshness": {
                     "maximum_fetch_age_hours": 36,
                     "allowed_clock_skew_minutes": 5,
@@ -247,7 +228,7 @@ DATASETS = [
                 },
                 "schedule": {
                     "enabled": True,
-                    "slot_id": "tw_1430",
+                    "slot_id": "taiwan_market_window",
                     "local_time": "14:30:00",
                     "timezone": "Asia/Taipei",
                     "expected_sources": ["finlab"],
@@ -311,7 +292,7 @@ DATASETS = [
                 },
                 "schedule": {
                     "enabled": True,
-                    "slot_id": "tw_1430",
+                    "slot_id": "taiwan_market_window",
                     "local_time": "14:30:00",
                     "timezone": "Asia/Taipei",
                     "expected_sources": ["finlab"],
@@ -603,7 +584,7 @@ DATASETS = [
                 },
                 "schedule": {
                     "enabled": False,
-                    "slot_id": "tw_1430",
+                    "slot_id": "taiwan_market_window",
                     "local_time": "14:30:00",
                     "timezone": "Asia/Taipei",
                     "expected_sources": [],
@@ -852,7 +833,7 @@ DATASETS = [
                 },
                 "schedule": {
                     "enabled": True,
-                    "slot_id": "tw_1430",
+                    "slot_id": "taiwan_market_window",
                     "local_time": "14:30:00",
                     "timezone": "Asia/Taipei",
                     "expected_sources": ["finlab"],
@@ -1056,39 +1037,6 @@ async def seed_datasets(session: AsyncSession):
                 {"dataset_key": ds["dataset_key"]},
             )
 
-        # Nested JSONB objects are operator-owned.  Add the FinLab pilot
-        # override only when the operator has not supplied one yet; this keeps
-        # unrelated policy keys and explicit source overrides untouched.
-        if ds["dataset_key"] == "tw_equity_eod":
-            await session.execute(
-                text("""
-                    UPDATE dataset_registry
-                    SET config = jsonb_set(
-                        config,
-                        '{delivery_expectation,source_overrides}',
-                        CASE
-                          WHEN jsonb_typeof(config->'delivery_expectation'->'source_overrides') = 'object'
-                            THEN config->'delivery_expectation'->'source_overrides'
-                              || CAST(:finlab_override AS jsonb)
-                          ELSE CAST(:finlab_override AS jsonb)
-                        END,
-                        true
-                    )
-                    WHERE dataset_key = :dataset_key
-                      AND jsonb_typeof(config->'delivery_expectation') = 'object'
-                      AND (
-                        NOT (config->'delivery_expectation' ? 'source_overrides')
-                        OR (
-                          jsonb_typeof(config->'delivery_expectation'->'source_overrides') = 'object'
-                          AND NOT (config->'delivery_expectation'->'source_overrides' ? 'finlab')
-                        )
-                      )
-                """),
-                {
-                    "dataset_key": ds["dataset_key"],
-                    "finlab_override": FINLAB_PILOT_OVERRIDE_JSON,
-                },
-            )
     await session.commit()
     logger.info(f"Seeded {len(DATASETS)} datasets")
 

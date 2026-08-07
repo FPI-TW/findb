@@ -33,7 +33,7 @@ _SCHEDULER_KEY_PATTERN = re.compile(r"^[a-z0-9_]{1,100}$")
 _SCHEDULER_KEYS = frozenset(
     {
         "twelve_data_us_common_stocks_daily_v1",
-        "finlab_tw_1430_tw_equity_eod",
+        "finlab_tw_equity_eod_v1",
         "shioaji_tw_pilot_v1",
     }
 )

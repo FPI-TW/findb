@@ -30,7 +30,7 @@ RUN_ID = UUID("019f98b5-ee0b-7b16-9a28-d8e2ed638a92")
 
 def _schedule():
     manifest = load_schedule_manifest(SCHEDULE_PATH)
-    return next(feed for feed in manifest.feeds if feed.slot_id == "tw_1430")
+    return next(feed for feed in manifest.feeds if feed.slot_id == "taiwan_market_window")
 
 
 def _tables() -> dict[str, FinLabDatasetTable]:
@@ -230,7 +230,7 @@ def test_prepared_request_replay_skips_gateway_and_raw(tmp_path: Path) -> None:
         attempt_count=2,
         checkpoint_before=TARGET_DATE,
         prepared_request=request,
-        slot_id="tw_1430",
+        slot_id="taiwan_market_window",
         provider="finlab",
         dataset_key="tw_equity_eod",
         work_item="tw_equity_eod",

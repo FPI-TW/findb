@@ -78,7 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--run-forever",
         action="store_true",
-        help="Poll continuously; the safe default runs one due cycle and exits.",
+        help=(
+            "Poll continuously using an explicit v2 manifest slot; "
+            "the safe default runs one due cycle and exits."
+        ),
     )
     mode.add_argument(
         "--as-of",
@@ -211,21 +214,14 @@ def _expected_definition(
     schedule: ScheduleConfig,
 ) -> tuple[str, tuple[str, ...], str, str, str]:
     """Return the Twelve Data execution identity expected from DB control."""
-    slot_id = schedule.slot_id if schedule.slot_id != "legacy" else "us_0600"
-    scheduled_local_time = {
-        "us_0600": "06:00:00",
-        "global_0815": "08:15:00",
-        "tw_1430": "14:30:00",
-        "asia_1630": "16:30:00",
-    }.get(slot_id)
-    if scheduled_local_time is None:
-        raise ScheduleError("unsupported scheduler slot")
+    if schedule.slot_id == "legacy":
+        raise ScheduleError("scheduler-control validation requires a v2 slot")
     return (
         schedule.provider,
         (schedule.dataset_key,),
-        slot_id,
-        scheduled_local_time,
-        "Asia/Taipei",
+        schedule.slot_id,
+        schedule.scheduled_local_time.isoformat(),
+        schedule.timezone_name,
     )
 
 

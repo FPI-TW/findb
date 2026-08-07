@@ -704,12 +704,11 @@ function PageIntro({
   )
 }
 
-const SLOT_ORDER = ["us_0600", "global_0815", "tw_1430", "asia_1630"]
-const SLOT_LABELS: Record<string, string> = {
-  us_0600: "06:00 美國與歐洲",
-  global_0815: "08:15 全球連續市場",
-  tw_1430: "14:30 台灣",
-  asia_1630: "16:30 亞洲",
+const SLOT_SEMANTIC_LABELS: Record<string, string> = {
+  western_markets_window: "西方市場窗口",
+  global_markets_window: "全球市場窗口",
+  taiwan_market_window: "台灣市場窗口",
+  asia_pacific_markets_window: "亞太市場窗口",
 }
 const STATUS_LABELS: Record<FreshnessStatus, string> = {
   not_due: "尚未到期",
@@ -830,11 +829,28 @@ export function MarketFreshnessPanel({
   const summaries = result?.ok ? result.data.data : []
   const slots = [...new Set(summaries.map(summary => summary.slot_id))].sort(
     (left, right) => {
-      const leftIndex = SLOT_ORDER.indexOf(left)
-      const rightIndex = SLOT_ORDER.indexOf(right)
+      const leftAuthoritative = summaries
+        .filter(summary => summary.slot_id === left)
+        .sort(
+          (a, b) =>
+            a.timezone.localeCompare(b.timezone) ||
+            a.scheduled_local_time.localeCompare(b.scheduled_local_time)
+        )[0]
+      const rightAuthoritative = summaries
+        .filter(summary => summary.slot_id === right)
+        .sort(
+          (a, b) =>
+            a.timezone.localeCompare(b.timezone) ||
+            a.scheduled_local_time.localeCompare(b.scheduled_local_time)
+        )[0]
+      if (!leftAuthoritative || !rightAuthoritative) {
+        return left.localeCompare(right)
+      }
       return (
-        (leftIndex === -1 ? SLOT_ORDER.length : leftIndex) -
-          (rightIndex === -1 ? SLOT_ORDER.length : rightIndex) ||
+        leftAuthoritative.timezone.localeCompare(rightAuthoritative.timezone) ||
+        leftAuthoritative.scheduled_local_time.localeCompare(
+          rightAuthoritative.scheduled_local_time
+        ) ||
         left.localeCompare(right)
       )
     }
@@ -870,14 +886,29 @@ export function MarketFreshnessPanel({
                 const slotMarkets = summaries.filter(
                   summary => summary.slot_id === slotId
                 )
+                const slotDefinition = [...slotMarkets].sort(
+                  (a, b) =>
+                    a.timezone.localeCompare(b.timezone) ||
+                    a.scheduled_local_time.localeCompare(
+                      b.scheduled_local_time
+                    ) ||
+                    a.market.localeCompare(b.market)
+                )[0]
                 return (
                   <section key={slotId}>
                     <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
                       <h3 className="font-bold">
-                        {SLOT_LABELS[slotId] ?? slotId}
+                        {SLOT_SEMANTIC_LABELS[slotId] ?? slotId}
                       </h3>
                       <span className="font-mono text-xs text-muted">
-                        Asia/Taipei · {slotMarkets.length} 個市場
+                        {slotDefinition
+                          ? formatScheduledTime(
+                              slotDefinition.scheduled_local_time
+                            ) +
+                            " · " +
+                            slotDefinition.timezone
+                          : "—"}{" "}
+                        · {slotMarkets.length} 個市場
                       </span>
                     </div>
                     <div className="grid gap-2 xl:grid-cols-2">

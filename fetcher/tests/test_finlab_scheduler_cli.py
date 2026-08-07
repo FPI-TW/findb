@@ -52,7 +52,7 @@ def test_check_mode_does_not_construct_network_or_sdk_clients(
     assert payload == {
         "dataset_key": "tw_equity_eod",
         "mode": "finlab_scheduler_check",
-        "slot_id": "tw_1430",
+        "slot_id": "taiwan_market_window",
         "status": "ok",
         "work_item_count": 1,
     }
@@ -62,7 +62,7 @@ def test_disabled_or_mismatched_feed_is_rejected_before_runtime_config(
     monkeypatch, tmp_path, capsys
 ) -> None:
     schedule = json.loads((CONFIG_DIR / "daily_scheduler.v2.json").read_text(encoding="utf-8"))
-    feed = next(item for item in schedule["feeds"] if item["slot_id"] == "tw_1430")
+    feed = next(item for item in schedule["feeds"] if item["slot_id"] == "taiwan_market_window")
     feed["enabled"] = False
     path = tmp_path / "disabled.json"
     path.write_text(json.dumps(schedule), encoding="utf-8")

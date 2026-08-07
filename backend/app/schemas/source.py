@@ -10,6 +10,7 @@ from app.schemas.payload_limits import (
     ensure_data_items_count_within_limit,
     ensure_payload_size_within_limit,
 )
+from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc
 
 
@@ -249,7 +250,7 @@ class SchedulerControlPollResponse(BaseModel):
     scheduler_key: str
     provider: str
     dataset_keys: list[str]
-    slot_id: str
+    slot_id: CanonicalSlotId
     scheduled_local_time: time
     timezone: str
     desired_state: Literal["running", "stopped"]

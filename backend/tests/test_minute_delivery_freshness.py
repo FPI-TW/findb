@@ -1,6 +1,6 @@
 """Acceptance coverage for sequenced Shioaji minute freshness semantics."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
 from app.services.delivery_monitor import scan_missing_deliveries
+from app.services.delivery_policy import DeliveryExpectation, resolve_expected_data_date
 from app.services.market_freshness import list_market_freshness
 from app.utils import uuid7
 
@@ -47,13 +48,17 @@ def _minute_config(asset_class: str) -> dict:
                 "calendar_market": "TW",
                 "timezone": "Asia/Taipei",
                 "market_close_time": "13:30:00",
-                "availability_grace_minutes": 210,
+                "availability_grace_minutes": 60,
                 "action": "warn",
             },
-            "missing_delivery": {"action": "warn", "expected_sources": ["shioaji"]},
+            "missing_delivery": {
+                "action": "warn",
+                "expected_sources": ["shioaji"],
+                "deadline_local_time": "17:00:00",
+            },
             "schedule": {
                 "enabled": True,
-                "slot_id": "tw_1430",
+                "slot_id": "taiwan_market_window",
                 "local_time": "14:30:00",
                 "timezone": "Asia/Taipei",
                 "expected_sources": ["shioaji"],
@@ -276,3 +281,47 @@ async def test_minute_monitor_waits_until_due_and_resolves_only_complete_group(
         )
         == 0
     )
+
+
+@pytest.mark.asyncio
+async def test_minute_market_freshness_uses_operational_deadline(test_session) -> None:
+    await _seed_minute_datasets(test_session, ("tw_equity_minute",))
+    test_session.add_all(
+        [_run("tw_equity_minute", sequence, 3, data_date=PRIOR_DATA_DATE) for sequence in (1, 2, 3)]
+    )
+    await test_session.commit()
+
+    before = (await list_market_freshness(test_session, market="TW", now=BEFORE_DUE))[0]
+    assert before.expected_data_date == PRIOR_DATA_DATE
+    assert before.feeds[0].status == "fresh"
+
+    at_deadline = (await list_market_freshness(test_session, market="TW", now=AT_DUE))[0]
+    assert at_deadline.expected_data_date == DATA_DATE
+    assert at_deadline.feeds[0].status == "late"
+
+
+@pytest.mark.asyncio
+async def test_minute_ingest_and_monitor_deadlines_are_independent(test_session) -> None:
+    await _seed_minute_datasets(test_session, ("tw_equity_minute",))
+    expectation = DeliveryExpectation.model_validate(
+        _minute_config("equity")["delivery_expectation"]
+    )
+    assert expectation.latest_date is not None
+    at_ingest_due = datetime(2026, 7, 22, 6, 30, tzinfo=timezone.utc)
+
+    ingest_expected, ingest_reason = await resolve_expected_data_date(
+        test_session,
+        expectation.latest_date,
+        at_ingest_due,
+        strict_current_session=True,
+    )
+    monitor_expected, monitor_reason = await resolve_expected_data_date(
+        test_session,
+        expectation.latest_date,
+        at_ingest_due,
+        strict_current_session=True,
+        current_session_deadline=time(17),
+    )
+
+    assert (ingest_expected, ingest_reason) == (DATA_DATE, None)
+    assert (monitor_expected, monitor_reason) == (PRIOR_DATA_DATE, None)

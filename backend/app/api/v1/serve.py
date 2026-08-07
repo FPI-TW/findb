@@ -4,7 +4,7 @@ Serve API 端點。
 """
 
 from datetime import date
-from typing import Optional
+from typing import Optional, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -57,6 +57,7 @@ from app.schemas.serve import (
 )
 from app.services.calendar_management import complete_published_revision_ids, published_year
 from app.services.market_freshness import list_market_freshness
+from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
 
@@ -116,7 +117,7 @@ async def list_market_freshness_summary(
         data=[
             MarketFreshnessSummaryResponse(
                 market=row.market,
-                slot_id=row.slot_id,
+                slot_id=cast(CanonicalSlotId, row.slot_id),
                 scheduled_local_time=row.scheduled_local_time,
                 timezone=row.timezone,
                 status=row.status,

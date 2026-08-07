@@ -34,6 +34,8 @@ _V2_FEED_KEYS = {
     "dataset_key",
     "universe_file",
     "scheduled_time",
+    "target_date_lag_days",
+    "legacy_schedule_id",
     "target_date_policy",
     "calendar_file",
     "grace_seconds",
@@ -59,7 +61,26 @@ _CALENDAR_ROOT_KEYS = {
     "source_url",
     "reviewed_at",
 }
-_SLOT_TIMES = {"us_0600": "06:00", "global_0815": "08:15", "tw_1430": "14:30", "asia_1630": "16:30"}
+# This allowlist intentionally has no clock/provider/dataset meaning.  The
+# manifest carries the trigger time as data, so changing only ``scheduled_time``
+# cannot change slot or schedule identity.
+CANONICAL_SLOT_IDS = frozenset(
+    {
+        "western_markets_window",
+        "global_markets_window",
+        "taiwan_market_window",
+        "asia_pacific_markets_window",
+    }
+)
+
+# Persisted v2 state used the original time-bearing IDs.  This is a state
+# migration concern only; they are not accepted as v2 manifest identities.
+LEGACY_SLOT_ID_MAP = {
+    "us_0600": "western_markets_window",
+    "global_0815": "global_markets_window",
+    "tw_1430": "taiwan_market_window",
+    "asia_1630": "asia_pacific_markets_window",
+}
 
 
 class ScheduleError(ValueError):
@@ -93,6 +114,9 @@ class ScheduleConfig:
     lease_seconds: int
     poll_interval_seconds: int
     wait_timeout_seconds: int
+    scheduled_local_time: time = time(0)
+    target_date_lag_days: int = 0
+    legacy_schedule_id: str | None = None
     slot_id: str = "legacy"
     provider: str = "twelve_data"
     market: str = "US"
@@ -136,8 +160,7 @@ class ScheduleConfig:
         if self.schedule_version == 1:
             return self.latest_due_date(now)
         candidate = self.scheduled_date(now)
-        if self.slot_id == "us_0600":
-            candidate -= timedelta(days=1)
+        candidate -= timedelta(days=self.target_date_lag_days)
         if self.target_date_policy == "latest_trade_date" and (
             self.calendar_start_date is None
             or self.calendar_end_date is None
@@ -164,8 +187,11 @@ class ScheduleConfig:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ScheduleError("scheduler clock must be timezone-aware")
         local = now.astimezone(ZoneInfo(self.timezone_name))
-        hour, minute = (int(part) for part in _SLOT_TIMES[self.slot_id].split(":"))
-        trigger = datetime.combine(local.date(), time(hour, minute), tzinfo=local.tzinfo)
+        trigger = datetime.combine(
+            local.date(),
+            self.scheduled_local_time,
+            tzinfo=local.tzinfo,
+        )
         candidate = local.date() if local >= trigger else local.date() - timedelta(days=1)
         return candidate
 
@@ -177,10 +203,9 @@ class ScheduleConfig:
                 time(self.hour_utc, self.minute_utc),
                 tzinfo=timezone.utc,
             )
-        hour, minute = (int(part) for part in _SLOT_TIMES[self.slot_id].split(":"))
         local = datetime.combine(
             scheduled_date,
-            time(hour, minute),
+            self.scheduled_local_time,
             tzinfo=ZoneInfo(self.timezone_name),
         )
         return (local + timedelta(seconds=self.grace_seconds)).astimezone(timezone.utc)
@@ -242,6 +267,11 @@ def load_schedule_config(path: Path) -> ScheduleConfig:
         lease_seconds=_bounded_int(value, "lease_seconds", 60, 28_800),
         poll_interval_seconds=_bounded_int(value, "poll_interval_seconds", 1, 3600),
         wait_timeout_seconds=_bounded_int(value, "wait_timeout_seconds", 1, 7200),
+        scheduled_local_time=time(
+            _bounded_int(value, "hour_utc", 0, 23),
+            _bounded_int(value, "minute_utc", 0, 59),
+        ),
+        target_date_lag_days=0,
     )
     if config.retry_base_seconds > config.retry_max_seconds:
         raise ScheduleError("retry_base_seconds must not exceed retry_max_seconds")
@@ -282,15 +312,20 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
     feeds: list[ScheduleConfig] = []
     seen_slots: set[str] = set()
     seen_feeds: set[tuple[str, str, str]] = set()
+    seen_legacy_schedule_ids: set[str] = set()
     for index, item in enumerate(feeds_value):
         if not isinstance(item, dict) or set(item) != _V2_FEED_KEYS:
             raise ScheduleError(f"feeds[{index}] keys must be exactly {sorted(_V2_FEED_KEYS)}")
         slot_id = _required_string(item, "slot_id")
-        if slot_id not in _SLOT_TIMES:
+        if slot_id not in CANONICAL_SLOT_IDS:
             raise ScheduleError("slot_id must be one of the four v2 slots")
         seen_slots.add(slot_id)
-        if _required_string(item, "scheduled_time") != _SLOT_TIMES[slot_id]:
-            raise ScheduleError("scheduled_time must match slot_id")
+        scheduled_local_time = _parse_scheduled_time(item.get("scheduled_time"))
+        legacy_schedule_id = _optional_identifier(item, "legacy_schedule_id")
+        if legacy_schedule_id is not None:
+            if legacy_schedule_id in seen_legacy_schedule_ids:
+                raise ScheduleError("legacy_schedule_id must be unique across v2 feeds")
+            seen_legacy_schedule_ids.add(legacy_schedule_id)
         provider = _identifier(item, "provider")
         if provider not in {"twelve_data", "finlab"}:
             raise ScheduleError("provider is unsupported")
@@ -322,6 +357,9 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
             lease_seconds=_bounded_int(item, "lease_seconds", 60, 28800),
             poll_interval_seconds=_bounded_int(item, "poll_interval_seconds", 1, 3600),
             wait_timeout_seconds=_bounded_int(item, "wait_timeout_seconds", 1, 7200),
+            scheduled_local_time=scheduled_local_time,
+            target_date_lag_days=_bounded_int(item, "target_date_lag_days", 0, 366),
+            legacy_schedule_id=legacy_schedule_id,
             slot_id=slot_id,
             provider=provider,
             market=_required_string(item, "market"),
@@ -348,7 +386,7 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         if config.target_date_policy == "latest_trade_date" and config.enabled and calendar is None:
             raise ScheduleError("enabled trade-date policy requires a governed calendar")
         feeds.append(config)
-    if seen_slots != set(_SLOT_TIMES):
+    if seen_slots != CANONICAL_SLOT_IDS:
         raise ScheduleError("v2 manifest must declare each of the four slots")
     return ScheduleManifest(2, timezone_name, tuple(feeds))
 
@@ -357,6 +395,18 @@ def _identifier(parent: dict[str, Any], key: str) -> str:
     value = _required_string(parent, key)
     if _IDENTIFIER_PATTERN.fullmatch(value) is None:
         raise ScheduleError(f"{key} must be a stable lowercase identifier")
+    return value
+
+
+def _optional_identifier(parent: dict[str, Any], key: str) -> str | None:
+    value = parent.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ScheduleError(f"{key} must be null or a stable lowercase identifier")
+    value = value.strip()
+    if _IDENTIFIER_PATTERN.fullmatch(value) is None:
+        raise ScheduleError(f"{key} must be null or a stable lowercase identifier")
     return value
 
 
@@ -456,6 +506,19 @@ def _required_string(parent: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ScheduleError(f"{key} must be a non-empty string")
     return value.strip()
+
+
+def _parse_scheduled_time(value: object) -> time:
+    """Parse an unzoned local wall-clock time carried by a v2 feed."""
+    if not isinstance(value, str) or not value.strip():
+        raise ScheduleError("scheduled_time must be an HH:MM or HH:MM:SS time")
+    try:
+        parsed = time.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise ScheduleError("scheduled_time must be an HH:MM or HH:MM:SS time") from exc
+    if parsed.tzinfo is not None:
+        raise ScheduleError("scheduled_time must not include a timezone")
+    return parsed.replace(tzinfo=None)
 
 
 def _bounded_int(parent: dict[str, Any], key: str, lower: int, upper: int) -> int:

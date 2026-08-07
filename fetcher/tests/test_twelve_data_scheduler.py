@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -214,8 +214,10 @@ def test_v2_scheduler_delivery_carries_slot_identity(contracts_dir: Path) -> Non
     executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
         executor._schedule,
         schedule_version=2,
-        slot_id="us_0600",
+        slot_id="western_markets_window",
         timezone_name="Asia/Taipei",
+        scheduled_local_time=time(6, 30),
+        target_date_lag_days=1,
     )
     executor.execute(
         replace(
@@ -226,8 +228,8 @@ def test_v2_scheduler_delivery_carries_slot_identity(contracts_dir: Path) -> Non
         now=NOW,
     )
     assert source.requests[0]["delivery"] == {
-        "slot_id": "us_0600",
-        "scheduled_for": "2024-01-05T22:00:00Z",
+        "slot_id": "western_markets_window",
+        "scheduled_for": "2024-01-05T22:30:00Z",
         "target_data_date": "2024-01-05",
         "work_item_id": "AAPL",
     }
@@ -243,8 +245,10 @@ def test_v2_scheduler_retries_when_target_date_is_not_ready(
     executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
         executor._schedule,
         schedule_version=2,
-        slot_id="us_0600",
+        slot_id="western_markets_window",
         timezone_name="Asia/Taipei",
+        scheduled_local_time=time(6, 30),
+        target_date_lag_days=1,
     )
 
     result = executor.execute(
@@ -275,8 +279,10 @@ def test_v2_scheduler_retries_when_provider_has_no_target_data(
     executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
         executor._schedule,
         schedule_version=2,
-        slot_id="us_0600",
+        slot_id="western_markets_window",
         timezone_name="Asia/Taipei",
+        scheduled_local_time=time(6, 30),
+        target_date_lag_days=1,
     )
 
     result = executor.execute(

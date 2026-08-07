@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 from jsonschema import FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.validators import validator_for
+
+from findb_fetcher.schedule import LEGACY_SLOT_ID_MAP
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ROOT_KEYS = {"manifest_version", "contracts"}
@@ -71,8 +74,9 @@ class ContractRegistry:
         contract = self.get(schema_id, schema_version)
         validator_class = validator_for(contract.schema)
         validator = validator_class(contract.schema, format_checker=FormatChecker())
+        validation_instance = _legacy_delivery_compatibility_copy(instance)
         try:
-            validator.validate(instance)
+            validator.validate(validation_instance)
         except ValidationError as exc:
             location = ".".join(str(part) for part in exc.absolute_path) or "<root>"
             raise ContractValidationError(f"{location}: {exc.message}") from exc
@@ -191,6 +195,28 @@ def _is_safe_relative_path(value: str) -> bool:
         and ".." not in path.parts
         and path.parts[-1].endswith(".schema.json")
     )
+
+
+def _legacy_delivery_compatibility_copy(instance: dict[str, Any]) -> dict[str, Any]:
+    """Return a validation-only copy for persisted pre-v2 slot metadata.
+
+    Prepared requests are immutable replay artifacts, so the legacy alias is
+    normalized only in the object handed to JSON Schema validation.  New
+    requests and arbitrary slot IDs continue through unchanged and are judged
+    strictly by the canonical schema.
+    """
+    delivery = instance.get("delivery")
+    if not isinstance(delivery, dict):
+        return instance
+    legacy_slot_id = delivery.get("slot_id")
+    if not isinstance(legacy_slot_id, str):
+        return instance
+    canonical_slot_id = LEGACY_SLOT_ID_MAP.get(legacy_slot_id)
+    if canonical_slot_id is None:
+        return instance
+    validation_instance = deepcopy(instance)
+    validation_instance["delivery"]["slot_id"] = canonical_slot_id
+    return validation_instance
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

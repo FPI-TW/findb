@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.schemas.common import PaginatedResponse
+from app.services.slot_identity import CanonicalSlotId
 
 
 class InstrumentResponse(BaseModel):
@@ -274,7 +275,7 @@ class MarketFreshnessSummaryResponse(BaseModel):
     """Public, provider-free projection of configured market delivery health."""
 
     market: str
-    slot_id: str
+    slot_id: CanonicalSlotId
     scheduled_local_time: time
     timezone: str
     status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]

@@ -128,11 +128,15 @@ async def scan_missing_deliveries(
                 delivery_mode=delivery_mode,
             )
             if delivery_mode == "sequenced_snapshot":
+                deadline = expectation.missing_delivery.deadline_local_time
+                resolver_kwargs: dict[str, Any] = {"strict_current_session": True}
+                if deadline is not None:
+                    resolver_kwargs["current_session_deadline"] = deadline
                 expected_date, reason = await resolve_expected_data_date(
                     db,
                     latest,
                     evaluated_at,
-                    strict_current_session=True,
+                    **resolver_kwargs,
                 )
             else:
                 # Keep the legacy call shape for downstream test/fixture

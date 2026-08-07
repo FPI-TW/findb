@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 from sqlalchemy import inspect, select
@@ -12,7 +13,23 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import AdminPrincipal
 from app.models.registry import SchedulerControl
 from app.services.admin_audit import record_admin_audit
+from app.services.slot_identity import normalize_slot_id
 from app.utils import ensure_utc, utc_now
+
+LEGACY_SCHEDULER_KEY_MAP = MappingProxyType(
+    {"finlab_tw_1430_tw_equity_eod": "finlab_tw_equity_eod_v1"}
+)
+SCHEDULER_KEY_ALIASES = LEGACY_SCHEDULER_KEY_MAP
+
+
+def normalize_scheduler_key(scheduler_key: str) -> str:
+    """Resolve the rollout alias to the one durable control-row key."""
+
+    normalized = str(scheduler_key or "").strip()
+    return LEGACY_SCHEDULER_KEY_MAP.get(normalized, normalized)
+
+
+canonical_scheduler_key = normalize_scheduler_key
 
 
 class SchedulerControlError(Exception):
@@ -48,17 +65,36 @@ async def list_scheduler_controls(db: AsyncSession) -> list[SchedulerControl]:
         .options(selectinload(SchedulerControl.scheduler_datasets))
         .order_by(SchedulerControl.scheduler_key)
     )
-    return list(result.scalars().all())
+    # A partially upgraded fixture may still contain the legacy key.  Prefer a
+    # canonical row if both are visible so callers never see dual controls.
+    rows_by_key: dict[str, SchedulerControl] = {}
+    for row in result.scalars().all():
+        canonical_key = normalize_scheduler_key(row.scheduler_key)
+        current = rows_by_key.get(canonical_key)
+        if current is None or row.scheduler_key == canonical_key:
+            rows_by_key[canonical_key] = row
+    return sorted(rows_by_key.values(), key=lambda row: normalize_scheduler_key(row.scheduler_key))
 
 
 async def get_scheduler_control(db: AsyncSession, scheduler_key: str) -> SchedulerControl | None:
     """Load one scheduler without acquiring a mutation lock."""
+    canonical_key = normalize_scheduler_key(scheduler_key)
     result = await db.execute(
+        select(SchedulerControl)
+        .options(selectinload(SchedulerControl.scheduler_datasets))
+        .where(SchedulerControl.scheduler_key == canonical_key)
+    )
+    row = result.scalar_one_or_none()
+    if row is not None or canonical_key == scheduler_key:
+        return row
+    # Bridge compatibility for a pre-migration local database.  Production
+    # migration renames the row, so this fallback never creates a second row.
+    legacy_result = await db.execute(
         select(SchedulerControl)
         .options(selectinload(SchedulerControl.scheduler_datasets))
         .where(SchedulerControl.scheduler_key == scheduler_key)
     )
-    return result.scalar_one_or_none()
+    return legacy_result.scalar_one_or_none()
 
 
 async def update_scheduler_desired_state(
@@ -71,13 +107,23 @@ async def update_scheduler_desired_state(
     commit: bool = True,
 ) -> SchedulerControl:
     """Atomically update desired state and append its Admin audit event."""
+    canonical_key = normalize_scheduler_key(scheduler_key)
     result = await db.execute(
         select(SchedulerControl)
         .options(selectinload(SchedulerControl.scheduler_datasets))
-        .where(SchedulerControl.scheduler_key == scheduler_key)
+        .where(SchedulerControl.scheduler_key == canonical_key)
         .with_for_update()
     )
     row = result.scalar_one_or_none()
+    if row is None and canonical_key != scheduler_key:
+        # Compatibility with a database that has not run the rename migration.
+        result = await db.execute(
+            select(SchedulerControl)
+            .options(selectinload(SchedulerControl.scheduler_datasets))
+            .where(SchedulerControl.scheduler_key == scheduler_key)
+            .with_for_update()
+        )
+        row = result.scalar_one_or_none()
     if row is None:
         raise SchedulerControlNotFoundError(scheduler_key)
     if row.revision != expected_revision:
@@ -93,7 +139,7 @@ async def update_scheduler_desired_state(
         principal,
         action="update",
         resource_type="scheduler_control",
-        resource_id=row.scheduler_key,
+        resource_id=normalize_scheduler_key(row.scheduler_key),
         details={
             "desired_state": row.desired_state,
             "expected_revision": expected_revision,
@@ -103,7 +149,7 @@ async def update_scheduler_desired_state(
     )
     if commit:
         await db.commit()
-        refreshed = await get_scheduler_control(db, scheduler_key)
+        refreshed = await get_scheduler_control(db, canonical_key)
         if refreshed is not None:
             row = refreshed
     return row
@@ -200,7 +246,7 @@ async def poll_scheduler_control(
     row.updated_at = server_time
     if commit:
         await db.commit()
-        refreshed = await get_scheduler_control(db, scheduler_key)
+        refreshed = await get_scheduler_control(db, normalize_scheduler_key(scheduler_key))
         if refreshed is not None:
             row = refreshed
     return row, server_time
@@ -213,12 +259,20 @@ def present_scheduler_control(
     reference = ensure_utc(now) if now is not None else utc_now()
     heartbeat = _normalize_timestamp(row.last_heartbeat_at)
     heartbeat_age = max(0.0, (reference - heartbeat).total_seconds()) if heartbeat else None
+    try:
+        canonical_slot_id = normalize_slot_id(row.slot_id)
+    except ValueError:
+        # Keep malformed legacy fixtures visible to diagnostics.  Production
+        # rows are canonicalized by the migration and never take this branch.
+        canonical_slot_id, canonical_local_time = row.slot_id, row.scheduled_local_time
+    else:
+        canonical_local_time = row.scheduled_local_time
     return {
-        "scheduler_key": row.scheduler_key,
+        "scheduler_key": normalize_scheduler_key(row.scheduler_key),
         "provider": row.provider,
         "dataset_keys": scheduler_dataset_keys(row),
-        "slot_id": row.slot_id,
-        "scheduled_local_time": row.scheduled_local_time,
+        "slot_id": canonical_slot_id,
+        "scheduled_local_time": canonical_local_time,
         "timezone": row.timezone,
         "desired_state": row.desired_state,
         "observed_state": row.observed_state,
@@ -243,6 +297,10 @@ __all__ = [
     "SchedulerScopeError",
     "get_scheduler_control",
     "list_scheduler_controls",
+    "LEGACY_SCHEDULER_KEY_MAP",
+    "SCHEDULER_KEY_ALIASES",
+    "canonical_scheduler_key",
+    "normalize_scheduler_key",
     "poll_scheduler_control",
     "present_scheduler_control",
     "scheduler_dataset_keys",

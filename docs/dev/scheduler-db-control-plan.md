@@ -18,11 +18,11 @@ Fetcher 不開始新 cycle，並持續 retry。
   `scheduler_control.dataset_keys` JSON 只保留相容投影，不可擴大 Source credential scope。
 - Alembic 以 stopped 狀態建立並驗證三筆初始 definition：
   - `twelve_data_us_common_stocks_daily_v1`
-    - `us_0600`、`06:00`、`Asia/Taipei`、`us_equity_eod`
-  - `finlab_tw_1430_tw_equity_eod`
-    - `tw_1430`、`14:30`、`Asia/Taipei`、`tw_equity_eod`
+    - `western_markets_window`、`06:30`、`Asia/Taipei`、`us_equity_eod`
+  - `finlab_tw_equity_eod_v1`
+    - `taiwan_market_window`、`14:30`、`Asia/Taipei`、`tw_equity_eod`
   - `shioaji_tw_pilot_v1`
-    - `tw_1430`、`14:30`、`Asia/Taipei`、`tw_equity_minute`、`tw_etf_minute`
+    - `taiwan_market_window`、`14:30`、`Asia/Taipei`、`tw_equity_minute`、`tw_etf_minute`
 - Admin API：`GET /api/v1/admin/schedulers` viewer 以上可讀；
   `PATCH /api/v1/admin/schedulers/{scheduler_key}` owner-only、revision conflict、audit event。
 - Source API：`POST /api/v1/source/scheduler-controls/{scheduler_key}/poll`，以 Source
@@ -34,6 +34,12 @@ Fetcher 不開始新 cycle，並持續 retry。
 - 現行 reviewed pilots 以 poll 回傳的 provider、dataset mapping、slot、時間與 timezone
   嚴格驗證 executable workload；任何不一致都 fail closed。變更 DB definition 時必須同步
   部署相符的 Fetcher workload，不能把這個驗證模式解讀成無需部署即可動態改排程。
+- Slot ID 是不可解讀時間、provider 或 dataset 的穩定 window identity；實際本地觸發時間
+  由 definition 欄位直接提供。變更時間不得改變 schedule/job identity；Fetcher SQLite
+  state v2 會以原子交易升級至 state v3，舊／新 logical identity collision 會 fail closed。
+- v2 manifest 另以 nullable `legacy_schedule_id` 明確宣告 v1 SQLite state 的 ownership；
+  目前只有 Twelve western feed 可承接 `twelve_data_us_common_stocks_daily_v1`，其它
+  provider/slot 不得依 provider、dataset 或時間推測 legacy ownership。
 - Admin market freshness 由 `scheduler_control`／`scheduler_dataset` 投影，一個 scheduler
   一張卡；`DatasetRegistry.delivery_expectation` 只負責各 feed 的 expected data date、
   completeness 與 freshness policy，不再是執行時程權威。未停止、未收過資料、heartbeat

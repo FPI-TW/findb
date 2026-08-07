@@ -93,7 +93,7 @@ credentials 加到此 smoke container。
 
 ## FinLab durable reviewed pilot
 
-FinLab production pilot固定在`tw_1430`抓取`2330`與`2317`的五個OHLCV datasets，組成
+FinLab production pilot固定在`taiwan_market_window`（Asia/Taipei `14:30`）抓取`2330`與`2317`的五個OHLCV datasets，組成
 單一`market_eod.v1` `full_snapshot` delivery。每一輪先保存deterministic SDK acquisition
 bundle至raw R2，再保存prepared Source request；重啟後直接重送相同request，不會再次
 呼叫SDK。只有Source run為`completed`且total/success均為2、failed為0時才推進checkpoint。
@@ -105,7 +105,7 @@ uv run --env-file .env findb-fetch-finlab-scheduler --check
 uv run --env-file .env findb-fetch-finlab-scheduler --run-forever
 ```
 
-Preflight會驗證已啟用的`tw_1430` feed、exact two-symbol reviewed manifest、runtime config、
+Preflight會驗證已啟用的`taiwan_market_window` feed、exact two-symbol reviewed manifest、runtime config、
 contracts與state，但不建立provider、Source、calendar或R2 client。Production state預設為
 `/var/lib/findb-finlab-fetcher/state.sqlite3`；此pilot不是FinLab全市場授權。
 
@@ -314,10 +314,15 @@ uv run --env-file .env findb-fetch-scheduler \
   --state-path .state/scheduler.sqlite3
 ```
 
-只有明確指定`--run-forever`才會進入poll loop：
+Legacy v1 scheduler config 保留 one-shot、`--check` 與 SQLite state migration
+相容；它沒有 time-independent slot definition，因此不得用於 DB-controlled
+`--run-forever`。常駐模式必須明確指定 v2 manifest、semantic slot 與 dataset：
 
 ```bash
 uv run --env-file .env findb-fetch-scheduler \
+  --schedule-file configs/daily_scheduler.v2.json \
+  --slot-id western_markets_window \
+  --dataset-key us_equity_eod \
   --state-path .state/scheduler.sqlite3 \
   --run-forever
 ```
@@ -337,6 +342,16 @@ SQLite檔屬於Fetcher自己的runtime state，不是FinDB DB，也不包含prov
 credentials。Production必須將`/var/lib/findb-fetcher`掛載至單一writer使用的durable
 volume；CD以UID/GID `10001:10001`及directory mode `0700`驗證此mount，不能把
 container writable layer當checkpoint。狀態包含：
+
+Production v2 feed使用`configs/daily_scheduler.v2.json`。四個slot ID是不可解讀時間的
+穩定window identity：`western_markets_window`（06:30）、`global_markets_window`
+（08:15）、`taiwan_market_window`（14:30）與`asia_pacific_markets_window`（17:15），
+均為Asia/Taipei本地時間；實際時間由manifest的`scheduled_time`欄位直接提供。西方市場
+feed另以`target_date_lag_days=1`明確表達前一交易日，其餘feed為0。變更時間不會改變
+slot、schedule或job identity；SQLite state v2會在啟動時以原子交易升級至state v3，遇到
+舊／新logical job collision則停止並保留原狀態。只有western feed宣告
+`legacy_schedule_id=twelve_data_us_common_stocks_daily_v1`，可將同一v1 SQLite job
+安全轉接；其它feed若遇到legacy row會fail closed，不會猜測slot ownership。
 
 - 每個schedule date與symbol的`pending`、`running`、`retry_wait`、`completed`或
   `failed`狀態。
