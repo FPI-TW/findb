@@ -11,7 +11,6 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timezone
-from datetime import time as clock_time
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -323,11 +322,9 @@ FinLabScheduler = FinLabSchedulerService
 
 def _delivery_metadata(schedule: ScheduleConfig, job: ScheduledJob) -> dict[str, str]:
     target_date = job.target_data_date or job.scheduled_date
-    slot_clock = schedule.slot_id.rsplit("_", 1)[-1]
-    hour, minute = int(slot_clock[:2]), int(slot_clock[2:])
     scheduled = datetime.combine(
         job.scheduled_date,
-        clock_time(hour, minute),
+        schedule.scheduled_local_time,
         tzinfo=ZoneInfo(schedule.timezone_name),
     )
     return {

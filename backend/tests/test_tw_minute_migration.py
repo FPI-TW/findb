@@ -38,6 +38,24 @@ async def _run_alembic(database_url: str, revision: str, command: str = "upgrade
         pytest.fail(f"Alembic {command} {revision} failed:\n{result.stdout}\n{result.stderr}")
 
 
+async def _run_alembic_capture(
+    database_url: str, revision: str, command: str = "upgrade"
+) -> subprocess.CompletedProcess[str]:
+    """Run Alembic without converting a deliberate migration failure to pytest.fail."""
+
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = database_url
+    return await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-m", "alembic", command, revision],
+        cwd=BACKEND_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_tw_minute_migration_is_single_linear_head():
     backend_root = Path(__file__).resolve().parents[1]
     config = Config(str(backend_root / "alembic.ini"))
@@ -50,6 +68,7 @@ def test_tw_minute_migration_is_single_linear_head():
     scheduler_definition = scripts.get_revision("d2e3f4a5b6c7")
     finlab_policy = scripts.get_revision("e3f4a5b6c7d8")
     minute_freshness = scripts.get_revision("f4a5b6c7d8e9")
+    minute_deadline = scripts.get_revision("c3d4e5f6a7b8")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -62,7 +81,11 @@ def test_tw_minute_migration_is_single_linear_head():
     assert finlab_policy.down_revision == "d2e3f4a5b6c7"
     assert minute_freshness is not None
     assert minute_freshness.down_revision == "e3f4a5b6c7d8"
-    assert scripts.get_heads() == ["f4a5b6c7d8e9"]
+    assert minute_deadline is not None
+    assert minute_deadline.down_revision == "b2c3d4e5f6a7"
+    # The environment-neutral registry policy cleanup is the linear head
+    # after the canonical slot identity migration.
+    assert scripts.get_heads() == ["c3d4e5f6a7b8"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -75,6 +98,251 @@ def test_minute_migration_downgrade_preserves_policy_provenance():
     assert "ADD COLUMN IF NOT EXISTS snapshot_id" in migration_source
     assert "run.snapshot_id IS NULL" in migration_source
     assert "DO $$" not in migration_source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_location", ("scheduler", "registry"))
+async def test_slot_identity_migration_rejects_unknown_ids_before_mutation(
+    invalid_location: str,
+) -> None:
+    """Unknown governed IDs fail before A1 can rename or rewrite any row."""
+
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_slot_guard_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        await _run_alembic(database_url, "f4a5b6c7d8e9")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            if invalid_location == "scheduler":
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE scheduler_control
+                        SET slot_id = 'operator_unknown_slot'
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                    )
+                )
+            else:
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE dataset_registry
+                        SET config = jsonb_set(
+                            COALESCE(config, '{}'::jsonb),
+                            '{delivery_expectation,schedule}',
+                            CAST(:schedule AS jsonb),
+                            true
+                        )
+                        WHERE dataset_key = 'tw_equity_eod'
+                        """
+                    ),
+                    {
+                        "schedule": json.dumps(
+                            {
+                                "enabled": True,
+                                "slot_id": "operator_unknown_slot",
+                                "local_time": "06:30:00",
+                                "timezone": "Asia/Taipei",
+                                "expected_sources": [],
+                            }
+                        )
+                    },
+                )
+
+            before = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, slot_id, scheduled_local_time, timezone
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'finlab_tw_1430_tw_equity_eod'
+                        """
+                    )
+                )
+            ).one()
+
+        failed = await _run_alembic_capture(database_url, "head")
+        assert failed.returncode != 0
+        assert "unsupported" in f"{failed.stdout}\n{failed.stderr}"
+
+        async with target_engine.connect() as connection:
+            after = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, slot_id, scheduled_local_time, timezone
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'finlab_tw_1430_tw_equity_eod'
+                        """
+                    )
+                )
+            ).one()
+            assert after == before
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "f4a5b6c7d8e9"
+            )
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        async with admin_engine.connect() as connection:
+            await connection.execute(
+                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :db"),
+                {"db": database_name},
+            )
+            await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        await admin_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_slot_identity_migration_accepts_mixed_ids_and_preserves_custom_times() -> None:
+    """Known mixed old/canonical rows converge without overwriting custom clocks."""
+
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_slot_mixed_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        await _run_alembic(database_url, "f4a5b6c7d8e9")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE scheduler_control
+                    SET slot_id = 'us_0600',
+                        scheduled_local_time = TIME '05:45:00',
+                        timezone = 'UTC'
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE scheduler_control
+                    SET slot_id = 'taiwan_market_window'
+                    WHERE scheduler_key = 'shioaji_tw_pilot_v1'
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO dataset_registry (
+                        dataset_key, name, asset_class, market, frequency,
+                        is_active, config, created_at, updated_at
+                    ) VALUES (
+                        'us_equity_eod', 'US equity EOD', 'equity', 'US', 'daily',
+                        true,
+                        jsonb_build_object(
+                            'delivery_expectation',
+                            jsonb_build_object('schedule', CAST(:schedule AS jsonb))
+                        ),
+                        now(), now()
+                    )
+                    ON CONFLICT (dataset_key) DO UPDATE
+                    SET config = EXCLUDED.config, updated_at = now()
+                    """
+                ),
+                {
+                    "schedule": json.dumps(
+                        {
+                            "enabled": True,
+                            "slot_id": "us_0600",
+                            "local_time": "05:45:00",
+                            "timezone": "UTC",
+                            "expected_sources": ["twelve_data"],
+                        }
+                    )
+                },
+            )
+
+        await _run_alembic(database_url, "head")
+        async with target_engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, slot_id, scheduled_local_time, timezone
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                    )
+                )
+            ).one()
+            assert row == (
+                "twelve_data_us_common_stocks_daily_v1",
+                "western_markets_window",
+                time(5, 45),
+                "UTC",
+            )
+            schedule = await connection.scalar(
+                text(
+                    """
+                    SELECT config->'delivery_expectation'->'schedule'
+                    FROM dataset_registry
+                    WHERE dataset_key = 'us_equity_eod'
+                    """
+                )
+            )
+            assert schedule["slot_id"] == "western_markets_window"
+            assert schedule["local_time"] == "05:45:00"
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM scheduler_control
+                        WHERE slot_id IN ('us_0600', 'global_0815', 'tw_1430', 'asia_1630')
+                        """
+                    )
+                )
+                == 0
+            )
+
+        await _run_alembic(database_url, "f4a5b6c7d8e9", command="downgrade")
+        async with target_engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT scheduler_key, slot_id, scheduled_local_time, timezone
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                    )
+                )
+            ).one()
+            assert row == (
+                "twelve_data_us_common_stocks_daily_v1",
+                "us_0600",
+                time(5, 45),
+                "UTC",
+            )
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        async with admin_engine.connect() as connection:
+            await connection.execute(
+                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :db"),
+                {"db": database_name},
+            )
+            await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -419,24 +687,24 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
             ).all()
             assert definitions == [
                 (
-                    "finlab_tw_1430_tw_equity_eod",
+                    "finlab_tw_equity_eod_v1",
                     "finlab",
-                    "tw_1430",
+                    "taiwan_market_window",
                     time(14, 30),
                     "Asia/Taipei",
                 ),
                 (
                     "shioaji_tw_pilot_v1",
                     "shioaji",
-                    "tw_1430",
+                    "taiwan_market_window",
                     time(14, 30),
                     "Asia/Taipei",
                 ),
                 (
                     "twelve_data_us_common_stocks_daily_v1",
                     "twelve_data",
-                    "us_0600",
-                    time(6),
+                    "western_markets_window",
+                    time(6, 30),
                     "Asia/Taipei",
                 ),
             ]
@@ -453,7 +721,7 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                 )
             ).all()
             assert mappings == [
-                ("finlab_tw_1430_tw_equity_eod", "tw_equity_eod"),
+                ("finlab_tw_equity_eod_v1", "tw_equity_eod"),
                 ("shioaji_tw_pilot_v1", "tw_equity_minute"),
                 ("shioaji_tw_pilot_v1", "tw_etf_minute"),
                 ("twelve_data_us_common_stocks_daily_v1", "us_equity_eod"),
@@ -505,7 +773,16 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     )
                 )
             ).all()
-            assert state_after == state_before
+            expected_state_after = [
+                (
+                    "finlab_tw_equity_eod_v1"
+                    if row[0] == "finlab_tw_1430_tw_equity_eod"
+                    else row[0],
+                    *row[1:],
+                )
+                for row in state_before
+            ]
+            assert state_after == expected_state_after
 
         await _run_alembic(database_url, "c1d2e3f4a5b6", command="downgrade")
         async with target_engine.connect() as connection:

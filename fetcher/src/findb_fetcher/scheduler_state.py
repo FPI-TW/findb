@@ -15,10 +15,15 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from findb_fetcher.schedule import ScheduleConfig, ScheduleError
+from findb_fetcher.schedule import (
+    CANONICAL_SLOT_IDS,
+    LEGACY_SLOT_ID_MAP,
+    ScheduleConfig,
+    ScheduleError,
+)
 from findb_fetcher.universe import SymbolUniverse
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _EXPECTED_COLUMNS = {
     "scheduled_job": {
         "job_key": ("TEXT", 0, 1),
@@ -116,34 +121,11 @@ class SchedulerState:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if schedule.schedule_version == 2:
-                connection.execute(
-                    """
-                    UPDATE scheduled_job
-                    SET slot_id = ?,
-                        schedule_id = ?,
-                        work_item = symbol,
-                        target_data_date = scheduled_date,
-                        scheduled_date = CASE
-                            WHEN ? = 'us_0600' THEN date(scheduled_date, '+1 day')
-                            ELSE scheduled_date
-                        END,
-                        updated_at = ?
-                    WHERE slot_id = 'legacy'
-                      AND provider = ?
-                      AND dataset_key = ?
-                      AND universe_id = ?
-                      AND universe_version = ?
-                    """,
-                    (
-                        schedule.slot_id,
-                        schedule.schedule_id,
-                        schedule.slot_id,
-                        timestamp,
-                        schedule.provider,
-                        schedule.dataset_key,
-                        universe.universe_id,
-                        universe.universe_version,
-                    ),
+                self._migrate_legacy_jobs(
+                    connection,
+                    schedule,
+                    universe,
+                    timestamp=timestamp,
                 )
             for member in universe.symbols:
                 cursor = connection.execute(
@@ -499,10 +481,114 @@ class SchedulerState:
             ).fetchone()
         return date.fromisoformat(row["trade_date"]) if row else None
 
+    def _migrate_legacy_jobs(
+        self,
+        connection: sqlite3.Connection,
+        schedule: ScheduleConfig,
+        universe: SymbolUniverse,
+        *,
+        timestamp: str,
+    ) -> None:
+        """Bind v1 ``legacy`` jobs to one selected v2 feed without refetching.
+
+        v1 scheduled dates represented the data date.  v2 keeps both dates, so
+        the selected feed's explicit target lag adapts the trigger date.  The
+        v2 manifest must explicitly claim the exact v1 schedule ID; provider,
+        dataset, slot, and clock values are never used as ownership inference.
+        A legacy row and an already-canonical row with the same logical
+        identity are ambiguous; fail closed before mutating either row.
+        """
+        rows = connection.execute(
+            """
+            SELECT job_key, schedule_id, provider, dataset_key, work_item,
+                   target_data_date, scheduled_date, symbol
+            FROM scheduled_job
+            WHERE slot_id = 'legacy'
+              AND provider = ?
+              AND dataset_key = ?
+              AND universe_id = ?
+              AND universe_version = ?
+            """,
+            (
+                schedule.provider,
+                schedule.dataset_key,
+                universe.universe_id,
+                universe.universe_version,
+            ),
+        ).fetchall()
+        if not rows:
+            return
+
+        if schedule.legacy_schedule_id is None:
+            raise SchedulerStateError(
+                "selected v2 feed does not declare ownership of legacy scheduler jobs"
+            )
+        if any(row["schedule_id"] != schedule.legacy_schedule_id for row in rows):
+            raise SchedulerStateError(
+                "legacy scheduler job schedule_id does not match the declared owner"
+            )
+
+        for row in rows:
+            target_data_date = row["scheduled_date"]
+            work_item = row["symbol"]
+            collision = connection.execute(
+                """
+                SELECT job_key
+                FROM scheduled_job
+                WHERE slot_id = ?
+                  AND provider = ?
+                  AND dataset_key = ?
+                  AND work_item = ?
+                  AND target_data_date = ?
+                  AND job_key != ?
+                LIMIT 1
+                """,
+                (
+                    schedule.slot_id,
+                    schedule.provider,
+                    schedule.dataset_key,
+                    work_item,
+                    target_data_date,
+                    row["job_key"],
+                ),
+            ).fetchone()
+            if collision is not None:
+                raise SchedulerStateError(
+                    "legacy scheduler job collides with canonical logical identity"
+                )
+
+        modifier = f"+{schedule.target_date_lag_days} day"
+        connection.execute(
+            """
+            UPDATE scheduled_job
+            SET slot_id = ?,
+                schedule_id = ?,
+                work_item = symbol,
+                target_data_date = scheduled_date,
+                scheduled_date = date(scheduled_date, ?),
+                updated_at = ?
+            WHERE slot_id = 'legacy'
+              AND provider = ?
+              AND dataset_key = ?
+              AND universe_id = ?
+              AND universe_version = ?
+            """,
+            (
+                schedule.slot_id,
+                schedule.schedule_id,
+                modifier,
+                timestamp,
+                schedule.provider,
+                schedule.dataset_key,
+                universe.universe_id,
+                universe.universe_version,
+            ),
+        )
+
     def _initialize(self) -> None:
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, _SCHEMA_VERSION):
+            if version not in (0, 1, 2, _SCHEMA_VERSION):
                 raise SchedulerStateError(
                     f"unsupported scheduler state schema {version}; expected {_SCHEMA_VERSION}"
                 )
@@ -554,6 +640,9 @@ class SchedulerState:
                 version = 1
             if version == 1:
                 self._migrate_v1(connection)
+                version = 2
+            if version == 2:
+                self._migrate_v2_to_v3(connection)
             self._validate_schema(connection)
         try:
             os.chmod(self.path, 0o600)
@@ -601,6 +690,67 @@ class SchedulerState:
         except sqlite3.Error as exc:
             connection.rollback()
             raise SchedulerStateError("scheduler state v1 migration failed") from exc
+
+    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
+        """Atomically canonicalize persisted v2 slot IDs.
+
+        The v2 schema already contains all evidence columns; only the opaque
+        slot identity and derived schedule ID change.  We inspect every row
+        first and reject old/canonical logical collisions so no merge policy is
+        guessed and no partial rewrite can occur.
+        """
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._validate_schema(connection)
+            rows = connection.execute(
+                "SELECT job_key, slot_id, provider, dataset_key, work_item, target_data_date, schedule_id FROM scheduled_job"
+            ).fetchall()
+            seen: dict[tuple[str, str, str, str, str], str] = {}
+            updates: list[tuple[str, str, str]] = []
+            for row in rows:
+                slot_id = row["slot_id"]
+                if slot_id == "legacy":
+                    continue
+                if slot_id in LEGACY_SLOT_ID_MAP:
+                    canonical_slot = LEGACY_SLOT_ID_MAP[slot_id]
+                elif slot_id in CANONICAL_SLOT_IDS:
+                    canonical_slot = slot_id
+                else:
+                    raise SchedulerStateError("scheduler state contains an unknown slot identity")
+                identity = (
+                    canonical_slot,
+                    row["provider"],
+                    row["dataset_key"],
+                    row["work_item"],
+                    row["target_data_date"],
+                )
+                previous = seen.get(identity)
+                if previous is not None and previous != row["job_key"]:
+                    raise SchedulerStateError("scheduler state old/canonical logical-job collision")
+                seen[identity] = row["job_key"]
+                if canonical_slot != slot_id:
+                    schedule_id = _canonical_schedule_id(
+                        row["schedule_id"],
+                        provider=row["provider"],
+                        old_slot=slot_id,
+                        canonical_slot=canonical_slot,
+                        dataset_key=row["dataset_key"],
+                    )
+                    updates.append((canonical_slot, schedule_id, row["job_key"]))
+
+            for slot_id, schedule_id, job_key in updates:
+                connection.execute(
+                    "UPDATE scheduled_job SET slot_id = ?, schedule_id = ? WHERE job_key = ?",
+                    (slot_id, schedule_id, job_key),
+                )
+            connection.execute("PRAGMA user_version = 3")
+            connection.commit()
+        except SchedulerStateError:
+            connection.rollback()
+            raise
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise SchedulerStateError("scheduler state v2 to v3 migration failed") from exc
 
     def _validate_v1_schema(self, connection: sqlite3.Connection) -> None:
         tables = {
@@ -725,6 +875,24 @@ class SchedulerState:
 def _job_key(schedule: ScheduleConfig, scheduled_date: date, symbol: str) -> str:
     identity = f"{schedule.slot_id}:{schedule.provider}:{schedule.dataset_key}:{symbol}:{scheduled_date.isoformat()}".encode()
     return hashlib.sha256(identity).hexdigest()
+
+
+def _canonical_schedule_id(
+    schedule_id: str,
+    *,
+    provider: str,
+    old_slot: str,
+    canonical_slot: str,
+    dataset_key: str,
+) -> str:
+    """Rewrite the v2 derived identity while preserving custom IDs safely."""
+    expected = f"{provider}_{old_slot}_{dataset_key}"
+    if schedule_id == expected:
+        return f"{provider}_{canonical_slot}_{dataset_key}"
+    marker = f"_{old_slot}_"
+    if marker in schedule_id:
+        return schedule_id.replace(marker, f"_{canonical_slot}_", 1)
+    raise SchedulerStateError("scheduler state schedule identity does not match slot")
 
 
 def _index_definitions(

@@ -63,9 +63,9 @@ function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
     scheduler_key: "twelve_data_us_common_stocks_daily_v1",
     provider: "twelve_data",
     dataset_keys: ["us_equity_eod"],
-    slot_id: "us_0600",
-    scheduled_local_time: "06:00:00",
-    timezone: "America/New_York",
+    slot_id: "western_markets_window",
+    scheduled_local_time: "06:30:00",
+    timezone: "Asia/Taipei",
     desired_state: "stopped",
     observed_state: "stopped",
     revision: 1,
@@ -92,10 +92,10 @@ function makeFreshness(
 ): MarketFreshness {
   return {
     market: "TW",
-    scheduler_key: "finlab_tw_1430_tw_equity_eod",
+    scheduler_key: "finlab_tw_equity_eod_v1",
     provider: "finlab",
     dataset_keys: ["tw_equity_eod"],
-    slot_id: "tw_1430",
+    slot_id: "taiwan_market_window",
     scheduled_local_time: "14:30:00",
     timezone: "Asia/Taipei",
     desired_state: "running",
@@ -391,7 +391,7 @@ describe("scheduler operations panel", () => {
       [
         makeScheduler({ heartbeat_age_seconds: null, last_heartbeat_at: null }),
         makeScheduler({
-          scheduler_key: "finlab_tw_1430_tw_equity_eod",
+          scheduler_key: "finlab_tw_equity_eod_v1",
           provider: "finlab",
           heartbeat_age_seconds: 91,
         }),
@@ -668,7 +668,9 @@ describe("unified ingestion overview", () => {
     )
 
     expect(
-      screen.getAllByText("每日排程 14:30 · Asia/Taipei · Slot tw_1430")
+      screen.getAllByText(
+        "每日排程 14:30 · Asia/Taipei · Slot taiwan_market_window"
+      )
     ).toHaveLength(7)
     expect(screen.getAllByText("Provider fetched")).toHaveLength(7)
     expect(screen.getAllByText("Normalization completed")).toHaveLength(7)

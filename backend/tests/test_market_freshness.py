@@ -37,7 +37,7 @@ def _config(sources: list[str]) -> dict:
             },
             "schedule": {
                 "enabled": True,
-                "slot_id": "tw_1430",
+                "slot_id": "taiwan_market_window",
                 "local_time": "14:30:00",
                 "timezone": "Asia/Taipei",
                 "expected_sources": sources,
@@ -172,9 +172,9 @@ async def test_registered_stopped_scheduler_and_invalid_dataset_stay_visible(tes
     )
     session.add(
         SchedulerControl(
-            scheduler_key="finlab_tw_1430_tw_equity_eod",
+            scheduler_key="finlab_tw_equity_eod_v1",
             provider="finlab",
-            slot_id="tw_1430",
+            slot_id="taiwan_market_window",
             scheduled_local_time=time(14, 30),
             timezone="Asia/Taipei",
             dataset_keys=["tw_equity_eod"],
@@ -185,7 +185,7 @@ async def test_registered_stopped_scheduler_and_invalid_dataset_stay_visible(tes
     )
     await session.flush()
     session.add(
-        SchedulerDataset(scheduler_key="finlab_tw_1430_tw_equity_eod", dataset_key="tw_equity_eod")
+        SchedulerDataset(scheduler_key="finlab_tw_equity_eod_v1", dataset_key="tw_equity_eod")
     )
     await _seed_published_calendar_year(session, market="TW", year=2026)
     await session.commit()
@@ -193,7 +193,7 @@ async def test_registered_stopped_scheduler_and_invalid_dataset_stay_visible(tes
     rows = await list_market_freshness(session, now=NOW)
     assert len(rows) == 1
     row = rows[0]
-    assert row.scheduler_key == "finlab_tw_1430_tw_equity_eod"
+    assert row.scheduler_key == "finlab_tw_equity_eod_v1"
     assert row.desired_state == "stopped"
     assert row.observed_state == "stopped"
     assert row.configuration_status == "error"
@@ -303,7 +303,7 @@ async def test_admin_filters_and_serve_redacts_feed_internals(
     unauthorized = await client.get("/api/v1/admin/market-freshness")
     assert unauthorized.status_code == 401
     admin = await client.get(
-        "/api/v1/admin/market-freshness?market=TW&slot_id=tw_1430&status=never_received&include_feeds=false",
+        "/api/v1/admin/market-freshness?market=TW&slot_id=taiwan_market_window&status=never_received&include_feeds=false",
         headers=admin_headers,
     )
     assert admin.status_code == 200

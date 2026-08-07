@@ -34,7 +34,7 @@ Fetcher adapter。
   "idempotency_key": "finlab_tw_equity_eod_20260724",
   "fetched_at": "2026-07-24T08:00:00Z",
   "delivery": {
-    "slot_id": "tw_1430",
+    "slot_id": "taiwan_market_window",
     "scheduled_for": "2026-07-24T06:30:00Z",
     "target_data_date": "2026-07-24",
     "work_item_id": "tw_equity_eod"
@@ -71,6 +71,16 @@ Fetcher adapter。
   object，但只要提供就必須同時包含 `slot_id`、`scheduled_for`、
   `target_data_date` 與 `work_item_id`。Backend 會將它保存到
   `IngestionRun.metadata.delivery`，不參與 canonical row 欄位。
+
+Slot identity 使用不含時間的 canonical ID；遷移期間舊 producer 的 slot ID 只在
+ingress/config input 邊界正規化，schema 與 API output 不再暴露舊值：
+
+| Legacy ID | Canonical ID | Asia/Taipei 時間 |
+| --- | --- | --- |
+| `us_0600` | `western_markets_window` | `06:30` |
+| `global_0815` | `global_markets_window` | `08:15` |
+| `tw_1430` | `taiwan_market_window` | `14:30` |
+| `asia_1630` | `asia_pacific_markets_window` | `17:15` |
 
 ## Batch contract
 

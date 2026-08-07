@@ -1,6 +1,6 @@
 """Scheduler control-plane model and API coverage."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -8,12 +8,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.registry import AdminAuditEvent, SchedulerControl
+from app.models.registry import (
+    AdminAuditEvent,
+    DatasetRegistry,
+    SchedulerControl,
+    SchedulerDataset,
+)
 from app.services.api_keys import create_api_key
 from app.services.source_clients import create_source_client
 from app.utils import utc_now
 
-SCHEDULER_KEY = "finlab_tw_1430_tw_equity_eod"
+SCHEDULER_KEY = "finlab_tw_equity_eod_v1"
 
 
 async def _add_scheduler(
@@ -23,10 +28,26 @@ async def _add_scheduler(
     provider: str = "finlab",
     dataset_keys: list[str] | None = None,
 ) -> SchedulerControl:
+    normalized_dataset_keys = dataset_keys or ["tw_equity_eod"]
+    for dataset_key in normalized_dataset_keys:
+        db.add(
+            DatasetRegistry(
+                dataset_key=dataset_key,
+                name=dataset_key,
+                asset_class="equity",
+                market="TW",
+                frequency="daily",
+                is_active=True,
+                config={},
+            )
+        )
     row = SchedulerControl(
         scheduler_key=scheduler_key,
         provider=provider,
-        dataset_keys=dataset_keys or ["tw_equity_eod"],
+        slot_id="taiwan_market_window",
+        scheduled_local_time=time(14, 30),
+        timezone="Asia/Taipei",
+        dataset_keys=normalized_dataset_keys,
         desired_state="stopped",
         observed_state="stopped",
         revision=1,
@@ -34,6 +55,13 @@ async def _add_scheduler(
         updated_at=utc_now(),
     )
     db.add(row)
+    await db.flush()
+    db.add_all(
+        [
+            SchedulerDataset(scheduler_key=scheduler_key, dataset_key=dataset_key)
+            for dataset_key in normalized_dataset_keys
+        ]
+    )
     await db.flush()
     return row
 
@@ -174,6 +202,15 @@ async def test_scheduler_source_scope_and_heartbeat_update(
     assert payload["desired_state"] == "stopped"
     assert payload["revision"] == 1
     assert payload["scheduler_key"] == SCHEDULER_KEY
+
+    legacy_alias = await client.post(
+        "/api/v1/source/scheduler-controls/finlab_tw_1430_tw_equity_eod/poll",
+        headers=source_headers,
+        json={"observed_state": "running"},
+    )
+    assert legacy_alias.status_code == 200
+    assert legacy_alias.json()["scheduler_key"] == SCHEDULER_KEY
+    assert legacy_alias.json()["slot_id"] == "taiwan_market_window"
 
     row = await test_session.get(SchedulerControl, SCHEDULER_KEY)
     assert row is not None

@@ -126,10 +126,10 @@
         },
         "slot_id": {
           "enum": [
-            "us_0600",
-            "global_0815",
-            "tw_1430",
-            "asia_1630"
+            "western_markets_window",
+            "global_markets_window",
+            "taiwan_market_window",
+            "asia_pacific_markets_window"
           ],
           "title": "Slot Id",
           "type": "string"

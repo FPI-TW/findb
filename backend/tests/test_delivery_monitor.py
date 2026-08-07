@@ -101,9 +101,17 @@ async def _seed_published_calendar_year(session, *, market: str, year: int) -> N
 def test_missing_delivery_config_is_opt_in_and_validated() -> None:
     assert DeliveryExpectation.model_validate({}).missing_delivery.action == "disabled"
     parsed = DeliveryExpectation.model_validate(
-        {"missing_delivery": {"action": "warn", "expected_sources": ["finlab"]}}
+        {
+            "missing_delivery": {
+                "action": "warn",
+                "expected_sources": ["finlab"],
+                "deadline_local_time": "17:00:00",
+            }
+        }
     )
     assert parsed.missing_delivery.expected_sources == ["finlab"]
+    assert parsed.missing_delivery.deadline_local_time == time(17)
+    assert DeliveryExpectation.model_validate({}).missing_delivery.deadline_local_time is None
     with pytest.raises(ValidationError):
         DeliveryExpectation.model_validate(
             {"missing_delivery": {"action": "warn", "expected_sources": []}}
@@ -122,6 +130,16 @@ def test_missing_delivery_config_is_opt_in_and_validated() -> None:
                     }
                 }
             )
+    with pytest.raises(ValidationError):
+        DeliveryExpectation.model_validate(
+            {
+                "missing_delivery": {
+                    "action": "warn",
+                    "expected_sources": ["finlab"],
+                    "deadline_local_time": "25:00:00",
+                }
+            }
+        )
 
 
 @pytest.mark.asyncio

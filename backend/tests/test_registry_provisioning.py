@@ -1,0 +1,233 @@
+"""Target-aware dataset registry provisioning checks."""
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from scripts import provision_registry as provisioning
+
+BACKEND_ROOT = Path(__file__).parents[1]
+MIGRATION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "b2c3d4e5f6a7_neutralize_finlab_pilot_policy.py"
+)
+WORKFLOW_PATH = BACKEND_ROOT.parent / ".github" / "workflows" / "findb-cd.yml"
+
+
+def _load_migration():
+    spec = importlib.util.spec_from_file_location("neutralize_finlab_pilot_policy", MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load neutralizing migration")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _config(*, finlab: dict | None = None, other: dict | None = None) -> dict:
+    overrides = {}
+    if finlab is not None:
+        overrides["finlab"] = finlab
+    if other is not None:
+        overrides["other"] = other
+    return {
+        "operator_note": "preserve",
+        "delivery_expectation": {
+            "record_count": {"minimum_record_count": 2100},
+            "source_overrides": overrides,
+        },
+    }
+
+
+def test_staging_applies_bounded_finlab_override_and_is_idempotent() -> None:
+    first, first_report = provisioning.provision_registry_config(
+        _config(), deployment_target="staging"
+    )
+    second, second_report = provisioning.provision_registry_config(
+        first, deployment_target="staging"
+    )
+
+    assert first["operator_note"] == "preserve"
+    assert first["delivery_expectation"]["record_count"] == {"minimum_record_count": 2100}
+    assert first["delivery_expectation"]["source_overrides"]["finlab"] == {
+        "baseline": {"enabled": False},
+        "record_count": {"minimum_record_count": 2},
+    }
+    assert first_report.changed is True
+    assert second == first
+    assert second_report.changed is False
+    assert second_report.action == "staging_finlab_pilot_unchanged"
+
+
+def test_production_removes_only_exact_pilot_and_preserves_other_overrides() -> None:
+    staged, _ = provisioning.provision_registry_config(
+        _config(other={"record_count": {"minimum_record_count": 17}}),
+        deployment_target="staging",
+    )
+    production, report = provisioning.provision_registry_config(
+        staged,
+        deployment_target="production",
+    )
+
+    assert production["delivery_expectation"]["record_count"] == {"minimum_record_count": 2100}
+    assert production["delivery_expectation"]["source_overrides"] == {
+        "other": {"record_count": {"minimum_record_count": 17}}
+    }
+    assert report.action == "production_exact_finlab_pilot_removed"
+    assert report.changed is True
+
+    custom = _config(
+        finlab={"baseline": {"enabled": True}, "record_count": {"minimum_record_count": 99}},
+        other={"record_count": {"minimum_record_count": 17}},
+    )
+    unchanged, custom_report = provisioning.provision_registry_config(
+        custom,
+        deployment_target="production",
+    )
+    assert unchanged == custom
+    assert custom_report.changed is False
+    assert custom_report.action == "production_operator_finlab_override_preserved"
+    custom_output = custom_report.as_dict()
+    assert custom_output["previous_finlab_override"] == "custom"
+    assert "99" not in str(custom_output)
+
+
+def test_production_without_pilot_is_a_noop() -> None:
+    config = _config()
+    result, report = provisioning.provision_registry_config(config, deployment_target="production")
+    assert result == config
+    assert report.changed is False
+    assert report.action == "production_full_market_policy_unchanged"
+
+
+def test_report_never_serializes_arbitrary_custom_policy() -> None:
+    marker = "operator-secret-annotation-" + ("x" * 10_000)
+    config = _config(
+        finlab={
+            "baseline": {"enabled": True, "annotation": marker},
+            "record_count": {"minimum_record_count": 99},
+        }
+    )
+    _, report = provisioning.provision_registry_config(config, deployment_target="production")
+    encoded = str(report.as_dict())
+    assert marker not in encoded
+    assert report.previous_finlab_override == "custom"
+    assert report.resulting_finlab_override == "custom"
+
+
+@pytest.mark.parametrize("target", ("qa", "", "STAGING "))
+def test_noncanonical_target_is_rejected(target: str) -> None:
+    with pytest.raises(provisioning.RegistryProvisioningError):
+        provisioning.provision_registry_config({}, deployment_target=target)
+
+
+def test_malformed_policy_fails_closed() -> None:
+    with pytest.raises(provisioning.RegistryProvisioningError, match="delivery_expectation"):
+        provisioning.provision_registry_config(
+            {"delivery_expectation": []}, deployment_target="staging"
+        )
+    with pytest.raises(provisioning.RegistryProvisioningError, match="source_overrides"):
+        provisioning.provision_registry_config(
+            {"delivery_expectation": {"source_overrides": []}},
+            deployment_target="production",
+        )
+
+
+class _FakeResult:
+    def __init__(self, config: dict):
+        self.config = config
+
+    def mappings(self):
+        return self
+
+    def one_or_none(self):
+        return {"config": self.config}
+
+
+class _FakeConnection:
+    def __init__(self, config: dict, *, fail_update: bool = False):
+        self.config = config
+        self.fail_update = fail_update
+        self.updated = False
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        if "SELECT config" in sql:
+            return _FakeResult(self.config)
+        if "UPDATE dataset_registry" in sql:
+            self.updated = True
+            if self.fail_update:
+                raise RuntimeError("simulated update failure")
+        return _FakeResult(self.config)
+
+
+class _FakeTransaction:
+    def __init__(self, connection: _FakeConnection):
+        self.connection = connection
+        self.rolled_back = False
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, exc_type, _exc, _tb):
+        self.rolled_back = exc_type is not None
+        return False
+
+
+class _FakeEngine:
+    def __init__(self, transaction: _FakeTransaction):
+        self.transaction = transaction
+        self.disposed = False
+
+    def begin(self):
+        return self.transaction
+
+    async def dispose(self):
+        self.disposed = True
+
+
+@pytest.mark.asyncio
+async def test_update_failure_rolls_back_and_disposes_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _FakeConnection(_config(), fail_update=True)
+    transaction = _FakeTransaction(connection)
+    engine = _FakeEngine(transaction)
+    monkeypatch.setattr(provisioning, "create_async_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(RuntimeError, match="simulated update failure"):
+        await provisioning.provision_registry("postgresql://unused", deployment_target="staging")
+
+    assert connection.updated is True
+    assert transaction.rolled_back is True
+    assert engine.disposed is True
+
+
+def test_neutralizing_migration_is_linear_and_exactly_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _load_migration()
+    statements: list[str] = []
+    monkeypatch.setattr(
+        migration.op,
+        "execute",
+        lambda statement, *params: statements.append(str(statement)),
+    )
+
+    migration.upgrade()
+    assert migration.down_revision == "a1b2c3d4e5f6"
+    assert len(statements) == 1
+    sql = statements[0]
+    assert "dataset_key = 'tw_equity_eod'" in sql
+    assert "CAST(:finlab_override AS jsonb)" in sql
+    assert "- 'finlab'" in sql
+    assert "updated_at = now()" in sql
+
+
+def test_cd_passes_target_explicitly_after_migration() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    migration_marker = "uv run alembic upgrade head"
+    provisioning_marker = "--deployment-target \"${{ inputs.deployment_target || 'staging' }}\""
+    assert migration_marker in workflow
+    assert provisioning_marker in workflow
+    assert workflow.index(migration_marker) < workflow.index(provisioning_marker)
+    assert "python /app/scripts/provision_registry.py" in workflow

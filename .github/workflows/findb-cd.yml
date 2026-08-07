@@ -305,6 +305,11 @@ jobs:
               uv run alembic current
             '
 
+            echo "Provisioning deployment-target registry policy"
+            docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
+              python /app/scripts/provision_registry.py \
+              --deployment-target "${{ inputs.deployment_target || 'staging' }}"
+
             if ! docker compose -f docker-compose.prod.yml up -d --remove-orphans; then
               diagnose_services rabbitmq rabbitmq-policy dispatcher worker serve ingest dashboard nginx raw-cleanup
               exit 1

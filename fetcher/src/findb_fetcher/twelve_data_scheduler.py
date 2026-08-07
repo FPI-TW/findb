@@ -6,7 +6,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from datetime import time as clock_time
 from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -319,8 +318,8 @@ class SchedulerService:
             target_data_date = self._schedule.target_date(now)
         else:
             target_data_date = scheduled_date
-            if self._schedule.schedule_version == 2 and self._schedule.slot_id == "us_0600":
-                target_data_date -= timedelta(days=1)
+            if self._schedule.schedule_version == 2:
+                target_data_date -= timedelta(days=self._schedule.target_date_lag_days)
             day, calendar_revision = self._calendar.get_day(
                 self._schedule.market,
                 target_data_date,
@@ -417,12 +416,9 @@ def _request_checkpoint(request: dict[str, Any]) -> date:
 def _delivery_metadata(schedule: ScheduleConfig, job: ScheduledJob) -> dict[str, str]:
     """Stable scheduler identity carried to Source without changing v1 pilots."""
     target_date = job.target_data_date or job.scheduled_date
-    clock = schedule.slot_id.rsplit("_", 1)[1]
-    hour = int(clock[:2])
-    minute = int(clock[2:])
     scheduled = datetime.combine(
         job.scheduled_date,
-        clock_time(hour, minute),
+        schedule.scheduled_local_time,
         tzinfo=ZoneInfo(schedule.timezone_name),
     )
     return {

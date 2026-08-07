@@ -45,9 +45,9 @@ EXIT_CONFIG_ERROR = 2
 EXIT_RETRY_PENDING = 8
 EXIT_SCHEDULE_FAILED = 9
 MAX_OUTPUT_BYTES = 2048
-DEFAULT_SLOT_ID = "tw_1430"
+DEFAULT_SLOT_ID = "taiwan_market_window"
 DEFAULT_DATASET_KEY = "tw_equity_eod"
-SCHEDULER_CONTROL_KEY = "finlab_tw_1430_tw_equity_eod"
+SCHEDULER_CONTROL_KEY = "finlab_tw_equity_eod_v1"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--slot-id",
         default=DEFAULT_SLOT_ID,
-        help="v2 manifest slot; the FinLab pilot is governed by tw_1430.",
+        help="v2 manifest slot; the FinLab pilot is governed by taiwan_market_window.",
     )
     parser.add_argument(
         "--dataset-key",
@@ -132,11 +132,11 @@ def main(argv: list[str] | None = None) -> int:
                     calendar_config=calendar_config,
                 ),
                 expected_definition=(
-                    "finlab",
-                    (DEFAULT_DATASET_KEY,),
-                    DEFAULT_SLOT_ID,
-                    "14:30:00",
-                    "Asia/Taipei",
+                    schedule.provider,
+                    (schedule.dataset_key,),
+                    schedule.slot_id,
+                    schedule.scheduled_local_time.isoformat(),
+                    schedule.timezone_name,
                 ),
             )
 

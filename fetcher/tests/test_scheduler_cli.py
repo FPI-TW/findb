@@ -103,6 +103,20 @@ def test_scheduler_modes_are_mutually_exclusive(arguments: list[str]) -> None:
         scheduler_cli.build_parser().parse_args(arguments)
 
 
+def test_v1_schedule_cannot_define_db_controlled_runtime_identity() -> None:
+    schedule = scheduler_cli.load_schedule_config(
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "twelve_data_us_common_stocks_daily.v1.json"
+    )
+
+    with pytest.raises(
+        scheduler_cli.ScheduleError,
+        match="scheduler-control validation requires a v2 slot",
+    ):
+        scheduler_cli._expected_definition(schedule)
+
+
 def _set_check_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOURCE_API_URL", "https://source.example.test")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "source-client-key")

@@ -14,6 +14,7 @@ from app.schemas.payload_limits import (
     ensure_data_items_count_within_limit,
     ensure_payload_size_within_limit,
 )
+from app.services.slot_identity import normalize_slot_id
 from app.vocabulary import SOURCE_NAME_PATTERN
 
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
@@ -83,10 +84,22 @@ class IngressDeliveryMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    slot_id: Literal["us_0600", "global_0815", "tw_1430", "asia_1630"]
+    slot_id: Literal[
+        "western_markets_window",
+        "global_markets_window",
+        "taiwan_market_window",
+        "asia_pacific_markets_window",
+    ]
     scheduled_for: datetime
     target_data_date: date
     work_item_id: str = Field(min_length=1, max_length=100)
+
+    @field_validator("slot_id", mode="before")
+    @classmethod
+    def normalize_legacy_slot_id(cls, value: object) -> str:
+        # Compatibility is intentionally limited to this input boundary.  The
+        # resulting model and generated contract schema expose canonical IDs.
+        return normalize_slot_id(value)
 
     @field_validator("scheduled_for")
     @classmethod

@@ -4,19 +4,19 @@
       "path": "futures_continuous_eod/v1.schema.json",
       "schema_id": "futures_continuous_eod",
       "schema_version": 1,
-      "sha256": "af2d2aa6901f172fa62fffcae74f8605a78bcad6cdc9789d1a189b0084deb7ff"
+      "sha256": "06c5121d37b6ef73c12d14c08e9a52dccc0f6fb3ce076f42dd3b15c24de82211"
     },
     {
       "path": "market_eod/v1.schema.json",
       "schema_id": "market_eod",
       "schema_version": 1,
-      "sha256": "65b83567a8a8e37bc1835914c74d1a5d3770674494815d48b2914240dca4e781"
+      "sha256": "70c0244e09de6961b8e12f9583d7e3ef8968647556413b3cc48f8bf431a24336"
     },
     {
       "path": "market_minute/v1.schema.json",
       "schema_id": "market_minute",
       "schema_version": 1,
-      "sha256": "be67eab8ee1e8d8e6727bf7816420a438e6a510f715d869c7836471486631361"
+      "sha256": "abee4f125335c2ed0391cabee184d50ff454ad5fd54f57556e9609f12b2a9929"
     }
   ],
   "manifest_version": 1

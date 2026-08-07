@@ -66,8 +66,8 @@ def _definition_response(key: str, desired: str = "running") -> dict[str, object
         **_response(key, desired),
         "provider": "twelve_data",
         "dataset_keys": ["us_equity_eod"],
-        "slot_id": "us_0600",
-        "scheduled_local_time": "06:00:00",
+        "slot_id": "western_markets_window",
+        "scheduled_local_time": "06:30:00",
         "timezone": "Asia/Taipei",
     }
 
@@ -152,8 +152,8 @@ def test_control_client_parses_authoritative_scheduler_definition() -> None:
     response = client.poll(observed_state="stopped")
     assert response.provider == "twelve_data"
     assert response.dataset_keys == ("us_equity_eod",)
-    assert response.slot_id == "us_0600"
-    assert response.scheduled_local_time == time(6)
+    assert response.slot_id == "western_markets_window"
+    assert response.scheduled_local_time == time(6, 30)
     assert response.timezone == "Asia/Taipei"
 
 
@@ -162,8 +162,8 @@ def test_definition_drift_is_rejected_before_cycle() -> None:
         scheduler_key=TWELVE_CONTROL_KEY,
         provider="twelve_data",
         dataset_keys=("other_dataset",),
-        slot_id="us_0600",
-        scheduled_local_time=time(6),
+        slot_id="western_markets_window",
+        scheduled_local_time=time(6, 30),
         timezone="Asia/Taipei",
         desired_state="running",
         revision=1,
@@ -174,8 +174,8 @@ def test_definition_drift_is_rejected_before_cycle() -> None:
             response,
             provider="twelve_data",
             dataset_keys=("us_equity_eod",),
-            slot_id="us_0600",
-            scheduled_local_time="06:00:00",
+            slot_id="western_markets_window",
+            scheduled_local_time="06:30:00",
             timezone_name="Asia/Taipei",
         )
 

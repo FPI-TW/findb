@@ -170,6 +170,7 @@ from app.services.scheduler_control import (
     present_scheduler_control,
     update_scheduler_desired_state,
 )
+from app.services.slot_identity import normalize_slot_id
 from app.services.source_clients import (
     create_source_client,
     list_source_clients,
@@ -733,7 +734,13 @@ async def list_market_freshness_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the configured market-delivery freshness projection."""
-    rows = await list_market_freshness(db, market=market, slot_id=slot_id, status=freshness_status)
+    try:
+        normalized_slot_id = normalize_slot_id(slot_id) if slot_id else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Unsupported slot_id") from exc
+    rows = await list_market_freshness(
+        db, market=market, slot_id=normalized_slot_id, status=freshness_status
+    )
     data = []
     for row in rows:
         payload = {

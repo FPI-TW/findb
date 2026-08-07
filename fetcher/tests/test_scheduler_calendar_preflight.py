@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -62,14 +62,16 @@ class Calendar:
 
 
 def _service(
-    status: str, *, slot_id: str = "tw_1430"
+    status: str, *, slot_id: str = "taiwan_market_window"
 ) -> tuple[SchedulerService, EmptyState, Calendar]:
     schedule = replace(
         load_schedule_config(CONFIG_PATH),
         schedule_version=2,
         slot_id=slot_id,
-        market="TW" if slot_id == "tw_1430" else "US",
+        market="TW" if slot_id == "taiwan_market_window" else "US",
         timezone_name="Asia/Taipei",
+        scheduled_local_time=time(14, 30) if slot_id == "taiwan_market_window" else time(6, 30),
+        target_date_lag_days=0 if slot_id == "taiwan_market_window" else 1,
         target_date_policy="latest_trade_date",
     )
     state = EmptyState()
@@ -117,7 +119,7 @@ def test_open_day_enqueues_exact_calendar_date() -> None:
 
 
 def test_us_slot_checks_previous_market_date() -> None:
-    service, state, calendar = _service("open", slot_id="us_0600")
+    service, state, calendar = _service("open", slot_id="western_markets_window")
 
     service.run_once(now=datetime(2026, 2, 12, 0, 0, tzinfo=timezone.utc))
 

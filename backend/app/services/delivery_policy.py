@@ -27,6 +27,7 @@ from app.models.registry import IngestionRun
 from app.schemas.ingress import DeliveryMode, IngressRequestV1
 from app.services.calendar_management import published_year
 from app.services.feed_scope import lock_feed_scope
+from app.services.slot_identity import normalize_slot_payload
 from app.utils import utc_now
 from app.vocabulary import SOURCE_NAME_PATTERN
 
@@ -133,6 +134,12 @@ class MissingDeliveryPolicy(BaseModel):
         default_factory=list,
         max_length=32,
     )
+    # The monitor deadline is intentionally independent from the ingest
+    # latest-date availability grace.  It is interpreted in the timezone of
+    # ``LatestDatePolicy`` and is only used by delivery monitoring and the
+    # market-freshness projection.  ``None`` preserves the legacy behavior
+    # for policies created before this field existed.
+    deadline_local_time: time | None = None
 
     @field_validator("expected_sources")
     @classmethod
@@ -176,10 +183,23 @@ class FreshnessSchedule(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     enabled: bool = False
-    slot_id: Literal["us_0600", "global_0815", "tw_1430", "asia_1630"]
+    slot_id: Literal[
+        "western_markets_window",
+        "global_markets_window",
+        "taiwan_market_window",
+        "asia_pacific_markets_window",
+    ]
     local_time: time
     timezone: Literal["Asia/Taipei"]
     expected_sources: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_slot_payload(cls, value: Any) -> Any:
+        # A legacy schedule may still arrive from an operator-owned JSONB
+        # config during rollout.  Normalize its ID and encoded clock before
+        # Literal validation; all model dumps are canonical thereafter.
+        return normalize_slot_payload(value)
 
     @field_validator("expected_sources")
     @classmethod
@@ -385,7 +405,17 @@ async def resolve_expected_data_date(
     now: datetime,
     *,
     strict_current_session: bool = False,
+    current_session_deadline: time | None = None,
 ) -> tuple[date | None, str | None]:
+    """Resolve the latest calendar date currently expected for a feed.
+
+    ``availability_grace_minutes`` remains the authoritative ingest-time
+    latest-date cutoff.  Callers that need a later operational monitoring
+    deadline may supply ``current_session_deadline`` explicitly; the override
+    is interpreted in ``policy.timezone`` and is never inferred from a slot
+    identifier.  When omitted, the historical close-plus-grace behavior is
+    unchanged.
+    """
     zone = ZoneInfo(policy.timezone)
     local_now = now.astimezone(zone)
     today = local_now.date()
@@ -399,9 +429,16 @@ async def resolve_expected_data_date(
         return None, "calendar_does_not_cover_evaluation_date"
     if strict_current_session and rows[0].is_open:
         close_at = rows[0].session_close or policy.market_close_time
-        cutoff = datetime.combine(rows[0].trade_date, close_at, tzinfo=zone) + timedelta(
-            minutes=policy.availability_grace_minutes
-        )
+        if current_session_deadline is None:
+            cutoff = datetime.combine(rows[0].trade_date, close_at, tzinfo=zone) + timedelta(
+                minutes=policy.availability_grace_minutes
+            )
+        else:
+            cutoff = datetime.combine(
+                rows[0].trade_date,
+                current_session_deadline,
+                tzinfo=zone,
+            )
         if local_now < cutoff:
             # Before today's current session is due, retain the normal
             # resolver semantics and evaluate the most recent prior open

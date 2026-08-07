@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -24,8 +24,13 @@ from app.models.registry import (
     SchedulerControl,
 )
 from app.services.delivery_policy import DeliveryExpectation, resolve_expected_data_date
-from app.services.scheduler_control import list_scheduler_controls, scheduler_dataset_keys
+from app.services.scheduler_control import (
+    list_scheduler_controls,
+    normalize_scheduler_key,
+    scheduler_dataset_keys,
+)
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
+from app.services.slot_identity import normalize_slot_id
 from app.utils import ensure_utc, utc_now
 
 FreshnessStatus = Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
@@ -323,12 +328,16 @@ async def _feed_freshness(
 
 def _definition_from_control(row: SchedulerControl) -> _SchedulerDefinition:
     keys = tuple(scheduler_dataset_keys(row))
+    try:
+        slot_id = normalize_slot_id(row.slot_id)
+    except ValueError:
+        slot_id = row.slot_id
     return _SchedulerDefinition(
-        scheduler_key=row.scheduler_key,
+        scheduler_key=normalize_scheduler_key(row.scheduler_key),
         provider=row.provider,
         providers=(row.provider,),
         dataset_keys=keys,
-        slot_id=row.slot_id,
+        slot_id=slot_id,
         scheduled_local_time=row.scheduled_local_time,
         timezone=row.timezone,
         desired_state=cast(Literal["running", "stopped"], row.desired_state),
@@ -508,13 +517,23 @@ async def _build_scheduler_freshness(
         )
         if effective_expectation is not None and effective_expectation.latest_date is not None:
             try:
+                resolver_kwargs: dict[str, Any] = {
+                    "strict_current_session": (
+                        effective_expectation.delivery_mode.value == "sequenced_snapshot"
+                    )
+                }
+                if (
+                    effective_expectation.delivery_mode.value == "sequenced_snapshot"
+                    and effective_expectation.missing_delivery.deadline_local_time is not None
+                ):
+                    resolver_kwargs["current_session_deadline"] = (
+                        effective_expectation.missing_delivery.deadline_local_time
+                    )
                 expected, reason = await resolve_expected_data_date(
                     db,
                     effective_expectation.latest_date,
                     evaluated_at,
-                    strict_current_session=(
-                        effective_expectation.delivery_mode.value == "sequenced_snapshot"
-                    ),
+                    **resolver_kwargs,
                 )
             except (ValueError, ZoneInfoNotFoundError):
                 reason = "latest_date_policy_invalid"
@@ -634,6 +653,7 @@ async def list_market_freshness(
 ) -> list[MarketFreshness]:
     """Build a scheduler-backed projection without mutating registry state."""
     evaluated_at = ensure_utc(now or utc_now())
+    normalized_slot_filter = normalize_slot_id(slot_id) if slot_id else None
     controls = await list_scheduler_controls(db)
     if controls:
         definitions = [_definition_from_control(row) for row in controls]
@@ -651,11 +671,13 @@ async def list_market_freshness(
                 .all()
             }
     else:
-        definitions, datasets = await _legacy_definitions(db, market=market, slot_id=slot_id)
+        definitions, datasets = await _legacy_definitions(
+            db, market=market, slot_id=normalized_slot_filter
+        )
 
     results: list[MarketFreshness] = []
     for definition in definitions:
-        if slot_id and definition.slot_id != slot_id:
+        if normalized_slot_filter and definition.slot_id != normalized_slot_filter:
             continue
         mapped_markets = {
             datasets[key].market.upper() for key in definition.dataset_keys if key in datasets
@@ -670,4 +692,13 @@ async def list_market_freshness(
         if status and row.status != status:
             continue
         results.append(row)
-    return sorted(results, key=lambda item: (item.market, item.slot_id, item.scheduler_key))
+    return sorted(
+        results,
+        key=lambda item: (
+            item.market,
+            item.timezone,
+            item.scheduled_local_time,
+            item.slot_id,
+            item.scheduler_key,
+        ),
+    )

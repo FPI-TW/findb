@@ -16,6 +16,7 @@ from findb_fetcher.scheduler_control import (
 )
 from findb_fetcher.shioaji_scheduler import (
     MAX_OUTPUT_BYTES,
+    PILOT_DUE,
     SchedulerRun,
     build_runtime,
     default_manifest_path,
@@ -83,8 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_definition=(
                         "shioaji",
                         ("tw_equity_minute", "tw_etf_minute"),
-                        "tw_1430",
-                        "14:30:00",
+                        "taiwan_market_window",
+                        PILOT_DUE.isoformat(),
                         "Asia/Taipei",
                     ),
                 )

@@ -1,6 +1,7 @@
 """Delivery policy parsing, baseline, mode, and calendar behavior."""
 
 from datetime import date, datetime, time, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +17,7 @@ from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.ingress import DeliveryMode
 from app.services.delivery_policy import (
     DeliveryExpectation,
+    FreshnessSchedule,
     PolicyAction,
     evaluate_delivery_policy,
 )
@@ -155,6 +157,20 @@ def test_flat_delivery_expectation_is_backward_compatible() -> None:
     assert policy.record_count.maximum_count_drop_ratio == 0.25
     assert policy.record_count.action == PolicyAction.WARN
     assert policy.freshness.maximum_fetch_age_hours == 48
+
+
+def test_legacy_schedule_slot_is_normalized_at_config_boundary() -> None:
+    schedule = FreshnessSchedule.model_validate(
+        {
+            "enabled": True,
+            "slot_id": "tw_1430",
+            "local_time": "14:30:00",
+            "timezone": "Asia/Taipei",
+            "expected_sources": ["finlab"],
+        }
+    )
+    assert schedule.slot_id == "taiwan_market_window"
+    assert schedule.local_time == time(14, 30)
 
 
 def test_policy_only_sequenced_snapshot_does_not_expand_eod_contract_enum() -> None:
@@ -542,6 +558,73 @@ async def test_calendar_close_grace_and_holiday_resolution(test_session: AsyncSe
     assert "LATEST_DATE_MISSING" not in {item.code for item in before_grace.violations}
     assert after_grace.primary_code == "LATEST_DATE_MISSING"
     assert after_grace.outcome == "reject"
+
+
+@pytest.mark.asyncio
+async def test_sequenced_ingest_uses_latest_date_cutoff_not_monitor_deadline(monkeypatch) -> None:
+    """The 17:00 monitor deadline must not delay 14:30 ingest validation."""
+
+    today = date(2026, 7, 22)
+    prior = date(2026, 7, 21)
+    calendar_rows = [
+        SimpleNamespace(trade_date=today, is_open=True, session_close=time(13, 30)),
+        SimpleNamespace(trade_date=prior, is_open=True, session_close=time(13, 30)),
+    ]
+
+    async def fake_published_year(_db, _market, _year):
+        return SimpleNamespace(), SimpleNamespace(), calendar_rows
+
+    monkeypatch.setattr("app.services.delivery_policy.published_year", fake_published_year)
+    expectation = DeliveryExpectation.model_validate(
+        {
+            "delivery_mode": "sequenced_snapshot",
+            "freshness": {"action": "disabled"},
+            "latest_date": {
+                "calendar_market": "TW",
+                "timezone": "Asia/Taipei",
+                "market_close_time": "13:30:00",
+                "availability_grace_minutes": 60,
+                "action": "reject",
+            },
+            "missing_delivery": {
+                "action": "warn",
+                "expected_sources": ["shioaji"],
+                "deadline_local_time": "17:00:00",
+            },
+        }
+    )
+
+    def request(data_date: date):
+        row = SimpleNamespace(trade_date=data_date)
+        return SimpleNamespace(
+            source="shioaji",
+            fetched_at=datetime(2026, 7, 22, 6, 30, tzinfo=timezone.utc),
+            payload=SimpleNamespace(
+                batch=SimpleNamespace(
+                    delivery_mode="sequenced_snapshot",
+                    data_date=data_date,
+                ),
+                data=[row],
+            ),
+        )
+
+    current = await evaluate_delivery_policy(
+        object(),
+        request(today),
+        expectation,
+        now=datetime(2026, 7, 22, 6, 30, tzinfo=timezone.utc),
+    )
+    assert current.outcome == "pass"
+    assert "LATEST_DATE_MISSING" not in {item.code for item in current.violations}
+
+    stale = await evaluate_delivery_policy(
+        object(),
+        request(prior),
+        expectation,
+        now=datetime(2026, 7, 22, 6, 30, tzinfo=timezone.utc),
+    )
+    assert stale.outcome == "reject"
+    assert stale.primary_code == "LATEST_DATE_MISSING"
 
 
 @pytest.mark.asyncio

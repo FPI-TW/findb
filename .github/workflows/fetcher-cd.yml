@@ -495,7 +495,7 @@ jobs:
             reconcile_scheduler twelve "${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}" \
               /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
               findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
-              findb-fetcher-scheduler-preflight - "$runtime_env_args" findb-fetch-scheduler
+              findb-fetcher-scheduler-preflight - "$runtime_env_args" findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id western_markets_window --dataset-key us_equity_eod
             # END FETCHER TWELVE SCHEDULER RECONCILIATION
 
       - name: Release and validate FinLab scheduler on Fetcher EC2
@@ -653,7 +653,7 @@ jobs:
               /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
               findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
               findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache "$runtime_env_args" \
-              findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id tw_1430 --dataset-key tw_equity_eod
+              findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id taiwan_market_window --dataset-key tw_equity_eod
             # END FETCHER FINLAB SCHEDULER RECONCILIATION
 
       - name: Release and validate Shioaji scheduler on Fetcher EC2

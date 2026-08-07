@@ -586,11 +586,12 @@ async def test_minute_datasets_are_seeded_active_for_reviewed_pilot_with_governa
             "calendar_market": "TW",
             "timezone": "Asia/Taipei",
             "market_close_time": "13:30:00",
-            "availability_grace_minutes": 210,
+            "availability_grace_minutes": 60,
             "action": "warn",
         }
         assert expectation["missing_delivery"] == {
             "action": "warn",
             "expected_sources": ["shioaji"],
+            "deadline_local_time": "17:00:00",
         }
         assert expectation["schedule"]["expected_sources"] == ["shioaji"]
