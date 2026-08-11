@@ -1020,8 +1020,7 @@ type IngestionCard = {
 
 function controlFromFreshness(summary: MarketFreshness): SchedulerCardControl {
   return {
-    scheduler_key:
-      summary.scheduler_key || `legacy:${summary.market}:${summary.slot_id}`,
+    scheduler_key: summary.scheduler_key,
     provider: summary.provider || summary.feeds[0]?.source || "—",
     dataset_keys: summary.dataset_keys,
     slot_id: summary.slot_id,
@@ -1350,7 +1349,6 @@ export function IngestionOverviewPanel({
                 freshness?.last_complete_at ??
                 freshness?.last_successful_update_at ??
                 null
-              const canToggle = !control.scheduler_key.startsWith("legacy:")
               return (
                 <article
                   className="grid gap-4 rounded-xl border border-line bg-surface p-4"
@@ -1483,7 +1481,7 @@ export function IngestionOverviewPanel({
                   )}
 
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-                    {role === "owner" && canToggle ? (
+                    {role === "owner" ? (
                       <Button
                         type="button"
                         variant={
@@ -1505,9 +1503,7 @@ export function IngestionOverviewPanel({
                       </Button>
                     ) : (
                       <span className="text-xs text-muted" role="note">
-                        {role === "owner"
-                          ? "此舊版排程僅供檢視。"
-                          : "唯讀：只有 owner 可以變更排程狀態。"}
+                        唯讀：只有 owner 可以變更排程狀態。
                       </span>
                     )}
                     {actionErrors[control.scheduler_key] && (

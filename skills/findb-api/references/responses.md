@@ -1,130 +1,131 @@
-# Response Shapes, Pagination & Errors
+# Response Shapes, Pagination, Runs, and Errors
 
 ## Pagination wrapper
 
-Every Serve list endpoint and most Admin list endpoints share the same wrapper:
+Serve list endpoints and most Admin list endpoints use:
 
 ```json
 {
   "success": true,
-  "data": [ /* result records */ ],
+  "data": [],
   "pagination": {
     "page": 1,
     "page_size": 100,
-    "total_records": 2500,
-    "total_pages": 25
+    "total_records": 0,
+    "total_pages": 0
   }
 }
 ```
 
-Params:
-
-| Param | Default | Range | Description |
-| --- | --- | --- | --- |
-| `page` | `1` | `≥ 1` | 1-indexed page number |
-| `page_size` | `100` | `1`–`1000` | Records per page |
-
-Iteration: keep incrementing `page` until `page > total_pages`. Avoid using
-`total_records` to compute offsets — `page` + `page_size` is the contract.
+`page` starts at 1. `page_size` is bounded by the endpoint (normally 1–1000). Continue
+until `page >= total_pages`; use cursor pagination for instruments when the response
+provides `next_cursor`.
 
 ```python
 import httpx
 
+
 def fetch_all(client: httpx.Client, url: str, params: dict, *, page_size: int = 500):
     page = 1
     while True:
-        resp = client.get(url, params={**params, "page": page, "page_size": page_size})
-        resp.raise_for_status()
-        body = resp.json()
+        response = client.get(url, params={**params, "page": page, "page_size": page_size})
+        response.raise_for_status()
+        body = response.json()
         yield from body["data"]
-        if page >= body["pagination"]["total_pages"]:
+        pagination = body.get("pagination") or {}
+        if page >= pagination.get("total_pages", page):
             return
         page += 1
 ```
 
+## Source ingest response
+
+`POST /api/v1/source/ingest` returns `202 Accepted` with:
+
+```json
+{
+  "attempt_id": "019...",
+  "run_id": "019...",
+  "status": "pending",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "message": "Data received, processing queued"
+}
+```
+
+The response means raw, run, normalization job, and outbox records were durably accepted.
+It does not mean canonical rows are ready. A same-key/same-content retry returns the same
+run with a duplicate message; a same-key/different-content request returns a conflict.
+
 ## Ingest run lifecycle
 
-`GET /api/v1/source/runs/{run_id}` returns one of these statuses:
+`GET /api/v1/source/runs/{run_id}` returns:
 
 | Status | Meaning | Action |
 | --- | --- | --- |
-| `pending` | Queued, normalize hasn't started | Wait, then poll |
-| `running` | Normalizer is processing | Wait, then poll |
-| `completed` | All records written, no DQ issues at `error` severity | Done |
-| `completed_with_errors` | Partial write or DQ warnings/errors triggered | Inspect `failed_records` and `error_message`; consider `/admin/dq-issues` |
-| `failed` | Run hit a fatal error before/while writing | Read `error_message`; payload still in raw store for `RAW_RETENTION_DAYS` |
+| `pending` | Accepted and queued | Poll again |
+| `running` | Normalization is processing | Poll again |
+| `completed` | All records passed blocking DQ and were written | Done |
+| `completed_with_errors` | Some rows failed DQ/write or warnings remain | Inspect counts and DQ issues |
+| `failed` | Terminal processing failure | Inspect failure code; retry only with the same policy |
 
-`completed_with_errors` is the most commonly misread status — it does NOT mean
-"all good". Check:
-- `total_records` vs `success_records` vs `failed_records`
-- `GET /api/v1/admin/dq-issues?run_id=<run_id>` if you have admin access
-- The `error_message` field (may be a summary like "5 records failed DQ checks")
+Always compare `total_records`, `success_records`, and `failed_records`. Keep both
+`attempt_id` and `run_id` for audit. A retained raw contract can be requeued with
+`POST /api/v1/source/runs/{run_id}/rerun`; the rerun has a new run ID and is bounded by
+the configured raw-retention window.
 
 ## Error response shape
 
 ```json
-{ "detail": "<human-readable message>" }
+{
+  "detail": "human-readable message"
+}
 ```
 
-The HTTP status code is the primary signal; the `detail` string is for
-debugging. Don't pattern-match on the detail text in production — it's not a
-stable contract.
+Use the HTTP status and, for Source contract errors, the stable error code. Do not pattern-
+match free-form detail text as a long-term contract.
 
-## HTTP status codes
-
-| Code | Meaning | Common root cause |
+| Code | Meaning | Typical cause |
 | --- | --- | --- |
-| `200` | OK | — |
-| `400` | Bad request | Unknown `dataset_key`, dataset deactivated, market mismatch (payload market vs endpoint), malformed OHLCV patch, empty cache PUT |
-| `401` | Missing auth | `X-API-Key` header absent |
-| `403` | Forbidden | API key wrong, or Source request from non-allowlisted IP |
-| `404` | Not found | `instrument_id` / `run_id` / `series_id` / `issue_id` doesn't exist; raw payload expired (past `RAW_RETENTION_DAYS`) |
-| `409` | Conflict | Trying to resolve an already-resolved DQ issue |
-| `422` | Validation | Pydantic schema failure on request body (wrong type, missing required field) |
-| `429` | Rate limit | >100 requests / 60s for the same `(API key, client IP)` |
-| `500` | Server error | Required runtime configuration missing (`SOURCE_ALLOWLIST_CIDRS` unset in prod) |
+| `200` | Successful read/mutation | — |
+| `202` | Contract durably accepted | Source ingest |
+| `400` | Request or policy error | Dataset/source scope or semantic policy |
+| `401` | Missing authentication | No `X-API-Key` or session |
+| `403` | Forbidden | Wrong key, provider/dataset scope, or staging IP policy |
+| `404` | Resource not found | Unknown run/instrument or expired raw |
+| `409` | Conflict | Idempotency or state conflict |
+| `422` | Validation failure | Wrong versioned contract field/type |
+| `429` | Rate limit | Back off and honor `Retry-After` |
+| `500` | Unexpected/configuration error | Server fault |
+| `503` | Temporary unavailable | DB/queue outage; retry same key |
 
-## Source API — known error messages
+## Source contract error categories
 
-| Message | Status | Cause |
-| --- | --- | --- |
-| `Missing API key` | 401 | `X-API-Key` header absent |
-| `Invalid API key` | 403 | Key value does not match an active DB-backed Source client |
-| `Source API client IP not allowlisted` | 403 | Caller's real IP not in nginx allowlist; if behind Cloudflare, ensure nginx trusts `CF-Connecting-IP` |
-| `Rate limit exceeded` | 429 | Backoff; resets at next minute boundary |
-| `Dataset '<key>' not found` | 400 | Check `GET /source/datasets`; you may need to use the direct endpoint instead |
-| `Dataset '<key>' is inactive` | 400 | Dataset registry disabled this key |
-| `Market mismatch...` | 400 | Payload's inferred market ≠ endpoint's market (e.g. posting `MSFT` to `/ingest/tw`) |
+| Category | What to check |
+| --- | --- |
+| `INGRESS_SCHEMA_INVALID` | `schema_id`, version, required envelope/payload fields, UTC timestamps |
+| Dataset/source scope rejection | One of the four exact provider/dataset pairs and the Source key allowlist |
+| Idempotency conflict | Same key was reused with a different body or schema identity |
+| Payload limit rejection | Data item count or serialized body exceeds staging limits |
+| DQ/normalization failure | Run status, failed records, and Admin DQ issue detail |
 
-## Admin API — known error messages
+## DQ severity
 
-| Message | Status | Cause |
-| --- | --- | --- |
-| `Missing API key` | 401 | Header absent |
-| `Invalid API key` | 403 | Wrong admin key |
-| `No admin credential configured` | 500 | No active DB-backed Admin key or break-glass credential is configured |
-| `EOD record not found...` | 404 | `(instrument_id, trade_date)` has no row |
-| `DQ issue ... not found` | 404 | Wrong `issue_id` |
-| `Raw payload not found` | 404 | Run's raw payload aged out (past `RAW_RETENTION_DAYS`) |
-| `Instrument cache not found...` | 404 | Cron hasn't generated the cache file yet |
-| `Instrument ... not found in cache` | 404 | Cache exists but doesn't include that `instrument_id` |
-| `Instrument cache ... invalid` | 400 | PUT body doesn't conform to schema |
-| `No OHLCV fields provided...` | 400 | PATCH body has no OHLCV keys |
-| `No changes detected...` | 400 | All submitted values equal current values |
-| `DQ issue ... is already resolved` | 409 | Issue already in resolved state |
-
-## DQ check severities
-
-Normalizers run data-quality checks before writing canonical:
+Normalizers run data-quality checks before canonical upsert:
 
 | Check | Severity | Effect |
 | --- | --- | --- |
-| OHLC integrity (`high >= max(open, close)`, `low <= min(open, close)`) | error | Blocks write for that record |
-| Volume non-negative | error | Blocks write |
-| `(instrument_id, trade_date)` uniqueness | error | Blocks write (re-running upsert is fine) |
-| Single-day return > ±30% | warning | Writes, raises DQ issue |
-| Missing OHLC fields | warning | Writes (with nulls), raises DQ issue |
+| OHLC integrity | error | Blocks the affected row |
+| Non-negative volume/turnover | error | Blocks the affected row |
+| Natural-key uniqueness | error | Blocks duplicate row |
+| Suspicious return or missing optional value | warning | Writes row and records a DQ issue |
 
-`error`-severity failures contribute to `failed_records` and may flip the run to
-`completed_with_errors`. `warning` records still land in canonical but appear
-in `/admin/dq-issues` for manual review.
+An `error` can produce `completed_with_errors`; a warning does not by itself block a row.
+Use Admin DQ endpoints only with a named session or DB-backed Admin key.
+
+## Read-model response notes
+
+Serve responses may include `source`, dates, and retained historical domains. These fields
+are lineage/read-model metadata; they do not authorize Source writes or imply an active
+provider feed. Read-only canonical data remains available even when an active feed is
+stopped or a provider is not configured.

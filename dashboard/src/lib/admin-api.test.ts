@@ -18,7 +18,7 @@ describe("admin API request helpers", () => {
 
   it("encodes supported audit filters and pagination", () => {
     const filters = auditFiltersSchema.parse({
-      datasetKey: "tw.eod",
+      datasetKey: "tw_equity_eod",
       runId: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
       dateFrom: "2026-01-01",
       dateTo: "2026-01-31",
@@ -28,7 +28,7 @@ describe("admin API request helpers", () => {
     const params = buildAuditSearch(filters)
     expect(params.get("page")).toBe("3")
     expect(params.get("page_size")).toBe("100")
-    expect(params.get("dataset_key")).toBe("tw.eod")
+    expect(params.get("dataset_key")).toBe("tw_equity_eod")
     expect(params.get("run_id")).toBe("019565d2-f838-7c91-85c1-72d4d7bbbe97")
     expect(params.get("date_from")).toBe("2026-01-01")
     expect(params.get("date_to")).toBe("2026-01-31")

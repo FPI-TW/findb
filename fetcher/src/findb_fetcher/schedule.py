@@ -310,7 +310,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
     if not isinstance(feeds_value, list) or not feeds_value:
         raise ScheduleError("v2 feeds must be a non-empty list")
     feeds: list[ScheduleConfig] = []
-    seen_slots: set[str] = set()
     seen_feeds: set[tuple[str, str, str]] = set()
     seen_legacy_schedule_ids: set[str] = set()
     for index, item in enumerate(feeds_value):
@@ -319,7 +318,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         slot_id = _required_string(item, "slot_id")
         if slot_id not in CANONICAL_SLOT_IDS:
             raise ScheduleError("slot_id must be one of the four v2 slots")
-        seen_slots.add(slot_id)
         scheduled_local_time = _parse_scheduled_time(item.get("scheduled_time"))
         legacy_schedule_id = _optional_identifier(item, "legacy_schedule_id")
         if legacy_schedule_id is not None:
@@ -386,8 +384,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         if config.target_date_policy == "latest_trade_date" and config.enabled and calendar is None:
             raise ScheduleError("enabled trade-date policy requires a governed calendar")
         feeds.append(config)
-    if seen_slots != CANONICAL_SLOT_IDS:
-        raise ScheduleError("v2 manifest must declare each of the four slots")
     return ScheduleManifest(2, timezone_name, tuple(feeds))
 
 

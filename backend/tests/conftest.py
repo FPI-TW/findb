@@ -156,18 +156,18 @@ async def source_headers(request, test_session: AsyncSession) -> AsyncGenerator[
     from app.services.source_clients import create_source_client
 
     settings = get_settings()
-    node_name = request.node.name
-    provider = "bloomberg"
-    if request.node.fspath.basename == "test_canonical_ingest_api.py":
-        provider = "bloomberg" if "futures" in node_name else "finlab"
-    elif "twstock" in node_name:
-        provider = "finlab"
+    basename = request.node.fspath.basename
+    provider = "finlab"
+    allowed_datasets = ["tw_equity_eod"]
+    if basename == "test_minute_normalize.py":
+        provider = "shioaji"
+        allowed_datasets = ["tw_equity_minute", "tw_etf_minute"]
     _, api_key = await create_source_client(
         test_session,
         name="test-source-client",
         owner="tests",
         source_name=provider,
-        allowed_datasets=None,
+        allowed_datasets=allowed_datasets,
         rate_limit_requests=100,
         rate_limit_window=60,
         commit=False,

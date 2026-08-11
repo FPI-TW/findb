@@ -163,14 +163,14 @@ async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
             "kind": "source",
             "name": "twelve-data-fetcher",
             "owner": "data-platform",
-            "source_name": "Twelve Data",
+            "source_name": "twelve_data",
             "allowed_datasets": ["us_equity_eod"],
         },
     )
     assert source_created.status_code == 200
     assert source_created.json()["api_key"].startswith("findb_src_")
     assert source_created.json()["data"]["owner"] == "data-platform"
-    assert source_created.json()["data"]["policies"]["source_name"] == "twelve data"
+    assert source_created.json()["data"]["policies"]["source_name"] == "twelve_data"
 
     provider_wide_source = await client.post(
         "/api/v1/admin/credentials",
@@ -184,8 +184,8 @@ async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
         },
     )
     assert provider_wide_source.status_code == 200
-    assert provider_wide_source.json()["data"]["scopes"] is None
-    assert provider_wide_source.json()["data"]["policies"]["allowed_datasets"] is None
+    assert provider_wide_source.json()["data"]["scopes"] == ["tw_equity_eod"]
+    assert provider_wide_source.json()["data"]["policies"]["allowed_datasets"] == ["tw_equity_eod"]
 
     created = await client.post(
         "/api/v1/admin/credentials",

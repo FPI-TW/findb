@@ -6,6 +6,7 @@ import {
   credentialMutationResponseSchema,
   credentialsOverviewSchema,
   credentialsResponseSchema,
+  SOURCE_PROVIDERS,
   SOURCE_PROVIDER_DATASETS,
   userMutationResponseSchema,
 } from "./admin-governance-api"
@@ -40,6 +41,15 @@ const credential = {
 }
 
 describe("admin governance wire contracts", () => {
+  it("exposes only the currently enabled providers and datasets", () => {
+    expect(SOURCE_PROVIDERS).toEqual(["twelve_data", "finlab", "shioaji"])
+    expect(SOURCE_PROVIDER_DATASETS).toEqual({
+      twelve_data: ["us_equity_eod"],
+      finlab: ["tw_equity_eod"],
+      shioaji: ["tw_equity_minute", "tw_etf_minute"],
+    })
+  })
+
   it("parses backend login and keeps opaque secrets out of the user object", () => {
     const result = adminLoginResponseSchema.parse({
       access_token: "opaque-token",
@@ -95,15 +105,25 @@ describe("admin governance wire contracts", () => {
     expect(
       createCredentialSchema.parse({
         kind: "source",
-        name: "provider-wide-fetcher",
+        name: "finlab-fetcher",
         owner: "data-platform",
         source_name: "finlab",
-        allowed_datasets: null,
+        allowed_datasets: ["tw_equity_eod"],
       })
     ).toMatchObject({
       kind: "source",
-      allowed_datasets: null,
+      source_name: "finlab",
+      allowed_datasets: ["tw_equity_eod"],
     })
+    expect(
+      createCredentialSchema.safeParse({
+        kind: "source",
+        name: "legacy-null-scope-fetcher",
+        owner: "data-platform",
+        source_name: "finlab",
+        allowed_datasets: null,
+      }).success
+    ).toBe(false)
     expect(
       createCredentialSchema.parse({
         kind: "source",
@@ -117,6 +137,28 @@ describe("admin governance wire contracts", () => {
       source_name: "shioaji",
       allowed_datasets: SOURCE_PROVIDER_DATASETS.shioaji,
     })
+    expect(
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "shioaji-subset",
+        owner: "data-platform",
+        source_name: "shioaji",
+        allowed_datasets: ["tw_equity_minute"],
+      })
+    ).toMatchObject({
+      kind: "source",
+      source_name: "shioaji",
+      allowed_datasets: ["tw_equity_minute"],
+    })
+    expect(() =>
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "shioaji-duplicate",
+        owner: "data-platform",
+        source_name: "shioaji",
+        allowed_datasets: ["tw_equity_minute", "tw_equity_minute"],
+      })
+    ).toThrow()
     expect(() =>
       createCredentialSchema.parse({
         kind: "source",
@@ -124,6 +166,15 @@ describe("admin governance wire contracts", () => {
         owner: "data-platform",
         source_name: "twelve_data",
         allowed_datasets: ["tw_equity_eod"],
+      })
+    ).toThrow()
+    expect(() =>
+      createCredentialSchema.parse({
+        kind: "source",
+        name: "retired-dataset",
+        owner: "data-platform",
+        source_name: "finlab",
+        allowed_datasets: ["retired_dataset"],
       })
     ).toThrow()
     expect(

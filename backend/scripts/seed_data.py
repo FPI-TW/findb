@@ -1,28 +1,84 @@
-"""
-Script to seed initial dataset registry and crypto instruments.
-"""
+"""Seed the four staging feeds and their versioned contract declarations."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 
-from sqlalchemy import cast, func, text
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.models.base import Base
-from app.models.canonical import Instrument, InstrumentIdentifier
 from app.models.registry import DatasetRegistry
-from app.utils import utc_now, uuid7
+from app.utils import utc_now
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 settings = get_settings()
 
 
+SUPPORTED_DATASETS = (
+    "us_equity_eod",
+    "tw_equity_eod",
+    "tw_equity_minute",
+    "tw_etf_minute",
+)
+
+
+def _eod_delivery_expectation(
+    *,
+    mode: str,
+    market: str,
+    timezone: str,
+    close_time: str,
+    source: str,
+    minimum_count: int,
+    slot_id: str,
+    local_time: str,
+) -> dict:
+    return {
+        "delivery_mode": mode,
+        "baseline": {
+            "strategy": "rolling_median",
+            "scope": "dataset_source_schema",
+            "window_size": 7,
+            "minimum_history": 3,
+        },
+        "record_count": {
+            "minimum_record_count": minimum_count,
+            "maximum_count_drop_ratio": 0.1,
+            "action": "warn",
+        },
+        "freshness": {
+            "maximum_fetch_age_hours": 36,
+            "allowed_clock_skew_minutes": 5,
+            "action": "warn",
+        },
+        "latest_date": {
+            "calendar_market": market,
+            "timezone": timezone,
+            "market_close_time": close_time,
+            "availability_grace_minutes": 120,
+            "action": "warn",
+        },
+        "missing_delivery": {
+            "action": "warn",
+            "expected_sources": [source],
+            "deadline_local_time": "17:00:00",
+        },
+        "schedule": {
+            "enabled": True,
+            "slot_id": slot_id,
+            "local_time": local_time,
+            "timezone": "Asia/Taipei",
+            "expected_sources": [source],
+        },
+    }
+
+
 def _minute_delivery_expectation() -> dict:
-    """Return the bounded Shioaji minute policy for both minute datasets."""
     return {
         "delivery_mode": "sequenced_snapshot",
         "baseline": {
@@ -54,8 +110,6 @@ def _minute_delivery_expectation() -> dict:
             "expected_sources": ["shioaji"],
             "deadline_local_time": "17:00:00",
         },
-        # This remains compatibility metadata.  SchedulerControl and its
-        # association rows are the scheduler authority.
         "schedule": {
             "enabled": True,
             "slot_id": "taiwan_market_window",
@@ -66,812 +120,110 @@ def _minute_delivery_expectation() -> dict:
     }
 
 
-# Initial dataset configurations
-DATASETS = [
-    {
-        "dataset_key": "crypto_eod",
-        "name": "加密貨幣日K",
-        "description": "Bloomberg 加密貨幣每日價格資料",
-        "asset_class": "crypto",
-        "market": "CRYPTO",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_crypto",
-            "field_mapping": {
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "trade_date": "timestamp.last_update",
-            },
-            "identifier_type": "bloomberg",
-            "identifier_field": "ticker",
+def _contract_config(
+    *,
+    schema_id: str,
+    market: str,
+    asset_class: str,
+    currency: str,
+    allowed_sources: list[str],
+    delivery_expectation: dict,
+) -> dict:
+    """Return only contract, scope, and delivery policy keys.
+
+    Provider-specific ``source_format``/``field_mapping``/``data_path`` keys
+    are intentionally not seeded; adapters must produce the versioned body.
+    """
+    return {
+        "schema_id": schema_id,
+        "accepted_schema_versions": [1],
+        "current_schema_version": 1,
+        "schema_enforcement": "enforce",
+        "allowed_sources": allowed_sources,
+        "defaults": {
+            "market": market,
+            "asset_class": asset_class,
+            "currency": currency,
+            **(
+                {"market_timezone": "Asia/Taipei", "price_adjustment": "none"}
+                if schema_id == "market_minute"
+                else {}
+            ),
         },
-    },
+        "delivery_expectation": delivery_expectation,
+    }
+
+
+DATASETS = [
     {
         "dataset_key": "us_equity_eod",
         "name": "美股日K",
-        "description": "美國股票每日價格資料",
+        "description": "Twelve Data provider-neutral market_eod.v1 美國股票每日 OHLCV 資料",
         "asset_class": "equity",
         "market": "US",
         "frequency": "daily",
         "is_active": True,
-        "config": {
-            "schema_id": "market_eod",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "US",
-                "asset_class": "equity",
-                "currency": "USD",
-            },
-            "delivery_expectation": {
-                "delivery_mode": "incremental",
-                "baseline": {
-                    "strategy": "rolling_median",
-                    "scope": "dataset_source_schema",
-                    "window_size": 7,
-                    "minimum_history": 3,
-                },
-                "record_count": {
-                    "minimum_record_count": 1,
-                    "maximum_count_drop_ratio": 0.0,
-                    "action": "warn",
-                },
-                "freshness": {
-                    "maximum_fetch_age_hours": 36,
-                    "allowed_clock_skew_minutes": 5,
-                    "action": "warn",
-                },
-                "latest_date": {
-                    "calendar_market": "US",
-                    "timezone": "America/New_York",
-                    "market_close_time": "16:00:00",
-                    "availability_grace_minutes": 120,
-                    "action": "warn",
-                },
-                "schedule": {
-                    "enabled": True,
-                    "slot_id": "western_markets_window",
-                    "local_time": "06:30:00",
-                    "timezone": "Asia/Taipei",
-                    "expected_sources": ["twelve_data"],
-                },
-            },
-            "source_format": "bloomberg_equity_api",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.last_update",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "volume",
-                "turnover": "turnover",
-            },
-        },
-    },
-    {
-        "dataset_key": "us_index_eod",
-        "name": "美股指數日K",
-        "description": "美國指數每日價格資料",
-        "asset_class": "index",
-        "market": "US",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_index_api",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.last_update",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "volume",
-                "turnover": "turnover",
-            },
-        },
+        "config": _contract_config(
+            schema_id="market_eod",
+            market="US",
+            asset_class="equity",
+            currency="USD",
+            allowed_sources=["twelve_data"],
+            delivery_expectation=_eod_delivery_expectation(
+                mode="incremental",
+                market="US",
+                timezone="America/New_York",
+                close_time="16:00:00",
+                source="twelve_data",
+                minimum_count=1,
+                slot_id="western_markets_window",
+                local_time="06:30:00",
+            ),
+        ),
     },
     {
         "dataset_key": "tw_equity_eod",
-        "name": "台股日K — FinLab Direct",
-        "description": "FinLab Direct 格式台股每日 OHLCV 資料",
+        "name": "台股日K",
+        "description": "FinLab provider-neutral market_eod.v1 台灣股票每日 OHLCV 資料",
         "asset_class": "equity",
         "market": "TW",
         "frequency": "daily",
         "is_active": True,
-        "config": {
-            "schema_id": "market_eod",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "TW",
-                "asset_class": "equity",
-                "currency": "TWD",
-            },
-            "delivery_expectation": {
-                "delivery_mode": "full_snapshot",
-                "baseline": {
-                    "strategy": "rolling_median",
-                    "scope": "dataset_source_schema",
-                    "window_size": 7,
-                    "minimum_history": 3,
-                },
-                "record_count": {
-                    "minimum_record_count": 2100,
-                    "maximum_count_drop_ratio": 0.1,
-                    "action": "warn",
-                },
-                "freshness": {
-                    "maximum_fetch_age_hours": 36,
-                    "allowed_clock_skew_minutes": 5,
-                    "action": "warn",
-                },
-                "latest_date": {
-                    "calendar_market": "TW",
-                    "timezone": "Asia/Taipei",
-                    "market_close_time": "13:30:00",
-                    "availability_grace_minutes": 120,
-                    "action": "warn",
-                },
-                "schedule": {
-                    "enabled": True,
-                    "slot_id": "taiwan_market_window",
-                    "local_time": "14:30:00",
-                    "timezone": "Asia/Taipei",
-                    "expected_sources": ["finlab"],
-                },
-            },
-            "source_format": "finlab_twstock_direct",
-            "data_path": "data",
-            "field_mapping": {
-                "trade_date": "date",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "volume": "total_volume",
-                "total_ticks": "total_ticks",
-            },
-        },
-    },
-    {
-        "dataset_key": "tw_etf_eod",
-        "name": "台股 ETF 日K — FinLab Direct",
-        "description": "FinLab Direct 格式台股 ETF 每日 OHLCV 資料",
-        "asset_class": "etf",
-        "market": "TW",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "schema_id": "market_eod",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "TW",
-                "asset_class": "etf",
-                "currency": "TWD",
-            },
-            "delivery_expectation": {
-                "delivery_mode": "full_snapshot",
-                "baseline": {
-                    "strategy": "rolling_median",
-                    "scope": "dataset_source_schema",
-                    "window_size": 7,
-                    "minimum_history": 3,
-                },
-                "record_count": {
-                    "minimum_record_count": 190,
-                    "maximum_count_drop_ratio": 0.1,
-                    "action": "warn",
-                },
-                "freshness": {
-                    "maximum_fetch_age_hours": 36,
-                    "allowed_clock_skew_minutes": 5,
-                    "action": "warn",
-                },
-                "latest_date": {
-                    "calendar_market": "TW",
-                    "timezone": "Asia/Taipei",
-                    "market_close_time": "13:30:00",
-                    "availability_grace_minutes": 120,
-                    "action": "warn",
-                },
-                "schedule": {
-                    "enabled": True,
-                    "slot_id": "taiwan_market_window",
-                    "local_time": "14:30:00",
-                    "timezone": "Asia/Taipei",
-                    "expected_sources": ["finlab"],
-                },
-            },
-            "source_format": "finlab_twstock_direct",
-            "data_path": "data",
-            "field_mapping": {
-                "trade_date": "date",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "volume": "total_volume",
-                "total_ticks": "total_ticks",
-            },
-        },
-    },
-    {
-        "dataset_key": "tw_equity_bloomberg_eod",
-        "name": "台股日K — Bloomberg",
-        "description": "Bloomberg API 格式台灣股票每日價格資料",
-        "asset_class": "equity",
-        "market": "TW",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "hk_equity_eod",
-        "name": "港股日K",
-        "description": "香港股票每日價格資料",
-        "asset_class": "equity",
-        "market": "HK",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "cn_equity_eod",
-        "name": "陸股日K",
-        "description": "中國股票每日價格資料",
-        "asset_class": "equity",
-        "market": "CN",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "tw_index_eod",
-        "name": "台股指數日K",
-        "description": "台灣指數每日價格資料",
-        "asset_class": "index",
-        "market": "TW",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "hk_index_eod",
-        "name": "港股指數日K",
-        "description": "香港指數每日價格資料",
-        "asset_class": "index",
-        "market": "HK",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "cn_index_eod",
-        "name": "陸股指數日K",
-        "description": "中國指數每日價格資料",
-        "asset_class": "index",
-        "market": "CN",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "fx_eod",
-        "name": "外匯日K",
-        "description": "全球外匯每日價格資料",
-        "asset_class": "fx",
-        "market": "FX",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_fx_api",
-            "symbol_field": "pair",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.last_update",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "volume",
-                "turnover": "turnover",
-            },
-        },
-    },
-    {
-        "dataset_key": "macro_observation",
-        "name": "宏觀指標",
-        "description": "宏觀經濟指標時間序列資料",
-        "asset_class": "macro",
-        "market": "MACRO",
-        "frequency": "varies",
-        "is_active": True,
-        "config": {
-            "data_path": "data",
-            "field_mapping": {
-                "source_code": "source_code",
-                "name": "name",
-                "unit": "unit",
-                "frequency": "frequency",
-                "market": "market",
-                "obs_date": "date",
-                "value": "value",
-                "source": "source",
-            },
-        },
-    },
-    {
-        "dataset_key": "futures_contracts",
-        "name": "台指期期貨合約",
-        "description": "台指期期貨合約資料",
-        "asset_class": "future",
-        "market": "WTX",
-        "frequency": "contract",
-        "is_active": True,
-        "config": {
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "contract_code": "contract_code",
-                "contract_month": "contract_month",
-                "expiry_date": "expiry_date",
-                "currency": "currency",
-                "extra": "extra",
-            },
-        },
-    },
-    {
-        "dataset_key": "futures_continuous_eod",
-        "name": "台指期連續日K",
-        "description": "台指期期貨連續日K資料",
-        "asset_class": "future",
-        "market": "WTX",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "schema_id": "futures_continuous_eod",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "WTX",
-                "asset_class": "future",
-                "currency": "TWD",
-            },
-            "delivery_expectation": {
-                "delivery_mode": "full_snapshot",
-                "baseline": {
-                    "strategy": "rolling_median",
-                    "scope": "dataset_source_schema",
-                    "window_size": 7,
-                    "minimum_history": 3,
-                },
-                "record_count": {
-                    "minimum_record_count": 1,
-                    "maximum_count_drop_ratio": 0.5,
-                    "action": "warn",
-                },
-                "freshness": {
-                    "maximum_fetch_age_hours": 36,
-                    "allowed_clock_skew_minutes": 5,
-                    "action": "warn",
-                },
-                "latest_date": {
-                    "calendar_market": "WTX",
-                    "timezone": "Asia/Taipei",
-                    "market_close_time": "13:45:00",
-                    "availability_grace_minutes": 120,
-                    "action": "warn",
-                },
-                "schedule": {
-                    "enabled": False,
-                    "slot_id": "taiwan_market_window",
-                    "local_time": "14:30:00",
-                    "timezone": "Asia/Taipei",
-                    "expected_sources": [],
-                },
-            },
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "trade_date",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "volume": "volume",
-                "turnover": "turnover",
-                "roll_rule": "roll_rule",
-                "roll_rule_name": "roll_rule.name",
-                "roll_rule_description": "roll_rule.description",
-                "roll_rule_config": "roll_rule.config",
-            },
-        },
-    },
-    {
-        "dataset_key": "us_equity_corporate_actions",
-        "name": "美股公司行為",
-        "description": "美股公司行為（除權息/分割）",
-        "asset_class": "equity",
-        "market": "US",
-        "frequency": "event",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_corporate_actions",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "action_type": "action.type",
-                "ex_date": "action.ex_date",
-                "record_date": "action.record_date",
-                "pay_date": "action.pay_date",
-                "ratio": "action.ratio",
-                "cash_amount": "action.cash_amount",
-                "currency": "action.currency",
-            },
-        },
-    },
-    {
-        "dataset_key": "crypto_index_eod",
-        "name": "加密貨幣指數日K",
-        "description": "加密貨幣指數每日價格資料",
-        "asset_class": "index",
-        "market": "CRYPTO",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_crypto_index_api",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.last_update",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "volume",
-                "turnover": "turnover",
-            },
-        },
-    },
-    {
-        "dataset_key": "us_stock_eod",
-        "name": "美股日K (Bloomberg API)",
-        "description": "Bloomberg API 美國股票每日價格資料",
-        "asset_class": "equity",
-        "market": "US",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_usstock_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "us_stock_index_eod",
-        "name": "美股指數日K (Bloomberg API)",
-        "description": "Bloomberg API 美國指數每日價格資料",
-        "asset_class": "index",
-        "market": "US",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_usstock_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "global_stock_eod",
-        "name": "全球股票日K (Bloomberg API)",
-        "description": "Bloomberg API 全球股票每日價格資料（包含 US, DE, TW, JP, CN 等市場）",
-        "asset_class": "equity",
-        "market": "GLOBAL",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_usstock_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    {
-        "dataset_key": "hkchina_stock_eod",
-        "name": "港中股票日K (Bloomberg API)",
-        "description": "Bloomberg API 港股與中國相關股票每日價格資料",
-        "asset_class": "equity",
-        "market": "GLOBAL",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "source_format": "bloomberg_hkchina_api",
-            "data_path": "data",
-            "symbol_field": "symbol",
-            "name_field": "name",
-            "source_field": "metadata.source",
-            "identifier_field": "ticker",
-            "identifier_type": "bloomberg",
-            "field_mapping": {
-                "trade_date": "timestamp.query_time",
-                "open": "price.open",
-                "high": "price.high",
-                "low": "price.low",
-                "close": "price.last",
-                "volume": "price.volume",
-            },
-        },
-    },
-    # Bloomberg direct format datasets
-    {
-        "dataset_key": "crypto_bloomberg_eod",
-        "name": "加密貨幣日K — Bloomberg Direct",
-        "description": "Bloomberg Direct 格式加密貨幣每日價格資料",
-        "asset_class": "crypto",
-        "market": "CRYPTO",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {"source_format": "bloomberg_crypto_direct"},
-    },
-    {
-        "dataset_key": "fx_bloomberg_eod",
-        "name": "外匯日K — Bloomberg Direct",
-        "description": "Bloomberg Direct 格式外匯每日價格資料",
-        "asset_class": "fx",
-        "market": "FX",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {"source_format": "bloomberg_fx_direct"},
-    },
-    {
-        "dataset_key": "wtx_eod",
-        "name": "WTX 期貨日K",
-        "description": "台灣加權指數期貨每日 OHLCV 資料（支援 FinLab 與 Bloomberg 來源）",
-        "asset_class": "future",
-        "market": "WTX",
-        "frequency": "daily",
-        "is_active": True,
-        "config": {
-            "schema_id": "futures_continuous_eod",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "WTX",
-                "asset_class": "future",
-                "currency": "TWD",
-            },
-            "delivery_expectation": {
-                "delivery_mode": "full_snapshot",
-                "baseline": {
-                    "strategy": "rolling_median",
-                    "scope": "dataset_source_schema",
-                    "window_size": 7,
-                    "minimum_history": 3,
-                },
-                "record_count": {
-                    "minimum_record_count": 1,
-                    "maximum_count_drop_ratio": 0.5,
-                    "action": "warn",
-                },
-                "freshness": {
-                    "maximum_fetch_age_hours": 36,
-                    "allowed_clock_skew_minutes": 5,
-                    "action": "warn",
-                },
-                "latest_date": {
-                    "calendar_market": "WTX",
-                    "timezone": "Asia/Taipei",
-                    "market_close_time": "13:45:00",
-                    "availability_grace_minutes": 120,
-                    "action": "warn",
-                },
-                "schedule": {
-                    "enabled": True,
-                    "slot_id": "taiwan_market_window",
-                    "local_time": "14:30:00",
-                    "timezone": "Asia/Taipei",
-                    "expected_sources": ["finlab"],
-                },
-            },
-            "source_format": "direct",
-        },
-    },
-    {
-        "dataset_key": "macro_bloomberg_observation",
-        "name": "總經觀測值 — Bloomberg Direct",
-        "description": "Bloomberg Direct 格式宏觀經濟指標觀測值",
-        "asset_class": "macro",
-        "market": "MACRO",
-        "frequency": "various",
-        "is_active": True,
-        "config": {"source_format": "bloomberg_macro_direct"},
+        "config": _contract_config(
+            schema_id="market_eod",
+            market="TW",
+            asset_class="equity",
+            currency="TWD",
+            allowed_sources=["finlab"],
+            delivery_expectation=_eod_delivery_expectation(
+                mode="full_snapshot",
+                market="TW",
+                timezone="Asia/Taipei",
+                close_time="13:30:00",
+                source="finlab",
+                minimum_count=2,
+                slot_id="taiwan_market_window",
+                local_time="14:30:00",
+            ),
+        ),
     },
     {
         "dataset_key": "tw_equity_minute",
-        "name": "台股股票分鐘 K — Shioaji",
-        "description": "台灣股票一分鐘 OHLCV 資料；production scheduler 目前限已審核 pilot universe。",
+        "name": "台股股票分鐘 K",
+        "description": "Shioaji provider-neutral market_minute.v1 台灣股票一分鐘 OHLCV 資料",
         "asset_class": "equity",
         "market": "TW",
         "frequency": "minute",
         "is_active": True,
         "config": {
-            "schema_id": "market_minute",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "TW",
-                "asset_class": "equity",
-                "currency": "TWD",
-                "market_timezone": "Asia/Taipei",
-                "price_adjustment": "none",
-            },
+            **_contract_config(
+                schema_id="market_minute",
+                market="TW",
+                asset_class="equity",
+                currency="TWD",
+                allowed_sources=["shioaji"],
+                delivery_expectation=_minute_delivery_expectation(),
+            ),
             "governance": {
                 "sequence_symbol_limit": 50,
                 "sequence_row_limit": 15000,
@@ -889,30 +241,25 @@ DATASETS = [
                     "retry_deadline": "17:00:00",
                 },
             },
-            "delivery_expectation": _minute_delivery_expectation(),
-            "source_format": "shioaji_tw_minute",
         },
     },
     {
         "dataset_key": "tw_etf_minute",
-        "name": "台股 ETF 分鐘 K — Shioaji",
-        "description": "台灣 ETF 一分鐘 OHLCV 資料；production scheduler 目前限已審核 pilot universe。",
+        "name": "台股 ETF 分鐘 K",
+        "description": "Shioaji provider-neutral market_minute.v1 台灣 ETF 一分鐘 OHLCV 資料",
         "asset_class": "etf",
         "market": "TW",
         "frequency": "minute",
         "is_active": True,
         "config": {
-            "schema_id": "market_minute",
-            "accepted_schema_versions": [1],
-            "current_schema_version": 1,
-            "schema_enforcement": "audit",
-            "defaults": {
-                "market": "TW",
-                "asset_class": "etf",
-                "currency": "TWD",
-                "market_timezone": "Asia/Taipei",
-                "price_adjustment": "none",
-            },
+            **_contract_config(
+                schema_id="market_minute",
+                market="TW",
+                asset_class="etf",
+                currency="TWD",
+                allowed_sources=["shioaji"],
+                delivery_expectation=_minute_delivery_expectation(),
+            ),
             "governance": {
                 "sequence_symbol_limit": 50,
                 "sequence_row_limit": 15000,
@@ -930,182 +277,133 @@ DATASETS = [
                     "retry_deadline": "17:00:00",
                 },
             },
-            "delivery_expectation": _minute_delivery_expectation(),
-            "source_format": "shioaji_tw_minute",
         },
     },
 ]
 
 
-# Initial crypto instruments
-CRYPTO_INSTRUMENTS = [
-    {
-        "symbol": "BTC",
-        "name": "Bitcoin",
-        "bloomberg_ticker": "XBTUSD BGN Curncy",
-        "currency": "USD",
-    },
-    {
-        "symbol": "ETH",
-        "name": "Ethereum",
-        "bloomberg_ticker": "XETUSD BGN Curncy",
-        "currency": "USD",
-    },
-    {
-        "symbol": "XRP",
-        "name": "Ripple",
-        "bloomberg_ticker": "XRP Curncy",
-        "currency": "USD",
-    },
-    {
-        "symbol": "SOL",
-        "name": "Solana",
-        "bloomberg_ticker": "XSO Curncy",
-        "currency": "USD",
-    },
-    {
-        "symbol": "ADA",
-        "name": "Cardano",
-        "bloomberg_ticker": "XAD BGN Curncy",
-        "currency": "USD",
-    },
-]
+_LEGACY_CONFIG_KEYS = {
+    "source_format",
+    "field_mapping",
+    "data_path",
+    "symbol_field",
+    "name_field",
+    "source_field",
+    "identifier_field",
+    "identifier_type",
+}
+_CONTRACT_CONFIG_KEYS = {
+    "schema_id",
+    "accepted_schema_versions",
+    "current_schema_version",
+    "schema_enforcement",
+    "allowed_sources",
+    "defaults",
+}
 
 
-async def seed_datasets(session: AsyncSession):
-    """Seed dataset registry without mutating operator scheduler authority.
+def _merge_operator_config(
+    dataset_key: str,
+    seed_config: dict,
+    existing_config: dict | None,
+) -> dict:
+    """Apply seed declarations while retaining operator-owned policy metadata.
 
-    Scheduler enabled state and trigger definitions live in ``scheduler_control``;
-    this seed keeps existing dataset delivery metadata intact and never
-    backfills a schedule block into an operator-managed registry row.
+    Contract discriminators/defaults are authoritative seed values.  Delivery
+    policy and governance are recursively merged with existing values winning,
+    so an operator override survives a repeatable seed.  Retired provider
+    mapping keys (and the old minute universe limit key) are always removed.
     """
-    logger.info("Seeding datasets...")
+    merged = deepcopy(seed_config)
+    if not isinstance(existing_config, dict):
+        return merged
 
-    for ds in DATASETS:
-        stmt = (
-            insert(DatasetRegistry)
-            .values(
-                dataset_key=ds["dataset_key"],
-                name=ds["name"],
-                description=ds["description"],
-                asset_class=ds["asset_class"],
-                market=ds["market"],
-                frequency=ds["frequency"],
-                is_active=ds["is_active"],
-                config=ds["config"],
-                created_at=utc_now(),
-                updated_at=utc_now(),
-            )
-            .on_conflict_do_update(
-                index_elements=["dataset_key"],
-                set_={
-                    "name": ds["name"],
-                    "description": ds["description"],
-                    # Seed defaults fill missing top-level keys, while operator-owned
-                    # production config always wins. Alembic handles nested policy
-                    # evolution without destructive seed overwrites.
-                    "config": cast(ds["config"], JSONB).op("||")(
-                        func.coalesce(DatasetRegistry.config, cast({}, JSONB))
-                    ),
-                    "is_active": ds["is_active"],
-                    "updated_at": utc_now(),
-                },
-            )
-        )
-        await session.execute(stmt)
+    def merge_mapping(defaults: dict, overrides: dict) -> dict:
+        result = deepcopy(defaults)
+        for key, value in overrides.items():
+            if isinstance(result.get(key), dict) and isinstance(value, dict):
+                result[key] = merge_mapping(result[key], value)
+            else:
+                result[key] = deepcopy(value)
+        return result
 
-        if ds["dataset_key"] in {
-            "us_equity_eod",
-            "tw_equity_eod",
-            "tw_etf_eod",
-            "futures_continuous_eod",
-            "wtx_eod",
-        }:
-            await session.execute(
-                text("""
-                    UPDATE dataset_registry
-                    SET config = jsonb_set(
-                        config,
-                        '{delivery_expectation,missing_delivery}',
-                        '{"action":"disabled","expected_sources":[]}'::jsonb,
-                        true
-                    )
-                    WHERE dataset_key = :dataset_key
-                      AND jsonb_typeof(config->'delivery_expectation') = 'object'
-                      AND NOT (config->'delivery_expectation' ? 'missing_delivery')
-                """),
-                {"dataset_key": ds["dataset_key"]},
-            )
+    for key, value in existing_config.items():
+        if key in _LEGACY_CONFIG_KEYS or key in _CONTRACT_CONFIG_KEYS:
+            continue
+        if key == "governance" and isinstance(value, dict):
+            governance = dict(value)
+            governance.pop("universe_symbol_limit", None)
+            merged[key] = merge_mapping(merged.get(key, {}), governance)
+            continue
+        if key == "delivery_expectation" and isinstance(value, dict):
+            merged[key] = merge_mapping(merged.get(key, {}), value)
+            if "missing_delivery" in value:
+                historical_disabled = {
+                    "action": "disabled",
+                    "expected_sources": [],
+                }
+                if (
+                    dataset_key != "tw_equity_eod"
+                    or value["missing_delivery"] != historical_disabled
+                ):
+                    merged[key]["missing_delivery"] = deepcopy(value["missing_delivery"])
+                else:
+                    merged[key]["missing_delivery"] = deepcopy(seed_config[key]["missing_delivery"])
+            continue
+        merged[key] = deepcopy(value)
 
-    await session.commit()
-    logger.info(f"Seeded {len(DATASETS)} datasets")
+    return merged
 
 
-async def seed_crypto_instruments(session: AsyncSession):
-    """Seed initial crypto instruments."""
-    logger.info("Seeding crypto instruments...")
-
-    for crypto in CRYPTO_INSTRUMENTS:
-        # Create instrument
-        instrument_id = uuid7()
-        stmt = (
-            insert(Instrument)
-            .values(
-                instrument_id=instrument_id,
-                asset_class="crypto",
-                market="CRYPTO",
-                symbol=crypto["symbol"],
-                name=crypto["name"],
-                currency=crypto["currency"],
-                status="active",
-                created_at=utc_now(),
-                updated_at=utc_now(),
-            )
-            .on_conflict_do_nothing()
-        )
-
-        result = await session.execute(stmt)
-
-        # If inserted (not a conflict), add identifier
-        if result.rowcount > 0:
-            # Add Bloomberg ticker identifier
-            ident_stmt = (
-                insert(InstrumentIdentifier)
-                .values(
-                    id=uuid7(),
-                    instrument_id=instrument_id,
-                    id_type="bloomberg",
-                    id_value=crypto["bloomberg_ticker"],
-                    source="seed",
+async def seed_datasets(session: AsyncSession) -> None:
+    """Upsert exactly the four supported feed declarations."""
+    logger.info("Seeding supported datasets: %s", ", ".join(SUPPORTED_DATASETS))
+    for dataset in DATASETS:
+        existing = await session.get(DatasetRegistry, dataset["dataset_key"])
+        if existing is None:
+            session.add(
+                DatasetRegistry(
+                    dataset_key=dataset["dataset_key"],
+                    name=dataset["name"],
+                    description=dataset["description"],
+                    asset_class=dataset["asset_class"],
+                    market=dataset["market"],
+                    frequency=dataset["frequency"],
+                    is_active=dataset["is_active"],
+                    config=deepcopy(dataset["config"]),
                     created_at=utc_now(),
+                    updated_at=utc_now(),
                 )
-                .on_conflict_do_nothing()
             )
-            await session.execute(ident_stmt)
+            continue
 
+        existing.name = dataset["name"]
+        existing.description = dataset["description"]
+        existing.asset_class = dataset["asset_class"]
+        existing.market = dataset["market"]
+        existing.frequency = dataset["frequency"]
+        existing.is_active = dataset["is_active"]
+        existing.config = _merge_operator_config(
+            dataset["dataset_key"],
+            dataset["config"],
+            existing.config,
+        )
+        existing.updated_at = utc_now()
     await session.commit()
-    logger.info(f"Seeded {len(CRYPTO_INSTRUMENTS)} crypto instruments")
+    logger.info("Seeded %d datasets", len(DATASETS))
 
 
-async def main():
-    """Main entry point."""
-    logger.info("Starting database seeding...")
-
+async def main() -> None:
+    """Create the local schema and seed supported registry rows."""
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     async_session = async_sessionmaker(engine, class_=AsyncSession)
-
     async with engine.begin() as conn:
-        # Ensure schema exists
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-        # Create tables
         await conn.run_sync(Base.metadata.create_all)
-
     async with async_session() as session:
         await seed_datasets(session)
-        await seed_crypto_instruments(session)
-
     await engine.dispose()
-    logger.info("Database seeding completed!")
+    logger.info("Database seeding completed")
 
 
 if __name__ == "__main__":

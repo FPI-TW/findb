@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.canonical import FuturesContinuousEOD, Instrument, MarketDataEOD
+from app.models.canonical import Instrument, MarketDataEOD
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
@@ -51,6 +51,7 @@ def _dataset_config() -> dict:
         "accepted_schema_versions": [1],
         "current_schema_version": 1,
         "schema_enforcement": "audit",
+        "allowed_sources": ["finlab"],
         "defaults": {
             "market": "TW",
             "asset_class": "equity",
@@ -98,42 +99,6 @@ def _canonical_request(*, idempotency_key: str = "finlab_tw_equity_eod_20260721"
     }
 
 
-def _futures_request() -> dict:
-    return {
-        "dataset_key": "wtx_eod",
-        "schema_id": "futures_continuous_eod",
-        "schema_version": 1,
-        "source": "bloomberg",
-        "request_key": "bloomberg_wtx_eod_20260721_01",
-        "idempotency_key": "bloomberg_wtx_eod_20260721",
-        "fetched_at": "2026-07-21T08:00:00Z",
-        "payload": {
-            "batch": {
-                "data_date": "2026-07-21",
-                "delivery_mode": "full_snapshot",
-                "declared_record_count": 1,
-            },
-            "data": [
-                {
-                    "symbol": "TX",
-                    "source_symbol": "TXA Index",
-                    "trade_date": "2026-07-21",
-                    "name": "臺股期貨近月",
-                    "open": "23000",
-                    "high": "23200",
-                    "low": "22900",
-                    "close": "23150",
-                    "volume": 80_000,
-                    "open_interest": 120_000,
-                    "active_contract_code": "TXF202607",
-                    "roll_rule": "front_month",
-                    "roll_adjustment": "12.5",
-                }
-            ],
-        },
-    }
-
-
 async def _seed_dataset(test_session, *, config: dict | None = None) -> None:
     test_session.add(
         DatasetRegistry(
@@ -144,31 +109,6 @@ async def _seed_dataset(test_session, *, config: dict | None = None) -> None:
             frequency="daily",
             is_active=True,
             config=config if config is not None else _dataset_config(),
-        )
-    )
-    await test_session.commit()
-
-
-async def _seed_futures_dataset(test_session) -> None:
-    test_session.add(
-        DatasetRegistry(
-            dataset_key="wtx_eod",
-            name="WTX Continuous EOD",
-            asset_class="future",
-            market="WTX",
-            frequency="daily",
-            is_active=True,
-            config={
-                "schema_id": "futures_continuous_eod",
-                "accepted_schema_versions": [1],
-                "current_schema_version": 1,
-                "schema_enforcement": "audit",
-                "defaults": {
-                    "market": "WTX",
-                    "asset_class": "future",
-                    "currency": "TWD",
-                },
-            },
         )
     )
     await test_session.commit()
@@ -288,11 +228,6 @@ async def test_dataset_discovery_exposes_contract_declaration(
     ("schema_id", "expected_title", "has_currency_rule"),
     [
         ("market_eod", "MarketEODIngressRequest", True),
-        (
-            "futures_continuous_eod",
-            "FuturesContinuousEODIngressRequest",
-            False,
-        ),
     ],
 )
 async def test_versioned_contract_schema_endpoint_is_machine_readable(
@@ -391,110 +326,6 @@ async def test_canonical_market_eod_normalizes_without_provider_specific_fields(
 
 
 @pytest.mark.asyncio
-async def test_canonical_futures_contract_routes_by_schema_not_provider_payload(
-    client: AsyncClient,
-    source_headers: dict,
-    test_session,
-    test_engine,
-):
-    await _seed_futures_dataset(test_session)
-    response = await client.post(
-        "/api/v1/source/ingest",
-        headers=source_headers,
-        json=_futures_request(),
-    )
-    assert response.status_code == 202
-    run_id = UUID(response.json()["run_id"])
-
-    await _execute_run(test_session, test_engine, run_id)
-
-    instrument = (
-        await test_session.execute(select(Instrument).where(Instrument.symbol == "TX"))
-    ).scalar_one()
-    eod = (
-        await test_session.execute(
-            select(FuturesContinuousEOD).where(
-                FuturesContinuousEOD.instrument_id == instrument.instrument_id
-            )
-        )
-    ).scalar_one()
-    run = await test_session.get(IngestionRun, run_id)
-    assert instrument.market == "WTX"
-    assert instrument.currency == "TWD"
-    assert str(eod.close) == "23150.00000000"
-    assert eod.open_interest == 120_000
-    assert eod.active_contract_code == "TXF202607"
-    assert str(eod.roll_adjustment) == "12.50000000"
-    assert eod.source == "bloomberg"
-    assert run.status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_canonical_futures_raw_rerun_preserves_optional_contract_fields(
-    client: AsyncClient,
-    source_headers: dict,
-    test_session,
-    test_engine,
-):
-    await _seed_futures_dataset(test_session)
-    accepted = await client.post(
-        "/api/v1/source/ingest",
-        headers=source_headers,
-        json=_futures_request(),
-    )
-    original_run_id = UUID(accepted.json()["run_id"])
-    await _execute_run(test_session, test_engine, original_run_id)
-
-    rerun = await client.post(
-        f"/api/v1/source/runs/{original_run_id}/rerun",
-        headers=source_headers,
-    )
-    assert rerun.status_code == 202
-    rerun_id = UUID(rerun.json()["run_id"])
-    await _execute_run(test_session, test_engine, rerun_id)
-
-    eod = (await test_session.execute(select(FuturesContinuousEOD))).scalar_one()
-    rerun_row = await test_session.get(IngestionRun, rerun_id)
-    assert eod.open_interest == 120_000
-    assert eod.active_contract_code == "TXF202607"
-    assert str(eod.roll_adjustment) == "12.50000000"
-    assert eod.run_id == rerun_id
-    assert rerun_row is not None
-    assert rerun_row.status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_futures_contract_requires_dataset_default_currency_before_persistence(
-    client: AsyncClient,
-    source_headers: dict,
-    test_session,
-):
-    await _seed_futures_dataset(test_session)
-    dataset = (
-        await test_session.execute(
-            select(DatasetRegistry).where(DatasetRegistry.dataset_key == "wtx_eod")
-        )
-    ).scalar_one()
-    config = dict(dataset.config)
-    config["defaults"] = {**config["defaults"], "currency": None}
-    dataset.config = config
-    await test_session.commit()
-
-    response = await client.post(
-        "/api/v1/source/ingest",
-        headers=source_headers,
-        json=_futures_request(),
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "CURRENCY_REQUIRED"
-    attempt = await test_session.get(IngestionAttempt, UUID(response.json()["attempt_id"]))
-    assert attempt.status == "rejected"
-    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 0
-    assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
-
-
-@pytest.mark.asyncio
 async def test_canonical_raw_rerun_preserves_schema_lineage_and_routing(
     client: AsyncClient,
     source_headers: dict,
@@ -521,6 +352,62 @@ async def test_canonical_raw_rerun_preserves_schema_lineage_and_routing(
     assert rerun_row.schema_id == "market_eod"
     assert rerun_row.schema_version == 1
     assert rerun_row.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_canonical_raw_rerun_rechecks_current_dataset_scope(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_dataset(test_session)
+    accepted = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+    original_run_id = UUID(accepted.json()["run_id"])
+    original_run = await test_session.get(IngestionRun, original_run_id)
+    source_client = await test_session.get(SourceClient, original_run.source_client_id)
+    source_client.allowed_datasets = []
+    await test_session.commit()
+
+    rerun = await client.post(
+        f"/api/v1/source/runs/{original_run_id}/rerun",
+        headers=source_headers,
+    )
+
+    assert rerun.status_code == 403
+    assert "not allowed to rerun dataset" in rerun.json()["detail"]
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 1
+
+
+@pytest.mark.asyncio
+async def test_canonical_raw_rerun_rechecks_current_source_binding(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_dataset(test_session)
+    accepted = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+    original_run_id = UUID(accepted.json()["run_id"])
+    original_run = await test_session.get(IngestionRun, original_run_id)
+    source_client = await test_session.get(SourceClient, original_run.source_client_id)
+    source_client.source_name = "shioaji"
+    await test_session.commit()
+
+    rerun = await client.post(
+        f"/api/v1/source/runs/{original_run_id}/rerun",
+        headers=source_headers,
+    )
+
+    assert rerun.status_code == 403
+    assert "Credential is bound to source shioaji" in rerun.json()["detail"]
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 1
 
 
 @pytest.mark.asyncio
@@ -827,9 +714,9 @@ async def test_unknown_dataset_rejection_has_attempt_id(
         json=value,
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 403
     body = response.json()
-    assert body["error"]["code"] == "DATASET_NOT_FOUND"
+    assert body["error"]["code"] == "DATASET_ACCESS_DENIED"
     attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
     assert attempt.dataset_key == "unknown_dataset"
     assert attempt.status == "rejected"
@@ -959,7 +846,7 @@ async def test_idempotency_key_cannot_be_reused_by_different_source(
         json=_canonical_request(),
     )
     changed_source = _canonical_request()
-    changed_source["source"] = "bloomberg"
+    changed_source["source"] = "twelve_data"
     second = await client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
@@ -1057,9 +944,9 @@ async def test_attempt_status_is_scoped_to_authenticated_source_client(
     )
     _, other_key = await create_source_client(
         test_session,
-        name="Other fetcher",
-        source_name="other",
-        allowed_datasets=["tw_equity_eod"],
+        name="Shioaji fetcher",
+        source_name="shioaji",
+        allowed_datasets=["tw_equity_minute"],
         rate_limit_requests=100,
         rate_limit_window=60,
     )
@@ -1067,7 +954,7 @@ async def test_attempt_status_is_scoped_to_authenticated_source_client(
     rejected = await client.post(
         "/api/v1/source/ingest",
         headers={header_name: finlab_key},
-        json={**_canonical_request(), "source": "bloomberg"},
+        json={**_canonical_request(), "source": "twelve_data"},
     )
     attempt_id = rejected.json()["attempt_id"]
 
@@ -1572,6 +1459,13 @@ async def test_concurrent_exact_deliveries_create_one_run_without_duplicate_warn
     )
 
     async with session_factory() as first_session, session_factory() as second_session:
+        for session in (first_session, second_session):
+            session.info.update(
+                {
+                    "source_name": "finlab",
+                    "allowed_datasets": ["tw_equity_eod"],
+                }
+            )
         first_attempt = await IngestionAttemptService(first_session).begin(
             request_body, json.dumps(request_body).encode()
         )
@@ -1611,6 +1505,13 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
     )
 
     async with session_factory() as first_session, session_factory() as second_session:
+        for session in (first_session, second_session):
+            session.info.update(
+                {
+                    "source_name": "finlab",
+                    "allowed_datasets": ["tw_equity_eod"],
+                }
+            )
         first_attempt = await IngestionAttemptService(first_session).begin(
             request_body, json.dumps(request_body).encode()
         )
@@ -1706,8 +1607,9 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
     await test_session.commit()
     first_body = _canonical_request(idempotency_key="cross-source-lock-waiter")
     second_body = _canonical_request(idempotency_key="cross-source-lock-waiter")
-    second_body["source"] = "bloomberg"
-    second_body["request_key"] = "bloomberg-cross-source-lock-waiter"
+    second_body["source"] = "finlab"
+    second_body["request_key"] = "finlab-cross-source-lock-waiter"
+    second_body["payload"]["data"][0]["close"] = "1016"
     first_request = validate_ingress_request(first_body)
     session_factory = async_sessionmaker(
         test_engine,
@@ -1718,6 +1620,10 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
     async with session_factory() as first_session, session_factory() as second_session:
         first_session.info["source_client_id"] = source_client_id
         second_session.info["source_client_id"] = source_client_id
+        first_session.info["source_name"] = "finlab"
+        second_session.info["source_name"] = "finlab"
+        first_session.info["allowed_datasets"] = ["tw_equity_eod"]
+        second_session.info["allowed_datasets"] = ["tw_equity_eod"]
         first_attempt = await IngestionAttemptService(first_session).begin(
             first_body, json.dumps(first_body).encode()
         )

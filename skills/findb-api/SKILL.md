@@ -1,260 +1,192 @@
 ---
 name: findb-api
 description: |
-  Use when integrating with the FinDB financial-data backend (https://findb.tingfong.com,
-  or http://localhost:8080 in dev) — reading instruments, EOD bars, corporate actions,
-  macro series, futures contracts/continuous EOD, or trading calendars; or POSTing
-  Bloomberg / FinLab / MultiCharts payloads via the Source ingest API. Trigger on any
-  mention of findb, findb.tingfong.com, /api/v1/source/, /api/v1/serve/, dataset_key,
-  idempotency_key, "ingest crypto/fx/us/tw/hk/cn/wtx/macro/global", instrument-lookup,
-  serve API X-API-Key, run_id status checks, or downstream tasks that read or write
-  FinDB — even when the user doesn't name the service explicitly (e.g. "fetch BTC daily
-  bars from our market-data backend"). FinDB is a Fetch → Normalize → Serve pipeline;
-  consumers see Source (write, X-API-Key required), Serve (read-only, optional auth),
-  and Admin (corrections, X-API-Key required) surfaces.
+  Use when integrating with the FinDB staging financial-data backend
+  (http://localhost:8080 in local development or the staging host) to read canonical
+  data or submit one of the four active provider/dataset feeds. The only active Source
+  write contract is POST /api/v1/source/ingest with an explicit versioned envelope:
+  twelve_data/us_equity_eod, finlab/tw_equity_eod, shioaji/tw_equity_minute, and
+  shioaji/tw_etf_minute. Trigger on FinDB, /api/v1/source/, /api/v1/serve/,
+  dataset_key, idempotency_key, run_id status checks, instrument lookup, or Serve
+  API X-API-Key. Do not invent provider-specific routes, direct payload routes, retired
+  providers, or inactive datasets.
 ---
 
 # FinDB API Skill
 
-Use this skill to build clients, dashboards, ETL jobs, or AI agents that read from or
-write to the **FinDB** financial-data backend. FinDB is a three-layer pipeline —
-**Fetch → Normalize → Serve** — that ingests market data from upstream providers,
-normalizes into canonical tables, and exposes them through three HTTP surfaces.
+Use this skill to build clients, dashboards, ETL jobs, or AI agents that read the FinDB
+staging backend or submit a bounded, versioned delivery. FinDB is a Fetch → Normalize →
+Serve pipeline: the Source API durably accepts a provider-neutral contract, workers
+normalize it into canonical tables, and Serve exposes read-only canonical data.
 
-## What FinDB exposes
+## Staging boundary
+
+The only active provider/dataset pairs are:
+
+| Provider | Dataset | Contract |
+| --- | --- | --- |
+| `twelve_data` | `us_equity_eod` | `market_eod.v1` |
+| `finlab` | `tw_equity_eod` | `market_eod.v1` |
+| `shioaji` | `tw_equity_minute` | `market_minute.v1` |
+| `shioaji` | `tw_etf_minute` | `market_minute.v1` |
+
+Serve and lookup may expose retained canonical/history read models outside these four
+feeds. A read model is not evidence that an active provider feed exists. Retired
+provider names, direct/market ingest routes, and old dataset payload shapes are not
+supported. If a new domain is needed, add a complete versioned contract, dataset
+registry declaration, normalizer, DQ policy, Serve model, and staging acceptance in a
+separate change.
+
+## Surfaces, URLs, and authentication
 
 | Surface | Prefix | Purpose | Auth |
 | --- | --- | --- | --- |
-| **Source API** | `/api/v1/source` | Write raw market payloads; FinDB normalizes them asynchronously. | `X-API-Key` **required**. IP allowlist enforced by nginx in prod. |
-| **Serve API** | `/api/v1/serve` | Read canonical instruments, EOD, corporate actions, macro, futures, calendar. | Optional — depends on `SERVE_REQUIRE_AUTH`. Read-only. |
-| **Admin API** | `/api/v1/admin` | Manual corrections, DQ-issue review, raw-payload inspection, instrument-cache. | Named user session, DB-backed Admin machine key, or break-glass recovery credential; no bypass. |
+| Source API | `/api/v1/source` | Versioned ingest and run/attempt status | `X-API-Key` required |
+| Serve API | `/api/v1/serve` | Read canonical data | Controlled by `SERVE_REQUIRE_AUTH`; read-only |
+| Admin API | `/api/v1/admin` | Governance, DQ, corrections, and operations | Named session or DB-backed Admin key |
 
-Base URLs:
-- Production: `https://findb.tingfong.com`
-- Local dev: `http://localhost:8080`
+Use the staging base URL supplied by the deployment environment. Local development is
+`http://localhost:8080`; OpenAPI is `<base>/docs`, and the static lookup page is
+`<base>/instrument-lookup`.
 
-Interactive docs (OpenAPI): `<base>/docs`. Manual tester UI: `<base>/test`. Static
-lookup UI: `<base>/instrument-lookup`.
+Source clients must use a DB-backed provider-scoped key. Never put credentials in a
+payload, URL, generated contract, raw artifact, or browser bundle. Serve keys are
+separate from Source keys; Admin keys are separate from both. Follow the staging nginx
+IP allowlist and rate-limit policy when a request is rejected with `403` or `429`.
 
-## Authentication & nginx behaviour
+## Reading canonical data
 
-1. **Source API** — a DB-backed Source client `X-API-Key` header is **required** on every
-   request. In production the request must also originate from an IP listed in
-   `SOURCE_ALLOWLIST_CIDRS` (the check happens at nginx, returning 403 before reaching
-   FastAPI). If the service sits behind Cloudflare, the allowlist matches the real
-   client IP, not the Cloudflare edge.
-2. **Serve API** — auth is optional and governed by the server's `SERVE_REQUIRE_AUTH`
-   flag. If enabled, pass an active DB-backed Serve API key in `X-API-Key`. **Production nginx
-   shortcut**: same-origin requests from `/instrument-lookup` get `X-API-Key` injected
-   by nginx based on `Referer`, so the static page calls Serve without exposing the
-   key to the browser. Programmatic clients still need to send their own key.
-3. **Admin API** — use a named user session, a DB-backed Admin machine
-   `X-API-Key`, or the break-glass recovery credential; there is no DEBUG bypass.
-   Keep Admin machine and break-glass keys separate from Source/Serve keys.
-
-Rate limit: ~100 requests / 60 seconds per `(API key + client IP)`; exceeding returns
-429.
-
-## Reading data — Serve API quick reference
-
-All list endpoints return `{success, data: [...], pagination: {...}}`. Date params are
-`YYYY-MM-DD`. Pagination: `page` (≥ 1, default 1), `page_size` (1–1000, default 100).
-
-### Five most common queries
+Serve list responses normally use `{success, data, pagination}`. Dates are `YYYY-MM-DD`,
+timestamps are UTC ISO 8601, and identifiers are opaque UUID strings. Common read-only
+queries are:
 
 ```bash
-# 1. Instruments — list / filter by market or asset class
-curl "https://findb.tingfong.com/api/v1/serve/instruments?market=US&asset_class=equity"
+# Instruments
+curl "$FINDB_BASE/api/v1/serve/instruments?market=US&asset_class=equity" \
+  -H "X-API-Key: $SERVE_KEY"
 
-# 2. Daily bars (EOD) — by market + symbols + date range
-curl "https://findb.tingfong.com/api/v1/serve/eod?market=CRYPTO&symbols=BTC,ETH&start_date=2026-01-01&end_date=2026-01-31"
+# EOD rows from the canonical read model
+curl "$FINDB_BASE/api/v1/serve/eod?market=US&symbols=AAPL&start_date=2026-01-01" \
+  -H "X-API-Key: $SERVE_KEY"
 
-# 3. Corporate actions — dividends / splits
-curl "https://findb.tingfong.com/api/v1/serve/corporate-actions?market=US&action_type=dividend"
-
-# 4. Macro observations — by source_code or series_id
-curl "https://findb.tingfong.com/api/v1/serve/macro/observations?source_code=CPI_YOY&start_date=2025-01-01"
-
-# 5. Futures continuous EOD — by symbol
-curl "https://findb.tingfong.com/api/v1/serve/futures/continuous?symbols=WTX&start_date=2026-01-01"
+# Trading calendar
+curl "$FINDB_BASE/api/v1/serve/calendar?market=US" \
+  -H "X-API-Key: $SERVE_KEY"
 ```
 
-Other Serve endpoints:
-- `GET /serve/instruments/{instrument_id}` — single instrument detail
-- `GET /serve/eod/{instrument_id}` — single-instrument bars
-- `GET /serve/corporate-actions/{instrument_id}` — single-instrument actions
-- `GET /serve/macro/series` and `/macro/observations/{series_id}` — macro series catalog & values
-- `GET /serve/futures/contracts` — listed futures contracts
-- `GET /serve/futures/continuous/{instrument_id}` — single-instrument continuous bars
-- `GET /serve/calendar?market=<MARKET>` — trading calendar (`market` **required**)
+The Serve surface also contains retained canonical read models for instruments, EOD,
+corporate actions, macro observations, futures/bonds, calendars, and market freshness.
+Those endpoints are read-only and must not be described as active provider feeds.
 
-Supported markets: `CRYPTO`, `US`, `FX`, `TW`, `HK`, `CN`, `WTX`, `GLOBAL`, `MACRO`.
+Useful endpoints include:
 
-For full parameter tables, response shapes, and edge cases, read
-`references/endpoints.md`.
+- `GET /api/v1/serve/instruments`
+- `GET /api/v1/serve/instruments/{instrument_id}`
+- `GET /api/v1/serve/eod`
+- `GET /api/v1/serve/eod/{instrument_id}`
+- `GET /api/v1/serve/corporate-actions`
+- `GET /api/v1/serve/calendar`
+- `GET /api/v1/serve/calendar/years/{market}/{year}` (complete published year for schedulers)
+- `GET /api/v1/serve/market-freshness`
 
-## Writing data — Source API
+Use the generated OpenAPI document for optional read-model endpoints and exact query
+parameters. Serve never creates ingest jobs or writes canonical data.
 
-The Source API supports two payload styles. Pick **one** per endpoint.
+## Writing a delivery: one contract-only route
 
-### Style A — standard `IngestRequest` (wrapper format)
+All four active feeds use exactly:
 
-POST to `/api/v1/source/ingest/{market}` where `{market}` is one of
-`crypto`, `us`, `fx`, `macro`, `wtx`, `global`, `tw`, `hk`, `cn`.
+```http
+POST /api/v1/source/ingest
+Content-Type: application/json
+X-API-Key: <provider-scoped-source-key>
+```
 
-Body:
+The envelope must include `dataset_key`, `schema_id`, `schema_version`, `source`,
+`request_key`, `idempotency_key`, `fetched_at`, and `payload`. The `source` and dataset
+must match one of the four pairs above. `market_eod.v1` uses a `payload.batch` plus EOD
+rows; `market_minute.v1` uses the minute sequence identity and Taiwan-local trade date
+rules. See `references/ingest-payloads.md` for provider-neutral examples.
+
+Example EOD delivery:
 
 ```json
 {
-  "dataset_key": "crypto_eod",
-  "source": "bloomberg",
-  "request_key": "bloomberg_crypto_20260116_144914",
-  "idempotency_key": "bloomberg_crypto_20260116_144914",
+  "dataset_key": "tw_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "finlab",
+  "request_key": "finlab_tw_equity_eod_20260724_01",
+  "idempotency_key": "finlab_tw_equity_eod_20260724",
+  "fetched_at": "2026-07-24T08:00:00Z",
   "payload": {
-    "metadata": { "source": "Bloomberg API", "query_time": "2026-01-16T14:49:14Z" },
-    "data": [ /* provider-shaped records */ ]
-  },
-  "fetched_at": "2026-01-16T14:49:14Z"
+    "batch": {
+      "data_date": "2026-07-24",
+      "delivery_mode": "full_snapshot",
+      "declared_record_count": 1
+    },
+    "data": [
+      {
+        "symbol": "2330",
+        "source_symbol": "2330",
+        "trade_date": "2026-07-24",
+        "currency": "TWD",
+        "open": "1120.00",
+        "high": "1145.00",
+        "low": "1115.00",
+        "close": "1140.00",
+        "volume": 25000000
+      }
+    ]
+  }
 }
 ```
 
-All six top-level keys are required. `idempotency_key` makes the call **idempotent**:
-re-sending the same key returns the existing run and skips reprocessing. Use a stable,
-collision-free key per upstream batch (e.g. `<source>_<market>_<yyyymmdd>_<hhmmss>`).
-
-Response:
-
-```json
-{
-  "success": true,
-  "run_id": "019462f0-7c00-7000-8000-000000000001",
-  "status": "pending",
-  "message": "Data received, processing queued"
-}
-```
-
-### Style B — direct format (provider-shaped, no wrapper)
-
-For payloads that already match a provider's native shape, post the bare `{metadata,
-data}` object to `/api/v1/source/ingest/{market}/direct`. FinDB infers `dataset_key`,
-`source`, and `idempotency_key` from the payload.
-
-| Endpoint | Auto `dataset_key` | Typical source |
-| --- | --- | --- |
-| `POST /ingest/crypto/direct` | `crypto_bloomberg_eod` | Bloomberg crypto |
-| `POST /ingest/fx/direct` | `fx_bloomberg_eod` | Bloomberg FX |
-| `POST /ingest/wtx/direct` | `wtx_eod` | Bloomberg / FinLab WTX futures |
-| `POST /ingest/usstock/direct` | `us_stock_eod` | Bloomberg US equities |
-| `POST /ingest/hkchina/direct` | `hkchina_mixed_eod` | Bloomberg HK + CN equity/index |
-| `POST /ingest/hkchina-index/direct` | `hkchina_index_eod` | Legacy HK/CN index-only feed |
-| `POST /ingest/macro/direct` | `macro_bloomberg_observation` | Bloomberg macro |
-| `POST /ingest/twstock/direct` | `tw_equity_eod` / `tw_etf_eod` | FinLab TW equity / ETF (routes on `metadata.asset_class`) |
-
-Sample minimal direct payload (US stock):
-
-```json
-{
-  "metadata": { "source": "bloomberg", "query_time": "2026-02-04T16:00:51Z" },
-  "data": [
-    { "ticker": "AAPL US Equity", "date": "2026-02-04",
-      "open": 231.0, "high": 233.0, "low": 230.5, "close": 232.5, "volume": 45000000 }
-  ]
-}
-```
-
-For per-market direct payload shapes, FinLab TW field naming, hkchina mixed routing
-rules, and full curl examples, see `references/ingest-payloads.md` and
-`assets/sample_payload.json` (a complete standard-format example).
-
-### Tracking ingest runs
+The `202 Accepted` response is durable acceptance, not canonical completion. Save the
+returned `attempt_id` and `run_id` and poll the run:
 
 ```bash
-# Poll until status ∈ {completed, completed_with_errors, failed}
-curl "https://findb.tingfong.com/api/v1/source/runs/<run_id>" \
-  -H "X-API-Key: <key>"
-
-# Re-run normalization for an existing run using the stored raw payload (creates a NEW run_id)
-curl -X POST "https://findb.tingfong.com/api/v1/source/runs/<run_id>/rerun" \
-  -H "X-API-Key: <key>"
-
-# List active datasets (dataset_key, market, asset_class, frequency)
-curl "https://findb.tingfong.com/api/v1/source/datasets" -H "X-API-Key: <key>"
+curl "$FINDB_BASE/api/v1/source/runs/<run_id>" \
+  -H "X-API-Key: $SOURCE_KEY"
 ```
 
-Run statuses: `pending` → `running` → `completed` | `completed_with_errors` | `failed`.
+Use the same idempotency key for transport retries. A same-key/same-content retry returns
+the existing run; a same-key/different-content request is rejected. Raw rerun, when
+authorized and within retention, is `POST /api/v1/source/runs/{run_id}/rerun` and creates
+a new run from the retained versioned contract.
 
-## Pagination & errors at a glance
+## Minute delivery notes
 
-Every list response includes `pagination: { page, page_size, total_records,
-total_pages }`. Iterate by incrementing `page` until `page > total_pages`.
+`shioaji/tw_equity_minute` and `shioaji/tw_etf_minute` use `market_minute.v1`:
 
-| Status | Common cause |
+- `payload.batch.delivery_mode` is `sequenced_snapshot`.
+- `snapshot_id`, `daily_update_id`, `universe_id`, `symbols_sha256`, `sequence`, and
+  `sequence_count` are required.
+- Every row has UTC-aware bar timestamps, Taiwan-local `trade_date`,
+  `market_timezone=Asia/Taipei`, and `price_adjustment=none`.
+- Shioaji deliveries include credential-free provider usage snapshots and use the
+  canonical `mmr:<sha256>` request key and `mms:<sha256>` idempotency key.
+
+## Errors and operational safety
+
+| Status | Meaning |
 | --- | --- |
-| `400` | Unknown `dataset_key`, dataset inactive, market mismatch, missing field, invalid OHLCV patch |
-| `401` | `X-API-Key` header missing |
-| `403` | API key wrong, or Source client IP not in nginx allowlist |
-| `404` | `instrument_id` / `run_id` / `series_id` / `issue_id` not found |
-| `409` | Conflict (e.g. resolving an already-resolved DQ issue) |
-| `422` | Pydantic schema validation failure on request body |
-| `429` | Rate-limit (100 req / 60s per key+IP) exceeded |
-| `500` | Missing required runtime configuration (e.g. `SOURCE_ALLOWLIST_CIDRS` unset in prod) |
+| `202` | Contract durably accepted; poll the run |
+| `400` | Dataset, policy, or semantic request error |
+| `401` | Missing API key |
+| `403` | Invalid key, provider/dataset scope, or staging IP policy |
+| `404` | Run/read-model resource not found or raw expired |
+| `409` | Idempotency conflict or state conflict |
+| `422` | Versioned contract validation failed |
+| `429` | Rate limit; respect `Retry-After` |
+| `503` | Temporary DB/queue unavailability; retry with the same key |
 
-Body shape on error: `{"detail": "<message>"}`. For the full Source/Admin error
-message table and how to interpret `completed_with_errors` runs (DQ flagged but data
-written), see `references/responses.md`.
-
-## Admin API (corrections, only when you need to fix data)
-
-Most consumers won't touch Admin. If you do (e.g. patching a wrong close price,
-resolving a DQ issue, inspecting raw payloads):
-
-```bash
-# List DQ issues filtered by severity
-curl "https://findb.tingfong.com/api/v1/admin/dq-issues?severity=error&resolved=false" \
-  -H "X-API-Key: <admin-key>"
-
-# Patch a single EOD field (audited; writes to canonical_correction)
-curl -X PATCH "https://findb.tingfong.com/api/v1/admin/eod/<instrument_id>/2026-01-16" \
-  -H "X-API-Key: <admin-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"close": 95710.00, "reason": "vendor correction"}'
-
-# Mark a DQ issue resolved
-curl -X PATCH "https://findb.tingfong.com/api/v1/admin/dq-issues/<issue_id>/resolve" \
-  -H "X-API-Key: <admin-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"resolution_note": "verified against source"}'
-```
-
-Full Admin surface (raw-payload inspection, corrections audit log, bulk rerun,
-instrument-cache CRUD) is in `references/endpoints.md`.
+Do not parse free-form error text as a stable API. Keep request/attempt/run identities in
+your own audit log, but never log API keys, full raw payloads, or provider credentials.
 
 ## Where to dig deeper
 
-- **`references/endpoints.md`** — every endpoint with method, path, parameters,
-  response shape, and edge cases. Read this when you need a parameter the SKILL
-  doesn't mention, or when validating a response field.
-- **`references/ingest-payloads.md`** — per-market payload skeletons for both
-  standard and direct formats, plus FinLab/Bloomberg/hkchina-specific quirks.
-- **`references/responses.md`** — pagination wrapper details, the full error
-  message catalog, and how to interpret `completed_with_errors` runs.
-- **`assets/sample_payload.json`** — a complete, ready-to-POST standard-format
-  payload for `/ingest/crypto`. Useful as a template to clone for other markets.
-
-## Practical patterns
-
-- **Backfill loop**: pull `dataset_key` list once via `/source/datasets`, iterate
-  over (market, date), POST with a deterministic `idempotency_key` like
-  `<source>_<market>_<yyyymmdd>`. Idempotency means safe to retry after partial
-  failures.
-- **Polling**: after every ingest, sleep a few seconds then GET
-  `/source/runs/{run_id}` until status is terminal. Don't assume `completed`
-  means error-free — also handle `completed_with_errors` (DQ warnings or partial
-  writes; check `failed_records` and `error_message`).
-- **Reads with auth disabled**: if `SERVE_REQUIRE_AUTH=false` (default in dev),
-  you can drop the `X-API-Key` header entirely on Serve calls. Don't rely on
-  this in production — check by hitting `/health` or a sample query first.
-- **Browser clients hitting Serve in prod**: don't bake DB-backed Serve keys into
-  JavaScript. If your page lives at `findb.tingfong.com/instrument-lookup` or
-  a path nginx rewrites for, the key is injected server-side; otherwise route
-  through your own backend.
+- **`references/endpoints.md`** — staging Source/Serve/Admin endpoints and response shapes.
+- **`references/ingest-payloads.md`** — only the four active provider/dataset contract examples.
+- **`references/responses.md`** — pagination, run lifecycle, DQ, and error handling.
+- **`assets/sample_payload.json`** — one complete `market_eod.v1` sample for an active feed.

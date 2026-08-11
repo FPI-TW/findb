@@ -8,7 +8,7 @@ FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以�
 
 整體資料流程是 Fetch -> Source -> durable queue -> Normalize -> Serve：
 
-- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data 日線 adapter、contract validation 與 delivery client；production scheduler/checkpoint 尚未完成。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
+- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data、FinLab、Shioaji 三個隔離的 staging provider runtime、durable scheduler/checkpoint、contract validation 與 delivery client。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
 - Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重，並在同一 transaction 寫入 raw、run、normalization job 與 outbox。
 - Durable queue：dispatcher 將 outbox 發布到 RabbitMQ，Celery worker 執行 normalization；RabbitMQ 可重建，PostgreSQL 是 durable truth。
 - Normalize layer：`backend/app/services/normalize/`，把 contract/raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
@@ -53,7 +53,7 @@ findb/
 
 1. Source API 收到 contract/raw payload，依 `idempotency_key` 去重，原子寫入 raw、run、job 與 outbox。
 2. Dispatcher 發布 outbox，RabbitMQ 將 delivery 交給 Celery worker。
-3. Worker 依 schema/version 或 legacy dataset 路由 normalizer，執行 DQ 與 canonical upsert，更新 terminal state。
+3. Worker 僅依 versioned schema/version 路由 contract normalizer，執行 DQ 與 canonical upsert，更新 terminal state。
 4. Serve API 只讀 canonical tables，回傳查詢結果與 pagination wrapper。
 
 ## 優先查看位置
@@ -61,13 +61,13 @@ findb/
 | 任務 | 位置 | 備註 |
 | --- | --- | --- |
 | App 啟動與生命週期 | `backend/app/main.py` | FastAPI app、lifespan DB init、router mounts、health endpoints |
-| Source 寫入流程 | `backend/app/api/v1/source.py` | auth、idempotency、ingestion/rerun dispatch、direct-format endpoints |
+| Source 寫入流程 | `backend/app/api/v1/source.py` | auth、idempotency、versioned contract ingestion 與 contract-only rerun |
 | Serve 查詢流程 | `backend/app/api/v1/serve.py` | read-only query endpoints、filters、pagination |
 | Admin API | `backend/app/api/v1/admin.py` | admin-only registry、run、raw payload 查詢與管理 |
 | API dependencies | `backend/app/api/deps.py` | `verify_source_api_key`、`verify_serve_api_key`、IP allowlist、rate limiting |
 | DB dependency | `backend/app/dependencies.py` | async session injection |
 | 設定 | `backend/app/config.py` | 所有設定由 env 與 `get_settings()` 載入 |
-| Ingestion orchestration | `backend/app/services/ingestion.py` | dataset validation、run lifecycle、rerun support、`NORMALIZER_MAP` |
+| Ingestion orchestration | `backend/app/services/ingestion.py` | dataset/provider scope validation、run lifecycle、contract-only rerun、`CONTRACT_NORMALIZER_MAP` |
 | Normalizer 基底 | `backend/app/services/normalize/base.py` | `BaseNormalizer`，所有 normalizer 的基底 |
 | 市場資料標準化 | `backend/app/services/normalize/` | 市場別 mapping、DQ checks、canonical writes |
 | DQ 規則 | `backend/app/services/dq/validators.py` | `severity="error"` 會阻擋寫入，`warning` 不會 |
@@ -108,7 +108,7 @@ findb/
 - Source API 是 write-path ingest；Serve API 是 read-only query path。
 - Pydantic v2 model 需要 ORM hydration 時使用 `from_attributes=True`。
 - secrets/config 一律經由 `app.config.Settings` 與 env 載入；不可 hardcode。
-- Source provider names 正規化為穩定 lowercase，例如 `bloomberg`。
+- Source provider names 正規化為穩定 lowercase，例如 `twelve_data`、`finlab`、`shioaji`。
 - Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。
 - Schema 變更一律透過 Alembic migrations；runtime `init_db()` 只檢查 Alembic revision 與 required tables，不執行 `create_all()`。
 - 靜態 UI 位於 `backend/app/static/`，包含 `/test` 與 `/instrument-lookup`；`backend/app/static/test_page.html` 只在明確要求時修改。
@@ -128,9 +128,9 @@ findb/
 ## 專案特性
 
 - Raw payload persistence 使用 PostgreSQL schema `raw`，核心 table 是 `raw.market_payload`。
-- Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `NORMALIZER_MAP`。
-- 部分市場支援 direct-format source ingest endpoints (`.../direct`)，必要時會自動 bootstrap built-in dataset registry rows。
-- Macro direct payload 如果省略 market，預設為 `MACRO`。
+- Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `CONTRACT_NORMALIZER_MAP`；缺少或不支援 schema/version 時一律 fail closed。
+- Source API 只接受 versioned provider-neutral contracts；不提供 market-specific、provider-specific 或 `.../direct` compatibility routes。
+- staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 與 `shioaji/tw_etf_minute`。
 - Instrument 與 macro lookup data 是 generated cache files：`backend/app/static/data/instruments.json`、`backend/app/static/data/macro-series.json`，不是 source-of-truth data。
 - 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 Referer regex 比對，對 `/instrument-lookup` 靜態頁觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
 - Source allowlist、Cloudflare real-IP、Serve key 注入三組 `*.conf` 都是 deploy time 渲染；本機開發不會跑 nginx，FastAPI 自身只負責 API key、rate limit、ingest 邏輯。
@@ -139,11 +139,11 @@ findb/
 
 ## 新增 Normalizer
 
-1. 在 `backend/app/services/normalize/{market}.py` 建立 `BaseNormalizer` subclass，實作 `map_fields()`，並設定 `dataset_key`、`asset_class`、`market` 等 class attributes。
-2. 從 `backend/app/services/normalize/__init__.py` export。
-3. 在 `backend/app/services/ingestion.py` 的 `NORMALIZER_MAP` 註冊。
-4. 在 `backend/scripts/seed_data.py` 新增 dataset definition。
-5. 在 `backend/tests/test_normalize.py` 或市場別 test file 新增測試。
+1. 在 `backend/app/schemas/ingress.py` 定義 provider-neutral versioned request schema，並發布 deterministic JSON Schema artifact。
+2. 在 `backend/app/services/normalize/contracts.py` 建立 `BaseNormalizer` subclass，實作 contract mapping 與 DQ/canonical 寫入。
+3. 從 `backend/app/services/normalize/__init__.py` export，並在 `backend/app/services/ingestion.py` 的 `CONTRACT_NORMALIZER_MAP` 依 schema/version 註冊。
+4. 在 `backend/scripts/seed_data.py` 新增具 `allowed_sources`、defaults 與 delivery policy 的 dataset definition。
+5. 在 ingress contract、canonical ingest 與市場別 test file 新增 schema、routing、rerun、DQ 與 persistence 測試。
 
 ## 安全性
 
@@ -195,9 +195,9 @@ uv --directory backend run mypy app
 
 # tests
 uv --directory backend run pytest
-uv --directory backend run pytest tests/test_source_api.py
-uv --directory backend run pytest tests/test_source_api.py::TestSourceAPI::test_ingest_without_api_key
-uv --directory backend run pytest -k "crypto"
+uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
+uv --directory backend run pytest tests/test_canonical_ingest_api.py::test_contract_schema_endpoint_requires_source_auth
+uv --directory backend run pytest -k "market_eod or market_minute"
 uv --directory backend run pytest --cov=app
 uv --directory backend run python scripts/dev.py test-db
 

@@ -9,8 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.models.canonical import Instrument, MarketDataMinute
 from app.services.dq.validators import DQIssueRecord
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
-from app.services.normalize.futures import FuturesContinuousNormalizer
-from app.services.normalize.types import FuturesContinuousRecord, MappedRecord, MarketMinuteRecord
+from app.services.normalize.types import MappedRecord, MarketMinuteRecord
 from app.utils import utc_now
 from app.utils.datetime_utils import ensure_utc, parse_datetime
 
@@ -353,64 +352,3 @@ class MarketMinuteContractNormalizer(BaseNormalizer):
             await self.db.rollback()
             raise
         return result
-
-
-class FuturesContinuousEODContractNormalizer(FuturesContinuousNormalizer):
-    """Normalize the provider-neutral ``futures_continuous_eod.v1`` row shape."""
-
-    dataset_key = "futures_continuous_eod"
-    asset_class = "future"
-    market = "WTX"
-
-    def __init__(self, db, dataset_config: dict | None = None):
-        super().__init__(db, dataset_config)
-        market, asset_class, _, _ = _contract_context(self.dataset_config)
-        self.market = market
-        self.asset_class = asset_class
-
-    def map_fields(self, raw_data: dict) -> list[FuturesContinuousRecord]:
-        data_items = raw_data.get("data", [])
-        if not isinstance(data_items, list):
-            return []
-        _, _, default_currency, source = _contract_context(self.dataset_config)
-
-        records: list[FuturesContinuousRecord] = []
-        for item in data_items:
-            if not isinstance(item, dict):
-                continue
-            trade_date = self._parse_trade_date(item.get("trade_date"))
-            symbol = str(item.get("symbol") or "").strip().upper()
-            if trade_date is None or not symbol:
-                continue
-
-            source_symbol = item.get("source_symbol")
-            identifier_value = str(source_symbol).strip() if source_symbol else None
-            records.append(
-                FuturesContinuousRecord(
-                    symbol=symbol,
-                    trade_date=trade_date,
-                    name=item.get("name"),
-                    currency=default_currency,
-                    open=self._parse_decimal(item.get("open")),
-                    high=self._parse_decimal(item.get("high")),
-                    low=self._parse_decimal(item.get("low")),
-                    close=self._parse_decimal(item.get("close")),
-                    volume=self._parse_int(item.get("volume")),
-                    turnover=self._parse_decimal(item.get("turnover")),
-                    open_interest=self._parse_int(item.get("open_interest")),
-                    active_contract_code=(
-                        str(item["active_contract_code"]).strip()
-                        if item.get("active_contract_code")
-                        else None
-                    ),
-                    roll_adjustment=self._parse_decimal(item.get("roll_adjustment")),
-                    source=source,
-                    raw_data=item,
-                    identifier_type=_identifier_type(source) if identifier_value else None,
-                    identifier_value=identifier_value,
-                    roll_rule_name=str(item["roll_rule"]).strip(),
-                    roll_rule_description=None,
-                    roll_rule_config=None,
-                )
-            )
-        return records

@@ -12,7 +12,7 @@ const pagination = {
 }
 const request: DashboardRequest = {
   audit: {
-    datasetKey: "tw.eod",
+    datasetKey: "tw_equity_eod",
     runId: "",
     dateFrom: "",
     dateTo: "",
@@ -168,8 +168,8 @@ const responses = {
       {
         idempotency_key: "delivery-1",
         run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
-        dataset_key: "tw.eod",
-        source: "bloomberg",
+        dataset_key: "tw_equity_eod",
+        source: "finlab",
         schema_id: null,
         schema_version: null,
         request_key: "request-1",
@@ -240,7 +240,7 @@ describe("FinDB Admin server boundary", () => {
         "Bearer operator-secret"
       )
     }
-    expect(calls[6]?.url.searchParams.get("dataset_key")).toBe("tw.eod")
+    expect(calls[6]?.url.searchParams.get("dataset_key")).toBe("tw_equity_eod")
     expect(calls[6]?.url.searchParams.get("page")).toBe("3")
     expect(calls[6]?.url.searchParams.get("page_size")).toBe("100")
     expect(calls[4]?.url.searchParams.get("resolved")).toBe("false")

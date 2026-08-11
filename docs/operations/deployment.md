@@ -1,5 +1,8 @@
 # Deployment
 
+> 目前本專案實際使用的 EC2 與本次四 feed cutover 對象是 **staging**；下列
+> production target 僅保留為專案既有部署能力，不代表目前已有 production EC2。
+
 > Repo內已將CI/CD拆成四個獨立workflow。GitHub Environments、AWS角色與runtime
 > secrets仍須在外部管理。Push至`main`會自動部署staging；production只能透過
 > `workflow_dispatch`明確選擇，並受production Environment protection約束。

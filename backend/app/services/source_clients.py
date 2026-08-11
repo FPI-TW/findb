@@ -11,6 +11,60 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.registry import SourceClient
 from app.utils import utc_now, uuid7
 
+# Source credentials are intentionally narrower than the historical
+# provider-wide scope.  Keep this mapping in one place so create/rotate
+# all apply the same fail-closed boundary as contract ingestion.
+PROVIDER_DATASET_SCOPE: dict[str, tuple[str, ...]] = {
+    "twelve_data": ("us_equity_eod",),
+    "finlab": ("tw_equity_eod",),
+    "shioaji": ("tw_equity_minute", "tw_etf_minute"),
+}
+
+
+class SourceProviderScopeError(ValueError):
+    """Raised when a source credential cannot be bounded to a supported feed."""
+
+
+def normalize_provider_scope(
+    source_name: str,
+    allowed_datasets: list[str] | None,
+) -> tuple[str, list[str]]:
+    """Return a canonical provider and its exact supported dataset scope.
+
+    ``None`` is accepted only as an input convenience for new credentials and
+    is immediately expanded to the provider's complete mapping.  A caller may
+    intentionally choose a non-empty subset for least privilege, but cannot
+    widen it beyond the provider's retained feeds.
+    """
+    if not isinstance(source_name, str):
+        raise SourceProviderScopeError("source_name must be a supported provider")
+    normalized_source = source_name.strip().lower()
+    expected = PROVIDER_DATASET_SCOPE.get(normalized_source)
+    if expected is None:
+        raise SourceProviderScopeError(
+            f"Unsupported source provider: {normalized_source or '<empty>'}"
+        )
+
+    if allowed_datasets is None:
+        return normalized_source, list(expected)
+    if not isinstance(allowed_datasets, list):
+        raise SourceProviderScopeError("allowed_datasets must be a list for a source credential")
+    normalized_datasets: list[str] = []
+    for dataset_key in allowed_datasets:
+        if not isinstance(dataset_key, str) or not dataset_key.strip():
+            raise SourceProviderScopeError("allowed_datasets must contain non-empty strings")
+        normalized_datasets.append(dataset_key.strip().lower())
+    if not normalized_datasets:
+        raise SourceProviderScopeError("allowed_datasets must contain at least one dataset")
+    if len(normalized_datasets) != len(set(normalized_datasets)):
+        raise SourceProviderScopeError("allowed_datasets must not contain duplicates")
+    if not set(normalized_datasets).issubset(expected):
+        raise SourceProviderScopeError(
+            f"Provider {normalized_source} cannot access datasets outside: {', '.join(expected)}"
+        )
+    # Persist a stable order regardless of caller input order.
+    return normalized_source, [dataset for dataset in expected if dataset in normalized_datasets]
+
 
 def hash_source_key(api_key: str) -> str:
     return sha256(api_key.encode("utf-8")).hexdigest()
@@ -44,17 +98,18 @@ async def create_source_client(
     rotated_from_id: UUID | None = None,
     commit: bool = True,
 ) -> tuple[SourceClient, str]:
+    normalized_source, normalized_datasets = normalize_provider_scope(source_name, allowed_datasets)
     plaintext = f"findb_src_{token_urlsafe(32)}"
     key_hash = hash_source_key(plaintext)
     row = SourceClient(
         client_id=uuid7(),
         name=name.strip(),
-        source_name=source_name.strip().lower(),
+        source_name=normalized_source,
         owner=owner,
         description=description,
         key_hash=key_hash,
         fingerprint=key_hash[:16],
-        allowed_datasets=allowed_datasets,
+        allowed_datasets=normalized_datasets,
         rate_limit_requests=rate_limit_requests,
         rate_limit_window=rate_limit_window,
         created_at=utc_now(),

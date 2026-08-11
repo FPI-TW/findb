@@ -51,7 +51,6 @@ import {
 import { SecretDialog } from "./SecretDialog"
 
 const EMPTY_FILTERS: CredentialFilters = { kind: "", status: "", owner: "" }
-type SourceDatasetAccessMode = "all" | "selected"
 
 function formatDate(value: string | null) {
   if (!value) return "—"
@@ -75,7 +74,7 @@ function sourceScopeLabel(item: Credential) {
   const sourceName =
     typeof configuredSource === "string" ? configuredSource : "Provider"
   if (item.scopes === null) {
-    return `${sourceName} · 全部 datasets（含未來新增）`
+    return `${sourceName} · dataset scope 未設定（需重新簽發）`
   }
   return `${sourceName} · ${item.scopes.length} 個指定 datasets`
 }
@@ -101,9 +100,9 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   const [owner, setOwner] = useState("")
   const [description, setDescription] = useState("")
   const [sourceName, setSourceName] = useState<SourceProvider>("twelve_data")
-  const [sourceDatasetAccessMode, setSourceDatasetAccessMode] =
-    useState<SourceDatasetAccessMode>("selected")
-  const [allowedDatasets, setAllowedDatasets] = useState<string[]>([])
+  const [allowedDatasets, setAllowedDatasets] = useState<string[]>([
+    ...SOURCE_PROVIDER_DATASETS.twelve_data,
+  ])
   const [scopes, setScopes] = useState("")
   const [credentialRole, setCredentialRole] = useState<AdminRole>("operator")
   const [expiresAt, setExpiresAt] = useState("")
@@ -156,8 +155,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                 owner,
                 description: description || undefined,
                 source_name: sourceName,
-                allowed_datasets:
-                  sourceDatasetAccessMode === "all" ? null : allowedDatasets,
+                allowed_datasets: allowedDatasets,
                 expires_at: expiry,
               },
             })
@@ -186,8 +184,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
       setSecret({ title: `已簽發 ${result.data.name}`, value: result.api_key })
       setName("")
       setDescription("")
-      setSourceDatasetAccessMode("selected")
-      setAllowedDatasets([])
+      setAllowedDatasets([...SOURCE_PROVIDER_DATASETS[sourceName]])
       setScopes("")
       setExpiresAt("")
       toast.success("Credential 已簽發", {
@@ -342,10 +339,13 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                       className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
                       value={sourceName}
                       onChange={event => {
-                        setSourceName(
-                          sourceProviderSchema.parse(event.target.value)
+                        const nextSource = sourceProviderSchema.parse(
+                          event.target.value
                         )
-                        setAllowedDatasets([])
+                        setSourceName(nextSource)
+                        setAllowedDatasets([
+                          ...SOURCE_PROVIDER_DATASETS[nextSource],
+                        ])
                       }}
                       required
                     >
@@ -360,79 +360,37 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                     <legend className="px-1 text-sm font-medium">
                       Dataset 權限
                     </legend>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <label className="flex items-start gap-2 rounded-md border border-line px-3 py-2 text-sm">
-                        <input
-                          aria-label="此 Provider 的全部 datasets（包含未來新增）"
-                          checked={sourceDatasetAccessMode === "all"}
-                          className="mt-0.5"
-                          name="source-dataset-access-mode"
-                          onChange={() => setSourceDatasetAccessMode("all")}
-                          type="radio"
-                        />
-                        <span>
-                          <strong className="block font-medium">
-                            此 Provider 的全部 datasets
-                          </strong>
-                          <span className="text-xs text-muted">
-                            包含未來新增的 datasets
-                          </span>
-                        </span>
-                      </label>
-                      <label className="flex items-start gap-2 rounded-md border border-line px-3 py-2 text-sm">
-                        <input
-                          aria-label="僅限指定 datasets"
-                          checked={sourceDatasetAccessMode === "selected"}
-                          className="mt-0.5"
-                          name="source-dataset-access-mode"
-                          onChange={() =>
-                            setSourceDatasetAccessMode("selected")
-                          }
-                          type="radio"
-                        />
-                        <span>
-                          <strong className="block font-medium">
-                            僅限指定 datasets
-                          </strong>
-                          <span className="text-xs text-muted">
-                            僅允許下方勾選的資料集
-                          </span>
-                        </span>
-                      </label>
+                    <p className="text-xs text-muted">
+                      預設選取此 Provider 的完整治理清單；可縮小為至少一個
+                      dataset。新增 dataset 需另行治理核准。
+                    </p>
+                    <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+                      {SOURCE_PROVIDER_DATASETS[sourceName].map(dataset => (
+                        <label
+                          className="rounded-md border border-line px-3 py-2 text-sm"
+                          key={dataset}
+                        >
+                          <input
+                            aria-label={dataset}
+                            checked={allowedDatasets.includes(dataset)}
+                            className="mr-2"
+                            onChange={event =>
+                              setAllowedDatasets(current =>
+                                event.target.checked
+                                  ? [...current, dataset]
+                                  : current.filter(item => item !== dataset)
+                              )
+                            }
+                            type="checkbox"
+                          />
+                          <span className="font-mono text-xs">{dataset}</span>
+                        </label>
+                      ))}
                     </div>
-                    {sourceDatasetAccessMode === "selected" && (
-                      <>
-                        <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
-                          {SOURCE_PROVIDER_DATASETS[sourceName].map(dataset => (
-                            <label
-                              className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm"
-                              key={dataset}
-                            >
-                              <input
-                                aria-label={dataset}
-                                checked={allowedDatasets.includes(dataset)}
-                                onChange={event =>
-                                  setAllowedDatasets(current =>
-                                    event.target.checked
-                                      ? [...current, dataset]
-                                      : current.filter(item => item !== dataset)
-                                  )
-                                }
-                                type="checkbox"
-                              />
-                              <span className="font-mono text-xs">
-                                {dataset}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                        {allowedDatasets.length === 0 && (
-                          <p className="text-xs text-warning">
-                            指定模式下至少選擇一個 dataset，否則 credential
-                            無法簽發。
-                          </p>
-                        )}
-                      </>
+                    {allowedDatasets.length === 0 && (
+                      <p className="text-xs text-warning">
+                        至少選擇一個 dataset，否則 credential 無法簽發。
+                      </p>
                     )}
                   </fieldset>
                 </>
@@ -486,9 +444,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                   type="submit"
                   disabled={
                     pending ||
-                    (kind === "source" &&
-                      sourceDatasetAccessMode === "selected" &&
-                      allowedDatasets.length === 0)
+                    (kind === "source" && allowedDatasets.length === 0)
                   }
                 >
                   <KeyRound size={17} /> {pending ? "處理中…" : "簽發"}

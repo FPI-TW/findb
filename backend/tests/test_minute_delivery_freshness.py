@@ -6,7 +6,13 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
-from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
+from app.models.registry import (
+    DatasetRegistry,
+    IngestionRun,
+    MissingDeliveryAlert,
+    SchedulerControl,
+    SchedulerDataset,
+)
 from app.services.delivery_monitor import scan_missing_deliveries
 from app.services.delivery_policy import DeliveryExpectation, resolve_expected_data_date
 from app.services.market_freshness import list_market_freshness
@@ -125,7 +131,28 @@ async def _seed_minute_datasets(
             for dataset_key in dataset_keys
         ]
     )
+    scheduler_key = "shioaji_tw_pilot_v1"
+    session.add(
+        SchedulerControl(
+            scheduler_key=scheduler_key,
+            provider="shioaji",
+            slot_id="taiwan_market_window",
+            scheduled_local_time=time(14, 30),
+            timezone="Asia/Taipei",
+            dataset_keys=list(dataset_keys),
+            desired_state="running",
+            observed_state="running",
+            revision=1,
+        )
+    )
     await _seed_calendar(session)
+    await session.flush()
+    session.add_all(
+        [
+            SchedulerDataset(scheduler_key=scheduler_key, dataset_key=dataset_key)
+            for dataset_key in dataset_keys
+        ]
+    )
     await session.commit()
 
 

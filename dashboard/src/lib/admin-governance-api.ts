@@ -6,12 +6,7 @@ const nullableDateTime = isoDateTime.nullable()
 export const adminRoleSchema = z.enum(["owner", "operator", "viewer"])
 export type AdminRole = z.infer<typeof adminRoleSchema>
 
-export const SOURCE_PROVIDERS = [
-  "twelve_data",
-  "finlab",
-  "shioaji",
-  "bloomberg",
-] as const
+export const SOURCE_PROVIDERS = ["twelve_data", "finlab", "shioaji"] as const
 export const sourceProviderSchema = z.enum(SOURCE_PROVIDERS)
 export type SourceProvider = z.infer<typeof sourceProviderSchema>
 
@@ -20,28 +15,8 @@ export const SOURCE_PROVIDER_DATASETS: Record<
   readonly string[]
 > = {
   twelve_data: ["us_equity_eod"],
-  finlab: ["tw_equity_eod", "tw_etf_eod", "wtx_eod"],
+  finlab: ["tw_equity_eod"],
   shioaji: ["tw_equity_minute", "tw_etf_minute"],
-  bloomberg: [
-    "tw_equity_bloomberg_eod",
-    "hk_equity_eod",
-    "cn_equity_eod",
-    "tw_index_eod",
-    "hk_index_eod",
-    "cn_index_eod",
-    "fx_eod",
-    "macro_observation",
-    "us_stock_eod",
-    "us_stock_index_eod",
-    "global_stock_eod",
-    "hkchina_stock_eod",
-    "hkchina_mixed_eod",
-    "hkchina_index_eod",
-    "crypto_bloomberg_eod",
-    "fx_bloomberg_eod",
-    "macro_bloomberg_observation",
-    "wtx_eod",
-  ],
 }
 
 export const adminUserSchema = z.object({
@@ -162,10 +137,7 @@ export const createCredentialSchema = z
       owner: z.string().trim().min(1).max(200),
       description: optionalText,
       source_name: sourceProviderSchema,
-      allowed_datasets: z
-        .array(z.string().trim().min(1).max(200))
-        .min(1)
-        .nullable(),
+      allowed_datasets: z.array(z.string().trim().min(1).max(200)).min(1),
       rate_limit_requests: optionalPositiveInteger,
       rate_limit_window: optionalPositiveInteger,
       expires_at: optionalExpiresAt,
@@ -197,9 +169,17 @@ export const createCredentialSchema = z
   ])
   .superRefine((credential, context) => {
     if (credential.kind !== "source") return
-    if (credential.allowed_datasets === null) return
     const supported = new Set(SOURCE_PROVIDER_DATASETS[credential.source_name])
+    const seen = new Set<string>()
     credential.allowed_datasets.forEach((dataset, index) => {
+      if (seen.has(dataset)) {
+        context.addIssue({
+          code: "custom",
+          message: `${dataset} is duplicated in allowed_datasets`,
+          path: ["allowed_datasets", index],
+        })
+      }
+      seen.add(dataset)
       if (!supported.has(dataset)) {
         context.addIssue({
           code: "custom",

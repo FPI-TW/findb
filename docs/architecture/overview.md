@@ -25,9 +25,9 @@ Source API 只有在 raw、run、job 與 outbox 同一個 PostgreSQL transaction
 後才回 `202 Accepted`。RabbitMQ 是可重建的 delivery layer；已接受工作的 durable
 truth 位於 PostgreSQL。
 
-## Production 角色
+## Staging 角色
 
-Production 使用同一個 backend image，依 `APP_ROLE` 與 Compose service 分離 workload：
+Staging 使用同一個 backend image，依 `APP_ROLE` 與 Compose service 分離 workload：
 
 | 角色 | 職責 | 寫入 DB |
 | --- | --- | --- |
@@ -39,6 +39,19 @@ Production 使用同一個 backend image，依 `APP_ROLE` 與 Compose service �
 | `dashboard` | 營運查詢與管理介面 | 只透過 API |
 | `nginx` | TLS、路由、Source allowlist、proxy headers | 否 |
 | `raw-cleanup` | 依 retention policy 清理 raw payload | 是 |
+
+Staging active provider feed 只有四個固定配對：
+
+| Provider | Dataset |
+| --- | --- |
+| `twelve_data` | `us_equity_eod` |
+| `finlab` | `tw_equity_eod` |
+| `shioaji` | `tw_equity_minute` |
+| `shioaji` | `tw_etf_minute` |
+
+Canonical tables 仍可保存歷史或預留資料域（例如 futures、macro、bonds）的 read
+model，Serve 也可維持對應唯讀查詢；這些 read model 不等於 staging 有 active provider
+feed。
 
 `serve` 與 `ingest` 使用獨立 DB pool，避免大量 ingest 搶占 read path 資源。Serve
 handler 不得新增寫入行為，未來才能安全指向 read replica。
@@ -87,14 +100,12 @@ FinDB contract只帶不含credentials的`source_raw_ref`與checksum。
 - `source` 表示實際 provider。
 - Idempotency key 必須可由 Fetcher 穩定重建。
 
-## 已發布、尚未啟用的 minute 契約
+## Minute feed 與保留 read model
 
-`market_minute.v1` 與 `market_minute_archive.v1` 已作為 machine-readable
-contract 發布，minute workflow/canonical DB 骨架亦已建立，但目前沒有 minute
-normalizer、runtime persistence、Serve query 或 Export API。RDS hot 61 monthly
-partitions automation、永久 Canonical R2 與 archive publication barrier 均屬後續實作；
-Serve 保持唯讀，未來 Export API 必須與 Serve 分離。細節見
-[台灣一分鐘資料契約](tw-minute-data.md)。
+`market_minute.v1` 是 `shioaji/tw_equity_minute` 與 `shioaji/tw_etf_minute` 的
+active ingress contract；canonical minute rows 經 DQ/normalization 後由 Serve 唯讀
+提供。`market_minute_archive.v1`、更完整 universe 與 Export API 若尚未部署，仍屬
+後續工作，不得把規劃內容寫成已發布 feed。細節見[台灣一分鐘資料契約](tw-minute-data.md)。
 
 ## 故障模型
 
@@ -112,6 +123,6 @@ Serve 保持唯讀，未來 Export API 必須與 Serve 分離。細節見
 - Workflow：`backend/app/services/ingestion.py`、task queue 與 dispatcher modules
 - ORM：`backend/app/models/`
 - DB schema：`backend/migrations/`
-- Production topology：`docker-compose.prod.yml`
+- Staging topology：`docker-compose.prod.yml`
 - CI/CD：`.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、
   `.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml`

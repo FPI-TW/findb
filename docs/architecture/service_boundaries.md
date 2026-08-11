@@ -23,7 +23,7 @@ Source API整合測試，以及exact-byte provider response的Fetcher-owned Clou
 與raw reference/checksum delivery已建立；自動化真實跨服務integration tests尚未
 建立。Fetcher CD目前已交付staging的immutable image與由Environment desired state
 管理的scheduler container；staging固定為`stopped`，部署會更新container但不啟動
-排程。這只代表staging runtime已建立，不代表production服務或完整資料導入已建立。
+排程。這只代表 staging runtime 已建立，不代表完整資料集或其他 provider feed 已建立。
 
 ## Release 與部署單位
 
@@ -36,8 +36,7 @@ Source API整合測試，以及exact-byte provider response的Fetcher-owned Clou
 同 repo 不代表同時部署。目前以四個workflow分離FinDB CI、FinDB CD、Fetcher CI與
 Fetcher CD；FinDB deployment unit包含backend與Dashboard。各自使用path filter、
 image tag、CD concurrency group與rollback；push自動CD分別綁定 `staging-findb`和
-`staging-fetcher`，手動dispatch可明確選擇隔離的`production-findb`或
-`production-fetcher`。Contract變更可觸發兩個CI，但contract-only變更不自動部署
+`staging-fetcher`。Contract變更可觸發兩個CI，但contract-only變更不自動部署
 Fetcher；自動CD只部署已通過對應CI的同一commit。環境必須記錄實際部署的image SHA
 與啟用的contract versions。
 
@@ -73,7 +72,9 @@ Fetcher 只能透過 HTTPS API 與 FinDB互動；不得取得 FinDB DB、RabbitM
 credentials。寫入只使用 provider-specific Source key；市場交易日 preflight 可使用
 另一把專用、唯讀的 Serve key，且只能讀取完整 published calendar year。
 
-目前已將Twelve Data列為固定資料來源之一，並落地其日線adapter、contract驗證、
+目前 staging active feed 固定為 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、
+`shioaji/tw_equity_minute`、`shioaji/tw_etf_minute`；並落地 Twelve Data 日線 adapter、
+FinLab 與 Shioaji 對應 contract 驗證、
 明確選用的manual delivery/wait CLI、受治理symbol universe、逐symbol獨立identity、
 credit/record/date bounds、bounded HTTP retry、SQLite persistent scheduler state、
 lease recovery、checkpoint、exact-byte raw R2 persistence、readiness與image/CI/CD
@@ -85,12 +86,12 @@ foundation；其餘項目保留在backlog。
   credentials。
 - Fetcher CD只能取得Fetcher target、provider、Fetcher Source client與Fetcher raw
   object storage credentials。
-- Production secrets必須放入對應GitHub Environment並從repository-level移除；
+- Staging secrets必須放入對應GitHub Environment並從repository-level移除；
   environment隔離不會自動限制仍留在repository scope的secret。
 - GitHub Environments、OIDC roles、AWS secret paths與EC2 target均為外部資源，不能
   僅憑workflow檔宣稱已建立。
-- 所有workflow可手動執行；contract rollout使用backend-first，先部署可同時接受
-  新舊版本的FinDB，再明確啟動Fetcher CD切換版本。
+- 所有workflow可手動執行；contract rollout使用backend-first，先部署可接受目標版本的
+  FinDB，再明確啟動Fetcher CD切換版本。
 
 ## Dashboard 與下游
 

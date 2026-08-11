@@ -26,6 +26,10 @@ Source API commit
 同dataset以PostgreSQL advisory lock串行；不同dataset可依worker concurrency並行。
 Consumer timeout必須高於Celery hard time limit與graceful shutdown所需時間。
 
+目前 staging active feeds 僅為：`twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、
+`shioaji/tw_equity_minute`、`shioaji/tw_etf_minute`。Canonical/Serve read model 可
+保留歷史資料域，但不應從監控結果推論存在其他 active provider feed。
+
 ## 上線前檢查
 
 - `predeploy_db_check.py`通過。

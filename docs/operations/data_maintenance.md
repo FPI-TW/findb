@@ -1,7 +1,7 @@
 # Data Maintenance
 
 所有維護程式必須使用獨立one-off container或工作資源，不在serve process內執行。
-預設先dry-run；會改production資料的命令需先備份並保留輸出。
+預設先dry-run；會改staging資料的命令需先備份並保留輸出。
 
 ## Partial dump與local seed
 
@@ -38,7 +38,6 @@ uv --directory backend run python scripts/dev.py seed-upsert --truncate
 ```text
 backend/scripts/backfill_instrument_names.py
 backend/scripts/backfill_world_names.py
-backend/scripts/fix_misrouted_tw_futures.py
 backend/scripts/cleanup_stale_instruments.py
 ```
 
@@ -72,14 +71,14 @@ Canonical data變更或backfill後執行：
 backend/scripts/generate_instrument_cache.py
 ```
 
-Production deploy會在服務健康後重生instrument cache。Cache失敗不能以直接編輯JSON
+Staging deploy會在服務健康後重生instrument cache。Cache失敗不能以直接編輯JSON
 取代；應修正canonical data或generator。
 
-## Staging legacy data reset
+## Staging data reset
 
-經明確授權的staging reset可以移除所有mutable canonical、workflow與PostgreSQL
-raw資料，建立不含legacy provenance的空白基線；它不是production rollback流程，
-也不得套用production。執行時：
+經明確授權的 staging reset 可以移除所有 mutable canonical、workflow 與 PostgreSQL
+raw 資料，建立 bounded pilot 的空白基線。它不是 rollback 流程；canonical read model
+的歷史資料域若需保留，必須明確列入 protected targets。執行時：
 
 1. 確認目標database/host屬於staging並記錄Alembic revision與image SHA。
 2. 暫停Fetcher scheduler及 `ingest`、`dispatcher`、`worker`、`raw-cleanup`，
@@ -93,19 +92,10 @@ raw資料，建立不含legacy provenance的空白基線；它不是production r
    才恢復服務。
 7. 重生受影響的generated cache，再執行一次bounded staging acceptance。
 
-Reset tool採兩階段、target-specific確認：
-
-```bash
-# 先在目標image與DATABASE_URL執行唯讀盤點，保存counts與target_fingerprint
-python scripts/reset_staging_legacy_data.py
-
-# writers停止後，以同一連線目標及剛取得的fingerprint執行
-python scripts/reset_staging_legacy_data.py \
-  --apply \
-  --confirm-staging RESET-STAGING-MUTABLE-DATA \
-  --confirm-target-fingerprint <dry-run-target-fingerprint> \
-  --confirm-db-writers-stopped
-```
+Staging reset tool 採兩階段、target-specific 確認：先在目標 image 與
+`DATABASE_URL` 執行唯讀盤點並保存 counts/fingerprint，再由 writers 停止後以同一連線
+目標執行 apply。命令與確認參數以目標 image 內的 `--help` 為準；不得把歷史或其他
+環境的 scheduler state 帶回 staging。
 
 Fingerprint是live database/user/server identity的非敏感digest。不得使用另一個環境、
 舊連線或舊dry-run的值；目標不符時tool必須拒絕。
@@ -114,7 +104,7 @@ Fingerprint是live database/user/server identity的非敏感digest。不得使�
 `dq_issue.run_id`也不會隨run自動刪除；不得只依賴cascade。
 `dataset_registry`、`source_client`、`api_key`與`alembic_version`屬設定／schema state，
 必須保留。即使canonical rows來自已驗證的新provider，只要instrument、identifier、
-stats或calendar承接legacy state，也必須完整reset後以bounded pilot重建。
+stats或calendar承接舊 state，也必須完整 reset 後以 bounded pilot 重建。
 
 R2 raw objects不屬於PostgreSQL reset，維持既有lifecycle與bucket lock。Fetcher
 SQLite checkpoint必須在scheduler停止後同步reset，否則舊job identity與checkpoint
@@ -133,10 +123,10 @@ schema/checkpoint驗證。
 - Queue backlog、expired leases或migration期間不要清理相關raw payload。
 - Raw刪除不影響canonical，但會失去rerun與provider payload audit能力。
 
-## Production執行安全
+## Staging執行安全
 
 - 不在serve container內跑長時間writer。
-- 不把production `DATABASE_URL`貼進shell history或文件。
+- 不把staging `DATABASE_URL`貼進shell history或文件。
 - 不用未pin的外部資料來源結果直接覆寫既有值。
 - 每次操作記錄image SHA、參數、開始/結束時間、影響筆數與驗證結果。
 - 回滾優先使用DB snapshot或script明確提供的可逆流程，不手寫大範圍DELETE。

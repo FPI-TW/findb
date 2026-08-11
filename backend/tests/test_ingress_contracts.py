@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.schemas.ingress import FuturesContinuousEODIngressRequest, MarketEODIngressRequest
+from app.schemas.ingress import MarketEODIngressRequest
 from app.services.canonical_ingestion import _select_validation_error
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
@@ -21,8 +21,6 @@ from app.services.ingress_contracts import (
     validate_ingress_request,
 )
 from app.services.normalize import (
-    FuturesContinuousEODContractNormalizer,
-    FuturesContinuousNormalizer,
     MarketEODContractNormalizer,
     MarketMinuteContractNormalizer,
 )
@@ -57,41 +55,6 @@ def _market_eod_request() -> dict:
                     "close": "1015.0",
                     "volume": 32_100_000,
                     "turnover": "32480000000",
-                }
-            ],
-        },
-    }
-
-
-def _futures_request() -> dict:
-    return {
-        "dataset_key": "wtx_eod",
-        "schema_id": "futures_continuous_eod",
-        "schema_version": 1,
-        "source": "bloomberg",
-        "request_key": "bloomberg_wtx_eod_20260721_01",
-        "idempotency_key": "bloomberg_wtx_eod_20260721",
-        "fetched_at": "2026-07-21T08:00:00Z",
-        "payload": {
-            "batch": {
-                "data_date": "2026-07-21",
-                "delivery_mode": "full_snapshot",
-                "declared_record_count": 1,
-            },
-            "data": [
-                {
-                    "symbol": "TX",
-                    "source_symbol": "TXA Index",
-                    "trade_date": "2026-07-21",
-                    "open": "23000",
-                    "high": "23200",
-                    "low": "22900",
-                    "close": "23150",
-                    "volume": 80_000,
-                    "open_interest": 120_000,
-                    "active_contract_code": "TXF202607",
-                    "roll_rule": "front_month",
-                    "roll_adjustment": "1.75",
                 }
             ],
         },
@@ -384,31 +347,11 @@ def test_contract_payload_obeys_configured_serialized_byte_limit():
         settings.SOURCE_MAX_PAYLOAD_BYTES = original_limit
 
 
-def test_futures_continuous_eod_v1_accepts_contract_fields():
-    request = FuturesContinuousEODIngressRequest.model_validate(_futures_request())
-
-    row = request.payload.data[0]
-    assert row.active_contract_code == "TXF202607"
-    assert row.roll_rule == "front_month"
-
-
-def test_futures_continuous_eod_rejects_missing_roll_rule():
-    value = _futures_request()
-    del value["payload"]["data"][0]["roll_rule"]
-
-    with pytest.raises(ValidationError):
-        FuturesContinuousEODIngressRequest.model_validate(value)
-
-
 def test_registry_dispatches_explicit_contract_version():
     request = validate_ingress_request(_market_eod_request())
 
     assert isinstance(request, MarketEODIngressRequest)
-    assert supported_contracts() == (
-        ("futures_continuous_eod", 1),
-        ("market_eod", 1),
-        ("market_minute", 1),
-    )
+    assert supported_contracts() == (("market_eod", 1), ("market_minute", 1))
 
 
 @pytest.mark.parametrize(
@@ -419,12 +362,6 @@ def test_registry_dispatches_explicit_contract_version():
             "MarketEODIngressRequest",
             "market.currency.row_or_dataset_default",
             "d92e6e032bf6c0f77d1ff516f18d6c04bedf4c57c61c864edfffc74bc42c3b02",
-        ),
-        (
-            "futures_continuous_eod",
-            "FuturesContinuousEODIngressRequest",
-            "futures.currency.dataset_default_required",
-            "5215549de365d59e8e005e7c3ca3d14028b6183fa85cb983039f60ba0b31d19d",
         ),
     ],
 )
@@ -563,9 +500,7 @@ def test_registry_publishes_versioned_deterministic_json_schema(
             "expected": 1,
         },
     ]
-    expected_specific_path = (
-        "payload.data[*].currency" if schema_id == "market_eod" else "payload.data[*].roll_rule"
-    )
+    expected_specific_path = "payload.data[*].currency"
     assert expected_specific_path in transformed_paths
     canonical_json = json.dumps(first, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(canonical_json).hexdigest() == expected_sha256
@@ -705,66 +640,19 @@ def test_contract_normalizer_routing_requires_schema_id_and_version():
     )
 
 
-def test_futures_contract_normalizer_maps_optional_canonical_fields():
-    request = FuturesContinuousEODIngressRequest.model_validate(_futures_request())
-    normalizer = FuturesContinuousEODContractNormalizer(
-        None,
-        {
-            "defaults": {"market": "WTX", "asset_class": "future", "currency": "TWD"},
-            "_ingest_source": "bloomberg",
-        },
-    )
-
-    record = normalizer.map_fields(request.payload.model_dump(mode="json"))[0]
-
-    assert record.open_interest == 120_000
-    assert record.active_contract_code == "TXF202607"
-    assert record.roll_adjustment == Decimal("1.75")
-
-
-def test_generic_futures_normalizer_defaults_new_fields_with_seeded_full_mapping():
-    config = next(
-        item["config"] for item in DATASETS if item["dataset_key"] == "futures_continuous_eod"
-    )
-    normalizer = FuturesContinuousNormalizer(None, config)
-
-    record = normalizer.map_fields(
-        {
-            "metadata": {"source": "bloomberg"},
-            "data": [
-                {
-                    "symbol": "TX",
-                    "ticker": "TXA Index",
-                    "trade_date": "2026-07-21",
-                    "close": "23150",
-                    "open_interest": 120_000,
-                    "active_contract_code": "TXF202607",
-                    "roll_adjustment": "1.75",
-                    "roll_rule": "front_month",
-                }
-            ],
-        }
-    )[0]
-
-    assert record.open_interest == 120_000
-    assert record.active_contract_code == "TXF202607"
-    assert record.roll_adjustment == Decimal("1.75")
-
-
 @pytest.mark.parametrize(
     "dataset_key",
     [
         "us_equity_eod",
         "tw_equity_eod",
-        "tw_etf_eod",
-        "futures_continuous_eod",
-        "wtx_eod",
+        "tw_equity_minute",
+        "tw_etf_minute",
     ],
 )
-def test_initial_dataset_contract_declarations_are_audit_only(dataset_key: str):
+def test_supported_dataset_contract_declarations_are_enforced(dataset_key: str):
     config = next(item["config"] for item in DATASETS if item["dataset_key"] == dataset_key)
 
     declaration = parse_dataset_contract_declaration(config)
 
     assert declaration is not None
-    assert declaration.schema_enforcement == "audit"
+    assert declaration.schema_enforcement == "enforce"

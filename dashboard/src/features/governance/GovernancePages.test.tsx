@@ -112,7 +112,6 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "twelve_data" },
     })
-    fireEvent.click(screen.getByLabelText("us_equity_eod"))
     fireEvent.click(screen.getByRole("button", { name: "簽發" }))
 
     expect(await screen.findByText("findb_src_one_time")).toBeInTheDocument()
@@ -130,41 +129,41 @@ describe("governance pages", () => {
     expect(screen.queryByText("findb_src_one_time")).not.toBeInTheDocument()
   })
 
-  it("offers provider-specific dataset checkboxes and clears stale scope", async () => {
+  it("shows the exact provider governance datasets", async () => {
     render(<CredentialsPage role="owner" />)
 
     await screen.findByText("lookup")
-    expect(screen.getByLabelText("us_equity_eod")).toBeInTheDocument()
-    fireEvent.click(screen.getByLabelText("us_equity_eod"))
+    expect(screen.getByText("us_equity_eod")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
 
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "finlab" },
     })
-    expect(screen.queryByLabelText("us_equity_eod")).not.toBeInTheDocument()
-    expect(screen.getByLabelText("tw_equity_eod")).toBeInTheDocument()
-    expect(screen.getByLabelText("tw_etf_eod")).toBeInTheDocument()
-    expect(screen.getByLabelText("wtx_eod")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "簽發" })).toBeDisabled()
+    expect(screen.queryByText("us_equity_eod")).not.toBeInTheDocument()
+    expect(screen.getByText("tw_equity_eod")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
 
     expect(screen.getByRole("option", { name: "shioaji" })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "shioaji" },
     })
-    expect(screen.queryByLabelText("tw_equity_eod")).not.toBeInTheDocument()
-    expect(screen.getByLabelText("tw_equity_minute")).toBeInTheDocument()
-    expect(screen.getByLabelText("tw_etf_minute")).toBeInTheDocument()
+    expect(screen.queryByText("tw_equity_eod")).not.toBeInTheDocument()
+    expect(screen.getByText("tw_equity_minute")).toBeInTheDocument()
+    expect(screen.getByText("tw_etf_minute")).toBeInTheDocument()
   })
 
-  it("issues a source credential for all current and future provider datasets", async () => {
+  it("issues a source credential with the provider's exact governed datasets", async () => {
     mocks.issueCredential.mockResolvedValue({
-      api_key: "findb_src_provider_wide",
+      api_key: "findb_src_finlab",
       data: {
         ...credential,
         kind: "source",
         name: "finlab-fetcher",
-        scopes: null,
-        policies: { source_name: "finlab", allowed_datasets: null },
+        scopes: ["tw_equity_eod"],
+        policies: {
+          source_name: "finlab",
+          allowed_datasets: ["tw_equity_eod"],
+        },
       },
     })
     render(<CredentialsPage role="owner" />)
@@ -179,12 +178,7 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "finlab" },
     })
-    fireEvent.click(
-      screen.getByLabelText("此 Provider 的全部 datasets（包含未來新增）")
-    )
-
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
-    expect(screen.queryByLabelText("tw_equity_eod")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "簽發" }))
 
     await waitFor(() =>
@@ -192,7 +186,7 @@ describe("governance pages", () => {
         data: expect.objectContaining({
           kind: "source",
           source_name: "finlab",
-          allowed_datasets: null,
+          allowed_datasets: ["tw_equity_eod"],
         }),
       })
     )
