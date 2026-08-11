@@ -4,9 +4,9 @@
 
 - ORM model與Alembic migration必須在同一個PR更新。
 - Runtime `init_db()`只驗證revision與required tables，不執行 `create_all()`。
-- Production schema是forward-only operation；downgrade只用於本機migration round-trip測試。
+- Staging schema是forward-only operation；downgrade只用於本機migration round-trip測試。
 - Migration前停止所有DB writers，不能只停止HTTP ingest。
-- 禁止手動修改production schema後不補migration。
+- 禁止手動修改staging schema後不補migration。
 
 ## 本機流程
 
@@ -39,7 +39,7 @@ uv --directory backend run alembic upgrade head
 uv --directory backend run alembic current
 ```
 
-涉及既有資料或partition時，在production-like clone或partial dump演練。驗證舊資料、
+涉及既有資料或partition時，在staging clone或partial dump演練。驗證保留資料、
 新寫入、Serve查詢與downtime估算，不只驗證空DB。
 
 ## Existing database baseline
@@ -53,11 +53,11 @@ DDL；它不能用來跳過未知schema drift。
 2. 比對revision與實際schema。
 3. 在clone執行upgrade與application smoke tests。
 4. 排定writer pause。
-5. 執行production preflight後upgrade。
+5. 執行staging preflight後upgrade。
 
-## Production rollout
+## Staging rollout
 
-1. 確認RDS snapshot/PITR與restore演練。
+1. 確認staging snapshot與restore演練。
 2. 暫停provider或確認安全retry。
 3. 執行read-only DB preflight。
 4. 停止ingest、dispatcher、worker、raw-cleanup及所有one-off writers。

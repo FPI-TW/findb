@@ -12,7 +12,12 @@
 /health          Process health
 ```
 
-Production 由 nginx 將 Source/Admin 導向 ingest role，Serve 導向 serve role。
+Staging 由 nginx 將 Source/Admin 導向 ingest role，Serve 導向 serve role。
+
+目前 staging 的 active provider feeds 僅有：`twelve_data/us_equity_eod`、
+`finlab/tw_equity_eod`、`shioaji/tw_equity_minute`、`shioaji/tw_etf_minute`。
+Serve API 仍可讀取保留的 canonical/history read model，但 read model 不代表目前有
+對應的 provider feed。
 
 ## 認證
 
@@ -31,11 +36,11 @@ Authorization: Bearer <admin-session>
 | API | 規則 |
 | --- | --- |
 | Source | 必須；使用 DB-backed source client key |
-| Serve | 由 `SERVE_REQUIRE_AUTH` 控制；production 建議啟用 |
+| Serve | 由 `SERVE_REQUIRE_AUTH` 控制；staging 建議啟用 |
 | Admin | 永遠必須；Dashboard使用具名user session，machine client使用DB-backed Admin key |
 
 Source client可限制 `source_name`、`allowed_datasets`與rate limit。每個
-provider/client應使用獨立 key。Source production入口另受 nginx IP allowlist保護。
+provider/client應使用獨立 key。Source staging入口另受 nginx IP allowlist保護。
 `ADMIN_BREAK_GLASS_API_KEY`只供初次bootstrap與緊急復原，不得作為日常Dashboard身分。
 
 ## Canonical ingest
@@ -98,7 +103,7 @@ X-API-Key: <source-client-key>
 
 ```http
 GET /api/v1/source/contracts/market_eod/versions/1
-GET /api/v1/source/contracts/futures_continuous_eod/versions/1
+GET /api/v1/source/contracts/market_minute/versions/1
 ```
 
 ## Delivery status
@@ -130,11 +135,12 @@ GET /api/v1/source/datasets
 
 分批 delivery可再加入可穩定重建的 sequence。
 
-## Legacy Source endpoints
+## Source contract boundary
 
-`/source/ingest/{market}` 與 `/source/ingest/*/direct` 仍供既有 feed和raw rerun相容。
-它們不是新 Fetcher的擴充點。新增 provider時必須轉成 canonical contract，不新增
-provider-specific route或normalizer。
+Fetcher 只能使用 `/source/ingest` 的 versioned provider-neutral contract。舊的
+`/source/ingest/{market}` 與 `/source/ingest/*/direct` route 已移除，不應再加入
+provider-specific route 或 normalizer。需要新增資料域時，另案完成完整新版 contract、
+dataset registry、normalizer、DQ 與 Serve read model 驗收。
 
 ## Serve API
 
@@ -166,6 +172,9 @@ curl -H "X-API-Key: $SERVE_KEY" \
 List endpoint使用 response內的 pagination資訊。`/serve/instruments` 支援 cursor
 keyset pagination；不需要總筆數時使用 `include_count=false` 降低DB負擔。其他
 endpoint的實際 query parameters以 OpenAPI為準。
+
+上述 futures endpoints 若仍存在於 canonical read model，只代表歷史/保留資料的唯讀
+查詢；staging 沒有對應的 active provider feed，也沒有 futures contract ingest。
 
 ## Admin API
 
@@ -241,8 +250,8 @@ http://localhost:8080/openapi.json
 
 ```bash
 make test
-uv --directory backend run pytest tests/test_source_api.py
+uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
 ```
 
-Production smoke test必須使用專用測試dataset/client或可安全重送的固定 idempotency
+Staging smoke test必須使用專用測試dataset/client或可安全重送的固定 idempotency
 key，並確認 run最後進入 terminal state。

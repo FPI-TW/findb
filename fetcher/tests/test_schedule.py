@@ -72,34 +72,28 @@ def test_retry_delay_is_exponential_and_bounded() -> None:
     ]
 
 
-def test_v2_manifest_has_four_taipei_slots_and_date_boundaries() -> None:
+def test_v2_manifest_has_only_active_daily_feeds_and_date_boundaries() -> None:
     manifest = load_schedule_manifest(V2_CONFIG_PATH)
     assert manifest.schedule_version == 2
     assert [feed.slot_id for feed in manifest.feeds] == [
         "western_markets_window",
-        "global_markets_window",
         "taiwan_market_window",
-        "asia_pacific_markets_window",
     ]
     assert [feed.scheduled_local_time.isoformat() for feed in manifest.feeds] == [
         "06:30:00",
-        "08:15:00",
         "14:30:00",
-        "17:15:00",
     ]
-    assert [feed.target_date_lag_days for feed in manifest.feeds] == [1, 0, 0, 0]
+    assert [feed.target_date_lag_days for feed in manifest.feeds] == [1, 0]
     assert [feed.legacy_schedule_id for feed in manifest.feeds] == [
         "twelve_data_us_common_stocks_daily_v1",
         None,
-        None,
-        None,
     ]
     assert (
-        manifest.feeds[2].target_date(datetime(2026, 7, 30, 6, 29, tzinfo=timezone.utc)).isoformat()
+        manifest.feeds[1].target_date(datetime(2026, 7, 30, 6, 29, tzinfo=timezone.utc)).isoformat()
         == "2026-07-29"
     )
     assert (
-        manifest.feeds[2].target_date(datetime(2026, 7, 30, 6, 30, tzinfo=timezone.utc)).isoformat()
+        manifest.feeds[1].target_date(datetime(2026, 7, 30, 6, 30, tzinfo=timezone.utc)).isoformat()
         == "2026-07-30"
     )
 
@@ -163,7 +157,7 @@ def test_v2_manifest_allows_multiple_unique_feeds_in_one_slot(
 
     manifest = load_schedule_manifest(path)
 
-    assert len(manifest.feeds) == 5
+    assert len(manifest.feeds) == 3
     assert [feed.slot_id for feed in manifest.feeds].count("western_markets_window") == 2
 
     value["feeds"].append(deepcopy(additional))
@@ -175,12 +169,12 @@ def test_v2_manifest_allows_multiple_unique_feeds_in_one_slot(
 def test_v2_scheduled_time_is_data_not_slot_identity(tmp_path: Path) -> None:
     value = json.loads(V2_CONFIG_PATH.read_text())
     original_path = _write_v2_manifest(tmp_path, value)
-    original = load_schedule_manifest(original_path).feeds[2]
+    original = load_schedule_manifest(original_path).feeds[1]
 
-    value["feeds"][2]["scheduled_time"] = "15:00"
+    value["feeds"][1]["scheduled_time"] = "15:00"
     changed_path = tmp_path / "changed.json"
     changed_path.write_text(json.dumps(value))
-    changed = load_schedule_manifest(changed_path).feeds[2]
+    changed = load_schedule_manifest(changed_path).feeds[1]
 
     assert changed.slot_id == original.slot_id == "taiwan_market_window"
     assert changed.schedule_id == original.schedule_id

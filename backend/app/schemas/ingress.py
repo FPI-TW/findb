@@ -152,25 +152,7 @@ class MarketEODRow(_OHLCRow):
     total_ticks: Optional[NonNegativeInt] = None
 
 
-class FuturesContinuousEODRow(_OHLCRow):
-    """Provider-neutral continuous-futures daily row."""
-
-    symbol: str = Field(min_length=1, max_length=50)
-    source_symbol: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    trade_date: date
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    volume: Optional[NonNegativeInt] = None
-    turnover: Optional[NonNegativeDecimal] = None
-    open_interest: Optional[NonNegativeInt] = None
-    active_contract_code: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    roll_rule: str = Field(min_length=1, max_length=50)
-    roll_adjustment: Optional[Decimal] = None
-
-
-def _validate_payload_batch(
-    batch: IngressBatch,
-    data: list[MarketEODRow] | list[FuturesContinuousEODRow],
-) -> None:
+def _validate_payload_batch(batch: IngressBatch, data: list[MarketEODRow]) -> None:
     ensure_data_items_count_within_limit(len(data))
     if batch.declared_record_count != len(data):
         raise PydanticCustomError(
@@ -206,27 +188,6 @@ class MarketEODPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_batch_and_rows(self) -> "MarketEODPayload":
-        _validate_payload_batch(self.batch, self.data)
-        natural_keys = [(row.symbol, row.trade_date) for row in self.data]
-        if len(natural_keys) != len(set(natural_keys)):
-            raise PydanticCustomError(
-                "duplicate_delivery_key",
-                "duplicate (symbol, trade_date) rows are not allowed",
-            )
-        ensure_payload_size_within_limit(self.model_dump(mode="json"))
-        return self
-
-
-class FuturesContinuousEODPayload(BaseModel):
-    """Payload body for ``futures_continuous_eod.v1``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    batch: IngressBatch
-    data: list[FuturesContinuousEODRow]
-
-    @model_validator(mode="after")
-    def validate_batch_and_rows(self) -> "FuturesContinuousEODPayload":
         _validate_payload_batch(self.batch, self.data)
         natural_keys = [(row.symbol, row.trade_date) for row in self.data]
         if len(natural_keys) != len(set(natural_keys)):
@@ -489,14 +450,6 @@ class MarketEODIngressRequest(_IngressRequest):
     payload: MarketEODPayload
 
 
-class FuturesContinuousEODIngressRequest(_IngressRequest):
-    """Complete ``futures_continuous_eod.v1`` request."""
-
-    schema_id: Literal["futures_continuous_eod"]
-    schema_version: Literal[1]
-    payload: FuturesContinuousEODPayload
-
-
 class MarketMinuteIngressRequest(_IngressRequest):
     """Complete ``market_minute.v1`` request shape with runtime normalization."""
 
@@ -542,6 +495,4 @@ def minute_sequence_key_digest(
     ).hexdigest()
 
 
-IngressRequestV1 = (
-    MarketEODIngressRequest | FuturesContinuousEODIngressRequest | MarketMinuteIngressRequest
-)
+IngressRequestV1 = MarketEODIngressRequest | MarketMinuteIngressRequest

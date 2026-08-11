@@ -223,6 +223,10 @@ async def test_dataset_seed_preserves_existing_operator_config(
                     "delivery_mode": "full_snapshot",
                     "minimum_record_count": 1777,
                     "freshness_hours": 72,
+                    "missing_delivery": {
+                        "action": "disabled",
+                        "expected_sources": [],
+                    },
                 },
             },
         )
@@ -236,8 +240,9 @@ async def test_dataset_seed_preserves_existing_operator_config(
     assert dataset.config["delivery_expectation"]["minimum_record_count"] == 1777
     assert dataset.config["delivery_expectation"]["freshness_hours"] == 72
     assert dataset.config["delivery_expectation"]["missing_delivery"] == {
-        "action": "disabled",
-        "expected_sources": [],
+        "action": "warn",
+        "expected_sources": ["finlab"],
+        "deadline_local_time": "17:00:00",
     }
     assert dataset.config["schema_id"] == "market_eod"
 

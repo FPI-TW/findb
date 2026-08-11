@@ -96,7 +96,7 @@ Expand-Archive findb-api.skill -DestinationPath "$env:USERPROFILE\\.claude\\skil
           <ol className="mt-2 grid list-decimal gap-4 pl-5 text-ink">
             <li>
               開新 Claude Code session，輸入：
-              <Prompt>從 findb 拉 BTC 最近 30 天 EOD</Prompt>
+              <Prompt>從 staging FinDB 拉 AAPL 最近 30 天 EOD</Prompt>
               <span className="mt-2 block text-xs text-muted">
                 預期：立刻產出帶{" "}
                 <code className="rounded bg-surface px-1.5 py-0.5 font-mono">
@@ -184,7 +184,7 @@ cat >> AGENTS.md <<'EOF'
 
 Authoritative API reference: docs/findb-skill/findb-api/SKILL.md.
 Endpoint specs / payload shapes / errors in docs/findb-skill/findb-api/references/.
-Production base URL: https://findb.tingfong.com.
+Staging base URL: https://findb.tingfong.com.
 EOF
 
 git add AGENTS.md docs/findb-skill
@@ -241,7 +241,7 @@ function ManualInstructions() {
       <CodeBlock
         label="prompt"
         code={`@./findb-skill/findb-api/SKILL.md @./findb-skill/findb-api/references/endpoints.md
-請幫我寫一個從 findb 拉 BTC EOD 的 Python 腳本`}
+請幫我寫一個從 staging FinDB 拉 AAPL EOD 的 Python 腳本`}
       />
     </div>
   )

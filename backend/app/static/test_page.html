@@ -734,11 +734,8 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       <a class="nav-item" onclick="goTo('ep-datasets')">
         <span class="nav-method m-get">GET</span>Datasets 清單
       </a>
-      <a class="nav-item" onclick="goTo('ep-ingest-raw')">
-        <span class="nav-method m-post">POST</span>Raw Ingest
-      </a>
-      <a class="nav-item" onclick="goTo('ep-ingest-direct')">
-        <span class="nav-method m-post">POST</span>Direct Ingest
+      <a class="nav-item" onclick="goTo('ep-ingest-contract')">
+        <span class="nav-method m-post">POST</span>Contract Ingest
       </a>
       <a class="nav-item" onclick="goTo('ep-run-status')">
         <span class="nav-method m-get">GET</span>Run Status
@@ -910,32 +907,34 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
     </div>
 
     <!-- Raw Ingest -->
-    <div class="endpoint-card" id="ep-ingest-raw">
+    <div class="endpoint-card" id="ep-ingest-contract">
       <div class="endpoint-header" onclick="toggleCard(this)">
         <span class="method-badge POST">POST</span>
-        <span class="endpoint-path">/api/v1/source/ingest/{market}</span>
-        <span class="endpoint-desc">注入原始資料 (標準格式)</span>
+        <span class="endpoint-path">/api/v1/source/ingest</span>
+        <span class="endpoint-desc">注入版本化契約資料</span>
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
         <div class="info-block">
-          用於 Fetch Layer 將原始資料推送到 FinDB。需提供完整的 <code>IngestRequest</code> 結構，
-          包含 <code>idempotency_key</code> 防止重複注入。<br><br>
-          可用 market：<code>crypto</code> · <code>us</code> · <code>fx</code> · <code>macro</code> · <code>wtx</code> · <code>global</code> · <code>tw</code> · <code>hk</code> · <code>cn</code>
+          Fetch Layer 以 versioned ingress contract 將資料推送到 FinDB。需提供完整的
+          <code>IngressRequestV1</code> envelope，並以 <code>schema_id</code>、<code>schema_version</code>
+          明確選擇 <code>market_eod.v1</code> 或 <code>market_minute.v1</code>；<code>idempotency_key</code>
+          用於防止重複注入。
         </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
             <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>市場代碼 (crypto / us / fx / macro / ...)</td></tr>
+            <tr><td>—</td><td>—</td><td>—</td><td style="color:var(--text-3)">無參數；契約識別放在 request body</td></tr>
           </table>
         </div>
         <div class="params-section">
-          <div class="params-title">Request Body (IngestRequest)</div>
+          <div class="params-title">Request Body (IngressRequestV1)</div>
           <table class="params-table">
             <tr><th>欄位</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>資料集鍵值 (如 crypto_eod)</td></tr>
-            <tr><td>source</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>資料來源名稱 (如 bloomberg)</td></tr>
+            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>四個受支援 feed 的資料集鍵值</td></tr>
+            <tr><td>schema_id / schema_version</td><td><span class="param-type">string / integer</span></td><td><span class="param-required">必填</span></td><td>market_eod.v1 或 market_minute.v1</td></tr>
+            <tr><td>source</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>twelve_data、finlab 或 shioaji</td></tr>
             <tr><td>request_key</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>上游請求識別碼</td></tr>
             <tr><td>idempotency_key</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>冪等鍵，防止重複注入</td></tr>
             <tr><td>payload</td><td><span class="param-type">object</span></td><td><span class="param-required">必填</span></td><td>原始資料 payload</td></tr>
@@ -946,25 +945,25 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-title">請求</div>
           <div class="form-grid single">
             <div class="form-field">
-              <label>market (路徑參數)</label>
-              <select id="raw-market">
-                <option>crypto</option><option>us</option><option>fx</option>
-                <option>macro</option><option>wtx</option><option>global</option>
-                <option>tw</option><option>hk</option><option>cn</option>
-              </select>
+              <label>Contract body</label>
             </div>
             <div class="form-field">
               <label>Request Body (JSON)</label>
               <textarea id="raw-body">{
-  "dataset_key": "crypto_eod",
-  "source": "bloomberg",
+  "dataset_key": "tw_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "finlab",
   "request_key": "test-req-001",
   "idempotency_key": "test-idem-001",
   "payload": {
+    "batch": { "data_date": "2024-01-15", "delivery_mode": "full_snapshot", "declared_record_count": 1 },
     "data": [
       {
-        "ticker": "BTC",
-        "date": "2024-01-15",
+        "symbol": "2330",
+        "source_symbol": "2330 TT Equity",
+        "trade_date": "2024-01-15",
+        "currency": "TWD",
         "open": 42000,
         "high": 43500,
         "low": 41800,
@@ -991,82 +990,72 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
       </div>
     </div>
 
-    <!-- Direct Ingest -->
-    <div class="endpoint-card" id="ep-ingest-direct">
+    <!-- Versioned Contract Ingest -->
+    <div class="endpoint-card" id="ep-ingest-contract-example">
       <div class="endpoint-header" onclick="toggleCard(this)">
         <span class="method-badge POST">POST</span>
-        <span class="endpoint-path">/api/v1/source/ingest/{type}/direct</span>
-        <span class="endpoint-desc">注入直接格式資料 (Bloomberg / FinLab Direct)</span>
+        <span class="endpoint-path">/api/v1/source/ingest</span>
+        <span class="endpoint-desc">契約 envelope 範例</span>
         <span class="endpoint-toggle">▼</span>
       </div>
       <div class="endpoint-body">
         <div class="info-block">
-          接受 Bloomberg 直接格式 <code>DirectIngestPayload</code>（含 metadata 與 data 陣列），以及台股專用
-          <code>TWStockDirectIngestPayload</code>。<br><br>
-          系統自動產生 idempotency_key。預設以原始扁平格式為主，<code>data[]</code> 可直接使用
-          <code>ticker</code>、<code>date</code>、<code>open</code>、<code>high</code>、<code>low</code>、
-          <code>close</code>、<code>volume</code> 等欄位；也相容巢狀 <code>price</code> / <code>timestamp</code> 格式。<br><br>
-          <code>metadata</code> 建議保留 <code>source</code> 與 <code>query_time</code>；<code>category</code> 非必需。<br><br>
-          <code>twstock/direct</code> 只接受 JSON（FinLab Direct 格式）；支援 <code>metadata.symbol + data[]</code>，
-          也支援每列自帶 <code>symbol</code> 的批次格式。若每列都有 <code>symbol</code>，可省略 <code>metadata.symbol</code>；
-          <code>date</code> 接受 <code>YYYY-MM-DD</code>，<code>time</code> 為選填。
-          <code>total_volume</code>、<code>total_ticks</code> 為必要欄位；<code>metadata.asset_class=ETF</code> 會路由到 <code>tw_etf_eod</code>。<br><br>
-          可用端點：<code>crypto/direct</code> · <code>usstock/direct</code> · <code>twstock/direct</code> · <code>hkchina/direct</code>（股票+指數整合） · <code>hkchina-index/direct</code>（相容舊流程） · <code>fx/direct</code> · <code>wtx/direct</code> · <code>macro/direct</code>
+          這個範例使用同一個 <code>/api/v1/source/ingest</code> endpoint，示範
+          <code>market_eod.v1</code> envelope。所有欄位需符合版本化 JSON Schema 與 dataset declaration。
         </div>
         <div class="params-section">
           <div class="params-title">Path Parameter</div>
           <table class="params-table">
             <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>type</td><td><span class="param-type">string</span></td><td><span class="param-required">必填</span></td><td>直接格式端點類型 (crypto / usstock / twstock / hkchina[mixed] / hkchina-index / fx / wtx / macro)</td></tr>
+            <tr><td>—</td><td>—</td><td>—</td><td style="color:var(--text-3)">無 path 參數；契約識別放在 request body</td></tr>
           </table>
         </div>
         <div class="params-section">
-          <div class="params-title">Request Body (DirectIngestPayload)</div>
+          <div class="params-title">Request Body (IngressRequestV1)</div>
           <table class="params-table">
             <tr><th>欄位</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>metadata</td><td><span class="param-type">object</span></td><td><span class="param-optional">選填</span></td><td>建議提供 source、query_time；query_time 會作為本批資料抓取時間</td></tr>
-            <tr><td>data</td><td><span class="param-type">array</span></td><td><span class="param-optional">選填</span></td><td>資料列表；一般 direct 建議傳 ticker/date/open/high/low/close/volume/value；twstock/direct 需提供台股拆分欄位</td></tr>
+            <tr><td>schema_id / schema_version</td><td><span class="param-type">string / integer</span></td><td><span class="param-required">必填</span></td><td>market_eod.v1 或 market_minute.v1</td></tr>
+            <tr><td>payload</td><td><span class="param-type">object</span></td><td><span class="param-required">必填</span></td><td>符合契約 schema 的 batch 與 data</td></tr>
           </table>
         </div>
         <div class="form-section">
           <div class="form-title">請求</div>
           <div class="form-grid single">
             <div class="form-field">
-              <label>類型</label>
-              <select id="direct-type" onchange="updateDirectExample(this)">
-                <option value="crypto">crypto/direct (加密貨幣)</option>
-                <option value="usstock">usstock/direct (美股)</option>
-                <option value="twstock">twstock/direct (台股 FinLab)</option>
-                <option value="hkchina">hkchina/direct (港股/陸股/港中指數)</option>
-                <option value="hkchina-index">hkchina-index/direct (港中指數，舊流程)</option>
-                <option value="fx">fx/direct (外匯)</option>
-                <option value="wtx">wtx/direct (期貨)</option>
-                <option value="macro">macro/direct (總經數據)</option>
-              </select>
-            </div>
-            <div class="form-field">
               <label>Request Body (JSON)</label>
-              <textarea id="direct-body">{
-  "metadata": {
-    "source": "bloomberg",
-    "query_time": "2024-01-15T08:00:00Z"
-  },
-  "data": [
-    {
-      "ticker": "XBTUSD BGN Curncy",
-      "date": "2024-01-15",
-      "open": 42000,
-      "high": 43500,
-      "low": 41800,
-      "close": 43200,
-      "volume": 18500
-    }
-  ]
+              <textarea id="contract-body">{
+  "dataset_key": "us_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "twelve_data",
+  "request_key": "test-contract-001",
+  "idempotency_key": "test-contract-idem-001",
+  "fetched_at": "2024-01-15T08:00:00Z",
+  "payload": {
+    "batch": {
+      "data_date": "2024-01-15",
+      "delivery_mode": "full_snapshot",
+      "declared_record_count": 1
+    },
+    "data": [
+      {
+        "symbol": "AAPL",
+        "source_symbol": "AAPL",
+        "trade_date": "2024-01-15",
+        "currency": "USD",
+        "open": 185.0,
+        "high": 188.0,
+        "low": 184.0,
+        "close": 187.0,
+        "volume": 50000000
+      }
+    ]
+  }
 }</textarea>
             </div>
           </div>
           <div class="form-actions">
-            <button class="btn-send" onclick="sendDirectIngest(this)">送出請求</button>
+            <button class="btn-send" onclick="sendContractIngest(this)">送出請求</button>
           </div>
         </div>
         <div class="response-area" style="display:none">
@@ -1537,7 +1526,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <table class="params-table">
             <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
             <tr><td>market</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>市場代碼</td></tr>
-            <tr><td>source</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>資料來源 (如 bloomberg)</td></tr>
+            <tr><td>source</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>歷史資料來源名稱</td></tr>
             <tr><td>source_code</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>來源代碼 (如 GDP_US)</td></tr>
             <tr><td>name</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>序列名稱（模糊搜尋）</td></tr>
             <tr><td>page</td><td><span class="param-type">integer</span></td><td><span class="param-optional">選填</span></td><td>頁碼 (預設 1)</td></tr>
@@ -1563,7 +1552,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
             </div>
             <div class="form-field">
               <label>source</label>
-              <input id="ms-source" type="text" placeholder="bloomberg">
+              <input id="ms-source" type="text" placeholder="歷史來源">
             </div>
             <div class="form-field">
               <label>source_code</label>
@@ -2148,7 +2137,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="params-title">Query Parameters</div>
           <table class="params-table">
             <tr><th>名稱</th><th>類型</th><th>必填</th><th>說明</th></tr>
-            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>如 us_stock_eod、crypto_bloomberg_eod</td></tr>
+            <tr><td>dataset_key</td><td><span class="param-type">string</span></td><td><span class="param-optional">選填</span></td><td>如 us_equity_eod、tw_equity_eod</td></tr>
             <tr><td>run_id</td><td><span class="param-type">UUID</span></td><td><span class="param-optional">選填</span></td><td>篩選特定注入 run</td></tr>
             <tr><td>date_from</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>建立日期起始（YYYY-MM-DD，UTC）</td></tr>
             <tr><td>date_to</td><td><span class="param-type">date</span></td><td><span class="param-optional">選填</span></td><td>建立日期結束（YYYY-MM-DD，UTC，含當天）</td></tr>
@@ -2160,7 +2149,7 @@ main::-webkit-scrollbar-thumb { background: var(--border); }
           <div class="form-grid">
             <div class="form-field">
               <label>dataset_key</label>
-              <input id="raw-list-dataset" type="text" placeholder="us_stock_eod">
+              <input id="raw-list-dataset" type="text" placeholder="us_equity_eod">
             </div>
             <div class="form-field">
               <label>run_id (UUID)</label>
@@ -3076,35 +3065,17 @@ function sendRequest(btn, method, path, opts) {
 }
 
 function sendRawIngest(btn) {
-  const market = document.getElementById('raw-market').value;
   let body;
   try { body = JSON.parse(document.getElementById('raw-body').value); }
   catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
-  doRequest(btn, 'POST', `/api/v1/source/ingest/${market}`, { auth:'source', body });
+  doRequest(btn, 'POST', '/api/v1/source/ingest', { auth:'source', body });
 }
 
-const directExamples = {
-  crypto:  `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "XBTUSD BGN Curncy",\n      "date": "2026-03-12",\n      "open": 95550.07,\n      "high": 95825.34,\n      "low": 95119.76,\n      "close": 95709.01,\n      "volume": 18500\n    }\n  ]\n}`,
-  usstock: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T16:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "AAPL US Equity",\n      "date": "2026-03-12",\n      "open": 218.2,\n      "high": 221.8,\n      "low": 217.6,\n      "close": 220.5,\n      "volume": 55000000\n    }\n  ]\n}`,
-  twstock: `{\n  "metadata": {\n    "name": "富邦科技",\n    "source": "finlab",\n    "asset_class": "STOCK",\n    "file_name": "finlab_stocks_ohlcv.jsonl",\n    "query_time": "2025-05-05T13:30:00Z"\n  },\n  "data": [\n    {\n      "symbol": "0052",\n      "date": "2025-05-05",\n      "open": 168.50,\n      "high": 168.50,\n      "low": 162.75,\n      "close": 164.90,\n      "total_volume": 1096,\n      "total_ticks": 306\n    }\n  ]\n}`,
-  hkchina: `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "700 HK Equity",\n      "date": "2026-03-12",\n      "open": 415.0,\n      "high": 425.0,\n      "low": 413.0,\n      "close": 420.0,\n      "volume": 18000000\n    },\n    {\n      "ticker": "SH000911 Index",\n      "date": "2026-03-12",\n      "open": 5915.2,\n      "high": 5968.4,\n      "low": 5901.6,\n      "close": 5950.8,\n      "volume": 0\n    }\n  ]\n}`,
-  "hkchina-index": `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "HSI Index",\n      "date": "2026-03-12",\n      "open": 17120.0,\n      "high": 17280.0,\n      "low": 17085.0,\n      "close": 17235.0,\n      "volume": 0\n    },\n    {\n      "ticker": "SH000911 Index",\n      "date": "2026-03-12",\n      "open": 5915.2,\n      "high": 5968.4,\n      "low": 5901.6,\n      "close": 5950.8,\n      "volume": 0\n    }\n  ]\n}`,
-  fx:      `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "pair": "EURUSD",\n      "ticker": "EURUSD Curncy",\n      "date": "2026-03-12",\n      "open": 1.0498,\n      "high": 1.0567,\n      "low": 1.0489,\n      "close": 1.0523\n    }\n  ]\n}`,
-  wtx:     `{\n  "metadata": {\n    "source": "bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "symbol": "TXF1",\n      "ticker": "TXF1 Index",\n      "date": "2026-03-12",\n      "open": 20800,\n      "high": 21100,\n      "low": 20700,\n      "close": 21000,\n      "volume": 50000\n    }\n  ]\n}`,
-  macro:   `{\n  "metadata": {\n    "source": "Bloomberg",\n    "query_time": "2026-03-12T08:00:00Z"\n  },\n  "data": [\n    {\n      "ticker": "SOFRRATE Index",\n      "date": "2026-03-12",\n      "value": 5.32\n    },\n    {\n      "ticker": "USGG10YR Index",\n      "date": "2026-03-12",\n      "value": 4.85\n    }\n  ]\n}`,
-};
-
-function updateDirectExample(sel) {
-  document.getElementById('direct-body').value = directExamples[sel.value];
-}
-
-function sendDirectIngest(btn) {
-  const type = document.getElementById('direct-type').value;
-  const pathMap = { crypto:'crypto', usstock:'usstock', twstock:'twstock', hkchina:'hkchina', 'hkchina-index':'hkchina-index', fx:'fx', wtx:'wtx', macro:'macro' };
+function sendContractIngest(btn) {
   let body;
-  try { body = JSON.parse(document.getElementById('direct-body').value); }
+  try { body = JSON.parse(document.getElementById('contract-body').value); }
   catch(e) { alert('JSON 格式錯誤: ' + e.message); return; }
-  doRequest(btn, 'POST', `/api/v1/source/ingest/${pathMap[type]}/direct`, { auth:'source', body });
+  doRequest(btn, 'POST', '/api/v1/source/ingest', { auth:'source', body });
 }
 
 function sendRunStatus(btn) {

@@ -15,7 +15,7 @@ from app.models.registry import (
     SchedulerDataset,
 )
 from app.services.api_keys import create_api_key
-from app.services.source_clients import create_source_client
+from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
 from app.utils import utc_now
 
 SCHEDULER_KEY = "finlab_tw_equity_eod_v1"
@@ -91,16 +91,24 @@ async def _source_headers(
     allowed_datasets: list[str] | None,
 ) -> dict[str, str]:
     settings = get_settings()
-    _, api_key = await create_source_client(
+    row, api_key = await create_source_client(
         db,
         name=f"scheduler-{provider}",
         owner="scheduler-tests",
         source_name=provider,
-        allowed_datasets=allowed_datasets,
+        # Credential creation itself enforces the exact provider mapping.  A
+        # deliberately malformed scope is applied only after creation here to
+        # exercise scheduler fail-closed behavior for legacy rows.
+        allowed_datasets=list(PROVIDER_DATASET_SCOPE[provider]),
         rate_limit_requests=100,
         rate_limit_window=60,
         commit=False,
     )
+    if allowed_datasets is not None and set(allowed_datasets) != set(
+        PROVIDER_DATASET_SCOPE[provider]
+    ):
+        row.allowed_datasets = allowed_datasets
+        await db.flush()
     return {settings.API_KEY_HEADER: api_key}
 
 

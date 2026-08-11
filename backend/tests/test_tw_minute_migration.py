@@ -69,6 +69,7 @@ def test_tw_minute_migration_is_single_linear_head():
     finlab_policy = scripts.get_revision("e3f4a5b6c7d8")
     minute_freshness = scripts.get_revision("f4a5b6c7d8e9")
     minute_deadline = scripts.get_revision("c3d4e5f6a7b8")
+    stage_four_feeds = scripts.get_revision("d4e5f6a7b8c9")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -83,9 +84,9 @@ def test_tw_minute_migration_is_single_linear_head():
     assert minute_freshness.down_revision == "e3f4a5b6c7d8"
     assert minute_deadline is not None
     assert minute_deadline.down_revision == "b2c3d4e5f6a7"
-    # The environment-neutral registry policy cleanup is the linear head
-    # after the canonical slot identity migration.
-    assert scripts.get_heads() == ["c3d4e5f6a7b8"]
+    assert stage_four_feeds is not None
+    assert stage_four_feeds.down_revision == "c3d4e5f6a7b8"
+    assert scripts.get_heads() == ["d4e5f6a7b8c9"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -559,13 +560,14 @@ async def test_minute_identity_migration_backfills_legacy_runs_safely():
             operator_config = await connection.scalar(
                 text("SELECT config FROM dataset_registry WHERE dataset_key = 'tw_etf_minute'")
             )
-            assert operator_config == {
-                "operator_marker": "keep-me",
-                "delivery_expectation": {
-                    "delivery_mode": "sequenced_snapshot",
-                    "missing_delivery": {"action": "disabled"},
-                },
+            assert operator_config["operator_marker"] == "keep-me"
+            assert operator_config["delivery_expectation"] == {
+                "delivery_mode": "sequenced_snapshot",
+                "missing_delivery": {"action": "disabled"},
             }
+            assert operator_config["schema_id"] == "market_minute"
+            assert operator_config["accepted_schema_versions"] == [1]
+            assert operator_config["allowed_sources"] == ["shioaji"]
 
         with pytest.raises(DBAPIError):
             async with target_engine.begin() as connection:
@@ -746,7 +748,25 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     "TW",
                     "daily",
                     True,
-                    {"source_format": "finlab_twstock_direct"},
+                    {
+                        "schema_id": "market_eod",
+                        "accepted_schema_versions": [1],
+                        "current_schema_version": 1,
+                        "schema_enforcement": "enforce",
+                        "allowed_sources": ["finlab"],
+                        "defaults": {
+                            "market": "TW",
+                            "asset_class": "equity",
+                            "currency": "TWD",
+                        },
+                        "delivery_expectation": {
+                            "missing_delivery": {
+                                "action": "warn",
+                                "expected_sources": ["finlab"],
+                                "deadline_local_time": "17:00:00",
+                            }
+                        },
+                    },
                 ),
                 (
                     "us_equity_eod",
@@ -754,7 +774,25 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     "US",
                     "daily",
                     True,
-                    {"source_format": "bloomberg_equity_api"},
+                    {
+                        "schema_id": "market_eod",
+                        "accepted_schema_versions": [1],
+                        "current_schema_version": 1,
+                        "schema_enforcement": "enforce",
+                        "allowed_sources": ["twelve_data"],
+                        "defaults": {
+                            "market": "US",
+                            "asset_class": "equity",
+                            "currency": "USD",
+                        },
+                        "delivery_expectation": {
+                            "missing_delivery": {
+                                "action": "warn",
+                                "expected_sources": ["twelve_data"],
+                                "deadline_local_time": "17:00:00",
+                            }
+                        },
+                    },
                 ),
             ]
 

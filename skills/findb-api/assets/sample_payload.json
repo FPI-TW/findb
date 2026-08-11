@@ -1,137 +1,30 @@
 {
-  "dataset_key": "crypto_eod",
-  "source": "bloomberg",
-  "request_key": "bloomberg_crypto_20260116_144914",
-  "idempotency_key": "bloomberg_crypto_20260116_144914",
+  "dataset_key": "tw_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "finlab",
+  "request_key": "finlab_tw_equity_eod_20260724_01",
+  "idempotency_key": "finlab_tw_equity_eod_20260724",
+  "fetched_at": "2026-07-24T08:00:00Z",
   "payload": {
-    "metadata": {
-      "source": "Bloomberg API",
-      "category": "Cryptocurrency",
-      "query_time": "2026-01-16T14:49:14.910965",
-      "total_records": 5
+    "batch": {
+      "data_date": "2026-07-24",
+      "delivery_mode": "full_snapshot",
+      "declared_record_count": 1
     },
     "data": [
       {
-        "crypto_id": "bitcoin",
-        "symbol": "BTC",
-        "name": "Bitcoin",
-        "ticker": "XBTUSD BGN Curncy",
-        "price": {
-          "last": 95709.01,
-          "open": 95550.07,
-          "high": 95825.34,
-          "low": 95119.76
-        },
-        "change": {
-          "net": 158.81,
-          "percent_1d": 0.1662
-        },
-        "timestamp": {
-          "query_time": "2026-01-16T14:49:14.901850",
-          "last_update": "2026-01-16"
-        },
-        "metadata": {
-          "source": "Bloomberg",
-          "data_type": "cryptocurrency"
-        }
-      },
-      {
-        "crypto_id": "ethereum",
-        "symbol": "ETH",
-        "name": "Ethereum",
-        "ticker": "XETUSD BGN Curncy",
-        "price": {
-          "last": 3313.855,
-          "open": 3297.76,
-          "high": 3325.536,
-          "low": 3275.938
-        },
-        "change": {
-          "net": 16.092,
-          "percent_1d": 0.488
-        },
-        "timestamp": {
-          "query_time": "2026-01-16T14:49:14.901940",
-          "last_update": "2026-01-16"
-        },
-        "metadata": {
-          "source": "Bloomberg",
-          "data_type": "cryptocurrency"
-        }
-      },
-      {
-        "crypto_id": "ripple",
-        "symbol": "XRP",
-        "name": "Ripple",
-        "ticker": "XRP Curncy",
-        "price": {
-          "last": 2.0741,
-          "open": 2.0739,
-          "high": 2.086,
-          "low": 2.0571
-        },
-        "change": {
-          "net": 0.0004,
-          "percent_1d": 0.0193
-        },
-        "timestamp": {
-          "query_time": "2026-01-16T14:49:14.902009",
-          "last_update": "2026-01-16"
-        },
-        "metadata": {
-          "source": "Bloomberg",
-          "data_type": "cryptocurrency"
-        }
-      },
-      {
-        "crypto_id": "solana",
-        "symbol": "SOL",
-        "name": "Solana",
-        "ticker": "XSO Curncy",
-        "price": {
-          "last": 143.2086,
-          "open": 142.07,
-          "high": 143.4939,
-          "low": 141.417
-        },
-        "change": {
-          "net": 1.1306,
-          "percent_1d": 0.7958
-        },
-        "timestamp": {
-          "query_time": "2026-01-16T14:49:14.902073",
-          "last_update": "2026-01-16"
-        },
-        "metadata": {
-          "source": "Bloomberg",
-          "data_type": "cryptocurrency"
-        }
-      },
-      {
-        "crypto_id": "cardano",
-        "symbol": "ADA",
-        "name": "Cardano",
-        "ticker": "XAD BGN Curncy",
-        "price": {
-          "last": 0.3941,
-          "open": 0.3927,
-          "high": 0.3944,
-          "low": 0.3885
-        },
-        "change": {
-          "net": 0.0014,
-          "percent_1d": 0.3565
-        },
-        "timestamp": {
-          "query_time": "2026-01-16T14:49:14.902137",
-          "last_update": "2026-01-16"
-        },
-        "metadata": {
-          "source": "Bloomberg",
-          "data_type": "cryptocurrency"
-        }
+        "symbol": "2330",
+        "source_symbol": "2330",
+        "trade_date": "2026-07-24",
+        "currency": "TWD",
+        "open": "1120.00",
+        "high": "1145.00",
+        "low": "1115.00",
+        "close": "1140.00",
+        "volume": 25000000,
+        "total_ticks": 120000
       }
     ]
-  },
-  "fetched_at": "2026-01-16T14:49:14Z"
+  }
 }

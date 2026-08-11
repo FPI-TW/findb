@@ -68,7 +68,7 @@ def test_check_command_fails_for_changed_and_missing_artifacts(tmp_path: Path) -
         '{"changed":true}\n',
         encoding="utf-8",
     )
-    (output_dir / "futures_continuous_eod" / "v1.schema.json").unlink()
+    (output_dir / "market_minute" / "v1.schema.json").unlink()
 
     result = subprocess.run(
         [
@@ -86,7 +86,7 @@ def test_check_command_fails_for_changed_and_missing_artifacts(tmp_path: Path) -
 
     assert result.returncode == 1
     assert "artifact differs: market_eod/v1.schema.json" in result.stderr
-    assert "missing artifact: futures_continuous_eod/v1.schema.json" in result.stderr
+    assert "missing artifact: market_minute/v1.schema.json" in result.stderr
     assert (output_dir / "market_eod" / "v1.schema.json").read_text(
         encoding="utf-8"
     ) == '{"changed":true}\n'

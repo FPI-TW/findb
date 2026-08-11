@@ -14,11 +14,9 @@ from app.api.deps import reset_source_rate_limit_state
 from app.config import get_settings
 from app.dependencies import get_db
 from app.main import app
-from app.models.canonical import InstrumentStats, MarketDataEOD
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
-    DQIssue,
     IngestionRun,
     NormalizationJob,
     NormalizationOutbox,
@@ -29,20 +27,10 @@ from app.services.normalization_queue import (
     reconcile_nonterminal_jobs,
     reconcile_stale_jobs,
 )
-from app.services.normalize.base import BaseNormalizer
 from app.task_queue import normalization_queue
 from app.utils import utc_now, uuid7
 from app.workers.tasks import normalize_run
 from scripts.cleanup_raw import cleanup_expired_raw
-
-
-class _PrecedenceNormalizer(BaseNormalizer):
-    dataset_key = "crypto_eod"
-    asset_class = "crypto"
-    market = "CRYPTO"
-
-    def map_fields(self, raw_data: dict):
-        return self.map_fields_from_config(raw_data)
 
 
 def test_queue_consumer_timeout_exceeds_task_hard_limit():
@@ -97,22 +85,22 @@ def test_worker_rejects_invalid_uuid_without_executing(run_id, delivery_id):
     execute.assert_not_called()
 
 
-async def _seed_crypto_dataset(session) -> None:
+async def _seed_eod_dataset(session) -> None:
     session.add(
         DatasetRegistry(
-            dataset_key="crypto_eod",
-            name="Crypto EOD",
-            asset_class="crypto",
-            market="CRYPTO",
+            dataset_key="tw_equity_eod",
+            name="TW Equity EOD",
+            asset_class="equity",
+            market="TW",
             frequency="daily",
             is_active=True,
             config={
-                "data_path": "data",
-                "field_mapping": {
-                    "symbol": "symbol",
-                    "trade_date": "trade_date",
-                    "close": "close",
-                },
+                "schema_id": "market_eod",
+                "accepted_schema_versions": [1],
+                "current_schema_version": 1,
+                "schema_enforcement": "enforce",
+                "allowed_sources": ["finlab"],
+                "defaults": {"market": "TW", "asset_class": "equity", "currency": "TWD"},
             },
         )
     )
@@ -121,18 +109,32 @@ async def _seed_crypto_dataset(session) -> None:
 
 def _request(idempotency_key: str, close: float = 100.0) -> dict:
     return {
-        "dataset_key": "crypto_eod",
-        "source": "bloomberg",
+        "dataset_key": "tw_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+        "source": "finlab",
         "request_key": idempotency_key,
         "idempotency_key": idempotency_key,
         "payload": {
+            "batch": {
+                "data_date": "2026-07-15",
+                "delivery_mode": "full_snapshot",
+                "declared_record_count": 1,
+            },
             "data": [
                 {
-                    "symbol": "BTCUSD",
+                    "symbol": "2330",
+                    "source_symbol": "2330 TT Equity",
                     "trade_date": "2026-07-15",
+                    "name": "台積電",
+                    "currency": "TWD",
+                    "open": close - 1,
+                    "high": close + 1,
+                    "low": close - 2,
                     "close": close,
+                    "volume": 100,
                 }
-            ]
+            ],
         },
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -146,7 +148,7 @@ async def test_burst_requests_are_durably_accepted(
     test_session,
     source_headers: dict,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     session_factory = async_sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -172,7 +174,7 @@ async def test_burst_requests_are_durably_accepted(
             responses = await asyncio.gather(
                 *(
                     burst_client.post(
-                        "/api/v1/source/ingest/crypto",
+                        "/api/v1/source/ingest",
                         headers=source_headers,
                         json=_request(f"burst-{request_count}-{index}"),
                     )
@@ -206,10 +208,10 @@ async def test_202_atomically_creates_raw_run_job_and_outbox(
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
 
     response = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("durable-accept-1"),
     )
@@ -247,14 +249,14 @@ async def test_scoped_idempotency_payload_mismatch_returns_409(
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     first = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("conflicting-key", close=100.0),
     )
     second = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("conflicting-key", close=101.0),
     )
@@ -266,48 +268,20 @@ async def test_scoped_idempotency_payload_mismatch_returns_409(
 
 
 @pytest.mark.asyncio
-async def test_direct_endpoint_honors_idempotency_key_header(
-    client: AsyncClient,
-    source_headers: dict,
-):
-    headers = {**source_headers, "Idempotency-Key": "provider-direct-key-1"}
-    payload = {
-        "metadata": {"source": "bloomberg", "query_time": "2026-07-15T00:00:00Z"},
-        "data": [
-            {
-                "symbol": "BTCUSD",
-                "date": "2026-07-15",
-                "open": 100,
-                "high": 110,
-                "low": 90,
-                "close": 105,
-                "volume": 1,
-            }
-        ],
-    }
-    first = await client.post("/api/v1/source/ingest/crypto/direct", headers=headers, json=payload)
-    payload["data"][0]["close"] = 106
-    second = await client.post("/api/v1/source/ingest/crypto/direct", headers=headers, json=payload)
-
-    assert first.status_code == 202
-    assert second.status_code == 409
-
-
-@pytest.mark.asyncio
 async def test_source_client_is_bound_to_source_dataset_and_own_runs(
     client: AsyncClient,
     admin_headers: dict,
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     issued = await client.post(
         "/api/v1/admin/source-clients",
         headers=admin_headers,
         json={
-            "name": "Bloomberg provider",
-            "source_name": "bloomberg",
-            "allowed_datasets": ["crypto_eod"],
+            "name": "FinLab provider",
+            "source_name": "finlab",
+            "allowed_datasets": ["tw_equity_eod"],
             "rate_limit_requests": 20,
             "rate_limit_window": 60,
         },
@@ -316,7 +290,7 @@ async def test_source_client_is_bound_to_source_dataset_and_own_runs(
     provider_headers = {"X-API-Key": issued.json()["api_key"]}
 
     accepted = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=provider_headers,
         json=_request("source-owned-run-1"),
     )
@@ -329,9 +303,9 @@ async def test_source_client_is_bound_to_source_dataset_and_own_runs(
     assert legacy_status.status_code == 404
 
     mismatched = _request("source-mismatch-1")
-    mismatched["source"] = "finlab"
+    mismatched["source"] = "twelve_data"
     forbidden = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=provider_headers,
         json=mismatched,
     )
@@ -344,9 +318,9 @@ async def test_reconciliation_replays_published_delivery_after_broker_loss(
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     response = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("broker-wipe-1"),
     )
@@ -383,9 +357,9 @@ async def test_reconciliation_resets_expired_processing_lease(
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     response = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("expired-lease-1"),
     )
@@ -421,9 +395,9 @@ async def test_reconciliation_preserves_delivery_id_when_active_outbox_exists(
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     response = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("expired-active-delivery"),
     )
@@ -457,9 +431,9 @@ async def test_reconciliation_never_rewrites_mismatched_active_generation(
     source_headers: dict,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     response = await client.post(
-        "/api/v1/source/ingest/crypto",
+        "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("mismatched-active-delivery"),
     )
@@ -526,11 +500,11 @@ async def test_reconciliation_never_rewrites_mismatched_active_generation(
 
 @pytest.mark.asyncio
 async def test_stale_reconciliation_repairs_processing_job_without_lease(test_session):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     now = utc_now()
     run = IngestionRun(
-        dataset_key="crypto_eod",
-        source="bloomberg",
+        dataset_key="tw_equity_eod",
+        source="finlab",
         status="processing",
         created_at=now - timedelta(hours=1),
     )
@@ -539,7 +513,7 @@ async def test_stale_reconciliation_repairs_processing_job_without_lease(test_se
     delivery_id = uuid7()
     job = NormalizationJob(
         run_id=run.run_id,
-        dataset_key="crypto_eod",
+        dataset_key="tw_equity_eod",
         status="processing",
         delivery_id=delivery_id,
         lease_expires_at=None,
@@ -575,11 +549,11 @@ async def test_lock_contention_creates_one_new_delivery_for_concurrent_duplicate
     test_engine,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     now = utc_now()
     run = IngestionRun(
-        dataset_key="crypto_eod",
-        source="bloomberg",
+        dataset_key="tw_equity_eod",
+        source="finlab",
         status="queued",
         created_at=now,
     )
@@ -588,7 +562,7 @@ async def test_lock_contention_creates_one_new_delivery_for_concurrent_duplicate
     original_delivery_id = uuid7()
     job = NormalizationJob(
         run_id=run.run_id,
-        dataset_key="crypto_eod",
+        dataset_key="tw_equity_eod",
         status="queued",
         delivery_id=original_delivery_id,
         available_at=now,
@@ -674,11 +648,11 @@ async def test_lock_contention_refreshes_preloaded_job_before_deferring(
     test_engine,
     test_session,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     now = utc_now()
     run = IngestionRun(
-        dataset_key="crypto_eod",
-        source="bloomberg",
+        dataset_key="tw_equity_eod",
+        source="finlab",
         status="queued",
         created_at=now,
     )
@@ -687,7 +661,7 @@ async def test_lock_contention_refreshes_preloaded_job_before_deferring(
     delivery_id = uuid7()
     job = NormalizationJob(
         run_id=run.run_id,
-        dataset_key="crypto_eod",
+        dataset_key="tw_equity_eod",
         status="queued",
         delivery_id=delivery_id,
         available_at=now,
@@ -753,11 +727,11 @@ async def test_lock_contention_refreshes_preloaded_job_before_deferring(
 
 @pytest.mark.asyncio
 async def test_stale_published_delivery_is_recreated(test_session):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     now = utc_now()
     run = IngestionRun(
-        dataset_key="crypto_eod",
-        source="bloomberg",
+        dataset_key="tw_equity_eod",
+        source="finlab",
         status="queued",
         created_at=now,
     )
@@ -765,7 +739,7 @@ async def test_stale_published_delivery_is_recreated(test_session):
     await test_session.flush()
     job = NormalizationJob(
         run_id=run.run_id,
-        dataset_key="crypto_eod",
+        dataset_key="tw_equity_eod",
         status="queued",
         delivery_id=uuid7(),
         available_at=now - timedelta(hours=1),
@@ -822,81 +796,6 @@ async def test_stale_published_delivery_is_recreated(test_session):
 
 
 @pytest.mark.asyncio
-async def test_source_precedence_is_independent_of_worker_completion_order(test_session):
-    await _seed_crypto_dataset(test_session)
-    runs = [
-        IngestionRun(
-            dataset_key="crypto_eod",
-            source=source,
-            status="queued",
-            created_at=utc_now(),
-        )
-        for source in ("preferred", "fallback", "preferred")
-    ]
-    test_session.add_all(runs)
-    await test_session.commit()
-    run_ids = [run.run_id for run in runs]
-
-    base_config = {
-        "source_precedence": ["preferred", "fallback"],
-        "source_field": "source",
-        "field_mapping": {
-            "symbol": "symbol",
-            "trade_date": "date",
-            "close": "close",
-        },
-    }
-
-    async def normalize(run_id, source: str, close: int, fetched_at: datetime):
-        normalizer = _PrecedenceNormalizer(
-            test_session,
-            {**base_config, "_ingest_fetched_at": fetched_at},
-        )
-        return await normalizer.process(
-            {
-                "data": [
-                    {
-                        "symbol": "BTCUSD",
-                        "date": "2026-07-15",
-                        "close": close,
-                        "source": source,
-                    }
-                ]
-            },
-            run_id,
-        )
-
-    await normalize(run_ids[0], "preferred", 100, datetime(2026, 7, 15, tzinfo=timezone.utc))
-    fallback_result = await normalize(
-        run_ids[1], "fallback", 999, datetime(2026, 7, 16, tzinfo=timezone.utc)
-    )
-    row = (await test_session.execute(select(MarketDataEOD))).scalar_one()
-    assert int(row.close or 0) == 100
-    assert row.source == "preferred"
-    assert fallback_result.success_records == 0
-    assert fallback_result.failed_records == 0
-    assert fallback_result.precedence_rejected_records == 1
-    warning = (
-        await test_session.execute(
-            select(DQIssue).where(
-                DQIssue.run_id == run_ids[1],
-                DQIssue.issue_type == "SOURCE_PRECEDENCE_REJECTED",
-            )
-        )
-    ).scalar_one()
-    assert warning.severity == "warning"
-    assert warning.raw_data == {"rejected_records": 1}
-    stats = await test_session.get(InstrumentStats, row.instrument_id)
-    assert stats is not None
-    assert int(stats.latest_price or 0) == 100
-
-    await normalize(run_ids[2], "preferred", 101, datetime(2026, 7, 17, tzinfo=timezone.utc))
-    test_session.expire_all()
-    row = (await test_session.execute(select(MarketDataEOD))).scalar_one()
-    assert int(row.close or 0) == 101
-
-
-@pytest.mark.asyncio
 async def test_raw_cleanup_skips_database_when_disabled():
     with patch("scripts.cleanup_raw.create_async_engine") as create_engine:
         deleted = await cleanup_expired_raw(retention_enabled=False)
@@ -910,7 +809,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     test_session,
     test_engine,
 ):
-    await _seed_crypto_dataset(test_session)
+    await _seed_eod_dataset(test_session)
     now = utc_now()
     retention_days = get_settings().RAW_RETENTION_DAYS
     old_terminal_at = now - timedelta(days=retention_days + 1)
@@ -927,8 +826,8 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         run_id = uuid7()
         raw = RawMarketPayload(
             raw_payload_id=uuid7(),
-            dataset_key="crypto_eod",
-            source="bloomberg",
+            dataset_key="tw_equity_eod",
+            source="finlab",
             request_key=key,
             idempotency_key=key,
             payload_sha256="a" * 64,
@@ -940,7 +839,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         )
         run = IngestionRun(
             run_id=run_id,
-            dataset_key="crypto_eod",
+            dataset_key="tw_equity_eod",
             raw_payload_id=raw.raw_payload_id,
             status=status,
             completed_at=terminal_at,
@@ -949,7 +848,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
         job = NormalizationJob(
             job_id=uuid7(),
             run_id=run_id,
-            dataset_key="crypto_eod",
+            dataset_key="tw_equity_eod",
             status=status,
             delivery_id=uuid7(),
             available_at=now,
@@ -995,8 +894,8 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     legacy_run_id = uuid7()
     legacy_raw = RawMarketPayload(
         raw_payload_id=uuid7(),
-        dataset_key="crypto_eod",
-        source="bloomberg",
+        dataset_key="tw_equity_eod",
+        source="finlab",
         request_key="legacy-terminal",
         idempotency_key="legacy-terminal",
         payload_sha256="b" * 64,
@@ -1008,7 +907,7 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     )
     legacy_run = IngestionRun(
         run_id=legacy_run_id,
-        dataset_key="crypto_eod",
+        dataset_key="tw_equity_eod",
         raw_payload_id=legacy_raw.raw_payload_id,
         status="completed",
         completed_at=None,

@@ -1,92 +1,65 @@
 # Fetcher 資料自動化 backlog
 
-本文件追蹤四時段自動化尚未完成的 provider、universe、contract、canonical
-model 與產品口徑。排程時區固定為 `Asia/Taipei`：
+本文件只追蹤 staging active feeds 的驗收與「日後新增資料域」所需的完整工作；不把
+canonical read model 誤列為目前 provider coverage。排程時區固定為 `Asia/Taipei`。
 
-| Slot          | 時間  | 範圍                                                 |
-| ------------- | ----- | ---------------------------------------------------- |
-| `western_markets_window`     | 06:30 | 美國、歐洲、英國、印度、新加坡、商品、美國宏觀與債券 |
-| `global_markets_window` | 08:15 | Crypto、外匯、DXY、UTC／紐約日界全球市場             |
-| `taiwan_market_window`     | 14:30 | 台股、ETF、指數、法人資料與 WTX 日盤                 |
-| `asia_pacific_markets_window`   | 17:15 | 中國、香港、日本、韓國、澳洲等亞太市場               |
+## 目前 active feed
+
+| Provider | Dataset | 目前範圍 | 狀態 |
+| --- | --- | --- | --- |
+| `twelve_data` | `us_equity_eod` | reviewed bounded US equity universe | staging active |
+| `finlab` | `tw_equity_eod` | reviewed bounded TW equity universe | staging active |
+| `shioaji` | `tw_equity_minute` | `2330` pilot | staging active |
+| `shioaji` | `tw_etf_minute` | `0050`、`0056`、`006201` pilot | staging active |
+
+每個 active feed 都使用獨立 Source client key、provider credential、raw storage ref、
+SQLite state 與 bounded universe。Fetcher 只能透過 `/api/v1/source/ingest` 送出
+versioned provider-neutral contract；舊 direct/market route、provider-specific route、
+退休 scheduler identity 與 futures contract feed 不在 staging。
 
 ## 現行安全邊界
 
-- Manifest v2 與 SQLite state v3 已有四 slot、provider/dataset/work-item/target
-  date identity、v1 原地遷移與 delivery metadata。v1 保留 one-shot／check 與 state
-  migration 相容；只有宣告精確 `legacy_schedule_id` 的 western feed 可承接 v1 state，
-  其它 feed 遇到 legacy row 一律 fail closed。DB-controlled `--run-forever` 必須顯式
-  選擇 v2 manifest feed，避免從 legacy identity 推導 slot 或時間。
-- `western_markets_window` 引用受治理的 NYSE 2026–2028 calendar 檔；超出 calendar
-  coverage 時排程會 fail closed，不能以 weekday 猜測交易日。Calendar 必須在
-  啟用 2029 年度前完成 review 與展延。
-- `scheduled_for` 表示 slot 實際觸發日，與可能因時區、週末或假日回推的
-  `target_data_date` 分開保存；retryable miss 在 grace deadline 前不會耗盡。
-- 目前可執行的reviewed pilots為：`western_markets_window` Twelve Data `AAPL`、`MSFT`、`NVDA`；
-  `taiwan_market_window` FinLab `2330`、`2317`日線；以及Shioaji `2330`、`0050`、`0056`、
-  `006201`當日分鐘線。這不代表全市場universe已獲授權。
-- Daily scheduler 不得隱式執行五年 backfill。Backfill 必須使用獨立命令、state
-  與分塊策略，且每一筆 Source request 小於 1 MB。
-- Universe 只能來自 reviewed、versioned manifest。不得由名稱、現有 cache、
-  公開知識或「約 N 檔」描述推導完整成分股。
-- 同一 canonical row 只能有一個權威來源；台股股票與 ETF OHLCV 以 FinLab
-  為主，Twelve Data 只補明列標的。
-- FinLab SDK 以 `finlab==1.5.7` optional dependency 管理；官方 changelog
-  顯示 `1.5.8` 導入 Firebase／瀏覽器登入，因此固定在前一版，保留團隊帳號僅能使用
-  `FINLAB_API_TOKEN` 的 headless 流程。不得未經驗證升級；通用 Fetcher image
-  不會安裝，production只由獨立FinLab image、Source key、state與container啟用。
+- Scheduler 由 DB definition 與 desired state 控制；Fetcher 不直接連 FinDB DB，控制面失聯
+  時 fail-closed。
+- Calendar 必須是完整 published year；沒有 static weekday fallback。
+- Daily scheduler 不得隱式執行歷史 backfill。任何 backfill、archive 或 universe 擴張都要
+  另案建立 contract、state、分塊策略與 rollback/cleanup 計畫。
+- Universe 只能來自 reviewed、versioned manifest；不得由名稱、cache 或「約 N 檔」推導。
+- 同一 canonical row 只能有一個權威來源；source ownership、record count、freshness、
+  coverage 與 missing-delivery policy 必須在 staging 觀察窗口中校準。
+- FinLab 與 Shioaji optional SDK 只在各自隔離 image/runtime 使用；通用 Fetcher image
+  不攜帶不需要的 provider SDK 或 credentials。
 
-## 第一階段 coverage matrix
+## Active feed 驗收 backlog
 
-`待驗證` 代表尚未以 production 帳戶取得並保存可去識別 fixture；不能據此啟用。
+- [ ] 以四個 active feed 完成至少兩個有效交易日的 bounded live preflight，保存 image/config
+  SHA、universe、日期/row 上限、預估 credits 與 post-run counts。
+- [ ] 驗證 provider raw artifact、Source `202`、outbox/RabbitMQ、normalization terminal
+  state、DQ、canonical rows、Serve/Admin/Dashboard lineage 一致。
+- [ ] 驗證相同 idempotency key 重送不增加 canonical row；相同 key 不同內容回 `409`。
+- [ ] 驗證 retry、lease recovery、graceful stop、calendar holiday、DST 與 late delivery。
+- [ ] 以實際四個 dataset 校準 minimum record count、freshness、coverage 與 missing alert，
+  並完成 rollback/cleanup runbook。
 
-| 市場／資料        | Provider 與 endpoint                 | 明確 universe                                                                                                                                                                  | Slot          | Canonical 支援                                                  | 驗證結果／阻礙                                                          | 啟用驗收                                                                        |
-| ----------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 美股日線 pilot    | Twelve Data `/time_series`           | `AAPL`, `MSFT`, `NVDA`                                                                                                                                                         | `western_markets_window`     | `market_eod.v1`、`us_equity_eod`                                | 已有 adapter 與受限 universe                                            | 保持現有 contract、raw-first、retry 與 checkpoint 測試通過                      |
-| 美國主要指數      | Twelve Data；需逐一驗證 entitlement  | `SPX`, `NDX`, `INDU`, `SOX`, `RTY Index`                                                                                                                                       | `western_markets_window`     | OHLC 可用 `market_eod.v1`；identifier mapping 待定              | 待驗證 symbol、instrument type、歷史深度                                | 每個 symbol 有真實 fixture、canonical mapping 與五日 staging 證據               |
-| 美國 sector 指數  | Twelve Data／待驗證                  | `S5INFT`, `S5COND`, `S5TELS`, `S5RLST`, `S5INDU`, `S5MATR`, `S5FINL`, `S5HLTH`, `S5ENRS`, `S5UTIL`, `S5CONS Index`                                                             | `western_markets_window`     | OHLC shape 可支援                                               | entitlement 與 symbol syntax 待驗證                                     | reviewed universe、fixture、quota 與 canonical identity 全數通過                |
-| M7                | Twelve Data `/time_series`           | `AAPL`, `MSFT`, `NVDA`, `AMZN`, `GOOGL`, `META`, `TSLA`                                                                                                                        | `western_markets_window`     | `market_eod.v1`                                                 | pilot 以外需擴大 hard cap                                               | 逐 symbol fixture、credit budget、無重複 canonical row                          |
-| 商品              | Twelve Data `/quote`, `/time_series` | `XBR/USD`, `WTI/USD`, `XAU/USD`, `XAG/USD`, `HG1`                                                                                                                              | `western_markets_window`     | OHLC shape 可支援；spot／future identity 未定                   | slash symbol、spot/future、roll 口徑未決                                | 產品核准 identity；adapter fixture、currency/type、歷史深度與 quota 通過        |
-| 外匯與 DXY        | Twelve Data `/quote`, `/time_series` | `DXY`, `EUR/USD`, `USD/JPY`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/SEK`, `AUD/USD`, `USD/TWD`, `USD/CNH`, `USD/KRW`, `USD/SGD`, `AUD/JPY`, `BRL/JPY`                           | `global_markets_window` | 既有 FX direct canonical path；Fetcher contract/universe 未泛化 | 現有 universe 禁止 slash symbol 且只接受 US equity                      | 精確 14 項 fixture matrix、FX contract routing、credit hard cap、跨日測試       |
-| Crypto OHLCV      | Twelve Data `/quote`, `/time_series` | `BTC/USD`, `ETH/USD`, `XRP/USD`, `SOL/USD`, `ADA/USD`                                                                                                                          | `global_markets_window` | 既有 crypto direct canonical path；TD acquisition 未接          | slash symbol、provider mapping 待完成                                   | 五項真實 fixture、24/7 target-date policy、UTC/NY 日界測試                      |
-| 台股股票／ETF     | FinLab                               | Reviewed pilot為`2330`、`2317`；全市場股票與ETF仍須由FinLab governed dataset產生                                                                                               | `taiwan_market_window`     | Pilot使用`market_eod.v1`、`tw_equity_eod`；`tw_etf_eod`待擴充   | Pilot已有durable scheduler、raw-first bundle、完整two-row Source/canonical gate與隔離deployment；全市場membership/completeness未完成 | 先觀察pilot五個有效交易日；全市場另需governed membership、sanitized fixture、quota與完整性政策 |
-| 台股補充標的      | Twelve Data、TWSE／TPEx API          | `TWII`, `TWB23`, `TWB28`, `0050&exchange=TWSE`, `SOX Index`；不得推導全部 `TWBxx`                                                                                              | `taiwan_market_window`     | 部分 OHLC 可支援；法人／估值等不可硬塞 EOD                      | entitlement、TWSE/TPEx adapter、新 contract/model 待辦                  | 每個 endpoint fixture；與 FinLab 權威範圍互斥；無雙源覆寫                       |
-| WTX 日盤          | FinLab                               | `WTX`                                                                                                                                                                          | `taiwan_market_window`     | `futures_continuous_eod.v1`、`wtx_eod`                          | Backend normalizer 已有；Fetcher adapter 未完成                         | 單一 FinLab feed、交易日與日盤完整性測試、無 legacy Bloomberg 雙源              |
-| 港股指數          | Twelve Data／Bloomberg               | `HSI`; `HSTECH Index`, `HSCEI Index`, `HSMSI Index`, `VHSI Index`; `HSCIIT`, `HSCICD`, `HSCICS`, `HSCIH`, `HSCIPC`, `HSCIMT`, `HSCIIN`, `HSCIFN`, `HSCIUT`, `HSCIEN`, `HSCITC` | `asia_pacific_markets_window`   | HK direct path 可支援；Fetcher provider 缺少                    | TD/Bloomberg entitlement 待驗證                                         | 明確 universe、真實 fixture、source ownership 與五日 staging                    |
-| 港股個股          | Twelve Data／Bloomberg               | `2559`, `981`, `1347`, `6869`, `151`, `1398`, `5`, `700`, `941`, `857`, `388`, `9988`, `1810`, `3690`, `300`, `9999`, `9618`, `9961`, `1024`                                   | `asia_pacific_markets_window`   | HK equity direct path可支援                                     | `02559` 去零與 coverage、`300` A/H mapping 未決；不得補足「約 40 檔」   | identifier 決策、逐 symbol fixture、去重與 entitlement 通過                     |
-| 陸股指數          | Twelve Data／Bloomberg               | `SHCOMP`, `SZCOMP`, `000300`, `399001`, `399006`, `000016`; optional `SHSZ300 Index` cross-check                                                                               | `asia_pacific_markets_window`   | CN index direct path 可支援                                     | composite 與舊口徑尚未定案                                              | 核准 index set、exchange mapping、fixture 與 source ownership                   |
-| 陸股 sector／個股 | Twelve Data／Bloomberg               | `SH000908`–`SH000917`; `600519&exchange=SSE`, `300750&exchange=SZSE`                                                                                                           | `asia_pacific_markets_window`   | CN direct path 可支援                                           | 「市值前 N」沒有 N 或 approved membership source                        | 僅啟用明列項目；fixture、market mapping、quota 與五日 staging                   |
+## 日後新增資料域的 gate
 
-## 新 provider 與 contract/model
+目前 canonical/Serve 可能保留 macro、bonds、futures、FX、crypto、HK/CN 或其他歷史
+read model；這些不是 active provider feed。任何新增資料域（包含現有 read model 的重新
+供應）都必須先完成：
 
-| 項目                                         | 需要的能力                                                                                                                                                                                                                              | 阻礙                                                              | 驗收條件                                                                                     |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| FinLab production scheduler                  | Reviewed two-symbol pilot已有headless SDK gateway、deterministic raw bundle、`full_snapshot` mapper、persistent retry/lease/checkpoint與Source terminal count gate                                                                         | 公開SDK只回傳DataFrame，raw artifact不是exact HTTP bytes；全市場governed universe與完整性政策尚未完成                 | 以獨立Source key/R2/state/container連續觀察五個有效交易日；再另案擴大universe                         |
-| TWSE／TPEx                                   | `MI_INDEX`, `T86`, `STOCK_DAY_ALL`, `BWIBBU_ALL` 與 OTC fallback adapters                                                                                                                                                               | 法人、估值、類股不是 market EOD                                   | 先新增專用 contract、canonical model、Alembic、DQ 與 Serve schema                            |
-| Bloomberg                                    | HK/CN、macro、yield、credit series acquisition                                                                                                                                                                                          | Backend 有 direct normalizer，但 Fetcher 無 provider              | provider adapter、entitlement matrix、sanitized fixture、rate limit/retry                    |
-| Macro／yield                                 | `USGG3M`, `USGG2YR`, `USGG5YR`, `USGG10YR`, `USGG30YR`, `SOFRRATE`, `USGGBE02`, `PCE CYOY`, `MOVE`, `USYC2Y10`, `USYC3M10`, `SPX Index`, `IBXXAX73`, `IBXXAJ03`, `IBXXAJ32`, `C0A1 Index`, `C0A4 Index`, `LG30YW Index`, `BEBGYW Index` | bond entity vs macro scalar、direct OAS vs calculated spread 未決 | 核准 canonical identity／calculation owner，然後 contract、fixture 與 Serve 驗收             |
-| FRED／Finnhub／Marketaux／CME 或 Atlanta Fed | macro backup、economic calendar、news、FedWatch                                                                                                                                                                                         | 尚無 provider 與 event/news canonical model                       | provider-neutral event/news contracts、去重、時區、revision 與 attribution 測試              |
-| CMC／alt.me／Binance／Bybit／Deribit         | global metrics、fear-and-greed、perpetual OI、DVOL                                                                                                                                                                                      | source/caption 衝突、altcoin endpoint 與 DVOL endpoint 未定       | 產品決策後新增 snapshot／derivatives contracts、fixture 與 provider fallback 規則            |
-| Instrument reference data                    | profile、market cap、sector、index membership、fundamentals                                                                                                                                                                             | 現有 InstrumentStats 不承載這些欄位                               | 新 contract/model/migration；point-in-time 與 membership effective-date 測試                 |
+1. provider entitlement、sanitized fixtures、source ownership 與 bounded universe。
+2. provider-neutral versioned contract、dataset registry、normalizer、DQ 與 migration。
+3. Source client scope、rate limit、raw retention、idempotency/retry、calendar 與 scheduler
+   definition。
+4. Serve read model/API shaping、Dashboard governance mapping、告警與稽核。
+5. staging live preflight、至少兩個有效交易日觀察、failure/recovery 演練與 rollback。
 
-## 上線順序與觀察
+未完成上述 gate 前，backlog 只可記為待評估，不得加入 active provider enum、dataset
+mapping、scheduler row 或 deployment secret。
 
-Shioaji Taiwan-minute 已有四檔reviewed production-pilot scheduler、獨立container/state、
-raw-first Source delivery與canonical count gate；原staging coordinator仍保留為bounded
-one-shot驗證工具。完整production universe、跨sequence publication、archive/backfill與
-Serve/Export publication仍在backlog。
+## 明確未承諾項目
 
-1. 在staging以production credentials完成三provider的live preflight，確認獨立
-   Source/R2/state/container與dataset registry。
-2. 觀察reviewed pilots的contract、target-date、DST／假日、grace、retry、late recovery
-   與 1 MB request 上限。
-3. 完成FinLab與Shioaji全市場governed universe、publication barrier與completeness policy。
-4. 使用獨立backfill/archive工作流完成五年資料，核對重複、日期缺口與source ownership。
-5. 依序擴充`taiwan_market_window`、`asia_pacific_markets_window`、`western_markets_window`、`global_markets_window`；每個slot至少觀察兩個
-   有效交易日，全數啟用後再觀察一個完整交易週。
-
-Reviewed pilots以外的項目，只有在entitlement/fixture、canonical mapping、DQ、API
-freshness、alert、rollback與observability同時通過，且已建立受審核的 DB scheduler
-definition／dataset mapping後，owner才能將 DB `desired_state`改為`running`。Manifest 的
-`enabled`與`scheduled_time`不是執行權威；既有pilots的實際Environment activation仍須
-完成上述live觀察。
+- 全市場 universe、跨 sequence publication、archive/backfill、永久 Canonical object
+  storage 與大型 Export API 尚未列入 active scope。
+- 任何退休 provider、舊 direct route 或 futures contract 都不會以相容 fallback
+  重新啟用；需求出現時需依完整新版 contract 流程另案設計。

@@ -35,12 +35,13 @@ Dashboard 統一讀取 repository 根目錄的 `.env`。Dashboard 本身只需�
 公開頁不讀取 Admin credentials。操作人員使用後端 DB-backed 管理者帳號登入；
 後端 opaque session token 只保存在 Dashboard server 設定的 `HttpOnly`、
 `SameSite=Strict` cookie，瀏覽器 JavaScript 無法讀取。Dashboard server 呼叫
-Admin API 時以 Bearer token 轉送。Production cookie 同時啟用 `Secure`；本機 HTTP
+Admin API 時以 Bearer token 轉送。Staging cookie 同時啟用 `Secure`；本機 HTTP
 開發則停用 `Secure`，以便在 localhost 測試。
 
 公開 Lookup 透過同源的 `/api/v1/serve/lookup/instruments` 與
 `/api/v1/serve/lookup/macro-series` 取得列表、facets 與分頁資料。前端測試只 mock
-此 HTTP contract，不讀取 backend source 或 generated cache。
+此 HTTP contract，不讀取 backend source 或 generated cache。Lookup 讀取的是 canonical
+read model；它不代表該資料域目前有 active provider feed。
 
 直接執行 `pnpm dev:dashboard` 時，開發入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
 
@@ -51,7 +52,7 @@ pnpm container:dashboard
 Dashboard image 內固定監聽 port `3333`，本機 Compose 也映射為
 `http://localhost:3333/dashboard/`，因此 container 不會占用前端開發常用的
 port `3000`。這兩個本機 Dashboard port 的公開 Lookup 請求會直接連到
-`http://localhost:8080`；正式環境則維持同源 `/api/v1/serve/*`，由 Nginx 代理並注入
+`http://localhost:8080`；staging 則維持同源 `/api/v1/serve/*`，由 Nginx 代理並注入
 Serve key。
 
 ## Checks

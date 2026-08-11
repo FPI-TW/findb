@@ -172,6 +172,7 @@ from app.services.scheduler_control import (
 )
 from app.services.slot_identity import normalize_slot_id
 from app.services.source_clients import (
+    SourceProviderScopeError,
     create_source_client,
     list_source_clients,
     revoke_source_client,
@@ -495,18 +496,21 @@ async def create_credential_endpoint(
                 status_code=422,
                 detail="Source credentials require name, owner, and source_name",
             )
-        source_row, plaintext = await create_source_client(
-            db,
-            name=body.name,
-            owner=body.owner,
-            description=body.description,
-            source_name=body.source_name,
-            allowed_datasets=body.allowed_datasets,
-            rate_limit_requests=body.rate_limit_requests,
-            rate_limit_window=body.rate_limit_window,
-            expires_at=body.expires_at,
-            commit=False,
-        )
+        try:
+            source_row, plaintext = await create_source_client(
+                db,
+                name=body.name,
+                owner=body.owner,
+                description=body.description,
+                source_name=body.source_name,
+                allowed_datasets=body.allowed_datasets,
+                rate_limit_requests=body.rate_limit_requests,
+                rate_limit_window=body.rate_limit_window,
+                expires_at=body.expires_at,
+                commit=False,
+            )
+        except SourceProviderScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         data = present_source(source_row)
         resource_id = str(source_row.client_id)
     else:
@@ -555,7 +559,10 @@ async def rotate_credential_endpoint(
         source = await db.get(SourceClient, credential_id)
         if source is None:
             raise HTTPException(status_code=404, detail="Credential not found")
-        rotated_source, plaintext = await rotate_source_client(db, source, commit=False)
+        try:
+            rotated_source, plaintext = await rotate_source_client(db, source, commit=False)
+        except SourceProviderScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         data = present_source(rotated_source)
         rotated_id = str(rotated_source.client_id)
     else:
@@ -639,6 +646,8 @@ async def create_source_client_endpoint(
             expires_at=body.expires_at,
             commit=False,
         )
+    except SourceProviderScopeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Source client conflicts with an existing key")

@@ -374,6 +374,16 @@ def test_bundle_cannot_be_mutated_or_constructed_with_inconsistent_integrity_dat
 
 def test_asset_class_has_a_fixed_source_dataset_key() -> None:
     config = _config()
+    with pytest.raises(FinLabConfigError, match="supports only asset_class equity"):
+        FinLabDatasetConfig(
+            dataset_key=config.dataset_key,
+            market=config.market,
+            asset_class="etf",
+            currency=config.currency,
+            field_datasets=config.field_datasets,
+            symbols=config.symbols,
+        )
+
     with pytest.raises(FinLabConfigError, match="fixed FinLab Source dataset key"):
         FinLabDatasetConfig(
             dataset_key="tw_etf_eod",

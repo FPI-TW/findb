@@ -1159,17 +1159,17 @@ class TestBulkRerun:
         monkeypatch,
     ):
         dataset = DatasetRegistry(
-            dataset_key="crypto_eod",
-            name="Crypto EOD",
-            asset_class="crypto",
-            market="CRYPTO",
+            dataset_key="tw_equity_eod",
+            name="TW Equity EOD",
+            asset_class="equity",
+            market="TW",
             frequency="daily",
             is_active=True,
             config={},
         )
         runs = [
             IngestionRun(
-                dataset_key="crypto_eod",
+                dataset_key="tw_equity_eod",
                 status="completed",
                 completed_at=utc_now(),
                 created_at=utc_now(),
@@ -1185,7 +1185,7 @@ class TestBulkRerun:
             calls += 1
             if calls == 1:
                 await self.db.execute(text("SELECT 1 / 0"))
-            return uuid7(), "queued", "crypto_eod", {}
+            return uuid7(), "queued", "tw_equity_eod", {}
 
         monkeypatch.setattr(
             IngestionService,
@@ -1194,7 +1194,7 @@ class TestBulkRerun:
         )
 
         response = await client.post(
-            "/api/v1/admin/runs/bulk-rerun?dataset_key=crypto_eod&limit=2",
+            "/api/v1/admin/runs/bulk-rerun?dataset_key=tw_equity_eod&limit=2",
             headers=admin_headers,
         )
 

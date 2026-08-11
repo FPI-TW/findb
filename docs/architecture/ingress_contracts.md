@@ -1,11 +1,13 @@
 # Versioned Ingress Contract
 
-> 狀態：`market_eod.v1` 與 `futures_continuous_eod.v1` 已發布。
+> 狀態：staging active feeds 使用 `market_eod.v1`（Twelve Data、FinLab）與
+> `market_minute.v1`（Shioaji）。Canonical futures read model 可保留歷史查詢，但沒有
+> 對應的 active ingress contract 或 provider feed。
 
 ## 邊界
 
 FinDB 定義 provider-neutral、可版本化的 ingress contract。Fetcher 必須先把
-Bloomberg、FinLab 或其他 provider 格式轉成 contract，再呼叫：
+Twelve Data、FinLab、Shioaji payload 轉成 contract，再呼叫：
 
 ```text
 POST /api/v1/source/ingest
@@ -67,20 +69,10 @@ Fetcher adapter。
 - 同一 source、dataset、idempotency key 與內容重送時回既有 run。
 - 相同 key 搭配不同 source、schema/version 或內容時回 `409`。
 - `request_key` 用於追蹤單次抓取；它不取代 idempotency key。
-- `delivery` 是 scheduler delivery 的完整識別；legacy producer 可省略整個
-  object，但只要提供就必須同時包含 `slot_id`、`scheduled_for`、
-  `target_data_date` 與 `work_item_id`。Backend 會將它保存到
+- `delivery` 是 scheduler delivery 的完整識別；active scheduler delivery 若提供此
+  object，必須同時包含 `slot_id`、`scheduled_for`、`target_data_date` 與
+  `work_item_id`。Backend 會將它保存到
   `IngestionRun.metadata.delivery`，不參與 canonical row 欄位。
-
-Slot identity 使用不含時間的 canonical ID；遷移期間舊 producer 的 slot ID 只在
-ingress/config input 邊界正規化，schema 與 API output 不再暴露舊值：
-
-| Legacy ID | Canonical ID | Asia/Taipei 時間 |
-| --- | --- | --- |
-| `us_0600` | `western_markets_window` | `06:30` |
-| `global_0815` | `global_markets_window` | `08:15` |
-| `tw_1430` | `taiwan_market_window` | `14:30` |
-| `asia_1630` | `asia_pacific_markets_window` | `17:15` |
 
 ## Batch contract
 
@@ -97,11 +89,12 @@ ingress/config input 邊界正規化，schema 與 API output 不再暴露舊值�
 `full_snapshot` 代表該資料日的完整 dataset universe；只送異動或部分 symbols 必須
 使用 `incremental`。`backfill` 可以跨日期，但 `data_date` 必須等於 coverage end。
 
-## 已發布 schema
+## Staging active schemas
 
 ### `market_eod.v1`
 
-適用股票、ETF、指數、crypto 與 FX 日 OHLCV。主要 row 欄位：
+目前適用 `us_equity_eod` 與 `tw_equity_eod` 的日 OHLCV。其他 canonical 日線
+read model 可保留歷史資料，但沒有 active provider feed。主要 row 欄位：
 
 - 必填：`symbol`、`trade_date`、`close`
 - 選填：`source_symbol`、`name`、`currency`、`open`、`high`、`low`、`volume`、
@@ -110,18 +103,10 @@ ingress/config input 邊界正規化，schema 與 API output 不再暴露舊值�
 - OHLC、volume 與 turnover 不得為負數；high/low 必須包住其他已提供價格。
 - Dataset 沒有 default currency 時，每列必須帶 `currency`。
 
-### `futures_continuous_eod.v1`
-
-適用連續期貨 EOD。除 OHLCV 外，包含：
-
-- 必填：`symbol`、`trade_date`、`close`、`roll_rule`
-- 選填：`source_symbol`、`name`、`turnover`、`open_interest`、
-  `active_contract_code`、`roll_adjustment`
-
 ### `market_minute.v1`
 
-適用 `tw_equity_minute` 與 `tw_etf_minute` 的台灣一分鐘 bar contract。此版本僅發布
-schema 與驗證語意，尚未接上 Source 寫入或 normalizer。row 固定包含 UTC-aware
+適用 `tw_equity_minute` 與 `tw_etf_minute` 的台灣一分鐘 bar contract，並已接上
+Source 寫入與 normalizer。row 固定包含 UTC-aware
 `bar_start_time`、`bar_end_time`、`signal_time`、Taiwan-local `trade_date`、
 `market_timezone=Asia/Taipei`、OHLC 與 `price_adjustment=none`；`trade_count` 固定
 `null`。完整的 provider timestamp、單位、sequence、anomaly 與 archive 規則見
@@ -174,7 +159,7 @@ canonical scope。
 
 1. Backend 新增並部署 `v2`，同時接受 `v1`、`v2`。
 2. 使用真實 fixtures 與 shadow delivery 驗證。
-3. Fetcher pin 到 `v2`；production 不自動追蹤 latest。
+3. Fetcher pin 到核准版本；staging 不自動追蹤 latest。
 4. 觀察 attempt、DQ、record count、freshness 與 normalization。
 5. 所有 producer 完成切換並經過保留期後，才停止接受 `v1`。
 
@@ -190,5 +175,6 @@ Optional 欄位只能在缺省語意明確且舊 producer 安全時加入既有�
 - Retry 429、timeout、502、503、504 時必須沿用相同 idempotency key。
 - 必須分別記錄 fetch、delivery accepted、normalization terminal state。
 
-Legacy direct endpoints 只供既有 feed 過渡；新 feed 不得新增 provider-specific endpoint
-或 normalizer。
+所有 active feed 都走 `/api/v1/source/ingest`；舊 direct/market route 已移除。新增資料域
+時必須另案提供完整新版 contract、dataset registry、normalizer、DQ 與 Serve read model，
+不得藉由 provider-specific endpoint 繞過 contract boundary。

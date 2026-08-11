@@ -195,10 +195,9 @@ class FinLabDatasetConfig:
             raise FinLabConfigError("dataset_key must be a lowercase identifier")
         if self.market != "TW":
             raise FinLabConfigError("FinLab v1 mapping supports only market TW")
-        if self.asset_class not in {"equity", "etf"}:
-            raise FinLabConfigError("asset_class must be explicitly equity or etf")
-        expected_dataset_key = {"equity": "tw_equity_eod", "etf": "tw_etf_eod"}[self.asset_class]
-        if self.dataset_key != expected_dataset_key:
+        if self.asset_class != "equity":
+            raise FinLabConfigError("FinLab staging feed supports only asset_class equity")
+        if self.dataset_key != "tw_equity_eod":
             raise FinLabConfigError("asset_class must match its fixed FinLab Source dataset key")
         if self.currency not in {None, "TWD"}:
             raise FinLabConfigError("currency must be TWD or null")

@@ -1,5 +1,6 @@
 """Registry and validation entry point for versioned ingress contracts."""
 
+import re
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, Optional
@@ -8,26 +9,20 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, m
 
 from app.schemas.ingress import (
     CurrencyCode,
-    FuturesContinuousEODIngressRequest,
     IngressRequestV1,
     MarketEODIngressRequest,
     MarketMinuteIngressRequest,
 )
 from app.services.delivery_policy import DeliveryExpectation
-from app.vocabulary import normalize_asset_class, normalize_market
+from app.vocabulary import SOURCE_NAME_PATTERN, normalize_asset_class, normalize_market
 
 ContractKey = tuple[str, int]
-ContractModel = (
-    type[MarketEODIngressRequest]
-    | type[FuturesContinuousEODIngressRequest]
-    | type[MarketMinuteIngressRequest]
-)
+ContractModel = type[MarketEODIngressRequest] | type[MarketMinuteIngressRequest]
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
 _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
     {
         ("market_eod", 1): MarketEODIngressRequest,
-        ("futures_continuous_eod", 1): FuturesContinuousEODIngressRequest,
         ("market_minute", 1): MarketMinuteIngressRequest,
     }
 )
@@ -73,6 +68,10 @@ class DatasetContractDeclaration(BaseModel):
     current_schema_version: PositiveStrictInt
     schema_enforcement: Literal["audit", "enforce"] = "audit"
     defaults: DatasetContractDefaults
+    # Explicit provider scope is preferred.  For compatibility with operator
+    # policy documents, the ingest service also derives this from the typed
+    # schedule/missing-delivery expected_sources fields when omitted.
+    allowed_sources: list[str] = Field(default_factory=list, max_length=32)
     delivery_expectation: DeliveryExpectation | None = None
 
     @model_validator(mode="after")
@@ -90,7 +89,28 @@ class DatasetContractDeclaration(BaseModel):
             raise ValueError(
                 "market_minute defaults require market_timezone=Asia/Taipei and price_adjustment=none"
             )
+        self.allowed_sources = [source.strip().lower() for source in self.allowed_sources]
+        if any(
+            not source or re.fullmatch(SOURCE_NAME_PATTERN, source) is None
+            for source in self.allowed_sources
+        ):
+            raise ValueError("allowed_sources must contain stable lowercase provider names")
+        if len(self.allowed_sources) != len(set(self.allowed_sources)):
+            raise ValueError("allowed_sources must not contain duplicates")
         return self
+
+    def provider_scope(self) -> tuple[str, ...]:
+        """Return the fail-closed provider allowlist for this declaration."""
+        if self.allowed_sources:
+            return tuple(self.allowed_sources)
+        if self.delivery_expectation is not None:
+            schedule = self.delivery_expectation.schedule
+            if schedule is not None and schedule.expected_sources:
+                return tuple(schedule.expected_sources)
+            expected = self.delivery_expectation.missing_delivery.expected_sources
+            if expected:
+                return tuple(expected)
+        return ()
 
 
 def supported_contracts() -> tuple[ContractKey, ...]:
@@ -311,20 +331,6 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 "error_code": "CURRENCY_REQUIRED",
             }
         )
-    if schema_id == "futures_continuous_eod":
-        semantic_rules.append(
-            {
-                "id": "futures.currency.dataset_default_required",
-                "scope": "dataset",
-                "description": "continuous futures require a dataset default currency",
-                "parameters": {
-                    "field": "defaults.currency",
-                    "operator": "required",
-                },
-                "context_dependencies": [{"kind": "dataset_context", "path": "defaults.currency"}],
-                "error_code": "CURRENCY_REQUIRED",
-            }
-        )
     if schema_id == "market_minute":
         semantic_rules.extend(
             [
@@ -373,13 +379,6 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "payload.data[*].source_symbol",
             "payload.data[*].name",
             "payload.data[*].currency",
-        ],
-        "futures_continuous_eod": [
-            "payload.data[*].symbol",
-            "payload.data[*].source_symbol",
-            "payload.data[*].name",
-            "payload.data[*].active_contract_code",
-            "payload.data[*].roll_rule",
         ],
         "market_minute": [
             "payload.data[*].symbol",
@@ -624,8 +623,4 @@ def validate_request_currency(
     ):
         raise CurrencyRequiredError(
             "currency is required for every market_eod row when the dataset has no default currency"
-        )
-    if isinstance(request, FuturesContinuousEODIngressRequest):
-        raise CurrencyRequiredError(
-            "dataset default currency is required for futures_continuous_eod"
         )

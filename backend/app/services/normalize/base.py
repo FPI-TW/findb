@@ -63,18 +63,6 @@ class BaseNormalizer(ABC):
         self._trading_day_cache: set[tuple[str, date]] = set()
         self._eod_partition_cache: set[int] = set()
 
-    def _get_nested_value(self, data: dict, path: str | None) -> Any:
-        """Get value from nested dict using dot notation."""
-        if not path:
-            return None
-        value: Any = data
-        for key in path.split("."):
-            if isinstance(value, dict) and key in value:
-                value = value[key]
-            else:
-                return None
-        return value
-
     def _parse_decimal(self, value: Any) -> Optional[Decimal]:
         """Parse value into Decimal."""
         if value is None:
@@ -105,19 +93,6 @@ class BaseNormalizer(ABC):
             return ensure_utc(parse_datetime(str(value)))
         except ValueError:
             return None
-
-    def _resolve_source(self, item: dict, raw_data: dict, source_path: str | None) -> Optional[str]:
-        """Resolve source value from config or metadata."""
-        source = None
-        if source_path:
-            source = self._get_nested_value(item, source_path)
-            if source is None:
-                source = self._get_nested_value(raw_data, source_path)
-        if source is None:
-            source = self._get_nested_value(item, "metadata.source")
-        if source is None:
-            source = self._get_nested_value(raw_data, "metadata.source")
-        return source
 
     def _source_control_values(self, source: str | None) -> tuple[int, datetime]:
         """Resolve deterministic source precedence and provider fetch time."""
@@ -152,70 +127,6 @@ class BaseNormalizer(ABC):
                 | (excluded.source_fetched_at >= table.c.source_fetched_at)
             )
         )
-
-    def map_fields_from_config(
-        self,
-        raw_data: dict,
-        config_override: dict | None = None,
-    ) -> list[MappedRecord]:
-        """Map raw data fields using dataset config mapping."""
-        config = config_override or getattr(self, "dataset_config", {}) or {}
-        field_mapping = config.get("field_mapping", {})
-        data_path = config.get("data_path", "data")
-        symbol_path = field_mapping.get("symbol") or config.get("symbol_field", "symbol")
-        market_path = field_mapping.get("market") or config.get("market_field")
-        name_path = field_mapping.get("name") or config.get("name_field", "name")
-        source_path = field_mapping.get("source") or config.get("source_field")
-
-        data_items = self._get_nested_value(raw_data, data_path) if data_path else None
-        if data_items is None:
-            data_items = raw_data.get("data", [])
-        if not isinstance(data_items, list):
-            return []
-
-        identifier_type = config.get("identifier_type")
-        identifier_field = config.get("identifier_field")
-
-        records: list[MappedRecord] = []
-        for item in data_items:
-            trade_date_value = self._get_nested_value(item, field_mapping.get("trade_date"))
-            trade_date = self._parse_trade_date(trade_date_value)
-            if trade_date is None:
-                continue
-
-            identifier_value = self._get_nested_value(item, identifier_field)
-            symbol_value = self._get_nested_value(item, symbol_path)
-            market_value = self._get_nested_value(item, market_path) if market_path else None
-            name_value = self._get_nested_value(item, name_path)
-            source_value = self._resolve_source(item, raw_data, source_path)
-
-            if not symbol_value and not identifier_value:
-                continue
-
-            record = MappedRecord(
-                symbol=symbol_value or "",
-                trade_date=trade_date,
-                market=str(market_value).upper().strip() if market_value is not None else None,
-                name=name_value,
-                open=self._parse_decimal(self._get_nested_value(item, field_mapping.get("open"))),
-                high=self._parse_decimal(self._get_nested_value(item, field_mapping.get("high"))),
-                low=self._parse_decimal(self._get_nested_value(item, field_mapping.get("low"))),
-                close=self._parse_decimal(self._get_nested_value(item, field_mapping.get("close"))),
-                volume=self._parse_int(self._get_nested_value(item, field_mapping.get("volume"))),
-                total_ticks=self._parse_int(
-                    self._get_nested_value(item, field_mapping.get("total_ticks"))
-                ),
-                turnover=self._parse_decimal(
-                    self._get_nested_value(item, field_mapping.get("turnover"))
-                ),
-                source=source_value,
-                raw_data=item,
-                identifier_type=identifier_type,
-                identifier_value=identifier_value,
-            )
-            records.append(record)
-
-        return records
 
     @abstractmethod
     def map_fields(self, raw_data: dict) -> list[Any]:

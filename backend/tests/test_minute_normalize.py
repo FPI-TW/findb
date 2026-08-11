@@ -77,7 +77,7 @@ def _minute_request(dataset_key: str, *, close: str = "1005") -> dict:
         "dataset_key": dataset_key,
         "schema_id": "market_minute",
         "schema_version": 1,
-        "source": "bloomberg",
+        "source": "shioaji",
         "request_key": f"mmr:{digest}",
         "idempotency_key": f"mms:{digest}",
         "fetched_at": "2026-07-30T02:00:00Z",
@@ -94,6 +94,8 @@ def _minute_request(dataset_key: str, *, close: str = "1005") -> dict:
                 "symbols_sha256": hashlib.sha256(b"2330").hexdigest(),
                 "sequence": 1,
                 "sequence_count": 1,
+                "provider_usage_before": {"requests_used": 1, "requests_limit": 500},
+                "provider_usage_after": {"requests_used": 2, "requests_limit": 500},
                 "anomalies": [],
             },
             "symbol_statuses": [{"symbol": "2330", "outcome": "data"}],
@@ -128,6 +130,7 @@ def _contract_config(asset_class: str, *, precedence: list[str] | None = None) -
             "accepted_schema_versions": [1],
             "current_schema_version": 1,
             "schema_enforcement": "audit",
+            "allowed_sources": ["shioaji"],
         }
     )
     config["defaults"]["asset_class"] = asset_class
@@ -340,7 +343,7 @@ async def test_market_minute_source_precedence_and_fetched_at_control_upsert(tes
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("dataset_key", "asset_class"),
-    [("test_equity_minute", "equity"), ("test_etf_minute", "etf")],
+    [("tw_equity_minute", "equity"), ("tw_etf_minute", "etf")],
 )
 async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     client: AsyncClient,
@@ -398,7 +401,7 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
         )
     ).scalar_one()
     assert instrument.asset_class == asset_class
-    assert minute.source == "bloomberg"
+    assert minute.source == "shioaji"
 
     rerun_response = await client.post(
         f"/api/v1/source/runs/{run_id}/rerun",

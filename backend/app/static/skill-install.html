@@ -675,8 +675,8 @@ footer {
       <div class="eyebrow">AI Assistant Skill</div>
       <h1 class="page-title">FinDB <span class="accent">·</span> Skill 安裝教學</h1>
       <p class="page-subtitle">
-        把 FinDB API 用法打包成 SKILL.md，讓 Claude Code、Codex、Cursor 等 AI 開發工具在你開發
-        FinDB 客戶端、儀表板、ETL 流程時自動理解認證、Source/Serve/Admin 端點與 payload 格式。
+        把 FinDB staging API 用法打包成 SKILL.md，讓 Claude Code、Codex、Cursor 等 AI 開發工具在你開發
+        FinDB 客戶端、儀表板、ETL 流程時理解認證、canonical Serve 查詢與四個 active Source contract。
       </p>
     </header>
 
@@ -693,10 +693,10 @@ footer {
           <dl class="download-meta">
             <div class="meta-row"><dt>檔名</dt><dd><code>findb-api.skill</code></dd></div>
             <div class="meta-row"><dt>格式</dt><dd>zip</dd></div>
-            <div class="meta-row"><dt>大小</dt><dd>~42 KB</dd></div>
+            <div class="meta-row"><dt>大小</dt><dd>~27 KB</dd></div>
           </dl>
           <p class="download-summary">
-            <code>.skill</code> 是 zip 壓縮包，包含 <code>SKILL.md</code> 主檔、三份 references 詳細規格與一份範例 payload。
+            <code>.skill</code> 是 zip 壓縮包，包含 <code>SKILL.md</code> 主檔、三份 references 詳細規格與一份 active contract 範例。
           </p>
         </div>
 
@@ -706,13 +706,13 @@ footer {
             <span class="ft-size">5 files</span>
           </div>
           <ul class="file-tree-list">
-            <li><span class="ft-name">├── SKILL.md</span><span class="ft-dots"></span><span class="ft-bytes">12 KB</span></li>
+            <li><span class="ft-name">├── SKILL.md</span><span class="ft-dots"></span><span class="ft-bytes">8 KB</span></li>
             <li><span class="ft-name dir">├── assets/</span></li>
-            <li><span class="ft-name">│&nbsp;&nbsp;&nbsp;└── sample_payload.json</span><span class="ft-dots"></span><span class="ft-bytes">3 KB</span></li>
+            <li><span class="ft-name">│&nbsp;&nbsp;&nbsp;└── sample_payload.json</span><span class="ft-dots"></span><span class="ft-bytes">1 KB</span></li>
             <li><span class="ft-name dir">└── references/</span></li>
-            <li><span class="ft-name">&nbsp;&nbsp;&nbsp;&nbsp;├── endpoints.md</span><span class="ft-dots"></span><span class="ft-bytes">13 KB</span></li>
-            <li><span class="ft-name">&nbsp;&nbsp;&nbsp;&nbsp;├── ingest-payloads.md</span><span class="ft-dots"></span><span class="ft-bytes">9 KB</span></li>
-            <li><span class="ft-name">&nbsp;&nbsp;&nbsp;&nbsp;└── responses.md</span><span class="ft-dots"></span><span class="ft-bytes">6 KB</span></li>
+            <li><span class="ft-name">&nbsp;&nbsp;&nbsp;&nbsp;├── endpoints.md</span><span class="ft-dots"></span><span class="ft-bytes">8 KB</span></li>
+            <li><span class="ft-name">&nbsp;&nbsp;&nbsp;&nbsp;├── ingest-payloads.md</span><span class="ft-dots"></span><span class="ft-bytes">6 KB</span></li>
+            <li><span class="ft-name">&nbsp;&nbsp;&nbsp;&nbsp;└── responses.md</span><span class="ft-dots"></span><span class="ft-bytes">5 KB</span></li>
           </ul>
         </div>
       </div>
@@ -767,7 +767,7 @@ Expand-Archive findb-api.skill -DestinationPath "$env:USERPROFILE\.claude\skills
               <div class="check-desc">
                 開新 Claude Code session，輸入：
                 <div class="prompt-block">
-                  <code>從 findb 拉 BTC 最近 30 天 EOD</code>
+                  <code>從 staging FinDB 拉 AAPL 最近 30 天 EOD</code>
                   <button type="button" class="copy-btn" data-copy aria-label="複製提示">
                     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4h10v14M6 8h10v12H6z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                   </button>
@@ -860,7 +860,7 @@ cat >> AGENTS.md &lt;&lt;'EOF'
 
 Authoritative API reference: docs/findb-skill/findb-api/SKILL.md.
 Endpoint specs / payload shapes / errors in docs/findb-skill/findb-api/references/.
-Production base URL: https://findb.tingfong.com.
+Staging base URL: https://findb.tingfong.com.
 EOF
 
 git add AGENTS.md docs/findb-skill
@@ -900,7 +900,7 @@ git commit -m "Add FinDB API skill as project reference"</code></pre>
             </button>
           </div>
 <pre><code>@./findb-skill/findb-api/SKILL.md @./findb-skill/findb-api/references/endpoints.md
-請幫我寫一個從 findb 拉 BTC EOD 的 Python 腳本</code></pre>
+請幫我寫一個從 staging FinDB 拉 AAPL EOD 的 Python 腳本</code></pre>
         </div>
       </div>
     </section>
@@ -915,12 +915,12 @@ git commit -m "Add FinDB API skill as project reference"</code></pre>
             <span class="content-card-name">SKILL.md</span>
           </div>
           <p class="content-card-desc">
-            AI 開發工具讀進後做為主指令使用。涵蓋認證模型、Serve 常用查詢範例、Source 兩種 payload 格式、分頁與錯誤碼速查。
+            AI 開發工具讀進後做為主指令使用。涵蓋 staging 認證模型、canonical Serve 查詢、四個 Source contract、分頁與錯誤碼速查。
           </p>
           <div class="content-card-tags">
             <span class="content-tag">認證</span>
             <span class="content-tag">Serve 範例 ×5</span>
-            <span class="content-tag">Source payload</span>
+            <span class="content-tag">Source contract</span>
             <span class="content-tag">分頁</span>
             <span class="content-tag">錯誤碼</span>
             <span class="content-tag">nginx Serve key 注入</span>
@@ -949,16 +949,13 @@ git commit -m "Add FinDB API skill as project reference"</code></pre>
             <span class="content-card-name">references/ingest-payloads.md</span>
           </div>
           <p class="content-card-desc">
-            各市場 payload skeleton 與 FinLab / Bloomberg 來源差異。
+            四個 active provider/dataset 的 provider-neutral contract skeleton 與序列規則。
           </p>
           <div class="content-card-tags">
-            <span class="content-tag">CRYPTO</span>
-            <span class="content-tag">US</span>
-            <span class="content-tag">FX</span>
-            <span class="content-tag">HK+CN</span>
-            <span class="content-tag">TW</span>
-            <span class="content-tag">WTX</span>
-            <span class="content-tag">MACRO</span>
+            <span class="content-tag">US EOD</span>
+            <span class="content-tag">TW EOD</span>
+            <span class="content-tag">TW minute</span>
+            <span class="content-tag">Provider-neutral</span>
           </div>
         </article>
 
@@ -984,7 +981,7 @@ git commit -m "Add FinDB API skill as project reference"</code></pre>
             <span class="content-card-name">assets/sample_payload.json</span>
           </div>
           <p class="content-card-desc">
-            可直接 <code>POST</code> 的標準 ingest 範例，照抄即能跑通整條鏈路。
+            可直接送至唯一 <code>POST /api/v1/source/ingest</code> route 的 active contract 範例。
           </p>
           <div class="content-card-tags">
             <span class="content-tag">ingest</span>

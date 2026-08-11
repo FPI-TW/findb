@@ -1,293 +1,174 @@
-# Source API Payload Reference
+# Active Source contract payloads
 
-Per-market payload shapes for both ingest styles:
+All four active feeds use the same route and explicit versioned envelope:
 
-- **Standard** (`POST /api/v1/source/ingest/{market}`) — full `IngestRequest`
-  wrapper around the provider payload.
-- **Direct** (`POST /api/v1/source/ingest/{market}/direct`) — bare provider
-  payload; FinDB infers `dataset_key` / `source` / `idempotency_key`.
+```http
+POST /api/v1/source/ingest
+X-API-Key: <provider-scoped-source-key>
+Content-Type: application/json
+```
 
-All examples are valid request bodies — copy, change the values, POST.
-See `../assets/sample_payload.json` for a complete standard-format crypto payload.
+There is no market-suffixed route and no direct provider-shaped payload. The envelope
+must contain `dataset_key`, `schema_id`, `schema_version`, `source`, `request_key`,
+`idempotency_key`, `fetched_at`, and `payload`.
 
-## Standard `IngestRequest` template
+## Exact active mapping
+
+| `source` | `dataset_key` | `schema_id` | Payload |
+| --- | --- | --- | --- |
+| `twelve_data` | `us_equity_eod` | `market_eod` v1 | EOD batch + rows |
+| `finlab` | `tw_equity_eod` | `market_eod` v1 | EOD batch + rows |
+| `shioaji` | `tw_equity_minute` | `market_minute` v1 | Sequenced minute batch |
+| `shioaji` | `tw_etf_minute` | `market_minute` v1 | Sequenced minute batch |
+
+Any other source/dataset combination is rejected by registry scope. Canonical read models
+outside this table are not valid Source targets.
+
+## Shared identity rules
+
+- `request_key` identifies one fetch attempt; `idempotency_key` identifies a safely
+  repeatable delivery.
+- Reuse both keys and the same body on transport retry.
+- `fetched_at`, and scheduler `delivery.scheduled_for` when present, must include a
+  timezone; FinDB normalizes them to UTC.
+- `payload.batch.declared_record_count` must equal the number of rows.
+- A provider raw reference and SHA-256, when present, are credential-free and refer to
+  the Fetcher-owned raw artifact.
+
+## `market_eod.v1` — Twelve Data and FinLab
+
+The EOD payload contains a `batch` and provider-neutral `data` rows:
 
 ```json
 {
-  "dataset_key": "<dataset_key>",
-  "source": "<lowercase provider name>",
-  "request_key": "<upstream request id>",
-  "idempotency_key": "<deterministic dedupe key>",
+  "dataset_key": "tw_equity_eod",
+  "schema_id": "market_eod",
+  "schema_version": 1,
+  "source": "finlab",
+  "request_key": "finlab_tw_equity_eod_20260724_01",
+  "idempotency_key": "finlab_tw_equity_eod_20260724",
+  "fetched_at": "2026-07-24T08:00:00Z",
   "payload": {
-    "metadata": { "source": "<provider>", "query_time": "2026-01-16T14:49:14Z" },
-    "data": [ /* provider-shaped records */ ]
-  },
-  "fetched_at": "2026-01-16T14:49:14Z"
-}
-```
-
-**Idempotency key**: use a deterministic string per upstream batch, e.g.
-`<source>_<market>_<yyyymmdd>_<hhmmss>`. Replaying with the same key is a no-op.
-
-**dataset_key**: discover valid keys via `GET /api/v1/source/datasets`. Common
-values: `crypto_eod`, `us_stock_eod`, `fx_eod`, `wtx_eod`, `tw_equity_eod`,
-`tw_etf_eod`, `hk_equity_eod`, `cn_equity_eod`, `macro_bloomberg_observation`.
-
-## Direct payload base shape
-
-```json
-{
-  "metadata": {
-    "source": "bloomberg",
-    "query_time": "2026-02-04T16:00:51Z"
-  },
-  "data": [ /* records; shape depends on market */ ]
-}
-```
-
-- `metadata.query_time` is recorded as the batch fetch time.
-- `metadata.source` is normalized to lowercase; defaults to the endpoint's
-  provider if omitted.
-- `data` accepts flat records by default; nested `price`/`timestamp` shapes
-  are also tolerated for backward compatibility with the original Bloomberg
-  exports.
-
----
-
-## Crypto
-
-### Direct — `POST /ingest/crypto/direct`
-
-Flat OHLCV per ticker.
-
-```json
-{
-  "metadata": { "source": "bloomberg", "query_time": "2026-01-16T14:49:14Z" },
-  "data": [
-    { "ticker": "XBTUSD BGN Curncy", "date": "2026-01-16",
-      "open": 95550.07, "high": 95825.34, "low": 95119.76, "close": 95709.01,
-      "volume": 18500 }
-  ]
-}
-```
-
-### Standard — `POST /ingest/crypto`
-
-The crypto standard payload accepts the original Bloomberg nested shape inside
-`payload.data` (see `assets/sample_payload.json` for the full example):
-
-```json
-{
-  "dataset_key": "crypto_eod",
-  "source": "bloomberg",
-  "request_key": "bloomberg_crypto_20260116_144914",
-  "idempotency_key": "bloomberg_crypto_20260116_144914",
-  "payload": {
-    "metadata": {
-      "source": "Bloomberg API",
-      "category": "Cryptocurrency",
-      "query_time": "2026-01-16T14:49:14.910965",
-      "total_records": 1
+    "batch": {
+      "data_date": "2026-07-24",
+      "delivery_mode": "full_snapshot",
+      "declared_record_count": 1
     },
     "data": [
       {
-        "crypto_id": "bitcoin",
-        "symbol": "BTC",
-        "name": "Bitcoin",
-        "ticker": "XBTUSD BGN Curncy",
-        "price": { "last": 95709.01, "open": 95550.07, "high": 95825.34, "low": 95119.76 },
-        "change": { "net": 158.81, "percent_1d": 0.1662 },
-        "timestamp": { "query_time": "2026-01-16T14:49:14", "last_update": "2026-01-16" },
-        "metadata": { "source": "Bloomberg", "data_type": "cryptocurrency" }
+        "symbol": "2330",
+        "source_symbol": "2330",
+        "trade_date": "2026-07-24",
+        "currency": "TWD",
+        "open": "1120.00",
+        "high": "1145.00",
+        "low": "1115.00",
+        "close": "1140.00",
+        "volume": 25000000,
+        "total_ticks": 120000
       }
     ]
-  },
-  "fetched_at": "2026-01-16T14:49:14Z"
+  }
 }
 ```
 
----
+Required row fields are `symbol`, `trade_date`, and non-negative `close`. Include
+`currency` when the dataset does not declare a default. `open`, `high`, `low`, `volume`,
+`turnover`, and `total_ticks` are optional but must satisfy non-negative and OHLC bounds.
+Use `full_snapshot` for a complete reviewed universe, `incremental` for changed rows,
+and `backfill` only when the approved contract covers a bounded historical range.
 
-## US equities
+### Twelve Data mapping notes
 
-### Direct — `POST /ingest/usstock/direct`
+The adapter maps the provider response before building this contract:
+
+- `meta.symbol` → `source_symbol` (and canonical `symbol` when approved).
+- `meta.currency` → each row's `currency`.
+- `values[].datetime` → `trade_date`.
+- `open`, `high`, `low`, `close`, `volume` → same-named canonical fields.
+
+Keep the reviewed universe and per-request record/date/credit limits; do not expand them
+from an unreviewed runtime string.
+
+### FinLab mapping notes
+
+FinLab's reviewed equity output maps its symbol/date/OHLCV columns to the same provider-
+neutral row. `tw_equity_eod` is the only active FinLab dataset. ETF EOD and other asset
+classes are not active Source targets.
+
+## `market_minute.v1` — Shioaji
+
+The minute payload adds sequence identity and symbol outcomes:
 
 ```json
 {
-  "metadata": { "source": "bloomberg", "query_time": "2026-02-04T16:00:51Z" },
-  "data": [
-    { "ticker": "AAPL US Equity", "date": "2026-02-04",
-      "open": 231.0, "high": 233.0, "low": 230.5, "close": 232.5, "volume": 45000000 },
-    { "ticker": "MSFT US Equity", "date": "2026-02-04",
-      "open": 410.5, "high": 415.0, "low": 408.0, "close": 412.7, "volume": 22000000 }
-  ]
+  "dataset_key": "tw_equity_minute",
+  "schema_id": "market_minute",
+  "schema_version": 1,
+  "source": "shioaji",
+  "request_key": "mmr:<sha256-of-canonical-sequence>",
+  "idempotency_key": "mms:<sha256-of-canonical-sequence>",
+  "fetched_at": "2026-07-24T07:00:00Z",
+  "payload": {
+    "batch": {
+      "data_date": "2026-07-24",
+      "coverage_start_date": "2026-07-24",
+      "coverage_end_date": "2026-07-24",
+      "delivery_mode": "sequenced_snapshot",
+      "declared_record_count": 1,
+      "snapshot_id": "snapshot-20260724",
+      "daily_update_id": "update-20260724",
+      "universe_id": "tw-pilot-v1",
+      "symbols_sha256": "<sha256-of-sorted-symbols>",
+      "sequence": 1,
+      "sequence_count": 1,
+      "provider_usage_before": { "requests_used": 1, "requests_limit": 50 },
+      "provider_usage_after": { "requests_used": 2, "requests_limit": 50 },
+      "anomalies": []
+    },
+    "symbol_statuses": [
+      { "symbol": "2330", "outcome": "data" }
+    ],
+    "data": [
+      {
+        "symbol": "2330",
+        "source_symbol": "2330",
+        "trade_date": "2026-07-24",
+        "market_timezone": "Asia/Taipei",
+        "bar_start_time": "2026-07-24T01:00:00Z",
+        "bar_end_time": "2026-07-24T01:01:00Z",
+        "signal_time": "2026-07-24T01:01:00Z",
+        "price_adjustment": "none",
+        "trade_count": null,
+        "open": "1140.00",
+        "high": "1140.00",
+        "low": "1140.00",
+        "close": "1140.00",
+        "volume": 1000,
+        "turnover": 1140000
+      }
+    ]
+  }
 }
 ```
 
-The `ticker` suffix (` US Equity`) is parsed; only the leading symbol enters
-canonical. Indices (e.g. `SPX Index`) are also accepted and routed to
-`asset_class=index`.
+Minute invariants:
 
----
+- `coverage_start_date` and `coverage_end_date` equal `data_date`.
+- `bar_end_time = bar_start_time + 1 minute`, `signal_time = bar_end_time`, and all
+  timestamps are timezone-aware UTC values.
+- `trade_date` is the Taiwan-local date of `bar_start_time`.
+- `symbols_sha256` hashes sorted `symbol_statuses` symbols joined by LF.
+- A non-`data` symbol status must include a reason. A row requires a matching `data`
+  status. Shioaji usage snapshots are paired and non-decreasing.
+- A null minute `volume` or `turnover` requires exactly one matching credential-free
+  anomaly record in `payload.batch.anomalies`.
 
-## FX
+The canonical minute identity is the SHA-256 of the compact sorted-key JSON object
+`{"data_date":"…","dataset_key":"…","sequence":N,"snapshot_id":"…"}`.
 
-### Direct — `POST /ingest/fx/direct`
+## Status polling
 
-```json
-{
-  "metadata": { "source": "bloomberg", "query_time": "2026-02-04T16:00:51Z" },
-  "data": [
-    { "ticker": "EURUSD BGN Curncy", "date": "2026-02-04",
-      "open": 1.0825, "high": 1.0847, "low": 1.0810, "close": 1.0840 }
-  ]
-}
-```
-
-FX records typically omit `volume` (set to `null` or drop entirely).
-
----
-
-## HK + CN (mixed)
-
-### Direct — `POST /ingest/hkchina/direct`
-
-Mixed payload: equity + index in one batch. Routing is per-ticker based on the
-Bloomberg suffix:
-- ` HK Equity` → market `HK`, asset_class `equity`
-- ` Index` (Shanghai/Shenzhen tickers `SH...` / `SZ...`) → market `CN`,
-  asset_class `index`
-- ` Index` (HK Hang Seng family `HSI`, `HSCEI`, ...) → market `HK`, asset_class `index`
-
-```json
-{
-  "metadata": { "source": "bloomberg", "query_time": "2026-04-08T02:29:42Z" },
-  "data": [
-    { "ticker": "700 HK Equity", "date": "2026-04-08",
-      "open": 558.0, "high": 567.0, "low": 550.0, "close": 560.0, "volume": 23494910 },
-    { "ticker": "SH000911 Index", "date": "2026-04-08",
-      "open": 5941.521, "high": 5966.992, "low": 5940.137, "close": 5960.012, "volume": 0 }
-  ]
-}
-```
-
-### Legacy — `POST /ingest/hkchina-index/direct`
-
-Index-only feed for the older pipeline. Same record shape but no equities allowed.
-
----
-
-## TW (FinLab)
-
-### Direct — `POST /ingest/twstock/direct`
-
-`TWStockDirectIngestPayload`. Routes on `metadata.asset_class`:
-- `STOCK` / `equity` / `stock` (or absent) → `tw_equity_eod`
-- `ETF` / `etf` → `tw_etf_eod`
-
-```json
-{
-  "metadata": {
-    "symbol": "2330",
-    "name": "台積電",
-    "source": "finlab",
-    "asset_class": "STOCK",
-    "file_name": "finlab_stocks_ohlcv.jsonl",
-    "query_time": "2026-05-14T13:30:00Z"
-  },
-  "data": [
-    { "date": "2026-05-14",
-      "open": 2250, "high": 2270, "low": 2230, "close": 2270,
-      "total_volume": 39564699, "total_ticks": 83872 }
-  ]
-}
-```
-
-| Field | Notes |
-| --- | --- |
-| `metadata.symbol` | Required **unless** every `data[]` row carries its own `symbol` |
-| `data[].symbol` | Required when `metadata.symbol` absent |
-| `data[].date` | `YYYY-MM-DD`; for delisted symbols FinLab returns the last trading date (≠ `metadata.query_time`) |
-| `data[].open/high/low/close` | Required |
-| `data[].total_volume` | Required; `volume` accepted as alias |
-| `data[].total_ticks` | Required |
-| `data[].time` | Optional; kept in raw only, never in canonical |
-
-Legacy MultiCharts fields (`up_volume`, `down_volume`, `up_ticks`, `down_ticks`)
-were removed; FinLab doesn't supply them.
-
----
-
-## WTX (台指期 futures)
-
-### Direct — `POST /ingest/wtx/direct`
-
-```json
-{
-  "metadata": { "source": "bloomberg", "query_time": "2026-01-16T14:49:14Z" },
-  "data": [
-    { "ticker": "TXFH6 Index", "date": "2026-01-16",
-      "open": 22500.0, "high": 22650.0, "low": 22400.0, "close": 22600.0,
-      "volume": 120000 }
-  ]
-}
-```
-
-`metadata.source` selects the normalizer (`bloomberg` vs `finlab`); both
-write to `dataset_key=wtx_eod`. Contract code (`TXFH6`, `TXFM6`, ...) is parsed
-into the futures_contract registry.
-
----
-
-## Macro
-
-### Direct — `POST /ingest/macro/direct`
-
-```json
-{
-  "metadata": {
-    "source": "bloomberg",
-    "query_time": "2026-01-15T08:00:00Z"
-  },
-  "data": [
-    { "source_code": "CPI_YOY", "series_name": "US CPI YoY",
-      "obs_date": "2026-01-15", "value": 3.2,
-      "unit": "percent", "frequency": "monthly" }
-  ]
-}
-```
-
-If `market` is omitted, macro defaults to `MACRO`. The series registry is
-auto-created on first observation, then reused.
-
----
-
-## Tracking and replay
-
-```bash
-# Look up run status
-curl "https://findb.tingfong.com/api/v1/source/runs/<run_id>" \
-  -H "X-API-Key: <key>"
-
-# Re-run normalization (new run_id returned)
-curl -X POST "https://findb.tingfong.com/api/v1/source/runs/<run_id>/rerun" \
-  -H "X-API-Key: <key>"
-```
-
-Re-runs only work while the raw payload is still inside the
-`RAW_RETENTION_DAYS` window (default 30 days; retention is enabled by default).
-Past that, you have to re-fetch from the upstream provider.
-
----
-
-## Idempotency reminders
-
-- Re-POSTing the same `idempotency_key` returns the original `run_id` with
-  `message: "Duplicate idempotency_key, returning existing run"`. The payload
-  body is **not** re-checked, so changing data while keeping the key is silently
-  ignored.
-- If you re-fetch with **different** content for the same logical batch (rare),
-  use a new key (e.g. append `_v2`).
-- A backfill loop is safe to retry: design the key as a pure function of the
-  upstream batch (`<source>_<market>_<yyyymmdd>` for daily, plus session if
-  intraday).
+After `202 Accepted`, poll `GET /api/v1/source/runs/{run_id}` with the same provider key.
+Do not treat a read-model row or a retained historical dataset as permission to submit a
+different payload shape.

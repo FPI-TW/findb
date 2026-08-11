@@ -23,8 +23,8 @@ HTTP boundary for Source ingest (write path), Serve query (read path), and Admin
 - Source routes are ingest/rerun write-paths; Serve routes are read-only; Admin routes are authenticated correction/maintenance paths.
 - Use dependency-injected `AsyncSession`; do not create ad hoc engines in handlers.
 - Return typed schema responses from `app/schemas/source.py`, `app/schemas/serve.py`, and `app/schemas/admin.py`.
-- Preserve idempotency behavior for ingest requests and direct-format endpoints.
-- Keep market-specific validation near route boundary before service invocation.
+- Preserve idempotency behavior for versioned contract ingest and rerun requests.
+- Keep contract validation in the ingress schema/service; routes should remain thin.
 
 ## ANTI-PATTERNS (LOCAL)
 
@@ -37,7 +37,7 @@ HTTP boundary for Source ingest (write path), Serve query (read path), and Admin
 
 ## CHANGE CHECKLIST
 
-- Update endpoint tests in `tests/test_source_api.py`, `tests/test_serve_api.py`, or `tests/test_admin_api.py`.
+- Update endpoint tests in `tests/test_source_routes.py`, `tests/test_canonical_ingest_api.py`, `tests/test_serve_api.py`, or `tests/test_admin_api.py`.
 - Validate auth behavior (`401`/`403`) and market mismatch errors.
 - Verify response fields match Pydantic schemas and pagination wrappers.
-- Run end-to-end path (`tests/test_end_to_end.py`) if ingest behavior changes.
+- Run canonical ingest plus durable queue paths (`tests/test_canonical_ingest_api.py` and `tests/test_normalization_queue.py`) if ingest behavior changes.

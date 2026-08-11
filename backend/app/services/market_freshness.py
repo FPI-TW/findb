@@ -352,91 +352,6 @@ def _definition_from_control(row: SchedulerControl) -> _SchedulerDefinition:
     )
 
 
-async def _legacy_definitions(
-    db: AsyncSession,
-    *,
-    market: str | None,
-    slot_id: str | None,
-) -> tuple[list[_SchedulerDefinition], dict[str, DatasetRegistry]]:
-    """Compatibility for pre-control-plane test/fixture databases only.
-
-    Production rows always come from SchedulerControl.  Keeping this narrow
-    fallback makes older local fixtures readable while never letting a legacy
-    dataset schedule shadow a registered scheduler definition.
-    """
-    statement = select(DatasetRegistry).where(DatasetRegistry.is_active.is_(True))
-    if market:
-        statement = statement.where(DatasetRegistry.market == market.upper())
-    datasets = list((await db.execute(statement)).scalars().all())
-    grouped: dict[tuple[str, str, time, str], dict[str, object]] = {}
-    for dataset in datasets:
-        config = dataset.config if isinstance(dataset.config, dict) else {}
-        raw_expectation = config.get("delivery_expectation")
-        if not isinstance(raw_expectation, dict):
-            continue
-        schedule = raw_expectation.get("schedule")
-        if not isinstance(schedule, dict) or not schedule.get("enabled"):
-            continue
-        try:
-            expectation = DeliveryExpectation.model_validate(raw_expectation)
-        except ValueError:
-            continue
-        if expectation.schedule is None:
-            continue
-        schedule = expectation.schedule
-        if slot_id and schedule.slot_id != slot_id:
-            continue
-        key = (dataset.market, schedule.slot_id, schedule.local_time, schedule.timezone)
-        entry = grouped.setdefault(
-            key,
-            {
-                "providers": [],
-                "dataset_keys": [],
-            },
-        )
-        providers = entry["providers"]
-        dataset_keys = entry["dataset_keys"]
-        if isinstance(providers, list):
-            for source in schedule.expected_sources:
-                if source not in providers:
-                    providers.append(source)
-        if isinstance(dataset_keys, list):
-            dataset_keys.append(dataset.dataset_key)
-
-    definitions: list[_SchedulerDefinition] = []
-    by_key: dict[str, DatasetRegistry] = {dataset.dataset_key: dataset for dataset in datasets}
-    for (group_market, group_slot, local_time, timezone_name), entry in grouped.items():
-        providers = tuple(entry["providers"]) if isinstance(entry["providers"], list) else ()
-        keys = (
-            tuple(sorted(set(entry["dataset_keys"])))
-            if isinstance(entry["dataset_keys"], list)
-            else ()
-        )
-        if not providers:
-            continue
-        definitions.append(
-            _SchedulerDefinition(
-                scheduler_key=f"legacy:{group_market.lower()}:{group_slot}",
-                provider=providers[0],
-                providers=providers,
-                dataset_keys=keys,
-                slot_id=group_slot,
-                scheduled_local_time=local_time,
-                timezone=timezone_name,
-                desired_state="running",
-                observed_state="running",
-                revision=0,
-                last_heartbeat_at=None,
-                last_cycle_started_at=None,
-                last_cycle_completed_at=None,
-                last_error=None,
-                created_at=None,
-                updated_at=None,
-            )
-        )
-    return definitions, by_key
-
-
 def _feed_configuration(
     dataset: DatasetRegistry, providers: tuple[str, ...]
 ) -> list[_ConfiguredFeed]:
@@ -655,25 +570,22 @@ async def list_market_freshness(
     evaluated_at = ensure_utc(now or utc_now())
     normalized_slot_filter = normalize_slot_id(slot_id) if slot_id else None
     controls = await list_scheduler_controls(db)
-    if controls:
-        definitions = [_definition_from_control(row) for row in controls]
-        all_keys = sorted({key for definition in definitions for key in definition.dataset_keys})
-        datasets: dict[str, DatasetRegistry] = {}
-        if all_keys:
-            datasets = {
-                row.dataset_key: row
-                for row in (
-                    await db.execute(
-                        select(DatasetRegistry).where(DatasetRegistry.dataset_key.in_(all_keys))
-                    )
+    if not controls:
+        return []
+    definitions = [_definition_from_control(row) for row in controls]
+    all_keys = sorted({key for definition in definitions for key in definition.dataset_keys})
+    datasets: dict[str, DatasetRegistry] = {}
+    if all_keys:
+        datasets = {
+            row.dataset_key: row
+            for row in (
+                await db.execute(
+                    select(DatasetRegistry).where(DatasetRegistry.dataset_key.in_(all_keys))
                 )
-                .scalars()
-                .all()
-            }
-    else:
-        definitions, datasets = await _legacy_definitions(
-            db, market=market, slot_id=normalized_slot_filter
-        )
+            )
+            .scalars()
+            .all()
+        }
 
     results: list[MarketFreshness] = []
     for definition in definitions:

@@ -61,6 +61,25 @@ async def _setup(
             config=_config(sources),
         )
     )
+    # Freshness cards are sourced exclusively from the durable scheduler
+    # control plane.  A dataset delivery schedule alone is not a definition.
+    for source in sources[:1]:
+        scheduler_key = f"{source}_tw_equity_eod_v1"
+        session.add(
+            SchedulerControl(
+                scheduler_key=scheduler_key,
+                provider=source,
+                slot_id="taiwan_market_window",
+                scheduled_local_time=time(14, 30),
+                timezone="Asia/Taipei",
+                dataset_keys=["tw_equity_eod"],
+                desired_state="running",
+                observed_state="running",
+                revision=1,
+            )
+        )
+        await session.flush()
+        session.add(SchedulerDataset(scheduler_key=scheduler_key, dataset_key="tw_equity_eod"))
     await _seed_published_calendar_year(
         session,
         market="TW",
@@ -157,6 +176,11 @@ async def test_configured_market_without_runs_is_never_received(test_session):
 
 
 @pytest.mark.asyncio
+async def test_freshness_without_scheduler_control_is_empty(test_session):
+    assert await list_market_freshness(test_session, now=NOW) == []
+
+
+@pytest.mark.asyncio
 async def test_registered_stopped_scheduler_and_invalid_dataset_stay_visible(test_session):
     """Scheduler definitions remain visible even when feed config is unusable."""
     session = test_session
@@ -202,31 +226,15 @@ async def test_registered_stopped_scheduler_and_invalid_dataset_stay_visible(tes
 
 
 @pytest.mark.asyncio
-async def test_freshness_aggregates_partial_late_failed_and_coverage(test_session):
+async def test_freshness_uses_scheduler_control_provider_and_feed(test_session):
     await _setup(test_session, ["finlab", "bloomberg"])
-    test_session.add_all(
-        [
-            _run("finlab", date(2026, 7, 22)),
-            _run("bloomberg", date(2026, 7, 21)),
-        ]
-    )
+    test_session.add(_run("finlab", date(2026, 7, 22)))
     await test_session.commit()
-    partial = (await list_market_freshness(test_session, now=NOW))[0]
-    assert partial.status == "partial"
-    assert partial.coverage_data_date == date(2026, 7, 21)
-    assert partial.last_complete_at is None
-
-    test_session.add(_run("bloomberg", date(2026, 7, 22), "failed"))
-    await test_session.commit()
-    failed = (await list_market_freshness(test_session, now=NOW))[0]
-    assert failed.status == "failed"
-    assert failed.feeds[1].last_failure_code == "NORMALIZATION_FAILED"
-
-    test_session.add(_run("bloomberg", date(2026, 7, 22)))
-    await test_session.commit()
-    recovered = (await list_market_freshness(test_session, now=NOW))[0]
-    assert recovered.status == "fresh"
-    assert recovered.last_complete_at == NOW
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.provider == "finlab"
+    assert row.status == "fresh"
+    assert row.coverage_data_date == date(2026, 7, 22)
+    assert row.feeds[0].source == "finlab"
 
 
 @pytest.mark.asyncio

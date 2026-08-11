@@ -1,9 +1,9 @@
 # 台灣一分鐘資料契約與後續架構
 
-> 狀態：`market_minute.v1` ingress 與 `market_minute_archive.v1` archive manifest
-> 已發布為契約，workflow/canonical DB 骨架、Source routing、normalizer、DQ 與 canonical
-> 寫入均已建；四檔reviewed production-pilot scheduler已實作。完整market universe、
-> cross-sequence publication、monthly partition automation與Serve查詢尚未實作。
+> 狀態：`market_minute.v1` 是 staging active 的 Shioaji ingress contract；目前只啟用
+> `tw_equity_minute` 與 `tw_etf_minute`。archive manifest、完整 market universe、
+> cross-sequence publication、monthly partition automation 與較完整的歷史 Serve
+> query 若尚未部署，均屬後續工作，不是 active provider feed。
 
 ## 範圍與單位
 
@@ -63,7 +63,7 @@ snapshot 之前存取 `api.contracts.stocks.get(symbol)` 的受限失敗分類�
 
 ## Maintained universe
 
-Production universe 採雙來源交集：
+Staging universe 採雙來源交集：
 
 - Shioaji contracts 決定 provider eligibility；
 - TWSE／TPEx 官方清單決定正式 membership 與股票／ETF 分類。
@@ -77,9 +77,8 @@ identifier，否則建立新 instrument。
 單一 dataset 異動超過 20 檔或 2% 任一門檻時 fail closed。每個 published universe
 必須保留 Shioaji snapshot、官方來源版本、差異、checksum、判定與發布時間。
 
-Staging與目前production pilot都固定只使用`2330`、`0050`、`0056`、`006201`，但各自
-使用不同manifest identity、credentials與SQLite state。Pilot不會隨未完成的full-market
-universe自動擴張；可以review更新這四檔metadata。
+Staging reviewed pilot 固定只使用 `2330`、`0050`、`0056`、`006201`，不會隨未完成的
+full-market universe 自動擴張；可以 review 更新這四檔 metadata。
 
 ## Daily update 與 publication barrier
 
@@ -119,9 +118,8 @@ chunk counts、總 rows、checksums、object keys 與 immutable object evidence�
 snapshot sequence 可有多個 chunk，每個 chunk 最多 5,000 rows。object key 不得是
 presigned URL 或含 credential 的 URL。
 
-Archive Source identity 固定為 `tw_recorder_archive`，metadata 仍記錄原始上游
-Shioaji，且 `overlap_precedence=direct_daily_shioaji`；重疊時 direct daily Shioaji
-優先。manifest 必須帶 immutable `trading_calendar_checksum`、非空且嚴格遞增的
+若未來啟用 archive，metadata 仍記錄原始上游 Shioaji；目前不建立額外 archive/direct
+ingest route。manifest 必須帶 immutable `trading_calendar_checksum`、非空且嚴格遞增的
 `expected_trading_dates`／`covered_trading_dates`，兩者必須逐日完全相同；
 `trading_dates_sha256` 是 LF 串接 ISO expected dates 的 SHA-256。每個 covered month
 必須至少有一個 expected trading date，這是 calendar-revision/checksum 支持的 strict
@@ -181,32 +179,33 @@ revision、實際 instruments、universe version、row counts、checksums、cove
 
 ## Credentials 與 provider compatibility
 
-Staging、production 各用不同 Shioaji 帳號、limiter 與 Source client key。Credentials
-只從環境 secrets/config 載入，不得進入 log、manifest、raw payload、文件或 generated
-contracts。Production 歷史回補不得向 Shioaji 跨日取得。
+Staging 使用獨立 Shioaji 帳號、limiter 與 Source client key。Credentials 只從環境
+secrets/config 載入，不得進入 log、manifest、raw payload、文件或 generated contracts。
+目前不授權以 Shioaji 執行跨日歷史回補。
 
 Fetcher 已將 Shioaji 精確 pin 為 optional dependency `1.7.1`，並以 lazy gateway 使用
 lowercase `api.contracts.stocks` 與 `KBars.dict()`。credential-safe、單一 `2330` 的
-simulation smoke CLI 已實作；成功的真實 staging smoke 仍是 production activation 前的
+simulation smoke CLI 已實作；成功的 staging smoke 是擴大資料範圍前的
 必要 gate，不得以 mock regression 取代。
 
-## Reviewed production pilot 與後續工作
+## Reviewed staging pilot 與後續工作
 
-Fetcher已有production專用的四檔manifest與scheduler：published TW calendar開市日於
+Fetcher已有 staging 專用的四檔 manifest 與 scheduler：published TW calendar 開市日於
 `14:30 Asia/Taipei`開始抓取同一trade date，`17:00`後停止retry且不做跨日Shioaji
-catch-up。Production runtime強制`SHIOAJI_SIMULATION=true`，使用獨立data-only
+catch-up。Staging runtime 強制 `SHIOAJI_SIMULATION=true`，使用獨立 data-only
 Shioaji帳號、Source key、R2 binding、writable provider cache、container與
 `/var/lib/findb-shioaji-fetcher/state.sqlite3`。
 Acquisition attempts、rolling limiter、SDK-detached raw snapshot、prepared Source request及
 terminal結果均durable；Source只有`completed`且record counts吻合才算sequence成功。
-兩個minute dataset registry rows已為此reviewed pilot啟用。
+兩個 minute dataset registry rows 已為此 reviewed pilot 啟用。
 
 這個pilot仍是每symbol一個sequence，直接進入既有Source/normalizer/canonical流程；它
 不實作本文描述的full-market universe release與transactional cross-sequence publication
 barrier，因此不得視為完整market publication或backfill授權。
 
 原staging-only one-shot coordinator仍保留作credentialed驗證工具。其committed manifest
-同樣固定為2330 equity與0050、0056、006201 ETF，但identity與state不可和production共用；
+同樣固定為2330 equity與0050、0056、006201 ETF，但 identity 與 state 不得跨 staging
+工作重用；
 `--check`完全離線，預設僅acquisition/contract validation，只有明確`--deliver`才會建立
 R2與Source client。它使用SQLite state保存rolling limit、attempt、lease、SDK-detached
 snapshot及prepared request。R2上傳前保存durable intent；若程序在外部寫入與本機
@@ -220,10 +219,10 @@ Taipei execution date，不能跨日恢復；此流程永遠不得使用 `--deli
 與 local contract validation 均成功後寫入的 durable preflight marker；缺少 marker 時不得呼叫
 provider。
 
-- credentialed staging與production pilot的live成功驗收及至少兩個有效交易日觀察；
+- credentialed staging pilot的live成功驗收及至少兩個有效交易日觀察；
 - full-market universe coordination與canonical backend publication finalizer；
-- production deployment rollout與failure/rollback演練；
-- production archive import；
+- staging deployment rollout與failure/rollback演練；
+- staging archive import（若 archive workflow 核准）；
 - RDS hot storage 的 61 個 monthly partitions automation；
 - 永久 Canonical R2 archive 與上述 publication barrier 的實際儲存流程；
 - 保持唯讀的 Serve API minute query；

@@ -15,10 +15,26 @@
 | [api/api_usage_guide.md](api/api_usage_guide.md)                                 | Source、Serve、Admin API 的認證、主要端點與使用方式。                      |
 | [operations/deployment.md](operations/deployment.md)                             | EC2 部署、staging資料界線、GitHub Environment、AWS IAM 與 secrets 邊界。   |
 | [operations/ingestion.md](operations/ingestion.md)                               | Durable ingestion、bounded staging驗收、RabbitMQ、監控、恢復與 rollback。  |
-| [operations/migration_workflow.md](operations/migration_workflow.md)             | Alembic migration 與 production rollout 規則。                             |
+| [operations/migration_workflow.md](operations/migration_workflow.md)             | Alembic migration 與 staging rollout 規則。                                |
 | [operations/data_maintenance.md](operations/data_maintenance.md)                 | Staging reset、partial dump、seed、backfill、raw retention 與 cache 維護。 |
 | [dev/backlog.md](dev/backlog.md)                                                 | 尚未完成、仍需追蹤的工作與已知風險。                                       |
 | [dev/fetcher-data-automation-backlog.md](dev/fetcher-data-automation-backlog.md) | Fetcher 四時段自動化、provider coverage、資料契約與上線驗收 backlog。      |
+
+## Staging active feeds
+
+目前 staging 只啟用下列 provider/dataset 配對：
+
+| Provider | Dataset |
+| --- | --- |
+| `twelve_data` | `us_equity_eod` |
+| `finlab` | `tw_equity_eod` |
+| `shioaji` | `tw_equity_minute` |
+| `shioaji` | `tw_etf_minute` |
+
+Canonical tables、Serve API 與 lookup read model 仍保留歷史或未來資料域的查詢能力，
+但不代表那些資料域目前有 active provider feed。舊 provider、direct ingest route 與
+futures contract feed 不在 staging 啟用範圍；需要新增資料域時，另案建立完整新版
+contract、normalizer、DQ 與 Serve read model 驗收。
 
 ## 文件原則
 

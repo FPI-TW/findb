@@ -152,7 +152,7 @@ make test
 
 ```bash
 uv --directory backend run pytest
-uv --directory backend run pytest tests/test_source_api.py
+uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
 uv --directory backend run ruff check app tests scripts migrations
 uv --directory backend run ruff format --check app tests scripts migrations
 uv --directory backend run mypy app
@@ -175,7 +175,7 @@ POST /api/v1/source/ingest
 目前已發布：
 
 - `market_eod.v1`
-- `futures_continuous_eod.v1`
+- `market_minute.v1`
 
 Machine-readable contract：
 

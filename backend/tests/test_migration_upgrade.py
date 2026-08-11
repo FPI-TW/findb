@@ -130,6 +130,35 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                 """),
                 {"id": uuid4()},
             )
+            for index, (source_name, allowed_datasets) in enumerate(
+                (
+                    ("Twelve_Data", None),
+                    ("finlab", ["tw_equity_eod", "retired_dataset"]),
+                    ("shioaji", None),
+                    ("bloomberg", None),
+                ),
+                start=1,
+            ):
+                await connection.execute(
+                    text("""
+                        INSERT INTO source_client (
+                            client_id, name, source_name, key_hash, allowed_datasets,
+                            rate_limit_requests, rate_limit_window, created_at, updated_at
+                        ) VALUES (
+                            :client_id, :name, :source_name, :key_hash,
+                            CAST(:allowed_datasets AS jsonb), 100, 60, now(), now()
+                        )
+                    """),
+                    {
+                        "client_id": uuid4(),
+                        "name": f"migration-source-{index}",
+                        "source_name": source_name,
+                        "key_hash": str(index) * 64,
+                        "allowed_datasets": (
+                            None if allowed_datasets is None else json.dumps(allowed_datasets)
+                        ),
+                    },
+                )
             for table_name in SOURCE_CONTROL_TABLES:
                 await connection.execute(
                     text(
@@ -138,6 +167,44 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         "DROP COLUMN IF EXISTS source_priority"
                     )
                 )
+
+        # Continue through the pre-cutover audit schema so the migration is
+        # exercised with a legitimate NULL dataset_key audit attempt.  Such
+        # rejected/unauthenticated attempts are intentionally out of scope.
+        await _run_alembic(database_url, "c3d4e5f6a7b8")
+        null_attempt_id = uuid4()
+        unknown_scheduler_key = "legacy_unknown_scheduler_v1"
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO ingestion_attempt (
+                        attempt_id, source_client_id, run_id, dataset_key, source,
+                        status, created_at, updated_at
+                    ) VALUES (
+                        :attempt_id, NULL, NULL, NULL, NULL,
+                        'rejected', now(), now()
+                    )
+                    """
+                ),
+                {"attempt_id": null_attempt_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO scheduler_control (
+                        scheduler_key, provider, slot_id, scheduled_local_time,
+                        timezone, dataset_keys, desired_state, observed_state,
+                        revision, created_at, updated_at
+                    ) VALUES (
+                        :scheduler_key, 'legacy_provider', 'legacy_unknown', TIME '00:00:00',
+                        'UTC', '["retired_dataset"]'::jsonb, 'stopped', 'stopped',
+                        1, now(), now()
+                    )
+                    """
+                ),
+                {"scheduler_key": unknown_scheduler_key},
+            )
 
         await _run_alembic(database_url, "head")
 
@@ -195,6 +262,27 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         FROM dataset_registry
                         WHERE dataset_key = 'us_equity_eod'
                         """)
+            )
+            credential_scopes = (
+                await connection.execute(
+                    text("""
+                        SELECT source_name, allowed_datasets
+                        FROM source_client
+                        WHERE name LIKE 'migration-source-%'
+                        ORDER BY source_name
+                    """)
+                )
+            ).all()
+            null_attempt_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM ingestion_attempt "
+                    "WHERE attempt_id = :attempt_id AND dataset_key IS NULL"
+                ),
+                {"attempt_id": null_attempt_id},
+            )
+            unknown_scheduler_count = await connection.scalar(
+                text("SELECT count(*) FROM scheduler_control WHERE scheduler_key = :scheduler_key"),
+                {"scheduler_key": unknown_scheduler_key},
             )
             delivery_column_count = await connection.scalar(
                 text("""
@@ -281,11 +369,13 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert cleanup_index_count == 1
         assert attempt_table == "ingestion_attempt"
         assert lineage_column_count == 4
-        assert contract_config["schema_id"] == "production_contract"
-        assert contract_config["accepted_schema_versions"] == [99]
-        assert contract_config["schema_enforcement"] == "audit"
+        assert contract_config["schema_id"] == "market_eod"
+        assert contract_config["accepted_schema_versions"] == [1]
+        assert contract_config["current_schema_version"] == 1
+        assert contract_config["schema_enforcement"] == "enforce"
+        assert contract_config["allowed_sources"] == ["finlab"]
         assert contract_config["defaults"] == {
-            "market": "US",
+            "market": "TW",
             "asset_class": "equity",
             "currency": "TWD",
         }
@@ -310,21 +400,27 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
             "action": "warn",
             "expected_sources": ["operator_feed"],
         }
-        assert default_monitor_config == {
-            "action": "disabled",
-            "expected_sources": [],
-        }
+        assert default_monitor_config is None
         assert us_equity_contract_config["schema_id"] == "market_eod"
         assert us_equity_contract_config["accepted_schema_versions"] == [1]
         assert us_equity_contract_config["current_schema_version"] == 1
-        assert us_equity_contract_config["schema_enforcement"] == "audit"
+        assert us_equity_contract_config["schema_enforcement"] == "enforce"
+        assert us_equity_contract_config["allowed_sources"] == ["twelve_data"]
         assert us_equity_contract_config["defaults"] == {
             "market": "US",
             "asset_class": "equity",
-            "currency": "CAD",
+            "currency": "USD",
         }
         assert us_equity_contract_config["delivery_expectation"]["delivery_mode"] == "incremental"
         assert us_equity_contract_config["custom"] == "preserve"
+        assert credential_scopes == [
+            ("bloomberg", []),
+            ("finlab", ["tw_equity_eod"]),
+            ("shioaji", ["tw_equity_minute", "tw_etf_minute"]),
+            ("twelve_data", ["us_equity_eod"]),
+        ]
+        assert null_attempt_count == 1
+        assert unknown_scheduler_count == 0
 
         await _run_alembic(database_url, "08b9c0d1e2f3", command="downgrade")
         async with target_engine.connect() as connection:
@@ -391,7 +487,12 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert cleanup_index_count == 0
         assert attempt_table is None
         assert lineage_column_count == 0
-        assert contract_config["schema_id"] == "production_contract"
+        assert "schema_id" not in contract_config
+        assert "accepted_schema_versions" not in contract_config
+        assert "current_schema_version" not in contract_config
+        assert "schema_enforcement" not in contract_config
+        assert "allowed_sources" not in contract_config
+        assert "defaults" not in contract_config
         assert contract_config["custom"] == "preserve"
         assert delivery_column_count == 0
         assert missing_alert_table is None
