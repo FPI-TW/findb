@@ -243,14 +243,14 @@ def test_v2_retryable_failure_cannot_exhaust_before_grace_deadline(
         schedule_id="twelve_data_western_markets_window_us_equity_eod",
         slot_id="western_markets_window",
         timezone_name="Asia/Taipei",
-        scheduled_local_time=time(6, 30),
+        scheduled_local_time=time(8, 15),
         target_date_lag_days=1,
         grace_seconds=3600,
         max_attempts=1,
         retry_base_seconds=1,
     )
     universe = load_symbol_universe(UNIVERSE_PATH)
-    before_grace = datetime(2026, 7, 24, 22, 29, tzinfo=timezone.utc)
+    before_grace = datetime(2026, 7, 25, 1, 14, tzinfo=timezone.utc)
     state.enqueue_due(
         schedule,
         universe,
@@ -271,7 +271,7 @@ def test_v2_retryable_failure_cannot_exhaust_before_grace_deadline(
         == "retry_wait"
     )
 
-    after_grace = datetime(2026, 7, 25, 0, 31, tzinfo=timezone.utc)
+    after_grace = datetime(2026, 7, 25, 1, 16, tzinfo=timezone.utc)
     second = state.claim_due(schedule, universe, now=after_grace, limit=1)[0]
     assert (
         state.record_failure(
