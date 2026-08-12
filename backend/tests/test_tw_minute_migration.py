@@ -89,7 +89,7 @@ def test_tw_minute_migration_is_single_linear_head():
     assert stage_four_feeds.down_revision == "c3d4e5f6a7b8"
     assert twelve_data_schedule is not None
     assert twelve_data_schedule.down_revision == "d4e5f6a7b8c9"
-    assert scripts.get_heads() == ["e5f6a7b8c9d0"]
+    assert scripts.get_heads() == ["f1a2b3c4d5e6"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():

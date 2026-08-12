@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, time, timezone
 from types import SimpleNamespace
@@ -27,7 +28,9 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlLoop,
     SchedulerControlProtocolError,
     SchedulerControlResponse,
+    SchedulerControlResponseError,
     SchedulerControlTransportError,
+    _log_control_failure,
     validate_scheduler_definition,
 )
 from findb_fetcher.shioaji_scheduler_cli import (
@@ -261,7 +264,9 @@ def test_graceful_stop_mid_cycle_finishes_work_then_stays_stopped() -> None:
     assert control.calls[-1]["cycle_completed_at"] is not None
 
 
-def test_control_failure_is_fail_closed_and_loop_keeps_polling() -> None:
+def test_control_failure_is_fail_closed_and_loop_keeps_polling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     stop_event = threading.Event()
 
     def recover(kwargs: dict[str, Any], control: _Control) -> Any:
@@ -282,9 +287,176 @@ def test_control_failure_is_fail_closed_and_loop_keeps_polling() -> None:
         stop_event=stop_event,
     )
     cycles: list[int] = []
+    caplog.set_level(logging.WARNING, logger="findb_fetcher.scheduler_control")
     SchedulerControlLoop(control).run(lambda: cycles.append(1), stop_event=stop_event)
     assert cycles == []
     assert len(control.calls) == 3
+    warnings = [
+        record for record in caplog.records if record.name == "findb_fetcher.scheduler_control"
+    ]
+    assert len(warnings) == 2
+    assert [record.phase for record in warnings] == ["idle_poll", "idle_poll"]
+    assert all(record.failure_class == "transport" for record in warnings)
+    assert all("offline" not in record.getMessage() for record in warnings)
+    assert all("offline" not in repr(record.args) for record in warnings)
+
+
+def test_preflight_failure_is_logged_once_and_does_not_start_cycle(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stop_event = threading.Event()
+
+    def recover(_kwargs: dict[str, Any], control: _Control) -> Any:
+        control.stop_event.set()
+        return SimpleNamespace(
+            scheduler_key=control.scheduler_key,
+            desired_state="stopped",
+            revision=len(control.calls),
+            server_time=datetime.now(UTC),
+        )
+
+    control = _Control(
+        ["running", SchedulerControlTransportError("transport sentinel"), recover],
+        stop_event=stop_event,
+    )
+    cycles: list[int] = []
+    caplog.set_level(logging.WARNING, logger="findb_fetcher.scheduler_control")
+    SchedulerControlLoop(control).run(lambda: cycles.append(1), stop_event=stop_event)
+
+    assert cycles == []
+    warnings = [
+        record for record in caplog.records if record.name == "findb_fetcher.scheduler_control"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].phase == "preflight_poll"
+    assert warnings[0].failure_class == "transport"
+    assert "transport sentinel" not in warnings[0].getMessage()
+    assert "transport sentinel" not in repr(warnings[0].args)
+
+
+def test_completion_report_failure_is_logged_without_replaying_cycle(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stop_event = threading.Event()
+
+    def recover(_kwargs: dict[str, Any], control: _Control) -> Any:
+        control.stop_event.set()
+        return SimpleNamespace(
+            scheduler_key=control.scheduler_key,
+            desired_state="stopped",
+            revision=len(control.calls),
+            server_time=datetime.now(UTC),
+        )
+
+    control = _Control(
+        ["running", "running", SchedulerControlResponseError(503), recover],
+        stop_event=stop_event,
+    )
+    cycles: list[int] = []
+    caplog.set_level(logging.WARNING, logger="findb_fetcher.scheduler_control")
+    SchedulerControlLoop(control).run(lambda: cycles.append(1), stop_event=stop_event)
+
+    assert cycles == [1]
+    assert [call["observed_state"] for call in control.calls] == [
+        "stopped",
+        "running",
+        "stopped",
+        "stopped",
+    ]
+    warnings = [
+        record for record in caplog.records if record.name == "findb_fetcher.scheduler_control"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].phase == "completion_report"
+    assert warnings[0].failure_class == "http_status"
+    assert warnings[0].status_code == 503
+    assert warnings[0].status_class == "5xx"
+
+
+def test_heartbeat_failure_is_logged_once_while_cycle_finishes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stop_event = threading.Event()
+    heartbeat_failed = threading.Event()
+    release_cycle = threading.Event()
+
+    def heartbeat_failure(_kwargs: dict[str, Any], _control: _Control) -> Any:
+        heartbeat_failed.set()
+        raise SchedulerControlProtocolError("body contains credential=heartbeat-secret")
+
+    def finish(_kwargs: dict[str, Any], control: _Control) -> Any:
+        control.stop_event.set()
+        return SimpleNamespace(
+            scheduler_key=control.scheduler_key,
+            desired_state="stopped",
+            revision=len(control.calls),
+            server_time=datetime.now(UTC),
+        )
+
+    control = _Control(["running", "running", heartbeat_failure, finish], stop_event=stop_event)
+    caplog.set_level(logging.WARNING, logger="findb_fetcher.scheduler_control")
+
+    def cycle() -> None:
+        assert heartbeat_failed.wait(1)
+        release_cycle.set()
+
+    SchedulerControlLoop(control).run(cycle, stop_event=stop_event)
+    assert release_cycle.is_set()
+    assert len(control.calls) == 4
+    assert control.calls[-1]["cycle_completed_at"] is not None
+    warnings = [
+        record for record in caplog.records if record.name == "findb_fetcher.scheduler_control"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].phase == "heartbeat"
+    assert warnings[0].failure_class == "protocol"
+    assert "heartbeat-secret" not in warnings[0].getMessage()
+    assert "heartbeat-secret" not in repr(warnings[0].args)
+
+
+@pytest.mark.parametrize(
+    ("phase", "error", "failure_class", "status_code", "status_class"),
+    [
+        ("idle_poll", SchedulerControlResponseError(503), "http_status", 503, "5xx"),
+        (
+            "preflight_poll",
+            SchedulerControlTransportError("url=https://secret.example"),
+            "transport",
+            None,
+            "none",
+        ),
+        (
+            "completion_report",
+            SchedulerControlProtocolError("response body token=secret-value"),
+            "protocol",
+            None,
+            "none",
+        ),
+        ("heartbeat", SchedulerControlResponseError(429), "http_status", 429, "4xx"),
+    ],
+)
+def test_control_failure_warning_is_structured_and_secret_free(
+    caplog: pytest.LogCaptureFixture,
+    phase: str,
+    error: Exception,
+    failure_class: str,
+    status_code: int | None,
+    status_class: str,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="findb_fetcher.scheduler_control")
+    _log_control_failure(TWELVE_CONTROL_KEY, phase, error)  # type: ignore[arg-type]
+
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.scheduler_key == TWELVE_CONTROL_KEY
+    assert record.phase == phase
+    assert record.failure_class == failure_class
+    assert record.failure_classification == failure_class
+    assert record.status_code == status_code
+    assert record.status_class == status_class
+    assert "secret-value" not in caplog.text
+    assert "https://secret.example" not in caplog.text
+    assert "response body" not in caplog.text
 
 
 def test_cycle_exception_is_bounded_and_reported() -> None:
