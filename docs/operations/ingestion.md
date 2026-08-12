@@ -30,6 +30,11 @@ Consumer timeout必須高於Celery hard time limit與graceful shutdown所需時�
 `shioaji/tw_equity_minute`、`shioaji/tw_etf_minute`。Canonical/Serve read model 可
 保留歷史資料域，但不應從監控結果推論存在其他 active provider feed。
 
+`twelve_data/us_equity_eod` 保持 `western_markets_window`，每日台北時間 08:15 觸發，
+目標仍是前一個受治理的美股交易日。Fetcher 保留 60 分鐘 retry grace；缺漏監控以
+`Asia/Taipei` 解讀 operational deadline，09:15 仍沒有預期 delivery 才建立 alert。
+此固定台北期限不受美東夏令／冬令時間切換影響。
+
 ## 上線前檢查
 
 - `predeploy_db_check.py`通過。
@@ -98,6 +103,11 @@ overview 每個 scheduler 一張卡，應同時核對 DB
 設定時間、desired／observed state、heartbeat、provider raw `fetched_at`、normalization
 completion 與 feed freshness。看到 raw 已抓取但 normalization 未完成時，應沿 downstream
 run／job／outbox／queue 診斷，不應誤判為 provider 沒有送達。
+
+Missing-delivery 的 `deadline_local_time` 使用 delivery schedule 的 timezone，並以預期交易日
+加上 `target_date_lag_days` 決定期限日期。這與 ingest-time 的 market close + availability
+grace 分離；調整 Fetcher 時間時必須同步更新 scheduler definition、registry schedule 與
+missing deadline，避免排程尚未開始便提前報 late。
 
 `tw_equity_eod` 的全域 minimum record count 仍為 2,100。FinLab 兩檔 pilot 只透過
 source-scoped override 將 minimum 設為 2 並停用 rolling baseline；其它 source 不繼承這個

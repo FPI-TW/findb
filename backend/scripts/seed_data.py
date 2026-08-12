@@ -37,6 +37,8 @@ def _eod_delivery_expectation(
     minimum_count: int,
     slot_id: str,
     local_time: str,
+    monitor_deadline: str = "17:00:00",
+    target_date_lag_days: int = 0,
 ) -> dict:
     return {
         "delivery_mode": mode,
@@ -66,13 +68,14 @@ def _eod_delivery_expectation(
         "missing_delivery": {
             "action": "warn",
             "expected_sources": [source],
-            "deadline_local_time": "17:00:00",
+            "deadline_local_time": monitor_deadline,
         },
         "schedule": {
             "enabled": True,
             "slot_id": slot_id,
             "local_time": local_time,
             "timezone": "Asia/Taipei",
+            "target_date_lag_days": target_date_lag_days,
             "expected_sources": [source],
         },
     }
@@ -115,6 +118,7 @@ def _minute_delivery_expectation() -> dict:
             "slot_id": "taiwan_market_window",
             "local_time": "14:30:00",
             "timezone": "Asia/Taipei",
+            "target_date_lag_days": 0,
             "expected_sources": ["shioaji"],
         },
     }
@@ -177,7 +181,9 @@ DATASETS = [
                 source="twelve_data",
                 minimum_count=1,
                 slot_id="western_markets_window",
-                local_time="06:30:00",
+                local_time="08:15:00",
+                monitor_deadline="09:15:00",
+                target_date_lag_days=1,
             ),
         ),
     },
@@ -204,6 +210,8 @@ DATASETS = [
                 minimum_count=2,
                 slot_id="taiwan_market_window",
                 local_time="14:30:00",
+                monitor_deadline="17:00:00",
+                target_date_lag_days=0,
             ),
         ),
     },

@@ -8,7 +8,7 @@
       "market": "US",
       "dataset_key": "us_equity_eod",
       "universe_file": "twelve_data_us_common_stocks.v1.json",
-      "scheduled_time": "06:30",
+      "scheduled_time": "08:15",
       "target_date_lag_days": 1,
       "legacy_schedule_id": "twelve_data_us_common_stocks_daily_v1",
       "target_date_policy": "latest_trade_date",

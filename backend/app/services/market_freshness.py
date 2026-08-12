@@ -432,18 +432,22 @@ async def _build_scheduler_freshness(
         )
         if effective_expectation is not None and effective_expectation.latest_date is not None:
             try:
+                deadline = effective_expectation.missing_delivery.deadline_local_time
                 resolver_kwargs: dict[str, Any] = {
                     "strict_current_session": (
                         effective_expectation.delivery_mode.value == "sequenced_snapshot"
+                        or deadline is not None
                     )
                 }
-                if (
-                    effective_expectation.delivery_mode.value == "sequenced_snapshot"
-                    and effective_expectation.missing_delivery.deadline_local_time is not None
-                ):
-                    resolver_kwargs["current_session_deadline"] = (
-                        effective_expectation.missing_delivery.deadline_local_time
-                    )
+                if deadline is not None:
+                    resolver_kwargs["current_session_deadline"] = deadline
+                    if effective_expectation.schedule is not None:
+                        resolver_kwargs["operational_deadline_timezone"] = (
+                            effective_expectation.schedule.timezone
+                        )
+                        resolver_kwargs["target_date_lag_days"] = (
+                            effective_expectation.schedule.target_date_lag_days
+                        )
                 expected, reason = await resolve_expected_data_date(
                     db,
                     effective_expectation.latest_date,

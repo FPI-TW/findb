@@ -171,6 +171,19 @@ def test_legacy_schedule_slot_is_normalized_at_config_boundary() -> None:
     )
     assert schedule.slot_id == "taiwan_market_window"
     assert schedule.local_time == time(14, 30)
+    assert schedule.target_date_lag_days == 0
+
+    with pytest.raises(ValidationError):
+        FreshnessSchedule.model_validate(
+            {
+                "enabled": True,
+                "slot_id": "western_markets_window",
+                "local_time": "08:15:00",
+                "timezone": "Asia/Taipei",
+                "target_date_lag_days": 367,
+                "expected_sources": ["twelve_data"],
+            }
+        )
 
 
 def test_policy_only_sequenced_snapshot_does_not_expand_eod_contract_enum() -> None:

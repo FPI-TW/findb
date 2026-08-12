@@ -191,6 +191,7 @@ class FreshnessSchedule(BaseModel):
     ]
     local_time: time
     timezone: Literal["Asia/Taipei"]
+    target_date_lag_days: int = Field(default=0, ge=0, le=366)
     expected_sources: list[str] = Field(default_factory=list, max_length=32)
 
     @model_validator(mode="before")
@@ -406,16 +407,21 @@ async def resolve_expected_data_date(
     *,
     strict_current_session: bool = False,
     current_session_deadline: time | None = None,
+    operational_deadline_timezone: str | None = None,
+    target_date_lag_days: int = 0,
 ) -> tuple[date | None, str | None]:
     """Resolve the latest calendar date currently expected for a feed.
 
     ``availability_grace_minutes`` remains the authoritative ingest-time
     latest-date cutoff.  Callers that need a later operational monitoring
-    deadline may supply ``current_session_deadline`` explicitly; the override
-    is interpreted in ``policy.timezone`` and is never inferred from a slot
-    identifier.  When omitted, the historical close-plus-grace behavior is
-    unchanged.
+    deadline may supply ``current_session_deadline`` explicitly.  When an
+    ``operational_deadline_timezone`` and ``target_date_lag_days`` are also
+    supplied, the current open session cutoff is evaluated at
+    ``trade_date + target_date_lag_days`` in that operational timezone.  When
+    omitted, the historical close-plus-grace behavior is unchanged.
     """
+    if not 0 <= target_date_lag_days <= 366:
+        raise ValueError("target_date_lag_days must be between 0 and 366")
     zone = ZoneInfo(policy.timezone)
     local_now = now.astimezone(zone)
     today = local_now.date()
@@ -433,13 +439,17 @@ async def resolve_expected_data_date(
             cutoff = datetime.combine(rows[0].trade_date, close_at, tzinfo=zone) + timedelta(
                 minutes=policy.availability_grace_minutes
             )
+            comparison_now = local_now
         else:
+            deadline_zone = ZoneInfo(operational_deadline_timezone or policy.timezone)
+            cutoff_date = rows[0].trade_date + timedelta(days=target_date_lag_days)
             cutoff = datetime.combine(
-                rows[0].trade_date,
+                cutoff_date,
                 current_session_deadline,
-                tzinfo=zone,
+                tzinfo=deadline_zone,
             )
-        if local_now < cutoff:
+            comparison_now = now.astimezone(deadline_zone)
+        if comparison_now < cutoff:
             # Before today's current session is due, retain the normal
             # resolver semantics and evaluate the most recent prior open
             # session instead of suppressing its expectation entirely.

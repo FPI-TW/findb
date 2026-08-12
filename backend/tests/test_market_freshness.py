@@ -97,11 +97,12 @@ async def _seed_published_calendar_year(
     closed_calendar_days: set[date] | None = None,
 ) -> None:
     if await session.get(CalendarMarket, market) is None:
+        calendar_timezone = "America/New_York" if market == "US" else "Asia/Taipei"
         session.add(
             CalendarMarket(
                 market=market,
                 display_name=market,
-                timezone="Asia/Taipei",
+                timezone=calendar_timezone,
                 weekend_days=[5, 6],
             )
         )
@@ -116,7 +117,7 @@ async def _seed_published_calendar_year(
         status="published",
         expected_days=count,
         actual_days=count,
-        timezone="Asia/Taipei",
+        timezone="America/New_York" if market == "US" else "Asia/Taipei",
         source_kind="test",
     )
     session.add(revision)
@@ -173,6 +174,103 @@ async def test_configured_market_without_runs_is_never_received(test_session):
     )
     assert before_due[0].status == "never_received"
     assert before_due[0].feeds[0].status == "never_received"
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_freshness_turns_late_at_0915_taipei(test_session):
+    config = {
+        "schema_id": "market_eod",
+        "current_schema_version": 1,
+        "delivery_expectation": {
+            "delivery_mode": "incremental",
+            "latest_date": {
+                "calendar_market": "US",
+                "timezone": "America/New_York",
+                "market_close_time": "16:00:00",
+                "availability_grace_minutes": 120,
+                "action": "warn",
+            },
+            "missing_delivery": {
+                "action": "warn",
+                "expected_sources": ["twelve_data"],
+                "deadline_local_time": "09:15:00",
+            },
+            "schedule": {
+                "enabled": True,
+                "slot_id": "western_markets_window",
+                "local_time": "08:15:00",
+                "timezone": "Asia/Taipei",
+                "target_date_lag_days": 1,
+                "expected_sources": ["twelve_data"],
+            },
+        },
+    }
+    test_session.add(
+        DatasetRegistry(
+            dataset_key="us_equity_eod",
+            name="US",
+            asset_class="equity",
+            market="US",
+            is_active=True,
+            config=config,
+        )
+    )
+    test_session.add(
+        SchedulerControl(
+            scheduler_key="twelve_data_us_common_stocks_daily_v1",
+            provider="twelve_data",
+            slot_id="western_markets_window",
+            scheduled_local_time=time(8, 15),
+            timezone="Asia/Taipei",
+            dataset_keys=["us_equity_eod"],
+            desired_state="running",
+            observed_state="running",
+            revision=1,
+        )
+    )
+    await test_session.flush()
+    test_session.add(
+        SchedulerDataset(
+            scheduler_key="twelve_data_us_common_stocks_daily_v1",
+            dataset_key="us_equity_eod",
+        )
+    )
+    await _seed_published_calendar_year(test_session, market="US", year=2026)
+    test_session.add(
+        IngestionRun(
+            run_id=uuid7(),
+            dataset_key="us_equity_eod",
+            source="twelve_data",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 21),
+            delivery_mode="incremental",
+            is_rerun=False,
+            status="completed",
+            completed_at=datetime(2026, 7, 22, 1, 10, tzinfo=timezone.utc),
+        )
+    )
+    await test_session.commit()
+
+    before = (
+        await list_market_freshness(
+            test_session,
+            market="US",
+            now=datetime(2026, 7, 23, 1, 14, tzinfo=timezone.utc),
+        )
+    )[0]
+    assert before.expected_data_date == date(2026, 7, 21)
+    assert before.status == "fresh"
+
+    due = (
+        await list_market_freshness(
+            test_session,
+            market="US",
+            now=datetime(2026, 7, 23, 1, 15, tzinfo=timezone.utc),
+        )
+    )[0]
+    assert due.expected_data_date == date(2026, 7, 22)
+    assert due.status == "late"
 
 
 @pytest.mark.asyncio

@@ -117,6 +117,23 @@ def test_v1_schedule_cannot_define_db_controlled_runtime_identity() -> None:
         scheduler_cli._expected_definition(schedule)
 
 
+def test_twelve_data_runtime_definition_uses_0815_without_changing_slot() -> None:
+    root = Path(__file__).resolve().parents[1]
+    schedule = scheduler_cli._load_selected_schedule(
+        root / "configs" / "daily_scheduler.v2.json",
+        "western_markets_window",
+        "us_equity_eod",
+    )
+
+    assert scheduler_cli._expected_definition(schedule) == (
+        "twelve_data",
+        ("us_equity_eod",),
+        "western_markets_window",
+        "08:15:00",
+        "Asia/Taipei",
+    )
+
+
 def _set_check_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOURCE_API_URL", "https://source.example.test")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "source-client-key")

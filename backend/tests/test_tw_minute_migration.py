@@ -70,6 +70,7 @@ def test_tw_minute_migration_is_single_linear_head():
     minute_freshness = scripts.get_revision("f4a5b6c7d8e9")
     minute_deadline = scripts.get_revision("c3d4e5f6a7b8")
     stage_four_feeds = scripts.get_revision("d4e5f6a7b8c9")
+    twelve_data_schedule = scripts.get_revision("e5f6a7b8c9d0")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -86,7 +87,9 @@ def test_tw_minute_migration_is_single_linear_head():
     assert minute_deadline.down_revision == "b2c3d4e5f6a7"
     assert stage_four_feeds is not None
     assert stage_four_feeds.down_revision == "c3d4e5f6a7b8"
-    assert scripts.get_heads() == ["d4e5f6a7b8c9"]
+    assert twelve_data_schedule is not None
+    assert twelve_data_schedule.down_revision == "d4e5f6a7b8c9"
+    assert scripts.get_heads() == ["e5f6a7b8c9d0"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -99,6 +102,206 @@ def test_minute_migration_downgrade_preserves_policy_provenance():
     assert "ADD COLUMN IF NOT EXISTS snapshot_id" in migration_source
     assert "run.snapshot_id IS NULL" in migration_source
     assert "DO $$" not in migration_source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift_kind", ("scheduler_time", "schedule_enabled"))
+async def test_twelve_data_schedule_migration_rejects_definition_drift(
+    drift_kind: str,
+) -> None:
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_twelve_schedule_guard_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    database_created = False
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        database_created = True
+        await _run_alembic(database_url, "d4e5f6a7b8c9")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            if drift_kind == "scheduler_time":
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE scheduler_control
+                        SET scheduled_local_time = TIME '05:45:00'
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                    )
+                )
+            else:
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE dataset_registry
+                        SET config = jsonb_set(
+                            config,
+                            '{delivery_expectation,schedule}',
+                            CAST(:schedule AS jsonb),
+                            true
+                        )
+                        WHERE dataset_key = 'us_equity_eod'
+                        """
+                    ),
+                    {
+                        "schedule": json.dumps(
+                            {
+                                "enabled": False,
+                                "slot_id": "western_markets_window",
+                                "local_time": "06:30:00",
+                                "timezone": "Asia/Taipei",
+                                "expected_sources": ["twelve_data"],
+                            }
+                        )
+                    },
+                )
+
+        result = await _run_alembic_capture(database_url, "head")
+
+        assert result.returncode != 0
+        expected_error = (
+            "Twelve Data scheduler definition drifted"
+            if drift_kind == "scheduler_time"
+            else "Twelve Data delivery schedule drifted"
+        )
+        assert expected_error in (result.stdout + result.stderr)
+        async with target_engine.connect() as connection:
+            assert await connection.scalar(
+                text(
+                    """
+                        SELECT scheduled_local_time
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                )
+            ) == (time(5, 45) if drift_kind == "scheduler_time" else time(6, 30))
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT config#>>'{delivery_expectation,missing_delivery,deadline_local_time}'
+                        FROM dataset_registry
+                        WHERE dataset_key = 'us_equity_eod'
+                        """
+                    )
+                )
+                == "17:00:00"
+            )
+            if drift_kind == "schedule_enabled":
+                assert (
+                    await connection.scalar(
+                        text(
+                            """
+                            SELECT config#>>'{delivery_expectation,schedule,enabled}'
+                            FROM dataset_registry
+                            WHERE dataset_key = 'us_equity_eod'
+                            """
+                        )
+                    )
+                    == "false"
+                )
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        if database_created:
+            async with admin_engine.connect() as connection:
+                await connection.execute(
+                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+                )
+        await admin_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgrades() -> None:
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"findb_twelve_schedule_json_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    database_created = False
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        database_created = True
+        await _run_alembic(database_url, "d4e5f6a7b8c9")
+        target_engine = create_async_engine(database_url)
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE dataset_registry
+                    SET config = jsonb_set(
+                        jsonb_set(
+                            config,
+                            '{operator_note}',
+                            '"preserve-me"'::jsonb,
+                            true
+                        ),
+                        '{delivery_expectation,missing_delivery,operator_note}',
+                        '"keep-nested"'::jsonb,
+                        true
+                    )
+                    WHERE dataset_key = 'us_equity_eod'
+                    """
+                )
+            )
+
+        await _run_alembic(database_url, "head")
+        async with target_engine.connect() as connection:
+            config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
+            )
+            assert config["operator_note"] == "preserve-me"
+            assert config["delivery_expectation"]["missing_delivery"]["operator_note"] == (
+                "keep-nested"
+            )
+            assert config["delivery_expectation"]["schedule"]["local_time"] == "08:15:00"
+            assert config["delivery_expectation"]["schedule"]["target_date_lag_days"] == 1
+
+        await _run_alembic(database_url, "d4e5f6a7b8c9", command="downgrade")
+        async with target_engine.connect() as connection:
+            config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
+            )
+            assert config["operator_note"] == "preserve-me"
+            assert config["delivery_expectation"]["missing_delivery"] == {
+                "action": "warn",
+                "expected_sources": ["twelve_data"],
+                "deadline_local_time": "17:00:00",
+                "operator_note": "keep-nested",
+            }
+            assert config["delivery_expectation"]["schedule"] == {
+                "enabled": True,
+                "slot_id": "western_markets_window",
+                "local_time": "06:30:00",
+                "timezone": "Asia/Taipei",
+                "expected_sources": ["twelve_data"],
+            }
+            assert await connection.scalar(
+                text(
+                    """
+                        SELECT scheduled_local_time
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                )
+            ) == time(6, 30)
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        if database_created:
+            async with admin_engine.connect() as connection:
+                await connection.execute(
+                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+                )
+        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -272,7 +475,7 @@ async def test_slot_identity_migration_accepts_mixed_ids_and_preserves_custom_ti
                 },
             )
 
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, "a1b2c3d4e5f6")
         async with target_engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -706,7 +909,7 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     "twelve_data_us_common_stocks_daily_v1",
                     "twelve_data",
                     "western_markets_window",
-                    time(6, 30),
+                    time(8, 15),
                     "Asia/Taipei",
                 ),
             ]
@@ -789,8 +992,16 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                             "missing_delivery": {
                                 "action": "warn",
                                 "expected_sources": ["twelve_data"],
-                                "deadline_local_time": "17:00:00",
-                            }
+                                "deadline_local_time": "09:15:00",
+                            },
+                            "schedule": {
+                                "enabled": True,
+                                "slot_id": "western_markets_window",
+                                "local_time": "08:15:00",
+                                "timezone": "Asia/Taipei",
+                                "expected_sources": ["twelve_data"],
+                                "target_date_lag_days": 1,
+                            },
                         },
                     },
                 ),
@@ -820,7 +1031,13 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                 )
                 for row in state_before
             ]
-            assert state_after == expected_state_after
+            assert [row[:-2] for row in state_after] == [row[:-2] for row in expected_state_after]
+            assert [row[-2] for row in state_after] == [row[-2] for row in expected_state_after]
+            for after, before in zip(state_after, expected_state_after, strict=True):
+                if after[0] == "twelve_data_us_common_stocks_daily_v1":
+                    assert after[-1] >= before[-1]
+                else:
+                    assert after[-1] == before[-1]
 
         await _run_alembic(database_url, "c1d2e3f4a5b6", command="downgrade")
         async with target_engine.connect() as connection:
@@ -839,7 +1056,9 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     )
                 )
             ).all()
-            assert legacy_state == state_before
+            assert [row[:-1] for row in legacy_state] == [row[:-1] for row in state_before]
+            for after, before in zip(legacy_state, state_before, strict=True):
+                assert after[-1] >= before[-1]
             assert (
                 await connection.scalar(text("SELECT to_regclass('public.scheduler_dataset')"))
                 is None

@@ -127,11 +127,20 @@ async def scan_missing_deliveries(
                 resolved_at=evaluated_at,
                 delivery_mode=delivery_mode,
             )
-            if delivery_mode == "sequenced_snapshot":
-                deadline = expectation.missing_delivery.deadline_local_time
-                resolver_kwargs: dict[str, Any] = {"strict_current_session": True}
+            deadline = expectation.missing_delivery.deadline_local_time
+            if delivery_mode == "sequenced_snapshot" or deadline is not None:
+                resolver_kwargs: dict[str, Any] = {
+                    "strict_current_session": True,
+                }
                 if deadline is not None:
                     resolver_kwargs["current_session_deadline"] = deadline
+                    if expectation.schedule is not None:
+                        resolver_kwargs["operational_deadline_timezone"] = (
+                            expectation.schedule.timezone
+                        )
+                        resolver_kwargs["target_date_lag_days"] = (
+                            expectation.schedule.target_date_lag_days
+                        )
                 expected_date, reason = await resolve_expected_data_date(
                     db,
                     latest,

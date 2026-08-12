@@ -44,6 +44,39 @@ def _config(*, action: str = "warn", sources: list[str] | None = None) -> dict:
     }
 
 
+def _twelve_data_config() -> dict:
+    return {
+        "schema_id": "market_eod",
+        "accepted_schema_versions": [1],
+        "current_schema_version": 1,
+        "schema_enforcement": "enforce",
+        "defaults": {"market": "US", "asset_class": "equity", "currency": "USD"},
+        "delivery_expectation": {
+            "delivery_mode": "incremental",
+            "latest_date": {
+                "calendar_market": "US",
+                "timezone": "America/New_York",
+                "market_close_time": "16:00:00",
+                "availability_grace_minutes": 120,
+                "action": "warn",
+            },
+            "missing_delivery": {
+                "action": "warn",
+                "expected_sources": ["twelve_data"],
+                "deadline_local_time": "09:15:00",
+            },
+            "schedule": {
+                "enabled": True,
+                "slot_id": "western_markets_window",
+                "local_time": "08:15:00",
+                "timezone": "Asia/Taipei",
+                "target_date_lag_days": 1,
+                "expected_sources": ["twelve_data"],
+            },
+        },
+    }
+
+
 async def _seed_dataset(session, *, active: bool = True, config: dict | None = None) -> None:
     session.add(
         DatasetRegistry(
@@ -59,7 +92,13 @@ async def _seed_dataset(session, *, active: bool = True, config: dict | None = N
     await session.commit()
 
 
-async def _seed_published_calendar_year(session, *, market: str, year: int) -> None:
+async def _seed_published_calendar_year(
+    session,
+    *,
+    market: str,
+    year: int,
+    closed_dates: set[date] | None = None,
+) -> None:
     if await session.get(CalendarMarket, market) is None:
         session.add(
             CalendarMarket(
@@ -72,6 +111,7 @@ async def _seed_published_calendar_year(session, *, market: str, year: int) -> N
         await session.flush()
     start = date(year, 1, 1)
     count = (date(year, 12, 31) - start).days + 1
+    closed_dates = closed_dates or set()
     revision = CalendarYearRevision(
         market=market,
         year=year,
@@ -89,8 +129,14 @@ async def _seed_published_calendar_year(session, *, market: str, year: int) -> N
             CalendarRevisionDay(
                 calendar_revision_id=revision.id,
                 trade_date=start + timedelta(days=offset),
-                is_open=(start + timedelta(days=offset)).weekday() < 5,
-                day_status=("open" if (start + timedelta(days=offset)).weekday() < 5 else "closed"),
+                is_open=(start + timedelta(days=offset)).weekday() < 5
+                and start + timedelta(days=offset) not in closed_dates,
+                day_status=(
+                    "open"
+                    if (start + timedelta(days=offset)).weekday() < 5
+                    and start + timedelta(days=offset) not in closed_dates
+                    else "closed"
+                ),
                 source_kind="test",
             )
             for offset in range(count)
@@ -168,6 +214,175 @@ async def test_public_calendar_resolver_honors_dst_and_grace(test_session) -> No
     assert before_reason is None
     assert after == date(2026, 3, 9)
     assert after_reason is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before_deadline", "at_deadline", "current_date", "prior_date"),
+    [
+        (
+            datetime(2026, 7, 23, 1, 14, tzinfo=timezone.utc),
+            datetime(2026, 7, 23, 1, 15, tzinfo=timezone.utc),
+            date(2026, 7, 22),
+            date(2026, 7, 21),
+        ),
+        (
+            datetime(2026, 1, 15, 1, 14, tzinfo=timezone.utc),
+            datetime(2026, 1, 15, 1, 15, tzinfo=timezone.utc),
+            date(2026, 1, 14),
+            date(2026, 1, 13),
+        ),
+        (
+            datetime(2026, 7, 25, 1, 14, tzinfo=timezone.utc),
+            datetime(2026, 7, 25, 1, 15, tzinfo=timezone.utc),
+            date(2026, 7, 24),
+            date(2026, 7, 23),
+        ),
+    ],
+    ids=("us-daylight-time", "us-standard-time", "weekend-deadline"),
+)
+async def test_twelve_data_operational_deadline_is_fixed_in_taipei(
+    test_session,
+    before_deadline: datetime,
+    at_deadline: datetime,
+    current_date: date,
+    prior_date: date,
+) -> None:
+    await _seed_published_calendar_year(test_session, market="US", year=2026)
+    await test_session.commit()
+    policy = LatestDatePolicy(
+        calendar_market="US",
+        timezone="America/New_York",
+        market_close_time=time(16),
+        availability_grace_minutes=120,
+        action="warn",
+    )
+
+    before = await resolve_expected_data_date(
+        test_session,
+        policy,
+        before_deadline,
+        strict_current_session=True,
+        current_session_deadline=time(9, 15),
+        operational_deadline_timezone="Asia/Taipei",
+        target_date_lag_days=1,
+    )
+    due = await resolve_expected_data_date(
+        test_session,
+        policy,
+        at_deadline,
+        strict_current_session=True,
+        current_session_deadline=time(9, 15),
+        operational_deadline_timezone="Asia/Taipei",
+        target_date_lag_days=1,
+    )
+
+    assert before == (prior_date, None)
+    assert due == (current_date, None)
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_deadline_keeps_last_session_across_us_holiday(test_session) -> None:
+    await _seed_published_calendar_year(
+        test_session,
+        market="US",
+        year=2026,
+        closed_dates={date(2026, 7, 3)},
+    )
+    await test_session.commit()
+    policy = LatestDatePolicy(
+        calendar_market="US",
+        timezone="America/New_York",
+        market_close_time=time(16),
+        availability_grace_minutes=120,
+        action="warn",
+    )
+
+    before_holiday_deadline = await resolve_expected_data_date(
+        test_session,
+        policy,
+        datetime(2026, 7, 3, 1, 14, tzinfo=timezone.utc),
+        strict_current_session=True,
+        current_session_deadline=time(9, 15),
+        operational_deadline_timezone="Asia/Taipei",
+        target_date_lag_days=1,
+    )
+    at_holiday_deadline = await resolve_expected_data_date(
+        test_session,
+        policy,
+        datetime(2026, 7, 3, 1, 15, tzinfo=timezone.utc),
+        strict_current_session=True,
+        current_session_deadline=time(9, 15),
+        operational_deadline_timezone="Asia/Taipei",
+        target_date_lag_days=1,
+    )
+    after_closed_session = await resolve_expected_data_date(
+        test_session,
+        policy,
+        datetime(2026, 7, 4, 1, 15, tzinfo=timezone.utc),
+        strict_current_session=True,
+        current_session_deadline=time(9, 15),
+        operational_deadline_timezone="Asia/Taipei",
+        target_date_lag_days=1,
+    )
+
+    assert before_holiday_deadline == (date(2026, 7, 1), None)
+    assert at_holiday_deadline == (date(2026, 7, 2), None)
+    assert after_closed_session == (date(2026, 7, 2), None)
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_monitor_waits_until_0915_and_late_run_resolves(test_session) -> None:
+    await _seed_dataset(test_session, config=_twelve_data_config())
+    await _seed_published_calendar_year(test_session, market="US", year=2026)
+    test_session.add(
+        IngestionRun(
+            dataset_key="tw_equity_eod",
+            source="twelve_data",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 21),
+            delivery_mode="incremental",
+            is_rerun=False,
+            status="completed",
+        )
+    )
+    await test_session.commit()
+
+    before = await scan_missing_deliveries(
+        test_session,
+        now=datetime(2026, 7, 23, 1, 14, tzinfo=timezone.utc),
+    )
+    assert before.created_or_refreshed == 0
+
+    due = await scan_missing_deliveries(
+        test_session,
+        now=datetime(2026, 7, 23, 1, 15, tzinfo=timezone.utc),
+    )
+    assert due.created_or_refreshed == 1
+    alert = (await test_session.execute(select(MissingDeliveryAlert))).scalar_one()
+    assert alert.expected_data_date == date(2026, 7, 22)
+
+    test_session.add(
+        IngestionRun(
+            dataset_key="tw_equity_eod",
+            source="twelve_data",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 22),
+            delivery_mode="incremental",
+            is_rerun=False,
+            status="completed",
+        )
+    )
+    await test_session.commit()
+    resolved = await scan_missing_deliveries(
+        test_session,
+        now=datetime(2026, 7, 23, 1, 16, tzinfo=timezone.utc),
+    )
+    assert resolved.resolved == 1
+    await test_session.refresh(alert)
+    assert alert.status == "resolved"
 
 
 @pytest.mark.asyncio
