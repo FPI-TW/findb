@@ -3,9 +3,14 @@ import { setResponseHeader } from "@tanstack/react-start/server"
 
 import {
   dashboardRequestSchema,
+  rawPayloadDetailRequestSchema,
   schedulerMutationRequestSchema,
 } from "./admin-api"
-import { fetchDashboardData, patchSchedulerData } from "./admin.server"
+import {
+  fetchDashboardData,
+  fetchRawPayloadDetailData,
+  patchSchedulerData,
+} from "./admin.server"
 import {
   assertSameOrigin,
   getDashboardConfig,
@@ -21,6 +26,16 @@ export const loadDashboard = createServerFn({ method: "POST" })
     setResponseHeader("Cache-Control", "no-store")
     setResponseHeader("Vary", "Cookie")
     return fetchDashboardData(data, session.token, config.apiBaseUrl)
+  })
+
+export const loadRawPayloadDetail = createServerFn({ method: "POST" })
+  .validator(rawPayloadDetailRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    setResponseHeader("Cache-Control", "no-store")
+    setResponseHeader("Vary", "Cookie")
+    return fetchRawPayloadDetailData(data, session.token, config.apiBaseUrl)
   })
 
 export const updateScheduler = createServerFn({ method: "POST" })

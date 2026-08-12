@@ -42,9 +42,13 @@ describe("admin API request helpers", () => {
 
   it("accepts audit input without exposing an Admin API key field", () => {
     const parsed = dashboardRequestSchema.parse({
+      view: "overview",
       audit: auditFiltersSchema.parse({}),
     })
-    expect(parsed).toEqual({ audit: auditFiltersSchema.parse({}) })
+    expect(parsed).toEqual({
+      view: "overview",
+      audit: auditFiltersSchema.parse({}),
+    })
     expect(parsed).not.toHaveProperty("apiKey")
   })
 

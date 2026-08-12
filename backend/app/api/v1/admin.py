@@ -1023,11 +1023,30 @@ async def list_raw_payloads(
     ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    include_payload: bool = Query(True, description="是否在列表回傳完整 JSONB payload"),
     api_key: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
     """列出原始市場資料，最新資料在前；可依 dataset_key、run_id 或日期區間篩選。"""
-    stmt = select(RawMarketPayload)
+    if include_payload:
+        stmt = select(RawMarketPayload)
+    else:
+        # Keep the list endpoint lightweight for the dashboard.  This is an
+        # explicit column projection so PostgreSQL never reads the JSONB
+        # payload when callers only need raw metadata.
+        stmt = select(
+            RawMarketPayload.raw_payload_id,
+            RawMarketPayload.idempotency_key,
+            RawMarketPayload.run_id,
+            RawMarketPayload.dataset_key,
+            RawMarketPayload.source,
+            RawMarketPayload.schema_id,
+            RawMarketPayload.schema_version,
+            RawMarketPayload.request_key,
+            RawMarketPayload.fetched_at,
+            RawMarketPayload.expire_at,
+            RawMarketPayload.created_at,
+        )
     count_stmt = select(func.count()).select_from(RawMarketPayload)
 
     if dataset_key:
@@ -1048,21 +1067,24 @@ async def list_raw_payloads(
         count_stmt = count_stmt.where(RawMarketPayload.created_at < dt_to)
 
     total = (await db.execute(count_stmt)).scalar_one()
-    rows = (
-        (
-            await db.execute(
-                stmt.order_by(RawMarketPayload.created_at.desc())
-                .offset((page - 1) * page_size)
-                .limit(page_size)
-            )
-        )
-        .scalars()
-        .all()
+    result = await db.execute(
+        stmt.order_by(RawMarketPayload.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
+    if include_payload:
+        payload_rows = result.scalars().all()
+        data = [RawPayloadResponse.model_validate(row) for row in payload_rows]
+    else:
+        metadata_rows = result.mappings().all()
+        data = [
+            RawPayloadResponse.model_validate({**dict(row), "payload": None})
+            for row in metadata_rows
+        ]
 
     total_pages = (total + page_size - 1) // page_size if total else 0
     return RawPayloadListResponse(
-        data=[RawPayloadResponse.model_validate(r) for r in rows],
+        data=data,
         pagination=PaginationInfo(
             page=page,
             page_size=page_size,
@@ -1070,6 +1092,19 @@ async def list_raw_payloads(
             total_pages=total_pages,
         ),
     )
+
+
+@router.get("/raw-payloads/by-id/{raw_payload_id}", response_model=RawPayloadResponse)
+async def get_raw_payload_by_id(
+    raw_payload_id: UUID,
+    api_key: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+):
+    """取得指定 raw payload primary key 的完整原始資料。"""
+    row = await db.get(RawMarketPayload, raw_payload_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Raw payload not found")
+    return RawPayloadResponse.model_validate(row)
 
 
 @router.get("/raw-payloads/{run_id}", response_model=RawPayloadResponse)

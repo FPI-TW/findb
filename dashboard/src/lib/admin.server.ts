@@ -8,10 +8,12 @@ import {
   marketFreshnessSchema,
   missingDeliveriesSchema,
   queueHealthSchema,
+  rawPayloadSchema,
   rawPayloadsSchema,
   schedulerMutationResponseSchema,
   schedulersResponseSchema,
   type DashboardRequest,
+  type RawPayloadDetailRequest,
   type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
@@ -21,6 +23,16 @@ import {
 } from "./auth-errors"
 
 type FetchImplementation = typeof fetch
+const UPSTREAM_TIMEOUT_MS = 10_000
+
+function isTimeoutError(reason: unknown) {
+  return (
+    typeof reason === "object" &&
+    reason !== null &&
+    "name" in reason &&
+    reason.name === "TimeoutError"
+  )
+}
 
 function safeBaseUrl(value: string | undefined) {
   const configured = value?.trim() || "http://localhost:8080"
@@ -48,8 +60,12 @@ async function fetchTarget<T extends z.ZodType>(
         Accept: "application/json",
       },
       cache: "no-store",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
-  } catch {
+  } catch (reason) {
+    if (isTimeoutError(reason)) {
+      throw new Error("FinDB API request timed out")
+    }
     throw new Error("Unable to reach FinDB API")
   }
   if (!response.ok) {
@@ -87,57 +103,93 @@ export async function fetchDashboardData(
     page: data.audit.page.toString(),
     page_size: data.audit.pageSize.toString(),
   })
-  const [
-    freshness,
-    queue,
-    schedulers,
-    deliveries,
-    issues,
-    corrections,
-    rawPayloads,
-  ] = await Promise.allSettled([
-    fetchTarget(
-      baseUrl,
-      sessionToken,
-      "/api/v1/admin/market-freshness",
-      marketFreshnessSchema,
-      fetchImplementation
-    ),
-    fetchTarget(
-      baseUrl,
-      sessionToken,
-      "/api/v1/admin/queue/health",
-      queueHealthSchema,
-      fetchImplementation
-    ),
-    fetchTarget(
-      baseUrl,
-      sessionToken,
-      "/api/v1/admin/schedulers",
-      schedulersResponseSchema,
-      fetchImplementation
-    ),
-    fetchTarget(
-      baseUrl,
-      sessionToken,
-      "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
-      missingDeliveriesSchema,
-      fetchImplementation
-    ),
-    fetchTarget(
-      baseUrl,
-      sessionToken,
-      `/api/v1/admin/dq-issues?${issuesSearch.toString()}`,
-      dqIssuesSchema,
-      fetchImplementation
-    ),
-    fetchTarget(
-      baseUrl,
-      sessionToken,
-      "/api/v1/admin/corrections?page=1&page_size=50",
-      correctionsSchema,
-      fetchImplementation
-    ),
+  const fetchedAt = new Date().toISOString()
+  if (data.view === "overview") {
+    const [freshness, queue, schedulers] = await Promise.allSettled([
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        "/api/v1/admin/market-freshness",
+        marketFreshnessSchema,
+        fetchImplementation
+      ),
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        "/api/v1/admin/queue/health",
+        queueHealthSchema,
+        fetchImplementation
+      ),
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        "/api/v1/admin/schedulers",
+        schedulersResponseSchema,
+        fetchImplementation
+      ),
+    ])
+    assertNoAuthenticationFailure([freshness, queue, schedulers])
+    return dashboardResponseSchema.parse({
+      view: data.view,
+      fetchedAt,
+      freshness: settled(freshness),
+      queue: settled(queue),
+      schedulers: settled(schedulers),
+    })
+  }
+  if (data.view === "deliveries") {
+    const [deliveries] = await Promise.allSettled([
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
+        missingDeliveriesSchema,
+        fetchImplementation
+      ),
+    ])
+    assertNoAuthenticationFailure([deliveries])
+    return dashboardResponseSchema.parse({
+      view: data.view,
+      fetchedAt,
+      deliveries: settled(deliveries),
+    })
+  }
+  if (data.view === "quality") {
+    const [issues] = await Promise.allSettled([
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        `/api/v1/admin/dq-issues?${issuesSearch.toString()}`,
+        dqIssuesSchema,
+        fetchImplementation
+      ),
+    ])
+    assertNoAuthenticationFailure([issues])
+    return dashboardResponseSchema.parse({
+      view: data.view,
+      fetchedAt,
+      issues: settled(issues),
+    })
+  }
+  if (data.view === "corrections") {
+    const [corrections] = await Promise.allSettled([
+      fetchTarget(
+        baseUrl,
+        sessionToken,
+        "/api/v1/admin/corrections?page=1&page_size=50",
+        correctionsSchema,
+        fetchImplementation
+      ),
+    ])
+    assertNoAuthenticationFailure([corrections])
+    return dashboardResponseSchema.parse({
+      view: data.view,
+      fetchedAt,
+      corrections: settled(corrections),
+    })
+  }
+  auditSearch.set("include_payload", "false")
+  const [rawPayloads] = await Promise.allSettled([
     fetchTarget(
       baseUrl,
       sessionToken,
@@ -146,16 +198,17 @@ export async function fetchDashboardData(
       fetchImplementation
     ),
   ])
+  assertNoAuthenticationFailure([rawPayloads])
+  return dashboardResponseSchema.parse({
+    view: data.view,
+    fetchedAt,
+    rawPayloads: settled(rawPayloads),
+  })
+}
 
-  const results = [
-    freshness,
-    queue,
-    schedulers,
-    deliveries,
-    issues,
-    corrections,
-    rawPayloads,
-  ]
+function assertNoAuthenticationFailure(
+  results: PromiseSettledResult<unknown>[]
+) {
   if (
     results.some(
       result =>
@@ -165,17 +218,21 @@ export async function fetchDashboardData(
   ) {
     throw new DashboardAuthenticationError()
   }
+}
 
-  return dashboardResponseSchema.parse({
-    fetchedAt: new Date().toISOString(),
-    freshness: settled(freshness),
-    queue: settled(queue),
-    schedulers: settled(schedulers),
-    deliveries: settled(deliveries),
-    issues: settled(issues),
-    corrections: settled(corrections),
-    rawPayloads: settled(rawPayloads),
-  })
+export async function fetchRawPayloadDetailData(
+  data: RawPayloadDetailRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/raw-payloads/by-id/${encodeURIComponent(data.rawPayloadId)}`,
+    rawPayloadSchema,
+    fetchImplementation
+  )
 }
 
 function safeSchedulerPath(schedulerKey: string) {
@@ -204,8 +261,12 @@ export async function patchSchedulerData(
         expected_revision: data.expectedRevision,
       }),
       cache: "no-store",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
-  } catch {
+  } catch (reason) {
+    if (isTimeoutError(reason)) {
+      throw new Error("FinDB API request timed out")
+    }
     throw new Error("Unable to reach FinDB API")
   }
   if (!response.ok) {
