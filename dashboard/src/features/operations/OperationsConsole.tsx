@@ -585,7 +585,10 @@ export default function OperationsLayout({
     await navigate({ to: "/login" })
   }
 
-  const initialLoading = data === null && pending && error === ""
+  // Route matching and the nested Outlet can briefly advance on different
+  // renders. Until a view has either data or a fatal error, keep its panels in
+  // the initial loading state instead of rendering a null-result error.
+  const initialLoading = data === null && error === ""
   const panelResults: PanelResult<unknown>[] = data
     ? data.view === "overview"
       ? [data.freshness, data.queue, data.schedulers]

@@ -27,13 +27,14 @@ const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
   loadRawPayloadDetail: vi.fn(),
   navigate: vi.fn(),
+  outlet: null as (() => ReactNode) | null,
   pathname: "/operations",
   updateScheduler: vi.fn(),
 }))
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <>{children}</>,
-  Outlet: () => null,
+  Outlet: () => mocks.outlet?.() ?? null,
   useNavigate: () => mocks.navigate,
   useRouterState: ({
     select,
@@ -58,6 +59,7 @@ vi.mock("../../lib/admin.functions", () => mocks)
 import {
   default as OperationsLayout,
   IngestionOverviewPanel,
+  OperationsOverviewPage,
   OperationsContext,
   QualityPage,
   RawPayloadsPage,
@@ -374,6 +376,7 @@ function renderPanel(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.outlet = null
   mocks.pathname = "/operations"
   mocks.loadDashboard.mockImplementation(
     async ({ data }: { data: { view: OperationsView } }) =>
@@ -830,6 +833,17 @@ describe("DQ quality provenance", () => {
 })
 
 describe("view-aware operations loading", () => {
+  it("keeps panels loading while the route discriminator is temporarily unavailable", () => {
+    mocks.pathname = "/operations/calendars"
+    mocks.outlet = () => <OperationsOverviewPage />
+
+    render(<OperationsLayout username="operator" role="operator" />)
+
+    expect(mocks.loadDashboard).not.toHaveBeenCalled()
+    expect(screen.getAllByText("正在載入資料")).toHaveLength(2)
+    expect(screen.queryByText("暫時無法顯示資料")).not.toBeInTheDocument()
+  })
+
   it("maps basepath and trailing-slash operations URLs without loading governance routes", () => {
     expect(operationsViewForPathname("/dashboard/operations/quality/")).toBe(
       "quality"
