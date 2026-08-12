@@ -10,6 +10,7 @@ again later.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
@@ -38,6 +39,7 @@ _SCHEDULER_KEYS = frozenset(
     }
 )
 _CONTROL_VALUE = Literal["running", "stopped"]
+_LOGGER = logging.getLogger(__name__)
 
 
 class SchedulerControlError(RuntimeError):
@@ -311,7 +313,8 @@ class SchedulerControlLoop:
                     cycle_completed_at=completed_at,
                     last_error=pending_error,
                 )
-            except SchedulerControlError:
+            except SchedulerControlError as exc:
+                _log_control_failure(self.client.scheduler_key, "idle_poll", exc)
                 self._wait(stopper)
                 continue
 
@@ -334,7 +337,8 @@ class SchedulerControlLoop:
                     cycle_completed_at=None,
                     last_error=None,
                 )
-            except SchedulerControlError:
+            except SchedulerControlError as exc:
+                _log_control_failure(self.client.scheduler_key, "preflight_poll", exc)
                 self._wait(stopper)
                 continue
             if preflight.desired_state != "running":
@@ -379,7 +383,8 @@ class SchedulerControlLoop:
                     cycle_completed_at=completed_at,
                     last_error=cycle_error,
                 )
-            except SchedulerControlError:
+            except SchedulerControlError as exc:
+                _log_control_failure(self.client.scheduler_key, "completion_report", exc)
                 # Keep the error for the next bounded report.  A successful
                 # idle poll clears it above; either way the provider cycle is
                 # never started again without a fresh running acknowledgement.
@@ -445,8 +450,78 @@ class _Heartbeat:
                     cycle_completed_at=None,
                     last_error=None,
                 )
-            except SchedulerControlError:
+            except SchedulerControlError as exc:
+                _log_control_failure(self._client.scheduler_key, "heartbeat", exc)
                 continue
+
+
+def _log_control_failure(
+    scheduler_key: str,
+    phase: Literal["idle_poll", "preflight_poll", "completion_report", "heartbeat"],
+    error: SchedulerControlError,
+) -> None:
+    """Emit one bounded warning for a failed control-plane operation.
+
+    The exception text is intentionally never included: protocol errors can be
+    raised while parsing an untrusted response, and transport errors may carry
+    request details.  The fixed classification and optional HTTP status are
+    sufficient for operations while keeping secrets, URLs, and response
+    bodies out of logs.
+    """
+
+    if isinstance(error, SchedulerControlResponseError):
+        failure_class = "http_status"
+        status_code: int | None = error.status_code
+        status_class = _http_status_class(error.status_code)
+    elif isinstance(error, SchedulerControlTransportError):
+        failure_class = "transport"
+        status_code = None
+        status_class = "none"
+    elif isinstance(error, SchedulerControlProtocolError):
+        failure_class = "protocol"
+        status_code = None
+        status_class = "none"
+    else:  # pragma: no cover - all current control failures are typed above.
+        failure_class = "control"
+        status_code = None
+        status_class = "none"
+
+    # Keep the values available as structured attributes for JSON log
+    # handlers, while also putting the safe context in the human-readable
+    # message.  No exception object or exception text is passed to logging.
+    _LOGGER.warning(
+        "scheduler control failure scheduler_key=%s phase=%s "
+        "failure_class=%s status_class=%s status_code=%s",
+        scheduler_key,
+        phase,
+        failure_class,
+        status_class,
+        status_code,
+        extra={
+            "scheduler_key": scheduler_key,
+            "phase": phase,
+            "failure_class": failure_class,
+            "failure_classification": failure_class,
+            "status_class": status_class,
+            "status_code": status_code,
+        },
+    )
+
+
+def _http_status_class(status_code: int) -> str:
+    """Return a bounded HTTP status family for structured control logs."""
+
+    if 100 <= status_code < 200:
+        return "1xx"
+    if 200 <= status_code < 300:
+        return "2xx"
+    if 300 <= status_code < 400:
+        return "3xx"
+    if 400 <= status_code < 500:
+        return "4xx"
+    if 500 <= status_code < 600:
+        return "5xx"
+    return "other"
 
 
 def _validate_interval(value: float) -> float:
