@@ -13,10 +13,18 @@ export const auditFiltersSchema = z.object({
 })
 
 export const dashboardRequestSchema = z.object({
+  view: z.enum([
+    "overview",
+    "deliveries",
+    "quality",
+    "corrections",
+    "rawPayloads",
+  ]),
   audit: auditFiltersSchema,
 })
 
 export type DashboardRequest = z.infer<typeof dashboardRequestSchema>
+export type OperationsView = DashboardRequest["view"]
 
 const paginationSchema = z.object({
   page: z.number().int().positive(),
@@ -237,24 +245,37 @@ export const correctionsSchema = z.object({
   pagination: paginationSchema,
 })
 
+export const rawPayloadSchema = z.object({
+  raw_payload_id: z.uuid(),
+  idempotency_key: z.string(),
+  run_id: z.uuid(),
+  dataset_key: z.string(),
+  source: z.string(),
+  schema_id: z.string().nullable(),
+  schema_version: z.number().int().nullable(),
+  request_key: z.string(),
+  payload: z.unknown().pipe(z.json()).nullable(),
+  fetched_at: isoDateTime,
+  expire_at: isoDateTime,
+  created_at: isoDateTime,
+})
+
 export const rawPayloadsSchema = z.object({
   data: z.array(
-    z.object({
-      idempotency_key: z.string(),
-      run_id: z.uuid(),
-      dataset_key: z.string(),
-      source: z.string(),
-      schema_id: z.string().nullable(),
-      schema_version: z.number().int().nullable(),
-      request_key: z.string(),
-      payload: z.unknown().pipe(z.json()),
-      fetched_at: isoDateTime,
-      expire_at: isoDateTime,
-      created_at: isoDateTime,
+    rawPayloadSchema.extend({
+      payload: z.null(),
     })
   ),
   pagination: paginationSchema,
 })
+
+export const rawPayloadDetailRequestSchema = z.object({
+  rawPayloadId: z.uuid(),
+})
+export type RawPayloadDetailRequest = z.infer<
+  typeof rawPayloadDetailRequestSchema
+>
+export type RawPayload = z.infer<typeof rawPayloadSchema>
 
 const panelErrorSchema = z.object({
   ok: z.literal(false),
@@ -268,46 +289,94 @@ function panelResultSchema<T extends z.ZodType>(schema: T) {
   ])
 }
 
-export const dashboardResponseSchema = z.object({
-  fetchedAt: isoDateTime,
-  freshness: panelResultSchema(marketFreshnessSchema),
-  queue: panelResultSchema(queueHealthSchema),
-  schedulers: panelResultSchema(schedulersResponseSchema),
-  deliveries: panelResultSchema(missingDeliveriesSchema),
-  issues: panelResultSchema(dqIssuesSchema),
-  corrections: panelResultSchema(correctionsSchema),
-  rawPayloads: panelResultSchema(rawPayloadsSchema),
-})
+const responseMetadataSchema = z.object({ fetchedAt: isoDateTime })
+
+export const dashboardResponseSchema = z.discriminatedUnion("view", [
+  responseMetadataSchema.extend({
+    view: z.literal("overview"),
+    freshness: panelResultSchema(marketFreshnessSchema),
+    queue: panelResultSchema(queueHealthSchema),
+    schedulers: panelResultSchema(schedulersResponseSchema),
+  }),
+  responseMetadataSchema.extend({
+    view: z.literal("deliveries"),
+    deliveries: panelResultSchema(missingDeliveriesSchema),
+  }),
+  responseMetadataSchema.extend({
+    view: z.literal("quality"),
+    issues: panelResultSchema(dqIssuesSchema),
+  }),
+  responseMetadataSchema.extend({
+    view: z.literal("corrections"),
+    corrections: panelResultSchema(correctionsSchema),
+  }),
+  responseMetadataSchema.extend({
+    view: z.literal("rawPayloads"),
+    rawPayloads: panelResultSchema(rawPayloadsSchema),
+  }),
+])
 
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>
 export type FreshnessStatus = z.infer<typeof freshnessStatusSchema>
 export type PanelResult<T> =
   { ok: true; data: T } | { ok: false; error: string }
 
+function mergePanel<T>(
+  current: PanelResult<T> | undefined,
+  next: PanelResult<T>
+): { panel: PanelResult<T>; error: string } {
+  if (next.ok) return { panel: next, error: "" }
+  return {
+    panel: current?.ok ? current : next,
+    error: next.error,
+  }
+}
+
 export function mergeDashboardRefresh(
   current: DashboardResponse | null,
   next: DashboardResponse
-): {
-  data: DashboardResponse
-  freshnessError: string
-  schedulersError: string
-} {
-  const retainFreshness = !next.freshness.ok && current?.freshness.ok === true
-  const retainSchedulers =
-    !next.schedulers.ok && current?.schedulers.ok === true
-  const nextFreshnessError = next.freshness.ok ? "" : next.freshness.error
-  const nextSchedulersError = next.schedulers.ok ? "" : next.schedulers.error
-  const freshnessError = retainFreshness ? nextFreshnessError : ""
-  const schedulersError = retainSchedulers ? nextSchedulersError : ""
-  const data = {
-    ...next,
-    ...(retainFreshness && current ? { freshness: current.freshness } : {}),
-    ...(retainSchedulers && current ? { schedulers: current.schedulers } : {}),
+): { data: DashboardResponse; errors: string[] } {
+  if (next.view === "overview") {
+    const previous = current?.view === "overview" ? current : undefined
+    const freshness = mergePanel(previous?.freshness, next.freshness)
+    const queue = mergePanel(previous?.queue, next.queue)
+    const schedulers = mergePanel(previous?.schedulers, next.schedulers)
+    return {
+      data: {
+        ...next,
+        freshness: freshness.panel,
+        queue: queue.panel,
+        schedulers: schedulers.panel,
+      },
+      errors: [freshness.error, queue.error, schedulers.error],
+    }
   }
+  if (next.view === "deliveries") {
+    const previous = current?.view === next.view ? current : undefined
+    const result = mergePanel(previous?.deliveries, next.deliveries)
+    return {
+      data: { ...next, deliveries: result.panel },
+      errors: [result.error],
+    }
+  }
+  if (next.view === "quality") {
+    const previous = current?.view === next.view ? current : undefined
+    const result = mergePanel(previous?.issues, next.issues)
+    return { data: { ...next, issues: result.panel }, errors: [result.error] }
+  }
+  if (next.view === "corrections") {
+    const previous = current?.view === next.view ? current : undefined
+    const result = mergePanel(previous?.corrections, next.corrections)
+    return {
+      data: { ...next, corrections: result.panel },
+      errors: [result.error],
+    }
+  }
+  const previous = current?.view === next.view ? current : undefined
+  const result = mergePanel(previous?.rawPayloads, next.rawPayloads)
   return {
-    data,
-    freshnessError: freshnessError || nextFreshnessError,
-    schedulersError: schedulersError || nextSchedulersError,
+    data: { ...next, rawPayloads: result.panel },
+    errors: [result.error],
   }
 }
 

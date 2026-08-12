@@ -291,6 +291,7 @@ class CorrectionListResponse(PaginatedResponse[CorrectionResponse]):
 class RawPayloadResponse(BaseModel):
     """單一原始市場資料紀錄。"""
 
+    raw_payload_id: UUID
     idempotency_key: str
     run_id: UUID
     dataset_key: str
@@ -298,7 +299,7 @@ class RawPayloadResponse(BaseModel):
     schema_id: Optional[str] = None
     schema_version: Optional[int] = None
     request_key: str
-    payload: Any
+    payload: Optional[Any] = None
     fetched_at: datetime
     expire_at: datetime
     created_at: datetime

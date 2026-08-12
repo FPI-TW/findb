@@ -81,6 +81,37 @@ async def _create_dq_issue(
     return issue
 
 
+async def _create_raw_payload(
+    session: AsyncSession,
+    *,
+    run_id: UUID | None = None,
+    dataset_key: str = "tw_equity_eod",
+    idempotency_key: str = "raw-idempotency",
+    request_key: str = "raw-request",
+    payload: dict | None = None,
+    created_at: datetime | None = None,
+) -> RawMarketPayload:
+    created_at = created_at or utc_now()
+    raw = RawMarketPayload(
+        raw_payload_id=uuid7(),
+        source_client_id=None,
+        dataset_key=dataset_key,
+        source="finlab",
+        request_key=request_key,
+        idempotency_key=idempotency_key,
+        schema_id="market_eod",
+        schema_version=1,
+        payload=payload if payload is not None else {"data": []},
+        fetched_at=created_at,
+        expire_at=created_at + timedelta(days=1),
+        run_id=run_id or uuid7(),
+        created_at=created_at,
+    )
+    session.add(raw)
+    await session.flush()
+    return raw
+
+
 def _sample_instrument_cache() -> dict:
     return {
         "generated_at": "2026-04-09T07:08:40.626344Z",
@@ -973,6 +1004,195 @@ class TestListCorrections:
         assert len(items) == 2
         assert items[0]["correction_reason"] == "Second"
         assert items[1]["correction_reason"] == "First"
+
+
+class TestRawPayloadAdmin:
+    @pytest.mark.asyncio
+    async def test_list_raw_payloads_default_and_lightweight_projection(
+        self,
+        client: AsyncClient,
+        test_session: AsyncSession,
+        admin_headers: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        raw = await _create_raw_payload(
+            test_session,
+            idempotency_key="raw-full",
+            request_key="request-full",
+            payload={"secret": "full-list-payload"},
+        )
+        await test_session.commit()
+
+        full_response = await client.get(
+            "/api/v1/admin/raw-payloads",
+            headers=admin_headers,
+            params={"page": 1, "page_size": 1},
+        )
+        assert full_response.status_code == 200
+        full_item = full_response.json()["data"][0]
+        assert full_item["raw_payload_id"] == str(raw.raw_payload_id)
+        assert full_item["payload"] == {"secret": "full-list-payload"}
+
+        executed_statements = []
+        original_execute = AsyncSession.execute
+
+        async def capture_execute(session, statement, *args, **kwargs):
+            executed_statements.append(statement)
+            return await original_execute(session, statement, *args, **kwargs)
+
+        monkeypatch.setattr(AsyncSession, "execute", capture_execute)
+        light_response = await client.get(
+            "/api/v1/admin/raw-payloads",
+            headers=admin_headers,
+            params={"include_payload": "false", "page": 1, "page_size": 1},
+        )
+        assert light_response.status_code == 200
+        light_item = light_response.json()["data"][0]
+        assert light_item["raw_payload_id"] == str(raw.raw_payload_id)
+        assert light_item["payload"] is None
+        assert light_response.json()["pagination"] == {
+            "page": 1,
+            "page_size": 1,
+            "total_records": 1,
+            "total_pages": 1,
+            "next_cursor": None,
+        }
+
+        # The last statement is the list query (the auth and count queries run
+        # before it).  ``payload`` must not appear in its SELECT projection;
+        # the table name and raw_payload_id are intentionally allowed.
+        list_sql = str(executed_statements[-1].compile())
+        select_clause = list_sql.split(" FROM ", 1)[0].lower()
+        assert ".payload" not in select_clause
+
+    @pytest.mark.asyncio
+    async def test_list_raw_payloads_filters_and_pagination(
+        self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
+    ):
+        await _create_raw_payload(
+            test_session,
+            dataset_key="tw_equity_eod",
+            idempotency_key="raw-filter-1",
+            request_key="request-filter-1",
+            payload={"index": 1},
+            created_at=datetime(2026, 1, 1, 8, tzinfo=timezone.utc),
+        )
+        newest = await _create_raw_payload(
+            test_session,
+            dataset_key="tw_equity_eod",
+            idempotency_key="raw-filter-2",
+            request_key="request-filter-2",
+            payload={"index": 2},
+            created_at=datetime(2026, 1, 2, 8, tzinfo=timezone.utc),
+        )
+        await _create_raw_payload(
+            test_session,
+            dataset_key="other_dataset",
+            idempotency_key="raw-filter-3",
+            request_key="request-filter-3",
+            payload={"index": 3},
+            created_at=datetime(2026, 1, 2, 9, tzinfo=timezone.utc),
+        )
+        await test_session.commit()
+
+        response = await client.get(
+            "/api/v1/admin/raw-payloads",
+            headers=admin_headers,
+            params={
+                "dataset_key": "tw_equity_eod",
+                "date_from": "2026-01-01",
+                "date_to": "2026-01-02",
+                "page": 1,
+                "page_size": 1,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["pagination"] == {
+            "page": 1,
+            "page_size": 1,
+            "total_records": 2,
+            "total_pages": 2,
+            "next_cursor": None,
+        }
+        assert data["data"][0]["raw_payload_id"] == str(newest.raw_payload_id)
+        assert data["data"][0]["payload"] == {"index": 2}
+
+        second_page = await client.get(
+            "/api/v1/admin/raw-payloads",
+            headers=admin_headers,
+            params={
+                "dataset_key": "tw_equity_eod",
+                "date_from": "2026-01-01",
+                "date_to": "2026-01-02",
+                "page": 2,
+                "page_size": 1,
+            },
+        )
+        assert second_page.status_code == 200
+        assert len(second_page.json()["data"]) == 1
+        assert second_page.json()["data"][0]["payload"] == {"index": 1}
+
+    @pytest.mark.asyncio
+    async def test_raw_payload_by_id_is_exact_for_duplicate_run_rows_and_auth(
+        self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict
+    ):
+        run_id = uuid7()
+        first = await _create_raw_payload(
+            test_session,
+            run_id=run_id,
+            idempotency_key="raw-duplicate-1",
+            request_key="request-duplicate-1",
+            payload={"which": "first"},
+        )
+        second = await _create_raw_payload(
+            test_session,
+            run_id=run_id,
+            idempotency_key="raw-duplicate-2",
+            request_key="request-duplicate-2",
+            payload={"which": "second"},
+        )
+        single = await _create_raw_payload(
+            test_session,
+            idempotency_key="raw-single",
+            request_key="request-single",
+            payload={"which": "single"},
+        )
+        await test_session.commit()
+
+        first_response = await client.get(
+            f"/api/v1/admin/raw-payloads/by-id/{first.raw_payload_id}",
+            headers=admin_headers,
+        )
+        second_response = await client.get(
+            f"/api/v1/admin/raw-payloads/by-id/{second.raw_payload_id}",
+            headers=admin_headers,
+        )
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert first_response.json()["raw_payload_id"] == str(first.raw_payload_id)
+        assert first_response.json()["payload"] == {"which": "first"}
+        assert second_response.json()["raw_payload_id"] == str(second.raw_payload_id)
+        assert second_response.json()["payload"] == {"which": "second"}
+
+        # Keep the legacy run-id lookup available for runs with one raw row.
+        run_response = await client.get(
+            f"/api/v1/admin/raw-payloads/{single.run_id}", headers=admin_headers
+        )
+        assert run_response.status_code == 200
+        assert run_response.json()["raw_payload_id"] == str(single.raw_payload_id)
+        assert run_response.json()["payload"] == {"which": "single"}
+
+        missing_response = await client.get(
+            f"/api/v1/admin/raw-payloads/by-id/{uuid7()}", headers=admin_headers
+        )
+        assert missing_response.status_code == 404
+        assert missing_response.json() == {"detail": "Raw payload not found"}
+
+        unauthorized_response = await client.get(
+            f"/api/v1/admin/raw-payloads/by-id/{first.raw_payload_id}"
+        )
+        assert unauthorized_response.status_code == 401
 
 
 class TestDQIssueProvenance:

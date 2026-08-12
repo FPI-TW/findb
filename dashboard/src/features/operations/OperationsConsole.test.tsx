@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -15,14 +16,18 @@ import type {
   DashboardResponse,
   DQIssue,
   MarketFreshness,
+  RawPayload,
   Scheduler,
   SchedulerMutationResponse,
   SchedulersResponse,
+  OperationsView,
 } from "../../lib/admin-api"
 
 const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
+  loadRawPayloadDetail: vi.fn(),
   navigate: vi.fn(),
+  pathname: "/operations",
   updateScheduler: vi.fn(),
 }))
 
@@ -30,6 +35,11 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <>{children}</>,
   Outlet: () => null,
   useNavigate: () => mocks.navigate,
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { pathname: string } }) => string
+  }) => select({ location: { pathname: mocks.pathname } }),
 }))
 
 vi.mock("@tanstack/react-start", () => ({
@@ -50,9 +60,11 @@ import {
   IngestionOverviewPanel,
   OperationsContext,
   QualityPage,
+  RawPayloadsPage,
   SchedulerPanel,
   SCHEDULER_RUNTIME_STATUS_META,
   selectSchedulerRuntimeStatus,
+  operationsViewForPathname,
   type OperationsContextValue,
 } from "./OperationsConsole"
 
@@ -203,11 +215,8 @@ function qualityIssue(): DQIssue {
 
 function qualityDashboardData(issue: DQIssue): DashboardResponse {
   return {
+    view: "quality",
     fetchedAt: timestamp,
-    freshness: { ok: false, error: "fixture" },
-    queue: { ok: false, error: "fixture" },
-    schedulers: { ok: false, error: "fixture" },
-    deliveries: { ok: false, error: "fixture" },
     issues: {
       ok: true,
       data: {
@@ -220,9 +229,97 @@ function qualityDashboardData(issue: DQIssue): DashboardResponse {
         },
       },
     },
-    corrections: { ok: false, error: "fixture" },
-    rawPayloads: { ok: false, error: "fixture" },
   }
+}
+
+function makeRawPayload(overrides: Partial<RawPayload> = {}): RawPayload {
+  return {
+    raw_payload_id: "019565d2-f838-7c91-85c1-72d4d7bbbe99",
+    idempotency_key: "delivery-1",
+    run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe98",
+    dataset_key: "tw_equity_eod",
+    source: "finlab",
+    schema_id: "market_eod",
+    schema_version: 1,
+    request_key: "request-1",
+    payload: { rows: [{ symbol: "2330", close: 1000 }] },
+    fetched_at: timestamp,
+    expire_at: timestamp,
+    created_at: timestamp,
+    ...overrides,
+  }
+}
+
+function rawDashboardData(
+  payloads: RawPayload[] = [makeRawPayload()],
+  totalPages = 1
+): DashboardResponse {
+  return {
+    view: "rawPayloads",
+    fetchedAt: timestamp,
+    rawPayloads: {
+      ok: true,
+      data: {
+        data: payloads.map(payload => ({ ...payload, payload: null })),
+        pagination: {
+          page: 1,
+          page_size: 25,
+          total_records: payloads.length,
+          total_pages: totalPages,
+        },
+      },
+    },
+  }
+}
+
+function dashboardForView(view: OperationsView): DashboardResponse {
+  if (view === "overview") {
+    return {
+      view,
+      fetchedAt: timestamp,
+      freshness: { ok: false, error: "fixture" },
+      queue: { ok: false, error: "fixture" },
+      schedulers: { ok: false, error: "fixture" },
+    }
+  }
+  if (view === "deliveries") {
+    return {
+      view,
+      fetchedAt: timestamp,
+      deliveries: {
+        ok: true,
+        data: {
+          data: [],
+          pagination: {
+            page: 1,
+            page_size: 100,
+            total_records: 0,
+            total_pages: 0,
+          },
+        },
+      },
+    }
+  }
+  if (view === "quality") return qualityDashboardData(qualityIssue())
+  if (view === "corrections") {
+    return {
+      view,
+      fetchedAt: timestamp,
+      corrections: {
+        ok: true,
+        data: {
+          data: [],
+          pagination: {
+            page: 1,
+            page_size: 50,
+            total_records: 0,
+            total_pages: 0,
+          },
+        },
+      },
+    }
+  }
+  return rawDashboardData()
 }
 
 function qualityContextValue(issue: DQIssue): OperationsContextValue {
@@ -277,9 +374,16 @@ function renderPanel(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.pathname = "/operations"
+  mocks.loadDashboard.mockImplementation(
+    async ({ data }: { data: { view: OperationsView } }) =>
+      dashboardForView(data.view)
+  )
+  mocks.loadRawPayloadDetail.mockResolvedValue(makeRawPayload())
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   toast.dismiss()
   cleanup()
 })
@@ -722,5 +826,249 @@ describe("DQ quality provenance", () => {
       screen.queryByText(/raw-payload-secret-must-not-render/)
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/raw-payload-secret-2/)).not.toBeInTheDocument()
+  })
+})
+
+describe("view-aware operations loading", () => {
+  it("maps basepath and trailing-slash operations URLs without loading governance routes", () => {
+    expect(operationsViewForPathname("/dashboard/operations/quality/")).toBe(
+      "quality"
+    )
+    expect(operationsViewForPathname("/dashboard/operations/")).toBe("overview")
+    expect(
+      operationsViewForPathname("/dashboard/operations/calendars/")
+    ).toBeNull()
+  })
+
+  const pollingViews = [
+    ["overview", "/operations"],
+    ["deliveries", "/operations/deliveries"],
+    ["quality", "/operations/quality"],
+  ] as const
+
+  it.each(pollingViews)(
+    "%s polls again after 60 seconds",
+    async (view, pathname) => {
+      vi.useFakeTimers()
+      mocks.pathname = pathname
+      render(<OperationsLayout username="operator" role="operator" />)
+
+      expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+      expect(mocks.loadDashboard).toHaveBeenLastCalledWith({
+        data: { view, audit: expect.any(Object) },
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(mocks.loadDashboard).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  it.each([
+    ["corrections", "/operations/corrections"],
+    ["rawPayloads", "/operations/raw-payloads"],
+  ] as const)(
+    "%s does not install a polling refresh",
+    async (view, pathname) => {
+      vi.useFakeTimers()
+      mocks.pathname = pathname
+      render(<OperationsLayout username="operator" role="operator" />)
+
+      expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+      expect(mocks.loadDashboard).toHaveBeenLastCalledWith({
+        data: { view, audit: expect.any(Object) },
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it("does not overlap a same-view refresh while the first request is in flight", async () => {
+    vi.useFakeTimers()
+    let resolveInitial!: (response: DashboardResponse) => void
+    const initial = new Promise<DashboardResponse>(resolve => {
+      resolveInitial = resolve
+    })
+    mocks.loadDashboard.mockImplementation(
+      ({ data }: { data: { view: OperationsView } }) => {
+        if (data.view === "overview") return initial
+        return Promise.resolve(dashboardForView(data.view))
+      }
+    )
+
+    render(<OperationsLayout username="operator" role="operator" />)
+    expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+
+    resolveInitial(dashboardForView("overview"))
+    await act(async () => {
+      await initial
+    })
+    expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps a new route's result when the previous route completes late", async () => {
+    vi.useFakeTimers()
+    let resolveOverview!: (response: DashboardResponse) => void
+    const overviewRequest = new Promise<DashboardResponse>(resolve => {
+      resolveOverview = resolve
+    })
+    mocks.loadDashboard.mockImplementation(
+      ({ data }: { data: { view: OperationsView } }) =>
+        data.view === "overview"
+          ? overviewRequest
+          : Promise.resolve(dashboardForView(data.view))
+    )
+
+    const { rerender } = render(
+      <OperationsLayout username="operator" role="operator" />
+    )
+    expect(mocks.loadDashboard).toHaveBeenCalledTimes(1)
+
+    mocks.pathname = "/operations/quality"
+    rerender(<OperationsLayout username="operator" role="operator" />)
+    expect(mocks.loadDashboard).toHaveBeenCalledTimes(2)
+    expect(mocks.loadDashboard).toHaveBeenLastCalledWith({
+      data: { view: "quality", audit: expect.any(Object) },
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(screen.getByText(/1\/1 個資料來源成功/)).toBeInTheDocument()
+
+    resolveOverview(dashboardForView("overview"))
+    await act(async () => {
+      await overviewRequest
+    })
+    expect(screen.getByText(/1\/1 個資料來源成功/)).toBeInTheDocument()
+  })
+})
+
+describe("raw payload detail retrieval", () => {
+  function rawContextValue(
+    options: {
+      payloads?: RawPayload[]
+      totalPages?: number
+      setFilters?: OperationsContextValue["setFilters"]
+      refresh?: OperationsContextValue["refresh"]
+    } = {}
+  ): OperationsContextValue {
+    return {
+      data: rawDashboardData(options.payloads, options.totalPages),
+      error: "",
+      freshnessError: "",
+      schedulersError: "",
+      pending: false,
+      initialLoading: false,
+      role: "viewer",
+      applyScheduler: vi.fn(),
+      filters: {
+        datasetKey: "",
+        runId: "",
+        dateFrom: "",
+        dateTo: "",
+        page: 1,
+        pageSize: 25,
+      },
+      setFilters: options.setFilters ?? vi.fn(),
+      refresh: options.refresh ?? vi.fn().mockResolvedValue(undefined),
+    }
+  }
+
+  it("does not fetch before expand, then shows loading/success and caches re-expansion", async () => {
+    const detail = makeRawPayload()
+    let resolveDetail!: (payload: RawPayload) => void
+    const detailRequest = new Promise<RawPayload>(resolve => {
+      resolveDetail = resolve
+    })
+    mocks.loadRawPayloadDetail.mockReturnValue(detailRequest)
+
+    render(
+      <OperationsContext.Provider value={rawContextValue()}>
+        <RawPayloadsPage />
+      </OperationsContext.Provider>
+    )
+
+    expect(mocks.loadRawPayloadDetail).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "檢視 JSON" }))
+    expect(mocks.loadRawPayloadDetail).toHaveBeenCalledWith({
+      data: { rawPayloadId: detail.raw_payload_id },
+    })
+    expect(screen.getByRole("status")).toHaveTextContent("正在載入完整 JSON…")
+
+    resolveDetail(detail)
+    expect(await screen.findByText(/2330/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "收合 JSON" }))
+    fireEvent.click(screen.getByRole("button", { name: "檢視 JSON" }))
+    expect(mocks.loadRawPayloadDetail).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText(/2330/)).toBeInTheDocument()
+  })
+
+  it("sanitizes a missing raw payload detail", async () => {
+    mocks.loadRawPayloadDetail.mockRejectedValue(
+      new Error("FinDB API request failed (404)")
+    )
+    render(
+      <OperationsContext.Provider value={rawContextValue()}>
+        <RawPayloadsPage />
+      </OperationsContext.Provider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "檢視 JSON" }))
+    expect(await screen.findByText("原始資料已不存在")).toBeInTheDocument()
+  })
+
+  it("clears cached details when filters or page change", async () => {
+    const detail = makeRawPayload()
+    const setFilters = vi.fn()
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    mocks.loadRawPayloadDetail.mockResolvedValue(detail)
+    render(
+      <OperationsContext.Provider
+        value={rawContextValue({
+          totalPages: 2,
+          setFilters,
+          refresh,
+        })}
+      >
+        <RawPayloadsPage />
+      </OperationsContext.Provider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "檢視 JSON" }))
+    expect(await screen.findByText(/2330/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "收合 JSON" }))
+
+    fireEvent.change(screen.getByLabelText("Dataset key"), {
+      target: { value: "tw_equity_eod" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "查詢" }))
+    expect(setFilters).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1 })
+    )
+    expect(refresh).toHaveBeenCalledWith(expect.objectContaining({ page: 1 }))
+
+    fireEvent.click(screen.getByRole("button", { name: "檢視 JSON" }))
+    expect(await screen.findByText(/2330/)).toBeInTheDocument()
+    expect(mocks.loadRawPayloadDetail).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole("button", { name: "收合 JSON" }))
+
+    fireEvent.click(screen.getByRole("button", { name: "第 2 頁" }))
+    expect(refresh).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2 })
+    )
+    fireEvent.click(screen.getByRole("button", { name: "檢視 JSON" }))
+    expect(await screen.findByText(/2330/)).toBeInTheDocument()
+    expect(mocks.loadRawPayloadDetail).toHaveBeenCalledTimes(3)
   })
 })

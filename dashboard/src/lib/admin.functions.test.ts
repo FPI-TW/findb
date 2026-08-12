@@ -1,24 +1,22 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
-import { type DashboardRequest, mergeDashboardRefresh } from "./admin-api"
+import { mergeDashboardRefresh, type DashboardRequest } from "./admin-api"
 import { fetchDashboardData, patchSchedulerData } from "./admin.server"
 
 const timestamp = "2026-07-23T02:00:00Z"
 const pagination = {
   page: 1,
   page_size: 10,
-  total_records: 1,
-  total_pages: 1,
+  total_records: 0,
+  total_pages: 0,
 }
-const request: DashboardRequest = {
-  audit: {
-    datasetKey: "tw_equity_eod",
-    runId: "",
-    dateFrom: "",
-    dateTo: "",
-    page: 3,
-    pageSize: 100,
-  },
+const audit = {
+  datasetKey: "tw_equity_eod",
+  runId: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+  dateFrom: "2026-07-01",
+  dateTo: "2026-07-23",
+  page: 3,
+  pageSize: 100,
 }
 
 const responses = {
@@ -113,42 +111,6 @@ const responses = {
         updated_at: timestamp,
         heartbeat_age_seconds: 2,
       },
-      {
-        scheduler_key: "finlab_tw_equity_eod_v1",
-        provider: "finlab",
-        dataset_keys: ["tw_equity_eod"],
-        slot_id: "taiwan_market_window",
-        scheduled_local_time: "14:30:00",
-        timezone: "Asia/Taipei",
-        desired_state: "stopped",
-        observed_state: "stopped",
-        revision: 4,
-        last_heartbeat_at: null,
-        last_cycle_started_at: null,
-        last_cycle_completed_at: null,
-        last_error: null,
-        created_at: timestamp,
-        updated_at: timestamp,
-        heartbeat_age_seconds: null,
-      },
-      {
-        scheduler_key: "shioaji_tw_pilot_v1",
-        provider: "shioaji",
-        dataset_keys: ["tw_equity_minute", "tw_etf_minute"],
-        slot_id: "taiwan_market_window",
-        scheduled_local_time: "14:30:00",
-        timezone: "Asia/Taipei",
-        desired_state: "stopped",
-        observed_state: "running",
-        revision: 1,
-        last_heartbeat_at: timestamp,
-        last_cycle_started_at: timestamp,
-        last_cycle_completed_at: null,
-        last_error: "provider timeout",
-        created_at: timestamp,
-        updated_at: timestamp,
-        heartbeat_age_seconds: 120,
-      },
     ],
   },
   "/api/v1/admin/missing-deliveries": {
@@ -166,6 +128,7 @@ const responses = {
   "/api/v1/admin/raw-payloads": {
     data: [
       {
+        raw_payload_id: "019565d2-f838-7c91-85c1-72d4d7bbbe99",
         idempotency_key: "delivery-1",
         run_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
         dataset_key: "tw_equity_eod",
@@ -173,20 +136,25 @@ const responses = {
         schema_id: null,
         schema_version: null,
         request_key: "request-1",
-        payload: { rows: [{ symbol: "2330", close: 1000 }] },
+        payload: null,
         fetched_at: timestamp,
         expire_at: timestamp,
         created_at: timestamp,
       },
     ],
-    pagination,
+    pagination: { ...pagination, total_records: 1, total_pages: 1 },
   },
 } as const
 
 type RecordedCall = { url: URL; init: RequestInit | undefined }
+type ResponsePath = keyof typeof responses
+
+function request(view: DashboardRequest["view"]): DashboardRequest {
+  return { view, audit: { ...audit } }
+}
 
 function responseFor(pathname: string) {
-  const response = responses[pathname as keyof typeof responses]
+  const response = responses[pathname as ResponsePath]
   return new Response(JSON.stringify(response), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -195,13 +163,17 @@ function responseFor(pathname: string) {
 
 function recordingFetch(
   calls: RecordedCall[],
-  statusByPath: Partial<Record<keyof typeof responses, number>> = {},
-  malformedPath?: keyof typeof responses
+  statusByPath: Partial<Record<ResponsePath, number>> = {},
+  malformedPath?: ResponsePath,
+  timeoutPath?: ResponsePath
 ): typeof fetch {
   return async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
     calls.push({ url, init })
-    const status = statusByPath[url.pathname as keyof typeof responses]
+    if (url.pathname === timeoutPath) {
+      throw new DOMException("The operation timed out", "TimeoutError")
+    }
+    const status = statusByPath[url.pathname as ResponsePath]
     if (status) {
       return new Response("sensitive upstream body", { status })
     }
@@ -213,105 +185,202 @@ function recordingFetch(
 }
 
 describe("FinDB Admin server boundary", () => {
-  it("calls only fixed GET targets and forwards the session without caching", async () => {
+  it.each([
+    [
+      "overview",
+      [
+        "/api/v1/admin/market-freshness",
+        "/api/v1/admin/queue/health",
+        "/api/v1/admin/schedulers",
+      ],
+    ],
+    [
+      "deliveries",
+      ["/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100"],
+    ],
+    ["quality", ["/api/v1/admin/dq-issues"]],
+    ["corrections", ["/api/v1/admin/corrections?page=1&page_size=50"]],
+    ["rawPayloads", ["/api/v1/admin/raw-payloads"]],
+  ] as const)(
+    "%s calls only its fixed endpoint set",
+    async (view, expected) => {
+      const calls: RecordedCall[] = []
+      const result = await fetchDashboardData(
+        request(view),
+        "operator-secret",
+        "https://findb.internal:8443",
+        recordingFetch(calls)
+      )
+
+      expect(calls).toHaveLength(view === "overview" ? 3 : 1)
+      expect(
+        calls.map(
+          call =>
+            `${call.url.pathname}${view === "deliveries" ? call.url.search : view === "corrections" ? call.url.search : ""}`
+        )
+      ).toEqual(expected)
+      expect(result.view).toBe(view)
+      for (const call of calls) {
+        expect(call.url.origin).toBe("https://findb.internal:8443")
+        expect(call.init?.method).toBe("GET")
+        expect(call.init?.cache).toBe("no-store")
+        expect(new Headers(call.init?.headers).get("Authorization")).toBe(
+          "Bearer operator-secret"
+        )
+        expect(call.init?.signal).toBeInstanceOf(AbortSignal)
+      }
+    }
+  )
+
+  it("includes include_payload=false while preserving every raw audit query field", async () => {
     const calls: RecordedCall[] = []
     const result = await fetchDashboardData(
-      request,
+      request("rawPayloads"),
       "operator-secret",
-      "https://findb.internal:8443",
+      undefined,
       recordingFetch(calls)
     )
 
-    expect(calls).toHaveLength(7)
-    expect(calls.map(call => call.url.pathname)).toEqual([
-      "/api/v1/admin/market-freshness",
-      "/api/v1/admin/queue/health",
-      "/api/v1/admin/schedulers",
-      "/api/v1/admin/missing-deliveries",
-      "/api/v1/admin/dq-issues",
-      "/api/v1/admin/corrections",
-      "/api/v1/admin/raw-payloads",
-    ])
-    for (const call of calls) {
-      expect(call.url.origin).toBe("https://findb.internal:8443")
-      expect(call.init?.method).toBe("GET")
-      expect(call.init?.cache).toBe("no-store")
-      expect(new Headers(call.init?.headers).get("Authorization")).toBe(
-        "Bearer operator-secret"
+    const url = calls[0]?.url
+    expect(url?.pathname).toBe("/api/v1/admin/raw-payloads")
+    expect(url?.searchParams.get("include_payload")).toBe("false")
+    expect(url?.searchParams.get("dataset_key")).toBe(audit.datasetKey)
+    expect(url?.searchParams.get("run_id")).toBe(audit.runId)
+    expect(url?.searchParams.get("date_from")).toBe(audit.dateFrom)
+    expect(url?.searchParams.get("date_to")).toBe(audit.dateTo)
+    expect(url?.searchParams.get("page")).toBe("3")
+    expect(url?.searchParams.get("page_size")).toBe("100")
+    expect(result.view).toBe("rawPayloads")
+  })
+
+  it("supplies a 10-second AbortSignal and sanitizes a timeout into a degraded panel", async () => {
+    const calls: RecordedCall[] = []
+    const controller = new AbortController()
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation(milliseconds => {
+        expect(milliseconds).toBe(10_000)
+        return controller.signal
+      })
+
+    try {
+      const result = await fetchDashboardData(
+        request("overview"),
+        "operator-secret",
+        undefined,
+        recordingFetch(calls, {}, undefined, "/api/v1/admin/queue/health")
       )
+
+      expect(timeoutSpy).toHaveBeenCalledTimes(3)
+      expect(calls.every(call => call.init?.signal === controller.signal)).toBe(
+        true
+      )
+      expect(result.view).toBe("overview")
+      if (result.view === "overview") {
+        expect(result.freshness.ok).toBe(true)
+        expect(result.schedulers.ok).toBe(true)
+        expect(result.queue).toEqual({
+          ok: false,
+          error: "FinDB API request timed out",
+        })
+      }
+      expect(JSON.stringify(result)).not.toContain("The operation timed out")
+    } finally {
+      timeoutSpy.mockRestore()
     }
-    expect(calls[6]?.url.searchParams.get("dataset_key")).toBe("tw_equity_eod")
-    expect(calls[6]?.url.searchParams.get("page")).toBe("3")
-    expect(calls[6]?.url.searchParams.get("page_size")).toBe("100")
-    expect(calls[4]?.url.searchParams.get("resolved")).toBe("false")
-    expect(calls[4]?.url.searchParams.get("page")).toBe("3")
-    expect(calls[4]?.url.searchParams.get("page_size")).toBe("100")
-    expect(calls[4]?.url.searchParams.has("dataset_key")).toBe(false)
-    expect(result.freshness.ok).toBe(true)
-    expect(result.rawPayloads.ok).toBe(true)
-    expect(result.schedulers.ok).toBe(true)
+  })
+
+  it("recognizes timeout errors across runtime realms by their standard name", async () => {
+    const result = await fetchDashboardData(
+      request("quality"),
+      "operator-secret",
+      undefined,
+      async () => {
+        const timeout = new Error("cross-realm timeout detail")
+        timeout.name = "TimeoutError"
+        throw timeout
+      }
+    )
+
+    expect(result.view).toBe("quality")
+    if (result.view === "quality") {
+      expect(result.issues).toEqual({
+        ok: false,
+        error: "FinDB API request timed out",
+      })
+    }
+    expect(JSON.stringify(result)).not.toContain("cross-realm timeout detail")
   })
 
   it("keeps successful panels when one endpoint fails", async () => {
     const result = await fetchDashboardData(
-      request,
+      request("quality"),
       "operator-secret",
       undefined,
       recordingFetch([], { "/api/v1/admin/dq-issues": 503 })
     )
 
-    expect(result.queue.ok).toBe(true)
-    expect(result.freshness.ok).toBe(true)
-    expect(result.deliveries.ok).toBe(true)
-    expect(result.issues).toEqual({
-      ok: false,
-      error: "FinDB API request failed (503)",
-    })
-    expect(result.corrections.ok).toBe(true)
-    expect(result.rawPayloads.ok).toBe(true)
+    expect(result.view).toBe("quality")
+    if (result.view === "quality") {
+      expect(result.issues).toEqual({
+        ok: false,
+        error: "FinDB API request failed (503)",
+      })
+    }
   })
 
-  it("retains the last successful freshness panel when polling fails", async () => {
+  it("retains the last successful panel when a refresh fails and reports the error", async () => {
     const current = await fetchDashboardData(
-      request,
+      request("overview"),
       "operator-secret",
       undefined,
       recordingFetch([])
     )
     const next = await fetchDashboardData(
-      request,
+      request("overview"),
       "operator-secret",
       undefined,
-      recordingFetch([], { "/api/v1/admin/market-freshness": 503 })
+      recordingFetch([], { "/api/v1/admin/queue/health": 503 })
     )
 
     const merged = mergeDashboardRefresh(current, next)
-
-    expect(merged.data.freshness).toEqual(current.freshness)
-    expect(merged.data.queue).toEqual(next.queue)
-    expect(merged.freshnessError).toBe("FinDB API request failed (503)")
+    expect(merged.data.view).toBe("overview")
+    if (
+      merged.data.view === "overview" &&
+      current.view === "overview" &&
+      next.view === "overview"
+    ) {
+      expect(merged.data.freshness).toEqual(current.freshness)
+      expect(merged.data.queue).toEqual(current.queue)
+      expect(merged.data.schedulers).toEqual(next.schedulers)
+    }
+    expect(merged.errors).toEqual(["", "FinDB API request failed (503)", ""])
   })
 
   it("sanitizes authentication and upstream response bodies", async () => {
     await expect(
       fetchDashboardData(
-        request,
+        request("overview"),
         "operator-secret",
         undefined,
         recordingFetch([], { "/api/v1/admin/queue/health": 401 })
       )
     ).rejects.toThrow("Dashboard authentication required")
+
     const upstreamResult = await fetchDashboardData(
-      request,
+      request("overview"),
       "operator-secret",
       undefined,
       recordingFetch([], { "/api/v1/admin/queue/health": 500 })
     )
 
-    expect(upstreamResult.queue).toEqual({
-      ok: false,
-      error: "FinDB API request failed (500)",
-    })
+    expect(upstreamResult.view).toBe("overview")
+    if (upstreamResult.view === "overview") {
+      expect(upstreamResult.queue).toEqual({
+        ok: false,
+        error: "FinDB API request failed (500)",
+      })
+    }
     expect(JSON.stringify(upstreamResult)).not.toContain(
       "sensitive upstream body"
     )
@@ -320,16 +389,19 @@ describe("FinDB Admin server boundary", () => {
 
   it("rejects malformed endpoint responses without exposing their body", async () => {
     const result = await fetchDashboardData(
-      request,
+      request("overview"),
       "operator-secret",
       undefined,
       recordingFetch([], {}, "/api/v1/admin/queue/health")
     )
 
-    expect(result.queue).toEqual({
-      ok: false,
-      error: "FinDB API returned an unexpected response",
-    })
+    expect(result.view).toBe("overview")
+    if (result.view === "overview") {
+      expect(result.queue).toEqual({
+        ok: false,
+        error: "FinDB API returned an unexpected response",
+      })
+    }
     expect(JSON.stringify(result)).not.toContain("sensitive response value")
   })
 

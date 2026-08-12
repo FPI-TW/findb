@@ -1,4 +1,9 @@
-import { Link, Outlet, useNavigate } from "@tanstack/react-router"
+import {
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router"
 import { useServerFn } from "@tanstack/react-start"
 import {
   AlertTriangle,
@@ -68,7 +73,9 @@ import {
   type FreshnessStatus,
   type MarketFreshness,
   type MarketFreshnessResponse,
+  type OperationsView,
   type PanelResult,
+  type RawPayload,
   type Scheduler,
   type SchedulerDesiredState,
   type SchedulerMutationResponse,
@@ -76,7 +83,11 @@ import {
 } from "../../lib/admin-api"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { canViewUsers } from "../../lib/admin-permissions"
-import { loadDashboard, updateScheduler } from "../../lib/admin.functions"
+import {
+  loadDashboard,
+  loadRawPayloadDetail,
+  updateScheduler,
+} from "../../lib/admin.functions"
 import { isDashboardAuthenticationError } from "../../lib/auth-errors"
 import { logout } from "../../lib/auth.functions"
 import { toast } from "../../components/ui/toast"
@@ -103,6 +114,28 @@ export type OperationsContextValue = {
   setFilters: (filters: DashboardRequest["audit"]) => void
   refresh: (filters: DashboardRequest["audit"]) => Promise<void>
 }
+
+type ViewState<T> = Partial<Record<OperationsView, T>>
+
+export function operationsViewForPathname(
+  pathname: string
+): OperationsView | null {
+  const normalizedPathname = pathname.replace(/\/+$/, "")
+  if (normalizedPathname.endsWith("/deliveries")) return "deliveries"
+  if (normalizedPathname.endsWith("/quality")) return "quality"
+  if (normalizedPathname.endsWith("/corrections")) return "corrections"
+  if (normalizedPathname.endsWith("/raw-payloads")) return "rawPayloads"
+  if (normalizedPathname.endsWith("/operations")) {
+    return "overview"
+  }
+  return null
+}
+
+const POLLING_VIEWS = new Set<OperationsView>([
+  "overview",
+  "deliveries",
+  "quality",
+])
 
 export const OperationsContext = createContext<OperationsContextValue | null>(
   null
@@ -431,20 +464,30 @@ export default function OperationsLayout({
   const load = useServerFn(loadDashboard)
   const logoutFn = useServerFn(logout)
   const navigate = useNavigate()
-  const [data, setData] = useState<DashboardResponse | null>(null)
-  const [error, setError] = useState("")
-  const [freshnessError, setFreshnessError] = useState("")
-  const [schedulersError, setSchedulersError] = useState("")
-  const [pending, setPending] = useState(true)
+  const pathname = useRouterState({ select: state => state.location.pathname })
+  const view = operationsViewForPathname(pathname)
+  const [dataByView, setDataByView] = useState<ViewState<DashboardResponse>>({})
+  const [errorsByView, setErrorsByView] = useState<ViewState<string[]>>({})
+  const [fatalErrorsByView, setFatalErrorsByView] = useState<ViewState<string>>(
+    {}
+  )
+  const [pendingByView, setPendingByView] = useState<ViewState<boolean>>({})
   const [filters, setFilters] = useState(EMPTY_FILTERS)
-  const dataRef = useRef<DashboardResponse | null>(null)
-  dataRef.current = data
+  const dataByViewRef = useRef(dataByView)
+  dataByViewRef.current = dataByView
   const filtersRef = useRef(filters)
   filtersRef.current = filters
+  const inFlightViews = useRef(new Set<OperationsView>())
+  const data = view ? (dataByView[view] ?? null) : null
+  const viewErrors = view ? (errorsByView[view] ?? []) : []
+  const error = view ? (fatalErrorsByView[view] ?? "") : ""
+  const freshnessError = view === "overview" ? (viewErrors[0] ?? "") : ""
+  const schedulersError = view === "overview" ? (viewErrors[2] ?? "") : ""
+  const pending = view ? (pendingByView[view] ?? data === null) : false
   const applyScheduler = useCallback((response: SchedulerMutationResponse) => {
-    const current = dataRef.current
-    if (!current) return
-    const next: DashboardResponse = { ...current }
+    const current = dataByViewRef.current.overview
+    if (!current || current.view !== "overview") return
+    const next = { ...current }
     if (current.schedulers.ok) {
       next.schedulers = {
         ok: true as const,
@@ -474,43 +517,68 @@ export default function OperationsLayout({
         },
       }
     }
-    dataRef.current = next
-    setData(next)
+    const nextByView = { ...dataByViewRef.current, overview: next }
+    dataByViewRef.current = nextByView
+    setDataByView(nextByView)
   }, [])
 
   const refresh = useCallback(
-    async (nextFilters: DashboardRequest["audit"]) => {
-      setPending(true)
-      setError("")
+    async (
+      nextFilters: DashboardRequest["audit"],
+      requestedView: OperationsView | null = view
+    ) => {
+      if (!requestedView) return
+      if (inFlightViews.current.has(requestedView)) return
+      inFlightViews.current.add(requestedView)
+      setFatalErrorsByView(current => ({ ...current, [requestedView]: "" }))
+      setPendingByView(current => ({ ...current, [requestedView]: true }))
       try {
-        const result = await load({ data: { audit: nextFilters } })
-        const merged = mergeDashboardRefresh(dataRef.current, result)
-        setFreshnessError(merged.freshnessError)
-        setSchedulersError(merged.schedulersError)
-        dataRef.current = merged.data
-        setData(merged.data)
+        const result = await load({
+          data: { view: requestedView, audit: nextFilters },
+        })
+        if (result.view !== requestedView) return
+        const merged = mergeDashboardRefresh(
+          dataByViewRef.current[requestedView] ?? null,
+          result
+        )
+        const nextByView = {
+          ...dataByViewRef.current,
+          [requestedView]: merged.data,
+        }
+        dataByViewRef.current = nextByView
+        setDataByView(nextByView)
+        setErrorsByView(current => ({
+          ...current,
+          [requestedView]: merged.errors,
+        }))
+        setFatalErrorsByView(current => ({ ...current, [requestedView]: "" }))
       } catch (reason) {
         if (isDashboardAuthenticationError(reason)) {
           await navigate({ to: "/login", replace: true })
           return
         }
-        setError(
-          reason instanceof Error ? reason.message : "無法連線至 FinDB API。"
-        )
+        setFatalErrorsByView(current => ({
+          ...current,
+          [requestedView]:
+            reason instanceof Error ? reason.message : "無法連線至 FinDB API。",
+        }))
       } finally {
-        setPending(false)
+        inFlightViews.current.delete(requestedView)
+        setPendingByView(current => ({ ...current, [requestedView]: false }))
       }
     },
-    [load, navigate]
+    [load, navigate, view]
   )
 
   useEffect(() => {
-    void refresh(EMPTY_FILTERS)
+    if (!view) return
+    void refresh(filtersRef.current, view)
+    if (!POLLING_VIEWS.has(view)) return
     const interval = window.setInterval(() => {
-      void refresh(filtersRef.current)
+      void refresh(filtersRef.current, view)
     }, 60_000)
     return () => window.clearInterval(interval)
-  }, [refresh])
+  }, [refresh, view])
 
   async function signOut() {
     await logoutFn()
@@ -518,31 +586,39 @@ export default function OperationsLayout({
   }
 
   const initialLoading = data === null && pending && error === ""
-  const panelResults = data
-    ? [
-        data.freshness,
-        data.queue,
-        data.schedulers,
-        data.deliveries,
-        data.issues,
-        data.corrections,
-        data.rawPayloads,
-      ]
+  const panelResults: PanelResult<unknown>[] = data
+    ? data.view === "overview"
+      ? [data.freshness, data.queue, data.schedulers]
+      : data.view === "deliveries"
+        ? [data.deliveries]
+        : data.view === "quality"
+          ? [data.issues]
+          : data.view === "corrections"
+            ? [data.corrections]
+            : [data.rawPayloads]
     : []
-  const successfulPanels =
-    panelResults.filter(result => result.ok).length -
-    (freshnessError && data?.freshness.ok ? 1 : 0) -
-    (schedulersError && data?.schedulers.ok ? 1 : 0)
+  const retainedSuccessfulPanels = panelResults.filter(
+    result => result.ok
+  ).length
+  const successfulPanels = error
+    ? 0
+    : panelResults.reduce(
+        (count, result, index) =>
+          count + (result.ok && !viewErrors[index] ? 1 : 0),
+        0
+      )
+  const hasRefreshError =
+    error !== "" || viewErrors.some(panelError => panelError !== "")
   const connectionState =
     data === null
       ? pending
         ? "loading"
         : "failed"
-      : successfulPanels === panelResults.length
-        ? "healthy"
-        : successfulPanels === 0
-          ? "failed"
-          : "degraded"
+      : retainedSuccessfulPanels === 0
+        ? "failed"
+        : hasRefreshError
+          ? "degraded"
+          : "healthy"
   const connectionLabel = {
     loading: "載入中",
     healthy: "連線正常",
@@ -571,14 +647,19 @@ export default function OperationsLayout({
             <small className="text-xs text-muted">{role}</small>
           </div>
           <div className="flex flex-col items-stretch gap-2 sm:flex-row">
-            <Button
-              type="button"
-              onClick={() => void refresh(filters)}
-              disabled={pending}
-            >
-              <RefreshCw className={pending ? "animate-spin" : ""} size={17} />
-              重新整理
-            </Button>
+            {view && (
+              <Button
+                type="button"
+                onClick={() => void refresh(filters)}
+                disabled={pending}
+              >
+                <RefreshCw
+                  className={pending ? "animate-spin" : ""}
+                  size={17}
+                />
+                重新整理
+              </Button>
+            )}
             <Button
               variant="secondary"
               type="button"
@@ -591,7 +672,7 @@ export default function OperationsLayout({
         </Card>
       </section>
 
-      {error && (
+      {view && error && (
         <Alert className="mb-3" variant="destructive">
           <AlertTriangle size={18} />
           <AlertTitle>無法更新營運資料</AlertTitle>
@@ -599,21 +680,23 @@ export default function OperationsLayout({
         </Alert>
       )}
 
-      <Alert
-        className="mb-5 flex items-center gap-2.5 text-xs text-muted"
-        role={initialLoading ? "status" : undefined}
-        aria-live="polite"
-      >
-        <ConnectionIndicator state={connectionState} />
-        <strong className="text-ink">{connectionLabel}</strong>
-        <span>
-          {data
-            ? `${successfulPanels}/${panelResults.length} 個資料來源成功 · 最後更新 ${formatDate(data.fetchedAt)}`
-            : "正在載入營運資料"}
-        </span>
-      </Alert>
+      {view && (
+        <Alert
+          className="mb-5 flex items-center gap-2.5 text-xs text-muted"
+          role={initialLoading ? "status" : undefined}
+          aria-live="polite"
+        >
+          <ConnectionIndicator state={connectionState} />
+          <strong className="text-ink">{connectionLabel}</strong>
+          <span>
+            {data
+              ? `${successfulPanels}/${panelResults.length} 個資料來源成功 · 最後更新 ${formatDate(data.fetchedAt)}`
+              : "正在載入營運資料"}
+          </span>
+        </Alert>
+      )}
 
-      {connectionState === "failed" && (
+      {view && connectionState === "failed" && (
         <Alert className="mb-5" variant="destructive">
           <AlertTriangle size={18} />
           <AlertTitle>Admin API 連線失敗</AlertTitle>
@@ -622,7 +705,7 @@ export default function OperationsLayout({
           </AlertDescription>
         </Alert>
       )}
-      {connectionState === "degraded" && (
+      {view && connectionState === "degraded" && (
         <Alert className="mb-5" variant="warning" role="status">
           <AlertTriangle size={18} />
           <AlertTitle>部分服務異常</AlertTitle>
@@ -1789,6 +1872,7 @@ export function OperationsOverviewPage() {
     pending,
     role,
   } = useOperations()
+  const overview = data?.view === "overview" ? data : null
   return (
     <>
       <PageIntro
@@ -1797,10 +1881,10 @@ export function OperationsOverviewPage() {
         description="檢查市場資料更新、佇列、Worker heartbeat 與 outbox 的即時健康狀態。"
       />
       <div className="grid gap-5">
-        <MarketFreshnessErrorBoundary key={data?.fetchedAt ?? "initial"}>
+        <MarketFreshnessErrorBoundary key={overview?.fetchedAt ?? "initial"}>
           <IngestionOverviewPanel
-            freshnessResult={data?.freshness ?? null}
-            schedulersResult={data?.schedulers ?? null}
+            freshnessResult={overview?.freshness ?? null}
+            schedulersResult={overview?.schedulers ?? null}
             loading={initialLoading}
             pending={pending}
             freshnessError={freshnessError}
@@ -1812,10 +1896,10 @@ export function OperationsOverviewPage() {
           eyebrow="Queue and worker"
           title="Source ingest 後的佇列與 Worker"
           icon={<Database size={19} />}
-          result={data?.queue ?? null}
+          result={overview?.queue ?? null}
           loading={initialLoading}
         >
-          {data?.queue.ok && (
+          {overview?.queue.ok && (
             <>
               <p className="mb-3 text-xs text-muted">
                 Source ingest 已寫入 durable queue 後，這裡顯示
@@ -1824,32 +1908,34 @@ export function OperationsOverviewPage() {
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Metric
                   label="排隊中"
-                  value={data.queue.data.counts.queued ?? 0}
+                  value={overview.queue.data.counts.queued ?? 0}
                 />
                 <Metric
                   label="處理中"
-                  value={data.queue.data.counts.processing ?? 0}
+                  value={overview.queue.data.counts.processing ?? 0}
                 />
                 <Metric
                   label="重試耗盡"
-                  value={data.queue.data.retry_exhausted}
+                  value={overview.queue.data.retry_exhausted}
                 />
                 <Metric
                   label="過期租約"
-                  value={data.queue.data.expired_leases}
+                  value={overview.queue.data.expired_leases}
                 />
                 <Metric
                   wide
                   label="Worker heartbeat"
                   value={formatAge(
-                    data.queue.data.worker_heartbeat_age_seconds
+                    overview.queue.data.worker_heartbeat_age_seconds
                   )}
-                  detail={formatDate(data.queue.data.last_worker_heartbeat_at)}
+                  detail={formatDate(
+                    overview.queue.data.last_worker_heartbeat_at
+                  )}
                 />
                 <Metric
                   wide
                   label="未發布 outbox"
-                  value={data.queue.data.unpublished_outbox}
+                  value={overview.queue.data.unpublished_outbox}
                 />
               </div>
             </>
@@ -1868,6 +1954,7 @@ export function OperationsOverviewPage() {
 
 export function DeliveriesPage() {
   const { data, initialLoading } = useOperations()
+  const deliveries = data?.view === "deliveries" ? data : null
   return (
     <>
       <PageIntro
@@ -1879,17 +1966,17 @@ export function DeliveriesPage() {
         eyebrow="Open alerts"
         title="未解決的交付缺漏"
         icon={<Clock3 size={19} />}
-        result={data?.deliveries ?? null}
+        result={deliveries?.deliveries ?? null}
         loading={initialLoading}
       >
-        {data?.deliveries.ok &&
-          (data.deliveries.data.data.length === 0 ? (
+        {deliveries?.deliveries.ok &&
+          (deliveries.deliveries.data.data.length === 0 ? (
             <EmptyState>目前沒有未解決的交付缺漏</EmptyState>
           ) : (
             <>
               <p className="mt-0 mb-2 text-xs text-muted">
-                共 {data.deliveries.data.pagination.total_records} 筆，顯示前{" "}
-                {data.deliveries.data.data.length} 筆
+                共 {deliveries.deliveries.data.pagination.total_records}{" "}
+                筆，顯示前 {deliveries.deliveries.data.data.length} 筆
               </p>
               <Table>
                 <TableHeader>
@@ -1901,7 +1988,7 @@ export function DeliveriesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.deliveries.data.data.map(alert => (
+                  {deliveries.deliveries.data.data.map(alert => (
                     <TableRow key={alert.alert_id}>
                       <TableCell className="font-mono wrap-anywhere">
                         {alert.dataset_key}
@@ -2014,7 +2101,8 @@ function DQPolicyDetails({ detail }: { detail: DQIssue["policy_detail"] }) {
 export function QualityPage() {
   const { data, filters, initialLoading, pending, refresh, setFilters } =
     useOperations()
-  const issues = data?.issues.ok ? data.issues.data : null
+  const quality = data?.view === "quality" ? data : null
+  const issues = quality?.issues.ok ? quality.issues.data : null
   const [pageSizeDraft, setPageSizeDraft] = useState(filters.pageSize)
 
   function submitIssues(event: FormEvent) {
@@ -2041,10 +2129,10 @@ export function QualityPage() {
         eyebrow="Unresolved issues"
         title="未解決 DQ 問題"
         icon={<ShieldCheck size={19} />}
-        result={data?.issues ?? null}
+        result={quality?.issues ?? null}
         loading={initialLoading}
       >
-        {data?.issues.ok && (
+        {quality?.issues.ok && (
           <>
             <form
               className="mb-4 flex flex-wrap items-end justify-end gap-2.5"
@@ -2232,6 +2320,7 @@ export function QualityPage() {
 
 export function CorrectionsPage() {
   const { data, initialLoading } = useOperations()
+  const corrections = data?.view === "corrections" ? data : null
   return (
     <>
       <PageIntro
@@ -2243,17 +2332,17 @@ export function CorrectionsPage() {
         eyebrow="Recent corrections"
         title="近期修正"
         icon={<Archive size={19} />}
-        result={data?.corrections ?? null}
+        result={corrections?.corrections ?? null}
         loading={initialLoading}
       >
-        {data?.corrections.ok &&
-          (data.corrections.data.data.length === 0 ? (
+        {corrections?.corrections.ok &&
+          (corrections.corrections.data.data.length === 0 ? (
             <EmptyState>目前沒有修正紀錄</EmptyState>
           ) : (
             <>
               <p className="mt-0 mb-2 text-xs text-muted">
-                共 {data.corrections.data.pagination.total_records} 筆，顯示前{" "}
-                {data.corrections.data.data.length} 筆
+                共 {corrections.corrections.data.pagination.total_records}{" "}
+                筆，顯示前 {corrections.corrections.data.data.length} 筆
               </p>
               <Table>
                 <TableHeader>
@@ -2265,7 +2354,7 @@ export function CorrectionsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.corrections.data.data.map(correction => (
+                  {corrections.corrections.data.data.map(correction => (
                     <TableRow key={correction.id}>
                       <TableCell>{formatDate(correction.created_at)}</TableCell>
                       <TableCell className="font-mono wrap-anywhere">
@@ -2289,37 +2378,89 @@ export function CorrectionsPage() {
 export function RawPayloadsPage() {
   const { data, filters, initialLoading, pending, refresh, setFilters } =
     useOperations()
-  const rawPayloads = data?.rawPayloads.ok ? data.rawPayloads.data : null
+  const loadDetail = useServerFn(loadRawPayloadDetail)
+  const navigate = useNavigate()
+  const rawView = data?.view === "rawPayloads" ? data : null
+  const rawPayloads = rawView?.rawPayloads.ok ? rawView.rawPayloads.data : null
   const [pageSizeDraft, setPageSizeDraft] = useState(filters.pageSize)
   const [expandedPayloadKeys, setExpandedPayloadKeys] = useState<Set<string>>(
     () => new Set()
   )
+  const [payloadDetails, setPayloadDetails] = useState<
+    Record<
+      string,
+      | { status: "loading" }
+      | { status: "success"; data: RawPayload }
+      | { status: "error"; error: string }
+    >
+  >({})
+  const detailGeneration = useRef(0)
+
+  function resetPayloadDetails() {
+    detailGeneration.current += 1
+    setExpandedPayloadKeys(new Set())
+    setPayloadDetails({})
+  }
 
   function submitAudit(event: FormEvent) {
     event.preventDefault()
     const nextFilters = { ...filters, page: 1, pageSize: pageSizeDraft }
     setFilters(nextFilters)
-    setExpandedPayloadKeys(new Set())
+    resetPayloadDetails()
     void refresh(nextFilters)
   }
 
   function changePage(page: number) {
     const nextFilters = { ...filters, page }
     setFilters(nextFilters)
-    setExpandedPayloadKeys(new Set())
+    resetPayloadDetails()
     void refresh(nextFilters)
   }
 
-  function togglePayload(payloadKey: string) {
+  async function togglePayload(payloadKey: string) {
+    if (expandedPayloadKeys.has(payloadKey)) {
+      setExpandedPayloadKeys(current => {
+        const next = new Set(current)
+        next.delete(payloadKey)
+        return next
+      })
+      return
+    }
     setExpandedPayloadKeys(current => {
       const next = new Set(current)
-      if (next.has(payloadKey)) {
-        next.delete(payloadKey)
-      } else {
-        next.add(payloadKey)
-      }
+      next.add(payloadKey)
       return next
     })
+    if (payloadDetails[payloadKey]) return
+    const generation = detailGeneration.current
+    setPayloadDetails(current => ({
+      ...current,
+      [payloadKey]: { status: "loading" },
+    }))
+    try {
+      const detail = await loadDetail({ data: { rawPayloadId: payloadKey } })
+      if (detailGeneration.current !== generation) return
+      setPayloadDetails(current => ({
+        ...current,
+        [payloadKey]: { status: "success", data: detail },
+      }))
+    } catch (reason) {
+      if (detailGeneration.current !== generation) return
+      if (isDashboardAuthenticationError(reason)) {
+        await navigate({ to: "/login", replace: true })
+        return
+      }
+      const message =
+        reason instanceof Error && reason.message.includes("(404)")
+          ? "原始資料已不存在"
+          : reason instanceof Error
+            ? reason.message
+            : "無法取得原始資料"
+      setPayloadDetails(current => ({
+        ...current,
+        [payloadKey]: { status: "error", error: message },
+      }))
+    }
   }
 
   return (
@@ -2418,9 +2559,9 @@ export function RawPayloadsPage() {
             <Alert variant="destructive">
               <TriangleAlert />
               <AlertDescription>
-                {data.rawPayloads.ok
-                  ? "暫時無法查詢 raw payload"
-                  : data.rawPayloads.error}
+                {rawView && !rawView.rawPayloads.ok
+                  ? rawView.rawPayloads.error
+                  : "暫時無法查詢 raw payload"}
               </AlertDescription>
             </Alert>
           ) : rawPayloads.data.length === 0 ? (
@@ -2453,8 +2594,9 @@ export function RawPayloadsPage() {
                 </TableHeader>
                 <TableBody>
                   {rawPayloads.data.map(payload => {
-                    const payloadKey = `${payload.run_id}:${payload.idempotency_key}`
+                    const payloadKey = payload.raw_payload_id
                     const expanded = expandedPayloadKeys.has(payloadKey)
+                    const detail = payloadDetails[payloadKey]
                     return (
                       <Fragment key={payloadKey}>
                         <TableRow>
@@ -2475,9 +2617,13 @@ export function RawPayloadsPage() {
                               size="sm"
                               type="button"
                               aria-expanded={expanded}
-                              onClick={() => togglePayload(payloadKey)}
+                              onClick={() => void togglePayload(payloadKey)}
                             >
-                              {expanded ? "收合 JSON" : "檢視 JSON"}
+                              {expanded
+                                ? "收合 JSON"
+                                : detail?.status === "loading"
+                                  ? "載入中…"
+                                  : "檢視 JSON"}
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -2487,9 +2633,20 @@ export function RawPayloadsPage() {
                               colSpan={6}
                               className="bg-surface-soft p-3"
                             >
-                              <pre className="m-0 w-full rounded-lg border border-line bg-surface p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink wrap-anywhere">
-                                {JSON.stringify(payload.payload, null, 2)}
-                              </pre>
+                              {detail?.status === "loading" ? (
+                                <span role="status">正在載入完整 JSON…</span>
+                              ) : detail?.status === "error" ? (
+                                <Alert variant="destructive">
+                                  <TriangleAlert />
+                                  <AlertDescription>
+                                    {detail.error}
+                                  </AlertDescription>
+                                </Alert>
+                              ) : detail?.status === "success" ? (
+                                <pre className="m-0 w-full rounded-lg border border-line bg-surface p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink wrap-anywhere">
+                                  {JSON.stringify(detail.data.payload, null, 2)}
+                                </pre>
+                              ) : null}
                             </TableCell>
                           </TableRow>
                         )}
