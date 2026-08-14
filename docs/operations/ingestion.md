@@ -30,9 +30,9 @@ Consumer timeout必須高於Celery hard time limit與graceful shutdown所需時�
 `shioaji/tw_equity_minute`、`shioaji/tw_etf_minute`。Canonical/Serve read model 可
 保留歷史資料域，但不應從監控結果推論存在其他 active provider feed。
 
-`twelve_data/us_equity_eod` 保持 `western_markets_window`，每日台北時間 08:15 觸發，
+`twelve_data/us_equity_eod` 保持 `western_markets_window`，每日台北時間 09:00 觸發，
 目標仍是前一個受治理的美股交易日。Fetcher 保留 60 分鐘 retry grace；缺漏監控以
-`Asia/Taipei` 解讀 operational deadline，09:15 仍沒有預期 delivery 才建立 alert。
+`Asia/Taipei` 解讀 operational deadline，10:00 仍沒有預期 delivery 才建立 alert。
 此固定台北期限不受美東夏令／冬令時間切換影響。
 
 ## 上線前檢查

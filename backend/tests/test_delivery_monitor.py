@@ -63,12 +63,12 @@ def _twelve_data_config() -> dict:
             "missing_delivery": {
                 "action": "warn",
                 "expected_sources": ["twelve_data"],
-                "deadline_local_time": "09:15:00",
+                "deadline_local_time": "10:00:00",
             },
             "schedule": {
                 "enabled": True,
                 "slot_id": "western_markets_window",
-                "local_time": "08:15:00",
+                "local_time": "09:00:00",
                 "timezone": "Asia/Taipei",
                 "target_date_lag_days": 1,
                 "expected_sources": ["twelve_data"],
@@ -221,20 +221,20 @@ async def test_public_calendar_resolver_honors_dst_and_grace(test_session) -> No
     ("before_deadline", "at_deadline", "current_date", "prior_date"),
     [
         (
-            datetime(2026, 7, 23, 1, 14, tzinfo=timezone.utc),
-            datetime(2026, 7, 23, 1, 15, tzinfo=timezone.utc),
+            datetime(2026, 7, 23, 1, 59, tzinfo=timezone.utc),
+            datetime(2026, 7, 23, 2, 0, tzinfo=timezone.utc),
             date(2026, 7, 22),
             date(2026, 7, 21),
         ),
         (
-            datetime(2026, 1, 15, 1, 14, tzinfo=timezone.utc),
-            datetime(2026, 1, 15, 1, 15, tzinfo=timezone.utc),
+            datetime(2026, 1, 15, 1, 59, tzinfo=timezone.utc),
+            datetime(2026, 1, 15, 2, 0, tzinfo=timezone.utc),
             date(2026, 1, 14),
             date(2026, 1, 13),
         ),
         (
-            datetime(2026, 7, 25, 1, 14, tzinfo=timezone.utc),
-            datetime(2026, 7, 25, 1, 15, tzinfo=timezone.utc),
+            datetime(2026, 7, 25, 1, 59, tzinfo=timezone.utc),
+            datetime(2026, 7, 25, 2, 0, tzinfo=timezone.utc),
             date(2026, 7, 24),
             date(2026, 7, 23),
         ),
@@ -263,7 +263,7 @@ async def test_twelve_data_operational_deadline_is_fixed_in_taipei(
         policy,
         before_deadline,
         strict_current_session=True,
-        current_session_deadline=time(9, 15),
+        current_session_deadline=time(10),
         operational_deadline_timezone="Asia/Taipei",
         target_date_lag_days=1,
     )
@@ -272,7 +272,7 @@ async def test_twelve_data_operational_deadline_is_fixed_in_taipei(
         policy,
         at_deadline,
         strict_current_session=True,
-        current_session_deadline=time(9, 15),
+        current_session_deadline=time(10),
         operational_deadline_timezone="Asia/Taipei",
         target_date_lag_days=1,
     )
@@ -301,27 +301,27 @@ async def test_twelve_data_deadline_keeps_last_session_across_us_holiday(test_se
     before_holiday_deadline = await resolve_expected_data_date(
         test_session,
         policy,
-        datetime(2026, 7, 3, 1, 14, tzinfo=timezone.utc),
+        datetime(2026, 7, 3, 1, 59, tzinfo=timezone.utc),
         strict_current_session=True,
-        current_session_deadline=time(9, 15),
+        current_session_deadline=time(10),
         operational_deadline_timezone="Asia/Taipei",
         target_date_lag_days=1,
     )
     at_holiday_deadline = await resolve_expected_data_date(
         test_session,
         policy,
-        datetime(2026, 7, 3, 1, 15, tzinfo=timezone.utc),
+        datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
         strict_current_session=True,
-        current_session_deadline=time(9, 15),
+        current_session_deadline=time(10),
         operational_deadline_timezone="Asia/Taipei",
         target_date_lag_days=1,
     )
     after_closed_session = await resolve_expected_data_date(
         test_session,
         policy,
-        datetime(2026, 7, 4, 1, 15, tzinfo=timezone.utc),
+        datetime(2026, 7, 4, 2, 0, tzinfo=timezone.utc),
         strict_current_session=True,
-        current_session_deadline=time(9, 15),
+        current_session_deadline=time(10),
         operational_deadline_timezone="Asia/Taipei",
         target_date_lag_days=1,
     )
@@ -332,7 +332,7 @@ async def test_twelve_data_deadline_keeps_last_session_across_us_holiday(test_se
 
 
 @pytest.mark.asyncio
-async def test_twelve_data_monitor_waits_until_0915_and_late_run_resolves(test_session) -> None:
+async def test_twelve_data_monitor_waits_until_1000_and_late_run_resolves(test_session) -> None:
     await _seed_dataset(test_session, config=_twelve_data_config())
     await _seed_published_calendar_year(test_session, market="US", year=2026)
     test_session.add(
@@ -351,13 +351,13 @@ async def test_twelve_data_monitor_waits_until_0915_and_late_run_resolves(test_s
 
     before = await scan_missing_deliveries(
         test_session,
-        now=datetime(2026, 7, 23, 1, 14, tzinfo=timezone.utc),
+        now=datetime(2026, 7, 23, 1, 59, tzinfo=timezone.utc),
     )
     assert before.created_or_refreshed == 0
 
     due = await scan_missing_deliveries(
         test_session,
-        now=datetime(2026, 7, 23, 1, 15, tzinfo=timezone.utc),
+        now=datetime(2026, 7, 23, 2, 0, tzinfo=timezone.utc),
     )
     assert due.created_or_refreshed == 1
     alert = (await test_session.execute(select(MissingDeliveryAlert))).scalar_one()

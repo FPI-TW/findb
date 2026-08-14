@@ -178,7 +178,7 @@ def test_legacy_schedule_slot_is_normalized_at_config_boundary() -> None:
             {
                 "enabled": True,
                 "slot_id": "western_markets_window",
-                "local_time": "08:15:00",
+                "local_time": "09:00:00",
                 "timezone": "Asia/Taipei",
                 "target_date_lag_days": 367,
                 "expected_sources": ["twelve_data"],
