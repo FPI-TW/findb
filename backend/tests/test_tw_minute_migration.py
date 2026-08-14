@@ -71,6 +71,7 @@ def test_tw_minute_migration_is_single_linear_head():
     minute_deadline = scripts.get_revision("c3d4e5f6a7b8")
     stage_four_feeds = scripts.get_revision("d4e5f6a7b8c9")
     twelve_data_schedule = scripts.get_revision("e5f6a7b8c9d0")
+    twelve_data_schedule_0900 = scripts.get_revision("f2a3b4c5d6e7")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -89,7 +90,9 @@ def test_tw_minute_migration_is_single_linear_head():
     assert stage_four_feeds.down_revision == "c3d4e5f6a7b8"
     assert twelve_data_schedule is not None
     assert twelve_data_schedule.down_revision == "d4e5f6a7b8c9"
-    assert scripts.get_heads() == ["f1a2b3c4d5e6"]
+    assert twelve_data_schedule_0900 is not None
+    assert twelve_data_schedule_0900.down_revision == "f1a2b3c4d5e6"
+    assert scripts.get_heads() == ["f2a3b4c5d6e7"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -262,7 +265,10 @@ async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgr
             assert config["delivery_expectation"]["missing_delivery"]["operator_note"] == (
                 "keep-nested"
             )
-            assert config["delivery_expectation"]["schedule"]["local_time"] == "08:15:00"
+            assert config["delivery_expectation"]["missing_delivery"]["deadline_local_time"] == (
+                "10:00:00"
+            )
+            assert config["delivery_expectation"]["schedule"]["local_time"] == "09:00:00"
             assert config["delivery_expectation"]["schedule"]["target_date_lag_days"] == 1
 
         await _run_alembic(database_url, "d4e5f6a7b8c9", command="downgrade")
@@ -909,7 +915,7 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     "twelve_data_us_common_stocks_daily_v1",
                     "twelve_data",
                     "western_markets_window",
-                    time(8, 15),
+                    time(9),
                     "Asia/Taipei",
                 ),
             ]
@@ -992,12 +998,12 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                             "missing_delivery": {
                                 "action": "warn",
                                 "expected_sources": ["twelve_data"],
-                                "deadline_local_time": "09:15:00",
+                                "deadline_local_time": "10:00:00",
                             },
                             "schedule": {
                                 "enabled": True,
                                 "slot_id": "western_markets_window",
-                                "local_time": "08:15:00",
+                                "local_time": "09:00:00",
                                 "timezone": "Asia/Taipei",
                                 "expected_sources": ["twelve_data"],
                                 "target_date_lag_days": 1,

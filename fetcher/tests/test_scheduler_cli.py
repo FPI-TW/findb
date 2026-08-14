@@ -117,7 +117,7 @@ def test_v1_schedule_cannot_define_db_controlled_runtime_identity() -> None:
         scheduler_cli._expected_definition(schedule)
 
 
-def test_twelve_data_runtime_definition_uses_0815_without_changing_slot() -> None:
+def test_twelve_data_runtime_definition_uses_0900_without_changing_slot() -> None:
     root = Path(__file__).resolve().parents[1]
     schedule = scheduler_cli._load_selected_schedule(
         root / "configs" / "daily_scheduler.v2.json",
@@ -129,7 +129,7 @@ def test_twelve_data_runtime_definition_uses_0815_without_changing_slot() -> Non
         "twelve_data",
         ("us_equity_eod",),
         "western_markets_window",
-        "08:15:00",
+        "09:00:00",
         "Asia/Taipei",
     )
 
