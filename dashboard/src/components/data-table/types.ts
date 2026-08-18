@@ -90,6 +90,8 @@ export type DataTableProps<TData extends RowData> = {
   viewportClassName?: string
   /** A class applied to the table element itself. */
   tableClassName?: string
+  /** Fill the viewport when column content is narrower, while preserving horizontal overflow. */
+  fillAvailableWidth?: boolean
   "aria-busy"?: boolean
 }
 

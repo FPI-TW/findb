@@ -273,6 +273,7 @@ export function RawPayloadsPage({
               data={rawPayloads.data}
               emptyState="查無符合條件的原始資料。"
               expanded={expanded}
+              fillAvailableWidth
               getRowCanExpand={() => true}
               getRowId={row => row.raw_payload_id}
               isRefreshing={state.pending && !state.initialLoading}

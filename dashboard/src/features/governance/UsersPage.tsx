@@ -430,6 +430,7 @@ export function UsersPage() {
                 ? usersQuery.error.message
                 : "無法載入使用者。"
             }
+            fillAvailableWidth
             getRowId={user => user.user_id}
             isLoading={usersQuery.isPending}
             isRefreshing={usersQuery.isFetching && !usersQuery.isPending}
