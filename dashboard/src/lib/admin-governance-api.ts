@@ -123,9 +123,15 @@ const optionalExpiresAt = z
   .transform(value => value || undefined)
 
 export const credentialFiltersSchema = z.object({
-  kind: z.union([credentialKindSchema, z.literal("")]).default(""),
-  status: z.union([credentialStatusSchema, z.literal("")]).default(""),
-  owner: z.string().trim().max(200).default(""),
+  kind: z
+    .union([credentialKindSchema, z.literal("")])
+    .catch("")
+    .default(""),
+  status: z
+    .union([credentialStatusSchema, z.literal("")])
+    .catch("")
+    .default(""),
+  owner: z.string().trim().max(200).catch("").default(""),
 })
 export type CredentialFilters = z.infer<typeof credentialFiltersSchema>
 

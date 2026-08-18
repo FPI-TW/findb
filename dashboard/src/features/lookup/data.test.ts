@@ -85,6 +85,19 @@ describe("lookup API client", () => {
     })
   })
 
+  it("passes React Query cancellation signals through to the lookup fetch", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(response(lookupPayload()))
+    const controller = new AbortController()
+
+    await loadLookupPage(DEFAULT_SEARCH, controller.signal)
+
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      signal: controller.signal,
+    })
+  })
+
   it("omits cleared filters from the macro lookup request", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       response({

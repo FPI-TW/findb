@@ -16,6 +16,8 @@
     "lint:check": "eslint . --max-warnings 0",
     "type:check": "tsc --noEmit",
     "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:e2e": "playwright test",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
@@ -27,6 +29,7 @@
     "@tanstack/react-router": "latest",
     "@tanstack/react-router-devtools": "latest",
     "@tanstack/react-start": "latest",
+    "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
@@ -41,6 +44,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@tailwindcss/typography": "^0.5.16",
     "@tanstack/devtools-vite": "latest",
     "@tanstack/router-cli": "^1.132.0",
@@ -50,11 +54,13 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/browser-playwright": "4.1.10",
     "eslint": "^10.7.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.2",
     "vite": "^8.0.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "vitest-browser-react": "^2.2.0"
   }
 }

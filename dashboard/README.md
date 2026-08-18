@@ -59,7 +59,13 @@ Serve key。
 
 ```bash
 pnpm check:dashboard
+pnpm --filter dashboard test:browser
+pnpm --filter dashboard test:e2e
 pnpm build:dashboard
 ```
+
+`test:browser` 會在 Chromium 中驗證 DataTable 的 overflow、sticky header 與
+pinned columns；`test:e2e` 會啟動本機 Dashboard，檢查公開 Lookup route 的 SSR
+hydration 與 canonical URL。
 
 目前後端沒有歷史 ingestion run 趨勢端點，因此 dashboard 只呈現即時 queue/worker health。Raw payload 搜尋結果也受後端 retention policy 限制。

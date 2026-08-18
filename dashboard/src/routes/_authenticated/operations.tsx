@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import OperationsLayout from "../../features/operations/OperationsConsole"
+import OperationsLayout from "../../features/operations/operations.shared"
 
 export const Route = createFileRoute("/_authenticated/operations")({
   component: OperationsPage,

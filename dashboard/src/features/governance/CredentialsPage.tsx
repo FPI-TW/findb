@@ -1,7 +1,11 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 import { KeyRound, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react"
-import { type FormEvent, useCallback, useEffect, useState } from "react"
+import { type FormEvent, useEffect, useMemo, useState } from "react"
+import type { ColumnDef } from "@tanstack/react-table"
 
+import { DataTable } from "../../components/data-table"
+import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
@@ -14,25 +18,19 @@ import {
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import { Skeleton } from "../../components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table"
 import { toast } from "../../components/ui/toast"
 import type {
   AdminRole,
   Credential,
   CredentialFilters,
   CredentialsOverview,
+  CreateCredential,
   SourceProvider,
 } from "../../lib/admin-governance-api"
 import {
   SOURCE_PROVIDERS,
   SOURCE_PROVIDER_DATASETS,
+  credentialFiltersSchema,
   credentialKindSchema,
   credentialStatusSchema,
   sourceProviderSchema,
@@ -51,6 +49,8 @@ import {
 import { SecretDialog } from "./SecretDialog"
 
 const EMPTY_FILTERS: CredentialFilters = { kind: "", status: "", owner: "" }
+
+type CredentialTarget = { kind: Credential["kind"]; id: string }
 
 function formatDate(value: string | null) {
   if (!value) return "—"
@@ -79,19 +79,27 @@ function sourceScopeLabel(item: Credential) {
   return `${sourceName} · ${item.scopes.length} 個指定 datasets`
 }
 
-export function CredentialsPage({ role }: { role: AdminRole }) {
+export function CredentialsPage({
+  role,
+  search,
+  updateSearch,
+}: {
+  role: AdminRole
+  search?: CredentialFilters
+  updateSearch?: (next: CredentialFilters) => void
+}) {
   const load = useServerFn(loadCredentials)
   const loadOverview = useServerFn(loadCredentialsOverview)
   const issue = useServerFn(issueCredential)
   const rotate = useServerFn(rotateCredential)
   const revoke = useServerFn(revokeCredential)
-  const [credentials, setCredentials] = useState<Credential[]>([])
-  const [overview, setOverview] = useState<CredentialsOverview | null>(null)
-  const [filters, setFilters] = useState(EMPTY_FILTERS)
-  const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS)
-  const [loading, setLoading] = useState(true)
-  const [pending, setPending] = useState(false)
-  const [loadError, setLoadError] = useState("")
+  const queryClient = useQueryClient()
+  const sessionScope = useProtectedQueryScope()
+  const credentialsRootKey = ["admin", sessionScope, "credentials"] as const
+  const overviewKey = ["admin", sessionScope, "credentials-overview"] as const
+  const [localFilters, setLocalFilters] = useState(EMPTY_FILTERS)
+  const filters = search ?? localFilters
+  const [draftFilters, setDraftFilters] = useState(filters)
   const [secret, setSecret] = useState<{ title: string; value: string } | null>(
     null
   )
@@ -107,38 +115,49 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
   const [credentialRole, setCredentialRole] = useState<AdminRole>("operator")
   const [expiresAt, setExpiresAt] = useState("")
 
-  const refresh = useCallback(
-    async (nextFilters: CredentialFilters, initial = false) => {
-      if (initial) setLoading(true)
-      else setPending(true)
-      setLoadError("")
-      try {
-        const [credentialResult, overviewResult] = await Promise.all([
-          load({ data: nextFilters }),
-          loadOverview(),
-        ])
-        setCredentials(credentialResult.data)
-        setOverview(overviewResult)
-      } catch (reason) {
-        const message =
-          reason instanceof Error ? reason.message : "無法載入 credential。"
-        if (initial) setLoadError(message)
-        else toast.error("更新 Credential 失敗", { description: message })
-      } finally {
-        setLoading(false)
-        setPending(false)
-      }
-    },
-    [load, loadOverview]
-  )
-
   useEffect(() => {
-    void refresh(EMPTY_FILTERS, true)
-  }, [refresh])
+    setDraftFilters(filters)
+  }, [filters.kind, filters.owner, filters.status])
+
+  const credentialsQuery = useQuery({
+    queryKey: [...credentialsRootKey, filters],
+    queryFn: () => load({ data: filters }),
+  })
+  const overviewQuery = useQuery({
+    queryKey: overviewKey,
+    queryFn: () => loadOverview(),
+  })
+
+  const invalidateCredentials = () => {
+    void queryClient.invalidateQueries({ queryKey: credentialsRootKey })
+    void queryClient.invalidateQueries({ queryKey: overviewKey })
+  }
+
+  const issueMutation = useMutation({
+    mutationFn: (variables: { data: CreateCredential }) => issue(variables),
+    onSuccess: invalidateCredentials,
+  })
+  const rotateMutation = useMutation({
+    mutationFn: (target: CredentialTarget) => rotate({ data: target }),
+    onSuccess: invalidateCredentials,
+  })
+  const revokeMutation = useMutation({
+    mutationFn: (target: CredentialTarget) => revoke({ data: target }),
+    onSuccess: invalidateCredentials,
+  })
+
+  function applyFilters(next: CredentialFilters) {
+    setLocalFilters(next)
+    updateSearch?.(next)
+  }
+
+  function refresh() {
+    void credentialsQuery.refetch()
+    void overviewQuery.refetch()
+  }
 
   async function submitIssue(event: FormEvent) {
     event.preventDefault()
-    setPending(true)
     const expiry = expiresAt ? new Date(expiresAt).toISOString() : undefined
     const split = (value: string) =>
       value
@@ -148,7 +167,7 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
     try {
       const result =
         kind === "source"
-          ? await issue({
+          ? await issueMutation.mutateAsync({
               data: {
                 kind,
                 name,
@@ -160,17 +179,18 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
               },
             })
           : kind === "serve"
-            ? await issue({
+            ? await issueMutation.mutateAsync({
                 data: {
                   kind,
                   name: name || undefined,
                   owner,
                   description: description || undefined,
+                  tier: undefined,
                   scopes: split(scopes),
                   expires_at: expiry,
                 },
               })
-            : await issue({
+            : await issueMutation.mutateAsync({
                 data: {
                   kind,
                   name: name || undefined,
@@ -190,20 +210,20 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
       toast.success("Credential 已簽發", {
         description: `${result.data.name} 已建立，請立即保存密鑰。`,
       })
-      await refresh(filters)
     } catch (reason) {
       toast.error("簽發 Credential 失敗", {
         description: reason instanceof Error ? reason.message : "簽發失敗。",
       })
-      setPending(false)
     }
   }
 
   async function rotateItem(item: Credential) {
     if (!item.id || !canManageCredential(role, item.kind)) return
-    setPending(true)
     try {
-      const result = await rotate({ data: { kind: item.kind, id: item.id } })
+      const result = await rotateMutation.mutateAsync({
+        kind: item.kind,
+        id: item.id,
+      })
       setSecret({
         title: `已輪替 ${result.data.name}`,
         value: result.api_key,
@@ -211,12 +231,10 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
       toast.success("Credential 已輪替", {
         description: `${result.data.name} 的新密鑰已產生，請立即保存。`,
       })
-      await refresh(filters)
     } catch (reason) {
       toast.error("輪替 Credential 失敗", {
         description: reason instanceof Error ? reason.message : "輪替失敗。",
       })
-      setPending(false)
     }
   }
 
@@ -227,22 +245,148 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
       !window.confirm(`確定立即撤銷「${item.name}」？撤銷後下一個請求即失效。`)
     )
       return
-    setPending(true)
     try {
-      await revoke({ data: { kind: item.kind, id: item.id } })
+      await revokeMutation.mutateAsync({ kind: item.kind, id: item.id })
       toast.success("Credential 已撤銷", {
         description: `${item.name} 已立即失效。`,
       })
-      await refresh(filters)
     } catch (reason) {
       toast.error("撤銷 Credential 失敗", {
         description: reason instanceof Error ? reason.message : "撤銷失敗。",
       })
-      setPending(false)
     }
   }
 
   const mayIssue = canIssueCredential(role, kind)
+  const credentials = credentialsQuery.data?.data ?? []
+  const overview: CredentialsOverview | undefined = overviewQuery.data
+  const credentialColumns = useMemo<ColumnDef<Credential, unknown>[]>(
+    () => [
+      {
+        id: "name",
+        accessorKey: "name",
+        header: "名稱 / 類型",
+        meta: { minWidth: 180 },
+        cell: ({ row }) => (
+          <>
+            <strong className="block">{row.original.name}</strong>
+            <span className="font-mono text-xs text-muted">
+              {row.original.kind}
+            </span>
+            {sourceScopeLabel(row.original) && (
+              <span className="mt-1 block text-xs text-muted">
+                {sourceScopeLabel(row.original)}
+              </span>
+            )}
+          </>
+        ),
+      },
+      {
+        accessorKey: "owner",
+        header: "Owner",
+        meta: { width: 132 },
+        cell: ({ row }) => row.original.owner ?? "—",
+      },
+      {
+        accessorKey: "status",
+        header: "狀態",
+        meta: { width: 112 },
+        cell: ({ row }) => (
+          <Badge variant={statusVariant(row.original.status)}>
+            {row.original.status}
+          </Badge>
+        ),
+      },
+      {
+        accessorKey: "fingerprint",
+        header: "Fingerprint",
+        meta: { minWidth: 150 },
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">
+            {row.original.fingerprint ?? "—"}
+          </span>
+        ),
+      },
+      {
+        id: "usage",
+        accessorFn: row => row.last_used_at,
+        header: "最後使用 / 次數",
+        meta: { minWidth: 160 },
+        cell: ({ row }) => (
+          <>
+            <span className="block">
+              {formatDate(row.original.last_used_at)}
+            </span>
+            <span className="text-xs text-muted">
+              {row.original.usage_count.toLocaleString()} requests
+            </span>
+          </>
+        ),
+      },
+      {
+        accessorKey: "expires_at",
+        header: "到期",
+        meta: { width: 168 },
+        cell: ({ row }) => formatDate(row.original.expires_at),
+      },
+      {
+        id: "actions",
+        header: "操作",
+        enableSorting: false,
+        meta: { width: 112, pin: "right", align: "right" },
+        cell: ({ row }) => {
+          const item = row.original
+          if (
+            item.status === "revoked" ||
+            !item.id ||
+            !canManageCredential(role, item.kind)
+          ) {
+            return null
+          }
+          const rotating =
+            rotateMutation.isPending && rotateMutation.variables?.id === item.id
+          const revoking =
+            revokeMutation.isPending && revokeMutation.variables?.id === item.id
+          return (
+            <div className="flex justify-end gap-1">
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label={`輪替 ${item.name}`}
+                disabled={rotating}
+                onClick={() => void rotateItem(item)}
+              >
+                <RotateCw
+                  className={rotating ? "animate-spin" : ""}
+                  size={16}
+                />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label={`撤銷 ${item.name}`}
+                disabled={revoking}
+                onClick={() => void revokeItem(item)}
+              >
+                <Trash2 size={16} />
+              </Button>
+            </div>
+          )
+        },
+      },
+    ],
+    [
+      revokeMutation.isPending,
+      revokeMutation.variables,
+      role,
+      rotateMutation.isPending,
+      rotateMutation.variables,
+    ]
+  )
+  const credentialsError = credentialsQuery.error
+  const overviewError = overviewQuery.error
 
   return (
     <div className="grid gap-5">
@@ -258,14 +402,39 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
         </p>
       </header>
 
-      {loadError && (
+      {overviewError && (
         <Alert variant="destructive">
-          <AlertTitle>無法載入 Credential</AlertTitle>
-          <AlertDescription>{loadError}</AlertDescription>
+          <AlertTitle>無法載入 Credential 狀態</AlertTitle>
+          <AlertDescription>
+            {overviewError instanceof Error
+              ? overviewError.message
+              : "無法載入 credential 狀態。"}
+          </AlertDescription>
         </Alert>
       )}
 
-      {loading ? (
+      {credentialsQuery.error && credentials.length > 0 && (
+        <Alert variant="destructive">
+          <AlertTitle>更新 Credential 失敗</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            <span>
+              {credentialsQuery.error instanceof Error
+                ? credentialsQuery.error.message
+                : "無法載入 credential。"}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void credentialsQuery.refetch()}
+            >
+              <RefreshCw />
+              重新載入
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {overviewQuery.isPending ? (
         <div className="grid gap-3 sm:grid-cols-5" role="status">
           <span className="sr-only">正在載入 credential 狀態</span>
           {Array.from({ length: 5 }).map((_, index) => (
@@ -443,11 +612,12 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                   className="w-full"
                   type="submit"
                   disabled={
-                    pending ||
+                    issueMutation.isPending ||
                     (kind === "source" && allowedDatasets.length === 0)
                   }
                 >
-                  <KeyRound size={17} /> {pending ? "處理中…" : "簽發"}
+                  <KeyRound size={17} />{" "}
+                  {issueMutation.isPending ? "處理中…" : "簽發"}
                 </Button>
               </div>
             </form>
@@ -464,8 +634,15 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
             className="mb-4 grid gap-2 sm:grid-cols-4"
             onSubmit={event => {
               event.preventDefault()
-              setFilters(draftFilters)
-              void refresh(draftFilters)
+              const nextFilters = credentialFiltersSchema.parse(draftFilters)
+              applyFilters(nextFilters)
+              if (
+                nextFilters.kind === filters.kind &&
+                nextFilters.status === filters.status &&
+                nextFilters.owner === filters.owner
+              ) {
+                refresh()
+              }
             }}
           >
             <select
@@ -515,100 +692,41 @@ export function CredentialsPage({ role }: { role: AdminRole }) {
                 setDraftFilters({ ...draftFilters, owner: event.target.value })
               }
             />
-            <Button type="submit" disabled={pending}>
-              <RefreshCw className={pending ? "animate-spin" : ""} size={17} />
+            <Button type="submit" disabled={credentialsQuery.isFetching}>
+              <RefreshCw
+                className={credentialsQuery.isFetching ? "animate-spin" : ""}
+                size={17}
+              />
               更新
             </Button>
           </form>
-          {loading ? (
-            <div className="grid gap-2" role="status">
-              <span className="sr-only">正在載入 credential</span>
-              <Skeleton className="h-10" />
-              <Skeleton className="h-10" />
-              <Skeleton className="h-10" />
-            </div>
-          ) : credentials.length === 0 ? (
-            <Alert role="status">
-              <AlertDescription>沒有符合條件的 credential。</AlertDescription>
-            </Alert>
-          ) : (
-            <Table scrollMode="page">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>名稱 / 類型</TableHead>
-                  <TableHead>Owner</TableHead>
-                  <TableHead>狀態</TableHead>
-                  <TableHead>Fingerprint</TableHead>
-                  <TableHead>最後使用 / 次數</TableHead>
-                  <TableHead>到期</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {credentials.map(item => (
-                  <TableRow key={item.credential_ref}>
-                    <TableCell>
-                      <strong className="block">{item.name}</strong>
-                      <span className="font-mono text-xs text-muted">
-                        {item.kind}
-                      </span>
-                      {sourceScopeLabel(item) && (
-                        <span className="mt-1 block text-xs text-muted">
-                          {sourceScopeLabel(item)}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>{item.owner ?? "—"}</TableCell>
-                    <TableCell>
-                      <Badge variant={statusVariant(item.status)}>
-                        {item.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {item.fingerprint ?? "—"}
-                    </TableCell>
-                    <TableCell>
-                      <span className="block">
-                        {formatDate(item.last_used_at)}
-                      </span>
-                      <span className="text-xs text-muted">
-                        {item.usage_count.toLocaleString()} requests
-                      </span>
-                    </TableCell>
-                    <TableCell>{formatDate(item.expires_at)}</TableCell>
-                    <TableCell>
-                      {item.status !== "revoked" &&
-                        item.id &&
-                        canManageCredential(role, item.kind) && (
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={`輪替 ${item.name}`}
-                              disabled={pending}
-                              onClick={() => void rotateItem(item)}
-                            >
-                              <RotateCw size={16} />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={`撤銷 ${item.name}`}
-                              disabled={pending}
-                              onClick={() => void revokeItem(item)}
-                            >
-                              <Trash2 size={16} />
-                            </Button>
-                          </div>
-                        )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+          <DataTable
+            ariaLabel="目前 Credentials"
+            caption="目前 Credentials"
+            columns={credentialColumns}
+            data={credentials}
+            emptyState="沒有符合條件的 credential。"
+            error={credentials.length === 0 ? credentialsError : undefined}
+            errorState={
+              credentialsError instanceof Error
+                ? credentialsError.message
+                : "無法載入 credential。"
+            }
+            getRowId={item => item.credential_ref}
+            isLoading={credentialsQuery.isPending}
+            isRefreshing={
+              credentialsQuery.isFetching && !credentialsQuery.isPending
+            }
+            loadingState={
+              <div className="grid gap-2">
+                <span className="sr-only">正在載入 credential</span>
+                <Skeleton className="h-10" />
+                <Skeleton className="h-10" />
+                <Skeleton className="h-10" />
+              </div>
+            }
+            tableClassName="min-w-[980px]"
+          />
           {overview && (
             <p className="mt-3 text-xs text-muted">
               使用量為近即時估算；聚合更新：

@@ -1,4 +1,6 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
+import type { ColumnDef } from "@tanstack/react-table"
 import {
   CalendarDays,
   FileJson2,
@@ -11,12 +13,13 @@ import {
 import {
   type ChangeEvent,
   type FormEvent,
-  useCallback,
   useEffect,
   useMemo,
   useState,
 } from "react"
 
+import { DataTable } from "../../components/data-table"
+import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
@@ -29,14 +32,6 @@ import {
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import { Skeleton } from "../../components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table"
 import { toast } from "../../components/ui/toast"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import {
@@ -45,7 +40,6 @@ import {
   type CalendarDay,
   type CalendarDayStatus,
   type CalendarImport,
-  type CalendarMarket,
   type CalendarPreview,
   type CalendarRevision,
   type CalendarYear,
@@ -62,6 +56,7 @@ import {
   publishCalendarYear,
   rollbackCalendarYear,
 } from "../../lib/calendar.functions"
+import type { CalendarSearch } from "./calendar.search"
 
 type Tab = "year" | "manual" | "json" | "csv" | "history"
 const TABS: { id: Tab; label: string }[] = [
@@ -103,100 +98,111 @@ function revisionText(year: CalendarYear) {
   return "尚未建立"
 }
 
-export function CalendarManagementPage({ role }: { role: AdminRole }) {
+const calendarKeys = {
+  all: ["calendar"] as const,
+  markets: (scope: string) => ["calendar", scope, "markets"] as const,
+  year: (scope: string, market: string, year: number) =>
+    ["calendar", scope, "year", market, year] as const,
+  imports: (scope: string, market: string, year: number) =>
+    ["calendar", scope, "imports", market, year] as const,
+  revisions: (scope: string, market: string, year: number) =>
+    ["calendar", scope, "revisions", market, year] as const,
+}
+
+export function CalendarManagementPage({
+  role,
+  search,
+  updateSearch,
+}: {
+  role: AdminRole
+  search: CalendarSearch
+  updateSearch: (next: CalendarSearch) => void
+}) {
   const getMarkets = useServerFn(loadCalendarMarkets)
   const getYear = useServerFn(loadCalendarYear)
   const getImports = useServerFn(loadCalendarImports)
   const getRevisions = useServerFn(loadCalendarRevisions)
-  const [markets, setMarkets] = useState<CalendarMarket[]>([])
-  const [market, setMarket] = useState("")
-  const [year, setYear] = useState(new Date().getFullYear())
-  const [calendar, setCalendar] = useState<CalendarYear | null>(null)
-  const [imports, setImports] = useState<CalendarImport[]>([])
-  const [revisions, setRevisions] = useState<CalendarRevision[]>([])
-  const [initialLoading, setInitialLoading] = useState(true)
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState("")
+  const queryClient = useQueryClient()
+  const sessionScope = useProtectedQueryScope()
   const [tab, setTab] = useState<Tab>("year")
 
-  const refresh = useCallback(
-    async (nextMarket: string, nextYear: number, initial = false) => {
-      if (!nextMarket) return
-      if (initial) setInitialLoading(true)
-      else setPending(true)
-      setError("")
-      try {
-        const importsPromise = getImports({
-          data: { market: nextMarket, year: nextYear },
-        })
-        const revisionsPromise = getRevisions({
-          data: { market: nextMarket, year: nextYear },
-        })
-        let nextCalendar: CalendarYear | null = null
-        try {
-          nextCalendar = await getYear({
-            data: { market: nextMarket, year: nextYear },
-          })
-        } catch (reason) {
-          const message = reason instanceof Error ? reason.message : ""
-          if (!message.includes("Managed calendar year not found")) throw reason
-        }
-        const [nextImports, nextRevisions] = await Promise.all([
-          importsPromise,
-          revisionsPromise,
-        ])
-        setCalendar(nextCalendar)
-        setImports(nextImports)
-        setRevisions(nextRevisions)
-      } catch (reason) {
-        setError(
-          reason instanceof Error ? reason.message : "無法載入交易日曆。"
-        )
-      } finally {
-        setInitialLoading(false)
-        setPending(false)
-      }
-    },
-    [getImports, getRevisions, getYear]
-  )
+  const marketsQuery = useQuery({
+    queryKey: calendarKeys.markets(sessionScope),
+    queryFn: () => getMarkets(),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const markets = marketsQuery.data ?? []
+  const preferredMarket =
+    markets.find(item => item.market === search.market)?.market ??
+    markets.find(item => item.market === "TW")?.market ??
+    markets[0]?.market ??
+    ""
+  const market = preferredMarket
+  const year = search.year
 
   useEffect(() => {
-    let active = true
-    async function initialise() {
-      setInitialLoading(true)
-      try {
-        const nextMarkets = await getMarkets()
-        if (!active) return
-        setMarkets(nextMarkets)
-        const first =
-          nextMarkets.find(item => item.market === "TW") ?? nextMarkets[0]
-        if (first) {
-          setMarket(first.market)
-          await refresh(first.market, year, true)
-        }
-      } catch (reason) {
-        if (active)
-          setError(
-            reason instanceof Error ? reason.message : "無法載入市場設定。"
-          )
-      } finally {
-        if (active) setInitialLoading(false)
-      }
+    if (market && market !== search.market) {
+      updateSearch({ ...search, market })
     }
-    void initialise()
-    return () => {
-      active = false
-    }
-  }, [getMarkets, refresh, year])
+  }, [market, search, updateSearch])
+
+  const selection = { market, year }
+  const yearQuery = useQuery({
+    queryKey: calendarKeys.year(sessionScope, market, year),
+    queryFn: () => getYear({ data: selection }),
+    enabled: market !== "",
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const importsQuery = useQuery({
+    queryKey: calendarKeys.imports(sessionScope, market, year),
+    queryFn: () => getImports({ data: selection }),
+    enabled: market !== "",
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const revisionsQuery = useQuery({
+    queryKey: calendarKeys.revisions(sessionScope, market, year),
+    queryFn: () => getRevisions({ data: selection }),
+    enabled: market !== "",
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const calendar = yearQuery.data ?? null
+  const imports = importsQuery.data ?? []
+  const revisions = revisionsQuery.data ?? []
+  const initialLoading =
+    marketsQuery.isPending || (market !== "" && yearQuery.isPending)
+  const pending =
+    marketsQuery.isFetching ||
+    yearQuery.isFetching ||
+    importsQuery.isFetching ||
+    revisionsQuery.isFetching
+  const queryError =
+    marketsQuery.error ??
+    yearQuery.error ??
+    importsQuery.error ??
+    revisionsQuery.error
+  const error =
+    queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? "無法載入交易日曆。"
+        : ""
+
+  async function refresh() {
+    await queryClient.invalidateQueries({
+      queryKey: market ? calendarKeys.all : calendarKeys.markets(sessionScope),
+    })
+  }
 
   function selectMarket(nextMarket: string) {
-    setMarket(nextMarket)
-    void refresh(nextMarket, year)
+    updateSearch({ ...search, market: nextMarket })
   }
 
   function selectYear(nextYear: number) {
-    setYear(nextYear)
-    void refresh(market, nextYear)
+    updateSearch({ ...search, year: nextYear })
   }
 
   const canEdit = role === "owner" || role === "operator"
@@ -220,7 +226,7 @@ export function CalendarManagementPage({ role }: { role: AdminRole }) {
           type="button"
           variant="secondary"
           disabled={pending || !market}
-          onClick={() => void refresh(market, year)}
+          onClick={() => void refresh()}
         >
           <RefreshCw className={pending ? "animate-spin" : ""} /> 重新整理
         </Button>
@@ -303,8 +309,10 @@ export function CalendarManagementPage({ role }: { role: AdminRole }) {
               calendar={calendar}
               canEdit={canEdit}
               role={role}
-              onSaved={() => void refresh(market, year)}
-              onRefresh={() => void refresh(market, year)}
+              search={search}
+              updateSearch={updateSearch}
+              onSaved={() => void refresh()}
+              onRefresh={() => void refresh()}
             />
           )}
           {tab === "manual" && (
@@ -312,7 +320,7 @@ export function CalendarManagementPage({ role }: { role: AdminRole }) {
               calendar={calendar}
               canEdit={canEdit}
               role={role}
-              onSaved={() => void refresh(market, year)}
+              onSaved={() => void refresh()}
             />
           )}
           {tab === "json" && (
@@ -321,7 +329,7 @@ export function CalendarManagementPage({ role }: { role: AdminRole }) {
               year={year}
               calendar={calendar}
               canEdit={canEdit}
-              onApplied={() => void refresh(market, year)}
+              onApplied={() => void refresh()}
             />
           )}
           {tab === "csv" && (
@@ -330,7 +338,7 @@ export function CalendarManagementPage({ role }: { role: AdminRole }) {
               year={year}
               calendar={calendar}
               canEdit={canEdit}
-              onApplied={() => void refresh(market, year)}
+              onApplied={() => void refresh()}
             />
           )}
           {tab === "history" && (
@@ -340,13 +348,13 @@ export function CalendarManagementPage({ role }: { role: AdminRole }) {
               revisions={revisions}
               loading={pending}
               canRollback={canPublish}
-              onRolledBack={() => void refresh(market, year)}
+              onRolledBack={() => void refresh()}
             />
           )}
           {canPublish && (
             <PublishButton
               calendar={calendar}
-              onPublished={() => void refresh(market, year)}
+              onPublished={() => void refresh()}
             />
           )}
         </>
@@ -397,31 +405,127 @@ function YearView({
   calendar,
   canEdit,
   role,
+  search,
+  updateSearch,
   onSaved,
   onRefresh,
 }: {
   calendar: CalendarYear
   canEdit: boolean
   role: AdminRole
+  search: CalendarSearch
+  updateSearch: (next: CalendarSearch) => void
   onSaved: () => void
   onRefresh: () => void
 }) {
-  const [month, setMonth] = useState("")
-  const [status, setStatus] = useState<CalendarDayStatus | "">("")
-  const [query, setQuery] = useState("")
   const [editing, setEditing] = useState<CalendarDay | null>(null)
   const days = useMemo(
     () =>
       calendar.days.filter(
         day =>
-          (!month || day.date.slice(5, 7) === month) &&
-          (!status || day.status === status) &&
-          (!query ||
+          (!search.month || day.date.slice(5, 7) === search.month) &&
+          (!search.status || day.status === search.status) &&
+          (!search.q ||
             `${day.date} ${calendarDayName(day)} ${day.description ?? ""}`
               .toLowerCase()
-              .includes(query.toLowerCase()))
+              .includes(search.q.toLowerCase()))
       ),
-    [calendar.days, month, query, status]
+    [calendar.days, search.month, search.q, search.status]
+  )
+  const columns = useMemo<ColumnDef<CalendarDay, unknown>[]>(
+    () => [
+      {
+        accessorKey: "date",
+        header: "日期",
+        enableSorting: false,
+        cell: info => (
+          <span className="font-mono">{String(info.getValue())}</span>
+        ),
+        meta: { width: 112, pin: "left" },
+      },
+      {
+        id: "weekday",
+        header: "星期",
+        enableSorting: false,
+        cell: info => weekday(info.row.original.date),
+        meta: { width: 72 },
+      },
+      {
+        accessorKey: "status",
+        header: "狀態",
+        enableSorting: false,
+        cell: info => (
+          <Badge variant={statusVariant(info.row.original.status)}>
+            {calendarStatusLabel(info.row.original.status)}
+          </Badge>
+        ),
+        meta: { width: 96 },
+      },
+      {
+        id: "session",
+        header: "時段",
+        enableSorting: false,
+        cell: info => {
+          const day = info.row.original
+          return day.session_open && day.session_close
+            ? `${day.session_open}-${day.session_close}`
+            : "—"
+        },
+        meta: { width: 128 },
+      },
+      {
+        id: "description",
+        header: "名稱／說明",
+        enableSorting: false,
+        cell: info => {
+          const day = info.row.original
+          return (
+            <div>
+              <strong>{calendarDayName(day)}</strong>
+              {day.description ? (
+                <p className="mt-1 mb-0 text-xs text-muted whitespace-pre-wrap">
+                  {day.description}
+                </p>
+              ) : null}
+            </div>
+          )
+        },
+        meta: { width: 320, minWidth: 240, wrap: true },
+      },
+      {
+        accessorKey: "source_kind",
+        header: "來源",
+        enableSorting: false,
+        cell: info => String(info.getValue() ?? "—"),
+        meta: { width: 140 },
+      },
+      ...(canEdit
+        ? ([
+            {
+              id: "actions",
+              header: () => <span className="sr-only">編輯</span>,
+              enableSorting: false,
+              cell: info => (
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={`編輯 ${info.row.original.date}`}
+                  onClick={() => setEditing(info.row.original)}
+                >
+                  <Pencil aria-hidden="true" />
+                </Button>
+              ),
+              meta: {
+                width: 56,
+                align: "right" as const,
+                pin: "right" as const,
+              },
+            },
+          ] satisfies ColumnDef<CalendarDay, unknown>[])
+        : []),
+    ],
+    [canEdit]
   )
   return (
     <Card className="gap-4 p-4">
@@ -438,8 +542,13 @@ function YearView({
           <select
             aria-label="月份篩選"
             className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
-            value={month}
-            onChange={event => setMonth(event.target.value)}
+            value={search.month}
+            onChange={event =>
+              updateSearch({
+                ...search,
+                month: event.target.value as CalendarSearch["month"],
+              })
+            }
           >
             <option value="">全部月份</option>
             {Array.from({ length: 12 }).map((_, index) => {
@@ -454,9 +563,12 @@ function YearView({
           <select
             aria-label="狀態篩選"
             className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
-            value={status}
+            value={search.status}
             onChange={event =>
-              setStatus(event.target.value as CalendarDayStatus | "")
+              updateSearch({
+                ...search,
+                status: event.target.value as CalendarSearch["status"],
+              })
             }
           >
             <option value="">全部狀態</option>
@@ -467,67 +579,20 @@ function YearView({
           <Input
             aria-label="搜尋日期或說明"
             placeholder="搜尋日期、名稱或說明"
-            value={query}
-            onChange={event => setQuery(event.target.value)}
+            value={search.q}
+            onChange={event =>
+              updateSearch({ ...search, q: event.target.value })
+            }
           />
         </div>
-        <Table scrollMode="page">
-          <TableHeader>
-            <TableRow>
-              <TableHead>日期</TableHead>
-              <TableHead>星期</TableHead>
-              <TableHead>狀態</TableHead>
-              <TableHead>時段</TableHead>
-              <TableHead>名稱／說明</TableHead>
-              <TableHead>來源</TableHead>
-              {canEdit && (
-                <TableHead>
-                  <span className="sr-only">編輯</span>
-                </TableHead>
-              )}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {days.map(day => (
-              <TableRow key={day.date}>
-                <TableCell className="font-mono">{day.date}</TableCell>
-                <TableCell>{weekday(day.date)}</TableCell>
-                <TableCell>
-                  <Badge variant={statusVariant(day.status)}>
-                    {calendarStatusLabel(day.status)}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  {day.session_open && day.session_close
-                    ? `${day.session_open}–${day.session_close}`
-                    : "—"}
-                </TableCell>
-                <TableCell className="max-w-sm whitespace-normal">
-                  <strong>{calendarDayName(day)}</strong>
-                  {day.description && (
-                    <p className="mt-1 mb-0 text-xs text-muted whitespace-pre-wrap">
-                      {day.description}
-                    </p>
-                  )}
-                </TableCell>
-                <TableCell>{day.source_kind ?? "—"}</TableCell>
-                {canEdit && (
-                  <TableCell>
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label={`編輯 ${day.date}`}
-                      onClick={() => setEditing(day)}
-                    >
-                      <Pencil />
-                    </Button>
-                  </TableCell>
-                )}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <DataTable
+          ariaLabel="全年交易日曆"
+          columns={columns}
+          data={days}
+          emptyState="沒有符合條件的交易日。"
+          getRowId={day => day.date}
+          viewportClassName="max-h-[70dvh]"
+        />
         {editing && (
           <EditDayDialog
             day={editing}
@@ -1100,6 +1165,88 @@ function CalendarHistory({
     }
   }
 
+  const columns = useMemo<ColumnDef<CalendarRevision, unknown>[]>(
+    () => [
+      {
+        accessorKey: "revision",
+        header: "修訂版",
+        enableSorting: false,
+        cell: info => (
+          <span className="font-mono">r{String(info.getValue())}</span>
+        ),
+        meta: { width: 88, pin: "left" },
+      },
+      {
+        accessorKey: "status",
+        header: "狀態",
+        enableSorting: false,
+        cell: info => {
+          const status = info.row.original.status
+          return (
+            <Badge
+              variant={
+                status === "published"
+                  ? "default"
+                  : status === "draft"
+                    ? "warning"
+                    : "secondary"
+              }
+            >
+              {status}
+            </Badge>
+          )
+        },
+        meta: { width: 112 },
+      },
+      {
+        accessorKey: "source_kind",
+        header: "來源",
+        enableSorting: false,
+        meta: { width: 160 },
+      },
+      {
+        accessorKey: "updated_at",
+        header: "更新時間",
+        enableSorting: false,
+        cell: info => formatDate(info.row.original.updated_at),
+        meta: { width: 180 },
+      },
+      ...(canRollback
+        ? ([
+            {
+              id: "actions",
+              header: "操作",
+              enableSorting: false,
+              cell: info => {
+                const item = info.row.original
+                return (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={
+                      rollingBack !== null ||
+                      item.status !== "superseded" ||
+                      !item.coverage_complete
+                    }
+                    onClick={() => void submit(item.revision)}
+                  >
+                    {rollingBack === item.revision ? "回滾中…" : "以此版本回滾"}
+                  </Button>
+                )
+              },
+              meta: {
+                width: 132,
+                align: "right" as const,
+                pin: "right" as const,
+              },
+            },
+          ] satisfies ColumnDef<CalendarRevision, unknown>[])
+        : []),
+    ],
+    [canRollback, rollingBack]
+  )
+
   return (
     <div className="grid gap-4">
       <Card className="gap-4 p-4">
@@ -1112,68 +1259,16 @@ function CalendarHistory({
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
-          {loading ? (
-            <CalendarSkeleton />
-          ) : revisions.length === 0 ? (
-            <Alert>
-              <AlertDescription>此市場年度尚無修訂紀錄。</AlertDescription>
-            </Alert>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>修訂版</TableHead>
-                  <TableHead>狀態</TableHead>
-                  <TableHead>來源</TableHead>
-                  <TableHead>更新時間</TableHead>
-                  {canRollback && <TableHead>操作</TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {revisions.map(item => (
-                  <TableRow key={item.revision}>
-                    <TableCell className="font-mono">
-                      r{item.revision}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          item.status === "published"
-                            ? "default"
-                            : item.status === "draft"
-                              ? "warning"
-                              : "secondary"
-                        }
-                      >
-                        {item.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{item.source_kind}</TableCell>
-                    <TableCell>{formatDate(item.updated_at)}</TableCell>
-                    {canRollback && (
-                      <TableCell>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          disabled={
-                            rollingBack !== null ||
-                            item.status !== "superseded" ||
-                            !item.coverage_complete
-                          }
-                          onClick={() => void submit(item.revision)}
-                        >
-                          {rollingBack === item.revision
-                            ? "回滾中…"
-                            : "以此版本回滾"}
-                        </Button>
-                      </TableCell>
-                    )}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+          <DataTable
+            ariaLabel="年度修訂紀錄"
+            columns={columns}
+            data={revisions}
+            emptyState="此市場年度尚無修訂紀錄。"
+            getRowId={item => String(item.revision)}
+            isLoading={loading && revisions.length === 0}
+            isRefreshing={loading && revisions.length > 0}
+            viewportClassName="max-h-96"
+          />
         </CardContent>
       </Card>
       <ImportHistory imports={imports} loading={loading} />
@@ -1188,44 +1283,63 @@ function ImportHistory({
   imports: CalendarImport[]
   loading: boolean
 }) {
+  const columns = useMemo<ColumnDef<CalendarImport, unknown>[]>(
+    () => [
+      {
+        accessorKey: "created_at",
+        header: "時間",
+        enableSorting: false,
+        cell: info => formatDate(info.row.original.created_at),
+        meta: { width: 180, pin: "left" },
+      },
+      {
+        accessorKey: "input_format",
+        header: "格式",
+        enableSorting: false,
+        meta: { width: 100 },
+      },
+      {
+        id: "source",
+        header: "檔案／來源",
+        enableSorting: false,
+        cell: info =>
+          info.row.original.source_filename ??
+          info.row.original.source_sha256 ??
+          "—",
+        meta: { width: 300, minWidth: 220, wrap: true },
+      },
+      {
+        accessorKey: "status",
+        header: "狀態",
+        enableSorting: false,
+        meta: { width: 120 },
+      },
+      {
+        accessorKey: "revision",
+        header: "修訂版",
+        enableSorting: false,
+        cell: info => String(info.getValue() ?? "—"),
+        meta: { width: 96, align: "right" },
+      },
+    ],
+    []
+  )
   return (
     <Card className="gap-4 p-4">
       <CardHeader className="px-0">
         <CardTitle>匯入紀錄</CardTitle>
       </CardHeader>
       <CardContent className="px-0">
-        {loading ? (
-          <CalendarSkeleton />
-        ) : imports.length === 0 ? (
-          <Alert>
-            <AlertDescription>此市場年度尚無匯入紀錄。</AlertDescription>
-          </Alert>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>時間</TableHead>
-                <TableHead>格式</TableHead>
-                <TableHead>檔案／來源</TableHead>
-                <TableHead>狀態</TableHead>
-                <TableHead>修訂版</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {imports.map(item => (
-                <TableRow key={item.id}>
-                  <TableCell>{formatDate(item.created_at)}</TableCell>
-                  <TableCell>{item.input_format}</TableCell>
-                  <TableCell className="max-w-xs wrap-anywhere">
-                    {item.source_filename ?? item.source_sha256 ?? "—"}
-                  </TableCell>
-                  <TableCell>{item.status}</TableCell>
-                  <TableCell>{item.revision ?? "—"}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+        <DataTable
+          ariaLabel="日曆匯入紀錄"
+          columns={columns}
+          data={imports}
+          emptyState="此市場年度尚無匯入紀錄。"
+          getRowId={item => item.id}
+          isLoading={loading && imports.length === 0}
+          isRefreshing={loading && imports.length > 0}
+          viewportClassName="max-h-96"
+        />
       </CardContent>
     </Card>
   )

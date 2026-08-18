@@ -120,6 +120,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Chromium for browser component tests
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Check formatting
         run: pnpm format:check
 
@@ -131,6 +134,12 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Browser component tests
+        run: pnpm test:browser
+
+      - name: Public route hydration smoke test
+        run: pnpm test:e2e
 
       - name: Build
         run: pnpm build

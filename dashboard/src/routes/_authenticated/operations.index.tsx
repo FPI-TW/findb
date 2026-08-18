@@ -1,7 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import { OperationsOverviewPage } from "../../features/operations/OperationsConsole"
+import { OperationsOverviewPage } from "../../features/operations/operations.overview"
 
 export const Route = createFileRoute("/_authenticated/operations/")({
-  component: OperationsOverviewPage,
+  component: OperationsOverviewRoute,
 })
+
+function OperationsOverviewRoute() {
+  const { role } = Route.useRouteContext()
+  return <OperationsOverviewPage role={role} />
+}

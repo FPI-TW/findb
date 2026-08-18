@@ -196,13 +196,13 @@ describe("FinDB Admin server boundary", () => {
     ],
     [
       "deliveries",
-      ["/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100"],
+      ["/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100"],
     ],
     ["quality", ["/api/v1/admin/dq-issues"]],
-    ["corrections", ["/api/v1/admin/corrections?page=1&page_size=50"]],
+    ["corrections", ["/api/v1/admin/corrections?page=3&page_size=100"]],
     ["rawPayloads", ["/api/v1/admin/raw-payloads"]],
   ] as const)(
-    "%s calls only its fixed endpoint set",
+    "%s calls only its expected endpoint set",
     async (view, expected) => {
       const calls: RecordedCall[] = []
       const result = await fetchDashboardData(

@@ -8,6 +8,9 @@ dist-ssr
 .tanstack
 .wrangler
 .output
+.playwright-results
+.vitest-attachments
 .vinxi
+src/**/__screenshots__
 __unconfig*
 todos.json

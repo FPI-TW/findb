@@ -52,7 +52,7 @@ export const lookupSearchSchema = z
     q: z.string().catch("").default(""),
     m: z.string().catch("ALL").default("ALL"),
     ac: z.string().catch("ALL").default("ALL"),
-    st: z.string().optional(),
+    st: z.string().catch(DEFAULT_SEARCH.st).default(DEFAULT_SEARCH.st),
     fq: z.string().catch("ALL").default("ALL"),
     src: z.string().catch("ALL").default("ALL"),
     sb: sortKeySchema.catch("market").default("market"),
@@ -70,7 +70,7 @@ export const lookupSearchSchema = z
   })
   .transform(values => ({
     ...values,
-    st: values.st ?? (values.ds === "instruments" ? "active" : "ALL"),
+    st: values.ds === "macro" ? "ALL" : values.st,
     sb: (values.ds === "macro" ? MACRO_SORT_KEYS : INSTRUMENT_SORT_KEYS).has(
       values.sb
     )
