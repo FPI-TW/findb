@@ -1,12 +1,14 @@
 import "@testing-library/jest-dom/vitest"
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import {
   cleanup,
   fireEvent,
-  render,
+  render as rtlRender,
   screen,
   waitFor,
 } from "@testing-library/react"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { toast, Toaster } from "../../components/ui/toast"
@@ -31,6 +33,15 @@ vi.mock("../../lib/admin-governance.functions", () => mocks)
 
 import { CredentialsPage } from "./CredentialsPage"
 import { UsersPage } from "./UsersPage"
+
+function render(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return rtlRender(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+  )
+}
 
 const timestamp = "2026-07-28T02:00:00Z"
 const credential = {
@@ -93,6 +104,75 @@ describe("governance pages", () => {
     expect(screen.queryByText("簽發 credential")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("輪替 lookup")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("撤銷 lookup")).not.toBeInTheDocument()
+  })
+
+  it("maps credential filters to URL search and hydrates them on navigation", async () => {
+    const updateSearch = vi.fn()
+    const search = { kind: "", status: "", owner: "" } as const
+    const { rerender } = render(
+      <CredentialsPage
+        role="owner"
+        search={search}
+        updateSearch={updateSearch}
+      />
+    )
+
+    await screen.findByText("lookup")
+    fireEvent.change(screen.getByLabelText("Credential 類型"), {
+      target: { value: "serve" },
+    })
+    fireEvent.change(screen.getByLabelText("Credential 狀態"), {
+      target: { value: "active" },
+    })
+    fireEvent.change(screen.getByLabelText("Credential owner"), {
+      target: { value: "  web  " },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "更新" }))
+
+    expect(updateSearch).toHaveBeenCalledWith({
+      kind: "serve",
+      status: "active",
+      owner: "web",
+    })
+
+    rerender(
+      <QueryClientProvider
+        client={
+          new QueryClient({
+            defaultOptions: { queries: { retry: false, gcTime: 0 } },
+          })
+        }
+      >
+        <CredentialsPage
+          role="owner"
+          search={{ kind: "admin", status: "revoked", owner: "platform" }}
+          updateSearch={updateSearch}
+        />
+      </QueryClientProvider>
+    )
+    await waitFor(() => {
+      expect(screen.getByLabelText("Credential 類型")).toHaveValue("admin")
+      expect(screen.getByLabelText("Credential 狀態")).toHaveValue("revoked")
+      expect(screen.getByLabelText("Credential owner")).toHaveValue("platform")
+    })
+  })
+
+  it("surfaces credential query loading, error, and empty states through DataTable", async () => {
+    mocks.loadCredentials.mockRejectedValueOnce(
+      new Error("credential 讀取失敗")
+    )
+    render(<CredentialsPage role="viewer" />)
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "credential 讀取失敗"
+    )
+
+    cleanup()
+    mocks.loadCredentials.mockResolvedValueOnce({ data: [] })
+    render(<CredentialsPage role="viewer" />)
+    expect(
+      await screen.findByText("沒有符合條件的 credential。")
+    ).toBeInTheDocument()
   })
 
   it("issues a source credential and displays its secret once", async () => {

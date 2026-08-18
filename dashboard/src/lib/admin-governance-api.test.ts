@@ -6,6 +6,7 @@ import {
   credentialMutationResponseSchema,
   credentialsOverviewSchema,
   credentialsResponseSchema,
+  credentialFiltersSchema,
   SOURCE_PROVIDERS,
   SOURCE_PROVIDER_DATASETS,
   userMutationResponseSchema,
@@ -81,6 +82,28 @@ describe("admin governance wire contracts", () => {
         usage_updated_at: timestamp,
       }).auth_mode
     ).toBe("db_only")
+  })
+
+  it("canonicalizes credential URL filters for deep links and back navigation", () => {
+    expect(
+      credentialFiltersSchema.parse({
+        kind: "serve",
+        status: "active",
+        owner: "  web  ",
+      })
+    ).toEqual({ kind: "serve", status: "active", owner: "web" })
+    expect(credentialFiltersSchema.parse({})).toEqual({
+      kind: "",
+      status: "",
+      owner: "",
+    })
+    expect(
+      credentialFiltersSchema.parse({
+        kind: "unknown",
+        status: "unknown",
+        owner: 42,
+      })
+    ).toEqual({ kind: "", status: "", owner: "" })
   })
 
   it("validates discriminated source, serve, and admin issue inputs", () => {

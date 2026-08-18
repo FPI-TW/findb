@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query"
+import type { ColumnDef } from "@tanstack/react-table"
 import {
   Clipboard,
   LineChart,
@@ -6,24 +8,16 @@ import {
   TrendingUp,
   X,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef } from "react"
 
+import { DataTable } from "../../components/data-table"
 import { Alert, AlertDescription } from "../../components/ui/alert"
 import { Button } from "../../components/ui/button"
 import { Skeleton } from "../../components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table"
 import { loadCorporateActions, loadMacroObservations, loadPrices } from "./data"
 import type {
   CorporateActionRow,
   DatasetKey,
-  DetailFeedState,
   LookupItem,
   MacroObservationRow,
   PriceRow,
@@ -31,7 +25,7 @@ import type {
 
 function LoadingFeed() {
   return (
-    <div className="space-y-2" role="status" aria-live="polite">
+    <div className="space-y-2">
       <span className="sr-only">正在載入明細</span>
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-4/5" />
@@ -53,6 +47,69 @@ function FeedError({ message, retry }: { message: string; retry: () => void }) {
     </Alert>
   )
 }
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+const PRICE_COLUMNS: ColumnDef<PriceRow, unknown>[] = [
+  {
+    accessorKey: "trade_date",
+    header: "交易日",
+    meta: { width: 124 },
+    cell: ({ row }) => row.original.trade_date ?? "—",
+  },
+  {
+    accessorKey: "close",
+    header: "收盤價",
+    meta: { width: 112, align: "right" },
+    cell: ({ row }) => row.original.close ?? "—",
+  },
+  {
+    accessorKey: "volume",
+    header: "成交量",
+    meta: { width: 112, align: "right" },
+    cell: ({ row }) => row.original.volume ?? "—",
+  },
+]
+
+const ACTION_COLUMNS: ColumnDef<CorporateActionRow, unknown>[] = [
+  {
+    accessorKey: "ex_date",
+    header: "除權息日",
+    meta: { width: 124 },
+    cell: ({ row }) => row.original.ex_date ?? "—",
+  },
+  {
+    accessorKey: "action_type",
+    header: "事件",
+    meta: { width: 112 },
+    cell: ({ row }) => row.original.action_type ?? "—",
+  },
+  {
+    id: "cash",
+    accessorFn: row => row.cash_amount,
+    header: "現金",
+    meta: { width: 124, align: "right" },
+    cell: ({ row }) =>
+      `${row.original.cash_amount ?? "—"} ${row.original.currency ?? ""}`,
+  },
+]
+
+const OBSERVATION_COLUMNS: ColumnDef<MacroObservationRow, unknown>[] = [
+  {
+    accessorKey: "obs_date",
+    header: "觀測日",
+    meta: { width: 124 },
+    cell: ({ row }) => row.original.obs_date ?? "—",
+  },
+  {
+    accessorKey: "value",
+    header: "數值",
+    meta: { width: 124, align: "right" },
+    cell: ({ row }) => row.original.value ?? "—",
+  },
+]
 
 function Trend({ prices }: { prices: PriceRow[] }) {
   const values = [...prices]
@@ -100,113 +157,113 @@ function Trend({ prices }: { prices: PriceRow[] }) {
 }
 
 function PriceFeed({
-  state,
+  data,
+  isLoading,
+  isRefreshing,
+  error,
   retry,
 }: {
-  state: DetailFeedState<PriceRow>
+  data: PriceRow[]
+  isLoading: boolean
+  isRefreshing: boolean
+  error: unknown
   retry: () => void
 }) {
-  if (state.status === "loading") return <LoadingFeed />
-  if (state.status === "error") {
-    return <FeedError message={state.message} retry={retry} />
-  }
-  if (state.data.length === 0) {
-    return <p className="text-sm text-muted">目前沒有價格紀錄。</p>
-  }
   return (
     <div className="space-y-3">
-      <Trend prices={state.data} />
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>交易日</TableHead>
-            <TableHead>收盤價</TableHead>
-            <TableHead>成交量</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {state.data.map((row, index) => (
-            <TableRow key={`${row.trade_date ?? "price"}-${index}`}>
-              <TableCell>{row.trade_date ?? "—"}</TableCell>
-              <TableCell>{row.close ?? "—"}</TableCell>
-              <TableCell>{row.volume ?? "—"}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      {data.length > 0 ? <Trend prices={data} /> : null}
+      <DataTable
+        ariaLabel="最近價格"
+        caption="最近價格"
+        columns={PRICE_COLUMNS}
+        data={data}
+        emptyState="目前沒有價格紀錄。"
+        error={error}
+        errorState={
+          <FeedError
+            message={errorMessage(error, "無法載入最近價格")}
+            retry={retry}
+          />
+        }
+        getRowId={(row, index) => `${row.trade_date ?? "price"}-${index}`}
+        isLoading={isLoading}
+        isRefreshing={isRefreshing}
+        loadingState={<LoadingFeed />}
+        tableClassName="min-w-[360px]"
+      />
     </div>
   )
 }
 
 function ActionFeed({
-  state,
+  data,
+  isLoading,
+  isRefreshing,
+  error,
   retry,
 }: {
-  state: DetailFeedState<CorporateActionRow>
+  data: CorporateActionRow[]
+  isLoading: boolean
+  isRefreshing: boolean
+  error: unknown
   retry: () => void
 }) {
-  if (state.status === "loading") return <LoadingFeed />
-  if (state.status === "error") {
-    return <FeedError message={state.message} retry={retry} />
-  }
-  if (state.data.length === 0) {
-    return <p className="text-sm text-muted">目前沒有公司事件。</p>
-  }
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>除權息日</TableHead>
-          <TableHead>事件</TableHead>
-          <TableHead>現金</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {state.data.map((row, index) => (
-          <TableRow key={`${row.ex_date ?? "action"}-${index}`}>
-            <TableCell>{row.ex_date ?? "—"}</TableCell>
-            <TableCell>{row.action_type ?? "—"}</TableCell>
-            <TableCell>
-              {row.cash_amount ?? "—"} {row.currency ?? ""}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <DataTable
+      ariaLabel="近期公司事件"
+      caption="近期公司事件"
+      columns={ACTION_COLUMNS}
+      data={data}
+      emptyState="目前沒有公司事件。"
+      error={error}
+      errorState={
+        <FeedError
+          message={errorMessage(error, "無法載入公司事件")}
+          retry={retry}
+        />
+      }
+      getRowId={(row, index) => `${row.ex_date ?? "action"}-${index}`}
+      isLoading={isLoading}
+      isRefreshing={isRefreshing}
+      loadingState={<LoadingFeed />}
+      tableClassName="min-w-[360px]"
+    />
   )
 }
 
 function ObservationFeed({
-  state,
+  data,
+  isLoading,
+  isRefreshing,
+  error,
   retry,
 }: {
-  state: DetailFeedState<MacroObservationRow>
+  data: MacroObservationRow[]
+  isLoading: boolean
+  isRefreshing: boolean
+  error: unknown
   retry: () => void
 }) {
-  if (state.status === "loading") return <LoadingFeed />
-  if (state.status === "error") {
-    return <FeedError message={state.message} retry={retry} />
-  }
-  if (state.data.length === 0) {
-    return <p className="text-sm text-muted">目前沒有觀測值。</p>
-  }
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>觀測日</TableHead>
-          <TableHead>數值</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {state.data.map((row, index) => (
-          <TableRow key={`${row.obs_date ?? "observation"}-${index}`}>
-            <TableCell>{row.obs_date ?? "—"}</TableCell>
-            <TableCell>{row.value ?? "—"}</TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <DataTable
+      ariaLabel="最近觀測值"
+      caption="最近觀測值"
+      columns={OBSERVATION_COLUMNS}
+      data={data}
+      emptyState="目前沒有觀測值。"
+      error={error}
+      errorState={
+        <FeedError
+          message={errorMessage(error, "無法載入觀測值")}
+          retry={retry}
+        />
+      }
+      getRowId={(row, index) => `${row.obs_date ?? "observation"}-${index}`}
+      isLoading={isLoading}
+      isRefreshing={isRefreshing}
+      loadingState={<LoadingFeed />}
+      tableClassName="min-w-[260px]"
+    />
   )
 }
 
@@ -223,17 +280,6 @@ export function DetailDrawer({
 }) {
   const drawerRef = useRef<HTMLElement>(null)
   const priorFocusRef = useRef<HTMLElement | null>(null)
-  const [prices, setPrices] = useState<DetailFeedState<PriceRow>>({
-    status: "loading",
-    data: [],
-  })
-  const [actions, setActions] = useState<DetailFeedState<CorporateActionRow>>({
-    status: "loading",
-    data: [],
-  })
-  const [observations, setObservations] = useState<
-    DetailFeedState<MacroObservationRow>
-  >({ status: "loading", data: [] })
 
   const record = item as unknown as Record<string, unknown> | null
   const id = item
@@ -242,50 +288,21 @@ export function DetailDrawer({
       : String(record?.instrument_id ?? "")
     : ""
 
-  const fetchPrices = useCallback(async () => {
-    if (!id) return
-    setPrices({ status: "loading", data: [] })
-    try {
-      setPrices({ status: "ready", data: await loadPrices(id) })
-    } catch (error) {
-      setPrices({
-        status: "error",
-        data: [],
-        message: error instanceof Error ? error.message : "無法載入最近價格",
-      })
-    }
-  }, [id])
-
-  const fetchActions = useCallback(async () => {
-    if (!id) return
-    setActions({ status: "loading", data: [] })
-    try {
-      setActions({ status: "ready", data: await loadCorporateActions(id) })
-    } catch (error) {
-      setActions({
-        status: "error",
-        data: [],
-        message: error instanceof Error ? error.message : "無法載入公司事件",
-      })
-    }
-  }, [id])
-
-  const fetchObservations = useCallback(async () => {
-    if (!id) return
-    setObservations({ status: "loading", data: [] })
-    try {
-      setObservations({
-        status: "ready",
-        data: await loadMacroObservations(id),
-      })
-    } catch (error) {
-      setObservations({
-        status: "error",
-        data: [],
-        message: error instanceof Error ? error.message : "無法載入觀測值",
-      })
-    }
-  }, [id])
+  const pricesQuery = useQuery({
+    queryKey: ["lookup-detail", "prices", id],
+    queryFn: ({ signal }) => loadPrices(id, signal),
+    enabled: Boolean(item && dataset === "instruments" && id),
+  })
+  const actionsQuery = useQuery({
+    queryKey: ["lookup-detail", "corporate-actions", id],
+    queryFn: ({ signal }) => loadCorporateActions(id, signal),
+    enabled: Boolean(item && dataset === "instruments" && id),
+  })
+  const observationsQuery = useQuery({
+    queryKey: ["lookup-detail", "observations", id],
+    queryFn: ({ signal }) => loadMacroObservations(id, signal),
+    enabled: Boolean(item && dataset === "macro" && id),
+  })
 
   useEffect(() => {
     if (!item) return
@@ -294,14 +311,8 @@ export function DetailDrawer({
         ? document.activeElement
         : null
     window.requestAnimationFrame(() => drawerRef.current?.focus())
-    if (dataset === "macro") {
-      void fetchObservations()
-    } else {
-      void fetchPrices()
-      void fetchActions()
-    }
     return () => priorFocusRef.current?.focus()
-  }, [dataset, fetchActions, fetchObservations, fetchPrices, item])
+  }, [item])
 
   const meta = useMemo(() => {
     if (!record) return []
@@ -455,8 +466,13 @@ export function DetailDrawer({
                 最近觀測值
               </h3>
               <ObservationFeed
-                state={observations}
-                retry={() => void fetchObservations()}
+                data={observationsQuery.data ?? []}
+                error={observationsQuery.error}
+                isLoading={observationsQuery.isPending}
+                isRefreshing={
+                  observationsQuery.isFetching && !observationsQuery.isPending
+                }
+                retry={() => void observationsQuery.refetch()}
               />
             </section>
           ) : (
@@ -469,7 +485,15 @@ export function DetailDrawer({
                   <LineChart size={16} />
                   最近價格
                 </h3>
-                <PriceFeed state={prices} retry={() => void fetchPrices()} />
+                <PriceFeed
+                  data={pricesQuery.data ?? []}
+                  error={pricesQuery.error}
+                  isLoading={pricesQuery.isPending}
+                  isRefreshing={
+                    pricesQuery.isFetching && !pricesQuery.isPending
+                  }
+                  retry={() => void pricesQuery.refetch()}
+                />
               </section>
               <section aria-labelledby="lookup-actions-heading">
                 <h3
@@ -478,7 +502,15 @@ export function DetailDrawer({
                 >
                   近期公司事件
                 </h3>
-                <ActionFeed state={actions} retry={() => void fetchActions()} />
+                <ActionFeed
+                  data={actionsQuery.data ?? []}
+                  error={actionsQuery.error}
+                  isLoading={actionsQuery.isPending}
+                  isRefreshing={
+                    actionsQuery.isFetching && !actionsQuery.isPending
+                  }
+                  retry={() => void actionsQuery.refetch()}
+                />
               </section>
             </>
           )}

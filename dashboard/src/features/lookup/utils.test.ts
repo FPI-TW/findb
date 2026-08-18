@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { DATASET_CONFIG } from "./config"
+import { DATASET_CONFIG, DEFAULT_SEARCH } from "./config"
 import type { Instrument } from "./types"
 import { buildCsv, buildPageList, parseLookupSearch } from "./utils"
 
@@ -18,6 +18,14 @@ const INSTRUMENT: Instrument = {
 }
 
 describe("lookup utilities", () => {
+  it("canonicalizes the default search identically on the server and client", () => {
+    expect(parseLookupSearch({})).toEqual(parseLookupSearch({ st: "active" }))
+    expect(parseLookupSearch({})).toEqual(DEFAULT_SEARCH)
+    expect(parseLookupSearch({ ds: "instruments", st: undefined })).toEqual(
+      DEFAULT_SEARCH
+    )
+  })
+
   it("defaults instruments to the active status filter", () => {
     expect(parseLookupSearch({})).toMatchObject({
       ds: "instruments",

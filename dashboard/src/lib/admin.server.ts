@@ -142,7 +142,7 @@ export async function fetchDashboardData(
       fetchTarget(
         baseUrl,
         sessionToken,
-        "/api/v1/admin/missing-deliveries?status=open&page=1&page_size=100",
+        `/api/v1/admin/missing-deliveries?status=open&page=${data.audit.page}&page_size=${data.audit.pageSize}`,
         missingDeliveriesSchema,
         fetchImplementation
       ),
@@ -176,7 +176,7 @@ export async function fetchDashboardData(
       fetchTarget(
         baseUrl,
         sessionToken,
-        "/api/v1/admin/corrections?page=1&page_size=50",
+        `/api/v1/admin/corrections?page=${data.audit.page}&page_size=${data.audit.pageSize}`,
         correctionsSchema,
         fetchImplementation
       ),

@@ -189,6 +189,9 @@ export const missingDeliveriesSchema = z.object({
   ),
   pagination: paginationSchema,
 })
+export type MissingDelivery = z.infer<
+  typeof missingDeliveriesSchema
+>["data"][number]
 
 export const dqIssuesSchema = z.object({
   data: z.array(
@@ -244,6 +247,7 @@ export const correctionsSchema = z.object({
   ),
   pagination: paginationSchema,
 })
+export type Correction = z.infer<typeof correctionsSchema>["data"][number]
 
 export const rawPayloadSchema = z.object({
   raw_payload_id: z.uuid(),
@@ -268,6 +272,9 @@ export const rawPayloadsSchema = z.object({
   ),
   pagination: paginationSchema,
 })
+export type RawPayloadListItem = z.infer<
+  typeof rawPayloadsSchema
+>["data"][number]
 
 export const rawPayloadDetailRequestSchema = z.object({
   rawPayloadId: z.uuid(),

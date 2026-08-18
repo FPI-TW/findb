@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query"
 import {
   ChevronDown,
   Clipboard,
@@ -7,8 +8,16 @@ import {
   Search,
   SlidersHorizontal,
 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import {
+  functionalUpdate,
+  type ColumnDef,
+  type OnChangeFn,
+  type PaginationState,
+  type SortingState,
+} from "@tanstack/react-table"
 
+import { DataTable } from "../../components/data-table"
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
@@ -22,14 +31,6 @@ import {
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import { Skeleton } from "../../components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table"
 import { DATASET_CONFIG, LOOKUP_STORAGE_KEY, PAGE_SIZES } from "./config"
 import { loadAllLookupItems, loadLookupPage } from "./data"
 import { DetailDrawer } from "./DetailDrawer"
@@ -38,9 +39,8 @@ import type {
   LookupItem,
   LookupResponse,
   LookupSearch,
-  LookupSortKey,
 } from "./types"
-import { buildCsv, buildPageList, formatCell, nextDatasetSearch } from "./utils"
+import { buildCsv, formatCell, nextDatasetSearch } from "./utils"
 
 interface PersistedPreferences {
   instruments?: Partial<LookupSearch>
@@ -140,41 +140,15 @@ export function LookupPage({
   search: LookupSearch
   updateSearch: (next: LookupSearch) => void
 }) {
-  const [result, setResult] = useState<{
-    dataset: DatasetKey
-    response: LookupResponse
-  } | null>(null)
-  const [error, setError] = useState("")
-  const [pending, setPending] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [queryInput, setQueryInput] = useState(search.q)
   const [announcement, setAnnouncement] = useState("")
   const restoredPreferences = useRef(false)
 
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      setPending(true)
-      setError("")
-      try {
-        const response = await loadLookupPage(search, signal)
-        setResult({ dataset: search.ds, response })
-      } catch (reason) {
-        if (signal?.aborted) return
-        setError(
-          reason instanceof Error ? reason.message : "無法載入查詢資料。"
-        )
-      } finally {
-        if (!signal?.aborted) setPending(false)
-      }
-    },
-    [search]
-  )
-
-  useEffect(() => {
-    const controller = new AbortController()
-    void load(controller.signal)
-    return () => controller.abort()
-  }, [load])
+  const lookupQuery = useQuery({
+    queryKey: ["lookup", search],
+    queryFn: ({ signal }) => loadLookupPage(search, signal),
+  })
 
   useEffect(() => {
     if (restoredPreferences.current) return
@@ -207,12 +181,19 @@ export function LookupPage({
     return () => window.clearTimeout(timer)
   }, [announcement])
 
+  useEffect(() => {
+    if (!lookupQuery.data) return
+    const lastPage = Math.max(lookupQuery.data.pagination.total_pages, 1)
+    if (search.p > lastPage) {
+      updateSearch({ ...search, p: lastPage, id: "" })
+    }
+  }, [lookupQuery.data, search, updateSearch])
+
   const config = DATASET_CONFIG[search.ds]
-  const response = result?.dataset === search.ds ? result.response : null
+  const response = lookupQuery.data as LookupResponse | undefined
   const items = (response?.data ?? []) as LookupItem[]
   const totalPages = Math.max(1, response?.pagination.total_pages ?? 1)
   const currentPage = Math.min(search.p, totalPages)
-  const visibleItems = items
   const selectedItem =
     items.find(item => {
       const record = item as unknown as Record<string, unknown>
@@ -223,6 +204,132 @@ export function LookupPage({
       )
     }) ?? null
 
+  const currentSorting: SortingState = [
+    { id: search.sb, desc: search.sd === "desc" },
+  ]
+
+  const tableColumns = useMemo<ColumnDef<LookupItem, unknown>[]>(() => {
+    const dataColumns = config.columns.map(column => ({
+      id: column.key,
+      accessorFn: (item: LookupItem) =>
+        (item as unknown as Record<string, unknown>)[column.key],
+      header: column.label,
+      enableSorting: true,
+      meta: {
+        minWidth:
+          column.key === "name" || column.key === "source"
+            ? 160
+            : column.key === "symbol" || column.key === "source_code"
+              ? 132
+              : 104,
+      },
+      cell: ({ row }: { row: { original: LookupItem } }) => {
+        const copyColumn =
+          (search.ds === "macro" && column.key === "source_code") ||
+          (search.ds === "instruments" && column.key === "symbol")
+        const record = row.original as unknown as Record<string, unknown>
+        const copyValue =
+          search.ds === "macro" ? record.source_code : record.symbol
+        const value = formatCell(row.original, column)
+        if (copyColumn) {
+          return (
+            <button
+              type="button"
+              className={
+                column.key === "symbol"
+                  ? "inline-flex items-center gap-1 font-sans font-bold tracking-wide text-accent hover:underline"
+                  : "inline-flex items-center gap-1 font-mono font-semibold text-accent hover:underline"
+              }
+              aria-label={`複製 ${String(copyValue ?? "")}`}
+              title={`複製 ${String(copyValue ?? "")}`}
+              onClick={() =>
+                void copyIdentifier(
+                  copyValue,
+                  search.ds === "macro" ? "Source Code" : "Symbol"
+                )
+              }
+            >
+              {value}
+              <Clipboard size={13} aria-hidden />
+            </button>
+          )
+        }
+        return column.type === "status" ? (
+          <Badge variant={value === "active" ? "secondary" : "outline"}>
+            {value}
+          </Badge>
+        ) : (
+          value
+        )
+      },
+    }))
+
+    return [
+      ...dataColumns,
+      {
+        id: "detail",
+        header: "詳細",
+        enableSorting: false,
+        meta: { width: 76, pin: "right", align: "center" },
+        cell: ({ row }: { row: { original: LookupItem } }) => {
+          const record = row.original as unknown as Record<string, unknown>
+          const id = String(
+            search.ds === "macro" ? record.series_id : record.instrument_id
+          )
+          const title = String(
+            search.ds === "macro"
+              ? record.source_code || record.name || id
+              : record.symbol || id
+          )
+          return (
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={`查看 ${title} 詳情`}
+              title={`查看 ${title} 詳情`}
+              onClick={() => patchSearch({ id })}
+            >
+              <Search aria-hidden="true" />
+            </Button>
+          )
+        },
+      },
+    ]
+  }, [config.columns, search])
+
+  const handleSortingChange: OnChangeFn<SortingState> = nextOrUpdater => {
+    const next = functionalUpdate(nextOrUpdater, currentSorting)
+    const first = next[0] ?? { id: search.sb, desc: false }
+    if (!config.columns.some(column => column.key === first.id)) return
+    updateSearch({
+      ...search,
+      sb: first.id as LookupSearch["sb"],
+      sd: first.desc ? "desc" : "asc",
+      p: 1,
+      id: "",
+    })
+  }
+
+  const handlePaginationChange: OnChangeFn<PaginationState> = nextOrUpdater => {
+    const currentPagination = {
+      pageIndex: currentPage - 1,
+      pageSize: search.ps,
+    }
+    const next = functionalUpdate(nextOrUpdater, currentPagination)
+    const pageSize = PAGE_SIZES.includes(
+      next.pageSize as (typeof PAGE_SIZES)[number]
+    )
+      ? next.pageSize
+      : search.ps
+    updateSearch({
+      ...search,
+      p: next.pageSize === search.ps ? next.pageIndex + 1 : 1,
+      ps: pageSize,
+      id: "",
+    })
+  }
+
   function patchSearch(patch: Partial<LookupSearch>) {
     updateSearch({ ...search, ...patch })
   }
@@ -230,14 +337,6 @@ export function LookupPage({
   function switchDataset(dataset: DatasetKey) {
     const persisted = readPreferences()[dataset]
     updateSearch(nextDatasetSearch(dataset, persisted))
-  }
-
-  function toggleSort(key: LookupSortKey) {
-    patchSearch({
-      sb: key,
-      sd: search.sb === key && search.sd === "asc" ? "desc" : "asc",
-      p: 1,
-    })
   }
 
   function clearFilters() {
@@ -304,6 +403,13 @@ export function LookupPage({
     (search.ds === "macro"
       ? search.fq !== "ALL" || search.src !== "ALL"
       : search.ac !== "ALL" || search.st !== "active")
+
+  const queryError = lookupQuery.error
+  const hasResponse = response !== undefined
+  const initialLoading = lookupQuery.isPending && !hasResponse
+  const refreshing = lookupQuery.isFetching && hasResponse
+  const errorMessage =
+    queryError instanceof Error ? queryError.message : "無法載入查詢資料。"
 
   return (
     <main className="mx-auto w-full max-w-screen-2xl flex-1 space-y-5 px-4 py-8 sm:px-6 lg:px-8">
@@ -423,13 +529,17 @@ export function LookupPage({
         </CardContent>
       </Card>
 
-      {error && response && (
+      {queryError && hasResponse && (
         <Alert variant="destructive">
           <Database />
           <AlertTitle>更新查詢結果失敗</AlertTitle>
           <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-            <span>{error}</span>
-            <Button type="button" variant="outline" onClick={() => void load()}>
+            <span>{errorMessage}</span>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void lookupQuery.refetch()}
+            >
               <RefreshCw />
               重新載入
             </Button>
@@ -437,15 +547,19 @@ export function LookupPage({
         </Alert>
       )}
 
-      {response === null && pending && error === "" ? (
+      {initialLoading ? (
         <LookupLoading />
-      ) : error && response === null ? (
+      ) : queryError && !hasResponse ? (
         <Alert variant="destructive">
           <Database />
           <AlertTitle>無法載入查詢資料</AlertTitle>
           <AlertDescription className="space-y-3">
-            <p>{error}</p>
-            <Button type="button" variant="outline" onClick={() => void load()}>
+            <p>{errorMessage}</p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void lookupQuery.refetch()}
+            >
               <RefreshCw />
               重新載入
             </Button>
@@ -467,26 +581,11 @@ export function LookupPage({
                 </CardDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {pending && (
+                {refreshing && (
                   <Badge variant="outline" aria-live="polite">
                     更新中
                   </Badge>
                 )}
-                <Label htmlFor="lookup-page-size">每頁</Label>
-                <select
-                  id="lookup-page-size"
-                  className="h-9 rounded-lg border border-line bg-surface px-2 text-sm"
-                  value={search.ps}
-                  onChange={event =>
-                    patchSearch({ ps: Number(event.target.value), p: 1 })
-                  }
-                >
-                  {PAGE_SIZES.map(size => (
-                    <option key={size} value={size}>
-                      {size}
-                    </option>
-                  ))}
-                </select>
                 <Button
                   type="button"
                   variant="outline"
@@ -500,171 +599,51 @@ export function LookupPage({
             </div>
           </CardHeader>
           <CardContent className="px-0 pb-4">
-            {visibleItems.length === 0 ? (
-              <div className="grid min-h-64 place-items-center px-5 text-center">
-                <div>
-                  <Database className="mx-auto text-muted" aria-hidden />
-                  <p className="mt-3 font-medium">
-                    沒有符合條件的{config.itemLabel}
-                  </p>
-                  {filtersDirty && (
-                    <Button
-                      className="mt-3"
-                      type="button"
-                      variant="outline"
-                      onClick={clearFilters}
-                    >
-                      清除條件
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <Table scrollMode="page" className="w-full min-w-[900px]">
-                <TableHeader>
-                  <TableRow>
-                    {config.columns.map(column => (
-                      <TableHead key={column.key}>
-                        <button
-                          type="button"
-                          className={
-                            search.sb === column.key
-                              ? "inline-flex items-center gap-1 text-accent"
-                              : "inline-flex items-center gap-1 hover:text-ink"
-                          }
-                          aria-label={`依 ${column.label} 排序`}
-                          onClick={() => toggleSort(column.key)}
-                        >
-                          {column.label}
-                          <span aria-hidden>
-                            {search.sb === column.key
-                              ? search.sd === "asc"
-                                ? "▲"
-                                : "▼"
-                              : "↕"}
-                          </span>
-                        </button>
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visibleItems.map(item => {
-                    const record = item as unknown as Record<string, unknown>
-                    const id = String(
-                      search.ds === "macro"
-                        ? record.series_id
-                        : record.instrument_id
-                    )
-                    const copyValue =
-                      search.ds === "macro" ? record.source_code : record.symbol
-                    return (
-                      <TableRow
-                        key={id}
-                        className="cursor-pointer focus-within:bg-surface-soft"
-                        aria-selected={search.id === id}
+            <DataTable
+              ariaLabel={`${config.label}查詢結果`}
+              caption={`${config.label}查詢結果`}
+              columns={tableColumns}
+              data={items}
+              emptyState={
+                <div className="grid min-h-64 place-items-center px-5 text-center">
+                  <div>
+                    <Database className="mx-auto text-muted" aria-hidden />
+                    <p className="mt-3 font-medium">
+                      沒有符合條件的{config.itemLabel}
+                    </p>
+                    {filtersDirty && (
+                      <Button
+                        className="mt-3"
+                        type="button"
+                        variant="outline"
+                        onClick={clearFilters}
                       >
-                        {config.columns.map(column => (
-                          <TableCell key={column.key}>
-                            {column.key === "symbol" ||
-                            column.key === "source_code" ? (
-                              <button
-                                type="button"
-                                className={
-                                  column.key === "symbol"
-                                    ? "inline-flex items-center gap-1 font-sans font-bold tracking-wide text-accent hover:underline"
-                                    : "inline-flex items-center gap-1 font-mono font-semibold text-accent hover:underline"
-                                }
-                                title={`複製 ${String(copyValue ?? "")}`}
-                                onClick={() =>
-                                  void copyIdentifier(
-                                    copyValue,
-                                    search.ds === "macro"
-                                      ? "Source Code"
-                                      : "Symbol"
-                                  )
-                                }
-                              >
-                                {formatCell(item, column)}
-                                <Clipboard size={13} aria-hidden />
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="w-full text-left"
-                                onClick={() => patchSearch({ id })}
-                              >
-                                {column.type === "status" ? (
-                                  <Badge
-                                    variant={
-                                      formatCell(item, column) === "active"
-                                        ? "secondary"
-                                        : "outline"
-                                    }
-                                  >
-                                    {formatCell(item, column)}
-                                  </Badge>
-                                ) : (
-                                  formatCell(item, column)
-                                )}
-                              </button>
-                            )}
-                          </TableCell>
-                        ))}
-                      </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            )}
-
-            {totalPages > 1 && (
-              <nav
-                className="flex flex-wrap justify-center gap-1 px-4 pt-4"
-                aria-label="分頁"
-              >
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={currentPage === 1}
-                  onClick={() => patchSearch({ p: currentPage - 1, id: "" })}
-                >
-                  前一頁
-                </Button>
-                {buildPageList(currentPage, totalPages).map((page, index) =>
-                  page === "…" ? (
-                    <span
-                      key={`ellipsis-${index}`}
-                      className="grid size-9 place-items-center text-muted"
-                      aria-hidden
-                    >
-                      …
-                    </span>
-                  ) : (
-                    <Button
-                      key={page}
-                      type="button"
-                      size="icon"
-                      variant={page === currentPage ? "default" : "outline"}
-                      aria-current={page === currentPage ? "page" : undefined}
-                      onClick={() => patchSearch({ p: page, id: "" })}
-                    >
-                      {page}
-                    </Button>
-                  )
-                )}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={currentPage === totalPages}
-                  onClick={() => patchSearch({ p: currentPage + 1, id: "" })}
-                >
-                  下一頁
-                </Button>
-              </nav>
-            )}
+                        清除條件
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              }
+              getRowId={item => {
+                const record = item as unknown as Record<string, unknown>
+                return String(
+                  search.ds === "macro"
+                    ? record.series_id
+                    : record.instrument_id
+                )
+              }}
+              isRefreshing={refreshing}
+              manualPagination
+              manualSorting
+              onPaginationChange={handlePaginationChange}
+              onSortingChange={handleSortingChange}
+              pageCount={totalPages}
+              pageSizeOptions={[...PAGE_SIZES]}
+              pagination={{ pageIndex: currentPage - 1, pageSize: search.ps }}
+              rowCount={totalRecords}
+              sorting={currentSorting}
+              tableClassName="min-w-[900px]"
+            />
           </CardContent>
         </Card>
       )}
