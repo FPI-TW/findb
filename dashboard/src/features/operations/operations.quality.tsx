@@ -308,6 +308,7 @@ export function QualityPage({
               data={issues.data}
               emptyState="目前沒有未解決的資料品質問題。"
               expanded={expanded}
+              fillAvailableWidth
               getRowCanExpand={() => true}
               getRowId={row => row.id}
               isRefreshing={state.pending && !state.initialLoading}

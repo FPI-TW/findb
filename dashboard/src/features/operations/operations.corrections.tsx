@@ -115,6 +115,7 @@ export function CorrectionsPage({
               columns={tableColumns}
               data={corrections.data}
               emptyState="目前沒有修正紀錄。"
+              fillAvailableWidth
               getRowId={row => row.id}
               isRefreshing={state.pending && !state.initialLoading}
               manualPagination

@@ -297,6 +297,7 @@ export function DataTable<TData extends RowData>({
   className,
   viewportClassName,
   tableClassName,
+  fillAvailableWidth = false,
   "aria-busy": ariaBusy,
 }: DataTableProps<TData>) {
   const [internalSorting, setInternalSorting] = React.useState<SortingState>([])
@@ -393,7 +394,8 @@ export function DataTable<TData extends RowData>({
           aria-label={ariaLabel}
           aria-busy={(ariaBusy ?? isLoading) || isRefreshing}
           className={cn(
-            "w-max min-w-full border-separate border-spacing-0 text-xs",
+            "border-separate border-spacing-0 text-xs",
+            fillAvailableWidth ? "w-full min-w-max" : "w-max min-w-full",
             tableClassName
           )}
           data-slot="data-table-table"

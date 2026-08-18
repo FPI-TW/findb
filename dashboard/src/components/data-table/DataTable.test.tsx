@@ -69,6 +69,21 @@ describe("DataTable", () => {
     expect(screen.queryByRole("button", { name: /排序/ })).toBeNull()
   })
 
+  it("can fill available width without losing intrinsic horizontal overflow", () => {
+    render(
+      <DataTable
+        caption="滿版資料"
+        columns={columns}
+        data={rows}
+        fillAvailableWidth
+      />
+    )
+
+    const table = screen.getByRole("table", { name: "滿版資料" })
+    expect(table).toHaveClass("w-full", "min-w-max")
+    expect(table).not.toHaveClass("w-max", "min-w-full")
+  })
+
   it("renders initial loading, error, and empty states", () => {
     const { rerender } = render(
       <DataTable caption="資料" columns={columns} data={[]} isLoading />

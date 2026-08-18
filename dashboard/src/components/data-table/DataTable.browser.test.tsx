@@ -121,6 +121,30 @@ describe("DataTable browser layout", () => {
     expect(getComputedStyle(rightCell!).right).toBe("0px")
   })
 
+  it("fills a wide viewport when the columns are narrower", async () => {
+    const screen = await render(
+      <div data-testid="surface" style={{ width: 1200 }}>
+        <DataTable
+          ariaLabel="Full-width table"
+          columns={columns.slice(0, 2)}
+          data={rows}
+          fillAvailableWidth
+          getRowId={row => row.id}
+        />
+      </div>
+    )
+    const viewport = screen.container.querySelector<HTMLElement>(
+      '[data-slot="data-table-viewport"]'
+    )
+    const table = screen.container.querySelector<HTMLTableElement>(
+      '[data-slot="data-table-table"]'
+    )
+
+    expect(viewport).not.toBeNull()
+    expect(table).not.toBeNull()
+    expect(table!.getBoundingClientRect().width).toBe(viewport!.clientWidth)
+  })
+
   it("keeps sticky surfaces opaque in dark mode", async () => {
     document.documentElement.classList.add("dark")
     const screen = await render(

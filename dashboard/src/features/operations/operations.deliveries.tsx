@@ -109,6 +109,7 @@ export function DeliveriesPage({
               columns={tableColumns}
               data={rows.data}
               emptyState="目前沒有未解決的交付缺漏。"
+              fillAvailableWidth
               getRowId={row => row.alert_id}
               isRefreshing={state.pending && !state.initialLoading}
               manualPagination
