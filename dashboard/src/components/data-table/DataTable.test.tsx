@@ -84,6 +84,30 @@ describe("DataTable", () => {
     expect(table).not.toHaveClass("w-max", "min-w-full")
   })
 
+  it("keeps fit-content columns at their declared minimum width", () => {
+    render(
+      <DataTable
+        caption="操作欄資料"
+        columns={[
+          { accessorKey: "name", header: "名稱", meta: { minWidth: 180 } },
+          {
+            id: "actions",
+            header: "操作",
+            meta: { width: 112, fitContent: true, pin: "right" },
+            cell: () => <button type="button">操作</button>,
+          },
+        ]}
+        data={rows}
+        fillAvailableWidth
+      />
+    )
+
+    const actionsHeader = screen.getByRole("columnheader", { name: "操作" })
+    expect(actionsHeader.style.width).toBe("1%")
+    expect(actionsHeader.style.minWidth).toBe("112px")
+    expect(actionsHeader.style.right).toBe("0px")
+  })
+
   it("renders initial loading, error, and empty states", () => {
     const { rerender } = render(
       <DataTable caption="資料" columns={columns} data={[]} isLoading />
