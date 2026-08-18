@@ -128,7 +128,7 @@ function cellStyle<TData extends RowData>(
   const meta = column.columnDef.meta
   const style: DataTableCellStyle = {}
   const width = columnWidth(column)
-  style.width = cssLength(width)
+  style.width = meta?.fitContent ? "1%" : cssLength(width)
   if (meta?.minWidth !== undefined) style.minWidth = cssLength(meta.minWidth)
   else if (meta?.width !== undefined) style.minWidth = cssLength(meta.width)
 

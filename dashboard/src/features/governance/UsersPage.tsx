@@ -237,7 +237,12 @@ export function UsersPage() {
         id: "actions",
         header: "操作",
         enableSorting: false,
-        meta: { width: 104, pin: "right", align: "right" },
+        meta: {
+          width: 104,
+          fitContent: true,
+          pin: "right",
+          align: "right",
+        },
         cell: ({ row }) => {
           const user = row.original
           const resetPending =

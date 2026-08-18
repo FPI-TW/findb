@@ -145,6 +145,74 @@ describe("DataTable browser layout", () => {
     expect(table!.getBoundingClientRect().width).toBe(viewport!.clientWidth)
   })
 
+  it("distributes surplus width to data columns instead of the action column", async () => {
+    const compactColumns: ColumnDef<BrowserRow, unknown>[] = [
+      {
+        accessorKey: "symbol",
+        header: "Name",
+        meta: { minWidth: 180 },
+      },
+      {
+        accessorKey: "market",
+        header: "Owner",
+        meta: { width: 132 },
+      },
+      {
+        accessorKey: "status",
+        header: "Status",
+        meta: { width: 112 },
+      },
+      {
+        accessorKey: "description",
+        header: "Description",
+        meta: { minWidth: 300 },
+      },
+      {
+        id: "actions",
+        header: "Actions",
+        meta: {
+          width: 112,
+          fitContent: true,
+          pin: "right",
+          align: "right",
+        },
+        cell: () => <button type="button">Inspect</button>,
+      },
+    ]
+    const screen = await render(
+      <div style={{ width: 1200 }}>
+        <DataTable
+          ariaLabel="Compact actions table"
+          columns={compactColumns}
+          data={rows}
+          fillAvailableWidth
+          getRowId={row => row.id}
+          tableClassName="min-w-[980px]"
+        />
+      </div>
+    )
+    const viewport = screen.container.querySelector<HTMLElement>(
+      '[data-slot="data-table-viewport"]'
+    )
+    const table = screen.container.querySelector<HTMLTableElement>(
+      '[data-slot="data-table-table"]'
+    )
+    const nameCell = screen.container.querySelector<HTMLElement>(
+      'td[data-column-id="symbol"]'
+    )
+    const actionsCell = screen.container.querySelector<HTMLElement>(
+      'td[data-column-id="actions"]'
+    )
+
+    expect(viewport).not.toBeNull()
+    expect(table).not.toBeNull()
+    expect(nameCell).not.toBeNull()
+    expect(actionsCell).not.toBeNull()
+    expect(table!.getBoundingClientRect().width).toBe(viewport!.clientWidth)
+    expect(actionsCell!.getBoundingClientRect().width).toBeCloseTo(112, 0)
+    expect(nameCell!.getBoundingClientRect().width).toBeGreaterThan(180)
+  })
+
   it("keeps sticky surfaces opaque in dark mode", async () => {
     document.documentElement.classList.add("dark")
     const screen = await render(

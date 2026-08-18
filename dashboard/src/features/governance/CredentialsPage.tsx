@@ -333,7 +333,12 @@ export function CredentialsPage({
         id: "actions",
         header: "操作",
         enableSorting: false,
-        meta: { width: 112, pin: "right", align: "right" },
+        meta: {
+          width: 112,
+          fitContent: true,
+          pin: "right",
+          align: "right",
+        },
         cell: ({ row }) => {
           const item = row.original
           if (
@@ -712,6 +717,7 @@ export function CredentialsPage({
                 ? credentialsError.message
                 : "無法載入 credential。"
             }
+            fillAvailableWidth
             getRowId={item => item.credential_ref}
             isLoading={credentialsQuery.isPending}
             isRefreshing={

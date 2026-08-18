@@ -16,6 +16,8 @@ export type DataTableColumnMeta = {
   width?: number | string
   /** Minimum column width. Numbers are interpreted as pixels. */
   minWidth?: number | string
+  /** Keep this column at its declared/content width instead of absorbing surplus space. */
+  fitContent?: boolean
   /** Horizontal alignment for headers and cells. */
   align?: "left" | "center" | "right"
   /** Allow cell contents to wrap instead of staying on one line. */
