@@ -54,6 +54,15 @@ class FakeProvider:
         return TwelveDataResponse(response, raw_bytes=json.dumps(response).encode())
 
 
+class FutureRowProvider(FakeProvider):
+    def fetch_daily(self, symbol: str, **kwargs: object) -> TwelveDataResponse:
+        response = super().fetch_daily(symbol, **kwargs)
+        payload = deepcopy(dict(response))
+        latest = payload["values"][-1]
+        payload["values"].append({**latest, "datetime": "2024-01-06"})
+        return TwelveDataResponse(payload, raw_bytes=json.dumps(payload).encode())
+
+
 class FakeSource:
     def __init__(
         self,
@@ -401,7 +410,7 @@ def test_executor_delivers_only_rows_after_checkpoint(contracts_dir: Path) -> No
             "AAPL",
             {
                 "start_date": date(2024, 1, 4),
-                "end_date": date(2024, 1, 5),
+                "end_date": date(2024, 1, 6),
                 "exchange": "NASDAQ",
             },
         )
@@ -410,6 +419,54 @@ def test_executor_delivers_only_rows_after_checkpoint(contracts_dir: Path) -> No
         "2024-01-04",
         "2024-01-05",
     ]
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "expected_start", "expected_rows"),
+    [
+        (None, date(2024, 1, 5), ["2024-01-05"]),
+        (date(2024, 1, 3), date(2024, 1, 4), ["2024-01-04", "2024-01-05"]),
+    ],
+)
+def test_v2_scheduler_uses_exclusive_provider_end_date_and_filters_future_rows(
+    contracts_dir: Path,
+    checkpoint: date | None,
+    expected_start: date,
+    expected_rows: list[str],
+) -> None:
+    provider = FutureRowProvider()
+    source = FakeSource()
+    executor = _executor(contracts_dir, provider=provider, source=source)
+    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
+        executor._schedule,
+        schedule_version=2,
+        slot_id="western_markets_window",
+        timezone_name="Asia/Taipei",
+        scheduled_local_time=time(6, 30),
+        target_date_lag_days=1,
+    )
+
+    result = executor.execute(
+        replace(
+            _job(checkpoint, scheduled_date=date(2024, 1, 6)),
+            target_data_date=date(2024, 1, 5),
+        ),
+        now=NOW,
+    )
+
+    assert result.succeeded is True
+    assert provider.calls == [
+        (
+            "AAPL",
+            {
+                "start_date": expected_start,
+                "end_date": date(2024, 1, 6),
+                "exchange": "NASDAQ",
+            },
+        )
+    ]
+    assert [row["trade_date"] for row in source.requests[0]["payload"]["data"]] == expected_rows
+    assert source.requests[0]["delivery"]["target_data_date"] == "2024-01-05"
 
 
 def test_executor_marks_up_to_date_without_source_delivery(contracts_dir: Path) -> None:

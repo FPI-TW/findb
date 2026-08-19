@@ -132,7 +132,8 @@ class TwelveDataScheduledExecutor:
                     if self._schedule.schedule_version == 2:
                         query = {
                             "start_date": target_date,
-                            "end_date": target_date,
+                            # Twelve Data treats end_date as an exclusive bound.
+                            "end_date": target_date + timedelta(days=1),
                         }
                         mapping_after_date = target_date - timedelta(days=1)
                     else:
@@ -152,7 +153,8 @@ class TwelveDataScheduledExecutor:
                         )
                     query = {
                         "start_date": start_date,
-                        "end_date": target_date,
+                        # Twelve Data treats end_date as an exclusive bound.
+                        "end_date": target_date + timedelta(days=1),
                     }
                 response = self._provider.fetch_daily(
                     job.symbol,
