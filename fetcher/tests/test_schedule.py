@@ -80,7 +80,7 @@ def test_v2_manifest_has_only_active_daily_feeds_and_date_boundaries() -> None:
         "taiwan_market_window",
     ]
     assert [feed.scheduled_local_time.isoformat() for feed in manifest.feeds] == [
-        "10:30:00",
+        "08:15:00",
         "14:30:00",
     ]
     assert [feed.target_date_lag_days for feed in manifest.feeds] == [1, 0]
@@ -102,19 +102,19 @@ def test_western_slot_targets_the_previous_us_weekday() -> None:
     us_feed = load_schedule_manifest(V2_CONFIG_PATH).feeds[0]
 
     assert (
-        us_feed.scheduled_date(datetime(2026, 7, 31, 2, 29, tzinfo=timezone.utc))
+        us_feed.scheduled_date(datetime(2026, 7, 31, 0, 14, tzinfo=timezone.utc))
         == datetime(2026, 7, 30, tzinfo=timezone.utc).date()
     )
     assert (
-        us_feed.target_date(datetime(2026, 7, 31, 2, 29, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2026, 7, 31, 0, 14, tzinfo=timezone.utc)).isoformat()
         == "2026-07-29"
     )
     assert (
-        us_feed.target_date(datetime(2026, 7, 31, 2, 30, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2026, 7, 31, 0, 15, tzinfo=timezone.utc)).isoformat()
         == "2026-07-30"
     )
     assert (
-        us_feed.target_date(datetime(2026, 7, 27, 2, 30, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2026, 7, 27, 0, 15, tzinfo=timezone.utc)).isoformat()
         == "2026-07-24"
     )
 
@@ -123,25 +123,25 @@ def test_us_trade_date_policy_uses_governed_holidays_and_fails_closed() -> None:
     us_feed = load_schedule_manifest(V2_CONFIG_PATH).feeds[0]
 
     assert (
-        us_feed.target_date(datetime(2026, 7, 4, 2, 30, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2026, 7, 4, 0, 15, tzinfo=timezone.utc)).isoformat()
         == "2026-07-02"
     )
     assert (
-        us_feed.target_date(datetime(2028, 7, 6, 2, 30, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2028, 7, 6, 0, 15, tzinfo=timezone.utc)).isoformat()
         == "2028-07-05"
     )
     assert (
-        us_feed.target_date(datetime(2028, 7, 5, 2, 30, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2028, 7, 5, 0, 15, tzinfo=timezone.utc)).isoformat()
         == "2028-07-03"
     )
     assert (
-        us_feed.target_date(datetime(2027, 11, 27, 2, 30, tzinfo=timezone.utc)).isoformat()
+        us_feed.target_date(datetime(2027, 11, 27, 0, 15, tzinfo=timezone.utc)).isoformat()
         == "2027-11-26"
     )
     with pytest.raises(ScheduleError, match="governed market calendar"):
-        us_feed.target_date(datetime(2029, 1, 5, 2, 30, tzinfo=timezone.utc))
+        us_feed.target_date(datetime(2029, 1, 5, 0, 15, tzinfo=timezone.utc))
     with pytest.raises(ScheduleError, match="governed market calendar"):
-        us_feed.target_date(datetime(2026, 1, 2, 2, 30, tzinfo=timezone.utc))
+        us_feed.target_date(datetime(2026, 1, 2, 0, 15, tzinfo=timezone.utc))
 
 
 def test_v2_manifest_allows_multiple_unique_feeds_in_one_slot(

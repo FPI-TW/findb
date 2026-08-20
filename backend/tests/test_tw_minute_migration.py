@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -56,6 +58,36 @@ async def _run_alembic_capture(
     )
 
 
+@asynccontextmanager
+async def _fresh_schedule_database(prefix: str) -> AsyncIterator[tuple[str, object]]:
+    """Create a disposable database at the pre-08:15 schedule head."""
+
+    base_url = make_url(BASE_DATABASE_URL)
+    database_name = f"{prefix}_{uuid4().hex[:12]}"
+    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
+    admin_engine = create_async_engine(
+        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    target_engine = None
+    database_created = False
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        database_created = True
+        await _run_alembic(database_url, "b4c5d6e7f8a9")
+        target_engine = create_async_engine(database_url)
+        yield database_url, target_engine
+    finally:
+        if target_engine is not None:
+            await target_engine.dispose()
+        if database_created:
+            async with admin_engine.connect() as connection:
+                await connection.execute(
+                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+                )
+        await admin_engine.dispose()
+
+
 def test_tw_minute_migration_is_single_linear_head():
     backend_root = Path(__file__).resolve().parents[1]
     config = Config(str(backend_root / "alembic.ini"))
@@ -74,6 +106,7 @@ def test_tw_minute_migration_is_single_linear_head():
     twelve_data_schedule_0900 = scripts.get_revision("f2a3b4c5d6e7")
     twelve_data_schedule_1030 = scripts.get_revision("a3b4c5d6e7f8")
     ingestion_coverage = scripts.get_revision("b4c5d6e7f8a9")
+    twelve_data_schedule_0815 = scripts.get_revision("c5d6e7f8a9b0")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -98,7 +131,9 @@ def test_tw_minute_migration_is_single_linear_head():
     assert twelve_data_schedule_1030.down_revision == "f2a3b4c5d6e7"
     assert ingestion_coverage is not None
     assert ingestion_coverage.down_revision == "a3b4c5d6e7f8"
-    assert scripts.get_heads() == ["b4c5d6e7f8a9"]
+    assert twelve_data_schedule_0815 is not None
+    assert twelve_data_schedule_0815.down_revision == "b4c5d6e7f8a9"
+    assert scripts.get_heads() == ["c5d6e7f8a9b0"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -322,7 +357,7 @@ async def test_twelve_data_schedule_policy_step_failure_rolls_back_scheduler(
         if direction == "upgrade":
             await _run_alembic(database_url, "f2a3b4c5d6e7")
         else:
-            await _run_alembic(database_url, "head")
+            await _run_alembic(database_url, "a3b4c5d6e7f8")
 
         target_engine = create_async_engine(database_url)
         async with target_engine.begin() as connection:
@@ -356,7 +391,7 @@ async def test_twelve_data_schedule_policy_step_failure_rolls_back_scheduler(
 
         result = await _run_alembic_capture(
             database_url,
-            "head" if direction == "upgrade" else "f2a3b4c5d6e7",
+            "a3b4c5d6e7f8" if direction == "upgrade" else "f2a3b4c5d6e7",
             command="upgrade" if direction == "upgrade" else "downgrade",
         )
         assert result.returncode != 0
@@ -364,7 +399,7 @@ async def test_twelve_data_schedule_policy_step_failure_rolls_back_scheduler(
         expected_scheduler_time = time(9) if direction == "upgrade" else time(10, 30)
         expected_deadline = "10:00:00" if direction == "upgrade" else "11:30:00"
         expected_local_time = "09:00:00" if direction == "upgrade" else "10:30:00"
-        expected_revision = "f2a3b4c5d6e7" if direction == "upgrade" else "b4c5d6e7f8a9"
+        expected_revision = "f2a3b4c5d6e7" if direction == "upgrade" else "a3b4c5d6e7f8"
         async with target_engine.connect() as connection:
             assert (
                 await connection.scalar(
@@ -460,9 +495,9 @@ async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgr
                 "keep-nested"
             )
             assert config["delivery_expectation"]["missing_delivery"]["deadline_local_time"] == (
-                "11:30:00"
+                "09:15:00"
             )
-            assert config["delivery_expectation"]["schedule"]["local_time"] == "10:30:00"
+            assert config["delivery_expectation"]["schedule"]["local_time"] == "08:15:00"
             assert config["delivery_expectation"]["schedule"]["target_date_lag_days"] == 1
 
         await _run_alembic(database_url, "f2a3b4c5d6e7", command="downgrade")
@@ -523,6 +558,336 @@ async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgr
                     text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
                 )
         await admin_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_0815_schedule_roundtrip_preserves_operator_json() -> None:
+    async with _fresh_schedule_database("findb_twelve_schedule_0815_roundtrip") as (
+        database_url,
+        target_engine,
+    ):
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE dataset_registry
+                    SET config = jsonb_set(
+                        jsonb_set(
+                            config,
+                            '{operator_note}',
+                            '"preserve-me"'::jsonb,
+                            true
+                        ),
+                        '{delivery_expectation,missing_delivery,operator_note}',
+                        '"keep-nested"'::jsonb,
+                        true
+                    )
+                    WHERE dataset_key = 'us_equity_eod'
+                    """
+                )
+            )
+
+        await _run_alembic(database_url, "head")
+        async with target_engine.connect() as connection:
+            config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
+            )
+            assert config["operator_note"] == "preserve-me"
+            assert config["delivery_expectation"]["missing_delivery"]["operator_note"] == (
+                "keep-nested"
+            )
+            assert config["delivery_expectation"]["missing_delivery"]["deadline_local_time"] == (
+                "09:15:00"
+            )
+            assert config["delivery_expectation"]["schedule"]["local_time"] == "08:15:00"
+            assert config["delivery_expectation"]["schedule"]["target_date_lag_days"] == 1
+            assert await connection.scalar(
+                text(
+                    """
+                    SELECT scheduled_local_time
+                    FROM scheduler_control
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            ) == time(8, 15)
+
+        await _run_alembic(database_url, "b4c5d6e7f8a9", command="downgrade")
+        async with target_engine.connect() as connection:
+            config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
+            )
+            assert config["operator_note"] == "preserve-me"
+            assert config["delivery_expectation"]["missing_delivery"]["operator_note"] == (
+                "keep-nested"
+            )
+            assert config["delivery_expectation"]["missing_delivery"]["deadline_local_time"] == (
+                "11:30:00"
+            )
+            assert config["delivery_expectation"]["schedule"]["local_time"] == "10:30:00"
+            assert await connection.scalar(
+                text(
+                    """
+                    SELECT scheduled_local_time
+                    FROM scheduler_control
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            ) == time(10, 30)
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_0815_schedule_upgrade_rejects_exact_mapping_drift() -> None:
+    async with _fresh_schedule_database("findb_twelve_schedule_0815_mapping") as (
+        database_url,
+        target_engine,
+    ):
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM scheduler_dataset
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            )
+
+        result = await _run_alembic_capture(database_url, "head")
+        assert result.returncode != 0
+        assert "Twelve Data scheduler dataset mapping drifted" in (result.stdout + result.stderr)
+        async with target_engine.connect() as connection:
+            assert await connection.scalar(
+                text(
+                    """
+                    SELECT scheduled_local_time
+                    FROM scheduler_control
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            ) == time(10, 30)
+            config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
+            )
+            assert config["delivery_expectation"]["missing_delivery"]["deadline_local_time"] == (
+                "11:30:00"
+            )
+            assert config["delivery_expectation"]["schedule"]["local_time"] == "10:30:00"
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                    SELECT count(*)
+                    FROM scheduler_dataset
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                    )
+                )
+                == 0
+            )
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "b4c5d6e7f8a9"
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift_kind",
+    ("scheduler_time", "registry_schedule", "registry_enabled", "scheduler_mapping"),
+)
+async def test_twelve_data_0815_downgrade_leaves_one_sided_drift_untouched(
+    drift_kind: str,
+) -> None:
+    async with _fresh_schedule_database("findb_twelve_schedule_0815_downgrade") as (
+        database_url,
+        target_engine,
+    ):
+        await _run_alembic(database_url, "head")
+        async with target_engine.begin() as connection:
+            if drift_kind == "scheduler_time":
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE scheduler_control
+                        SET scheduled_local_time = TIME '08:14:00'
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                    )
+                )
+            elif drift_kind == "registry_schedule":
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE dataset_registry
+                        SET config = jsonb_set(
+                            config,
+                            '{delivery_expectation,schedule,local_time}',
+                            '"08:16:00"'::jsonb,
+                            true
+                        )
+                        WHERE dataset_key = 'us_equity_eod'
+                        """
+                    )
+                )
+            elif drift_kind == "registry_enabled":
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE dataset_registry
+                        SET config = jsonb_set(
+                            config,
+                            '{delivery_expectation,schedule,enabled}',
+                            'false'::jsonb,
+                            true
+                        )
+                        WHERE dataset_key = 'us_equity_eod'
+                        """
+                    )
+                )
+            else:
+                await connection.execute(
+                    text(
+                        """
+                        DELETE FROM scheduler_dataset
+                        WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                        """
+                    )
+                )
+
+            before = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                            (
+                                SELECT scheduled_local_time
+                                FROM scheduler_control
+                                WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                            ),
+                            (
+                                SELECT config
+                                FROM dataset_registry
+                                WHERE dataset_key = 'us_equity_eod'
+                            )
+                        """
+                    )
+                )
+            ).one()
+            before_mapping_count = await connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM scheduler_dataset
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            )
+
+        await _run_alembic(database_url, "b4c5d6e7f8a9", command="downgrade")
+        async with target_engine.connect() as connection:
+            after = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                            (
+                                SELECT scheduled_local_time
+                                FROM scheduler_control
+                                WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                            ),
+                            (
+                                SELECT config
+                                FROM dataset_registry
+                                WHERE dataset_key = 'us_equity_eod'
+                            )
+                        """
+                    )
+                )
+            ).one()
+            after_mapping_count = await connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM scheduler_dataset
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                )
+            )
+        assert after == before
+        assert after_mapping_count == before_mapping_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direction", ("upgrade", "downgrade"))
+async def test_twelve_data_0815_policy_step_failure_rolls_back_scheduler(direction: str) -> None:
+    async with _fresh_schedule_database("findb_twelve_schedule_0815_policy") as (
+        database_url,
+        target_engine,
+    ):
+        if direction == "downgrade":
+            await _run_alembic(database_url, "head")
+
+        async with target_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION test_block_twelve_data_0815_policy_update()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        IF OLD.dataset_key = 'us_equity_eod' THEN
+                            RAISE EXCEPTION 'forced Twelve Data 0815 policy mutation failure';
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $$
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TRIGGER test_block_twelve_data_0815_policy_update
+                    BEFORE UPDATE OF config ON dataset_registry
+                    FOR EACH ROW
+                    EXECUTE FUNCTION test_block_twelve_data_0815_policy_update()
+                    """
+                )
+            )
+
+        result = await _run_alembic_capture(
+            database_url,
+            "head" if direction == "upgrade" else "b4c5d6e7f8a9",
+            command="upgrade" if direction == "upgrade" else "downgrade",
+        )
+        assert result.returncode != 0
+        assert "forced Twelve Data 0815 policy mutation failure" in (result.stdout + result.stderr)
+        expected_scheduler_time = time(8, 15) if direction == "downgrade" else time(10, 30)
+        expected_deadline = "09:15:00" if direction == "downgrade" else "11:30:00"
+        expected_local_time = "08:15:00" if direction == "downgrade" else "10:30:00"
+        expected_revision = "c5d6e7f8a9b0" if direction == "downgrade" else "b4c5d6e7f8a9"
+        async with target_engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                    SELECT scheduled_local_time
+                    FROM scheduler_control
+                    WHERE scheduler_key = 'twelve_data_us_common_stocks_daily_v1'
+                    """
+                    )
+                )
+                == expected_scheduler_time
+            )
+            config = await connection.scalar(
+                text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
+            )
+            assert config["delivery_expectation"]["missing_delivery"]["deadline_local_time"] == (
+                expected_deadline
+            )
+            assert config["delivery_expectation"]["schedule"]["local_time"] == expected_local_time
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                expected_revision
+            )
 
 
 @pytest.mark.asyncio
@@ -1280,7 +1645,7 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     "twelve_data_us_common_stocks_daily_v1",
                     "twelve_data",
                     "western_markets_window",
-                    time(10, 30),
+                    time(8, 15),
                     "Asia/Taipei",
                 ),
             ]
@@ -1363,12 +1728,12 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                             "missing_delivery": {
                                 "action": "warn",
                                 "expected_sources": ["twelve_data"],
-                                "deadline_local_time": "11:30:00",
+                                "deadline_local_time": "09:15:00",
                             },
                             "schedule": {
                                 "enabled": True,
                                 "slot_id": "western_markets_window",
-                                "local_time": "10:30:00",
+                                "local_time": "08:15:00",
                                 "timezone": "Asia/Taipei",
                                 "expected_sources": ["twelve_data"],
                                 "target_date_lag_days": 1,
