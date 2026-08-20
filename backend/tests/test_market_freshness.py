@@ -177,7 +177,7 @@ async def test_configured_market_without_runs_is_never_received(test_session):
 
 
 @pytest.mark.asyncio
-async def test_twelve_data_freshness_turns_late_at_1130_taipei(test_session):
+async def test_twelve_data_freshness_turns_late_at_0915_taipei(test_session):
     config = {
         "schema_id": "market_eod",
         "current_schema_version": 1,
@@ -193,12 +193,12 @@ async def test_twelve_data_freshness_turns_late_at_1130_taipei(test_session):
             "missing_delivery": {
                 "action": "warn",
                 "expected_sources": ["twelve_data"],
-                "deadline_local_time": "11:30:00",
+                "deadline_local_time": "09:15:00",
             },
             "schedule": {
                 "enabled": True,
                 "slot_id": "western_markets_window",
-                "local_time": "10:30:00",
+                "local_time": "08:15:00",
                 "timezone": "Asia/Taipei",
                 "target_date_lag_days": 1,
                 "expected_sources": ["twelve_data"],
@@ -220,7 +220,7 @@ async def test_twelve_data_freshness_turns_late_at_1130_taipei(test_session):
             scheduler_key="twelve_data_us_common_stocks_daily_v1",
             provider="twelve_data",
             slot_id="western_markets_window",
-            scheduled_local_time=time(10, 30),
+            scheduled_local_time=time(8, 15),
             timezone="Asia/Taipei",
             dataset_keys=["us_equity_eod"],
             desired_state="running",
@@ -256,7 +256,7 @@ async def test_twelve_data_freshness_turns_late_at_1130_taipei(test_session):
         await list_market_freshness(
             test_session,
             market="US",
-            now=datetime(2026, 7, 23, 3, 29, tzinfo=timezone.utc),
+            now=datetime(2026, 7, 23, 1, 14, tzinfo=timezone.utc),
         )
     )[0]
     assert before.expected_data_date == date(2026, 7, 21)
@@ -266,7 +266,7 @@ async def test_twelve_data_freshness_turns_late_at_1130_taipei(test_session):
         await list_market_freshness(
             test_session,
             market="US",
-            now=datetime(2026, 7, 23, 3, 30, tzinfo=timezone.utc),
+            now=datetime(2026, 7, 23, 1, 15, tzinfo=timezone.utc),
         )
     )[0]
     assert due.expected_data_date == date(2026, 7, 22)
