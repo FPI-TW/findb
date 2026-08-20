@@ -18,6 +18,7 @@
 | [operations/migration_workflow.md](operations/migration_workflow.md)             | Alembic migration 與 staging rollout 規則。                                |
 | [operations/data_maintenance.md](operations/data_maintenance.md)                 | Staging reset、partial dump、seed、backfill、raw retention 與 cache 維護。 |
 | [dev/backlog.md](dev/backlog.md)                                                 | 尚未完成、仍需追蹤的工作與已知風險。                                       |
+| [dev/staging-aws-deployment-plan.md](dev/staging-aws-deployment-plan.md)         | Staging AWS 的 OIDC、SSM、secrets、digest、備份與分階段驗收計畫。           |
 | [dev/fetcher-data-automation-backlog.md](dev/fetcher-data-automation-backlog.md) | Fetcher 四時段自動化、provider coverage、資料契約與上線驗收 backlog。      |
 
 ## Staging active feeds
