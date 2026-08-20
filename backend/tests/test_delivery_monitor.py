@@ -473,6 +473,148 @@ async def test_presence_requires_exact_non_rerun_full_snapshot_identity(test_ses
 
 
 @pytest.mark.asyncio
+async def test_incremental_backfill_resolves_covered_history_and_keeps_out_of_range_alert(
+    test_session,
+) -> None:
+    await _seed_dataset(test_session, config=_twelve_data_config())
+    await _seed_published_calendar_year(test_session, market="US", year=2026)
+    covered_dates = [date(2026, 7, day) for day in (20, 21, 22)]
+    out_of_range = date(2026, 7, 23)
+    test_session.add_all(
+        [
+            MissingDeliveryAlert(
+                dataset_key="tw_equity_eod",
+                source="twelve_data",
+                schema_id="market_eod",
+                schema_version=1,
+                expected_data_date=data_date,
+                status="open",
+                first_detected_at=NOW,
+                last_detected_at=NOW,
+            )
+            for data_date in (*covered_dates, out_of_range)
+        ]
+    )
+    test_session.add(
+        IngestionRun(
+            dataset_key="tw_equity_eod",
+            source="twelve_data",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=covered_dates[-1],
+            delivery_mode="backfill",
+            coverage_start_date=covered_dates[0],
+            coverage_end_date=covered_dates[-1],
+            is_rerun=False,
+            status="pending",
+        )
+    )
+    await test_session.commit()
+
+    result = await scan_missing_deliveries(test_session, now=NOW)
+
+    assert result.resolved == len(covered_dates)
+    statuses = dict(
+        (
+            await test_session.execute(
+                select(
+                    MissingDeliveryAlert.expected_data_date,
+                    MissingDeliveryAlert.status,
+                )
+            )
+        ).all()
+    )
+    assert all(statuses[data_date] == "resolved" for data_date in covered_dates)
+    assert statuses[out_of_range] == "open"
+
+
+@pytest.mark.asyncio
+async def test_incremental_backfill_without_range_only_covers_its_batch_date(test_session) -> None:
+    await _seed_dataset(test_session, config=_twelve_data_config())
+    await _seed_published_calendar_year(test_session, market="US", year=2026)
+    expected = date(2026, 7, 21)
+    other = date(2026, 7, 20)
+    test_session.add_all(
+        [
+            MissingDeliveryAlert(
+                dataset_key="tw_equity_eod",
+                source="twelve_data",
+                schema_id="market_eod",
+                schema_version=1,
+                expected_data_date=data_date,
+                status="open",
+                first_detected_at=NOW,
+                last_detected_at=NOW,
+            )
+            for data_date in (other, expected)
+        ]
+    )
+    test_session.add(
+        IngestionRun(
+            dataset_key="tw_equity_eod",
+            source="twelve_data",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=expected,
+            delivery_mode="backfill",
+            is_rerun=False,
+            status="pending",
+        )
+    )
+    await test_session.commit()
+
+    result = await scan_missing_deliveries(test_session, now=NOW)
+
+    assert result.resolved == 1
+    alerts = {
+        row.expected_data_date: row.status
+        for row in (await test_session.execute(select(MissingDeliveryAlert))).scalars()
+    }
+    assert alerts[expected] == "resolved"
+    assert alerts[other] == "open"
+
+
+@pytest.mark.asyncio
+async def test_full_snapshot_expectation_does_not_accept_backfill_or_rerun(test_session) -> None:
+    await _seed_dataset(test_session)
+    expected = date(2026, 7, 22)
+    test_session.add(
+        MissingDeliveryAlert(
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            expected_data_date=expected,
+            status="open",
+            first_detected_at=NOW,
+            last_detected_at=NOW,
+        )
+    )
+    test_session.add_all(
+        [
+            IngestionRun(
+                dataset_key="tw_equity_eod",
+                source="finlab",
+                schema_id="market_eod",
+                schema_version=1,
+                batch_data_date=expected,
+                delivery_mode="backfill",
+                is_rerun=is_rerun,
+                status="pending",
+            )
+            for is_rerun in (False, True)
+        ]
+    )
+    await test_session.commit()
+
+    result = await scan_missing_deliveries(test_session, now=NOW)
+
+    assert result.resolved == 0
+    alert = (await test_session.execute(select(MissingDeliveryAlert))).scalar_one()
+    assert alert.status == "open"
+
+
+@pytest.mark.asyncio
 async def test_disabled_inactive_and_calendar_unavailable_do_not_alert(test_session) -> None:
     await _seed_dataset(test_session, config=_config(action="disabled"))
     result = await scan_missing_deliveries(test_session, now=NOW)

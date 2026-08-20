@@ -23,7 +23,13 @@ from app.models.registry import (
     MissingDeliveryAlert,
     SchedulerControl,
 )
-from app.services.delivery_policy import DeliveryExpectation, resolve_expected_data_date
+from app.services.delivery_policy import (
+    DeliveryExpectation,
+    delivery_run_coverage_condition,
+    delivery_run_covers_date,
+    delivery_run_mode_condition,
+    resolve_expected_data_date,
+)
 from app.services.scheduler_control import (
     list_scheduler_controls,
     normalize_scheduler_key,
@@ -154,9 +160,10 @@ async def _runs_for_feed(
         criteria.append(IngestionRun.schema_version == feed.schema_version)
     delivery_mode = feed.expectation.delivery_mode.value if feed.expectation else None
     if delivery_mode is not None:
-        criteria.append(IngestionRun.delivery_mode == delivery_mode)
+        criteria.append(delivery_run_mode_condition(delivery_mode))
 
     latest_group = None
+    expected_success = None
     last_criteria = list(criteria)
     if delivery_mode == "sequenced_snapshot" and expected is not None:
         # A strict minute session may evaluate the prior trading date before
@@ -226,6 +233,21 @@ async def _runs_for_feed(
             )
             .limit(1)
         )
+        if delivery_mode == "incremental" and expected is not None:
+            expected_success = await db.scalar(
+                select(IngestionRun)
+                .where(
+                    *criteria,
+                    IngestionRun.status == "completed",
+                    delivery_run_coverage_condition(delivery_mode, expected),
+                )
+                .order_by(
+                    IngestionRun.completed_at.desc().nullslast(),
+                    IngestionRun.created_at.desc(),
+                    IngestionRun.run_id.desc(),
+                )
+                .limit(1)
+            )
     failure_criteria = list(criteria)
     if delivery_mode == "sequenced_snapshot" and expected is not None:
         failure_criteria.append(IngestionRun.batch_data_date <= expected)
@@ -248,7 +270,15 @@ async def _runs_for_feed(
         latest_group is not None and not latest_group.complete and not latest_group.failed
     )
     failed_group = bool(latest_group is not None and latest_group.failed)
-    return last_run, last_fetched_at, latest_success, latest_failure, partial_group, failed_group
+    return (
+        last_run,
+        last_fetched_at,
+        latest_success,
+        latest_failure,
+        expected_success,
+        partial_group,
+        failed_group,
+    )
 
 
 async def _open_alert_exists(
@@ -277,11 +307,31 @@ async def _feed_freshness(
     feed: _ConfiguredFeed,
     expected: date | None,
 ) -> FreshnessFeed:
-    last_run, last_fetched_at, latest, failure, partial_group, failed_group = await _runs_for_feed(
-        db, feed, expected
-    )
+    (
+        last_run,
+        last_fetched_at,
+        latest,
+        failure,
+        expected_success,
+        partial_group,
+        failed_group,
+    ) = await _runs_for_feed(db, feed, expected)
     alert_open = await _open_alert_exists(db, feed, expected)
     config_error = "; ".join(feed.configuration_errors) if feed.configuration_errors else None
+
+    incremental_mode = bool(
+        feed.expectation and feed.expectation.delivery_mode.value == "incremental"
+    )
+    failed_expected = bool(
+        last_run is not None
+        and last_run.status == "failed"
+        and (
+            delivery_run_covers_date(last_run, "incremental", expected)
+            if incremental_mode and expected is not None
+            else last_run.batch_data_date is None
+            or (expected is not None and last_run.batch_data_date >= expected)
+        )
+    )
 
     if config_error:
         # A malformed policy is not evidence that a feed is late or fresh.
@@ -290,13 +340,13 @@ async def _feed_freshness(
         state = "never_received"
     elif expected is None:
         state = "not_due"
-    elif failed_group or (
-        last_run is not None
-        and last_run.status == "failed"
-        and (last_run.batch_data_date is None or last_run.batch_data_date >= expected)
-    ):
+    elif failed_group or failed_expected:
         state = "failed"
-    elif latest is not None and latest.batch_data_date >= expected:
+    elif (
+        expected_success is not None
+        if incremental_mode
+        else latest is not None and latest.batch_data_date >= expected
+    ):
         state = "fresh"
     elif partial_group:
         state = "partial"

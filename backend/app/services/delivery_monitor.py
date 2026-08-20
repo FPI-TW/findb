@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
 from app.services.delivery_policy import (
+    delivery_run_coverage_condition,
     parse_delivery_expectation,
     resolve_expected_data_date,
 )
@@ -180,8 +181,7 @@ async def scan_missing_deliveries(
                                 IngestionRun.source == source,
                                 IngestionRun.schema_id == declaration.schema_id,
                                 IngestionRun.schema_version == declaration.current_schema_version,
-                                IngestionRun.batch_data_date == expected_date,
-                                IngestionRun.delivery_mode == delivery_mode,
+                                delivery_run_coverage_condition(delivery_mode, expected_date),
                                 IngestionRun.is_rerun.is_(False),
                             )
                         )
@@ -283,8 +283,10 @@ async def _resolve_open_alerts_for_feed(
                 IngestionRun.source == source,
                 IngestionRun.schema_id == schema_id,
                 IngestionRun.schema_version == schema_version,
-                IngestionRun.batch_data_date == MissingDeliveryAlert.expected_data_date,
-                IngestionRun.delivery_mode == delivery_mode,
+                delivery_run_coverage_condition(
+                    delivery_mode,
+                    MissingDeliveryAlert.expected_data_date,
+                ),
                 IngestionRun.is_rerun.is_(False),
             )
         )

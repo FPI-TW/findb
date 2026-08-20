@@ -174,6 +174,39 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         await _run_alembic(database_url, "c3d4e5f6a7b8")
         null_attempt_id = uuid4()
         unknown_scheduler_key = "legacy_unknown_scheduler_v1"
+        coverage_run_ids: dict[str, object] = {}
+        coverage_payloads = {
+            "valid": {
+                "batch": {
+                    "data_date": "2026-07-21",
+                    "delivery_mode": "backfill",
+                    "coverage_start_date": "2026-07-20",
+                    "coverage_end_date": "2026-07-21",
+                }
+            },
+            "malformed": {
+                "batch": {
+                    "data_date": "2026-07-21",
+                    "delivery_mode": "backfill",
+                    "coverage_start_date": "not-a-date",
+                    "coverage_end_date": "2026-07-21",
+                }
+            },
+            "missing": {
+                "batch": {
+                    "data_date": "2026-07-21",
+                    "delivery_mode": "backfill",
+                }
+            },
+            "expired": {
+                "batch": {
+                    "data_date": "2026-07-21",
+                    "delivery_mode": "backfill",
+                    "coverage_start_date": "2026-07-20",
+                    "coverage_end_date": "2026-07-21",
+                }
+            },
+        }
         async with target_engine.begin() as connection:
             await connection.execute(
                 text(
@@ -205,6 +238,92 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                 ),
                 {"scheduler_key": unknown_scheduler_key},
             )
+            for label, payload in coverage_payloads.items():
+                run_id = uuid4()
+                raw_payload_id = uuid4()
+                coverage_run_ids[label] = run_id
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO raw.market_payload (
+                            raw_payload_id, source_client_id, dataset_key, source,
+                            request_key, idempotency_key, schema_id, schema_version,
+                            payload_sha256, payload, fetched_at, expire_at, run_id, created_at
+                        ) VALUES (
+                            :raw_payload_id, NULL, 'tw_equity_eod', 'finlab',
+                            :request_key, :idempotency_key, 'market_eod', 1,
+                            NULL, CAST(:payload AS jsonb), now(),
+                            CASE
+                                WHEN :expired THEN now() - interval '1 day'
+                                ELSE now() + interval '30 days'
+                            END,
+                            :run_id, now()
+                        )
+                        """
+                    ),
+                    {
+                        "raw_payload_id": raw_payload_id,
+                        "request_key": f"migration-coverage-{label}",
+                        "idempotency_key": f"migration-coverage-{label}",
+                        "payload": json.dumps(payload),
+                        "run_id": run_id,
+                        "expired": label == "expired",
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO ingestion_run (
+                            run_id, dataset_key, source, raw_payload_id, request_key,
+                            schema_id, schema_version, batch_data_date, delivery_mode,
+                            is_rerun, raw_records, status, total_records, success_records,
+                            failed_records, attempt_count, max_attempts, created_at
+                        ) VALUES (
+                            :run_id, 'tw_equity_eod', 'finlab', :raw_payload_id, :request_key,
+                            'market_eod', 1, DATE '2026-07-21', 'backfill',
+                            false, 0, 'completed', 0, 0, 0, 0, 5, now()
+                        )
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "raw_payload_id": raw_payload_id,
+                        "request_key": f"migration-coverage-{label}",
+                    },
+                )
+                if label == "valid":
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw.market_payload (
+                                raw_payload_id, source_client_id, dataset_key, source,
+                                request_key, idempotency_key, schema_id, schema_version,
+                                payload_sha256, payload, fetched_at, expire_at, run_id, created_at
+                            ) VALUES (
+                                :raw_payload_id, NULL, 'tw_equity_eod', 'finlab',
+                                :request_key, :idempotency_key, 'market_eod', 1,
+                                NULL, CAST(:payload AS jsonb), now(), now() + interval '30 days',
+                                :run_id, now() + interval '1 hour'
+                            )
+                            """
+                        ),
+                        {
+                            "raw_payload_id": uuid4(),
+                            "request_key": "migration-coverage-valid-fallback",
+                            "idempotency_key": "migration-coverage-valid-fallback",
+                            "payload": json.dumps(
+                                {
+                                    "batch": {
+                                        "data_date": "2026-07-21",
+                                        "delivery_mode": "backfill",
+                                        "coverage_start_date": "2026-07-19",
+                                        "coverage_end_date": "2026-07-21",
+                                    }
+                                }
+                            ),
+                            "run_id": run_id,
+                        },
+                    )
 
         await _run_alembic(database_url, "head")
 
@@ -294,11 +413,26 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         OR
                         (table_name = 'ingestion_run' AND column_name IN (
                             'batch_data_date', 'delivery_mode', 'policy_outcome',
-                            'policy_details', 'is_rerun'
+                            'policy_details', 'is_rerun', 'coverage_start_date',
+                            'coverage_end_date'
                         ))
                       )
                     """)
             )
+            coverage_rows = {}
+            for label, run_id in coverage_run_ids.items():
+                coverage_rows[label] = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT coverage_start_date, coverage_end_date
+                            FROM ingestion_run
+                            WHERE run_id = :run_id
+                            """
+                        ),
+                        {"run_id": run_id},
+                    )
+                ).one()
             baseline_index_count = await connection.scalar(
                 text("""
                     SELECT count(*)
@@ -380,7 +514,13 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
             "currency": "TWD",
         }
         assert contract_config["custom"] == "preserve"
-        assert delivery_column_count == 6
+        assert delivery_column_count == 8
+        assert tuple(
+            value.isoformat() if value is not None else None for value in coverage_rows["valid"]
+        ) == ("2026-07-20", "2026-07-21")
+        assert coverage_rows["malformed"] == (None, None)
+        assert coverage_rows["missing"] == (None, None)
+        assert coverage_rows["expired"] == (None, None)
         assert baseline_index_count == 1
         assert missing_alert_table == "missing_delivery_alert"
         assert missing_alert_index_count == 2
@@ -476,7 +616,8 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         OR
                         (table_name = 'ingestion_run' AND column_name IN (
                             'batch_data_date', 'delivery_mode', 'policy_outcome',
-                            'policy_details', 'is_rerun'
+                            'policy_details', 'is_rerun', 'coverage_start_date',
+                            'coverage_end_date'
                         ))
                       )
                     """)

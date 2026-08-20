@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 from datetime import date, timedelta
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -131,8 +131,44 @@ def _rerun_batch_metadata(
     else:
         return {}
 
+    invalid_date = object()
+
+    def bounded_date_value(name: str) -> date | None | object:
+        value = batch.get(name)
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value
+        if not isinstance(value, str) or len(value) != 10:
+            return invalid_date
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return invalid_date
+
+    coverage_start = bounded_date_value("coverage_start_date")
+    coverage_end = bounded_date_value("coverage_end_date")
+    if coverage_start is invalid_date or coverage_end is invalid_date:
+        return {}
+    if (coverage_start is None) != (coverage_end is None):
+        return {}
+    if coverage_start is not None and coverage_end is not None:
+        parsed_coverage_start = cast(date, coverage_start)
+        parsed_coverage_end = cast(date, coverage_end)
+        if parsed_coverage_start > parsed_coverage_end:
+            return {}
+        if mode == "backfill" and parsed_coverage_end != parsed_date:
+            return {}
+
+    coverage: dict[str, date] = {}
+    if coverage_start is not None and coverage_end is not None:
+        coverage = {
+            "coverage_start_date": cast(date, coverage_start),
+            "coverage_end_date": cast(date, coverage_end),
+        }
+
     if mode in {"full_snapshot", "incremental", "backfill"}:
-        return {"batch_data_date": parsed_date, "delivery_mode": mode}
+        return {"batch_data_date": parsed_date, "delivery_mode": mode, **coverage}
     if mode != "sequenced_snapshot" or not (
         schema_id == "market_minute" or dataset_key in {"tw_equity_minute", "tw_etf_minute"}
     ):
@@ -166,6 +202,7 @@ def _rerun_batch_metadata(
     return {
         "batch_data_date": parsed_date,
         "delivery_mode": mode,
+        **coverage,
         "snapshot_id": snapshot_id,
         "daily_update_id": daily_update_id,
         "sequence": sequence,
@@ -337,6 +374,8 @@ class IngestionService:
         schema_version: int | None = None,
         batch_data_date: date | None = None,
         delivery_mode: str | None = None,
+        coverage_start_date: date | None = None,
+        coverage_end_date: date | None = None,
         policy_outcome: str | None = None,
         policy_details: dict | None = None,
         is_rerun: bool = False,
@@ -357,6 +396,8 @@ class IngestionService:
             schema_version=schema_version,
             batch_data_date=batch_data_date,
             delivery_mode=delivery_mode,
+            coverage_start_date=coverage_start_date,
+            coverage_end_date=coverage_end_date,
             snapshot_id=snapshot_id,
             daily_update_id=daily_update_id,
             sequence=sequence,
@@ -703,6 +744,8 @@ class IngestionService:
                     "value",
                     request.payload.batch.delivery_mode,
                 ),
+                coverage_start_date=request.payload.batch.coverage_start_date,
+                coverage_end_date=request.payload.batch.coverage_end_date,
                 **_minute_sequence_identity(request.payload),
                 policy_outcome=policy_result.outcome,
                 policy_details=policy_details,

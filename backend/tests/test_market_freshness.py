@@ -271,6 +271,7 @@ async def test_twelve_data_freshness_turns_late_at_1130_taipei(test_session):
     )[0]
     assert due.expected_data_date == date(2026, 7, 22)
     assert due.status == "late"
+    assert due.feeds[0].latest_successful_data_date == date(2026, 7, 21)
 
 
 @pytest.mark.asyncio
@@ -333,6 +334,72 @@ async def test_freshness_uses_scheduler_control_provider_and_feed(test_session):
     assert row.status == "fresh"
     assert row.coverage_data_date == date(2026, 7, 22)
     assert row.feeds[0].source == "finlab"
+
+
+@pytest.mark.asyncio
+async def test_incremental_freshness_counts_successful_backfill_and_reports_batch_date(
+    test_session,
+):
+    await _setup(test_session)
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    dataset.config["delivery_expectation"]["delivery_mode"] = "incremental"
+    test_session.add(
+        IngestionRun(
+            run_id=uuid7(),
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 22),
+            delivery_mode="backfill",
+            coverage_start_date=date(2026, 7, 21),
+            coverage_end_date=date(2026, 7, 22),
+            is_rerun=False,
+            status="completed",
+            completed_at=NOW,
+        )
+    )
+    await test_session.commit()
+
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+
+    assert row.status == "fresh"
+    assert row.feeds[0].status == "fresh"
+    assert row.feeds[0].latest_successful_data_date == date(2026, 7, 22)
+    assert row.coverage_data_date == date(2026, 7, 22)
+
+
+@pytest.mark.asyncio
+async def test_incremental_freshness_keeps_out_of_range_backfill_visible_but_late(
+    test_session,
+):
+    await _setup(test_session)
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    dataset.config["delivery_expectation"]["delivery_mode"] = "incremental"
+    test_session.add(
+        IngestionRun(
+            run_id=uuid7(),
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 23),
+            delivery_mode="backfill",
+            coverage_start_date=date(2026, 7, 23),
+            coverage_end_date=date(2026, 7, 23),
+            is_rerun=False,
+            status="completed",
+            completed_at=NOW,
+        )
+    )
+    await test_session.commit()
+
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+
+    assert row.status == "late"
+    assert row.feeds[0].status == "late"
+    assert row.feeds[0].latest_successful_data_date == date(2026, 7, 23)
+    assert row.coverage_data_date == date(2026, 7, 23)
 
 
 @pytest.mark.asyncio

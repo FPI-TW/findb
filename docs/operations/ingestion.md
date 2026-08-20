@@ -95,6 +95,14 @@ Delivery policy以最近同source、dataset、schema/version的合格delivery建
 `warn`階段只產生可觀測訊號；切到 `reject`前必須先用真實feed校準count、freshness、
 coverage與missing-delivery時間窗。
 
+EOD 的 bounded checkpoint catch-up 使用 `delivery_mode=backfill`。`ingestion_run` 會保存
+成對的 `coverage_start_date`／`coverage_end_date`；沒有宣告範圍的 backfill 只代表自己的
+`batch_data_date`，有範圍的 backfill 才能覆蓋包含在區間內的交易日。採
+`delivery_mode=incremental` 的 missing-delivery monitor 會接受同日 incremental 或能證明
+覆蓋預期日期的 backfill；`full_snapshot`、`backfill` 與分鐘 `sequenced_snapshot` expectation
+仍維持原本的嚴格模式。Rerun 不會被當成新的 delivery，raw retention 到期或格式不完整的
+歷史 payload 則保留 NULL coverage，不能推導出補齊證據。
+
 Scheduler 的執行時間、timezone 與 dataset mapping 以 `scheduler_control` 和
 `scheduler_dataset` 為唯一權威；dataset 的 `delivery_expectation` 只描述該 feed 的資料日期
 與完整性政策。現行 Fetcher 會把 DB definition 與 reviewed executable workload 嚴格比對，
