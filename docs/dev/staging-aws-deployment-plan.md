@@ -323,6 +323,15 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 - [ ] FinDB與Fetcher各完成兩次SSM deploy，並通過bounded acceptance與一個完整排程週期觀察。
 - [ ] EC2/RDS/EBS/application告警、log retention、owner與recovery RTO/RPO已記錄。
 - [ ] 所有staging例外都有owner、期限、補償控制與退場觸發條件。
+- [ ] 本計畫的完成結果已移入永久文件：現行部署操作放入
+  `docs/operations/deployment.md`，migration與recovery規則放入對應operations runbook，
+  target設定契約放入`infra/env/`，尚未完成項目只保留在`docs/dev/backlog.md`。
+- [ ] 所有上述驗收證據均已有永久、可查驗的位置，且repo內不再需要本計畫解釋現行架構或
+  操作；完成此確認的同一個PR必須刪除`docs/dev/staging-aws-deployment-plan.md`，並移除或改寫
+  README、文件索引、backlog及其他文件對它的連結。
+
+這份檔案是暫時性執行計畫，不是永久runbook。不得在尚有未完成Phase、未搬移的操作知識或
+只存在本文的驗收證據時提前刪除；反之，全部完成後仍保留本文，也不符合完成定義。
 
 ## 尚待決策
 
