@@ -7,6 +7,11 @@
 > secrets仍須在外部管理。Push至`main`會自動部署staging；production只能透過
 > `workflow_dispatch`明確選擇，並受production Environment protection約束。
 
+> SSH、GitHub runtime secrets與SHA tag的退場順序，以及staging AWS外部資源清冊與
+> 完成定義，見
+> [Staging AWS deployment completion plan](../dev/staging-aws-deployment-plan.md)。在各phase
+> 驗收前，本文件描述的SSH流程仍是現行runbook，不得把目標架構誤當成已部署。
+
 ## Workflow 邊界
 
 | Workflow | 責任 | 主要觸發 | Environment / concurrency |

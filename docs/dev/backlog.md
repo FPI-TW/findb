@@ -30,6 +30,9 @@ Canonical tables、Serve API 與 lookup read model 可保留歷史或預留資�
   取代長效 EC2 SSH key。
 - [ ] Runtime secrets 搬至 AWS Secrets Manager/Parameter Store，建立 service-specific
   instance role、secret path 與 KMS policy。
+- [ ] 完成 image digest、release manifest、RDS restore、EC2/SQLite backup、監控與rollback
+  rehearsal；執行順序與驗收證據依
+  [staging AWS deployment completion plan](staging-aws-deployment-plan.md)。
 - [ ] 為每個 active provider/client 簽發並輪替 DB-backed Source client key，完成一個
   完整排程週期的 credential usage 觀察。
 
