@@ -19,7 +19,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CalendarRevisionDay
@@ -64,6 +64,98 @@ class DeliveryExpectationMode(str, Enum):
 # Keep a descriptive alias for callers that use the policy namespace rather
 # than the expectation model name.
 DeliveryPolicyMode = DeliveryExpectationMode
+
+
+def _delivery_mode_value(mode: str | Enum | None) -> str:
+    """Return the persisted value for a delivery-mode enum or string."""
+    value = getattr(mode, "value", mode)
+    return value if isinstance(value, str) else str(value)
+
+
+def compatible_delivery_modes(expected_mode: str | Enum) -> tuple[str, ...]:
+    """Return the run modes accepted by one monitoring expectation.
+
+    Incremental feeds may be repaired by a bounded ``backfill``.  Every other
+    expectation remains mode-strict; in particular a backfill never satisfies
+    a full snapshot or sequenced snapshot expectation.
+    """
+    mode = _delivery_mode_value(expected_mode)
+    if mode == DeliveryExpectationMode.INCREMENTAL.value:
+        return (
+            DeliveryExpectationMode.INCREMENTAL.value,
+            DeliveryExpectationMode.BACKFILL.value,
+        )
+    return (mode,)
+
+
+def delivery_run_covers_date(
+    run: Any,
+    expected_mode: str | Enum,
+    expected_date: date,
+) -> bool:
+    """Return whether a persisted run covers one expected delivery date.
+
+    This Python predicate mirrors :func:`delivery_run_coverage_condition` and
+    is useful for bounded in-memory projections.  An unbounded backfill only
+    covers its own ``batch_data_date``; a ranged backfill covers its inclusive
+    declared interval.
+    """
+    mode = _delivery_mode_value(expected_mode)
+    run_mode = _delivery_mode_value(getattr(run, "delivery_mode", None))
+    batch_date = getattr(run, "batch_data_date", None)
+    if run_mode not in compatible_delivery_modes(mode):
+        return False
+    if mode != DeliveryExpectationMode.INCREMENTAL.value:
+        return run_mode == mode and batch_date == expected_date
+    if run_mode == DeliveryExpectationMode.INCREMENTAL.value:
+        return batch_date == expected_date
+
+    coverage_start = getattr(run, "coverage_start_date", None)
+    coverage_end = getattr(run, "coverage_end_date", None)
+    if coverage_start is None or coverage_end is None:
+        return batch_date == expected_date
+    if coverage_end != batch_date:
+        return False
+    return coverage_start <= expected_date <= coverage_end
+
+
+def delivery_run_coverage_condition(
+    expected_mode: str | Enum,
+    expected_date: Any,
+):
+    """Return the SQL predicate matching :func:`delivery_run_covers_date`.
+
+    ``expected_date`` may be a Python ``date`` or a SQLAlchemy column (for
+    example ``MissingDeliveryAlert.expected_data_date``).
+    """
+    mode = _delivery_mode_value(expected_mode)
+    exact = and_(
+        IngestionRun.delivery_mode == mode,
+        IngestionRun.batch_data_date == expected_date,
+    )
+    if mode != DeliveryExpectationMode.INCREMENTAL.value:
+        return exact
+
+    unbounded_backfill = and_(
+        IngestionRun.delivery_mode == DeliveryExpectationMode.BACKFILL.value,
+        IngestionRun.coverage_start_date.is_(None),
+        IngestionRun.coverage_end_date.is_(None),
+        IngestionRun.batch_data_date == expected_date,
+    )
+    ranged_backfill = and_(
+        IngestionRun.delivery_mode == DeliveryExpectationMode.BACKFILL.value,
+        IngestionRun.coverage_start_date.is_not(None),
+        IngestionRun.coverage_end_date.is_not(None),
+        IngestionRun.coverage_end_date == IngestionRun.batch_data_date,
+        IngestionRun.coverage_start_date <= expected_date,
+        IngestionRun.coverage_end_date >= expected_date,
+    )
+    return or_(exact, unbounded_backfill, ranged_backfill)
+
+
+def delivery_run_mode_condition(expected_mode: str | Enum):
+    """Return the SQL mode predicate for a feed's compatible run modes."""
+    return IngestionRun.delivery_mode.in_(compatible_delivery_modes(expected_mode))
 
 
 class BaselinePolicy(BaseModel):

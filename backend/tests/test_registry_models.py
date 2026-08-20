@@ -1,5 +1,7 @@
 """Registry model schema invariants."""
 
+from sqlalchemy import CheckConstraint
+
 from app.models.registry import (
     IngestionAttempt,
     IngestionRun,
@@ -13,6 +15,21 @@ def test_ingestion_run_indexes_raw_payload_cleanup_lookup() -> None:
 
     assert "idx_run_raw_payload" in index_names
     assert "idx_run_delivery_policy_baseline" in index_names
+
+
+def test_ingestion_run_persists_bounded_coverage_with_guards() -> None:
+    columns = IngestionRun.__table__.columns
+    assert columns["coverage_start_date"].nullable is True
+    assert columns["coverage_end_date"].nullable is True
+
+    constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in IngestionRun.__table__.constraints
+        if isinstance(constraint, CheckConstraint) and constraint.name
+    }
+    assert "ck_ingestion_run_coverage_dates_paired" in constraints
+    assert "ck_ingestion_run_coverage_date_order" in constraints
+    assert "ck_ingestion_run_backfill_coverage_end_matches_batch_date" in constraints
 
 
 def test_ingestion_attempt_has_operational_lookup_indexes() -> None:

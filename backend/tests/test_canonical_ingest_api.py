@@ -174,6 +174,44 @@ async def test_canonical_ingest_persists_attempt_raw_run_and_job(
 
 
 @pytest.mark.asyncio
+async def test_canonical_ingest_and_retained_rerun_persist_eod_coverage(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+):
+    await _seed_dataset(test_session)
+    request = _canonical_request(idempotency_key="finlab-backfill-20260721")
+    request["payload"]["batch"].update(
+        {
+            "delivery_mode": "backfill",
+            "coverage_start_date": "2026-07-20",
+            "coverage_end_date": "2026-07-21",
+        }
+    )
+
+    accepted = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=request,
+    )
+    assert accepted.status_code == 202
+    original_run_id = UUID(accepted.json()["run_id"])
+    original = await test_session.get(IngestionRun, original_run_id)
+    assert original.coverage_start_date == date(2026, 7, 20)
+    assert original.coverage_end_date == date(2026, 7, 21)
+
+    rerun_response = await client.post(
+        f"/api/v1/source/runs/{original_run_id}/rerun",
+        headers=source_headers,
+    )
+    assert rerun_response.status_code == 202
+    rerun = await test_session.get(IngestionRun, UUID(rerun_response.json()["run_id"]))
+    assert rerun.is_rerun is True
+    assert rerun.coverage_start_date == date(2026, 7, 20)
+    assert rerun.coverage_end_date == date(2026, 7, 21)
+
+
+@pytest.mark.asyncio
 async def test_canonical_full_snapshot_resolves_exact_missing_delivery_alert(
     client: AsyncClient,
     source_headers: dict,

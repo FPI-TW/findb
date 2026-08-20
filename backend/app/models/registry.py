@@ -763,6 +763,20 @@ class IngestionRun(Base):
             "sequence IS NULL OR sequence_count IS NULL OR sequence <= sequence_count",
             name="minute_sequence_order",
         ),
+        CheckConstraint(
+            "(coverage_start_date IS NULL AND coverage_end_date IS NULL) OR "
+            "(coverage_start_date IS NOT NULL AND coverage_end_date IS NOT NULL)",
+            name="coverage_dates_paired",
+        ),
+        CheckConstraint(
+            "coverage_start_date IS NULL OR coverage_start_date <= coverage_end_date",
+            name="coverage_date_order",
+        ),
+        CheckConstraint(
+            "delivery_mode IS DISTINCT FROM 'backfill' OR coverage_end_date IS NULL "
+            "OR coverage_end_date = batch_data_date",
+            name="backfill_coverage_end_matches_batch_date",
+        ),
         Index(
             "idx_run_delivery_policy_baseline",
             "dataset_key",
@@ -799,6 +813,8 @@ class IngestionRun(Base):
     schema_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     batch_data_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     delivery_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    coverage_start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    coverage_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     # Minute sequenced snapshots carry durable identity on the run so freshness
     # and missing-delivery monitoring never need to inspect retained raw JSON.
     # New valid minute deliveries populate all four fields; legacy or

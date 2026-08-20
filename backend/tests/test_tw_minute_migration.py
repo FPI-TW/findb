@@ -73,6 +73,7 @@ def test_tw_minute_migration_is_single_linear_head():
     twelve_data_schedule = scripts.get_revision("e5f6a7b8c9d0")
     twelve_data_schedule_0900 = scripts.get_revision("f2a3b4c5d6e7")
     twelve_data_schedule_1030 = scripts.get_revision("a3b4c5d6e7f8")
+    ingestion_coverage = scripts.get_revision("b4c5d6e7f8a9")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -95,7 +96,9 @@ def test_tw_minute_migration_is_single_linear_head():
     assert twelve_data_schedule_0900.down_revision == "f1a2b3c4d5e6"
     assert twelve_data_schedule_1030 is not None
     assert twelve_data_schedule_1030.down_revision == "f2a3b4c5d6e7"
-    assert scripts.get_heads() == ["a3b4c5d6e7f8"]
+    assert ingestion_coverage is not None
+    assert ingestion_coverage.down_revision == "a3b4c5d6e7f8"
+    assert scripts.get_heads() == ["b4c5d6e7f8a9"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -361,7 +364,7 @@ async def test_twelve_data_schedule_policy_step_failure_rolls_back_scheduler(
         expected_scheduler_time = time(9) if direction == "upgrade" else time(10, 30)
         expected_deadline = "10:00:00" if direction == "upgrade" else "11:30:00"
         expected_local_time = "09:00:00" if direction == "upgrade" else "10:30:00"
-        expected_revision = "f2a3b4c5d6e7" if direction == "upgrade" else "a3b4c5d6e7f8"
+        expected_revision = "f2a3b4c5d6e7" if direction == "upgrade" else "b4c5d6e7f8a9"
         async with target_engine.connect() as connection:
             assert (
                 await connection.scalar(

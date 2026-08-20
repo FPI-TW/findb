@@ -19,6 +19,8 @@ from app.services.delivery_policy import (
     DeliveryExpectation,
     FreshnessSchedule,
     PolicyAction,
+    compatible_delivery_modes,
+    delivery_run_covers_date,
     evaluate_delivery_policy,
 )
 from app.services.ingress_contracts import validate_ingress_request
@@ -194,6 +196,34 @@ def test_policy_only_sequenced_snapshot_does_not_expand_eod_contract_enum() -> N
     eod_value["payload"]["batch"]["delivery_mode"] = "sequenced_snapshot"
     with pytest.raises(ValidationError):
         validate_ingress_request(eod_value)
+
+
+def test_incremental_compatibility_requires_provable_backfill_coverage() -> None:
+    expected = date(2026, 7, 21)
+    ranged = SimpleNamespace(
+        delivery_mode="backfill",
+        batch_data_date=date(2026, 7, 22),
+        coverage_start_date=date(2026, 7, 20),
+        coverage_end_date=date(2026, 7, 22),
+    )
+    single_day = SimpleNamespace(
+        delivery_mode="backfill",
+        batch_data_date=expected,
+        coverage_start_date=None,
+        coverage_end_date=None,
+    )
+    out_of_range = SimpleNamespace(
+        delivery_mode="backfill",
+        batch_data_date=date(2026, 7, 23),
+        coverage_start_date=date(2026, 7, 22),
+        coverage_end_date=date(2026, 7, 23),
+    )
+
+    assert compatible_delivery_modes("incremental") == ("incremental", "backfill")
+    assert delivery_run_covers_date(ranged, "incremental", expected)
+    assert delivery_run_covers_date(single_day, "incremental", expected)
+    assert not delivery_run_covers_date(out_of_range, "incremental", expected)
+    assert not delivery_run_covers_date(ranged, "full_snapshot", expected)
 
 
 @pytest.mark.parametrize(

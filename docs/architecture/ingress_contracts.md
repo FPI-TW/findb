@@ -88,6 +88,10 @@ Fetcher adapter。
 
 `full_snapshot` 代表該資料日的完整 dataset universe；只送異動或部分 symbols 必須
 使用 `incremental`。`backfill` 可以跨日期，但 `data_date` 必須等於 coverage end。
+Backend 會把這組 coverage metadata 同步保存到 `ingestion_run`，供 missing-delivery
+監控判斷 bounded checkpoint catch-up；同日 incremental 或明確覆蓋預期日期的 backfill
+可補齊 incremental expectation，其他 expectation 不會跨 delivery mode 相容。Rerun 仍標記
+為 rerun，不會成為新的 delivery arrival。
 
 ## Staging active schemas
 
