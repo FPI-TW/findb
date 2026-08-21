@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import signal
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from datetime import time as clock_time
@@ -60,6 +62,38 @@ class SchedulerControlProtocolError(SchedulerControlError):
 
 class SchedulerControlTransportError(SchedulerControlError):
     """Control transport retries were exhausted."""
+
+
+@contextmanager
+def scheduler_stop_event(
+    existing: threading.Event | None = None,
+) -> Iterator[threading.Event]:
+    """Translate process termination signals into a graceful loop stop.
+
+    Callers may inject an existing event for tests or embedding.  Production
+    CLIs omit it, so SIGTERM from the container runtime and interactive SIGINT
+    both request a stop without interrupting an active provider cycle.
+    """
+
+    if existing is not None:
+        yield existing
+        return
+
+    stopper = threading.Event()
+    installed: dict[signal.Signals, Any] = {}
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        stopper.set()
+
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous = signal.getsignal(signum)
+            signal.signal(signum, request_stop)
+            installed[signum] = previous
+        yield stopper
+    finally:
+        for signum, previous in installed.items():
+            signal.signal(signum, previous)
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +390,12 @@ class SchedulerControlLoop:
                     pending_error = _bound_error(f"definition drift: {type(exc).__name__}: {exc}")
                     self._wait(stopper)
                     continue
+
+            # SIGTERM can arrive after the final running acknowledgement. Do
+            # not cross the provider side-effect boundary once shutdown has
+            # been requested; an already-started cycle still finishes below.
+            if stopper.is_set():
+                break
 
             heartbeat_stop = threading.Event()
             heartbeat = _Heartbeat(
@@ -677,6 +717,7 @@ __all__ = [
     "SchedulerControlResponse",
     "SchedulerControlResponseError",
     "SchedulerControlTransportError",
+    "scheduler_stop_event",
     "scheduler_control_keys",
     "validate_scheduler_definition",
 ]

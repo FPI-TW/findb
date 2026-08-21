@@ -34,6 +34,7 @@ from findb_fetcher.schedule import (
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
+    scheduler_stop_event,
     validate_scheduler_definition,
 )
 from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
@@ -185,29 +186,30 @@ def _run_forever(
 ) -> int:
     """Run the DB-controlled loop, constructing provider clients per cycle."""
 
-    with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
-        validator = None
-        if expected_definition is not None:
-            provider, dataset_keys, slot_id, scheduled_local_time, timezone_name = (
-                expected_definition
-            )
-
-            def validator(response: Any) -> None:
-                validate_scheduler_definition(
-                    response,
-                    provider=provider,
-                    dataset_keys=dataset_keys,
-                    slot_id=slot_id,
-                    scheduled_local_time=scheduled_local_time,
-                    timezone_name=timezone_name,
+    with scheduler_stop_event(stop_event) as stopper:
+        with SchedulerControlClient(config, SCHEDULER_CONTROL_KEY) as control:
+            validator = None
+            if expected_definition is not None:
+                provider, dataset_keys, slot_id, scheduled_local_time, timezone_name = (
+                    expected_definition
                 )
 
-        loop = (
-            SchedulerControlLoop(control, definition_validator=validator)
-            if validator is not None
-            else SchedulerControlLoop(control)
-        )
-        return loop.run(cycle_factory, stop_event=stop_event)
+                def validator(response: Any) -> None:
+                    validate_scheduler_definition(
+                        response,
+                        provider=provider,
+                        dataset_keys=dataset_keys,
+                        slot_id=slot_id,
+                        scheduled_local_time=scheduled_local_time,
+                        timezone_name=timezone_name,
+                    )
+
+            loop = (
+                SchedulerControlLoop(control, definition_validator=validator)
+                if validator is not None
+                else SchedulerControlLoop(control)
+            )
+            return loop.run(cycle_factory, stop_event=stopper)
 
 
 def _expected_definition(

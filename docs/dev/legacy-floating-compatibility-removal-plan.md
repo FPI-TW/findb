@@ -21,11 +21,11 @@ active feed acceptance或staging AWS P0工作：
 | 項目 | 現況 | 完成條件 |
 | --- | --- | --- |
 | Nginx image | Production Compose使用`nginx:alpine` | 使用staging已驗收的明確版本與repository digest |
-| Fetcher schedule/state | 可讀v1 schedule及state schema v1／v2，並接受舊slot | 所有live state為v3；runtime只接受current config、state及canonical slot |
+| Fetcher schedule/state | Twelve Data／FinLab的通用`SchedulerState`可讀v1／v2並接受舊slot；Shioaji使用獨立`meta.schema_version=9` state | Twelve Data／FinLab的通用state全為SQLite `PRAGMA user_version=3`；Shioaji全為`meta.schema_version=9`，不套用generic legacy-slot migration；runtime只接受current config、provider-specific current state及canonical slot |
 | Backend scheduler | 接受舊key／slot，ORM仍保留`dataset_keys` projection | 舊輸入fail closed；association是唯一dataset mapping；projection已移除 |
 | Raw bucket marker | Twelve Data可accept-once舊account＋bucket marker | 所有provider只接受provider-scoped marker |
 | Static routes | Backend仍提供兩條舊HTML route | 舊route與HTML移除且回`404`；Dashboard替代功能不變 |
-| TW futures修復工具 | Deprecated工具仍可搬移或刪除舊routing殘留 | 所有適用資料面零候選，工具與現行文件引用已移除 |
+| TW futures修復工具 | Deprecated工具只處理歷史TW futures／option routing殘留；目前沒有active TW futures contract feed | 歷史適用資料面及promotion來源以exact-image dry-run驗證為零候選；現行Shioaji／market-minute路徑的0050回歸維持`TW/etf`；工具與現行文件引用已移除 |
 
 整體完成時，將仍有效的部署、ingestion及維護規則併入現行文件，從backlog移除此項，並在
 同一PR刪除本文件。Git history是唯一歷史保存方式，不建立archive或redirect stub。
@@ -44,36 +44,44 @@ active feed acceptance或staging AWS P0工作：
 
 ## Wave 2：收斂Fetcher state與Raw marker
 
-此波只使用目前仍具相容能力的release收斂live state，不移除reader或migrator。
+此波只使用目前仍具相容能力的release收斂live state，不移除reader或migrator；版本gate依各provider的state implementation判定。
 
 1. 對每個已部署provider停止single writer，備份SQLite state與Raw bucket marker，再執行
    SQLite integrity／schema檢查。尚未建立的target以資源盤點證據記為N/A。
-2. 讓現行runtime將state升至schema v3，並確認沒有`legacy`、舊slot alias或仍依賴
-   `legacy_schedule_id`的job。任何帶舊slot的pending、running或retry prepared request都必須
-   先安全完成；不得直接刪除。
+2. 讓Twelve Data與FinLab的通用`SchedulerState`由現行runtime升至SQLite `PRAGMA user_version=3`；
+   Shioaji不使用此通用state，僅驗證獨立state的`meta.schema_version=9`，不做generic legacy
+   slot migration。通用state／schedule job必須確認沒有`legacy`、舊slot alias或仍依賴
+   `legacy_schedule_id`；任何帶舊slot的pending、running或retry prepared request都必須先安全
+   完成，provider-specific版本或identity不符時fail closed，不得直接刪除。
 3. 以job identity、attempt及terminal state檢查migration碰撞。無法唯一判定、資料不一致或
    integrity check失敗時停止rollout，另開具operator核准的remediation工作。
 4. 讓Twelve Data執行既有accept-once流程，確認marker已使用account、bucket、provider共同
    計算的fingerprint；所有provider marker owner／mode必須為`10001:10001`／`0600`。
 5. 從備份複製品演練SQLite及marker還原，重新執行相同preflight；不得覆寫live state驗證。
 
-驗收：所有已部署target均有v3備份、成功的restore rehearsal、canonical slot及
-provider-scoped marker，且沒有legacy nonterminal request。未達任一條件即不得進入Wave 3。
+驗收：所有已部署target均有對應版本備份（Twelve Data／FinLab通用state為SQLite
+`PRAGMA user_version=3`；Shioaji為`meta.schema_version=9`）、成功的restore rehearsal、
+canonical slot及provider-scoped marker，且沒有legacy nonterminal request。未達任一條件即不得
+進入Wave 3。
 
 ## Wave 3：發布strict Fetcher
 
 1. 移除v1 schedule config／loader、`legacy_schedule_id`、舊slot map、contract validation
-   compatibility copy、v1／v2 state migrator及`legacy` defaults。
-2. Scheduler CLI只接受current manifest與state schema v3；舊config、舊state或舊delivery
-   slot在啟動／validation階段fail closed，不進入delivery。
+   compatibility copy、Twelve Data／FinLab通用`SchedulerState`的v1／v2 state migrator及
+   `legacy` defaults；Shioaji獨立state不引入或套用通用migrator。
+2. Scheduler CLI及runtime只接受current manifest與provider-specific current state：Twelve
+   Data／FinLab通用`SchedulerState`必須是SQLite `PRAGMA user_version=3`；Shioaji獨立state
+   必須是`meta.schema_version=9`，且不經generic legacy slot migration。舊config、舊state或
+   舊delivery slot在啟動／validation階段fail closed，不進入delivery。
 3. 刪除Twelve Data舊Raw marker fingerprint與特殊接受分支；三個provider共用相同的
    provider-scoped marker拒絕規則。
 4. 先逐一部署provider runtime，確認single writer、checkpoint、delivery及graceful stop，再
    觀察至少兩個有效交易日週期。失敗時只有在state仍相容時才回切前一exact image；否則
    保持writer停止並forward-fix。
 
-驗收：current v3 recovery測試保留；只服務v1／v2、舊slot及舊marker接受行為的測試與fixture
-移除，並由拒絕測試取代。
+驗收：Twelve Data／FinLab通用state的current SQLite `PRAGMA user_version=3` recovery測試，
+以及Shioaji獨立state的`meta.schema_version=9` strict recovery／fail-closed測試保留；只服務
+v1／v2、舊slot及舊marker接受行為的測試與fixture移除，並由拒絕測試取代。
 
 ## Wave 4：Backend application contract
 
@@ -121,20 +129,24 @@ Dashboard lookup的Serve key注入仍正常。
 1. 使用exact application image在每個既存staging及production RDS執行
    `fix_misrouted_tw_futures.py` dry-run，保存target、image digest、時間及bounded candidate
    counts；不得在輸出記錄連線資訊或完整資料內容。
-2. 候選必須同時涵蓋`TW/equity 0050`及工具目前辨識的`TW/equity`期貨／選擇權代碼。
-   尚未建立的production target可用AWS資源盤點記為N/A，但任何預定promotion至production的
-   snapshot、dump或seed也必須完成相同零候選驗證。
+2. exact-image dry-run候選範圍必須涵蓋歷史`TW/equity 0050` duplicate及工具目前辨識的
+   `TW/equity`期貨／選擇權routing residues；這是既存資料清理，不代表現行有futures feed。
+   目前repo沒有active TW futures contract feed或current futures normalizer，不得以不存在的
+   API／feed作為gate。尚未建立的production target可用AWS資源盤點記為N/A，但任何預定
+   promotion至production的snapshot、dump或seed也必須完成相同零候選驗證。
 3. 任一資料面有候選時立即no-go。另開具RDS snapshot、writer pause、dry-run review、
    `--apply`、FK／canonical／Serve驗證及cache重生的獨立修復工作；完成後重新執行dry-run，
    直到所有適用資料面為零。
-4. 確認current normalizer及instrument identity測試已覆蓋TW futures寫入`WTX/future`、0050只
-   使用canonical ETF identity；若缺少覆蓋，先補回歸測試，避免移除工具後重建相同殘留。
+4. Active regression coverage必須透過現行Shioaji／market-minute path驗證`0050`（`tw_etf_minute`）
+   持續寫入`TW/etf`；歷史TW futures／option residues只由上述exact-image dry-run覆蓋。
+   不新增或假設current futures API、normalizer或feed，避免移除工具後重建相同殘留。
 5. Gate通過後刪除`backend/scripts/fix_misrouted_tw_futures.py`，並從data maintenance、root
    Agent指南及所有repo引用移除。`cleanup_stale_instruments.py`不在此波範圍內。
 
-驗收：所有適用資料面及production promotion來源皆為零候選；repo不再包含腳本或引用；
-canonical ingest、Serve及instrument cache測試通過。不得保留stub、deprecated wrapper或
-以GitHub artifact封存腳本。
+驗收：所有適用資料面及production promotion來源的歷史TW futures／option residues exact-image
+dry-run皆為零候選；現行Shioaji／market-minute的0050 regression持續為`TW/etf`；repo不再
+包含腳本或引用；canonical ingest、Serve及instrument cache測試通過。不得保留stub、deprecated
+wrapper或以GitHub artifact封存腳本。
 
 ## Public interfaces
 
@@ -148,12 +160,14 @@ canonical ingest、Serve及instrument cache測試通過。不得保留stub、dep
 ## 驗證矩陣
 
 - Compose：Nginx使用literal版本與digest，所有production services可render。
-- Fetcher：schedule、contract、CLI、state、provider scheduler及deployment marker測試。
+- Fetcher：schedule、contract、CLI、Twelve Data／FinLab通用state（SQLite `PRAGMA user_version=3`）、
+  Shioaji獨立state（`meta.schema_version=9`）、provider scheduler及deployment marker測試。
 - Backend：scheduler control、Source ingress、Admin filter及association-only response測試。
 - Migration：空DB、舊revision、不一致fixture及upgrade／downgrade／upgrade。
 - Static／Nginx：舊route `404`、Dashboard與skill archive `200`、Referer規則只保留Dashboard。
-- Deprecated tool：staging／production與promotion來源零候選，TW futures／0050 routing回歸
-  測試通過，腳本及引用已移除。
+- Deprecated tool：staging／production與promotion來源的歷史TW futures／option residues以
+  exact-image dry-run零候選，現行Shioaji／market-minute的0050 `TW/etf`回歸測試通過；repo
+  沒有active futures contract feed／normalizer，腳本及引用已移除。
 - Repo：搜尋所有已移除symbol、config、route與檔名，執行Markdown link檢查及
   `git diff --check`。
 

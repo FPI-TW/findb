@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
+import subprocess
+import sys
 import threading
 from datetime import datetime, time, timezone
 from types import SimpleNamespace
@@ -31,6 +34,7 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlResponseError,
     SchedulerControlTransportError,
     _log_control_failure,
+    scheduler_stop_event,
     validate_scheduler_definition,
 )
 from findb_fetcher.shioaji_scheduler_cli import (
@@ -111,6 +115,102 @@ def test_interval_configuration_uses_one_shared_environment_variable(
         monkeypatch.setenv("FETCHER_SCHEDULER_CONTROL_POLL_SECONDS", value)
         with pytest.raises(ConfigError):
             FetcherConfig.from_env()
+
+
+def test_scheduler_stop_event_translates_signals_and_restores_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = {
+        signal.SIGTERM: object(),
+        signal.SIGINT: object(),
+    }
+    handlers = dict(original)
+
+    monkeypatch.setattr(signal, "getsignal", lambda signum: handlers[signum])
+
+    def install(signum: signal.Signals, handler: Any) -> None:
+        handlers[signum] = handler
+
+    monkeypatch.setattr(signal, "signal", install)
+
+    with scheduler_stop_event() as stopper:
+        assert not stopper.is_set()
+        handler = handlers[signal.SIGTERM]
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        assert stopper.is_set()
+        assert handlers[signal.SIGINT] is not original[signal.SIGINT]
+
+    assert handlers == original
+
+
+def test_scheduler_stop_event_preserves_injected_event_without_signal_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplied = threading.Event()
+    monkeypatch.setattr(
+        signal,
+        "signal",
+        lambda *_args: pytest.fail("signal handlers must not change"),
+    )
+
+    with scheduler_stop_event(supplied) as stopper:
+        assert stopper is supplied
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "findb_fetcher.scheduler_cli",
+        "findb_fetcher.finlab_scheduler_cli",
+        "findb_fetcher.shioaji_scheduler_cli",
+    ],
+)
+def test_production_cli_exits_cleanly_on_real_sigterm(module_name: str) -> None:
+    code = """
+import importlib
+import sys
+
+module = importlib.import_module(sys.argv[1])
+
+class Client:
+    def __init__(self, _config, _key):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+class Loop:
+    def __init__(self, _control):
+        pass
+
+    def run(self, _cycle, *, stop_event=None):
+        print("ready", flush=True)
+        return 0 if stop_event.wait(5) else 2
+
+module.SchedulerControlClient = Client
+module.SchedulerControlLoop = Loop
+sys.exit(module._run_forever(object(), lambda: None))
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, module_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+        process.send_signal(signal.SIGTERM)
+        _stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, stderr
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_control_client_rejects_protocol_identity_and_sends_safe_payload() -> None:
@@ -200,6 +300,33 @@ def test_disabled_idle_never_constructs_or_invokes_cycle() -> None:
     assert SchedulerControlLoop(control).run(lambda: cycles.append(1), stop_event=stop_event) == 0
     assert cycles == []
     assert [call["observed_state"] for call in control.calls] == ["stopped"]
+
+
+def test_stop_after_running_preflight_does_not_start_cycle() -> None:
+    stop_event = threading.Event()
+
+    def stop_after_preflight(kwargs: dict[str, Any], control: _Control) -> Any:
+        assert kwargs["observed_state"] == "running"
+        control.stop_event.set()
+        return SimpleNamespace(
+            scheduler_key=control.scheduler_key,
+            desired_state="running",
+            revision=len(control.calls),
+            server_time=datetime.now(UTC),
+        )
+
+    control = _Control(["running", stop_after_preflight], stop_event=stop_event)
+    cycles: list[int] = []
+
+    assert (
+        SchedulerControlLoop(control).run(
+            lambda: cycles.append(1),
+            stop_event=stop_event,
+        )
+        == 0
+    )
+    assert cycles == []
+    assert [call["observed_state"] for call in control.calls] == ["stopped", "running"]
 
 
 def test_enabled_cycle_requires_running_preflight_and_reports_completion() -> None:
@@ -545,6 +672,7 @@ def test_all_production_clis_use_fixed_control_keys(
             pass
 
         def run(self, _cycle: Any, *, stop_event: Any = None) -> int:
+            assert isinstance(stop_event, threading.Event)
             return 0
 
     module = runner.__module__
