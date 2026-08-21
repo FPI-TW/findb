@@ -1,48 +1,40 @@
 # FinDB 文件
 
-本目錄只保存目前仍有效的架構、契約與維運資訊。歷史決策以 Git history
-追溯，不在主文件中維護已完成的 roadmap、phase checklist 或事故過程。
+本目錄只保存目前有效的架構、契約、操作規則與未完成工作。歷史決策、已完成計畫與
+一次性cutover由Git history追溯，不在主文件持續維護。
 
-## 必讀文件
+## 從任務開始
 
-| 文件                                                                             | 用途                                                                       |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [architecture/overview.md](architecture/overview.md)                             | 現行系統架構、資料流、服務角色與不可破壞的邊界。                           |
-| [architecture/ingress_contracts.md](architecture/ingress_contracts.md)           | Fetcher 與 FinDB 間的 versioned ingress contract。                         |
-| [architecture/tw-minute-data.md](architecture/tw-minute-data.md)                 | 台灣一分鐘 ingress/archive 契約，以及尚未實作的後續資料架構。              |
-| [architecture/service_boundaries.md](architecture/service_boundaries.md)         | Monorepo 內 FinDB、Fetcher、Dashboard 與下游服務的責任邊界。               |
-| [architecture/market_calendars.md](architecture/market_calendars.md)             | 市場年度日曆、Dashboard 管理流程與 Scheduler fail-closed 合約。            |
-| [api/api_usage_guide.md](api/api_usage_guide.md)                                 | Source、Serve、Admin API 的認證、主要端點與使用方式。                      |
-| [operations/deployment.md](operations/deployment.md)                             | EC2 部署、staging資料界線、GitHub Environment、AWS IAM 與 secrets 邊界。   |
-| [operations/ingestion.md](operations/ingestion.md)                               | Durable ingestion、bounded staging驗收、RabbitMQ、監控、恢復與 rollback。  |
-| [operations/migration_workflow.md](operations/migration_workflow.md)             | Alembic migration 與 staging rollout 規則。                                |
-| [operations/data_maintenance.md](operations/data_maintenance.md)                 | Staging reset、partial dump、seed、backfill、raw retention 與 cache 維護。 |
-| [dev/backlog.md](dev/backlog.md)                                                 | 尚未完成、仍需追蹤的工作與已知風險。                                       |
-| [dev/staging-aws-deployment-plan.md](dev/staging-aws-deployment-plan.md)         | Staging AWS 的 OIDC、SSM、secrets、digest、備份與分階段驗收計畫。           |
-| [dev/fetcher-data-automation-backlog.md](dev/fetcher-data-automation-backlog.md) | Fetcher 四時段自動化、provider coverage、資料契約與上線驗收 backlog。      |
-
-## Staging active feeds
-
-目前 staging 只啟用下列 provider/dataset 配對：
-
-| Provider | Dataset |
+| 需求 | 文件 |
 | --- | --- |
-| `twelve_data` | `us_equity_eod` |
-| `finlab` | `tw_equity_eod` |
-| `shioaji` | `tw_equity_minute` |
-| `shioaji` | `tw_etf_minute` |
+| 理解整體資料流、服務責任、active feeds與scheduler/calendar治理 | [architecture/overview.md](architecture/overview.md) |
+| 實作或升級Fetcher與Source間的versioned contract | [architecture/ingress_contracts.md](architecture/ingress_contracts.md) |
+| 呼叫Source、Serve或Admin API | [api/api_usage_guide.md](api/api_usage_guide.md) |
+| 部署、migration、credential設定、release或rollback | [operations/deployment.md](operations/deployment.md) |
+| 驗證ingestion、監控queue、診斷delivery或重建RabbitMQ | [operations/ingestion.md](operations/ingestion.md) |
+| 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
+| 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
+| 執行尚未落地的staging AWS控制面強化 | [dev/staging-aws-deployment-plan.md](dev/staging-aws-deployment-plan.md) |
+| 分波移除legacy／floating compatibility | [dev/legacy-floating-compatibility-removal-plan.md](dev/legacy-floating-compatibility-removal-plan.md) |
 
-Canonical tables、Serve API 與 lookup read model 仍保留歷史或未來資料域的查詢能力，
-但不代表那些資料域目前有 active provider feed。舊 provider、direct ingest route 與
-futures contract feed 不在 staging 啟用範圍；需要新增資料域時，另案建立完整新版
-contract、normalizer、DQ 與 Serve read model 驗收。
+## Source of truth
 
-## 文件原則
+文件用來解釋穩定邊界與操作意圖；精確行為依下列來源為準：
 
-- `architecture/` 描述現在或已核准的目標架構，不記錄已完成的執行過程。
-- `api/` 面向 API 消費者；精確 request/response schema 以同版本 OpenAPI
-  與 versioned contract endpoint 為準。
-- `operations/` 只保留可直接執行的維運規則。
-- `dev/backlog.md` 只列未完成項目；完成後刪除，不累積完成紀錄。
-- 程式碼、Alembic migration、Compose 與 workflow 是最終 source of truth。
-- 架構或部署方式改變時，必須在同一個 PR 更新相關文件。
+- API與schema：部署版本的OpenAPI、versioned contract endpoint及`contracts/`。
+- Active datasets與policy：`backend/scripts/seed_data.py`及Fetcher的versioned configs。
+- DB schema：ORM與Alembic migrations。
+- Runtime topology：`docker-compose.prod.yml`。
+- Environment設定：`infra/env/`與`app.config.Settings`。
+- CI/CD：`.github/workflows/`。
+
+## 維護原則
+
+- `architecture/`只描述現況與不可破壞的邊界。
+- `api/`只保存穩定使用規則，不複製完整OpenAPI。
+- `operations/`只保存可重複執行的runbook；一次性cutover完成後刪除。
+- `dev/backlog.md`只列仍在核准範圍內的未完成工作，完成後直接移除。
+- `dev/`只保存尚未完成的開發計畫。功能完成時，必須在同一個PR將仍有效的架構、契約、API
+  或操作知識整併至對應的`architecture/`、`api/`或`operations/`文件，並移除完成的開發文件；
+  不建立archive或保留已完成計畫，歷史由Git追溯。
+- 架構或部署方式改變時，在同一個PR更新相關文件並移除被取代的描述。

@@ -53,7 +53,7 @@ findb/
 
 Fetcher目前包含contract validation、安全delivery client、Twelve Data
 `market_eod.v1`日線adapter、durable scheduler、checkpoint與staging runtime。詳見
-[服務邊界](docs/architecture/service_boundaries.md)。
+[現行架構](docs/architecture/overview.md)。
 
 ## 技術
 

@@ -1,51 +1,39 @@
 # FinDB API 使用指南
 
-> 精確 request/response model 以部署版本的 `/docs`、`/openapi.json` 與 Source
-> contract endpoint 為準。本文件只維護穩定的使用規則。
+> 精確request/response model以部署版本的`/docs`、`/openapi.json`與Source contract
+> endpoint為準。本文件只維護穩定的使用規則。
 
-## Base paths
+## API families與認證
 
 ```text
-/api/v1/source   資料寫入與 delivery status
-/api/v1/serve    Canonical 資料查詢
-/api/v1/admin    營運與修正
-/health          Process health
+/api/v1/source   Contract ingest、delivery status與scheduler control
+/api/v1/serve    Canonical唯讀查詢
+/api/v1/admin    營運、credential、修正與治理
+/health          Process liveness
 ```
 
-Staging 由 nginx 將 Source/Admin 導向 ingest role，Serve 導向 serve role。
-
-目前 staging 的 active provider feeds 僅有：`twelve_data/us_equity_eod`、
-`finlab/tw_equity_eod`、`shioaji/tw_equity_minute`、`shioaji/tw_etf_minute`。
-Serve API 仍可讀取保留的 canonical/history read model，但 read model 不代表目前有
-對應的 provider feed。
-
-## 認證
-
-受保護端點使用：
+Machine API使用：
 
 ```http
 X-API-Key: <key>
 ```
 
-Admin human session改用：
+Dashboard human session使用：
 
 ```http
 Authorization: Bearer <admin-session>
 ```
 
-| API | 規則 |
+| API | 認證與權限 |
 | --- | --- |
-| Source | 必須；使用 DB-backed source client key |
-| Serve | 由 `SERVE_REQUIRE_AUTH` 控制；staging 建議啟用 |
-| Admin | 永遠必須；Dashboard使用具名user session，machine client使用DB-backed Admin key |
+| Source | 必須使用DB-backed Source client key，受`source_name`、datasets與rate limit限制 |
+| Serve | 由`SERVE_REQUIRE_AUTH`控制；即使開放仍保持唯讀 |
+| Admin | 永遠需要具名session、DB-backed machine key或break-glass recovery key |
 
-Source client可限制 `source_name`、`allowed_datasets`與rate limit。每個
-provider/client應使用獨立 key。Source staging入口另受 nginx IP allowlist保護。
-`ADMIN_BREAK_GLASS_API_KEY`只供初次bootstrap與緊急復原，不得作為日常Dashboard身分。
+每個provider/client使用獨立Source key。Fetcher的calendar Serve key只讀published
+calendar且不得與Source key共用。`ADMIN_BREAK_GLASS_API_KEY`只供bootstrap與緊急復原。
 
 ## Canonical ingest
-
-所有新 Fetcher使用：
 
 ```http
 POST /api/v1/source/ingest
@@ -70,97 +58,71 @@ X-API-Key: <source-client-key>
       "delivery_mode": "full_snapshot",
       "declared_record_count": 1
     },
-    "data": [
-      {
-        "symbol": "2330",
-        "trade_date": "2026-07-24",
-        "currency": "TWD",
-        "close": "1140.00"
-      }
-    ]
+    "data": [{"symbol": "2330", "trade_date": "2026-07-24", "close": "1140.00"}]
   }
 }
 ```
 
-成功回 `202`：
+成功回`202`及`attempt_id`、`run_id`、schema version與初始status。`202`只代表durable
+accept，不代表canonical完成；producer必須保存兩個ID並等待run進入terminal state。
 
-```json
-{
-  "attempt_id": "019...",
-  "run_id": "019...",
-  "status": "pending",
-  "schema_id": "market_eod",
-  "schema_version": 1,
-  "message": "Data received, processing queued"
-}
-```
-
-`202` 只表示 durable accept，不表示 canonical data已完成。呼叫端必須保存
-`attempt_id` 與 `run_id`，並查詢 terminal state。
-
-完整 contract見
-[Versioned Ingress Contract](../architecture/ingress_contracts.md)，或直接取得：
+完整contract見[Versioned Ingress Contract](../architecture/ingress_contracts.md)，或讀取：
 
 ```http
-GET /api/v1/source/contracts/market_eod/versions/1
-GET /api/v1/source/contracts/market_minute/versions/1
+GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 ```
 
-## Delivery status
+## Delivery status、重試與rerun
 
 ```http
-GET /api/v1/source/attempts/{attempt_id}
-GET /api/v1/source/runs/{run_id}
+GET  /api/v1/source/attempts/{attempt_id}
+GET  /api/v1/source/runs/{run_id}
 POST /api/v1/source/runs/{run_id}/rerun
-GET /api/v1/source/datasets
+GET  /api/v1/source/datasets
 ```
 
-- Attempt記錄每一次通過 auth/rate-limit gate 的 canonical呼叫，包括被拒絕的請求。
-- Run代表已接受並排入 normalization的工作。
-- Rerun從保留的 raw payload建立新 run，不修改原 run。
+- Attempt記錄通過auth／rate-limit gate的呼叫，包括contract rejection。
+- Run代表已durable accept並排入normalization的工作。
+- Rerun從仍保存的raw建立新run，不修改原run，也不算新的delivery arrival。
+- 冪等範圍是已認證`source_client_id + dataset_key + idempotency_key`。
+- 同一範圍內的canonical payload、source及schema/version皆相同時回既有run；任一項不同
+  時回`409 IDEMPOTENCY_PAYLOAD_MISMATCH`。
+- Credential綁定的source與request不符時，會先回`403 SOURCE_IDENTITY_MISMATCH`。
+- `request_key`、`fetched_at`與`delivery` metadata不參與內容衝突比對。
+- Raw retention清除對應payload後不再保證key可去重；Source key輪替產生的新client identity
+  也屬新的冪等範圍。
+- Timeout、429、502、503、504重試時沿用相同key並遵守`Retry-After`。
 
-## Idempotency與重試
+不要只看HTTP `202`判斷資料完成，也不要因client timeout自行生成新key。
 
-- 相同 source、dataset、idempotency key與內容：回既有 `run_id`。
-- 相同 key、不同 source、schema/version或內容：`409`。
-- Timeout、429、502、503、504重試時必須沿用相同 key。
-- `Retry-After` 存在時應遵守。
-- 不要因 client timeout自行生成新 key，否則可能建立重複業務 delivery。
+## Scheduler與calendar
 
-建議 key：
+Fetcher以provider-scoped Source key輪詢並回報heartbeat：
 
-```text
-{source}_{dataset_key}_{data_date}
+```http
+POST /api/v1/source/scheduler-controls/{scheduler_key}/poll
 ```
 
-分批 delivery可再加入可穩定重建的 sequence。
+回應包含provider、dataset mapping、slot、本地時間、timezone、desired state與revision。
+Scope或reviewed workload不一致時consumer必須fail closed。
 
-## Source contract boundary
+Scheduler取得完整published calendar：
 
-Fetcher 只能使用 `/source/ingest` 的 versioned provider-neutral contract。舊的
-`/source/ingest/{market}` 與 `/source/ingest/*/direct` route 已移除，不應再加入
-provider-specific route 或 normalizer。需要新增資料域時，另案完成完整新版 contract、
-dataset registry、normalizer、DQ 與 Serve read model 驗收。
+```http
+GET /api/v1/serve/calendar/years/{market}/{year}
+```
+
+缺少published revision或年度不完整時回`404`。Dashboard calendar preview、draft、publish
+與rollback由Admin API處理；只有Owner可publish／rollback。
 
 ## Serve API
 
-Serve只讀 canonical tables。主要端點：
+Serve只讀canonical tables，涵蓋instrument、EOD、corporate action、macro、futures、
+bonds、calendar及market freshness。保留的endpoint或歷史資料不代表有active provider
+feed；active feed清單見[現行架構](../architecture/overview.md#active-feeds)。
 
-| Endpoint | 用途 |
-| --- | --- |
-| `GET /serve/instruments` | Instrument列表、market/asset class/symbol篩選 |
-| `GET /serve/instruments/{instrument_id}` | 單一 instrument |
-| `GET /serve/eod` | 依 market、symbol、日期查 EOD |
-| `GET /serve/eod/{instrument_id}` | 單一 instrument EOD |
-| `GET /serve/corporate-actions` | 公司行為 |
-| `GET /serve/macro/series` | Macro series |
-| `GET /serve/macro/observations` | Macro observations |
-| `GET /serve/futures/contracts` | 期貨合約 |
-| `GET /serve/futures/continuous` | 連續期貨 EOD |
-| `GET /serve/bonds` | 債券 master |
-| `GET /serve/bonds/eod` | 債券 EOD |
-| `GET /serve/calendar` | 交易日曆 |
-| `GET /serve/calendar/years/{market}/{year}` | Scheduler 專用；只回傳完整已發布年度，否則404 |
+List endpoint的filter、pagination與response envelope以OpenAPI為準。使用
+`/serve/instruments`時可選`include_count=false`避免不必要的count query。
 
 範例：
 
@@ -169,65 +131,34 @@ curl -H "X-API-Key: $SERVE_KEY" \
   "https://<host>/api/v1/serve/eod?market=TW&symbols=2330&start_date=2026-07-01"
 ```
 
-List endpoint使用 response內的 pagination資訊。`/serve/instruments` 支援 cursor
-keyset pagination；不需要總筆數時使用 `include_count=false` 降低DB負擔。其他
-endpoint的實際 query parameters以 OpenAPI為準。
-
-上述 futures endpoints 若仍存在於 canonical read model，只代表歷史/保留資料的唯讀
-查詢；staging 沒有對應的 active provider feed，也沒有 futures contract ingest。
-
 ## Admin API
 
-Admin API具有敏感讀寫能力，只供Dashboard與維運：
+Admin只供Dashboard與維運，主要能力包括：
 
-- Source、Serve與Admin machine credential簽發、列表、輪替與撤銷
-- Admin user、角色與session管理
-- Queue health與missing delivery
-- DQ issue查詢與resolve
-- EOD人工修正與correction audit
-- Raw payload查詢
-- Bulk rerun
-- Instrument cache管理
-- 市場交易日曆設定、JSON／TWSE CSV preview、草稿、發布與回滾
+- user session、Source／Serve／Admin credentials的簽發、輪替與撤銷；
+- scheduler desired state、queue health、missing delivery與market freshness；
+- DQ、raw payload、rerun、EOD correction與audit；
+- instrument cache及市場日曆draft／publish／rollback。
 
-Credential與登入主要端點：
+Credential plaintext只在簽發時顯示一次。Admin machine key不得提供給Fetcher或一般
+Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。完整端點以OpenAPI的
+`Admin API` tag為準。
 
-| Endpoint | 用途 |
-| --- | --- |
-| `POST /admin/auth/bootstrap` | 尚無user時，以break-glass credential建立第一位Owner |
-| `POST /admin/auth/login`、`POST /admin/auth/logout` | 建立或撤銷Dashboard user session |
-| `GET /admin/credentials`、`GET /admin/credentials/overview` | 統一清單與近即時usage摘要 |
-| `POST /admin/credentials` | 簽發一次性顯示plaintext的credential |
-| `POST /admin/credentials/{kind}/{id}/rotate` | 建立successor；不自動撤銷舊key |
-| `DELETE /admin/credentials/{kind}/{id}` | 立即撤銷credential |
-
-其餘端點可由 `/docs` 的 `Admin API` tag查看。Admin machine key不得提供給Fetcher或
-一般Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。
-
-## 常見狀態碼
+## Error、時間與ID
 
 | Status | 意義 |
 | --- | --- |
-| `202` | Delivery已 durable accept並排隊 |
-| `400` | Request語意或delivery policy不合法 |
-| `401` | 缺少 API key |
-| `403` | Key無效、source/dataset scope不符或來源IP不允許 |
-| `409` | Idempotency衝突、dataset未設定contract等狀態衝突 |
-| `413` | Request或payload超過限制 |
-| `422` | Contract/schema/欄位驗證失敗 |
-| `429` | Rate limit |
-| `500` | 非預期內部錯誤 |
-| `503` | DB或ingestion暫時不可用，可依 `Retry-After` 重試 |
+| `202` | Delivery已durable accept並排隊 |
+| `400`／`422` | Request語意、policy或schema不合法 |
+| `401`／`403` | 缺少credential、credential無效、scope或來源IP不符 |
+| `409` | Idempotency或狀態衝突 |
+| `413` | Request或payload超限 |
+| `429` | Rate limit，依`Retry-After`重試 |
+| `503` | DB或ingestion暫時不可用，可安全重試 |
 
-Canonical ingest error會回固定 `code` 與可查詢的 `attempt_id`（若 attempt已能建立）。
-Client應依 code分類，不解析人類訊息。
-
-## 時間、日期與ID
-
-- Datetime使用含 timezone的 ISO 8601；系統正規化為 UTC。
-- 業務日期使用 `YYYY-MM-DD`。
-- UUID視為opaque string，不依版本或排序特性建立client邏輯。
-- Decimal可能以JSON number或字串呈現；財務程式不得轉成binary float後再計算。
+Canonical ingest error提供穩定`code`及可用時的`attempt_id`；client依code分類，不解析
+人類訊息。Datetime使用含timezone的ISO 8601並正規化為UTC；業務日期用`YYYY-MM-DD`；
+UUID視為opaque string；財務decimal不得轉成binary float後計算。
 
 ## 本機驗證
 
@@ -239,19 +170,5 @@ make up-server
 curl http://localhost:8080/health
 ```
 
-互動式文件：
-
-```text
-http://localhost:8080/docs
-http://localhost:8080/openapi.json
-```
-
-自動化測試：
-
-```bash
-make test
-uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
-```
-
-Staging smoke test必須使用專用測試dataset/client或可安全重送的固定 idempotency
-key，並確認 run最後進入 terminal state。
+互動式schema位於`http://localhost:8080/docs`與`/openapi.json`。Staging smoke使用
+專用client、bounded payload及可安全重送的固定idempotency key，並確認terminal state。
