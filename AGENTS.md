@@ -246,4 +246,7 @@ Production 不使用 `findb-app` 單一角色，而是依 `docker-compose.prod.y
 
 - 本檔保持 repo-level 高階指南；domain/module 細節放在最接近的子目錄 `AGENTS.md`。
 - 更新本檔時先確認內容符合目前 repo 結構、Makefile、scripts、tests 與 Docker 設定。
+- `docs/dev/`只保存未完成的開發文件。功能完成時，必須在同一個PR將仍有效的架構、契約、
+  API與維運知識整併至`docs/`對應的現行文件，並移除完成的開發文件與backlog項目；不建立
+  archive，歷史由Git追溯。
 - 若從其他 agent 文件整併內容，移除重複並修正過期資訊；遇到實質衝突先詢問再合併。
