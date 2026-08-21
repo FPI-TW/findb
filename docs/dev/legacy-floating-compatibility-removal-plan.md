@@ -77,9 +77,8 @@ canonical slot及provider-scoped marker，且沒有legacy nonterminal request。
    provider-scoped marker拒絕規則。
 4. 先逐一部署provider runtime，確認single writer、checkpoint、delivery及graceful stop，再
    觀察至少兩個有效交易日週期。失敗時只有在state仍相容時才回切前一exact image；否則
-   保持writer停止並forward-fix。首次導入signal handler時，只能對已完成Wave 2備份與restore
-   rehearsal的exact predecessor tag＋provider-specific image ID接受一次exit `137` bootstrap；
-   三個provider切換後立即移除該exact allowlist，並以後續deploy exit `0`作為graceful-stop驗收。
+   保持writer停止並forward-fix。首次signal-handler bootstrap已使用完成，exact predecessor
+   allowlist必須移除；後續所有deploy均以exit `0`作為唯一graceful-stop驗收條件。
 
 驗收：Twelve Data／FinLab通用state的current SQLite `PRAGMA user_version=3` recovery測試，
 以及Shioaji獨立state的`meta.schema_version=9` strict recovery／fail-closed測試保留；只服務
