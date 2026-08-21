@@ -1,82 +1,45 @@
-# Deployment
+# Deployment Runbook
 
-> 目前本專案實際使用的 EC2 與本次四 feed cutover 對象是 **staging**；下列
-> production target 僅保留為專案既有部署能力，不代表目前已有 production EC2。
+> 目前實際target是staging；production workflow capability存在，但production EC2與外部資源
+> 尚未完成。SSH、GitHub runtime secrets與tag-only image部署仍是現況；退場計畫見
+> [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
-> Repo內已將CI/CD拆成四個獨立workflow。GitHub Environments、AWS角色與runtime
-> secrets仍須在外部管理。Push至`main`會自動部署staging；production只能透過
-> `workflow_dispatch`明確選擇，並受production Environment protection約束。
+## Workflow與release units
 
-> SSH、GitHub runtime secrets與SHA tag的退場順序，以及staging AWS外部資源清冊與
-> 完成定義，見
-> [Staging AWS deployment completion plan](../dev/staging-aws-deployment-plan.md)。在各phase
-> 驗收前，本文件描述的SSH流程仍是現行runbook，不得把目標架構誤當成已部署。
-
-## Workflow 邊界
-
-| Workflow | 責任 | 主要觸發 | Environment / concurrency |
+| Workflow | Unit | Trigger | Environment／concurrency |
 | --- | --- | --- | --- |
-| `findb-ci.yml` | Backend、migration、Dashboard與contract acceptance | FinDB或contract相關PR/push、手動 | 不讀部署environment |
-| `findb-cd.yml` | 建置並部署backend與Dashboard | `main`的FinDB部署檔案變更、手動 | 自動：`staging-findb`；手動：可選`staging-findb`/`production-findb` |
-| `fetcher-ci.yml` | Fetcher lint、test、contract與container build | Fetcher或contract相關PR/push、手動 | 不讀部署environment |
-| `fetcher-cd.yml` | 發布Fetcher image並交付獨立目標 | `main`的Fetcher runtime/deploy檔案變更、手動 | 自動：`staging-fetcher`；手動：可選`staging-fetcher`/`production-fetcher` |
+| `findb-ci.yml` | Backend、migration、Dashboard、contracts | PR、`workflow_call`、manual | 不讀deployment Environment |
+| `findb-cd.yml` | Backend＋Dashboard | FinDB paths合入`main`或manual | `staging-findb`／`staging-findb` |
+| `fetcher-ci.yml` | Fetcher、contracts、images | PR、`workflow_call`、manual | 不讀deployment Environment |
+| `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`或manual | `staging-fetcher`／`staging-fetcher` |
 
-兩個CI可同時因 `contracts/**` 或contract source變更而執行。Contract-only變更不會
-自動部署Fetcher；跨版本更新必須依下方backend-first順序，由
-`workflow_dispatch`明確啟動需要的CD。
+Deployment concurrency一律`cancel-in-progress: false`。CD直接呼叫同revision reusable CI；
+不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署Fetcher，
+需要依backend-first順序manual dispatch。
 
-自動CD只可部署同一commit已通過對應CI的artifact；不得用另一個SHA或僅憑branch最新
-狀態取代該gate。手動 `workflow_dispatch`仍須受environment protection約束，操作者
-也必須確認指定revision的CI結果。
-
-FinDB deployment unit包含backend與Dashboard。FinDB CD會建置兩個image、render nginx
-設定、同步remote Compose/infra、執行migration，再啟動與驗證serve、ingest、
-dispatcher、worker、RabbitMQ、Dashboard及nginx。
-
-Fetcher CD發布：
-
-```text
-ghcr.io/fpi-tw/findb-fetcher:<git-sha>
-```
-
-並將該immutable tag交付給獨立Fetcher target。現有Fetcher程式提供contract
-validation、readiness、Source API delivery client、具整體deadline的manual
-delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，以及
-Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
-Cloudflare R2 persistence。Fetcher CD會用exact SHA image執行無外部呼叫的scheduler
-preflight，並讓三個隔離的`--run-forever` container保持常駐。Container只輪詢FinDB
-Source control endpoint；DB desired state為`stopped`時不建立新provider cycle，但仍保留
-SQLite state並回報heartbeat。Migration在每個environment先建立`stopped` rows，owner
-於Dashboard完成驗證後再逐一啟用。它不會建立R2 bucket/API token。
-
-Remote migration期間必須停止 `ingest`、`dispatcher`、`worker`與其他DB writers。
-Serve若與新schema相容，可以持續提供查詢。
+FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
+Fetcher的三個provider images是另一個unit。現行workflow以commit SHA tag部署；完成digest
+與release manifest前，不得宣稱可把staging artifact原樣promotion到production。
 
 ## Staging data policy
 
-`staging-findb`與`staging-fetcher`只用於驗證部署、完整端到端資料流與故障處理，
-不承載完整資料集。預設data-producing acceptance profile固定為committed
-`twelve_data_us_common_stocks.v1.json`中的AAPL、MSFT、NVDA，以及scheduler
-`outputsize=20`；fresh cycle最多3個symbols、60筆provider rows。Universe內較大的
-hard limits只是程式安全上限，不是操作授權。
+Staging用來驗證部署、bounded端到端資料流與故障處理，不承載完整universe或
+production-scale歷史資料。Active feeds與pilot範圍見
+[現行架構](../architecture/overview.md#active-feeds)。
 
-Staging可以用bounded fixtures或pilot rows驗證：
+任何data-producing操作事前記錄：
 
-- provider fetch、R2 raw、Source、outbox、RabbitMQ、worker、DQ、canonical與
-  Serve/Admin/Dashboard的完整lineage；
-- retry、idempotency、duplicate handling、failure recovery與rollback；
-- migration、deployment與cache generation的功能正確性。
+- image／config SHA與operator；
+- provider、dataset、symbols、日期、row上限及預估credits；
+- pre-run counts、停止條件與cleanup／rollback方式。
 
-Staging禁止完整universe導入、production-scale歷史backfill，以及未經核准擴大
-symbol、日期或record caps。例外必須針對具名run另行授權，並事前記錄config/image
-SHA、symbol/date/row上限、預估provider credits、rollback/cleanup方案與operator。
-Deployment不會改寫DB scheduler desired state，因此staging deploy後仍依資料庫控制
-停妥而不需人工SSH關閉。data-producing one-shot acceptance可作為後續受控
-operation；在提供前不得藉由CD改成常駐執行。任何具名觀察窗口均不得放寬上述caps。
+驗收可覆蓋provider fetch、Raw R2、Source、outbox、RabbitMQ、normalization、DQ、
+canonical及Serve／Admin／Dashboard lineage。不得以smoke名義擴張universe或執行歷史
+backfill。Deployment不改寫DB scheduler desired state；啟用或停止由Dashboard Owner控制。
 
-## Deployment isolation
+## Environment與設定
 
-外部設定需建立四個互相隔離的GitHub Environments：
+Deployment使用四個互相隔離的GitHub Environments：
 
 ```text
 staging-findb
@@ -85,264 +48,121 @@ production-findb
 production-fetcher
 ```
 
-每個deployment job只能引用自己的environment。不要在workflow-level或大型job-level
-`env:`注入全部secrets，也不要對reusable workflow使用 `secrets: inherit`；逐一傳入
-具名secret。
+Push至`main`自動部署staging；production只允許manual dispatch。兩者都不配置GitHub
+Environment人工核准，仍以PR、required CI、protected branch及target隔離控制變更。每個job
+只能取得自己unit與target的設定；branch與Environment protection的實際外部設定需另行驗證。
 
-### `{staging|production}-findb`
+完整變數與secret名稱不在本runbook重複維護，以
+[infra/env契約](../../infra/env/README.md)、各target的`remote.env.example`、workflow及
+`app.config.Settings`為準。Sync script只新增或更新GitHub Environment，不會刪除退休值；
+operator必須另行移除不用的repository／Environment設定。
 
-| 類型 | Environment設定名稱 |
-| --- | --- |
-| Secrets | `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY` |
-| Secrets | `DATABASE_URL`、`CELERY_BROKER_URL`、`RABBITMQ_DEFAULT_USER`、`RABBITMQ_DEFAULT_PASS`、`RABBITMQ_ERLANG_COOKIE` |
-| Secrets | `CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID`、`CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY`（Worker限定、Object Read & Write） |
-| Secrets | `CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID`、`CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY`（Serve限定、Object Read） |
-| Secrets | `ADMIN_BREAK_GLASS_API_KEY` |
-| Secrets | `FINDB_LOOKUP_SERVE_API_KEY`、`FINDB_STATIC_CACHE_SERVE_API_KEY`（`SERVE_REQUIRE_AUTH=true`時必填且必須為不同的DB-backed keys） |
-| Queue health secret | `FINDB_QUEUE_HEALTH_ADMIN_API_KEY`（DB-backed Admin viewer key） |
-| Variables | `APP_NAME`、`APP_VERSION`、`DEBUG`、`PORT`、`DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW` |
-| Variables | `API_V1_PREFIX`、`API_KEY_HEADER`、`SOURCE_ALLOWLIST_CIDRS`、`SOURCE_TRUST_PROXY_HEADERS`、`SERVE_REQUIRE_AUTH` |
-| Variables | `RATE_LIMIT_REQUESTS`、`RATE_LIMIT_WINDOW`、`RAW_RETENTION_ENABLED`、`RAW_RETENTION_DAYS`、`FINDB_STATIC_CACHE_BASE_URL`、`FINDB_LATEST_PRICE_WORKERS`、`FINDB_PUBLIC_HOST`（此 target 對外的 DNS hostname）、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_CANONICAL_BUCKET` |
+目前runtime secrets由target-scoped GitHub Environment傳到remote process，屬明確過渡。
+目標是GitHub OIDC＋service-specific deploy role＋SSM，並由EC2 instance role讀取
+Secrets Manager／Parameter Store。完成對應plan phase前，不得把目標架構寫成現況。
 
-### `{staging|production}-fetcher`
+## Credential與storage邊界
 
-| 類型 | Environment設定名稱 |
-| --- | --- |
-| Secrets | `FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY` |
-| Variables | `FETCHER_SOURCE_API_URL`、`CLOUDFLARE_R2_ACCOUNT_ID`、`CLOUDFLARE_R2_RAW_BUCKET` |
-| Variables | `FINDB_SERVE_BASE_URL`、`FETCHER_CALENDAR_TIMEOUT_SECONDS`、`FETCHER_CALENDAR_CACHE_TTL_SECONDS` |
-| Variables | `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS`（預設`30`，限制`1`–`30`秒）、`CLOUDFLARE_R2_MAX_OBJECT_BYTES` |
-| Variables | `TWELVE_DATA_BASE_URL`、`TWELVE_DATA_TIMEOUT_SECONDS`、`TWELVE_DATA_MAX_RESPONSE_BYTES` |
-| Variables | `FETCHER_REQUEST_TIMEOUT_SECONDS`、`FETCHER_MAX_ATTEMPTS`、`FETCHER_MAX_RETRY_AFTER_SECONDS` |
-| Secrets | `FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`、`TWELVE_DATA_API_KEY` |
-| Secrets | `FETCHER_CALENDAR_SERVE_API_KEY`（必填，且不得與Source key相同） |
-| Optional secrets | `FETCHER_FINLAB_SOURCE_CLIENT_KEY`（FinLab consumer上線前只保存於Environment，不注入Twelve Data container） |
-| Optional secrets | `FINLAB_API_TOKEN`（僅手動 staging acquisition smoke 注入隔離FinLab container；不注入Twelve scheduler） |
-| Secrets | `CLOUDFLARE_R2_RAW_ACCESS_KEY_ID`、`CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY`、選用的`CLOUDFLARE_R2_RAW_SESSION_TOKEN` |
+- FinDB與Fetcher使用不同deployment target、credential與secret scope。
+- 每個provider/client使用獨立DB-backed Source key與dataset allowlist。
+- Fetcher calendar使用獨立read-only Serve key，不得與Source key共用。
+- Break-glass key只供bootstrap／recovery；日常Dashboard使用具名session。
+- Fetcher只持有Raw R2 Object Read & Write；不得取得Canonical R2、RDS、RabbitMQ或Admin。
+- Canonical publisher與reader credentials分離，且只注入worker與serve。
+- R2 management credential不得注入application runtime。
 
-`GITHUB_TOKEN`由GitHub針對workflow run提供，只用於拉取GHCR image，絕不傳入runtime
-container。部署層使用provider-specific的
-`FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY`，再映射為container內共用的
-`SOURCE_CLIENT_KEY`。現階段Source、Twelve Data與R2 secrets由對應的`{target}-fetcher` Environment
-逐一傳到遠端程序，再用Docker `--env NAME`注入；這是遷移到instance role加
-Secrets Manager/Parameter Store前的明確過渡機制，不可使用
-`--env NAME=value`出現在command line。Fetcher Raw R2 credentials與未來OIDC/SSM
-設定必須維持Fetcher專屬，不能複製到FinDB。FinDB Canonical R2 credentials僅由Worker
-publisher及Serve reader各自持有，不能複製到ingest、dispatcher或raw-cleanup。FinDB TLS private key若未來由workflow管理，只能加入
-對應的`{target}-findb`，不能跨環境或服務共用。
+Raw與Canonical使用不同private buckets。Raw object key由provider／dataset開始，contract
+只帶credential-free `r2://` reference與checksum。Raw R2 lifecycle為30天、bucket lock
+為7天；此Cloudflare設定已於2026-08-21人工確認。Canonical runtime尚未實作，不得做
+資料面acceptance聲明。
 
-Fetcher 一律使用 FinDB complete published calendar；部署前必須先在 FinDB 發布完整
-目標市場年度，建立專用 DB-backed Serve key，並於 staging 驗證休市、僅結算與 API
-失敗都不會 enqueue。Calendar preflight key只授權
-唯讀 Serve API，不可重用 Source client key。
+Fetcher SQLite位於provider-specific EBS paths，owner為runtime UID，目錄`0700`、檔案
+`0600`。Raw bucket binding marker不符時deployment fail closed；不同bucket的state與
+prepared refs不得混用。Candidate通過preflight與single-writer檢查後才能取代stable。
 
-Fetcher只持有Raw bucket的Object Read & Write credential；raw object key固定從
-`{provider}/{dataset}/...`開始，沒有可設定prefix，也不支援舊bucket相容。FinDB Canonical
-bucket使用完全獨立的兩套credential：Worker publisher為Object Read & Write，Serve reader為
-Object Read；R2 lifecycle、bucket lock或configuration稽核必須使用application runtime以外的
-獨立短效管理credential。
+## Network與GitHub protection
 
-### Staging R2 bucket split（部署前必做）
+Repository可證實的application／Compose邊界與需要外部核對的target policy必須分開看待：
 
-建立兩個不同的staging bucket後，將raw bucket填入`staging-fetcher`的
-`CLOUDFLARE_R2_RAW_BUCKET`，將canonical bucket填入`staging-findb`的
-`CLOUDFLARE_R2_CANONICAL_BUCKET`。Fetcher Environment不得保存canonical bucket或其
-credentials。FinDB CD會要求publisher與reader兩套canonical credentials皆存在且access key
-ID與secret都不同，並只注入Worker或Serve。
-
-更新staging raw bucket後，必須同步換成僅對新raw bucket具Object Read & Write權限的
-`CLOUDFLARE_R2_RAW_ACCESS_KEY_ID`與`CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY`。執行
-`uv --directory backend run python ../infra/env/sync_github_environment.py staging fetcher`
-確認契約；再以
-`uv --directory backend run python ../infra/env/sync_github_environment.py staging fetcher --apply`
-發布；同樣執行`staging findb`發布canonical bucket與兩套FinDB credentials。此腳本只新增或
-更新，**不會刪除**GitHub Environment既有變數，operator應自行移除退休的prefix、legacy和
-跨服務R2設定。Fetcher與FinDB分屬不同GitHub Environment，系統無法程式驗證兩邊token
-是否重複；operator必須確保Fetcher Raw token不與任何FinDB Canonical token重用。
-
-Raw bucket切換**不遷移也不fallback**既有object或scheduler state。部署在重用
-`/var/lib/findb-fetcher/state.sqlite3`前會驗證同目錄的`raw-bucket.sha256` account+bucket binding marker；
-marker遺失或與新bucket不符會在container reconciliation與preflight前中止，避免送出指向舊
-bucket的prepared/raw reference。可回復的staging cutover程序為：
-
-1. 將scheduler desired state設為`stopped`並確認stable、candidate、previous containers已停止後移除。
-2. 在主機上建立受限權限的archive目錄，將`state.sqlite3`、存在時的`state.sqlite3-wal`與
-   `state.sqlite3-shm`移入該目錄；不要複製舊Raw objects。
-   同時 archive 或 reset `FETCHER_SHIOAJI_STAGING_STATE_PATH`及其`-wal`/`-shm`檔案；它的
-   persisted raw/prepared delivery refs同樣不可跨Raw account+bucket重用。
-3. 移除舊的`raw-bucket.sha256`，以UID/GID `10001:10001`、mode `0600`寫入新account+bucket SHA-256
-   binding；或保留state目錄空白讓下一次部署原子建立marker。若首次部署在建立marker後、建立
-   SQLite state前失敗，下一次部署會先驗證marker的owner/mode，並安全重用或原子更新它。重新驗證
-   state目錄為`0700`且同一owner。
-4. 以新bucket及新Raw credential redeploy，先保持`stopped`完成preflight，再視需要切為`running`。
-
-此程序刻意丟棄舊的prepared/raw refs；archive只提供人工復原或稽核，不得被新bucket runtime使用。
-
-Canonical R2目前僅完成bucket與credential wiring：Worker publisher R/W與Serve reader R/O
-credentials已分權注入，但Canonical publish、read與sign runtime尚未實作，因此本階段不能以
-staging進行Canonical R2資料流程實測。
-
-不要複製或「升級」既有raw objects；本次工作不做資料遷移。production尚未部署，
-因此沒有legacy migration或fallback；日後首次建立production環境時直接分別填入Fetcher Raw
-與FinDB Canonical bucket及其分離credentials。
-此程式碼變更本身沒有建立bucket、複製object、修改GitHub Environment或執行部署。
-
-Fetcher CD會建立並驗證`/var/lib/findb-fetcher`（numeric owner `10001:10001`、mode
-`0700`），以bind mount提供給preflight與scheduler。SQLite state保存schedule job、
-retry lease與逐symbol checkpoint；container writable layer、FinDB RDS與RabbitMQ都
-不能替代此volume。Rollout在替換stable前先以exact SHA image對實際mount執行
-`--check`。`running`模式以candidate通過bounded存活與restart-count檢查後rename
-promote，維持單一writer；`stopped`模式建立但不啟動同樣image/config的candidate，再
-promote並驗證running count為零。失敗會移除candidate並把先前container收斂回宣告
-狀態；首次部署失敗則不留下service。State不隨rollback備份或還原。
-
-每次release在pull新image前先reconcile `stable`、`candidate`與`previous`名稱：先移除
-競爭中的candidate，保留stable或在其不存在時恢復previous，最後將保留container收斂
-為Environment宣告的狀態。Reconciliation失敗會在preflight與停止舊服務之前以generic
-error終止；`running`避免留下兩個scheduler，`stopped`不會呼叫`docker start`。
-Scheduler preflight亦會驗證SQLite quick-check、完整v1 table/column/index/uniqueness，
-不接受只偽造`user_version=1`的空或不相容資料庫。
-
-Container停止給予30秒grace period，但scheduler目前不攔截SIGTERM來主動釋放執行中
-lease；若在job中途被終止，重新啟動後須等該lease到期才會恢復為retry，這是現有
-rollback的已知延遲。
-
-Fetcher raw R2 bucket不得綁定public development URL或custom domain；R2 API token只授權
-該bucket的Object Read & Write，並以Fetcher專屬secret注入。Cloudflare R2會自動以
-AES-256加密所有object及metadata，因此PutObject不得傳入R2不支援的AWS SSE/KMS headers。
-R2 raw data lifecycle為30天，bucket lock為7天；規則由Cloudflare R2管理。
-Application只傳credential-free `r2://account-id/bucket/key` reference，不產生
-presigned URL，也不把Fetcher的R2 credentials送入FinDB。
-
-FinDB job不得讀provider credentials、Fetcher Source client key、raw storage或Fetcher
-部署credential。Fetcher job不得讀 `DATABASE_URL`、RabbitMQ、Admin、Dashboard、TLS、
-FinDB Source shared key或FinDB部署credential。
-
-非敏感值，如API URL、port、image name與retention days，放Environment variables。
-
-GitHub Environment只會限制存放在該environment內的secrets/variables；repository-level
-secrets仍可能被repository內其他workflow引用。因此上表的deployment secrets必須實際
-搬入對應environment，確認workflow已切換後再從repository scope移除。建立environment、
-設定reviewer/branch policy與搬移secret都是GitHub外部作業，repo檔案不會自動完成。
-
-## GitHub protection
-
-- 四個Environment都只允許`main`部署。
-- `production-findb`與`production-fetcher`必須啟用required reviewer與prevent
-  self-review；production只允許手動選擇，不接受push事件自動部署。
-- Staging也建議啟用required reviewer與prevent self-review（依GitHub方案能力）。
-- `.github/workflows/**`、`infra/**`、production Compose與contract manifest設定
-  CODEOWNERS。
-- Branch protection禁止未review直接更新 `main`。
-- 第三方Actions固定到完整commit SHA；升級由獨立PR審查。
-- 每個服務使用獨立concurrency group且 `cancel-in-progress: false`。
-
-Environment只隔離job。若能任意修改workflow並合入main，仍可能要求另一個environment，
-因此branch protection、CODEOWNERS與environment review缺一不可。
-
-## AWS credentials與runtime secrets
-
-目標架構不在GitHub保存長效AWS access key或SSH private key：
-
-```text
-GitHub Actions
-  -> OIDC short-lived credentials
-  -> service-specific AWS deploy role
-  -> SSM / deployment service
-  -> EC2 instance role
-  -> service-specific Secrets Manager path
-```
-
-角色：
-
-- `GitHubDeployFinDBRole`：只能部署FinDB資源。
-- `GitHubDeployFetcherRole`：只能部署Fetcher資源。
-- `FinDBInstanceRole`：只能讀 `/findb/staging/*`。
-- `FetcherInstanceRole`：只能讀 `/fetcher/staging/*`。
-
-Application secrets由runtime instance role讀取Secrets Manager/Parameter Store；GitHub
-Actions只取得部署權限。需要更強隔離時，兩個secret path使用不同KMS key與key policy。
-
-OIDC trust policy必須限制repository與GitHub Environment subject，不能只信任整個
-organization。
-
-## Source client key
-
-Fetcher使用Admin API簽發的DB-backed source client key：
-
-- 每個provider/client一把key。
-- 綁定固定 `source_name`、`allowed_datasets`與rate limit。
-- FinDB只保存hash；plaintext只在簽發時回傳一次。
-- Plaintext存入Fetcher的Secrets Manager path，不放FinDB runtime。
-
-## Credential bootstrap與分階段退場
-
-部署與日常運作均使用 DB-backed credentials：
-
-1. 設定一把高強度 `ADMIN_BREAK_GLASS_API_KEY`，只透過
-   `POST /api/v1/admin/auth/bootstrap`建立第一位Owner；bootstrap完成後不得注入
-   Dashboard或一般automation。
-2. Owner在Credentials頁分別簽發lookup、static cache、各Fetcher與machine Admin key。
-   Plaintext只顯示一次，立即存入對應deployment secret。
-3. `FINDB_LOOKUP_SERVE_API_KEY`只供nginx同源lookup Referer注入；
-   `FINDB_STATIC_CACHE_SERVE_API_KEY`只供cache generator。兩者不可共用。
-4. `SERVE_REQUIRE_AUTH=true`時，FinDB CD會要求上述兩把專用DB-backed Serve key；
-   部署前先確保兩把key已在DB建立且未撤銷。Serve不支援環境變數fallback。
-5. 後續逐一輪替 Source/Admin consumer 並觀察 Credentials 頁的 last-used/usage
-   freshness至少一個完整排程週期。
-
-Dashboard以DB-backed Admin user登入，後端簽發的opaque session只存在
-`HttpOnly + Secure + SameSite=Strict` cookie；不再讀取共享Dashboard帳密或Admin key。
-
-Break-glass輪替時先更新runtime secret並重新部署，再以新key執行受控復原檢查；不要把
-break-glass key用於一般健康檢查。若所有Owner無法登入，使用break-glass credential
-建立或恢復Owner後，立即撤銷臨時session並記錄稽核事件。
-
-## Network boundaries
-
-- Fetch EC2只透過HTTPS呼叫Source API。
-- 優先使用private networking或security-group-to-security-group規則。
-- Fetch EC2不得取得RDS與RabbitMQ ingress。
-- Source nginx allowlist在Cloudflare後必須先以受信任的Cloudflare CIDR還原
-  `CF-Connecting-IP`，再對真實client IP執行allowlist。
-- RabbitMQ 5672/15672不對EC2 host或Internet公開。
-- TLS private key只存在FinDB主機，不經Fetcher。
+- **Operator pre-deploy**：確認RDS不公開且只接受FinDB EC2 security group，Fetcher沒有RDS
+  route；未保存外部設定證據前不得宣稱已驗證。
+- **Workflow**：RabbitMQ ports不對host公開；第三方Actions固定完整commit SHA；不同unit
+  使用獨立deployment concurrency。
+- **Operator pre-deploy**：確認Source經Cloudflare/nginx還原可信client IP後執行allowlist，
+  TLS private key只存在FinDB target；外部Cloudflare、DNS與security group設定另行留證。
+- **Operator pre-deploy**：確認repository政策與外部設定要求PR、required CI及protected
+  branch。Staging由protected `main`自動部署，production只接受manual dispatch；兩者均不設
+  GitHub Environment人工核准。
 
 ## Release順序
 
-Contract變更使用backend-first：
+一般release：
 
-1. Contract PR必須同時通過FinDB CI與Fetcher CI。
-2. 以FinDB CD的 `workflow_dispatch`（或符合其FinDB path trigger的main更新）先部署
-   同時接受舊版與新版contract的backend。
-3. 驗證schema endpoint與shadow delivery。
-4. 待Fetcher runtime能力完成後，以Fetcher CD的 `workflow_dispatch`部署切換pin版本；
-   contract-only merge不會自動執行此步。
-5. 觀察attempt、queue、DQ與canonical結果。
-6. 經過保留期後才停止舊版。
+1. **Workflow**：對同revision執行對應CI，build並push明確image identity，再pull candidate。
+2. **Operator pre-deploy**：確認target、backup／PITR、disk／inode、container state、觀察窗口及
+   必要external dependencies；現行workflow未自動涵蓋的項目必須人工留證。
+3. **Workflow**：執行remote與DB preflight；FinDB migration前停止本unit所有DB writers，
+   由單一migration job升級。
+4. **Workflow**：啟動candidate，檢查container、internal health、nginx、RabbitMQ topology、
+   worker ping及DB-authoritative queue health。
+5. **Operator acceptance**：從外部驗證public TLS／routing，執行bounded fixed-idempotency
+   smoke並確認terminal state。
+6. **Operator acceptance**：記錄實際image、Alembic revision、設定checksum及驗收結果。
 
-環境需記錄：
+Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受新舊版本並部署；
+**Operator acceptance**完成schema與shadow delivery驗證後，再manual deploy Fetcher切換pin；
+經過保留期才停止舊版。
 
-```text
-findb_image_sha
-dashboard_image_sha
-fetcher_image_sha
-accepted_contract_versions
+Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三個scheduler分別
+執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
+
+## Alembic migration
+
+ORM與migration必須在同一PR；runtime只驗證revision，不執行`create_all()`。Staging採
+forward-only；downgrade只供本機round-trip測試。
+
+本機：
+
+```bash
+uv --directory backend run alembic current
+uv --directory backend run alembic upgrade head
+uv --directory backend run alembic revision --autogenerate -m "describe change"
+uv --directory backend run alembic downgrade -1
+uv --directory backend run alembic upgrade head
 ```
 
-## Production go/no-go
+Autogenerate後人工審查schema/table、enum、constraint、index、data backfill、lock／rewrite、
+partition及可逆性。涉及既有資料時在clone或partial dump驗證，不只測空DB。
 
-- RDS snapshot/PITR可用，production clone已演練migration。
-- DB preflight通過且保留足夠connection headroom。
-- Provider已暫停，或確認retry會沿用同一idempotency key。
-- Queue、worker、disk、DB與delivery monitor均有告警。
-- 新image與schema的rollback/forward-fix策略已確認。
-- 部署後以固定key做smoke delivery，確認run進入terminal state。
+Staging rollout：
 
-## Rollback
+1. **Operator pre-deploy**：確認backup／PITR與可用的restore紀錄，暫停provider並確認沒有
+   未結束的delivery cycle。
+2. **Workflow**：執行read-only DB preflight；失敗時不停止既有服務。
+3. **Workflow**：停止`ingest`、`dispatcher`、`worker`、`raw-cleanup`及本unit所有writers。
+4. **Workflow**：由candidate image執行單一`alembic upgrade head`與`alembic current`。
+5. **Workflow**：啟動queue、worker、ingest及相容的serve，執行container、health與queue
+   checks。
+6. **Operator acceptance**：執行fixed-idempotency smoke，驗證terminal state後才恢復producer。
 
-- 發現寫入問題時先暫停provider，停止ingest/dispatcher/worker。
-- 不刪raw、job、outbox或RabbitMQ volume來「清除錯誤」。
-- 不對production schema做即席downgrade。
-- 舊image若Alembic revision不同，不能直接作為rollback image。
-- 優先部署包含目前migration chain的forward fix；Serve健康時維持唯讀服務。
+`alembic stamp`只可在schema已人工證明與revision完全一致時使用，不能掩蓋drift。
+
+## Acceptance與rollback
+
+Deploy後至少完成：
+
+- **Workflow**：container與restart count、process health、Alembic head、RDS connectivity、
+  RabbitMQ topology、worker ping及DB-authoritative queue health。
+- **Operator acceptance**：public TLS／routing、bounded API smoke、terminal state與lineage。
+- **Operator acceptance**：Fetcher另核對heartbeat、desired／observed state及terminal
+  delivery。
+
+失敗時：
+
+1. 暫停provider並停止所有writers，保留raw、run、job、outbox、volumes與logs。
+2. 收集bounded diagnostics，不輸出secret。
+3. 只有schema相容時才能恢復previous image。
+4. Schema已改且舊image不相容時保持writers停止，部署包含目前migration chain的forward fix。
+
+禁止使用`docker compose down -v`、刪資料、`stamp head`、即席production downgrade或R2
+mass delete強迫恢復。Serve健康且schema相容時可維持唯讀服務。

@@ -1,128 +1,117 @@
 # FinDB 現行架構
 
-> 核對日期：2026-07-24
+## 系統與資料流
 
-## 系統目標
-
-FinDB 接收多個 provider 的金融資料，保存可追溯的 raw delivery，經過 DQ 與
-normalization 後產生 canonical data，並透過唯讀 Serve API 提供下游使用。
-
-核心資料流：
+FinDB接收provider金融資料，保存可追溯的raw delivery，經DQ與normalization產生
+canonical data，再由唯讀Serve API提供下游使用。
 
 ```text
 Fetcher
   -> Source API
   -> ingestion_attempt
   -> raw payload + ingestion_run + normalization_job + outbox
-  -> Outbox Dispatcher
-  -> RabbitMQ
-  -> Celery Worker
+  -> Dispatcher -> RabbitMQ -> Celery Worker
   -> Normalize + DQ + canonical tables
-  -> Serve API / Admin API
+  -> Serve API / Admin API / Dashboard
 ```
 
-Source API 只有在 raw、run、job 與 outbox 同一個 PostgreSQL transaction commit
-後才回 `202 Accepted`。RabbitMQ 是可重建的 delivery layer；已接受工作的 durable
-truth 位於 PostgreSQL。
+Source只有在raw、run、job與outbox於同一PostgreSQL transaction commit後才回
+`202 Accepted`。RabbitMQ是可重建的delivery layer；已接受工作的durable truth在
+PostgreSQL。
 
-## Staging 角色
+## Runtime與release units
 
-Staging 使用同一個 backend image，依 `APP_ROLE` 與 Compose service 分離 workload：
-
-| 角色 | 職責 | 寫入 DB |
+| Unit | Runtime | 責任 |
 | --- | --- | --- |
-| `serve` | Serve API、公開靜態資料與健康檢查 | 否 |
-| `ingest` | Source API、Admin API、接受 delivery | 是 |
-| `dispatcher` | 將 transactional outbox 發布到 RabbitMQ | 是 |
-| `worker` | 執行 normalization、DQ 與 canonical upsert | 是 |
-| `rabbitmq` | 保存待處理 delivery；不是真相來源 | 不適用 |
-| `dashboard` | 營運查詢與管理介面 | 只透過 API |
-| `nginx` | TLS、路由、Source allowlist、proxy headers | 否 |
-| `raw-cleanup` | 依 retention policy 清理 raw payload | 是 |
+| FinDB backend | `serve`、`ingest`、`dispatcher`、`worker`、`raw-cleanup` | API、durable queue orchestration、normalization、DQ、canonical與migration |
+| Dashboard | FinDB EC2上的獨立image | 透過Serve/Admin API提供營運介面，不直接連DB |
+| Fetcher | 獨立EC2上的Twelve Data、FinLab、Shioaji images | Provider抓取、contract mapping、Raw R2、retry、checkpoint與delivery status |
+| Infrastructure | PostgreSQL RDS、RabbitMQ、nginx | Durable data、可重建delivery與TLS／routing |
 
-Staging active provider feed 只有四個固定配對：
+FinDB backend與Dashboard同屬一個deployment unit；Fetcher為另一個deployment unit。
+四個GitHub workflows分離FinDB CI/CD與Fetcher CI/CD。Contract變更採
+backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 
-| Provider | Dataset |
-| --- | --- |
-| `twelve_data` | `us_equity_eod` |
-| `finlab` | `tw_equity_eod` |
-| `shioaji` | `tw_equity_minute` |
-| `shioaji` | `tw_etf_minute` |
+## Active feeds
 
-Canonical tables 仍可保存歷史或預留資料域（例如 futures、macro、bonds）的 read
-model，Serve 也可維持對應唯讀查詢；這些 read model 不等於 staging 有 active provider
-feed。
+文件層級的active feed清單只在本節維護；最終真相是
+`backend/scripts/seed_data.py`及對應Fetcher configs。
 
-`serve` 與 `ingest` 使用獨立 DB pool，避免大量 ingest 搶占 read path 資源。Serve
-handler 不得新增寫入行為，未來才能安全指向 read replica。
-
-## 資料層
-
-| 層級 | 主要資料 | 保存策略 |
+| Provider | Dataset | Staging範圍 |
 | --- | --- | --- |
-| Raw | `raw.market_payload` | 預設啟用清理並保存30天，由 `RAW_RETENTION_ENABLED` 與 `RAW_RETENTION_DAYS` 控制 |
-| Workflow | `ingestion_attempt`、`ingestion_run`、`normalization_job`、`normalization_outbox` | durable audit 與 recovery truth |
-| Registry | `dataset_registry`、source clients、API keys、`dq_issue` | 長期保存 |
-| Canonical | instruments、calendar、EOD、corporate actions、macro、futures、bonds、stats | 長期保存 |
+| `twelve_data` | `us_equity_eod` | Reviewed bounded US equity universe |
+| `finlab` | `tw_equity_eod` | Reviewed bounded TW equity universe |
+| `shioaji` | `tw_equity_minute` | `2330` pilot |
+| `shioaji` | `tw_etf_minute` | `0050`、`0056`、`006201` pilot |
 
-Provider原始檔由Fetcher寫入R2；R2 lifecycle保存30天、bucket lock保護前7天。
-FinDB contract只帶不含credentials的`source_raw_ref`與checksum。
+Canonical tables與Serve endpoints可保留歷史或預留read model；這不代表目前有對應
+provider feed。新增資料域必須另案完成contract、registry、normalizer、DQ與Serve驗收。
 
-## 寫入路徑
+## 資料責任
 
-1. Fetcher 把 provider-specific payload 轉成 provider-neutral ingress contract。
-2. Source API 驗證 client identity、dataset scope、rate limit、schema 與 delivery policy。
-3. Canonical endpoint 先建立 `ingestion_attempt`，使被拒絕的 delivery 也可追蹤。
-4. 接受後原子寫入 raw、run、job、outbox並回 `202`。
-5. Dispatcher 發布 delivery；worker 使用 late ack 執行。
-6. Worker 以 dataset advisory lock 控制同 dataset 的執行順序。
-7. Normalizer 執行 DQ、canonical upsert，並在同一 transaction 更新 terminal state。
+| 層級 | 儲存位置 | 規則 |
+| --- | --- | --- |
+| Provider raw object | Fetcher Raw R2 | Credential-free reference與checksum傳給FinDB；依retention policy保存 |
+| Raw ingress | `raw.market_payload` | 預設保存30天，支援audit與rerun |
+| Workflow | attempt、run、job、outbox | Durable acceptance、terminal state與recovery truth |
+| Registry | dataset、scheduler、credential metadata、DQ | 長期治理狀態 |
+| Canonical | instrument、calendar、EOD、minute及其他read models | 長期保存，Serve只讀 |
 
-所有資料來源必須經 Source API 入庫。腳本、Fetcher、Admin 或 worker 都不得建立第二條
-直接寫 canonical tables 的 ingestion path。
+Raw與Canonical R2使用不同private buckets及credentials。Fetcher不得取得Canonical
+credential；FinDB不得取得provider credential或Fetcher state。RDS不保存R2 secret或
+presigned URL。
 
-## 讀取與修正路徑
+## 服務邊界
 
-- Serve API 只讀 canonical tables。
-- Dashboard 與其他消費者透過 Serve API 讀資料。
-- 人工修正透過 Admin API，必須留下 correction audit。
-- DQ `severity="error"` 阻擋 canonical write；warning 允許寫入但留下 issue。
-- RAG、embedding、vector index 與模型執行屬下游服務，不進入 FinDB。
+FinDB負責Source、Serve、Admin、idempotency、raw audit、queue orchestration、DQ、
+canonical schema及migration；不負責provider登入、抓取排程或provider-specific mapping。
 
-## Schema 與識別規則
+Fetcher負責provider adapter、限流、versioned contract、stable identity、Raw R2、
+SQLite retry／lease／checkpoint及terminal status追蹤；只能透過HTTPS呼叫FinDB，不得
+import backend ORM／normalizer、連FinDB DB或取得RabbitMQ／Admin credentials。
 
-- 時間一律為 UTC-aware datetime。
-- 主鍵預設使用 UUIDv7。
-- DB access 使用 async SQLAlchemy。
-- Schema 變更只能透過 Alembic；runtime 不執行 `create_all()`。
-- `dataset_key` 表示治理單位，不能包含 provider 名稱。
-- `schema_id + schema_version` 表示 payload 契約。
-- `source` 表示實際 provider。
-- Idempotency key 必須可由 Fetcher 穩定重建。
+Dashboard只能透過API運作。公開lookup使用generated cache。RAG、embedding、vector
+index與模型runtime屬下游，不進入FinDB。
 
-## Minute feed 與保留 read model
+允許跨unit共享的內容只有published JSON Schema、contract manifest、無secret fixtures及
+純validation工具；runtime config、DB code、provider SDK與credentials不得共享。
 
-`market_minute.v1` 是 `shioaji/tw_equity_minute` 與 `shioaji/tw_etf_minute` 的
-active ingress contract；canonical minute rows 經 DQ/normalization 後由 Serve 唯讀
-提供。`market_minute_archive.v1`、更完整 universe 與 Export API 若尚未部署，仍屬
-後續工作，不得把規劃內容寫成已發布 feed。細節見[台灣一分鐘資料契約](tw-minute-data.md)。
+## Scheduler與市場日曆
 
-## 故障模型
+PostgreSQL的`scheduler_control`與`scheduler_dataset`是排程definition、dataset mapping
+及desired state的唯一權威。Dashboard Owner可修改desired state；Fetcher以
+provider-scoped Source key輪詢
+`POST /api/v1/source/scheduler-controls/{scheduler_key}/poll`並回報heartbeat。
+控制面失聯、scope不符或definition與reviewed workload不一致時，Fetcher fail closed，不
+建立新cycle；停止要求會讓目前cycle完成後不再啟動下一輪。
 
-- RabbitMQ 中斷：Source API 仍可接受並寫入 outbox，恢復後補送。
-- Worker 中斷：job lease 與 DB reconciliation 重新建立 delivery。
-- 重複 delivery：相同 key 與內容回既有 run；相同 key、不同內容回 `409`。
-- Schema 不相容：先拒絕並留下 attempt，不建立 raw/run/job。
-- DB migration 不相容：舊 image 的 revision check 會拒絕啟動，採 forward fix。
+市場日曆以不可變的年度revision管理。Dashboard建立draft，只有Owner可publish或rollback。
+Scheduler只使用
+`GET /api/v1/serve/calendar/years/{market}/{year}`；未發布、不完整或不一致時回`404`
+並fail closed。`settlement_only`不可觸發抓取，沒有static weekday fallback。
 
-## Source of truth
+## 不可破壞的規則
 
-- API routes：`backend/app/api/v1/`
-- Ingress contracts：`backend/app/schemas/ingress.py`
-- Contract registry：`backend/app/services/ingress_contracts.py`
-- Workflow：`backend/app/services/ingestion.py`、task queue 與 dispatcher modules
-- ORM：`backend/app/models/`
-- DB schema：`backend/migrations/`
-- Staging topology：`docker-compose.prod.yml`
-- CI/CD：`.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、
-  `.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml`
+- Serve API與serve role不得寫DB；人工修正只能經Admin API並留下audit。
+- 所有資料來源只走versioned provider-neutral Source contract，不建立direct寫入路徑。
+- DQ `severity=error`阻擋canonical write；warning可寫入但保留issue。
+- 時間使用UTC-aware datetime，主鍵預設UUIDv7，DB access採async SQLAlchemy。
+- Schema只能經Alembic改變；runtime只驗證revision，不執行`create_all()`。
+- `dataset_key`是治理單位，`schema_id + version`是wire contract，`source`是provider。
+- Idempotency key必須能由producer穩定重建。
+
+## 故障模型與source of truth
+
+- RabbitMQ中斷：Source仍可commit outbox，broker恢復後補送。
+- Worker中斷：lease與DB reconciliation重建delivery。
+- 重複delivery：相同key與內容回既有run；相同key不同內容回`409`。
+- Schema不相容：留下attempt並拒絕，不建立raw／run／job。
+- Migration不相容：舊image拒絕啟動，採forward fix。
+
+精確來源：
+
+- Routes：`backend/app/api/v1/`
+- Contracts：`backend/app/schemas/ingress.py`、`contracts/`
+- Workflow：`backend/app/services/ingestion.py`與queue services
+- ORM／schema：`backend/app/models/`、`backend/migrations/`
+- Topology／delivery：`docker-compose.prod.yml`、`.github/workflows/`

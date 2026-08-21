@@ -59,7 +59,7 @@ protected main
 
 | 階段 | 判定 | 原因與調整 |
 | --- | --- | --- |
-| Phase 0：盤點與保護 | 必要 | 確認實際 target、資料與復原 owner；不要求全面 IaC import，也不對 staging 加人工 deploy reviewer |
+| Phase 0：盤點與保護 | 必要 | 確認實際 target、資料與復原 owner；不要求全面 IaC import，也不對 staging 加Environment人工核准 |
 | Phase 1：OIDC、SSM、instance role | 必要 | 移除長效 SSH deployment identity，建立 service-specific AWS trust boundary |
 | Phase 2：Runtime secrets | 必要 | 避免 runtime secrets 經 GitHub runner 與遠端 shell傳遞，並完成 credential rotation |
 | Phase 3：Digest、manifest、CI gate | 必要 | staging 必須能重播並把相同 artifact promotion 到 production，不能依賴 `latest` 或可漂移 tag |
@@ -79,8 +79,8 @@ protected main
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check | RDS backup inventory、migration credential分權、restore rehearsal與release紀錄 |
 | Queue | RabbitMQ在FinDB EC2，以EBS path保存；PostgreSQL是durable truth | 容量告警、broker全毀重建演練與實測恢復時間 |
 | Fetcher state | 三個provider runtime隔離，SQLite state與Raw bucket binding有preflight | 一致性備份、SSM rollout與完整排程週期觀察 |
-| R2 | Raw與Canonical bucket／credential契約已拆分 | 外部bucket policy/lifecycle盤點；Canonical runtime不得宣稱已通過資料面驗收 |
-| Protection | workflow固定第三方Action SHA，repo要求PR | CODEOWNERS與branch／Environment protection的外部驗證紀錄 |
+| R2 | Raw與Canonical bucket／credential契約已拆分；2026-08-21已人工確認Raw lifecycle 30天與bucket lock 7天 | Canonical runtime不得宣稱已通過資料面驗收 |
+| Protection | workflow固定第三方Action SHA，repo政策要求PR | branch／Environment protection與required CI的外部驗證紀錄 |
 | Observability | 應用內已有health、queue與freshness checks | 關鍵CloudWatch alarms、log retention、告警接收者及synthetic test |
 | IaC | Repo內尚無AWS IaC | 新控制面資源以團隊既有工具或OpenTofu納管；既有data-plane資源先盤點 |
 
@@ -96,8 +96,8 @@ protected main
 | Fetcher | Fetcher、contracts、contract generation依賴與Fetcher workflows | Generic、FinLab、Shioaji | `staging-fetcher` | `staging-fetcher`，`cancel-in-progress: false` | FinDB acceptance後部署 |
 
 兩個 CD 都由 protected `main` 的 path-filtered push 自動進入 staging，也可手動 dispatch；CD
-必須直接呼叫同 revision CI。Staging Environment只允許protected branch，不設required reviewer；
-production建立後才由其Environment設定required reviewer與prevent self-review。
+必須直接呼叫同 revision CI。Staging Environment只允許protected branch且不設人工核准；
+production建立後只允許manual dispatch，同樣不配置Environment人工核准。
 
 FinDB仍是一個deployment unit，backend與Dashboard各自記錄digest。Fetcher三個image同屬一個
 deployment unit，但release manifest必須列出三個digest，不能只用共同SHA tag代替。
@@ -206,14 +206,13 @@ remote state。這次只納管新建或為cutover明確修改的控制面資源�
 - [ ] 填完staging資源清冊，記錄owner、AWS account/region、resource ARN/ID、資料分類、backup
   policy、告警接收者與公開網路例外。
 - [ ] 驗證`main`的required CI與PR protection；`staging-findb`、`staging-fetcher`只允許protected
-  branch，但不設required reviewer，維持main合併後自動部署。
-- [ ] 建立`.github/CODEOWNERS`，至少覆蓋workflows、`infra/**`、Compose、migrations與contracts。
+  branch且不設Environment人工核准，維持main合併後自動部署。
 - [ ] 依IaC邊界確認團隊既有工具與state owner；沒有既有標準時採OpenTofu，只納管新控制面。
 - [ ] 記錄目前accepted SHA、實際image identity、Alembic revision、running containers、RDS
   snapshot／backup狀態與SSH recovery owner。
 
 Exit gate：不存在未知的target、database、secret或backup owner；目前SSH部署仍可用；staging自動
-部署不會被Environment reviewer阻塞。
+部署不會被Environment人工核准阻塞。
 
 ### Phase 1：OIDC、SSM與instance role基礎
 
@@ -322,7 +321,8 @@ migration chain的forward fix。
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 
 - [ ] 四個GitHub workflow的path、CI、Environment、concurrency與release unit matrix一致。
-- [ ] Protected `main`自動部署staging，不受Environment reviewer阻塞；高風險檔案已有CODEOWNERS。
+- [ ] Protected `main`自動部署staging且不受Environment人工核准阻塞；required CI與PR protection
+  已完成外部驗證。
 - [ ] `staging-findb`與`staging-fetcher`有獨立OIDC deploy role、EC2 instance role與secret path。
 - [ ] 日常deploy不使用SSH／SCP，EC2不開放SSH ingress，cross-unit IAM測試fail closed。
 - [ ] 所有application image以digest部署，accepted release manifest可重播並供production promotion。
@@ -348,7 +348,6 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 | 全面AWS IaC import | 延後；本次只納管新控制面 | 現有resource owner確認、準備進行production環境複製或drift治理 |
 | Canonical R2資料面驗收 | 延後；只完成bucket與credential邊界 | Canonical publish/read/sign runtime完成 |
 | 正式24/7 on-call與企業稽核 | 延後；使用具名owner與通知channel | Production SLA、法遵或客戶稽核需求確立 |
-| Staging Environment人工核准 | 不採用；維持protected main自動部署 | Staging開始承載高敏感資料或不可逆外部副作用 |
 
 這份檔案是暫時性執行計畫，不是永久runbook。不得在尚有未完成Phase、未搬移的操作知識或
 只存在本文的驗收證據時提前刪除；全部完成並完成文件搬移後，也不應繼續保留本計畫。
