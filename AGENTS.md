@@ -90,13 +90,12 @@ findb/
 
 ## 子目錄指南
 
-先套用本檔，再套用最接近工作目錄的子目錄 `AGENTS.md`：
+先套用本檔，再依工作目錄套用對應指南：
 
-- `backend/app/api/v1/AGENTS.md`
-- `backend/app/models/AGENTS.md`
-- `backend/app/services/normalize/AGENTS.md`
+- `backend/AGENTS.md`：整個backend的API、models與normalize規則。
+- `dashboard/AGENTS.md`：Dashboard開發規則。
 
-若本檔與子目錄指南衝突，優先採用更接近修改檔案的子目錄指南；若仍不確定，先詢問。
+若本檔與子目錄指南衝突，優先採用子目錄指南；若仍不確定，先詢問。
 
 ## 專案慣例
 
