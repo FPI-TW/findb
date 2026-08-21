@@ -15,6 +15,7 @@
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
 | 執行尚未落地的staging AWS控制面強化 | [dev/staging-aws-deployment-plan.md](dev/staging-aws-deployment-plan.md) |
+| 分波移除legacy／floating compatibility | [dev/legacy-floating-compatibility-removal-plan.md](dev/legacy-floating-compatibility-removal-plan.md) |
 
 ## Source of truth
 

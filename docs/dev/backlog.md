@@ -30,6 +30,12 @@
 - [ ] 監控`market_data_eod_default`；資料累積到門檻時建立安全搬移runbook。
 - [ ] 建立代表性ingest throughput與Serve latency baseline，再決定batch insert／upsert優化。
 
+## P1：Legacy／floating compatibility
+
+- [ ] 依[移除計畫](legacy-floating-compatibility-removal-plan.md)分波固定Nginx digest、收斂
+  Fetcher state與Raw marker、移除scheduler compatibility／DB projection、舊public routes及
+  deprecated TW futures修復工具。
+
 ## P2：治理
 
 - [ ] 將credential usage aggregate與invalid-key事件接入集中式告警。
