@@ -36,6 +36,12 @@ DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
+FETCHER_SHUTDOWN_BOOTSTRAP_TAG = "7915ea856b677a67776476cd87cb531617203ed0"
+FETCHER_SHUTDOWN_BOOTSTRAP_IMAGE_IDS = {
+    "twelve": "sha256:fab4b2ac7b43a1637d53d9aa60380d3d7720904b9250fd869ea292c4d43728a2",
+    "finlab": "sha256:42b268f067da6d5e8be046f2418b16e59258764d3a32f671794775519240f4a8",
+    "shioaji": "sha256:828ed5d1a38063b9f511ae3cfd74509a1b8b4d6c08d700c0cbc0cdc0d4c2077d",
+}
 
 
 class UniqueKeyLoader(yaml.BaseLoader):
@@ -717,6 +723,12 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         graceful_gate = script[stable_stop:stable_rename]
         assert "{{.State.ExitCode}}" in graceful_gate
         assert 'if [ "$stable_exit_code" -ne 0 ]' in graceful_gate
+        assert FETCHER_SHUTDOWN_BOOTSTRAP_TAG in graceful_gate
+        assert FETCHER_SHUTDOWN_BOOTSTRAP_IMAGE_IDS[provider] in graceful_gate
+        assert '[ "$stable_exit_code" -eq 137 ]' in graceful_gate
+        assert '[ "$stable_image_ref" = "$bootstrap_ref" ]' in graceful_gate
+        assert '[ "$stable_image_id" = "$bootstrap_id" ]' in graceful_gate
+        assert '[ "$image" != "$bootstrap_ref" ]' in graceful_gate
         assert 'docker rename "$candidate" "$stable"' in script
         assert 'docker rename "$previous" "$stable"' in script
         assert 'docker rm -f "$candidate"' in script
@@ -860,7 +872,14 @@ case "$operation" in
     name="$3"
     status="$(cat "$state_dir/$name")"
     case "$format" in
-      *Config.Image*) printf '%s\\n' "${FAKE_IMAGE:?}" ;;
+      *Config.Image*)
+        if [ "$name" = "${FAKE_STABLE_NAME:-}" ] || [ "$name" = "${FAKE_PREVIOUS_NAME:-}" ]; then
+          printf '%s\\n' "${FAKE_STABLE_IMAGE:-${FAKE_IMAGE:?}}"
+        else
+          printf '%s\\n' "${FAKE_IMAGE:?}"
+        fi
+        ;;
+      *Image*) printf '%s\\n' "${FAKE_STABLE_IMAGE_ID:-sha256:unknown}" ;;
       *Config.User*) printf '10001:10001\\n' ;;
       *State.Running*) [ "$status" = running ] && printf 'true\\n' || printf 'false\\n' ;;
       *State.Status*) printf '%s\\n' "$status" ;;
@@ -904,6 +923,8 @@ def _run_fetcher_reconciliation(
     preflight_fails: bool = False,
     legacy_raw_bucket_marker: bool = False,
     stable_exit_code: int = 0,
+    stable_image_ref: str | None = None,
+    stable_image_id: str = "sha256:unknown",
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
     provider_id, step_name, command, stable, candidate, previous = provider
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
@@ -976,6 +997,10 @@ previous={previous}
         FAKE_DOCKER_STATE=str(state_dir),
         FAKE_DOCKER_LOG=str(log_path),
         FAKE_IMAGE=image,
+        FAKE_STABLE_IMAGE=stable_image_ref or image,
+        FAKE_STABLE_IMAGE_ID=stable_image_id,
+        FAKE_STABLE_NAME=stable,
+        FAKE_PREVIOUS_NAME=previous,
         FAKE_CANDIDATE_STATUS=candidate_status,
         FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
         FAKE_STABLE_EXIT_CODE=str(stable_exit_code),
@@ -1098,16 +1123,29 @@ def test_fetcher_provider_candidate_failure_rolls_back_and_preserves_sqlite(
 
 
 @pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+@pytest.mark.parametrize(
+    ("matching_ref", "matching_id"),
+    ((False, False), (True, False), (False, True)),
+    ids=("unknown", "wrong-image-id", "wrong-image-ref"),
+)
 def test_fetcher_provider_forced_stop_blocks_promotion_and_restores_stable(
     tmp_path: Path,
     provider: tuple[str, str, str, str, str, str],
+    matching_ref: bool,
+    matching_id: bool,
 ) -> None:
-    stable, candidate, previous = provider[3], provider[4], provider[5]
+    provider_id, _, _, stable, candidate, previous = provider
     completed, statuses, operations, durable_state = _run_fetcher_reconciliation(
         tmp_path,
         provider,
         initial={stable: "running"},
         stable_exit_code=137,
+        stable_image_ref=(
+            f"image:{FETCHER_SHUTDOWN_BOOTSTRAP_TAG}" if matching_ref else "image:unknown"
+        ),
+        stable_image_id=(
+            FETCHER_SHUTDOWN_BOOTSTRAP_IMAGE_IDS[provider_id] if matching_id else "sha256:unknown"
+        ),
     )
 
     assert completed.returncode != 0
@@ -1116,6 +1154,31 @@ def test_fetcher_provider_forced_stop_blocks_promotion_and_restores_stable(
     assert candidate not in statuses
     assert previous not in statuses
     assert "start" in operations
+    assert durable_state == "durable-state\n"
+
+
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+def test_fetcher_provider_accepts_reviewed_shutdown_bootstrap_once(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+) -> None:
+    provider_id, _, _, stable, candidate, previous = provider
+    completed, statuses, operations, durable_state = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        initial={stable: "running"},
+        stable_exit_code=137,
+        stable_image_ref=f"image:{FETCHER_SHUTDOWN_BOOTSTRAP_TAG}",
+        stable_image_id=FETCHER_SHUTDOWN_BOOTSTRAP_IMAGE_IDS[provider_id],
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "shutdown bootstrap" in completed.stdout.lower()
+    assert statuses == {stable: "running"}
+    assert candidate not in statuses
+    assert previous not in statuses
+    assert "run" in operations
+    assert "start" not in operations
     assert durable_state == "durable-state\n"
 
 

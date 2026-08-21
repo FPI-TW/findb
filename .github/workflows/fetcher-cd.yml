@@ -414,11 +414,22 @@ jobs:
               had_previous=0
               if docker container inspect "$stable" >/dev/null 2>&1; then
                 had_previous=1
+                stable_image_ref="$(docker inspect --format '{{.Config.Image}}' "$stable")"
+                stable_image_id="$(docker inspect --format '{{.Image}}' "$stable")"
                 docker stop --time 30 "$stable" >/dev/null
                 stable_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")"
                 if [ "$stable_exit_code" -ne 0 ]; then
-                  echo "::error title=Fetcher graceful stop failed::${provider_id} stable container exited ${stable_exit_code}" >&2
-                  false
+                  bootstrap_ref="${image%:*}:7915ea856b677a67776476cd87cb531617203ed0"
+                  bootstrap_id="sha256:fab4b2ac7b43a1637d53d9aa60380d3d7720904b9250fd869ea292c4d43728a2"
+                  if [ "$stable_exit_code" -eq 137 ] \
+                    && [ "$stable_image_ref" = "$bootstrap_ref" ] \
+                    && [ "$stable_image_id" = "$bootstrap_id" ] \
+                    && [ "$image" != "$bootstrap_ref" ]; then
+                    echo "::notice title=Fetcher shutdown bootstrap::Accepted the reviewed predecessor forced stop for ${provider_id}"
+                  else
+                    echo "::error title=Fetcher graceful stop failed::${provider_id} stable container exited ${stable_exit_code}" >&2
+                    false
+                  fi
                 fi
                 docker rename "$stable" "$previous"
               fi
@@ -627,9 +638,20 @@ jobs:
               had_previous=0
               if docker container inspect "$stable" >/dev/null 2>&1; then
                 had_previous=1
+                stable_image_ref="$(docker inspect --format '{{.Config.Image}}' "$stable")"
+                stable_image_id="$(docker inspect --format '{{.Image}}' "$stable")"
                 docker stop --time 30 "$stable" >/dev/null
                 stable_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")"
-                if [ "$stable_exit_code" -ne 0 ]; then echo "::error title=FinLab graceful stop failed::Stable container exited ${stable_exit_code}" >&2; false; fi
+                if [ "$stable_exit_code" -ne 0 ]; then
+                  bootstrap_ref="${image%:*}:7915ea856b677a67776476cd87cb531617203ed0"
+                  bootstrap_id="sha256:42b268f067da6d5e8be046f2418b16e59258764d3a32f671794775519240f4a8"
+                  if [ "$stable_exit_code" -eq 137 ] && [ "$stable_image_ref" = "$bootstrap_ref" ] && [ "$stable_image_id" = "$bootstrap_id" ] && [ "$image" != "$bootstrap_ref" ]; then
+                    echo "::notice title=FinLab shutdown bootstrap::Accepted the reviewed predecessor forced stop"
+                  else
+                    echo "::error title=FinLab graceful stop failed::Stable container exited ${stable_exit_code}" >&2
+                    false
+                  fi
+                fi
                 docker rename "$stable" "$previous"
               fi
               common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher")
@@ -758,9 +780,20 @@ jobs:
               had_previous=0
               if docker container inspect "$stable" >/dev/null 2>&1; then
                 had_previous=1
+                stable_image_ref="$(docker inspect --format '{{.Config.Image}}' "$stable")"
+                stable_image_id="$(docker inspect --format '{{.Image}}' "$stable")"
                 docker stop --time 30 "$stable" >/dev/null
                 stable_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")"
-                if [ "$stable_exit_code" -ne 0 ]; then echo "::error title=Shioaji graceful stop failed::Stable container exited ${stable_exit_code}" >&2; false; fi
+                if [ "$stable_exit_code" -ne 0 ]; then
+                  bootstrap_ref="${image%:*}:7915ea856b677a67776476cd87cb531617203ed0"
+                  bootstrap_id="sha256:828ed5d1a38063b9f511ae3cfd74509a1b8b4d6c08d700c0cbc0cdc0d4c2077d"
+                  if [ "$stable_exit_code" -eq 137 ] && [ "$stable_image_ref" = "$bootstrap_ref" ] && [ "$stable_image_id" = "$bootstrap_id" ] && [ "$image" != "$bootstrap_ref" ]; then
+                    echo "::notice title=Shioaji shutdown bootstrap::Accepted the reviewed predecessor forced stop"
+                  else
+                    echo "::error title=Shioaji graceful stop failed::Stable container exited ${stable_exit_code}" >&2
+                    false
+                  fi
+                fi
                 docker rename "$stable" "$previous"
               fi
               common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher")
