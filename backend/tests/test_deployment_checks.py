@@ -154,11 +154,12 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         if service == "fetcher":
             assert jobs["deploy"]["needs"] == [
                 "build-push",
+                "validate-release-manifest",
                 "validate-r2-bucket-configuration",
                 "validate-fetcher-credential-isolation",
             ]
         else:
-            assert jobs["deploy"]["needs"] == "build-push"
+            assert jobs["deploy"]["needs"] == ["build-push", "validate-release-manifest"]
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
@@ -377,7 +378,10 @@ def test_reusable_ci_runs_deterministic_deployment_and_migration_gates() -> None
 def test_production_compose_requires_an_explicit_release_tag() -> None:
     compose = PROD_COMPOSE.read_text(encoding="utf-8")
     assert ":-latest" not in compose
-    assert compose.count("IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag") == 6
+    assert compose.count("FINDB_IMAGE_REFERENCE:?FINDB_IMAGE_REFERENCE") == 5
+    assert compose.count("DASHBOARD_IMAGE_REFERENCE:?DASHBOARD_IMAGE_REFERENCE") == 1
+    assert compose.count("NGINX_IMAGE_REFERENCE:?NGINX_IMAGE_REFERENCE") == 1
+    assert "image: nginx:alpine" not in compose
 
 
 def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> None:
@@ -387,6 +391,7 @@ def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> 
         "backend/pyproject.toml",
         "backend/uv.lock",
         "backend/scripts/export_ingress_contracts.py",
+        "backend/scripts/release_manifest.py",
         "backend/tests/test_contract_artifacts.py",
     }
     fetcher_ci = _load_workflow(FETCHER_CI_WORKFLOW)
@@ -451,6 +456,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
     fetcher_cd_paths = set(fetcher_cd["on"]["push"]["paths"])
     assert fetcher_cd_paths == {
         "fetcher/**",
+        "backend/scripts/release_manifest.py",
         ".github/workflows/fetcher-cd.yml",
     }
 
@@ -585,6 +591,82 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
         assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" not in environment
     assert "DASHBOARD_USERNAME" not in compose
     assert "DASHBOARD_PASSWORD" not in compose
+
+
+def test_findb_nginx_bundle_is_candidate_rendered_and_promoted_after_acceptance() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    render = _named_step(workflow, "deploy", "Render nginx configs")["run"]
+    deploy = _named_step(workflow, "deploy", "Deploy to EC2")["with"]["script"]
+
+    assert "--template infra/nginx/nginx.conf" in render
+    assert "--output infra/nginx/nginx.conf" not in render
+    assert "candidate_dir=release-candidate" in render
+    assert 'nginx_dir="$candidate_dir/nginx"' in render
+    assert "attest-nginx" in render
+    assert "bind-nginx-attestation" in render
+    assert "release_root=/opt/findb/release-state" in deploy
+    assert 'candidate_root="$release_root/candidate"' in deploy
+    assert "candidate_attestation" in deploy
+    assert "--nginx-root /tmp/nginx-candidate" in deploy
+    assert "--nginx-attestation /tmp/nginx-attestation.json" in deploy
+    assert "--expected-manifest-sha256" in deploy
+    assert 'docker compose -f "$compose_file" run --rm --no-deps' in deploy
+    assert 'docker cp "$candidate_nginx/."' not in deploy
+    assert "stop_unaccepted_writers_on_failure" in deploy
+    assert 'check_exact_image nginx "$NGINX_IMAGE_REFERENCE"' in deploy
+    promotion_cleanup_comment = "# The active 0600 copy is already installed."
+    promotion_cleanup = deploy.index(
+        'rm -f "$candidate_nginx/serve-key.conf"',
+        deploy.index(promotion_cleanup_comment),
+    )
+    metadata_promotion = deploy.index('echo "Atomically promoting accepted FinDB metadata"')
+    assert promotion_cleanup < metadata_promotion
+    prune = 'docker image prune -af --filter "until=168h" ||'
+    assert prune in deploy
+    assert "Accepted release is healthy; prune can be retried separately" in deploy
+    assert "restore_previous_nginx" in deploy
+    assert "nginx_had_nginx_conf" in deploy
+    assert "restore_previous_metadata" in deploy
+    assert "metadata_swap_started" in deploy
+    assert "accepted_manifest.next" in deploy
+    assert "previous_manifest.next" in deploy
+    assert "target-acceptance.json.next" in deploy
+
+
+def test_fetcher_promotes_one_accepted_manifest_only_after_all_provider_candidates() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    deploy_steps = workflow["jobs"]["deploy"]["steps"]
+    names = [step.get("name") for step in deploy_steps]
+    assert "Roll back incomplete Fetcher candidate" in names
+    assert "Promote all Fetcher providers atomically" in names
+    final = _named_step(workflow, "deploy", "Promote all Fetcher providers atomically")
+    script = final["with"]["script"]
+    assert "provider_specs" in script
+    assert "all_provider_candidates" in script
+    assert '"status":"candidate"' in script
+    assert 'docker rename "$candidate" "$stable"' in script
+    assert "restore_previous_metadata" in script
+    assert "metadata_swap_started" in script
+    assert "manifest_sha256" in script
+    assert "RELEASE_MANIFEST_SHA256" in script
+    assert "Fetcher target rejected release manifest contract" in script
+    assert "promoted_stables" in script
+    assert 'elif was_promoted "$stable"' in script
+    assert '"manifest_identity"' in script
+    assert "handle_promotion_failure" in script
+    handler = script[script.index("handle_promotion_failure()") :]
+    assert 'if [ "$metadata_promoted" -eq 0 ]' in handler
+    promoted = handler.index("metadata_promoted=1")
+    assert promoted < handler.index("trap - ERR INT TERM HUP", promoted)
+    assert "accepted_manifest.next" in script
+    assert "previous_manifest.next" in script
+    rollback = _named_step(workflow, "deploy", "Roll back incomplete Fetcher candidate")
+    assert "accepted manifest was not changed" in rollback["with"]["script"]
+    assert "cancelled()" in rollback["if"]
+    prepare = _named_step(workflow, "deploy", "Prepare Fetcher release directory")["with"]["script"]
+    for state in ("candidate", "accepted", "previous"):
+        path = f"/opt/findb/release-state/{state}"
+        assert prepare.count(path) >= 3
 
 
 def test_retired_shared_credential_identifiers_are_absent_from_runtime_contracts() -> None:
@@ -752,6 +834,8 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         assert "--log-opt max-file=3" in script
         assert "--user 10001:10001" in script
         assert "raw-bucket.sha256" in script
+        assert "target-acceptance.json" in script
+        assert "RELEASE_COMMIT_SHA" in env and "RELEASE_COMMIT_SHA" in forwarded
         assert "recover_scheduler()" in script
         assert "for attempt in $(seq 1 6)" in script
         assert "{{.RestartCount}}" in script
@@ -764,7 +848,9 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         preflight = script.index("--check")
         stable_stop = script.index('docker stop --time 30 "$stable"', preflight)
         assert preflight < stable_stop
-        assert 'docker rename "$candidate" "$stable"' in script
+        assert 'docker rename "$candidate" "$stable"' not in script
+        assert 'status":"candidate"' in script
+        assert "overall promotion waits for all providers" in script
         assert 'docker rename "$previous" "$stable"' in script
         assert 'docker rm -f "$candidate"' in script
         image_prune = script.index("docker image prune -af")
@@ -1034,7 +1120,8 @@ previous={previous}
     statuses = {
         path.name: path.read_text(encoding="utf-8").strip()
         for path in state_dir.iterdir()
-        if path.is_file() and path.name not in {"state.sqlite3", "raw-bucket.sha256"}
+        if path.is_file()
+        and path.name not in {"state.sqlite3", "raw-bucket.sha256", "target-acceptance.json"}
     }
     operations = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
     return completed, statuses, operations, state_path.read_text(encoding="utf-8")
@@ -1054,7 +1141,7 @@ def test_twelve_legacy_raw_bucket_marker_is_migrated_before_reconciliation(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert statuses == {stable: "running"}
+    assert statuses == {provider[4]: "running", provider[5]: "stopped"}
     assert durable_state == "durable-state\n"
     marker = (tmp_path / "twelve" / "state" / "raw-bucket.sha256").read_text(encoding="utf-8")
     expected = hashlib.sha256(b"0123456789abcdef0123456789abcdef\nraw-bucket\ntwelve").hexdigest()
@@ -1096,9 +1183,9 @@ def test_fetcher_provider_reconciliation_always_converges_to_running(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert statuses == {stable: "running"}
-    assert provider[4] not in statuses
-    assert provider[5] not in statuses
+    assert statuses == {provider[4]: "running", provider[5]: "stopped"}
+    assert statuses[provider[4]] == "running"
+    assert statuses[provider[5]] == "stopped"
     assert "run" in operations
 
 
@@ -1107,7 +1194,7 @@ def test_fetcher_provider_reconciliation_cleans_interrupted_candidate(
     tmp_path: Path,
     provider: tuple[str, str, str, str, str, str],
 ) -> None:
-    stable, candidate = provider[3], provider[4]
+    stable, candidate, previous = provider[3], provider[4], provider[5]
     completed, statuses, operations, _ = _run_fetcher_reconciliation(
         tmp_path,
         provider,
@@ -1115,8 +1202,8 @@ def test_fetcher_provider_reconciliation_cleans_interrupted_candidate(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert statuses == {stable: "running"}
-    assert candidate not in statuses
+    assert statuses[candidate] == "running"
+    assert statuses[previous] == "stopped"
     assert "rm" in operations
 
 
@@ -1151,12 +1238,13 @@ def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolatio
     r2_script = predeploy["steps"][0]["run"]
     isolation_script = isolation["steps"][0]["run"]
 
-    assert predeploy["needs"] == "build-push"
-    assert isolation["needs"] == "build-push"
+    assert predeploy["needs"] == ["build-push", "validate-release-manifest"]
+    assert isolation["needs"] == ["build-push", "validate-release-manifest"]
     assert "inputs.run_finlab_smoke != true" in predeploy["if"]
     assert "inputs.run_finlab_smoke != true" in isolation["if"]
     assert deploy["needs"] == [
         "build-push",
+        "validate-release-manifest",
         "validate-r2-bucket-configuration",
         "validate-fetcher-credential-isolation",
     ]
@@ -1207,7 +1295,7 @@ def test_deploy_uses_ordered_health_checks_with_failure_diagnostics() -> None:
     assert "diagnose_services()" in deploy
     assert ".State.OOMKilled" in deploy
     assert "{{json .State.Health}}" in deploy
-    assert "docker compose -f docker-compose.prod.yml ps -a" in deploy
+    assert 'docker compose -f "$compose_file" ps -a' in deploy
 
 
 def test_dashboard_health_checks_use_the_public_landing_page() -> None:

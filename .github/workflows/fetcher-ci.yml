@@ -16,6 +16,7 @@ on:
       - "backend/uv.lock"
       - "backend/scripts/export_ingress_contracts.py"
       - "backend/scripts/export_archive_contracts.py"
+      - "backend/scripts/release_manifest.py"
       - "backend/tests/test_contract_artifacts.py"
       - ".github/workflows/fetcher-ci.yml"
       - ".github/workflows/fetcher-cd.yml"

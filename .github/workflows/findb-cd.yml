@@ -44,6 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    outputs:
+      backend_digest: ${{ steps.backend-build.outputs.digest }}
+      dashboard_digest: ${{ steps.dashboard-build.outputs.digest }}
+      nginx_reference: ${{ steps.nginx-image.outputs.reference }}
+
     permissions:
       contents: read
       packages: write
@@ -63,30 +68,101 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push backend image
+        id: backend-build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: ./backend
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Build and push dashboard image
+        id: dashboard-build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: dashboard/Dockerfile
           push: ${{ github.ref == 'refs/heads/main' }}
-          tags: |
-            ${{ env.DASHBOARD_IMAGE }}:latest
-            ${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}
+          tags: ${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=dashboard
           cache-to: type=gha,mode=max,scope=dashboard
 
-  deploy:
+      - name: Resolve immutable nginx image
+        id: nginx-image
+        run: |
+          set -euo pipefail
+          docker pull nginx:alpine
+          reference="$(docker image inspect nginx:alpine --format '{{index .RepoDigests 0}}')"
+          if ! printf '%s' "$reference" | grep -Eq '^.+@sha256:[0-9a-f]{64}$'; then
+            echo "::error title=Nginx image digest missing::nginx:alpine did not resolve to one RepoDigest"
+            exit 1
+          fi
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
+
+      - name: Create release manifest
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          BACKEND_IMAGE: ${{ env.IMAGE }}
+          BACKEND_DIGEST: ${{ steps.backend-build.outputs.digest }}
+          DASHBOARD_IMAGE: ${{ env.DASHBOARD_IMAGE }}
+          DASHBOARD_DIGEST: ${{ steps.dashboard-build.outputs.digest }}
+          NGINX_REFERENCE: ${{ steps.nginx-image.outputs.reference }}
+        run: |
+          set -euo pipefail
+          python backend/scripts/release_manifest.py create \
+            --repo-root . \
+            --unit findb \
+            --deployment-target "$DEPLOYMENT_TARGET" \
+            --commit-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --image "backend=${BACKEND_IMAGE}@${BACKEND_DIGEST}" \
+            --image "dashboard=${DASHBOARD_IMAGE}@${DASHBOARD_DIGEST}" \
+            --image "nginx=${NGINX_REFERENCE}" \
+            --output release-manifest/findb.json
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findb-release-manifest-${{ github.sha }}
+          path: release-manifest/findb.json
+          if-no-files-found: error
+          retention-days: 14
+
+  validate-release-manifest:
     needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download release manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: findb-release-manifest-${{ github.sha }}
+          path: release-manifest
+
+      - name: Validate release manifest
+        env:
+          BACKEND_REFERENCE: ${{ env.IMAGE }}@${{ needs.build-push.outputs.backend_digest }}
+          DASHBOARD_REFERENCE: ${{ env.DASHBOARD_IMAGE }}@${{ needs.build-push.outputs.dashboard_digest }}
+          NGINX_REFERENCE: ${{ needs.build-push.outputs.nginx_reference }}
+        run: |
+          set -euo pipefail
+          python backend/scripts/release_manifest.py validate \
+            --repo-root . \
+            --manifest release-manifest/findb.json \
+            --unit findb \
+            --deployment-target "${{ inputs.deployment_target || 'staging' }}" \
+            --commit-sha "$GITHUB_SHA" \
+            --image "backend=${BACKEND_REFERENCE}" \
+            --image "dashboard=${DASHBOARD_REFERENCE}" \
+            --image "nginx=${NGINX_REFERENCE}"
+
+  deploy:
+    needs: [build-push, validate-release-manifest]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: ${{ inputs.deployment_target || 'staging' }}-findb
@@ -97,7 +173,10 @@ jobs:
 
     env:
       GITHUB_ACTOR: ${{ github.actor }}
-      IMAGE_TAG: ${{ github.sha }}
+      FINDB_IMAGE_REFERENCE: ${{ env.IMAGE }}@${{ needs.build-push.outputs.backend_digest }}
+      DASHBOARD_IMAGE_REFERENCE: ${{ env.DASHBOARD_IMAGE }}@${{ needs.build-push.outputs.dashboard_digest }}
+      NGINX_IMAGE_REFERENCE: ${{ needs.build-push.outputs.nginx_reference }}
+      DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
       APP_NAME: ${{ vars.APP_NAME }}
       APP_VERSION: ${{ vars.APP_VERSION }}
       DEBUG: ${{ vars.DEBUG }}
@@ -122,6 +201,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Download release manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: findb-release-manifest-${{ github.sha }}
+          path: release-manifest
+
       - name: Validate deployment configuration
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -140,9 +225,15 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_BREAK_GLASS_API_KEY FINDB_QUEUE_HEALTH_ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY; do
+          for name in FINDB_IMAGE_REFERENCE DASHBOARD_IMAGE_REFERENCE NGINX_IMAGE_REFERENCE APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_BREAK_GLASS_API_KEY FINDB_QUEUE_HEALTH_ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
+              missing=1
+            fi
+          done
+          for image in FINDB_IMAGE_REFERENCE DASHBOARD_IMAGE_REFERENCE NGINX_IMAGE_REFERENCE; do
+            if ! printf '%s' "${!image}" | grep -Eq '^.+@sha256:[0-9a-f]{64}$'; then
+              echo "::error title=Image digest missing::${image} must be a full registry@sha256 reference"
               missing=1
             fi
           done
@@ -169,23 +260,46 @@ jobs:
           exit "$missing"
 
       - name: Render nginx configs
+        id: candidate-manifest
         env:
           FINDB_LOOKUP_SERVE_API_KEY: ${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}
         run: |
           set -euo pipefail
+          candidate_dir=release-candidate
+          nginx_dir="$candidate_dir/nginx"
+          mkdir -p "$nginx_dir"
           python backend/scripts/render_nginx_public_host.py \
             --host "$FINDB_PUBLIC_HOST" \
             --template infra/nginx/nginx.conf \
-            --output infra/nginx/nginx.conf
+            --output "$nginx_dir/nginx.conf"
           python backend/scripts/render_nginx_source_allowlist.py \
             --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
-            --output infra/nginx/source-allowlist.conf
+            --output "$nginx_dir/source-allowlist.conf"
           python backend/scripts/render_nginx_cloudflare_real_ip.py \
-            --output infra/nginx/cloudflare-real-ip.conf
+            --output "$nginx_dir/cloudflare-real-ip.conf"
           python backend/scripts/render_nginx_serve_key.py \
             --key "${FINDB_LOOKUP_SERVE_API_KEY:-}" \
             --public-host "$FINDB_PUBLIC_HOST" \
-            --output infra/nginx/serve-key.conf
+            --output "$nginx_dir/serve-key.conf"
+          chmod 0644 "$nginx_dir/nginx.conf" "$nginx_dir/source-allowlist.conf" "$nginx_dir/cloudflare-real-ip.conf"
+          chmod 0600 "$nginx_dir/serve-key.conf"
+          python backend/scripts/release_manifest.py attest-nginx \
+            --root "$nginx_dir" \
+            --public-host "$FINDB_PUBLIC_HOST" \
+            --source-allowlist-cidrs "$SOURCE_ALLOWLIST_CIDRS" \
+            --output "$candidate_dir/nginx-attestation.json"
+          python backend/scripts/release_manifest.py bind-nginx-attestation \
+            --repo-root . \
+            --manifest release-manifest/findb.json \
+            --attestation "$candidate_dir/nginx-attestation.json" \
+            --output "$candidate_dir/findb.json"
+          python backend/scripts/release_manifest.py validate \
+            --repo-root . \
+            --manifest "$candidate_dir/findb.json" \
+            --unit findb \
+            --deployment-target "$DEPLOYMENT_TARGET" \
+            --commit-sha "$GITHUB_SHA"
+          echo "manifest_sha256=$(sha256sum "$candidate_dir/findb.json" | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare deploy directories on EC2
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
@@ -196,8 +310,11 @@ jobs:
           script: |
             set -euo pipefail
             sudo mkdir -p /var/lib/findb/rabbitmq
-            mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
+            mkdir -p /opt/findb /opt/findb/release-state/candidate /opt/findb/release-state/accepted /opt/findb/release-state/previous
+            mkdir -p /home/ubuntu/etc/nginx/candidate /home/ubuntu/etc/nginx/ssl
             sudo chown -R 999:999 /var/lib/findb/rabbitmq
+            chmod 0700 /opt/findb/release-state/candidate
+            chmod 0700 /home/ubuntu/etc/nginx/candidate
 
       - name: Sync deploy artifacts to EC2
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
@@ -206,7 +323,18 @@ jobs:
           username: ${{ secrets.FINDB_EC2_USER }}
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           source: "docker-compose.prod.yml"
-          target: /opt/findb
+          target: /opt/findb/release-state/candidate
+          overwrite: true
+
+      - name: Sync release manifest to EC2
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          source: "release-candidate/findb.json,release-candidate/nginx-attestation.json"
+          target: /opt/findb/release-state/candidate
+          strip_components: 1
           overwrite: true
 
       - name: Sync nginx.conf to EC2 nginx path
@@ -215,8 +343,8 @@ jobs:
           host: ${{ secrets.FINDB_EC2_HOST }}
           username: ${{ secrets.FINDB_EC2_USER }}
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          source: "infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf,infra/nginx/serve-key.conf"
-          target: /home/ubuntu/etc/nginx
+          source: "release-candidate/nginx/nginx.conf,release-candidate/nginx/source-allowlist.conf,release-candidate/nginx/cloudflare-real-ip.conf,release-candidate/nginx/serve-key.conf"
+          target: /home/ubuntu/etc/nginx/candidate
           strip_components: 2
           overwrite: true
 
@@ -238,26 +366,53 @@ jobs:
           CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: ${{ secrets.CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN }}
+          RELEASE_MANIFEST_SHA256: ${{ steps.candidate-manifest.outputs.manifest_sha256 }}
         with:
           host: ${{ secrets.FINDB_EC2_HOST }}
           username: ${{ secrets.FINDB_EC2_USER }}
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,DASHBOARD_IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,ADMIN_BREAK_GLASS_API_KEY,FINDB_QUEUE_HEALTH_ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID,CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY,CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN,CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID,CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY,CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FINDB_IMAGE_REFERENCE,DASHBOARD_IMAGE_REFERENCE,NGINX_IMAGE_REFERENCE,RELEASE_MANIFEST_SHA256,DEPLOYMENT_TARGET,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,ADMIN_BREAK_GLASS_API_KEY,FINDB_QUEUE_HEALTH_ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID,CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY,CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN,CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID,CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY,CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN
           script: |
             set -euo pipefail
             echo "Logging in to GHCR"
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-            echo "Deploying image tag: ${IMAGE_TAG}"
+            echo "Deploying immutable image references"
             cd /opt/findb
+            release_root=/opt/findb/release-state
+            candidate_root="$release_root/candidate"
+            accepted_root="$release_root/accepted"
+            previous_root="$release_root/previous"
+            candidate_manifest="$candidate_root/findb.json"
+            candidate_attestation="$candidate_root/nginx-attestation.json"
+            candidate_nginx=/home/ubuntu/etc/nginx/candidate
+            compose_file="$candidate_root/docker-compose.prod.yml"
+            accepted_manifest="$accepted_root/findb.json"
+            previous_manifest="$previous_root/findb.json"
+
+            candidate_runtime_started=0
+            stop_unaccepted_writers_on_failure() {
+              status="$?"
+              trap - EXIT
+              if [ "$status" -ne 0 ] && [ "$candidate_runtime_started" -eq 1 ]; then
+                echo "Stopping unaccepted FinDB writers after failed acceptance"
+                docker compose -f "$compose_file" stop \
+                  ingest dispatcher worker raw-cleanup >/dev/null 2>&1 || true
+              fi
+              if [ "$status" -ne 0 ]; then
+                rm -f "$candidate_nginx/serve-key.conf"
+              fi
+              exit "$status"
+            }
+            trap stop_unaccepted_writers_on_failure EXIT
 
             diagnose_services() {
               echo "Container status at deployment failure"
-              docker compose -f docker-compose.prod.yml ps -a || true
+              docker compose -f "$compose_file" ps -a || true
               for service in "$@"; do
                 container_id="$(
-                  docker compose -f docker-compose.prod.yml ps -aq "$service" 2>/dev/null | head -n 1 || true
+                  docker compose -f "$compose_file" ps -aq "$service" 2>/dev/null | head -n 1 || true
                 )"
                 if [ -z "$container_id" ]; then
                   echo "Service ${service}: no container found"
@@ -272,15 +427,19 @@ jobs:
                   '{{if .State.Health}}{{json .State.Health}}{{else}}not-configured{{end}}' \
                   "$container_id" || true
               done
-              docker compose -f docker-compose.prod.yml logs --tail=200 "$@" || true
+              docker compose -f "$compose_file" logs --tail=200 "$@" || true
             }
 
             for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
-              if [ ! -f "/home/ubuntu/etc/nginx/${conf}" ]; then
-                echo "::error title=Missing nginx config::/home/ubuntu/etc/nginx/${conf} not found on target host"
+              if [ ! -f "$candidate_nginx/${conf}" ]; then
+                echo "::error title=Missing candidate nginx config::${conf} was not transferred to the candidate path"
                 exit 1
               fi
             done
+            if [ "$(stat -c '%a' "$candidate_nginx/serve-key.conf")" != "600" ]; then
+              echo "::error title=Serve-key mode rejected::candidate serve-key.conf must be mode 0600"
+              exit 1
+            fi
             if [ ! -f /home/ubuntu/etc/nginx/ssl/server.crt ]; then
               echo "::error title=Missing TLS cert::/home/ubuntu/etc/nginx/ssl/server.crt not found on target host"
               exit 1
@@ -289,43 +448,49 @@ jobs:
               echo "::error title=Missing TLS key::/home/ubuntu/etc/nginx/ssl/server.key not found on target host"
               exit 1
             fi
-            docker compose -f docker-compose.prod.yml pull
+            if [ ! -f "$candidate_manifest" ] || [ ! -f "$candidate_attestation" ]; then
+              echo "::error title=Missing release candidate::candidate manifest and attestation must be transferred before deployment"
+              exit 1
+            fi
+            docker compose -f "$compose_file" config --quiet
+            docker compose -f "$compose_file" pull
 
             echo "Checking production database before migration"
-            docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
+            docker compose -f "$compose_file" run --rm --no-deps ingest \
               python /app/scripts/predeploy_db_check.py
 
             echo "Pausing every database writer before schema migration"
-            docker compose -f docker-compose.prod.yml stop \
+            docker compose -f "$compose_file" stop \
               ingest dispatcher worker raw-cleanup 2>/dev/null || true
 
             echo "Running Alembic migrations"
-            docker compose -f docker-compose.prod.yml run --rm --no-deps ingest sh -euc '
+            docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
               uv run alembic upgrade head
               uv run alembic current
             '
 
             echo "Provisioning deployment-target registry policy"
-            docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
+            docker compose -f "$compose_file" run --rm --no-deps ingest \
               python /app/scripts/provision_registry.py \
               --deployment-target "${{ inputs.deployment_target || 'staging' }}"
 
-            if ! docker compose -f docker-compose.prod.yml up -d --remove-orphans; then
+            candidate_runtime_started=1
+            if ! docker compose -f "$compose_file" up -d --remove-orphans; then
               diagnose_services rabbitmq rabbitmq-policy dispatcher worker serve ingest dashboard nginx raw-cleanup
               exit 1
             fi
 
             echo "Checking RabbitMQ and version-controlled queue topology"
-            if ! docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping; then
+            if ! docker compose -f "$compose_file" exec -T rabbitmq rabbitmq-diagnostics -q ping; then
               diagnose_services rabbitmq rabbitmq-policy
               exit 1
             fi
             expected_consumer_timeout="$(
-              docker compose -f docker-compose.prod.yml config --format json | \
+              docker compose -f "$compose_file" config --format json | \
                 python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["rabbitmq-policy"]["environment"]["NORMALIZATION_CONSUMER_TIMEOUT_MS"])'
             )"
             actual_consumer_timeout="$(
-              docker compose -f docker-compose.prod.yml exec -T rabbitmq \
+              docker compose -f "$compose_file" exec -T rabbitmq \
                 rabbitmqctl list_policies -p /findb --formatter json | \
                 python3 -c 'import json, sys; policies=json.load(sys.stdin); policy=next((item for item in policies if item["name"] == "findb-normalization-consumer-timeout"), None); definition=json.loads(policy["definition"]) if policy else {}; print(definition.get("consumer-timeout", ""))'
             )"
@@ -335,7 +500,7 @@ jobs:
             fi
             topology_ready=0
             for attempt in $(seq 1 24); do
-              queue_state="$(docker compose -f docker-compose.prod.yml exec -T rabbitmq \
+              queue_state="$(docker compose -f "$compose_file" exec -T rabbitmq \
                 rabbitmqctl list_queues -p /findb name durable arguments 2>/dev/null || true)"
               if echo "$queue_state" | grep -Fq "findb.normalize.v1" \
                 && echo "$queue_state" | grep -Fq "findb.normalize.dlq.v1"; then
@@ -354,14 +519,14 @@ jobs:
 
             echo "Checking dispatcher and Celery worker"
             for service in dispatcher worker; do
-              if ! docker compose -f docker-compose.prod.yml ps --status running --services | grep -qx "$service"; then
+              if ! docker compose -f "$compose_file" ps --status running --services | grep -qx "$service"; then
                 diagnose_services "$service"
                 exit 1
               fi
             done
             worker_ready=0
             for attempt in $(seq 1 24); do
-              if docker compose -f docker-compose.prod.yml exec -T worker \
+              if docker compose -f "$compose_file" exec -T worker \
                 celery -A app.task_queue inspect ping --timeout=10 >/dev/null 2>&1; then
                 echo "Celery worker is ready"
                 worker_ready=1
@@ -381,7 +546,7 @@ jobs:
             for service in serve ingest; do
               ready=0
               for attempt in $(seq 1 24); do
-                if docker compose -f docker-compose.prod.yml exec -T "$service" sh -lc 'python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5); print(\"ok\")"' >/dev/null 2>&1; then
+                if docker compose -f "$compose_file" exec -T "$service" sh -lc 'python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5); print(\"ok\")"' >/dev/null 2>&1; then
                   echo "Service ${service} is ready"
                   ready=1
                   break
@@ -400,7 +565,7 @@ jobs:
             echo "Waiting for Dashboard readiness"
             dashboard_ready=0
             for attempt in $(seq 1 24); do
-              if docker compose -f docker-compose.prod.yml exec -T dashboard \
+              if docker compose -f "$compose_file" exec -T dashboard \
                 wget -q --spider http://127.0.0.1:3333/dashboard/; then
                 echo "Dashboard is ready"
                 dashboard_ready=1
@@ -415,15 +580,144 @@ jobs:
             fi
 
             echo "Waiting for DB-authoritative queue health"
-            if ! docker compose -f docker-compose.prod.yml exec -T ingest \
+            if ! docker compose -f "$compose_file" exec -T ingest \
               python /app/scripts/check_queue_health.py \
               --attempts 24 --interval 5 --maximum-heartbeat-age 90; then
               diagnose_services ingest dispatcher worker
               exit 1
             fi
 
+            echo "Verifying transferred nginx candidate attestation before promotion"
+            rm -f "$candidate_root/target-acceptance.json"
+            docker compose -f "$compose_file" run --rm --no-deps \
+              -v "$candidate_nginx:/tmp/nginx-candidate:ro" \
+              -v "$candidate_manifest:/tmp/release-manifest.json:ro" \
+              -v "$candidate_attestation:/tmp/nginx-attestation.json:ro" \
+              -v "$candidate_root:/tmp/release-state" \
+              ingest \
+              python /app/scripts/target_acceptance.py \
+              --manifest /tmp/release-manifest.json \
+              --expected-manifest-sha256 "$RELEASE_MANIFEST_SHA256" \
+              --nginx-attestation /tmp/nginx-attestation.json \
+              --nginx-root /tmp/nginx-candidate \
+              --output /tmp/release-state/target-acceptance.json \
+              --target "$DEPLOYMENT_TARGET" \
+              --expected-image "backend=${FINDB_IMAGE_REFERENCE}" \
+              --expected-image "dashboard=${DASHBOARD_IMAGE_REFERENCE}" \
+              --expected-image "nginx=${NGINX_IMAGE_REFERENCE}" \
+              --health-url ingest http://ingest:8080/health \
+              --health-url serve http://serve:8080/health \
+              --health-url dashboard http://dashboard:3333/dashboard/
+            python3 -m json.tool "$candidate_root/target-acceptance.json" >/dev/null
+
+            echo "Promoting candidate nginx files for public acceptance"
+            nginx_previous=/home/ubuntu/etc/nginx/previous
+            mkdir -p "$nginx_previous"
+            nginx_promoted=0
+            metadata_swap_started=0
+            metadata_promoted=0
+            accepted_manifest_present=0
+            accepted_attestation_present=0
+            accepted_evidence_present=0
+            nginx_had_nginx_conf=0
+            nginx_had_source_allowlist=0
+            nginx_had_cloudflare_real_ip=0
+            nginx_had_serve_key=0
+            [ -f "$accepted_manifest" ] && accepted_manifest_present=1
+            [ -f "$accepted_root/nginx-attestation.json" ] && accepted_attestation_present=1
+            [ -f "$accepted_root/target-acceptance.json" ] && accepted_evidence_present=1
+            for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
+              if [ -f "/home/ubuntu/etc/nginx/${conf}" ]; then
+                case "$conf" in
+                  nginx.conf) nginx_had_nginx_conf=1 ;;
+                  source-allowlist.conf) nginx_had_source_allowlist=1 ;;
+                  cloudflare-real-ip.conf) nginx_had_cloudflare_real_ip=1 ;;
+                  serve-key.conf) nginx_had_serve_key=1 ;;
+                esac
+              fi
+            done
+            restore_previous_nginx() {
+              set +e
+              for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
+                had_active=0
+                case "$conf" in
+                  nginx.conf) had_active="$nginx_had_nginx_conf" ;;
+                  source-allowlist.conf) had_active="$nginx_had_source_allowlist" ;;
+                  cloudflare-real-ip.conf) had_active="$nginx_had_cloudflare_real_ip" ;;
+                  serve-key.conf) had_active="$nginx_had_serve_key" ;;
+                esac
+                if [ "$had_active" -eq 1 ] && [ -f "$nginx_previous/${conf}.previous" ]; then
+                  mode=0644
+                  [ "$conf" = "serve-key.conf" ] && mode=0600
+                  install -m "$mode" "$nginx_previous/${conf}.previous" \
+                    "/home/ubuntu/etc/nginx/.${conf}.restore"
+                  mv -f "/home/ubuntu/etc/nginx/.${conf}.restore" "/home/ubuntu/etc/nginx/${conf}"
+                elif [ "$had_active" -eq 0 ]; then
+                  rm -f "/home/ubuntu/etc/nginx/${conf}"
+                fi
+              done
+              docker compose -f "$compose_file" restart nginx >/dev/null 2>&1 || true
+            }
+            restore_previous_metadata() {
+              set +e
+              if [ "$accepted_manifest_present" -eq 1 ] && [ -f "$previous_manifest" ]; then
+                install -m 0600 "$previous_manifest" "$accepted_manifest.restore"
+                mv -f "$accepted_manifest.restore" "$accepted_manifest"
+              elif [ "$accepted_manifest_present" -eq 0 ] && [ -f "$accepted_manifest" ]; then
+                rm -f "$accepted_manifest"
+              fi
+              if [ "$accepted_attestation_present" -eq 1 ] && [ -f "$previous_root/nginx-attestation.json" ]; then
+                install -m 0600 "$previous_root/nginx-attestation.json" "$accepted_root/nginx-attestation.json.restore"
+                mv -f "$accepted_root/nginx-attestation.json.restore" "$accepted_root/nginx-attestation.json"
+              elif [ "$accepted_attestation_present" -eq 0 ] && [ -f "$accepted_root/nginx-attestation.json" ]; then
+                rm -f "$accepted_root/nginx-attestation.json"
+              fi
+              if [ "$accepted_evidence_present" -eq 1 ] && [ -f "$previous_root/target-acceptance.json" ]; then
+                install -m 0600 "$previous_root/target-acceptance.json" "$accepted_root/target-acceptance.json.restore"
+                mv -f "$accepted_root/target-acceptance.json.restore" "$accepted_root/target-acceptance.json"
+              elif [ "$accepted_evidence_present" -eq 0 ] && [ -f "$accepted_root/target-acceptance.json" ]; then
+                rm -f "$accepted_root/target-acceptance.json"
+              fi
+              rm -f "$accepted_manifest.next" "$accepted_root/nginx-attestation.json.next" "$accepted_root/target-acceptance.json.next"
+            }
+            restore_nginx_on_failure() {
+              status="$?"
+              trap - EXIT
+              if [ "$status" -ne 0 ]; then
+                if [ "$metadata_swap_started" -eq 1 ] && [ "$metadata_promoted" -eq 0 ]; then
+                  restore_previous_metadata
+                fi
+                if [ "$nginx_promoted" -eq 1 ]; then
+                  restore_previous_nginx
+                fi
+                if [ "$candidate_runtime_started" -eq 1 ]; then
+                  docker compose -f "$compose_file" stop \
+                    ingest dispatcher worker raw-cleanup >/dev/null 2>&1 || true
+                fi
+                rm -f "$candidate_nginx/serve-key.conf"
+              fi
+              exit "$status"
+            }
+            trap restore_nginx_on_failure EXIT
+            nginx_promoted=1
+            for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
+              if [ -f "/home/ubuntu/etc/nginx/${conf}" ]; then
+                install -m "$(stat -c '%a' "/home/ubuntu/etc/nginx/${conf}")" \
+                  "/home/ubuntu/etc/nginx/${conf}" "$nginx_previous/${conf}.previous"
+              else
+                rm -f "$nginx_previous/${conf}.previous"
+              fi
+            done
+            for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
+              mode=0644
+              [ "$conf" = "serve-key.conf" ] && mode=0600
+              install -m "$mode" "$candidate_nginx/${conf}" \
+                "/home/ubuntu/etc/nginx/.${conf}.candidate"
+              mv -f "/home/ubuntu/etc/nginx/.${conf}.candidate" "/home/ubuntu/etc/nginx/${conf}"
+            done
+
             echo "Restarting nginx proxy"
-            docker compose -f docker-compose.prod.yml restart nginx
+            docker compose -f "$compose_file" restart nginx
 
             echo "Checking nginx proxy health"
             proxy_ready=0
@@ -446,7 +740,7 @@ jobs:
 
             echo "Checking public Dashboard routes through nginx"
             for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill; do
-              if ! docker compose -f docker-compose.prod.yml exec -T nginx \
+              if ! docker compose -f "$compose_file" exec -T nginx \
                 wget -q --no-check-certificate --spider "https://127.0.0.1${dashboard_path}"; then
                 echo "::error title=Dashboard proxy check failed::${dashboard_path} is not reachable through nginx."
                 diagnose_services nginx dashboard
@@ -455,7 +749,7 @@ jobs:
             done
 
             echo "Generating instrument cache"
-            if ! docker compose -f docker-compose.prod.yml exec -T serve sh -lc '
+            if ! docker compose -f "$compose_file" exec -T serve sh -lc '
               for attempt in 1 2 3 4 5 6 7 8 9 10; do
                 python /app/scripts/generate_instrument_cache.py && exit 0
                 echo "Cache generation attempt ${attempt} failed; retrying in 5s..."
@@ -470,7 +764,7 @@ jobs:
 
             echo "Running post-deploy health checks"
             for service in serve ingest; do
-              if ! docker compose -f docker-compose.prod.yml exec -T "$service" sh -lc '
+              if ! docker compose -f "$compose_file" exec -T "$service" sh -lc '
                 python -c "import os, urllib.request; port = os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"
               '; then
                 echo "Post-deploy health check failed for ${service}"
@@ -479,5 +773,59 @@ jobs:
               fi
             done
 
+            check_exact_image() {
+              service="$1"
+              expected="$2"
+              container_id="$(docker compose -f "$compose_file" ps -q "$service" | head -n 1)"
+              if [ -z "$container_id" ]; then
+                echo "::error title=Missing runtime container::${service} has no running container"
+                return 1
+              fi
+              actual="$(docker inspect --format '{{.Config.Image}}' "$container_id")"
+              if [ "$actual" != "$expected" ]; then
+                echo "::error title=Image digest mismatch::${service} is ${actual}, expected ${expected}"
+                return 1
+              fi
+            }
+            check_exact_image serve "$FINDB_IMAGE_REFERENCE"
+            check_exact_image ingest "$FINDB_IMAGE_REFERENCE"
+            check_exact_image dispatcher "$FINDB_IMAGE_REFERENCE"
+            check_exact_image worker "$FINDB_IMAGE_REFERENCE"
+            check_exact_image raw-cleanup "$FINDB_IMAGE_REFERENCE"
+            check_exact_image dashboard "$DASHBOARD_IMAGE_REFERENCE"
+            check_exact_image nginx "$NGINX_IMAGE_REFERENCE"
+
+            # The active 0600 copy is already installed.  Remove the redundant
+            # candidate secret before accepted metadata changes, so a cleanup
+            # failure still follows the normal rollback path.
+            rm -f "$candidate_nginx/serve-key.conf"
+
+            echo "Atomically promoting accepted FinDB metadata"
+            install -m 0600 "$candidate_manifest" "$accepted_manifest.next"
+            install -m 0600 "$candidate_attestation" "$accepted_root/nginx-attestation.json.next"
+            install -m 0600 "$candidate_root/target-acceptance.json" "$accepted_root/target-acceptance.json.next"
+            if [ -f "$accepted_manifest" ]; then
+              install -m 0600 "$accepted_manifest" "$previous_manifest.next"
+              mv -f "$previous_manifest.next" "$previous_manifest"
+            fi
+            if [ -f "$accepted_root/nginx-attestation.json" ]; then
+              install -m 0600 "$accepted_root/nginx-attestation.json" "$previous_root/nginx-attestation.json.next"
+              mv -f "$previous_root/nginx-attestation.json.next" "$previous_root/nginx-attestation.json"
+            fi
+            if [ -f "$accepted_root/target-acceptance.json" ]; then
+              install -m 0600 "$accepted_root/target-acceptance.json" "$previous_root/target-acceptance.json.next"
+              mv -f "$previous_root/target-acceptance.json.next" "$previous_root/target-acceptance.json"
+            fi
+            metadata_swap_started=1
+            mv -f "$accepted_root/nginx-attestation.json.next" "$accepted_root/nginx-attestation.json"
+            mv -f "$accepted_root/target-acceptance.json.next" "$accepted_root/target-acceptance.json"
+            mv -f "$accepted_manifest.next" "$accepted_manifest"
+            metadata_promoted=1
+            nginx_promoted=0
+            candidate_runtime_started=0
+            trap - EXIT
+            echo "Accepted FinDB manifest promoted; previous accepted metadata remains at ${previous_manifest} when present"
+
             echo "Pruning unused images older than 7 days"
-            docker image prune -af --filter "until=168h"
+            docker image prune -af --filter "until=168h" || \
+              echo "::warning title=Image prune skipped::Accepted release is healthy; prune can be retried separately"

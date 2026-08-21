@@ -180,9 +180,9 @@ mechanism。這項過渡風險必須寫入release acceptance。
   "deployment_target": "staging",
   "deployment_unit": "findb-or-fetcher",
   "commit_sha": "40-char SHA",
-  "images": {"name": "registry/repository@sha256:..."},
+  "images": {"backend": {"name": "registry/repository", "digest": "sha256:..."}},
   "migration_revision": "alembic revision or none",
-  "contract_versions": ["versioned contracts"],
+  "contract_versions": [{"path": "contracts/...json", "schema_id": "...", "schema_version": 1, "sha256": "..."}],
   "deployment_bundle_sha256": "...",
   "created_by_run_id": "..."
 }
@@ -191,9 +191,19 @@ mechanism。這項過渡風險必須寫入release acceptance。
 - Build jobs必須從`docker/build-push-action`取得digest output；SHA tag只作索引。
 - `docker-compose.prod.yml`改收完整`image@sha256:...`，移除`latest`與缺值fallback。
 - Deploy前核對manifest commit、CI revision、image digest、bundle checksum與target。
-- Host在停止任何writer前先pull exact digest並render `docker compose config`。
-- 成功後保存accepted manifest、Alembic revision、時間、SSM command ID與acceptance結果；
-  previous accepted manifest是唯一application rollback候選。
+- Host在停止任何writer前先pull exact digest並render `docker compose config`；FinDB nginx
+  template只讀，target render輸出與attestation先寫入`release-state/candidate`。
+- Attestation只保留target public host、Source allowlist、Cloudflare CIDRs、Serve-key
+  injection presence/mode與四個實際轉移檔案的checksum；`FINDB_LOOKUP_SERVE_API_KEY`原值、
+  長度與原值digest都排除，Serve-key檔案只以固定`<redacted>`正規化後計算checksum。
+- EC2 acceptance會重新以轉移後的candidate檔案驗證attestation；所有bounded checks完成後，
+  才用暫存檔與`mv`原子更新`accepted`，並把舊accepted manifest/attestation/evidence保存在
+  `previous`。FinDB在metadata promotion完成前失敗會維持舊accepted；Fetcher三個provider都以
+  candidate container通過後才整體promotion，promotion前或中途失敗會清理candidate並還原各
+  provider previous container；metadata完整換版後解除rollback trap，保持新runtime/metadata一致。
+- Target會以workflow端已驗證manifest的SHA-256核對傳輸內容與完整schema；FinDB attestation
+  透過ephemeral container唯讀掛載，通過promotion後移除candidate中的重複Serve-key檔。若FinDB
+  驗收失敗，新的writers保持停止；migration後不自動回切可能不相容的舊application image。
 - 未來production promotion只能使用staging已接受的相同digests，不能重新build；production
   尚未建立期間，先確保manifest格式支援此查驗。
 
@@ -211,11 +221,17 @@ storage，也不得替代Raw/Canonical R2；若團隊選OCI artifact，必須提
 
 - [x] 驗證`staging-findb`、`staging-fetcher`只允許protected `main`；記錄單人維護治理例外與
   pipeline補償控制。
-- [ ] 將workflow、infra、Compose、migration與contract的可重複檢查逐步整合進CI/CD pipeline。
+- [x] 將workflow、infra、Compose、migration與contract的可重複檢查逐步整合進CI/CD pipeline。
   - [x] CI reusable gate 檢查 workflow YAML/action pin、infra renderer determinism、Environment
     example contract、兩份 Compose schema/render，以及 published contract artifacts。
   - [x] CI 在 disposable PostgreSQL 上執行 Alembic upgrade、drift check 與 current revision。
-  - [ ] 補齊受支援舊 revision fixture、image digest/release manifest 與 target acceptance checks。
+  - [x] 以`backend/tests/fixtures/migration_revisions.json`登錄受支援舊 revision；CI為每個fixture
+    建立disposable PostgreSQL database，實際執行該revision再升級到current head並查驗revision。
+  - [x] Build job以registry digest產生並驗證versioned release manifest；manifest綁定commit、
+    migration head、contract artifact與deployment bundle checksum，Compose只接受完整digest reference。
+  - [x] FinDB部署後執行DB revision、one-row UPDATE後rollback、ingest/serve/dashboard health、exact image
+    reference與target-rendered nginx attestation查驗；Fetcher三個provider先各自寫入secret-free
+    candidate evidence，三者完成後才寫入整體 accepted evidence。
 - [x] 決定IaC工具、deploy bundle transport與secret store。
 - [ ] 唯讀查驗EC2內容；其餘AWS、GitHub與Cloudflare控制面欄位逐項列出，由人工確認後再
   import或以read-only data source記錄，禁止平行建立第二套同名資源。
@@ -250,11 +266,12 @@ GitHub runtime secret已撤銷而非只複製。
 
 ### Phase 3：Digest與release manifest
 
-- [ ] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend+Dashboard，Fetcher記錄
-  generic+FinLab+Shioaji。
-- [ ] 建立versioned deploy bundle，納入Compose、nginx templates與deploy helper checksum。
-- [ ] Compose改為必填完整image reference，CI驗證缺值fail closed且不存在`:latest`。
-- [ ] CI驗證manifest schema、SHA/digest格式、bundle checksum與deterministic generation。
+- [x] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend、Dashboard與本次解析的
+  Nginx RepoDigest（RabbitMQ已由Compose固定digest），Fetcher記錄generic+FinLab+Shioaji。
+- [x] 建立versioned deploy bundle，納入Compose、nginx templates與deploy helper checksum；
+  nginx target-rendered files與attestation獨立放在candidate path。
+- [x] Compose改為必填完整image reference，CI驗證缺值fail closed且不存在`:latest`。
+- [x] CI驗證manifest schema、SHA/digest格式、bundle checksum與deterministic generation。
 - [ ] 在不停止服務的情況下，由SSM target pull並inspect所有exact digests。
 
 Exit gate：相同manifest可重播且不重新build；任一tag漂移不影響部署內容。

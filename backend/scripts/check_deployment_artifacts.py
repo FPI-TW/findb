@@ -101,6 +101,17 @@ def _compose_ci_environment(compose_text: str) -> dict[str, str]:
         {
             "IMAGE_TAG": "ci-check",
             "DASHBOARD_IMAGE": "ghcr.io/example/findb-dashboard",
+            "FINDB_IMAGE_REFERENCE": (
+                "ghcr.io/example/findb@sha256:"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            "DASHBOARD_IMAGE_REFERENCE": (
+                "ghcr.io/example/findb-dashboard@sha256:"
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            "NGINX_IMAGE_REFERENCE": (
+                "nginx@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ),
             "APP_NAME": "findb",
             "APP_VERSION": "ci-check",
             "DEBUG": "false",
@@ -164,6 +175,11 @@ def check_compose() -> None:
         image = service.get("image")
         if isinstance(image, str) and (":latest" in image or ":-latest" in image):
             raise ValueError(f"production service {service_name!r} has a latest image fallback")
+        if isinstance(image, str):
+            if "_IMAGE_REFERENCE:?" not in image and "@sha256:" not in image:
+                raise ValueError(
+                    f"production service {service_name!r} must use an immutable image reference"
+                )
 
 
 def check_infra_rendering() -> None:

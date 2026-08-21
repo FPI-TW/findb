@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "fetcher/**"
+      - "backend/scripts/release_manifest.py"
       - ".github/workflows/fetcher-cd.yml"
   workflow_dispatch:
     inputs:
@@ -59,6 +60,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    outputs:
+      fetcher_digest: ${{ steps.fetcher-build.outputs.digest }}
+      finlab_digest: ${{ steps.finlab-build.outputs.digest }}
+      shioaji_digest: ${{ steps.shioaji-build.outputs.digest }}
+
     permissions:
       contents: read
       packages: write
@@ -77,6 +83,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Fetcher image
+        id: fetcher-build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -87,6 +94,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=fetcher
 
       - name: Build and push FinLab Fetcher image
+        id: finlab-build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -97,6 +105,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=fetcher-finlab
 
       - name: Build and push Shioaji Fetcher image
+        id: shioaji-build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -106,8 +115,69 @@ jobs:
           cache-from: type=gha,scope=fetcher-shioaji
           cache-to: type=gha,mode=max,scope=fetcher-shioaji
 
-  validate-r2-bucket-configuration:
+      - name: Create release manifest
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          FETCHER_IMAGE_NAME: ${{ env.FETCHER_IMAGE }}
+          FETCHER_DIGEST: ${{ steps.fetcher-build.outputs.digest }}
+          FINLAB_IMAGE_NAME: ${{ env.FETCHER_FINLAB_IMAGE }}
+          FINLAB_DIGEST: ${{ steps.finlab-build.outputs.digest }}
+          SHIOAJI_IMAGE_NAME: ${{ env.FETCHER_SHIOAJI_IMAGE }}
+          SHIOAJI_DIGEST: ${{ steps.shioaji-build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python backend/scripts/release_manifest.py create \
+            --repo-root . \
+            --unit fetcher \
+            --deployment-target "$DEPLOYMENT_TARGET" \
+            --commit-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --image "generic=${FETCHER_IMAGE_NAME}@${FETCHER_DIGEST}" \
+            --image "finlab=${FINLAB_IMAGE_NAME}@${FINLAB_DIGEST}" \
+            --image "shioaji=${SHIOAJI_IMAGE_NAME}@${SHIOAJI_DIGEST}" \
+            --output release-manifest/fetcher.json
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fetcher-release-manifest-${{ github.sha }}
+          path: release-manifest/fetcher.json
+          if-no-files-found: error
+          retention-days: 14
+
+  validate-release-manifest:
     needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download release manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fetcher-release-manifest-${{ github.sha }}
+          path: release-manifest
+
+      - name: Validate release manifest
+        env:
+          GENERIC_REFERENCE: ${{ env.FETCHER_IMAGE }}@${{ needs.build-push.outputs.fetcher_digest }}
+          FINLAB_REFERENCE: ${{ env.FETCHER_FINLAB_IMAGE }}@${{ needs.build-push.outputs.finlab_digest }}
+          SHIOAJI_REFERENCE: ${{ env.FETCHER_SHIOAJI_IMAGE }}@${{ needs.build-push.outputs.shioaji_digest }}
+        run: |
+          set -euo pipefail
+          python backend/scripts/release_manifest.py validate \
+            --repo-root . \
+            --manifest release-manifest/fetcher.json \
+            --unit fetcher \
+            --deployment-target "${{ inputs.deployment_target || 'staging' }}" \
+            --commit-sha "$GITHUB_SHA" \
+            --image "generic=${GENERIC_REFERENCE}" \
+            --image "finlab=${FINLAB_REFERENCE}" \
+            --image "shioaji=${SHIOAJI_REFERENCE}"
+
+  validate-r2-bucket-configuration:
+    needs: [build-push, validate-release-manifest]
     if: >-
       github.event_name != 'workflow_dispatch' ||
       inputs.run_finlab_smoke != true
@@ -135,7 +205,7 @@ jobs:
           fi
 
   validate-fetcher-credential-isolation:
-    needs: build-push
+    needs: [build-push, validate-release-manifest]
     if: >-
       github.event_name != 'workflow_dispatch' ||
       inputs.run_finlab_smoke != true
@@ -179,7 +249,7 @@ jobs:
           echo "Fetcher credential isolation check passed without printing credential values"
 
   deploy:
-    needs: [build-push, validate-r2-bucket-configuration, validate-fetcher-credential-isolation]
+    needs: [build-push, validate-release-manifest, validate-r2-bucket-configuration, validate-fetcher-credential-isolation]
     if: >-
       github.event_name != 'workflow_dispatch' ||
       inputs.run_finlab_smoke != true
@@ -192,13 +262,54 @@ jobs:
       packages: read
 
     steps:
+      - name: Download release manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fetcher-release-manifest-${{ github.sha }}
+          path: release-manifest
+
+      - name: Record validated Fetcher manifest identity
+        id: fetcher-manifest
+        run: |
+          set -euo pipefail
+          echo "sha256=$(sha256sum release-manifest/fetcher.json | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Fetcher release directory
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            sudo mkdir -p /opt/findb/release-state/candidate /opt/findb/release-state/accepted /opt/findb/release-state/previous
+            sudo chown "$(id -u):$(id -g)" \
+              /opt/findb/release-state/candidate \
+              /opt/findb/release-state/accepted \
+              /opt/findb/release-state/previous
+            chmod 0700 \
+              /opt/findb/release-state/candidate \
+              /opt/findb/release-state/accepted \
+              /opt/findb/release-state/previous
+
+      - name: Sync release manifest to Fetcher EC2
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          source: "release-manifest/fetcher.json"
+          target: /opt/findb/release-state/candidate
+          strip_components: 1
+          overwrite: true
+
       - name: Release and validate Twelve Data scheduler on Fetcher EC2
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
-          FETCHER_IMAGE: ${{ env.FETCHER_IMAGE }}
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          RELEASE_COMMIT_SHA: ${{ github.sha }}
+          FETCHER_IMAGE_REFERENCE: ${{ env.FETCHER_IMAGE }}@${{ needs.build-push.outputs.fetcher_digest }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
@@ -224,7 +335,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY,TWELVE_DATA_API_KEY,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,RELEASE_COMMIT_SHA,FETCHER_IMAGE_REFERENCE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY,TWELVE_DATA_API_KEY,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
 
@@ -253,6 +364,7 @@ jobs:
             export SOURCE_CLIENT_KEY="$FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"
             export FETCHER_STATE_PATH=/var/lib/findb-fetcher/state.sqlite3
             export TWELVE_DATA_API_KEY TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES
+            test -s /opt/findb/release-state/candidate/fetcher.json
 
             reconcile_scheduler() {
               provider_id="$1"
@@ -347,11 +459,7 @@ jobs:
               # Resolve interrupted candidate/previous names without changing
               # another provider's container.
               if docker container inspect "$candidate" >/dev/null 2>&1; then
-                if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then
-                  docker rm -f "$candidate"
-                else
-                  docker rename "$candidate" "$stable"
-                fi
+                docker rm -f "$candidate"
               fi
               if docker container inspect "$previous" >/dev/null 2>&1; then
                 if docker container inspect "$stable" >/dev/null 2>&1; then
@@ -456,16 +564,17 @@ jobs:
                   "$candidate" || true
                 false
               fi
-              docker rename "$candidate" "$stable"
-              [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
-
-              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$stable_running" != "true" ]; then
-                echo "::error title=Fetcher release rejected::${provider_id} did not converge to running" >&2
+              candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
+              if [ "$candidate_running" != "true" ]; then
+                echo "::error title=Fetcher release rejected::${provider_id} candidate did not remain running" >&2
                 false
               fi
               trap - ERR INT TERM HUP
-              echo "Fetcher ${provider_id} scheduler release reconciled to running"
+              printf '{"schema_version":1,"provider":"%s","commit_sha":"%s","image":"%s","status":"candidate","checks":["digest","preflight","runtime_user","restart_count","state_binding"]}\n' \
+                "$provider_id" "${RELEASE_COMMIT_SHA:-unknown}" "$image" | sudo tee "$state_dir/target-acceptance.json" >/dev/null
+              sudo chown 10001:10001 "$state_dir/target-acceptance.json"
+              sudo chmod 0600 "$state_dir/target-acceptance.json"
+              echo "Fetcher ${provider_id} scheduler candidate is running; overall promotion waits for all providers"
             }
 
             runtime_env_args="\
@@ -492,7 +601,7 @@ jobs:
               --env FETCHER_STATE_PATH"
             # BEGIN FETCHER TWELVE SCHEDULER RECONCILIATION
             # Provider command contracts: findb-fetch-scheduler --check and findb-fetch-scheduler --run-forever.
-            reconcile_scheduler twelve "${FETCHER_IMAGE}:${FETCHER_IMAGE_TAG}" \
+            reconcile_scheduler twelve "${FETCHER_IMAGE_REFERENCE}" \
               /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
               findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
               findb-fetcher-scheduler-preflight - "$runtime_env_args" findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id western_markets_window --dataset-key us_equity_eod
@@ -503,8 +612,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
-          FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          RELEASE_COMMIT_SHA: ${{ github.sha }}
+          FETCHER_FINLAB_IMAGE_REFERENCE: ${{ env.FETCHER_FINLAB_IMAGE }}@${{ needs.build-push.outputs.finlab_digest }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
@@ -527,7 +636,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_FINLAB_SOURCE_CLIENT_KEY,FINLAB_API_TOKEN,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,RELEASE_COMMIT_SHA,FETCHER_FINLAB_IMAGE_REFERENCE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_FINLAB_SOURCE_CLIENT_KEY,FINLAB_API_TOKEN,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
             require_runtime_value() {
@@ -557,6 +666,7 @@ jobs:
             export SOURCE_CLIENT_KEY="$FETCHER_FINLAB_SOURCE_CLIENT_KEY"
             export FETCHER_STATE_PATH=/var/lib/findb-finlab-fetcher/state.sqlite3
             export FINLAB_API_TOKEN
+            test -s /opt/findb/release-state/candidate/fetcher.json
 
             reconcile_scheduler() {
               provider_id="$1"; image="$2"; state_dir="$3"; state_path="$4"
@@ -597,7 +707,7 @@ jobs:
                 write_raw_bucket_marker
               fi
               if docker container inspect "$candidate" >/dev/null 2>&1; then
-                if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then docker rm -f "$candidate"; else docker rename "$candidate" "$stable"; fi
+                docker rm -f "$candidate"
               fi
               if docker container inspect "$previous" >/dev/null 2>&1; then
                 if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi
@@ -631,14 +741,17 @@ jobs:
                 docker inspect --format "FinLab candidate failed: image={{.Config.Image}} user={{.Config.User}} status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true
                 false
               fi
-              docker rename "$candidate" "$stable"; [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
-              stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$stable_running" != "true" ]; then
-                echo "::error title=FinLab release rejected::Scheduler did not converge to running" >&2
+              candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
+              if [ "$candidate_running" != "true" ]; then
+                echo "::error title=FinLab release rejected::Candidate did not remain running" >&2
                 false
               fi
               trap - ERR INT TERM HUP
-              echo "FinLab scheduler release reconciled to running"
+              printf '{"schema_version":1,"provider":"finlab","commit_sha":"%s","image":"%s","status":"candidate","checks":["digest","preflight","runtime_user","restart_count","state_binding"]}\n' \
+                "${RELEASE_COMMIT_SHA:-unknown}" "$image" | sudo tee "$state_dir/target-acceptance.json" >/dev/null
+              sudo chown 10001:10001 "$state_dir/target-acceptance.json"
+              sudo chmod 0600 "$state_dir/target-acceptance.json"
+              echo "FinLab scheduler candidate is running; overall promotion waits for all providers"
             }
             runtime_env_args="\
               --env SOURCE_API_URL --env SOURCE_CLIENT_KEY --env FINDB_SERVE_BASE_URL \
@@ -649,7 +762,7 @@ jobs:
               --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_STATE_PATH"
             # BEGIN FETCHER FINLAB SCHEDULER RECONCILIATION
             # Provider command contracts: findb-fetch-finlab-scheduler --check and findb-fetch-finlab-scheduler --run-forever.
-            reconcile_scheduler finlab "${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}" \
+            reconcile_scheduler finlab "${FETCHER_FINLAB_IMAGE_REFERENCE}" \
               /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
               findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
               findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache "$runtime_env_args" \
@@ -661,8 +774,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
-          FETCHER_SHIOAJI_IMAGE: ${{ env.FETCHER_SHIOAJI_IMAGE }}
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          RELEASE_COMMIT_SHA: ${{ github.sha }}
+          FETCHER_SHIOAJI_IMAGE_REFERENCE: ${{ env.FETCHER_SHIOAJI_IMAGE }}@${{ needs.build-push.outputs.shioaji_digest }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_SERVE_API_KEY: ${{ secrets.FETCHER_CALENDAR_SERVE_API_KEY }}
@@ -687,7 +800,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_SHIOAJI_SOURCE_CLIENT_KEY,SHIOAJI_API_KEY,SHIOAJI_SECRET_KEY,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,RELEASE_COMMIT_SHA,FETCHER_SHIOAJI_IMAGE_REFERENCE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_SERVE_API_KEY,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,FETCHER_SHIOAJI_SOURCE_CLIENT_KEY,SHIOAJI_API_KEY,SHIOAJI_SECRET_KEY,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_RAW_ACCESS_KEY_ID,CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY,CLOUDFLARE_R2_RAW_SESSION_TOKEN,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
           script: |
             set -euo pipefail
             require_runtime_value() {
@@ -718,6 +831,7 @@ jobs:
             export SOURCE_CLIENT_KEY="$FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"
             export FETCHER_SHIOAJI_STATE_PATH=/var/lib/findb-shioaji-fetcher/state.sqlite3
             export SHIOAJI_API_KEY SHIOAJI_SECRET_KEY SHIOAJI_SIMULATION
+            test -s /opt/findb/release-state/candidate/fetcher.json
 
             reconcile_scheduler() {
               provider_id="$1"; image="$2"; state_dir="$3"; state_path="$4"
@@ -734,7 +848,7 @@ jobs:
               write_raw_bucket_marker() { marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"; printf '%s\n' "$raw_bucket_fingerprint" | sudo tee "$marker_tmp" >/dev/null; sudo chown 10001:10001 "$marker_tmp"; sudo chmod 0600 "$marker_tmp"; sudo mv "$marker_tmp" "$raw_bucket_marker"; }
               validate_raw_bucket_marker_mode() { if ! sudo test -f "$raw_bucket_marker" || [ "$(sudo stat -c '%u:%g:%a' "$raw_bucket_marker")" != "10001:10001:600" ]; then echo "::error title=Shioaji state rejected::Raw bucket binding marker ownership or mode is unsafe" >&2; exit 1; fi; }
               if sudo test -e "$state_path"; then sudo test -f "$raw_bucket_marker" || { echo "::error title=Shioaji raw bucket cutover required::State has no binding marker" >&2; exit 1; }; validate_raw_bucket_marker_mode; [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || { echo "::error title=Shioaji raw bucket mismatch::State belongs to a different Raw bucket" >&2; exit 1; }; elif sudo test -e "$raw_bucket_marker"; then validate_raw_bucket_marker_mode; [ "$(sudo cat "$raw_bucket_marker")" = "$raw_bucket_fingerprint" ] || write_raw_bucket_marker; else write_raw_bucket_marker; fi
-              if docker container inspect "$candidate" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then docker rm -f "$candidate"; else docker rename "$candidate" "$stable"; fi; fi
+              if docker container inspect "$candidate" >/dev/null 2>&1; then docker rm -f "$candidate"; fi
               if docker container inspect "$previous" >/dev/null 2>&1; then if docker container inspect "$stable" >/dev/null 2>&1; then docker rm -f "$previous"; else docker rename "$previous" "$stable"; fi; fi
               echo "Pruning unused Docker images before pulling ${provider_id}"
               docker image prune -af
@@ -747,12 +861,12 @@ jobs:
               had_previous=0; if docker container inspect "$stable" >/dev/null 2>&1; then had_previous=1; docker stop --time 30 "$stable" >/dev/null; docker rename "$stable" "$previous"; fi
               common_runtime_args=(--user 10001:10001 --restart unless-stopped --read-only --cap-drop ALL --security-opt no-new-privileges --log-opt max-size=10m --log-opt max-file=3 --tmpfs /tmp:rw,noexec,nosuid,size=16m --mount "type=bind,src=$state_dir,dst=$state_dir" --mount "type=bind,src=$cache_dir,dst=/home/fetcher")
               docker run -d --name "$candidate" "${common_runtime_args[@]}" $runtime_env_args "$image" "${scheduler_command[@]}" --run-forever >/dev/null; candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"; candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"; healthy=0; for attempt in $(seq 1 6); do status="$(docker inspect --format '{{.State.Status}}' "$candidate")"; restarts="$(docker inspect --format '{{.RestartCount}}' "$candidate")"; if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then break; fi; [ "$attempt" -eq 6 ] && healthy=1 && break; sleep 5; done; if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] || [ "$healthy" -ne 1 ]; then docker inspect --format "Shioaji candidate failed: image={{.Config.Image}} user={{.Config.User}} status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}" "$candidate" || true; false; fi
-              docker rename "$candidate" "$stable"; [ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true; stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")"
-              if [ "$stable_running" != "true" ]; then
-                echo "::error title=Shioaji release rejected::Scheduler did not converge to running" >&2
+              candidate_running="$(docker inspect --format '{{.State.Running}}' "$candidate")"
+              if [ "$candidate_running" != "true" ]; then
+                echo "::error title=Shioaji release rejected::Candidate did not remain running" >&2
                 false
               fi
-              trap - ERR INT TERM HUP; echo "Shioaji scheduler release reconciled to running"
+              trap - ERR INT TERM HUP; printf '{"schema_version":1,"provider":"shioaji","commit_sha":"%s","image":"%s","status":"candidate","checks":["digest","preflight","runtime_user","restart_count","state_binding"]}\n' "${RELEASE_COMMIT_SHA:-unknown}" "$image" | sudo tee "$state_dir/target-acceptance.json" >/dev/null; sudo chown 10001:10001 "$state_dir/target-acceptance.json"; sudo chmod 0600 "$state_dir/target-acceptance.json"; echo "Shioaji scheduler candidate is running; overall promotion waits for all providers"
             }
             runtime_env_args="\
               --env SOURCE_API_URL --env SOURCE_CLIENT_KEY --env FINDB_SERVE_BASE_URL \
@@ -763,14 +877,245 @@ jobs:
               --env FETCHER_REQUEST_TIMEOUT_SECONDS --env FETCHER_SCHEDULER_CONTROL_POLL_SECONDS --env FETCHER_MAX_ATTEMPTS --env FETCHER_MAX_RETRY_AFTER_SECONDS --env FETCHER_SHIOAJI_STATE_PATH"
             # BEGIN FETCHER SHIOAJI SCHEDULER RECONCILIATION
             # Provider command contracts: findb-fetch-shioaji-scheduler --check and findb-fetch-shioaji-scheduler --run-forever.
-            reconcile_scheduler shioaji "${FETCHER_SHIOAJI_IMAGE}:${FETCHER_IMAGE_TAG}" \
+            reconcile_scheduler shioaji "${FETCHER_SHIOAJI_IMAGE_REFERENCE}" \
               /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
               findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
               findb-fetcher-shioaji-scheduler-preflight "$runtime_env_args" findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json
             # END FETCHER SHIOAJI SCHEDULER RECONCILIATION
 
+      - name: Roll back incomplete Fetcher candidate
+        if: ${{ failure() || cancelled() }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            set +e
+            for spec in \
+              'findb-fetcher-scheduler|findb-fetcher-scheduler-candidate|findb-fetcher-scheduler-previous' \
+              'findb-fetcher-finlab-scheduler|findb-fetcher-finlab-scheduler-candidate|findb-fetcher-finlab-scheduler-previous' \
+              'findb-fetcher-shioaji-scheduler|findb-fetcher-shioaji-scheduler-candidate|findb-fetcher-shioaji-scheduler-previous'; do
+              IFS='|' read -r stable candidate previous <<< "$spec"
+              if docker container inspect "$candidate" >/dev/null 2>&1; then
+                docker rm -f "$candidate" >/dev/null 2>&1 || true
+              fi
+              if docker container inspect "$previous" >/dev/null 2>&1; then
+                if docker container inspect "$stable" >/dev/null 2>&1; then
+                  docker rm -f "$stable" >/dev/null 2>&1 || true
+                fi
+                docker rename "$previous" "$stable" >/dev/null 2>&1 || true
+                docker start "$stable" >/dev/null 2>&1 || true
+              fi
+            done
+            echo "Fetcher candidate rollback completed; accepted manifest was not changed"
+
+      - name: Promote all Fetcher providers atomically
+        if: ${{ success() }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          RELEASE_COMMIT_SHA: ${{ github.sha }}
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          RELEASE_MANIFEST_SHA256: ${{ steps.fetcher-manifest.outputs.sha256 }}
+          FETCHER_IMAGE_REFERENCE: ${{ env.FETCHER_IMAGE }}@${{ needs.build-push.outputs.fetcher_digest }}
+          FETCHER_FINLAB_IMAGE_REFERENCE: ${{ env.FETCHER_FINLAB_IMAGE }}@${{ needs.build-push.outputs.finlab_digest }}
+          FETCHER_SHIOAJI_IMAGE_REFERENCE: ${{ env.FETCHER_SHIOAJI_IMAGE }}@${{ needs.build-push.outputs.shioaji_digest }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: RELEASE_COMMIT_SHA,DEPLOYMENT_TARGET,RELEASE_MANIFEST_SHA256,FETCHER_IMAGE_REFERENCE,FETCHER_FINLAB_IMAGE_REFERENCE,FETCHER_SHIOAJI_IMAGE_REFERENCE
+          script: |
+            set -euo pipefail
+            release_root=/opt/findb/release-state
+            candidate_root="$release_root/candidate"
+            accepted_root="$release_root/accepted"
+            previous_root="$release_root/previous"
+            candidate_manifest="$candidate_root/fetcher.json"
+            accepted_manifest="$accepted_root/fetcher.json"
+            previous_manifest="$previous_root/fetcher.json"
+            restore_unverified_candidates() {
+              set +e
+              for spec in \
+                'findb-fetcher-scheduler|findb-fetcher-scheduler-candidate|findb-fetcher-scheduler-previous' \
+                'findb-fetcher-finlab-scheduler|findb-fetcher-finlab-scheduler-candidate|findb-fetcher-finlab-scheduler-previous' \
+                'findb-fetcher-shioaji-scheduler|findb-fetcher-shioaji-scheduler-candidate|findb-fetcher-shioaji-scheduler-previous'; do
+                IFS='|' read -r stable candidate previous <<< "$spec"
+                docker rm -f "$candidate" >/dev/null 2>&1 || true
+                if docker container inspect "$previous" >/dev/null 2>&1; then
+                  docker rm -f "$stable" >/dev/null 2>&1 || true
+                  docker rename "$previous" "$stable" >/dev/null 2>&1 || true
+                  docker start "$stable" >/dev/null 2>&1 || true
+                fi
+              done
+            }
+            if [ ! -s "$candidate_manifest" ]; then
+              echo "::error title=Missing Fetcher release candidate::Candidate manifest was not transferred"
+              restore_unverified_candidates
+              exit 1
+            fi
+            manifest_sha256="$(sha256sum "$candidate_manifest" | cut -d ' ' -f1)"
+            if [ "$manifest_sha256" != "$RELEASE_MANIFEST_SHA256" ]; then
+              echo "::error title=Fetcher manifest identity mismatch::Transferred manifest differs from the validated workflow artifact"
+              restore_unverified_candidates
+              exit 1
+            fi
+            if ! python3 - "$candidate_manifest" <<'PY'
+            import json
+            import os
+            import re
+            import sys
+
+            with open(sys.argv[1], encoding="utf-8") as stream:
+                manifest = json.load(stream)
+            expected_images = {
+                "generic": os.environ["FETCHER_IMAGE_REFERENCE"],
+                "finlab": os.environ["FETCHER_FINLAB_IMAGE_REFERENCE"],
+                "shioaji": os.environ["FETCHER_SHIOAJI_IMAGE_REFERENCE"],
+            }
+            actual_images = {
+                label: f"{entry.get('name', '')}@{entry.get('digest', '')}"
+                for label, entry in manifest.get("images", {}).items()
+                if isinstance(entry, dict)
+            }
+            contracts = manifest.get("contract_versions")
+            valid_contracts = isinstance(contracts, list) and bool(contracts) and all(
+                isinstance(entry, dict)
+                and set(entry) == {"path", "schema_id", "schema_version", "sha256"}
+                and re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256", "")))
+                for entry in contracts
+            )
+            checks = (
+                manifest.get("schema_version") == 1,
+                manifest.get("deployment_unit") == "fetcher",
+                manifest.get("deployment_target") == os.environ["DEPLOYMENT_TARGET"],
+                manifest.get("commit_sha") == os.environ["RELEASE_COMMIT_SHA"],
+                actual_images == expected_images,
+                bool(re.fullmatch(r"[0-9a-f]{12}", str(manifest.get("migration_revision", "")))),
+                valid_contracts,
+                bool(re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("deployment_bundle_sha256", "")))),
+                bool(str(manifest.get("created_by_run_id", "")).strip()),
+            )
+            if not all(checks):
+                raise SystemExit("Fetcher target rejected release manifest contract")
+            PY
+            then
+              restore_unverified_candidates
+              exit 1
+            fi
+            provider_specs=(
+              'twelve|/var/lib/findb-fetcher|findb-fetcher-scheduler|findb-fetcher-scheduler-candidate|findb-fetcher-scheduler-previous'
+              'finlab|/var/lib/findb-finlab-fetcher|findb-fetcher-finlab-scheduler|findb-fetcher-finlab-scheduler-candidate|findb-fetcher-finlab-scheduler-previous'
+              'shioaji|/var/lib/findb-shioaji-fetcher|findb-fetcher-shioaji-scheduler|findb-fetcher-shioaji-scheduler-candidate|findb-fetcher-shioaji-scheduler-previous'
+            )
+            promoted_stables=()
+            was_promoted() {
+              sought="$1"
+              for promoted in "${promoted_stables[@]-}"; do
+                [ "$promoted" = "$sought" ] && return 0
+              done
+              return 1
+            }
+            rollback_all() {
+              set +e
+              for spec in "${provider_specs[@]}"; do
+                IFS='|' read -r provider state_dir stable candidate previous <<< "$spec"
+                if docker container inspect "$candidate" >/dev/null 2>&1; then
+                  docker rm -f "$candidate" >/dev/null 2>&1 || true
+                fi
+                if docker container inspect "$previous" >/dev/null 2>&1; then
+                  if docker container inspect "$stable" >/dev/null 2>&1; then
+                    docker rm -f "$stable" >/dev/null 2>&1 || true
+                  fi
+                  docker rename "$previous" "$stable" >/dev/null 2>&1 || true
+                  docker start "$stable" >/dev/null 2>&1 || true
+                elif was_promoted "$stable" && docker container inspect "$stable" >/dev/null 2>&1; then
+                  docker rm -f "$stable" >/dev/null 2>&1 || true
+                fi
+              done
+            }
+            metadata_swap_started=0
+            metadata_promoted=0
+            accepted_manifest_present=0
+            accepted_evidence_present=0
+            [ -f "$accepted_manifest" ] && accepted_manifest_present=1
+            [ -f "$accepted_root/target-acceptance.json" ] && accepted_evidence_present=1
+            restore_previous_metadata() {
+              set +e
+              if [ "$accepted_manifest_present" -eq 1 ] && [ -f "$previous_manifest" ]; then
+                install -m 0600 "$previous_manifest" "$accepted_manifest.restore"
+                mv -f "$accepted_manifest.restore" "$accepted_manifest"
+              elif [ "$accepted_manifest_present" -eq 0 ] && [ -f "$accepted_manifest" ]; then
+                rm -f "$accepted_manifest"
+              fi
+              if [ "$accepted_evidence_present" -eq 1 ] && [ -f "$previous_root/target-acceptance.json" ]; then
+                install -m 0600 "$previous_root/target-acceptance.json" "$accepted_root/target-acceptance.json.restore"
+                mv -f "$accepted_root/target-acceptance.json.restore" "$accepted_root/target-acceptance.json"
+              elif [ "$accepted_evidence_present" -eq 0 ] && [ -f "$accepted_root/target-acceptance.json" ]; then
+                rm -f "$accepted_root/target-acceptance.json"
+              fi
+              rm -f "$accepted_manifest.next" "$accepted_root/target-acceptance.json.next"
+            }
+            for spec in "${provider_specs[@]}"; do
+              IFS='|' read -r provider state_dir stable candidate previous <<< "$spec"
+              marker="$state_dir/target-acceptance.json"
+              if ! sudo test -s "$marker" \
+                || ! sudo grep -Fq '"status":"candidate"' "$marker" \
+                || ! sudo grep -Fq "\"commit_sha\":\"${RELEASE_COMMIT_SHA}\"" "$marker" \
+                || ! docker container inspect "$candidate" >/dev/null 2>&1 \
+                || [ "$(docker inspect --format '{{.State.Running}}' "$candidate")" != "true" ]; then
+                echo "::error title=Fetcher provider acceptance incomplete::${provider} candidate is not ready for promotion"
+                rollback_all
+                exit 1
+              fi
+            done
+            handle_promotion_failure() {
+              status="$?"
+              trap - ERR INT TERM HUP
+              if [ "$metadata_promoted" -eq 0 ]; then
+                rollback_all
+                if [ "$metadata_swap_started" -eq 1 ]; then
+                  restore_previous_metadata
+                fi
+              fi
+              exit "$status"
+            }
+            trap handle_promotion_failure ERR INT TERM HUP
+            for spec in "${provider_specs[@]}"; do
+              IFS='|' read -r provider state_dir stable candidate previous <<< "$spec"
+              docker rename "$candidate" "$stable"
+              promoted_stables+=("$stable")
+            done
+            printf '{"schema_version":1,"deployment_target":"%s","deployment_unit":"fetcher","commit_sha":"%s","manifest_sha256":"%s","status":"accepted","providers":["twelve","finlab","shioaji"],"checks":["manifest_identity","all_provider_candidates","digest","preflight","runtime_user","restart_count","state_binding"]}\n' \
+              "$DEPLOYMENT_TARGET" "$RELEASE_COMMIT_SHA" "$manifest_sha256" > "$candidate_root/target-acceptance.json.next"
+            chmod 0600 "$candidate_root/target-acceptance.json.next"
+            mv -f "$candidate_root/target-acceptance.json.next" "$candidate_root/target-acceptance.json"
+            install -m 0600 "$candidate_manifest" "$accepted_manifest.next"
+            install -m 0600 "$candidate_root/target-acceptance.json" "$accepted_root/target-acceptance.json.next"
+            if [ -f "$accepted_manifest" ]; then
+              install -m 0600 "$accepted_manifest" "$previous_manifest.next"
+              mv -f "$previous_manifest.next" "$previous_manifest"
+            fi
+            if [ -f "$accepted_root/target-acceptance.json" ]; then
+              install -m 0600 "$accepted_root/target-acceptance.json" "$previous_root/target-acceptance.json.next"
+              mv -f "$previous_root/target-acceptance.json.next" "$previous_root/target-acceptance.json"
+            fi
+            metadata_swap_started=1
+            mv -f "$accepted_root/target-acceptance.json.next" "$accepted_root/target-acceptance.json"
+            mv -f "$accepted_manifest.next" "$accepted_manifest"
+            metadata_promoted=1
+            trap - ERR INT TERM HUP
+            for spec in "${provider_specs[@]}"; do
+              IFS='|' read -r provider state_dir stable candidate previous <<< "$spec"
+              docker rm "$previous" >/dev/null 2>&1 || true
+            done
+            echo "All Fetcher provider candidates accepted; previous manifest preserved at ${previous_manifest} when present"
+
   finlab-acquisition-smoke:
-    needs: build-push
+    needs: [build-push, validate-release-manifest]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.run_finlab_smoke == true
@@ -789,8 +1134,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
-          FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_FINLAB_IMAGE_REFERENCE: ${{ env.FETCHER_FINLAB_IMAGE }}@${{ needs.build-push.outputs.finlab_digest }}
           FINLAB_API_TOKEN: ${{ secrets.FINLAB_API_TOKEN }}
           FINLAB_SMOKE_TARGET_DATE: ${{ inputs.finlab_target_date }}
           FINLAB_SMOKE_SYMBOLS: ${{ inputs.finlab_symbols }}
@@ -799,7 +1143,7 @@ jobs:
           username: ${{ secrets.FETCHER_EC2_USER }}
           key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FINLAB_API_TOKEN,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,FETCHER_FINLAB_IMAGE_REFERENCE,FINLAB_API_TOKEN,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS
           script: |
             set -euo pipefail
 
@@ -814,7 +1158,7 @@ jobs:
 
             echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-            image="${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}"
+            image="${FETCHER_FINLAB_IMAGE_REFERENCE}"
             echo "Pruning unused Docker images before pulling FinLab smoke image"
             docker image prune -af
             docker pull "$image"

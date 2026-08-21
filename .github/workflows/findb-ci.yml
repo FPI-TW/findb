@@ -95,6 +95,9 @@ jobs:
           uv run alembic check
           uv run alembic current
 
+      - name: Check supported migration fixture matrix
+        run: uv run pytest tests/test_migration_fixture_matrix.py -q
+
       - name: Run tests
         run: uv run pytest --tb=short -q
 

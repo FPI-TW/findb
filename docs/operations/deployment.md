@@ -41,6 +41,32 @@ FinDB CI 另外在 disposable PostgreSQL 上執行 `alembic upgrade head`、`ale
 與 revision 查驗；兩個CI都執行 checked-in contract artifact 的 `--check`。因此CD透過
 `verify` reusable workflow 自動繼承同一組 gate。
 
+每次CD build只產生一份 immutable release manifest。Build job使用 registry 回傳的
+`image@sha256:...` digest；FinDB另將本次解析的Nginx RepoDigest固定在同一份manifest，並把
+commit SHA、migration head、contract manifest與 deployment
+bundle checksum一併寫入；CD在部署前重新驗證 manifest，Compose缺少完整digest reference
+或使用`:latest`都會 fail closed。FinDB部署後的 acceptance 會檢查所有 runtime container
+的 exact image reference、Alembic revision、會實際變更一列再明確rollback的UPDATE檢查與
+ingest/serve/dashboard health，
+並保存 secret-free `target-acceptance.json`；Fetcher三個provider reconciliation先只啟動
+candidate container並保存 candidate evidence，三者全部通過後才一次性 promote。FinDB與
+Fetcher都將 manifest 放在 `/opt/findb/release-state/candidate`，驗收完成才以暫存檔與
+`mv` 原子更新 `accepted`，上一份 accepted manifest 保存在 `previous`；promotion完成前任一
+失敗都不會覆寫 accepted metadata，完成後則解除rollback trap並保持新runtime與metadata一致。
+FinDB candidate開始後若驗收失敗，新的writer會保持停止，避免未接受
+release繼續寫入；不會在migration後盲目回切可能不相容的舊image。SSM/OIDC尚未完成前，這些
+檢查仍由現行SSH CD執行。
+
+FinDB 的 nginx templates 永遠保留 checked-in source，不在工作樹上原地 render。部署 job
+將四個 target-rendered files 與獨立 attestation 放入 candidate path；attestation 綁定
+public host、Source allowlist CIDRs、Cloudflare CIDRs、Serve-key injection 是否存在及
+檔案 mode，並以固定 `<redacted>` 正規化 `FINDB_LOOKUP_SERVE_API_KEY`。原始 key、長度與
+原始 key digest 都不會寫入 log、manifest、attestation 或 acceptance evidence。EC2 會以
+ephemeral `--rm` acceptance container的唯讀bind mount重新驗證轉移後實際檔案，不會把key
+複製進長駐app container layer；通過後才切換 nginx，並移除candidate中的重複key檔。切換後若
+bounded acceptance失敗，會從 previous bundle 還原 active nginx policy。Target同時核對runner
+已驗證candidate manifest的SHA-256與完整schema，防止截短或傳輸替換。
+
 FinDB deployment unit包含backend與Dashboard。FinDB CD會建置兩個image、render nginx
 設定、同步remote Compose/infra、執行migration，再啟動與驗證serve、ingest、
 dispatcher、worker、RabbitMQ、Dashboard及nginx。
@@ -48,10 +74,10 @@ dispatcher、worker、RabbitMQ、Dashboard及nginx。
 Fetcher CD發布：
 
 ```text
-ghcr.io/fpi-tw/findb-fetcher:<git-sha>
+ghcr.io/fpi-tw/findb-fetcher@sha256:<digest>
 ```
 
-並將該immutable tag交付給獨立Fetcher target。現有Fetcher程式提供contract
+並將manifest中的三個 immutable digest 交付給獨立Fetcher target。現有Fetcher程式提供contract
 validation、readiness、Source API delivery client、具整體deadline的manual
 delivery/wait CLI、versioned小型symbol universe、Twelve Data日線adapter，以及
 Fetcher-owned SQLite scheduler、persistent retry、checkpoint與exact-byte raw
