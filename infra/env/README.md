@@ -62,6 +62,13 @@ before making remote changes and never prints values. Serve lookup/cache secrets
 are required only when `SERVE_REQUIRE_AUTH=true`; when enabled they must be
 different DB-backed credentials.
 
+Validation fails closed when an active `.env.remote` assignment is duplicated,
+when the local source contains a name outside the service contract, or when an
+existing remote Environment contains an unsupported variable/secret name. The
+sync command never chooses between duplicate values and never deletes retired
+remote names; the operator must resolve the local duplicate or explicitly remove
+the retired remote setting before applying the contract again.
+
 Fetcher Environments set `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS` (default `30`,
 valid range `1`–`30`) for the DB control poll/heartbeat cadence. Desired state
 is not an Environment variable; it is stored in FinDB DB and changed by an

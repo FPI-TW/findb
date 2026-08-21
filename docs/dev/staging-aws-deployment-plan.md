@@ -3,8 +3,8 @@
 > 狀態：待執行。本文是 staging AWS 控制面、部署身分與驗收的完成計畫；現行可操作
 > runbook 仍以 [`../operations/deployment.md`](../operations/deployment.md) 為準。
 >
-> 最後盤點：2026-08-20。AWS、GitHub Environment 與 Cloudflare 的實際資源狀態未由
-> repo 自動驗證，表中標示 `待盤點` 的欄位不得視為已完成。
+> 最後盤點：2026-08-21。EC2主機內容已完成唯讀查驗；AWS控制面、GitHub Environment與
+> Cloudflare其餘狀態仍須人工確認，表中標示`待盤點`的欄位不得視為已完成。
 
 ## 目標與範圍
 
@@ -41,7 +41,7 @@ release manifest、migration、監控、備份與 recovery rehearsal。它不建
 | Queue | RabbitMQ 在 FinDB EC2，以 EBS path保存；PostgreSQL是durable truth | volume backup/容量告警、broker全毀重建演練與明確RTO |
 | Fetcher state | 三個provider runtime隔離，SQLite state與raw bucket binding有preflight | EBS/SQLite一致性備份、SSM rollout與完整排程週期觀察 |
 | R2 | Raw與Canonical bucket/credential契約已拆分 | 外部bucket policy/lifecycle盤點；Canonical runtime尚不能作put/get acceptance |
-| Protection | workflow固定第三方Action SHA，repo要求PR | CODEOWNERS、Environment protection與branch policy的外部驗證紀錄 |
+| Protection | workflow固定第三方Action SHA；`main`要求PR且禁止force-push；Environment只允許`main` | 將可重複檢查整合進pipeline，並保存branch/Environment policy的外部驗證紀錄 |
 | Observability | 應用內已有health、queue與freshness checks | CloudWatch agent/log retention、EC2/RDS/EBS alarms與告警接收者 |
 
 目前 `.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-cd.yml` 和
@@ -77,16 +77,20 @@ FinDB 仍是一個 deployment unit，因為 backend migration、Dashboard、ngin
 Phase 0 必須將下表填入 target-specific、非敏感的實際識別資料。Secret 只記錄 ARN/name，
 不得貼值、hash 或可比較片段。清冊完成前禁止停用現行 SSH recovery path。
 
+實際盤點證據與owner持久保存於
+[`../operations/staging-aws-inventory.md`](../operations/staging-aws-inventory.md)；下表只保留
+目標欄位與驗收要求，不重複維護會變動的resource ID。
+
 | 類別 | `staging-findb` | `staging-fetcher` | 驗收要求 |
 | --- | --- | --- | --- |
-| AWS account ID | 待盤點 | 待盤點；原則上與FinDB相同 | workflow明確檢查STS account，不接受任意account |
-| Region | 待盤點 | 待盤點 | GitHub Environment variable與主機region一致 |
-| VPC / subnet | 待盤點 | 待盤點 | RDS private；若EC2暫留public subnet須列例外與退場條件 |
-| EC2 instance ID / tag | 待盤點 | 待盤點 | `Project=FinDB`、`Environment=staging`、`DeploymentUnit=findb|fetcher` |
+| AWS account ID | 已由IMDS驗證，見永久清冊 | 已由IMDS驗證，見永久清冊 | workflow明確檢查STS account，不接受任意account |
+| Region | 已由IMDS驗證，見永久清冊 | 已由IMDS驗證，見永久清冊 | GitHub Environment variable與主機region一致 |
+| VPC / subnet | instance-side metadata已驗證；route table待AWS API | instance-side metadata已驗證；route table待AWS API | RDS private；若EC2暫留public subnet須列例外與退場條件 |
+| EC2 instance ID / tag | ID已驗證；tags待AWS API | ID已驗證；tags待AWS API | `Project=FinDB`、`Environment=staging`、`DeploymentUnit=findb|fetcher` |
 | EC2 instance profile | `FinDBStagingInstanceRole`（待建立/查證） | `FetcherStagingInstanceRole`（待建立/查證） | 只讀自己的secret path與deploy bundle；可寫自己的log/metrics |
 | GitHub deploy role | `GitHubDeployFinDBStagingRole`（待建立） | `GitHubDeployFetcherStagingRole`（待建立） | OIDC subject綁定對應Environment；SSM resource以target tag限制 |
-| SSM managed node | 待盤點 | 待盤點 | Online、無需public SSH、command output送CloudWatch Logs |
-| RDS / Aurora | instance/cluster ARN、engine/version、DB subnet group待盤點 | 無權限、無網路路由 | `PubliclyAccessible=false`；只允許FinDB EC2 SG；backup/PITR啟用 |
+| SSM managed node | agent installed但inactive，且無instance profile | agent installed但inactive，且無instance profile | Online、無需public SSH、command output送CloudWatch Logs |
+| RDS / Aurora | endpoint與PostgreSQL version已驗證；ARN、DB subnet group待AWS API | 無權限、無網路路由 | `PubliclyAccessible=false`；只允許FinDB EC2 SG；backup/PITR啟用 |
 | RDS security group | 待盤點 | 不得被允許 | ingress只使用SG reference，不使用公開CIDR |
 | KMS key | runtime secrets key待決定 | 使用不同key或至少不同key policy scope | deploy role不可解密runtime secret；instance role只解密自身路徑 |
 | Secret prefix | `findb/staging/findb/` | `findb/staging/fetcher/` | 不共用RDS、R2、provider、Source/Admin或deploy credential |
@@ -97,6 +101,10 @@ Phase 0 必須將下表填入 target-specific、非敏感的實際識別資料�
 
 ### 已知的 staging 例外
 
+- 專案目前由單一維護者負責，其餘人員僅在請假時代理，因此不增加強制審核規則。補償控制是
+  `main`只能經PR更新、禁止force-push、第三方Action固定SHA、CD重跑同revision CI，以及把
+  環境契約、migration、artifact與部署驗收逐步收斂成fail-closed pipeline。若出現第二位固定
+  維護者、production風險提高或稽核要求變更，再重新評估治理規則。
 - FinDB 與 Fetcher 各只有單一 EC2 target，是共同故障點；staging 不承諾 HA。升級條件是
   staging 被用作長時間 SLA 驗證、單機故障阻塞 release，或 production topology 要求先在
   staging 演練多主機 rollout。
@@ -201,13 +209,16 @@ storage，也不得替代Raw/Canonical R2；若團隊選OCI artifact，必須提
 
 ### Phase 0：盤點與變更保護
 
-- [ ] 填完staging資源清冊，記錄owner、AWS account/region、resource ARN/ID、資料分類、
-  backup policy、告警接收者與公開網路例外。
-- [ ] 驗證`staging-findb`、`staging-fetcher`只允許protected `main`，開啟required reviewer與
-  prevent self-review（方案支援時）。
-- [ ] 建立`.github/CODEOWNERS`，至少覆蓋workflows、`infra/**`、Compose、migrations與contracts。
-- [ ] 決定IaC工具、deploy bundle transport與secret store；AWS console現況先import或以
-  read-only data source記錄，禁止平行建立第二套同名資源。
+- [x] 驗證`staging-findb`、`staging-fetcher`只允許protected `main`；記錄單人維護治理例外與
+  pipeline補償控制。
+- [ ] 將workflow、infra、Compose、migration與contract的可重複檢查逐步整合進CI/CD pipeline。
+  - [x] CI reusable gate 檢查 workflow YAML/action pin、infra renderer determinism、Environment
+    example contract、兩份 Compose schema/render，以及 published contract artifacts。
+  - [x] CI 在 disposable PostgreSQL 上執行 Alembic upgrade、drift check 與 current revision。
+  - [ ] 補齊受支援舊 revision fixture、image digest/release manifest 與 target acceptance checks。
+- [x] 決定IaC工具、deploy bundle transport與secret store。
+- [ ] 唯讀查驗EC2內容；其餘AWS、GitHub與Cloudflare控制面欄位逐項列出，由人工確認後再
+  import或以read-only data source記錄，禁止平行建立第二套同名資源。
 - [ ] 記錄目前accepted SHA、Alembic revision、running containers、RDS snapshot與SSH recovery
   owner，作為後續變更基線。
 

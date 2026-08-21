@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -14,6 +16,7 @@ from dotenv import dotenv_values
 REPOSITORY: Final = "FPI-TW/findb"
 ENV_ROOT: Final = Path(__file__).resolve().parent
 DEPLOYMENT_TARGETS: Final = ("staging", "production")
+ENV_ASSIGNMENT_RE: Final = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,17 @@ def _run(
     )
 
 
+def _duplicate_env_names(source: Path) -> tuple[str, ...]:
+    """Return duplicate active assignments without reading or exposing values."""
+    names = (
+        match.group(1)
+        for line in source.read_text(encoding="utf-8").splitlines()
+        if (match := ENV_ASSIGNMENT_RE.match(line))
+    )
+    counts = Counter(names)
+    return tuple(sorted(name for name, count in counts.items() if count > 1))
+
+
 def _ensure_environment(environment: str) -> None:
     endpoint = f"repos/{REPOSITORY}/environments/{environment}"
     existing = subprocess.run(
@@ -225,19 +239,13 @@ def _validate_findb_canonical_contract(target: str, values: dict[str, str]) -> s
     return None
 
 
-def _unexpected_r2_names(service: str, values: dict[str, str]) -> tuple[str, ...]:
+def _unexpected_names(service: str, values: dict[str, str]) -> tuple[str, ...]:
     config = SERVICE_CONFIGS[service]
-    allowed = {
-        name
-        for name in (*config.variables, *config.secrets, *config.optional_secrets)
-        if name.startswith("CLOUDFLARE_R2_")
-    }
-    return tuple(
-        sorted(name for name in values if name.startswith("CLOUDFLARE_R2_") and name not in allowed)
-    )
+    allowed = set((*config.variables, *config.secrets, *config.optional_secrets))
+    return tuple(sorted(name for name in values if name not in allowed))
 
 
-def _remote_environment_r2_names(environment: str) -> tuple[str, ...]:
+def _remote_environment_names(environment: str) -> tuple[str, ...]:
     names: set[str] = set()
     for endpoint in (
         f"repos/{REPOSITORY}/environments/{environment}/variables?per_page=100",
@@ -256,19 +264,15 @@ def _remote_environment_r2_names(environment: str) -> tuple[str, ...]:
         payload = json.loads(completed.stdout)
         for item in payload.get("variables", payload.get("secrets", [])):
             name = str(item.get("name") or "")
-            if name.startswith("CLOUDFLARE_R2_"):
+            if name:
                 names.add(name)
     return tuple(sorted(names))
 
 
-def _unexpected_remote_r2_names(service: str, environment: str) -> tuple[str, ...]:
+def _unexpected_remote_names(service: str, environment: str) -> tuple[str, ...]:
     config = SERVICE_CONFIGS[service]
-    allowed = {
-        name
-        for name in (*config.variables, *config.secrets, *config.optional_secrets)
-        if name.startswith("CLOUDFLARE_R2_")
-    }
-    return tuple(name for name in _remote_environment_r2_names(environment) if name not in allowed)
+    allowed = set((*config.variables, *config.secrets, *config.optional_secrets))
+    return tuple(name for name in _remote_environment_names(environment) if name not in allowed)
 
 
 def main() -> int:
@@ -288,10 +292,15 @@ def main() -> int:
     if not source.is_file():
         parser.error(f"missing ignored source: {source}")
 
+    duplicate_names = _duplicate_env_names(source)
+    if duplicate_names:
+        print(f"{environment} has duplicate names: {', '.join(duplicate_names)}")
+        return 1
+
     values = {key: str(value or "").strip() for key, value in dotenv_values(source).items()}
-    unexpected_r2 = _unexpected_r2_names(arguments.service, values)
-    if unexpected_r2:
-        print(f"{environment} has unsupported R2 names: {', '.join(unexpected_r2)}")
+    unexpected = _unexpected_names(arguments.service, values)
+    if unexpected:
+        print(f"{environment} has unsupported names: {', '.join(unexpected)}")
         return 1
     required_secrets = list(config.secrets)
     if arguments.service == "findb" and values.get("SERVE_REQUIRE_AUTH") == "false":
@@ -350,9 +359,9 @@ def main() -> int:
         print("validation passed; rerun with --apply to publish")
         return 0
 
-    unexpected_remote_r2 = _unexpected_remote_r2_names(arguments.service, environment)
-    if unexpected_remote_r2:
-        print(f"{environment} has unsupported remote R2 names: {', '.join(unexpected_remote_r2)}")
+    unexpected_remote = _unexpected_remote_names(arguments.service, environment)
+    if unexpected_remote:
+        print(f"{environment} has unsupported remote names: {', '.join(unexpected_remote)}")
         return 1
 
     _ensure_environment(environment)

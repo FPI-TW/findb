@@ -41,7 +41,7 @@ x-app-healthcheck: &app-healthcheck
 
 services:
   serve:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag}"
     container_name: findb-serve
     environment:
       <<: *app-environment
@@ -64,7 +64,7 @@ services:
       - findb-static-data:/app/app/static/data
 
   ingest:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag}"
     container_name: findb-ingest
     environment:
       <<: *app-environment
@@ -82,7 +82,7 @@ services:
       - findb-static-data:/app/app/static/data
 
   dashboard:
-    image: "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE must be set by deployment}:${IMAGE_TAG:-latest}"
+    image: "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE must be set by deployment}:${IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag}"
     container_name: findb-dashboard
     environment:
       PORT: "3333"
@@ -147,7 +147,7 @@ services:
     restart: "no"
 
   dispatcher:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag}"
     container_name: findb-dispatcher
     environment:
       <<: *app-environment
@@ -158,7 +158,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag}"
     container_name: findb-worker
     environment:
       <<: *app-environment
@@ -210,7 +210,7 @@ services:
       restart: unless-stopped
 
   raw-cleanup:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag}"
     container_name: findb-raw-cleanup
     environment:
       <<: *app-environment

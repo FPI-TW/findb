@@ -86,9 +86,13 @@ jobs:
           uv run python scripts/export_ingress_contracts.py --check
           uv run python scripts/export_archive_contracts.py --check
 
+      - name: Check deployment artifacts
+        run: uv run python scripts/check_deployment_artifacts.py
+
       - name: Run migration smoke test
         run: |
           uv run alembic upgrade head
+          uv run alembic check
           uv run alembic current
 
       - name: Run tests

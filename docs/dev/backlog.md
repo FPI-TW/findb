@@ -25,7 +25,8 @@ Canonical tables、Serve API 與 lookup read model 可保留歷史或預留資�
 - [ ] 完成 delivery-missing monitor、schema drift、provider 欄位消失與異常空 snapshot
   告警。
 - [ ] 驗證 broker 全毀、worker kill、DB 短暫中斷與重複 delivery 演練。
-- [ ] 為 workflow、infra 與 contract 設定 CODEOWNERS、staging Environment protection。
+- [ ] 持續把workflow、infra與contract的重複檢查整合進CI/CD pipeline；維持`main`只能透過PR
+  更新、禁止force-push，且兩個staging Environment只允許`main`部署。
 - [ ] 建立 service-specific GitHub OIDC AWS deploy roles，並以 SSM/deployment service
   取代長效 EC2 SSH key。
 - [ ] Runtime secrets 搬至 AWS Secrets Manager/Parameter Store，建立 service-specific

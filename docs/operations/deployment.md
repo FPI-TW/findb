@@ -12,6 +12,10 @@
 > [Staging AWS deployment completion plan](../dev/staging-aws-deployment-plan.md)。在各phase
 > 驗收前，本文件描述的SSH流程仍是現行runbook，不得把目標架構誤當成已部署。
 
+> 已驗證的staging account、EC2、RDS、R2、GitHub protection、runtime baseline與未完成風險
+> 記錄於[Staging AWS resource inventory](staging-aws-inventory.md)。資源或owner變更時必須在
+> 同一個PR更新該清冊。
+
 ## Workflow 邊界
 
 | Workflow | 責任 | 主要觸發 | Environment / concurrency |
@@ -28,6 +32,14 @@
 自動CD只可部署同一commit已通過對應CI的artifact；不得用另一個SHA或僅憑branch最新
 狀態取代該gate。手動 `workflow_dispatch`仍須受environment protection約束，操作者
 也必須確認指定revision的CI結果。
+
+兩個CI都會執行 `backend/scripts/check_deployment_artifacts.py`，以無外部副作用的
+固定值重跑下列檢查：workflow YAML/action SHA、nginx/infra renderer、GitHub Environment
+example contract、local/production Compose schema/render，以及production Compose不得帶入
+資料庫或 `latest` fallback。
+FinDB CI 另外在 disposable PostgreSQL 上執行 `alembic upgrade head`、`alembic check`
+與 revision 查驗；兩個CI都執行 checked-in contract artifact 的 `--check`。因此CD透過
+`verify` reusable workflow 自動繼承同一組 gate。
 
 FinDB deployment unit包含backend與Dashboard。FinDB CD會建置兩個image、render nginx
 設定、同步remote Compose/infra、執行migration，再啟動與驗證serve、ingest、
@@ -223,22 +235,22 @@ FinDB Source shared key或FinDB部署credential。
 GitHub Environment只會限制存放在該environment內的secrets/variables；repository-level
 secrets仍可能被repository內其他workflow引用。因此上表的deployment secrets必須實際
 搬入對應environment，確認workflow已切換後再從repository scope移除。建立environment、
-設定reviewer/branch policy與搬移secret都是GitHub外部作業，repo檔案不會自動完成。
+設定branch policy與搬移secret都是GitHub外部作業，repo檔案不會自動完成。
 
 ## GitHub protection
 
 - 四個Environment都只允許`main`部署。
-- `production-findb`與`production-fetcher`必須啟用required reviewer與prevent
-  self-review；production只允許手動選擇，不接受push事件自動部署。
-- Staging也建議啟用required reviewer與prevent self-review（依GitHub方案能力）。
-- `.github/workflows/**`、`infra/**`、production Compose與contract manifest設定
-  CODEOWNERS。
-- Branch protection禁止未review直接更新 `main`。
+- Production只允許手動選擇，不接受push事件自動部署。
+- 專案目前採單人維護模式，不增加強制審核規則；代理人只在主要維護者請假時介入。若增加
+  固定維護者、production風險提高或稽核要求變更，再重新評估。
+- Branch protection要求所有`main`更新經PR進入，並禁止刪除與force-push。
 - 第三方Actions固定到完整commit SHA；升級由獨立PR審查。
 - 每個服務使用獨立concurrency group且 `cancel-in-progress: false`。
+- workflow、infra、Compose、migration與contract的確定性檢查應持續收斂進CI/CD pipeline，
+  以降低人工步驟、漏檢與重複操作。
 
-Environment只隔離job。若能任意修改workflow並合入main，仍可能要求另一個environment，
-因此branch protection、CODEOWNERS與environment review缺一不可。
+Environment只隔離job，不能取代branch與pipeline控制。任何workflow變更仍須經PR、同revision
+CI與target-specific Environment執行；具破壞性或尚未自動化的外部操作需先列出內容並人工確認。
 
 ## AWS credentials與runtime secrets
 

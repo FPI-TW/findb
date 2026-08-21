@@ -216,6 +216,25 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
             assert configured_names == documented_names
 
 
+def test_env_sync_rejects_duplicate_active_assignments(tmp_path: Path) -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    duplicate_names = namespace["_duplicate_env_names"]
+    source = tmp_path / ".env.remote"
+    source.write_text(
+        """\
+FIRST=value-one
+# FIRST=commented-out
+export SECOND=value-two
+SECOND=value-three
+THIRD=value-four
+FIRST=value-five
+""",
+        encoding="utf-8",
+    )
+
+    assert duplicate_names(source) == ("FIRST", "SECOND")
+
+
 def test_fetcher_r2_sync_contract_is_raw_only() -> None:
     namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
     fetcher = namespace["SERVICE_CONFIGS"]["fetcher"]
@@ -265,9 +284,9 @@ def test_fetcher_sync_rejects_canonical_bucket(target: str) -> None:
     assert error == f"{target}-fetcher must not configure CLOUDFLARE_R2_CANONICAL_BUCKET"
 
 
-def test_sync_rejects_unallowlisted_r2_names_even_when_empty() -> None:
+def test_sync_rejects_unallowlisted_names_even_when_empty() -> None:
     namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    unexpected = namespace["_unexpected_r2_names"]
+    unexpected = namespace["_unexpected_names"]
 
     assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": "present"}) == (
         "CLOUDFLARE_R2_UNRELATED",
@@ -275,29 +294,40 @@ def test_sync_rejects_unallowlisted_r2_names_even_when_empty() -> None:
     assert unexpected("findb", {"CLOUDFLARE_R2_RAW_BUCKET": "present"}) == (
         "CLOUDFLARE_R2_RAW_BUCKET",
     )
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_RAW_BUCKET": ""}) == ()
+    assert unexpected(
+        "fetcher",
+        {"CLOUDFLARE_R2_RAW_BUCKET": "", "FETCHER_CALENDAR_MODE": "db"},
+    ) == ("FETCHER_CALENDAR_MODE",)
     assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": ""}) == ("CLOUDFLARE_R2_UNRELATED",)
 
 
-def test_remote_r2_name_audit_reads_names_without_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_remote_name_audit_reads_names_without_values(monkeypatch: pytest.MonkeyPatch) -> None:
     namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
     calls: list[list[str]] = []
 
     def fake_run(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
         if arguments[-1].endswith("/variables?per_page=100"):
-            output = '{"variables":[{"name":"CLOUDFLARE_R2_RAW_BUCKET"}]}'
+            output = (
+                '{"variables":['
+                '{"name":"CLOUDFLARE_R2_RAW_BUCKET"},'
+                '{"name":"FETCHER_CALENDAR_MODE"}'
+                "]}"
+            )
         else:
             output = '{"secrets":[{"name":"CLOUDFLARE_R2_UNRELATED"}]}'
         return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
 
-    assert namespace["_unexpected_remote_r2_names"]("fetcher", "staging-fetcher") == (
+    assert namespace["_unexpected_remote_names"]("fetcher", "staging-fetcher") == (
         "CLOUDFLARE_R2_UNRELATED",
+        "FETCHER_CALENDAR_MODE",
     )
     assert len(calls) == 2
-    assert all("CLOUDFLARE_R2_" not in " ".join(call) for call in calls)
+    invoked_commands = "\n".join(" ".join(call) for call in calls)
+    assert "CLOUDFLARE_R2_RAW_BUCKET" not in invoked_commands
+    assert "FETCHER_CALENDAR_MODE" not in invoked_commands
 
 
 def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
@@ -327,6 +357,27 @@ def test_contract_changes_gate_both_ci_workflows_but_not_cd() -> None:
     for path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
         workflow = _load_workflow(path)
         assert "contracts/**" not in workflow["on"]["push"]["paths"]
+
+
+def test_reusable_ci_runs_deterministic_deployment_and_migration_gates() -> None:
+    findb_ci = _load_workflow(FINDB_CI_WORKFLOW)
+    fetcher_ci = _load_workflow(FETCHER_CI_WORKFLOW)
+
+    findb_check = _named_step(findb_ci, "backend", "Check deployment artifacts")
+    assert findb_check["run"] == "uv run python scripts/check_deployment_artifacts.py"
+    migration = _named_step(findb_ci, "backend", "Run migration smoke test")["run"]
+    assert "uv run alembic upgrade head" in migration
+    assert "uv run alembic check" in migration
+
+    fetcher_check = _named_step(fetcher_ci, "test", "Check deployment artifacts")
+    assert fetcher_check["working-directory"] == "backend"
+    assert fetcher_check["run"] == ("uv run --frozen python scripts/check_deployment_artifacts.py")
+
+
+def test_production_compose_requires_an_explicit_release_tag() -> None:
+    compose = PROD_COMPOSE.read_text(encoding="utf-8")
+    assert ":-latest" not in compose
+    assert compose.count("IMAGE_TAG:?IMAGE_TAG must be set to an immutable release tag") == 6
 
 
 def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> None:

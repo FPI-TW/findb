@@ -62,6 +62,10 @@ jobs:
           uv run --frozen python scripts/export_ingress_contracts.py --check
           uv run --frozen python scripts/export_archive_contracts.py --check
 
+      - name: Check deployment artifacts
+        working-directory: backend
+        run: uv run --frozen python scripts/check_deployment_artifacts.py
+
       - name: Lint and format check
         run: |
           uv run ruff check .

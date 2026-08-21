@@ -14,6 +14,7 @@
 | [architecture/market_calendars.md](architecture/market_calendars.md)             | 市場年度日曆、Dashboard 管理流程與 Scheduler fail-closed 合約。            |
 | [api/api_usage_guide.md](api/api_usage_guide.md)                                 | Source、Serve、Admin API 的認證、主要端點與使用方式。                      |
 | [operations/deployment.md](operations/deployment.md)                             | EC2 部署、staging資料界線、GitHub Environment、AWS IAM 與 secrets 邊界。   |
+| [operations/staging-aws-inventory.md](operations/staging-aws-inventory.md)       | Staging AWS/GitHub/R2資源清冊、owner、已驗證狀態與例外。                   |
 | [operations/ingestion.md](operations/ingestion.md)                               | Durable ingestion、bounded staging驗收、RabbitMQ、監控、恢復與 rollback。  |
 | [operations/migration_workflow.md](operations/migration_workflow.md)             | Alembic migration 與 staging rollout 規則。                                |
 | [operations/data_maintenance.md](operations/data_maintenance.md)                 | Staging reset、partial dump、seed、backfill、raw retention 與 cache 維護。 |
