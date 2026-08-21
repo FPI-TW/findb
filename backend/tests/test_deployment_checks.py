@@ -713,6 +713,10 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
         preflight = script.index("--check")
         stable_stop = script.index('docker stop --time 30 "$stable"', preflight)
         assert preflight < stable_stop
+        stable_rename = script.index('docker rename "$stable" "$previous"', stable_stop)
+        graceful_gate = script[stable_stop:stable_rename]
+        assert "{{.State.ExitCode}}" in graceful_gate
+        assert 'if [ "$stable_exit_code" -ne 0 ]' in graceful_gate
         assert 'docker rename "$candidate" "$stable"' in script
         assert 'docker rename "$previous" "$stable"' in script
         assert 'docker rm -f "$candidate"' in script
@@ -860,6 +864,7 @@ case "$operation" in
       *Config.User*) printf '10001:10001\\n' ;;
       *State.Running*) [ "$status" = running ] && printf 'true\\n' || printf 'false\\n' ;;
       *State.Status*) printf '%s\\n' "$status" ;;
+      *State.ExitCode*) printf '%s\\n' "${FAKE_STABLE_EXIT_CODE:-0}" ;;
       *RestartCount*) printf '0\\n' ;;
       *) printf '%s\\n' "$status" ;;
     esac
@@ -898,6 +903,7 @@ def _run_fetcher_reconciliation(
     candidate_status: str = "running",
     preflight_fails: bool = False,
     legacy_raw_bucket_marker: bool = False,
+    stable_exit_code: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
     provider_id, step_name, command, stable, candidate, previous = provider
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
@@ -972,6 +978,7 @@ previous={previous}
         FAKE_IMAGE=image,
         FAKE_CANDIDATE_STATUS=candidate_status,
         FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
+        FAKE_STABLE_EXIT_CODE=str(stable_exit_code),
     )
     completed = subprocess.run(
         ["bash", "-c", harness],
@@ -1083,6 +1090,28 @@ def test_fetcher_provider_candidate_failure_rolls_back_and_preserves_sqlite(
     )
 
     assert completed.returncode != 0
+    assert statuses == {stable: "running"}
+    assert candidate not in statuses
+    assert previous not in statuses
+    assert "start" in operations
+    assert durable_state == "durable-state\n"
+
+
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+def test_fetcher_provider_forced_stop_blocks_promotion_and_restores_stable(
+    tmp_path: Path,
+    provider: tuple[str, str, str, str, str, str],
+) -> None:
+    stable, candidate, previous = provider[3], provider[4], provider[5]
+    completed, statuses, operations, durable_state = _run_fetcher_reconciliation(
+        tmp_path,
+        provider,
+        initial={stable: "running"},
+        stable_exit_code=137,
+    )
+
+    assert completed.returncode != 0
+    assert "graceful stop failed" in completed.stderr.lower()
     assert statuses == {stable: "running"}
     assert candidate not in statuses
     assert previous not in statuses

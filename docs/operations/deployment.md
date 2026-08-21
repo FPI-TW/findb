@@ -115,6 +115,10 @@ Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受�
 
 Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三個scheduler分別
 執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
+常駐CLI將`SIGTERM`／`SIGINT`轉為shared stop event：idle時立即退出，final running preflight
+後收到stop也不得啟動新provider cycle；已開始的cycle則完成terminal report後退出。Workflow
+以30秒grace period停止stable container並要求exit code為`0`，否則fail closed並恢復原stable，
+不得把exit `137`的強制停止視為成功promotion。
 
 ## Alembic migration
 

@@ -162,6 +162,11 @@ control endpoint 是啟停唯一權威，失聯或 mapping 不一致時 fail clo
 stopped 時保持 idle，不建立 provider cycle。state directory 應由 staging deployment 以
 UID/GID `10001:10001`、mode `0700` 的 durable volume 掛載。
 
+常駐CLI會將container runtime的`SIGTERM`及互動式`SIGINT`轉成shared stop event。Idle loop
+會立即以exit `0`結束；若signal落在final running preflight後，runtime不會跨入新的provider
+cycle；已開始的cycle仍會完成terminal report再結束。Deployment要求stable container在30秒
+grace period內exit `0`，exit `137`一律視為no-go並恢復原stable。
+
 ## Provider raw storage（Cloudflare R2）
 
 Twelve Data 保存 exact HTTP bytes；FinLab 保存 deterministic SDK bundle；Shioaji 保存
