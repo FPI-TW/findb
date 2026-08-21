@@ -118,10 +118,8 @@ Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三�
 常駐CLI將`SIGTERM`／`SIGINT`轉為shared stop event：idle時立即退出，final running preflight
 後收到stop也不得啟動新provider cycle；已開始的cycle則完成terminal report後退出。Workflow
 以30秒grace period停止stable container並要求exit code為`0`，否則fail closed並恢復原stable，
-不得把exit `137`的強制停止視為成功promotion。唯一bootstrap例外是首次導入signal handler：
-只接受已完成state備份／restore rehearsal的`7915ea8` predecessor，且container config image tag
-與provider-specific image ID都必須exact match、target image必須不同；其它tag、ID或exit code仍
-fail closed。三個provider切換完成後立即移除此例外，下一次deploy必須以exit `0`驗收。
+不得把exit `137`或其它非零退出視為成功promotion。首次signal-handler bootstrap已完成且
+temporary allowlist已移除；後續所有provider與image一律套用相同的strict exit-`0` gate。
 
 ## Alembic migration
 
