@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_REFERER_REGEX = (
     r"^https?://findb-staging\.tingfong\.com/"
-    r"(?:instrument-lookup(?:[/?#]|$)|dashboard/lookup(?:[/?#]|$))"
+    r"dashboard/lookup(?:[/?#]|$)"
 )
 
 
@@ -21,7 +21,7 @@ def referer_regex_for_host(public_host: str) -> str:
         raise ValueError("public host must be a valid DNS hostname")
     return (
         rf"^https?://{re.escape(host)}/"
-        r"(?:instrument-lookup(?:[/?#]|$)|dashboard/lookup(?:[/?#]|$))"
+        r"dashboard/lookup(?:[/?#]|$)"
     )
 
 
@@ -37,7 +37,7 @@ def render_serve_key(lookup_key: str, allowed_referer_regex: str) -> str:
     header = (
         "# Generated during deployment from FINDB_LOOKUP_SERVE_API_KEY.\n"
         "# Injects X-API-Key into /api/v1/serve/* requests whose Referer matches the\n"
-        "# public instrument lookup pages; external callers without a Referer match\n"
+        "# public Dashboard lookup page; external callers without a Referer match\n"
         "# fall through to passing their own X-API-Key header.\n"
     )
 

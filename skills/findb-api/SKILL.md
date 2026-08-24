@@ -46,8 +46,8 @@ separate change.
 | Admin API | `/api/v1/admin` | Governance, DQ, corrections, and operations | Named session or DB-backed Admin key |
 
 Use the staging base URL supplied by the deployment environment. Local development is
-`http://localhost:8080`; OpenAPI is `<base>/docs`, and the static lookup page is
-`<base>/instrument-lookup`.
+`http://localhost:8080`; OpenAPI is `<base>/docs`, and the public lookup page is
+`<base>/dashboard/lookup`.
 
 Source clients must use a DB-backed provider-scoped key. Never put credentials in a
 payload, URL, generated contract, raw artifact, or browser bundle. Serve keys are

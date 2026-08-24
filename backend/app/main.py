@@ -56,8 +56,6 @@ app = FastAPI(
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TEST_PAGE_PATH = STATIC_DIR / "test_page.html"
-INSTRUMENT_LOOKUP_PAGE_PATH = STATIC_DIR / "instrument-lookup.html"
-SKILL_INSTALL_PAGE_PATH = STATIC_DIR / "skill-install.html"
 
 # CORS middleware
 app.add_middleware(
@@ -156,15 +154,3 @@ async def root():
 async def test_page():
     """測試儀表板頁面。"""
     return FileResponse(TEST_PAGE_PATH, media_type="text/html")
-
-
-@app.get("/instrument-lookup", include_in_schema=False)
-async def instrument_lookup_page():
-    """Serve the legacy public lookup page."""
-    return FileResponse(INSTRUMENT_LOOKUP_PAGE_PATH, media_type="text/html")
-
-
-@app.get("/skill-install", include_in_schema=False)
-async def skill_install_page():
-    """Serve the legacy public Skill page."""
-    return FileResponse(SKILL_INSTALL_PAGE_PATH, media_type="text/html")

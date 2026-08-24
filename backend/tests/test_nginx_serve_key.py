@@ -10,18 +10,22 @@ PUBLIC_HOST = "findb-staging.tingfong.com"
 STAGING_REFERER_REGEX = referer_regex_for_host(PUBLIC_HOST)
 
 
-def test_default_referer_allows_legacy_and_dashboard_lookup_routes() -> None:
+def test_default_referer_allows_only_dashboard_lookup_route() -> None:
     allowed = [
-        f"https://{PUBLIC_HOST}/instrument-lookup",
-        f"https://{PUBLIC_HOST}/instrument-lookup?ds=macro",
         f"https://{PUBLIC_HOST}/dashboard/lookup",
+        f"https://{PUBLIC_HOST}/dashboard/lookup/",
         f"https://{PUBLIC_HOST}/dashboard/lookup?ds=instruments",
+        f"https://{PUBLIC_HOST}/dashboard/lookup#instruments",
     ]
     rejected = [
+        f"https://{PUBLIC_HOST}/instrument-lookup",
+        f"https://{PUBLIC_HOST}/instrument-lookup?ds=macro",
         f"https://{PUBLIC_HOST}/dashboard/",
         f"https://{PUBLIC_HOST}/dashboard/lookup-impersonator",
         f"https://{PUBLIC_HOST}.evil.example/dashboard/lookup",
+        f"https://{PUBLIC_HOST}@evil.example/dashboard/lookup",
         "https://evil.example/dashboard/lookup",
+        f"http://{PUBLIC_HOST}/api/v1/serve/instruments",
     ]
 
     assert all(re.search(STAGING_REFERER_REGEX, referer) for referer in allowed)
@@ -57,5 +61,6 @@ def test_lookup_key_rejects_unsafe_nginx_characters() -> None:
 def test_public_host_is_escaped_for_referer_matching() -> None:
     regex = referer_regex_for_host(PUBLIC_HOST)
 
-    assert re.search(regex, f"https://{PUBLIC_HOST}/instrument-lookup")
-    assert not re.search(regex, "https://findb-stagingXtingfong.com/instrument-lookup")
+    assert re.search(regex, f"https://{PUBLIC_HOST}/dashboard/lookup")
+    assert not re.search(regex, f"https://{PUBLIC_HOST}.evil.example/dashboard/lookup")
+    assert not re.search(regex, "https://findb-stagingXtingfong.com/dashboard/lookup")

@@ -1,5 +1,5 @@
 """
-Generate a static instrument cache for the FinDB instrument lookup page.
+Generate static instrument and macro cache artifacts for FinDB.
 
 This script fetches every page from ``GET /api/v1/serve/instruments`` and
 ``GET /api/v1/serve/macro/series``. It writes reduced static payloads to
@@ -66,7 +66,7 @@ MACRO_SERIES_FIELDS = (
 
 
 def normalize_instrument(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep only the fields needed by the static lookup page."""
+    """Keep only the fields needed by the generated instrument cache."""
     return {field: payload.get(field) for field in INSTRUMENT_FIELDS}
 
 
@@ -80,7 +80,7 @@ def sort_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def normalize_macro_series(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep only the fields needed by the static macro lookup page."""
+    """Keep only the fields needed by the generated macro cache."""
     return {field: payload.get(field) for field in MACRO_SERIES_FIELDS}
 
 
@@ -96,7 +96,7 @@ def build_cache_payload(
     instruments: list[dict[str, Any]],
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build the final JSON document consumed by the lookup page."""
+    """Build the final generated instrument cache document."""
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     ordered = sorted((normalize_instrument(item) for item in instruments), key=sort_key)
     markets = sorted({item["market"] for item in ordered if item.get("market")})
@@ -432,7 +432,7 @@ def main() -> int:
         print_macro_summary(macro_payload)
         return 0
     except Exception as exc:
-        print(f"Failed to generate static lookup cache: {exc}", file=sys.stderr)
+        print(f"Failed to generate static instrument cache: {exc}", file=sys.stderr)
         return 1
 
 

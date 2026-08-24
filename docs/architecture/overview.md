@@ -70,8 +70,9 @@ Fetcher負責provider adapter、限流、versioned contract、stable identity、
 SQLite retry／lease／checkpoint及terminal status追蹤；只能透過HTTPS呼叫FinDB，不得
 import backend ORM／normalizer、連FinDB DB或取得RabbitMQ／Admin credentials。
 
-Dashboard只能透過API運作。公開lookup使用generated cache。RAG、embedding、vector
-index與模型runtime屬下游，不進入FinDB。
+Dashboard只能透過API運作。公開lookup使用canonical Serve API；generated cache僅供
+backend static／Admin cache maintenance。RAG、embedding、vector index與模型runtime屬
+下游，不進入FinDB。
 
 允許跨unit共享的內容只有published JSON Schema、contract manifest、無secret fixtures及
 純validation工具；runtime config、DB code、provider SDK與credentials不得共享。

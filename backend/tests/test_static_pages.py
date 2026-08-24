@@ -1,8 +1,8 @@
-"""
-Tests for static HTML pages.
-"""
+"""Tests for the remaining backend static surfaces."""
 
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -14,32 +14,47 @@ REPO_ROOT = BACKEND_ROOT.parent
 
 
 @pytest.mark.asyncio
-async def test_instrument_lookup_page_is_served():
-    """Ensure the legacy lookup page remains publicly available."""
+async def test_legacy_public_pages_and_html_assets_are_removed():
+    """Removed public pages and their direct static assets must return 404."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        static_response = await client.get("/static/instrument-lookup.html")
-        page_response = await client.get("/instrument-lookup")
+        responses = [
+            await client.get("/instrument-lookup"),
+            await client.get("/skill-install"),
+            await client.get("/static/instrument-lookup.html"),
+            await client.get("/static/skill-install.html"),
+        ]
 
-    assert static_response.status_code == 200
-    assert page_response.status_code == 200
-    assert "標的與宏觀查詢" in page_response.text
-    assert "/static/data/instruments.json" in page_response.text
-    assert "/static/data/macro-series.json" in page_response.text
+    assert all(response.status_code == 404 for response in responses)
 
 
 @pytest.mark.asyncio
-async def test_skill_install_page_and_archive_remain_public():
-    """Ensure the legacy Skill page and downloadable archive remain public."""
+async def test_remaining_static_pages_and_skill_archive_remain_public():
+    """Ensure /test, its direct asset, and the Skill archive remain public."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        page_response = await client.get("/skill-install")
+        test_page_response = await client.get("/test")
+        static_test_page_response = await client.get("/static/test_page.html")
         archive_response = await client.get("/static/findb-api.skill")
 
-    assert page_response.status_code == 200
-    assert "Skill 安裝教學" in page_response.text
-    assert "/static/findb-api.skill" in page_response.text
+    assert test_page_response.status_code == 200
+    assert static_test_page_response.status_code == 200
     assert archive_response.status_code == 200
+    with ZipFile(BytesIO(archive_response.content)) as archive:
+        assert set(archive.namelist()) == {
+            "findb-api/",
+            "findb-api/SKILL.md",
+            "findb-api/assets/",
+            "findb-api/assets/sample_payload.json",
+            "findb-api/references/",
+            "findb-api/references/endpoints.md",
+            "findb-api/references/ingest-payloads.md",
+            "findb-api/references/responses.md",
+        }
+        skill_text = archive.read("findb-api/SKILL.md").decode("utf-8")
+    assert "/dashboard/lookup" in skill_text
+    assert "/instrument-lookup" not in skill_text
+    assert "/skill-install" not in skill_text
 
 
 def test_instrument_cache_path_is_gitignored():
