@@ -33,8 +33,6 @@ describe("LandingPage workspace", () => {
     expect(screen.getByRole("link", { name: /開啟 Lookup/ })).toBeTruthy()
     expect(screen.getByRole("link", { name: /進入 Operations/ })).toBeTruthy()
 
-    const skillLink = screen.getByRole("link", { name: /查看 Skill/ })
-    expect(skillLink.closest("aside")).not.toBeNull()
     expect(
       screen.getByRole("navigation", { name: "Operations 快捷入口" })
     ).toBeTruthy()

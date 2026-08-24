@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router"
-import { Activity, BookOpenCheck, Gauge, Search } from "lucide-react"
+import { Activity, Gauge, Search } from "lucide-react"
 
 import { DEFAULT_SEARCH } from "../features/lookup/config"
 import ThemeToggle from "./ThemeToggle"
@@ -32,15 +32,6 @@ export default function Header() {
             >
               <Search className="size-4" aria-hidden="true" />
               <span className="hidden sm:inline">Lookup</span>
-            </Link>
-            <Link
-              to="/skill"
-              aria-label="FinDB Skill"
-              activeProps={{ className: "bg-accent-soft text-accent" }}
-              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm font-bold text-muted transition-colors hover:bg-surface-soft hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20 focus-visible:outline-none"
-            >
-              <BookOpenCheck className="size-4" aria-hidden="true" />
-              <span className="hidden sm:inline">Skill</span>
             </Link>
             <Link
               to="/operations"

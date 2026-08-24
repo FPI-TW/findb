@@ -1412,7 +1412,7 @@ def test_dashboard_health_checks_use_the_public_landing_page() -> None:
     assert "http://127.0.0.1:3333/dashboard/login" not in deploy
     assert "http://127.0.0.1:3333/dashboard/login" not in compose
     assert "Checking public Dashboard routes through nginx" in deploy
-    assert "for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill" in deploy
+    assert "for dashboard_path in /dashboard/ /dashboard/lookup" in deploy
 
 
 def test_deploy_retries_celery_worker_readiness() -> None:

@@ -24,7 +24,7 @@ findb/
 |  |  |- services/normalize/ # 市場別 normalizers 與 mapping logic
 |  |  |- models/             # canonical、raw、registry ORM models
 |  |  |- schemas/            # Pydantic request/response models
-|  |  `- static/             # static mount、/test、findb-api.skill、generated data cache
+|  |  `- static/             # static mount、generated data cache
 |  |- migrations/            # Alembic migration scripts
 |  |- configs/               # YAML configs，例如 partial_dump.yaml
 |  |- tests/                 # async API/service integration tests 與 unit tests
@@ -74,7 +74,6 @@ findb/
 | ORM/data model | `backend/app/models/` | raw schema、canonical tables、registry tables |
 | API schemas | `backend/app/schemas/` | request/response contracts |
 | Instrument cache | `backend/app/services/instrument_cache.py` + `backend/scripts/generate_instrument_cache.py` | Admin 維護與 generated JSON cache；公開查詢頁為 Dashboard `/dashboard/lookup` |
-| 測試頁 | `backend/app/static/test_page.html` | static `/test` API tester；除非明確要求，避免修改 |
 | 營運 Dashboard | `dashboard/` | TanStack Start 前端；子目錄規則見 `dashboard/AGENTS.md` |
 | 測試與 fixtures | `backend/tests/` + `backend/tests/conftest.py` | AsyncClient、ASGITransport、DB dependency overrides |
 | Alembic migrations | `backend/alembic.ini` + `backend/migrations/` | schema-as-code；`init_db()` 只驗證 revision，不自動建表 |
@@ -110,7 +109,7 @@ findb/
 - Source provider names 正規化為穩定 lowercase，例如 `twelve_data`、`finlab`、`shioaji`。
 - Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。
 - Schema 變更一律透過 Alembic migrations；runtime `init_db()` 只檢查 Alembic revision 與 required tables，不執行 `create_all()`。
-- 後端 static mount 保留 `/test`、`test_page.html` 與 `findb-api.skill`；公開查詢與 Skill 說明頁位於 Dashboard 的 `/dashboard/lookup` 與 `/dashboard/skill`。
+- 後端保留 `/static` mount 供 generated instrument／macro cache 使用；公開查詢頁位於 Dashboard 的 `/dashboard/lookup`。
 
 ## 專案反模式
 

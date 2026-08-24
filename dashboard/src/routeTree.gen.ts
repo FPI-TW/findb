@@ -13,7 +13,6 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LookupRouteImport } from './routes/lookup'
-import { Route as SkillRouteImport } from './routes/skill'
 import { Route as AuthenticatedChangePasswordRouteImport } from './routes/_authenticated/change-password'
 import { Route as AuthenticatedOperationsRouteImport } from './routes/_authenticated/operations'
 import { Route as AuthenticatedOperationsIndexRouteImport } from './routes/_authenticated/operations.index'
@@ -42,11 +41,6 @@ const LoginRoute = LoginRouteImport.update({
 const LookupRoute = LookupRouteImport.update({
   id: '/lookup',
   path: '/lookup',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SkillRoute = SkillRouteImport.update({
-  id: '/skill',
-  path: '/skill',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedChangePasswordRoute =
@@ -113,7 +107,6 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
-  '/skill': typeof SkillRoute
   '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations': typeof AuthenticatedOperationsRouteWithChildren
   '/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
@@ -129,7 +122,6 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
-  '/skill': typeof SkillRoute
   '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
@@ -146,7 +138,6 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/login': typeof LoginRoute
   '/lookup': typeof LookupRoute
-  '/skill': typeof SkillRoute
   '/_authenticated/change-password': typeof AuthenticatedChangePasswordRoute
   '/_authenticated/operations': typeof AuthenticatedOperationsRouteWithChildren
   '/_authenticated/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
@@ -164,7 +155,6 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/lookup'
-    | '/skill'
     | '/change-password'
     | '/operations'
     | '/operations/calendars'
@@ -180,7 +170,6 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/lookup'
-    | '/skill'
     | '/change-password'
     | '/operations/calendars'
     | '/operations/corrections'
@@ -196,7 +185,6 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/login'
     | '/lookup'
-    | '/skill'
     | '/_authenticated/change-password'
     | '/_authenticated/operations'
     | '/_authenticated/operations/calendars'
@@ -214,7 +202,6 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   LoginRoute: typeof LoginRoute
   LookupRoute: typeof LookupRoute
-  SkillRoute: typeof SkillRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -245,13 +232,6 @@ declare module '@tanstack/react-router' {
       path: '/lookup'
       fullPath: '/lookup'
       preLoaderRoute: typeof LookupRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/skill': {
-      id: '/skill'
-      path: '/skill'
-      fullPath: '/skill'
-      preLoaderRoute: typeof SkillRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/change-password': {
@@ -379,7 +359,6 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   LoginRoute: LoginRoute,
   LookupRoute: LookupRoute,
-  SkillRoute: SkillRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
