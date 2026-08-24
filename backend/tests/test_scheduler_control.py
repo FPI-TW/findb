@@ -27,7 +27,6 @@ def test_scheduler_dataset_keys_uses_loaded_association_only() -> None:
         scheduler_key=SCHEDULER_KEY,
         provider="finlab",
         slot_id="taiwan_market_window",
-        dataset_keys=["projection_only"],
     )
     assert scheduler_dataset_keys(row) == []
 
@@ -63,7 +62,6 @@ async def _add_scheduler(
         slot_id="taiwan_market_window",
         scheduled_local_time=time(14, 30),
         timezone="Asia/Taipei",
-        dataset_keys=normalized_dataset_keys,
         desired_state="stopped",
         observed_state="stopped",
         revision=1,
@@ -136,6 +134,7 @@ async def test_scheduler_model_exposes_constraints_and_indexes(test_engine):
     assert "ck_scheduler_control_desired_state_valid" in constraint_names
     assert "ck_scheduler_control_observed_state_valid" in constraint_names
     assert "ck_scheduler_control_revision_positive" in constraint_names
+    assert "ck_scheduler_control_slot_id_canonical" in constraint_names
     assert "idx_scheduler_control_provider" in index_names
     assert "idx_scheduler_control_heartbeat" in index_names
 

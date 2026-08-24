@@ -107,6 +107,7 @@ def test_tw_minute_migration_is_single_linear_head():
     twelve_data_schedule_1030 = scripts.get_revision("a3b4c5d6e7f8")
     ingestion_coverage = scripts.get_revision("b4c5d6e7f8a9")
     twelve_data_schedule_0815 = scripts.get_revision("c5d6e7f8a9b0")
+    scheduler_dataset_projection_removal = scripts.get_revision("d6e7f8a9b0c1")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -133,7 +134,9 @@ def test_tw_minute_migration_is_single_linear_head():
     assert ingestion_coverage.down_revision == "a3b4c5d6e7f8"
     assert twelve_data_schedule_0815 is not None
     assert twelve_data_schedule_0815.down_revision == "b4c5d6e7f8a9"
-    assert scripts.get_heads() == ["c5d6e7f8a9b0"]
+    assert scheduler_dataset_projection_removal is not None
+    assert scheduler_dataset_projection_removal.down_revision == "c5d6e7f8a9b0"
+    assert scripts.get_heads() == ["d6e7f8a9b0c1"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -781,6 +784,33 @@ async def test_twelve_data_0815_downgrade_leaves_one_sided_drift_untouched(
                 )
             )
 
+        if drift_kind == "scheduler_mapping":
+            # Wave 5's local-only downgrade refuses to invent a projection
+            # when an association has been removed.  The transaction must
+            # leave the d6 schema and Alembic stamp untouched.
+            result = await _run_alembic_capture(database_url, "b4c5d6e7f8a9", command="downgrade")
+            assert result.returncode != 0
+            assert "without an association" in (result.stdout + result.stderr)
+            async with target_engine.connect() as connection:
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                    "d6e7f8a9b0c1"
+                )
+                assert (
+                    await connection.scalar(
+                        text(
+                            """
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'scheduler_control'
+                          AND column_name = 'dataset_keys'
+                        """
+                        )
+                    )
+                    == 0
+                )
+            return
+
         await _run_alembic(database_url, "b4c5d6e7f8a9", command="downgrade")
         async with target_engine.connect() as connection:
             after = (
@@ -864,7 +894,7 @@ async def test_twelve_data_0815_policy_step_failure_rolls_back_scheduler(directi
         expected_scheduler_time = time(8, 15) if direction == "downgrade" else time(10, 30)
         expected_deadline = "09:15:00" if direction == "downgrade" else "11:30:00"
         expected_local_time = "08:15:00" if direction == "downgrade" else "10:30:00"
-        expected_revision = "c5d6e7f8a9b0" if direction == "downgrade" else "b4c5d6e7f8a9"
+        expected_revision = "d6e7f8a9b0c1" if direction == "downgrade" else "b4c5d6e7f8a9"
         async with target_engine.connect() as connection:
             assert (
                 await connection.scalar(
@@ -996,6 +1026,16 @@ async def test_twelve_data_schedule_downgrade_leaves_one_sided_drift_untouched(
                     """
                 )
             )
+
+        if drift_kind == "scheduler_mapping":
+            result = await _run_alembic_capture(database_url, "f2a3b4c5d6e7", command="downgrade")
+            assert result.returncode != 0
+            assert "without an association" in (result.stdout + result.stderr)
+            async with target_engine.connect() as connection:
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                    "d6e7f8a9b0c1"
+                )
+            return
 
         await _run_alembic(database_url, "f2a3b4c5d6e7", command="downgrade")
         async with target_engine.connect() as connection:
@@ -1747,7 +1787,7 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                 await connection.execute(
                     text(
                         """
-                        SELECT scheduler_key, provider, dataset_keys,
+                        SELECT scheduler_key, provider,
                                desired_state, observed_state, revision,
                                last_heartbeat_at, last_cycle_started_at,
                                last_cycle_completed_at, last_error,
@@ -1763,10 +1803,25 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                     "finlab_tw_equity_eod_v1"
                     if row[0] == "finlab_tw_1430_tw_equity_eod"
                     else row[0],
-                    *row[1:],
+                    row[1],
+                    *row[3:],
                 )
                 for row in state_before
             ]
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'scheduler_control'
+                          AND column_name = 'dataset_keys'
+                        """
+                    )
+                )
+                == 0
+            )
             assert [row[:-2] for row in state_after] == [row[:-2] for row in expected_state_after]
             assert [row[-2] for row in state_after] == [row[-2] for row in expected_state_after]
             for after, before in zip(state_after, expected_state_after, strict=True):

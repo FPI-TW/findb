@@ -139,7 +139,6 @@ async def _seed_minute_datasets(
             slot_id="taiwan_market_window",
             scheduled_local_time=time(14, 30),
             timezone="Asia/Taipei",
-            dataset_keys=list(dataset_keys),
             desired_state="running",
             observed_state="running",
             revision=1,

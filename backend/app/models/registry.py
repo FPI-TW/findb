@@ -68,7 +68,12 @@ class DatasetRegistry(Base):
 
 
 class SchedulerControl(Base):
-    """Durable desired/observed state for a provider-owned scheduler."""
+    """Durable desired/observed state for a provider-owned scheduler.
+
+    Dataset scope is represented only by the related ``SchedulerDataset``
+    associations.  The former JSON projection is intentionally not mapped by
+    the current ORM.
+    """
 
     __tablename__ = "scheduler_control"
     __table_args__ = (
@@ -85,12 +90,17 @@ class SchedulerControl(Base):
             name="slot_id_nonempty",
         ),
         CheckConstraint(
-            "length(trim(timezone)) > 0",
-            name="timezone_nonempty",
+            "slot_id IN ("
+            "'western_markets_window', "
+            "'global_markets_window', "
+            "'taiwan_market_window', "
+            "'asia_pacific_markets_window'"
+            ")",
+            name="slot_id_canonical",
         ),
         CheckConstraint(
-            "jsonb_typeof(dataset_keys) = 'array' AND jsonb_array_length(dataset_keys) > 0",
-            name="dataset_keys_array",
+            "length(trim(timezone)) > 0",
+            name="timezone_nonempty",
         ),
         CheckConstraint(
             "desired_state IN ('running', 'stopped')",
@@ -116,7 +126,6 @@ class SchedulerControl(Base):
     slot_id: Mapped[str] = mapped_column(String(50), nullable=False)
     scheduled_local_time: Mapped[time] = mapped_column(Time(), nullable=False, default=time(0, 0))
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
-    dataset_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     desired_state: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
     observed_state: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -142,13 +151,7 @@ class SchedulerControl(Base):
 
 
 class SchedulerDataset(Base):
-    """Normalized scheduler-to-dataset scope mapping.
-
-    ``SchedulerControl.dataset_keys`` remains as a database projection during
-    the expand/contract rollout.  Application scope checks and scheduler
-    definition consumers use this association table exclusively so a stale
-    JSON projection cannot widen authority.
-    """
+    """Authoritative scheduler-to-dataset scope association."""
 
     __tablename__ = "scheduler_dataset"
     __table_args__ = (Index("idx_scheduler_dataset_dataset", "dataset_key"),)
