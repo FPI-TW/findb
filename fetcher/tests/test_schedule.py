@@ -7,11 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from findb_fetcher.schedule import ScheduleError, load_schedule_config, load_schedule_manifest
+from findb_fetcher.schedule import ScheduleError, load_schedule_manifest
 
-CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "twelve_data_us_common_stocks_daily.v1.json"
-)
 V2_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.v2.json"
 V2_CALENDAR_PATH = V2_CONFIG_PATH.parent / "calendars" / "us_equity_2026_2028.v1.json"
 
@@ -26,40 +23,35 @@ def _write_v2_manifest(tmp_path: Path, value: object) -> Path:
 
 
 def test_repository_schedule_is_strict_and_bounded() -> None:
-    schedule = load_schedule_config(CONFIG_PATH)
+    manifest = load_schedule_manifest(V2_CONFIG_PATH)
+    schedule = manifest.feeds[0]
 
-    assert schedule.schedule_version == 1
-    assert schedule.schedule_id == "twelve_data_us_common_stocks_daily_v1"
+    assert manifest.schedule_version == 2
+    assert schedule.schedule_id == "twelve_data_western_markets_window_us_equity_eod"
     assert schedule.universe_file.name == "twelve_data_us_common_stocks.v1.json"
-    assert schedule.hour_utc == 22
-    assert schedule.minute_utc == 0
+    assert schedule.scheduled_local_time.isoformat() == "08:15:00"
     assert schedule.outputsize == 20
     assert schedule.max_attempts == 5
     assert schedule.lease_seconds > schedule.wait_timeout_seconds
 
 
-def test_latest_due_date_uses_utc_schedule_boundary() -> None:
-    schedule = load_schedule_config(CONFIG_PATH)
-
-    assert schedule.latest_due_date(
-        datetime(2026, 7, 25, 21, 59, tzinfo=timezone.utc)
-    ).isoformat() == ("2026-07-24")
-    assert schedule.latest_due_date(
-        datetime(2026, 7, 25, 22, 0, tzinfo=timezone.utc)
-    ).isoformat() == ("2026-07-24")
-    assert schedule.latest_due_date(
-        datetime(2026, 7, 27, 21, 59, tzinfo=timezone.utc)
-    ).isoformat() == ("2026-07-24")
-    assert schedule.latest_due_date(
-        datetime(2026, 7, 27, 22, 0, tzinfo=timezone.utc)
-    ).isoformat() == ("2026-07-27")
-
-    with pytest.raises(ScheduleError, match="timezone-aware"):
-        schedule.latest_due_date(datetime(2026, 7, 25, 22, 0))
+def test_v1_schedule_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-schedule.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schedule_version": 1,
+                "schedule_id": "twelve_data_us_common_stocks_daily_v1",
+                "universe_file": "twelve_data_us_common_stocks.v1.json",
+            }
+        )
+    )
+    with pytest.raises(ScheduleError, match="v2 schedule keys"):
+        load_schedule_manifest(path)
 
 
 def test_retry_delay_is_exponential_and_bounded() -> None:
-    schedule = load_schedule_config(CONFIG_PATH)
+    schedule = load_schedule_manifest(V2_CONFIG_PATH).feeds[0]
 
     assert [schedule.retry_delay_seconds(attempt) for attempt in range(1, 8)] == [
         60,
@@ -84,10 +76,6 @@ def test_v2_manifest_has_only_active_daily_feeds_and_date_boundaries() -> None:
         "14:30:00",
     ]
     assert [feed.target_date_lag_days for feed in manifest.feeds] == [1, 0]
-    assert [feed.legacy_schedule_id for feed in manifest.feeds] == [
-        "twelve_data_us_common_stocks_daily_v1",
-        None,
-    ]
     assert (
         manifest.feeds[1].target_date(datetime(2026, 7, 30, 6, 29, tzinfo=timezone.utc)).isoformat()
         == "2026-07-29"
@@ -150,7 +138,6 @@ def test_v2_manifest_allows_multiple_unique_feeds_in_one_slot(
     value = json.loads(V2_CONFIG_PATH.read_text())
     additional = deepcopy(value["feeds"][0])
     additional["dataset_key"] = "us_index_eod"
-    additional["legacy_schedule_id"] = None
     additional["enabled"] = False
     value["feeds"].append(additional)
     path = _write_v2_manifest(tmp_path, value)
@@ -184,47 +171,25 @@ def test_v2_scheduled_time_is_data_not_slot_identity(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("legacy_schedule_id", "message"),
-    [
-        ("", "legacy_schedule_id"),
-        ("Not-Stable", "legacy_schedule_id"),
-        (123, "legacy_schedule_id"),
-    ],
-)
-def test_v2_legacy_schedule_id_is_strictly_null_or_stable(
-    tmp_path: Path,
-    legacy_schedule_id: object,
-    message: str,
-) -> None:
+def test_v2_manifest_rejects_removed_schedule_ownership_key(tmp_path: Path) -> None:
     value = json.loads(V2_CONFIG_PATH.read_text())
-    value["feeds"][0]["legacy_schedule_id"] = legacy_schedule_id
+    value["feeds"][0]["legacy_schedule_id"] = "old_schedule"
     path = _write_v2_manifest(tmp_path, value)
 
-    with pytest.raises(ScheduleError, match=message):
-        load_schedule_manifest(path)
-
-
-def test_v2_legacy_schedule_id_cannot_be_claimed_by_two_feeds(tmp_path: Path) -> None:
-    value = json.loads(V2_CONFIG_PATH.read_text())
-    value["feeds"][1]["legacy_schedule_id"] = "twelve_data_us_common_stocks_daily_v1"
-    path = _write_v2_manifest(tmp_path, value)
-
-    with pytest.raises(ScheduleError, match="legacy_schedule_id"):
+    with pytest.raises(ScheduleError, match="keys must be exactly"):
         load_schedule_manifest(path)
 
 
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("schedule_version", 2, "schedule_version"),
-        ("schedule_id", "Not-Stable", "schedule_id"),
+        ("schedule_version", 1, "schedule_version"),
+        ("timezone", "UTC", "timezone"),
         ("universe_file", "../secrets.json", "universe_file"),
-        ("hour_utc", 24, "hour_utc"),
         ("outputsize", 5001, "outputsize"),
         ("max_attempts", 11, "max_attempts"),
         ("retry_base_seconds", 3601, "retry_base_seconds"),
-        ("lease_seconds", 1800, "lease_seconds"),
+        ("lease_seconds", 1800, "lease"),
     ],
 )
 def test_invalid_schedule_values_are_rejected(
@@ -233,27 +198,29 @@ def test_invalid_schedule_values_are_rejected(
     value: object,
     message: str,
 ) -> None:
-    config = json.loads(CONFIG_PATH.read_text())
-    config[field] = value
-    path = tmp_path / "schedule.json"
-    path.write_text(json.dumps(config))
+    config = json.loads(V2_CONFIG_PATH.read_text())
+    if field in {"schedule_version", "timezone"}:
+        config[field] = value
+    else:
+        config["feeds"][0][field] = value
+    path = _write_v2_manifest(tmp_path, config)
 
     with pytest.raises(ScheduleError, match=message):
-        load_schedule_config(path)
+        load_schedule_manifest(path)
 
 
 def test_unknown_and_duplicate_keys_are_rejected(tmp_path: Path) -> None:
-    config = json.loads(CONFIG_PATH.read_text())
+    config = json.loads(V2_CONFIG_PATH.read_text())
     config["secret"] = "not-allowed"
     unknown = tmp_path / "unknown.json"
     unknown.write_text(json.dumps(config))
     with pytest.raises(ScheduleError, match="keys must be exactly"):
-        load_schedule_config(unknown)
+        load_schedule_manifest(unknown)
 
     duplicate = tmp_path / "duplicate.json"
-    duplicate.write_text('{"schedule_version":1,"schedule_version":1}')
+    duplicate.write_text('{"schedule_version":2,"schedule_version":2}')
     with pytest.raises(ScheduleError, match="unique keys"):
-        load_schedule_config(duplicate)
+        load_schedule_manifest(duplicate)
 
 
 @pytest.mark.parametrize(

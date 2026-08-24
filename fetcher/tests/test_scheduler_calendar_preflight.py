@@ -9,12 +9,10 @@ from typing import Any
 import pytest
 
 from findb_fetcher.market_calendar import CalendarDay, MarketCalendarError
-from findb_fetcher.schedule import load_schedule_config
+from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.twelve_data_scheduler import SchedulerService
 
-CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "twelve_data_us_common_stocks_daily.v1.json"
-)
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.v2.json"
 
 
 class EmptyState:
@@ -64,8 +62,11 @@ class Calendar:
 def _service(
     status: str, *, slot_id: str = "taiwan_market_window"
 ) -> tuple[SchedulerService, EmptyState, Calendar]:
+    current = next(
+        feed for feed in load_schedule_manifest(CONFIG_PATH).feeds if feed.slot_id == slot_id
+    )
     schedule = replace(
-        load_schedule_config(CONFIG_PATH),
+        current,
         schedule_version=2,
         slot_id=slot_id,
         market="TW" if slot_id == "taiwan_market_window" else "US",

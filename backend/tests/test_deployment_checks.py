@@ -788,7 +788,7 @@ def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...
         (
             "finlab",
             "Release and validate FinLab scheduler on Fetcher EC2",
-            "findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id tw_1430 --dataset-key tw_equity_eod",
+            "findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id taiwan_market_window --dataset-key tw_equity_eod",
             "findb-fetcher-finlab-scheduler",
             "findb-fetcher-finlab-scheduler-candidate",
             "findb-fetcher-finlab-scheduler-previous",
@@ -905,7 +905,7 @@ def _run_fetcher_reconciliation(
     initial: dict[str, str],
     candidate_status: str = "running",
     preflight_fails: bool = False,
-    legacy_raw_bucket_marker: bool = False,
+    wrong_raw_bucket_marker: bool = False,
     stable_exit_code: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
     provider_id, step_name, command, stable, candidate, previous = provider
@@ -924,7 +924,7 @@ def _run_fetcher_reconciliation(
     state_path = state_dir / "state.sqlite3"
     state_path.write_text("durable-state\n", encoding="utf-8")
     marker_components = "0123456789abcdef0123456789abcdef\nraw-bucket"
-    if not legacy_raw_bucket_marker:
+    if not wrong_raw_bucket_marker:
         marker_components += f"\n{provider_id}"
     (state_dir / "raw-bucket.sha256").write_text(
         hashlib.sha256(marker_components.encode()).hexdigest() + "\n",
@@ -999,29 +999,8 @@ previous={previous}
     return completed, statuses, operations, state_path.read_text(encoding="utf-8")
 
 
-def test_twelve_legacy_raw_bucket_marker_is_migrated_before_reconciliation(
-    tmp_path: Path,
-) -> None:
-    provider = _fetcher_scheduler_cases()[0]
-    stable = provider[3]
-
-    completed, statuses, _, durable_state = _run_fetcher_reconciliation(
-        tmp_path,
-        provider,
-        initial={stable: "running"},
-        legacy_raw_bucket_marker=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert statuses == {stable: "running"}
-    assert durable_state == "durable-state\n"
-    marker = (tmp_path / "twelve" / "state" / "raw-bucket.sha256").read_text(encoding="utf-8")
-    expected = hashlib.sha256(b"0123456789abcdef0123456789abcdef\nraw-bucket\ntwelve").hexdigest()
-    assert marker == f"{expected}\n"
-
-
-@pytest.mark.parametrize("provider", _fetcher_scheduler_cases()[1:], ids=lambda item: item[0])
-def test_new_providers_reject_legacy_twelve_raw_bucket_marker(
+@pytest.mark.parametrize("provider", _fetcher_scheduler_cases(), ids=lambda item: item[0])
+def test_all_providers_reject_unscoped_raw_bucket_marker(
     tmp_path: Path,
     provider: tuple[str, str, str, str, str, str],
 ) -> None:
@@ -1031,7 +1010,7 @@ def test_new_providers_reject_legacy_twelve_raw_bucket_marker(
         tmp_path,
         provider,
         initial={stable: "running"},
-        legacy_raw_bucket_marker=True,
+        wrong_raw_bucket_marker=True,
     )
 
     assert completed.returncode != 0

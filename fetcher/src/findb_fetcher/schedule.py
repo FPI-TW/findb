@@ -12,20 +12,6 @@ from zoneinfo import ZoneInfo
 
 _MAX_CONFIG_BYTES = 64 * 1024
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
-_ROOT_KEYS = {
-    "schedule_version",
-    "schedule_id",
-    "universe_file",
-    "hour_utc",
-    "minute_utc",
-    "outputsize",
-    "max_attempts",
-    "retry_base_seconds",
-    "retry_max_seconds",
-    "lease_seconds",
-    "poll_interval_seconds",
-    "wait_timeout_seconds",
-}
 _V2_ROOT_KEYS = {"schedule_version", "timezone", "feeds"}
 _V2_FEED_KEYS = {
     "slot_id",
@@ -35,7 +21,6 @@ _V2_FEED_KEYS = {
     "universe_file",
     "scheduled_time",
     "target_date_lag_days",
-    "legacy_schedule_id",
     "target_date_policy",
     "calendar_file",
     "grace_seconds",
@@ -73,15 +58,6 @@ CANONICAL_SLOT_IDS = frozenset(
     }
 )
 
-# Persisted v2 state used the original time-bearing IDs.  This is a state
-# migration concern only; they are not accepted as v2 manifest identities.
-LEGACY_SLOT_ID_MAP = {
-    "us_0600": "western_markets_window",
-    "global_0815": "global_markets_window",
-    "tw_1430": "taiwan_market_window",
-    "asia_1630": "asia_pacific_markets_window",
-}
-
 
 class ScheduleError(ValueError):
     """A scheduler configuration or clock value violates its safety contract."""
@@ -105,8 +81,6 @@ class ScheduleConfig:
     schedule_version: int
     schedule_id: str
     universe_file: Path
-    hour_utc: int
-    minute_utc: int
     outputsize: int
     max_attempts: int
     retry_base_seconds: int
@@ -114,16 +88,15 @@ class ScheduleConfig:
     lease_seconds: int
     poll_interval_seconds: int
     wait_timeout_seconds: int
-    scheduled_local_time: time = time(0)
-    target_date_lag_days: int = 0
-    legacy_schedule_id: str | None = None
-    slot_id: str = "legacy"
-    provider: str = "twelve_data"
-    market: str = "US"
-    dataset_key: str = "us_equity_eod"
-    timezone_name: str = "UTC"
-    target_date_policy: str = "latest_weekday"
-    grace_seconds: int = 0
+    slot_id: str
+    provider: str
+    market: str
+    dataset_key: str
+    timezone_name: str
+    scheduled_local_time: time
+    target_date_lag_days: int
+    target_date_policy: str
+    grace_seconds: int
     non_trading_dates: tuple[date, ...] = ()
     calendar_start_date: date | None = None
     calendar_end_date: date | None = None
@@ -133,23 +106,6 @@ class ScheduleConfig:
     max_records_per_run: int = 10_000
     enabled: bool = True
 
-    def latest_due_date(self, now: datetime) -> date:
-        """Return the latest weekday UTC schedule date that is due at ``now``."""
-        normalized = _utc_datetime(now)
-        scheduled_today = datetime.combine(
-            normalized.date(),
-            time(self.hour_utc, self.minute_utc),
-            tzinfo=timezone.utc,
-        )
-        candidate = (
-            normalized.date() - timedelta(days=1)
-            if normalized < scheduled_today
-            else normalized.date()
-        )
-        while candidate.weekday() >= 5:
-            candidate -= timedelta(days=1)
-        return candidate
-
     def retry_delay_seconds(self, attempt_count: int) -> int:
         if attempt_count < 1:
             raise ScheduleError("attempt_count must be at least 1")
@@ -157,8 +113,6 @@ class ScheduleConfig:
 
     def target_date(self, now: datetime) -> date:
         """Return the v2 target date; a trigger starts checking, not backfill."""
-        if self.schedule_version == 1:
-            return self.latest_due_date(now)
         candidate = self.scheduled_date(now)
         candidate -= timedelta(days=self.target_date_lag_days)
         if self.target_date_policy == "latest_trade_date" and (
@@ -182,8 +136,6 @@ class ScheduleConfig:
 
     def scheduled_date(self, now: datetime) -> date:
         """Return the local calendar date of the latest due schedule trigger."""
-        if self.schedule_version == 1:
-            return self.latest_due_date(now)
         if now.tzinfo is None or now.utcoffset() is None:
             raise ScheduleError("scheduler clock must be timezone-aware")
         local = now.astimezone(ZoneInfo(self.timezone_name))
@@ -197,12 +149,6 @@ class ScheduleConfig:
 
     def grace_deadline(self, scheduled_date: date) -> datetime:
         """Return the UTC deadline before a retryable miss may become terminal."""
-        if self.schedule_version == 1:
-            return datetime.combine(
-                scheduled_date,
-                time(self.hour_utc, self.minute_utc),
-                tzinfo=timezone.utc,
-            )
         local = datetime.combine(
             scheduled_date,
             self.scheduled_local_time,
@@ -219,69 +165,15 @@ class ScheduleManifest:
 
 
 def load_schedule_config(path: Path) -> ScheduleConfig:
-    """Load a strict scheduler config and resolve its universe beside the config."""
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise ScheduleError(f"unable to read schedule config: {path}") from exc
-    if len(raw) > _MAX_CONFIG_BYTES:
-        raise ScheduleError("schedule config exceeds size limit")
-    try:
-        value = json.loads(raw, object_pairs_hook=_unique_object)
-    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJSONKeyError) as exc:
-        raise ScheduleError("schedule config must be valid UTF-8 JSON with unique keys") from exc
-    if not isinstance(value, dict):
-        raise ScheduleError("schedule config must be an object")
-    if value.get("schedule_version") == 2:
-        manifest = _load_v2_manifest(path, value)
-        if len(manifest.feeds) != 1:
-            raise ScheduleError("v2 manifest has multiple feeds; use load_schedule_manifest")
-        return manifest.feeds[0]
-    if set(value) != _ROOT_KEYS:
-        raise ScheduleError(f"schedule config keys must be exactly {sorted(_ROOT_KEYS)}")
-
-    schedule_version = _bounded_int(value, "schedule_version", 1, 1)
-    schedule_id = _required_string(value, "schedule_id")
-    if _IDENTIFIER_PATTERN.fullmatch(schedule_id) is None:
-        raise ScheduleError("schedule_id must be a stable lowercase identifier")
-    universe_name = _required_string(value, "universe_file")
-    universe_path = Path(universe_name)
-    if (
-        universe_path.is_absolute()
-        or len(universe_path.parts) != 1
-        or universe_path.name != universe_name
-        or universe_path.suffix != ".json"
-    ):
-        raise ScheduleError("universe_file must be a JSON filename beside the schedule config")
-
-    config = ScheduleConfig(
-        schedule_version=schedule_version,
-        schedule_id=schedule_id,
-        universe_file=path.parent / universe_path,
-        hour_utc=_bounded_int(value, "hour_utc", 0, 23),
-        minute_utc=_bounded_int(value, "minute_utc", 0, 59),
-        outputsize=_bounded_int(value, "outputsize", 1, 5000),
-        max_attempts=_bounded_int(value, "max_attempts", 1, 10),
-        retry_base_seconds=_bounded_int(value, "retry_base_seconds", 1, 3600),
-        retry_max_seconds=_bounded_int(value, "retry_max_seconds", 1, 86_400),
-        lease_seconds=_bounded_int(value, "lease_seconds", 60, 28_800),
-        poll_interval_seconds=_bounded_int(value, "poll_interval_seconds", 1, 3600),
-        wait_timeout_seconds=_bounded_int(value, "wait_timeout_seconds", 1, 7200),
-        scheduled_local_time=time(
-            _bounded_int(value, "hour_utc", 0, 23),
-            _bounded_int(value, "minute_utc", 0, 59),
-        ),
-        target_date_lag_days=0,
-    )
-    if config.retry_base_seconds > config.retry_max_seconds:
-        raise ScheduleError("retry_base_seconds must not exceed retry_max_seconds")
-    if config.lease_seconds <= config.wait_timeout_seconds:
-        raise ScheduleError("lease_seconds must exceed wait_timeout_seconds")
-    return config
+    """Load a current v2 manifest containing exactly one feed."""
+    manifest = load_schedule_manifest(path)
+    if len(manifest.feeds) != 1:
+        raise ScheduleError("v2 manifest has multiple feeds; use load_schedule_manifest")
+    return manifest.feeds[0]
 
 
 def load_schedule_manifest(path: Path) -> ScheduleManifest:
-    """Load strict v2 manifests, while exposing a v1 file as one legacy feed."""
+    """Load the current v2 schedule manifest."""
     try:
         raw = path.read_bytes()
         if len(raw) > _MAX_CONFIG_BYTES:
@@ -291,8 +183,6 @@ def load_schedule_manifest(path: Path) -> ScheduleManifest:
         raise ScheduleError("schedule config must be valid UTF-8 JSON with unique keys") from exc
     if not isinstance(value, dict):
         raise ScheduleError("schedule config must be an object")
-    if value.get("schedule_version") == 1:
-        return ScheduleManifest(1, "UTC", (load_schedule_config(path),))
     return _load_v2_manifest(path, value)
 
 
@@ -311,7 +201,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         raise ScheduleError("v2 feeds must be a non-empty list")
     feeds: list[ScheduleConfig] = []
     seen_feeds: set[tuple[str, str, str]] = set()
-    seen_legacy_schedule_ids: set[str] = set()
     for index, item in enumerate(feeds_value):
         if not isinstance(item, dict) or set(item) != _V2_FEED_KEYS:
             raise ScheduleError(f"feeds[{index}] keys must be exactly {sorted(_V2_FEED_KEYS)}")
@@ -319,11 +208,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         if slot_id not in CANONICAL_SLOT_IDS:
             raise ScheduleError("slot_id must be one of the four v2 slots")
         scheduled_local_time = _parse_scheduled_time(item.get("scheduled_time"))
-        legacy_schedule_id = _optional_identifier(item, "legacy_schedule_id")
-        if legacy_schedule_id is not None:
-            if legacy_schedule_id in seen_legacy_schedule_ids:
-                raise ScheduleError("legacy_schedule_id must be unique across v2 feeds")
-            seen_legacy_schedule_ids.add(legacy_schedule_id)
         provider = _identifier(item, "provider")
         if provider not in {"twelve_data", "finlab"}:
             raise ScheduleError("provider is unsupported")
@@ -346,8 +230,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
             schedule_version=2,
             schedule_id=f"{provider}_{slot_id}_{dataset_key}",
             universe_file=universe_file,
-            hour_utc=0,
-            minute_utc=0,
             outputsize=_bounded_int(item, "outputsize", 1, 5000),
             max_attempts=_bounded_int(item, "max_attempts", 1, 10),
             retry_base_seconds=_bounded_int(item, "retry_base_seconds", 1, 3600),
@@ -357,7 +239,6 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
             wait_timeout_seconds=_bounded_int(item, "wait_timeout_seconds", 1, 7200),
             scheduled_local_time=scheduled_local_time,
             target_date_lag_days=_bounded_int(item, "target_date_lag_days", 0, 366),
-            legacy_schedule_id=legacy_schedule_id,
             slot_id=slot_id,
             provider=provider,
             market=_required_string(item, "market"),
@@ -391,18 +272,6 @@ def _identifier(parent: dict[str, Any], key: str) -> str:
     value = _required_string(parent, key)
     if _IDENTIFIER_PATTERN.fullmatch(value) is None:
         raise ScheduleError(f"{key} must be a stable lowercase identifier")
-    return value
-
-
-def _optional_identifier(parent: dict[str, Any], key: str) -> str | None:
-    value = parent.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ScheduleError(f"{key} must be null or a stable lowercase identifier")
-    value = value.strip()
-    if _IDENTIFIER_PATTERN.fullmatch(value) is None:
-        raise ScheduleError(f"{key} must be null or a stable lowercase identifier")
     return value
 
 
@@ -489,12 +358,6 @@ def _calendar_path(manifest_path: Path, calendar_name: str) -> Path:
             "calendar_file must resolve inside the governed configs/calendars directory"
         ) from exc
     return resolved_calendar_path
-
-
-def _utc_datetime(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ScheduleError("scheduler clock must be timezone-aware")
-    return value.astimezone(timezone.utc)
 
 
 def _required_string(parent: dict[str, Any], key: str) -> str:

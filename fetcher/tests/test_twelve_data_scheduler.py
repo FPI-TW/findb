@@ -20,7 +20,7 @@ from findb_fetcher.providers.twelve_data import (
     build_market_eod_request,
 )
 from findb_fetcher.raw_storage import RawObject, RawStorageUploadError, attach_raw_object
-from findb_fetcher.schedule import load_schedule_config
+from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.scheduler_state import ScheduledJob, SchedulerState
 from findb_fetcher.twelve_data_scheduler import (
     JobExecution,
@@ -30,7 +30,7 @@ from findb_fetcher.twelve_data_scheduler import (
 from findb_fetcher.universe import load_symbol_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
-SCHEDULE_PATH = CONFIG_DIR / "twelve_data_us_common_stocks_daily.v1.json"
+SCHEDULE_PATH = CONFIG_DIR / "daily_scheduler.v2.json"
 UNIVERSE_PATH = CONFIG_DIR / "twelve_data_us_common_stocks.v1.json"
 FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "twelve_data" / "aapl_1day_2024-01-02_2024-01-05.json"
@@ -38,6 +38,10 @@ FIXTURE_PATH = (
 NOW = datetime(2026, 7, 25, 2, 5, tzinfo=timezone.utc)
 ATTEMPT_ID = UUID("019f98b5-ee0b-7b16-9a28-d8e2ed638a91")
 RUN_ID = UUID("019f98b5-ee0b-7b16-9a28-d8e2ed638a92")
+
+
+def _schedule():
+    return load_schedule_manifest(SCHEDULE_PATH).feeds[0]
 
 
 class FakeProvider:
@@ -104,7 +108,7 @@ def _job(
 ) -> ScheduledJob:
     return ScheduledJob(
         job_key="a" * 64,
-        schedule_id="twelve_data_us_common_stocks_daily_v1",
+        schedule_id="twelve_data_western_markets_window_us_equity_eod",
         scheduled_date=scheduled_date,
         universe_id="twelve_data_us_common_stocks_v1",
         universe_version=1,
@@ -113,6 +117,11 @@ def _job(
         exchange="NASDAQ",
         status="running",
         attempt_count=1,
+        slot_id="western_markets_window",
+        provider="twelve_data",
+        dataset_key="us_equity_eod",
+        work_item="AAPL",
+        target_data_date=date(2024, 1, 5),
         checkpoint_before=checkpoint,
         prepared_request=None,
     )
@@ -127,7 +136,7 @@ def _executor(
     state: SchedulerState | None = None,
 ) -> TwelveDataScheduledExecutor:
     return TwelveDataScheduledExecutor(
-        schedule=load_schedule_config(SCHEDULE_PATH),
+        schedule=_schedule(),
         universe=load_symbol_universe(UNIVERSE_PATH),
         provider=provider or FakeProvider(),  # type: ignore[arg-type]
         source=source or FakeSource(),  # type: ignore[arg-type]
@@ -176,7 +185,7 @@ class RawProvider(FakeProvider):
 def test_scheduler_executor_rejects_missing_raw_store(contracts_dir: Path) -> None:
     with pytest.raises(ValueError, match="raw object storage"):
         TwelveDataScheduledExecutor(
-            schedule=load_schedule_config(SCHEDULE_PATH),
+            schedule=_schedule(),
             universe=load_symbol_universe(UNIVERSE_PATH),
             provider=FakeProvider(),  # type: ignore[arg-type]
             source=FakeSource(),  # type: ignore[arg-type]
@@ -492,10 +501,22 @@ def test_executor_bootstrap_is_bounded_and_large_checkpoint_gap_is_rejected(
     executor = _executor(contracts_dir, provider=provider)
 
     bootstrap = executor.execute(_job(), now=NOW)
-    gap = executor.execute(_job(date(2024, 1, 3)), now=NOW)
+    gap = executor.execute(
+        replace(_job(date(2024, 1, 3)), target_data_date=date(2026, 7, 25)),
+        now=NOW,
+    )
 
     assert bootstrap.succeeded is True
-    assert provider.calls == [("AAPL", {"outputsize": 20, "exchange": "NASDAQ"})]
+    assert provider.calls == [
+        (
+            "AAPL",
+            {
+                "start_date": date(2024, 1, 5),
+                "end_date": date(2024, 1, 6),
+                "exchange": "NASDAQ",
+            },
+        )
+    ]
     assert gap.outcome == "checkpoint_gap_exceeded"
     assert gap.succeeded is False
 
@@ -553,7 +574,7 @@ def test_executor_classifies_persistent_retry_safety(
 def test_service_persists_success_and_retry_across_cycles(
     tmp_path: Path,
 ) -> None:
-    schedule = load_schedule_config(SCHEDULE_PATH)
+    schedule = _schedule()
     universe = load_symbol_universe(UNIVERSE_PATH)
     state = SchedulerState(tmp_path / "state.sqlite3")
 
@@ -608,7 +629,7 @@ def test_delivery_retry_reuses_persisted_request_without_refetching(
     tmp_path: Path,
     contracts_dir: Path,
 ) -> None:
-    schedule = load_schedule_config(SCHEDULE_PATH)
+    schedule = _schedule()
     universe = load_symbol_universe(UNIVERSE_PATH)
     state = SchedulerState(tmp_path / "state.sqlite3")
     state.enqueue_due(schedule, universe, date(2024, 1, 5), now=NOW)

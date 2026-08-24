@@ -14,13 +14,6 @@ from findb_fetcher.contracts import (
     ContractValidationError,
 )
 
-LEGACY_SLOT_ALIASES = (
-    ("us_0600", "western_markets_window"),
-    ("global_0815", "global_markets_window"),
-    ("tw_1430", "taiwan_market_window"),
-    ("asia_1630", "asia_pacific_markets_window"),
-)
-
 
 def test_valid_request_satisfies_local_contract(
     contracts_dir: Path, market_request: dict[str, Any]
@@ -40,31 +33,22 @@ def test_invalid_request_is_rejected_by_local_contract(
         registry.validate("market_eod", 1, market_request)
 
 
-@pytest.mark.parametrize(("legacy_slot", "canonical_slot"), LEGACY_SLOT_ALIASES)
-def test_legacy_delivery_slot_validates_without_mutating_prepared_request(
+@pytest.mark.parametrize("removed_slot", ("us_0600", "global_0815", "tw_1430", "asia_1630"))
+def test_removed_delivery_slot_is_rejected_before_delivery(
     contracts_dir: Path,
     market_request: dict[str, Any],
-    legacy_slot: str,
-    canonical_slot: str,
+    removed_slot: str,
 ) -> None:
     registry = ContractRegistry(contracts_dir)
     market_request["delivery"] = {
-        "slot_id": legacy_slot,
+        "slot_id": removed_slot,
         "scheduled_for": "2026-07-23T14:30:00Z",
         "target_data_date": "2026-07-23",
         "work_item_id": "2330",
     }
-    before = deepcopy(market_request)
-    before_bytes = json.dumps(market_request, sort_keys=True, separators=(",", ":")).encode()
 
-    registry.validate("market_eod", 1, market_request)
-
-    assert market_request == before
-    assert (
-        json.dumps(market_request, sort_keys=True, separators=(",", ":")).encode() == before_bytes
-    )
-    assert market_request["delivery"]["slot_id"] == legacy_slot
-    assert canonical_slot != legacy_slot
+    with pytest.raises(ContractValidationError, match="slot_id"):
+        registry.validate("market_eod", 1, market_request)
 
 
 def test_canonical_delivery_slot_validates_unchanged(
