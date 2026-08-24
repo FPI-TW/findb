@@ -300,10 +300,6 @@ jobs:
                 exit 1
               fi
               raw_bucket_fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$provider_id" | sha256sum | cut -d ' ' -f1)"
-              # Twelve Data used the account+bucket fingerprint before provider
-              # runtimes were isolated. Accept that exact legacy binding once,
-              # then atomically replace it with the provider-scoped marker.
-              legacy_twelve_raw_bucket_fingerprint="$(printf '%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" | sha256sum | cut -d ' ' -f1)"
               write_raw_bucket_marker() {
                 marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
                 printf '%s\n' "$raw_bucket_fingerprint" | sudo tee "$marker_tmp" >/dev/null
@@ -326,13 +322,8 @@ jobs:
                 validate_raw_bucket_marker_mode
                 marker_fingerprint="$(sudo cat "$raw_bucket_marker")"
                 if [ "$marker_fingerprint" != "$raw_bucket_fingerprint" ]; then
-                  if [ "$provider_id" = "twelve" ] \
-                    && [ "$marker_fingerprint" = "$legacy_twelve_raw_bucket_fingerprint" ]; then
-                    write_raw_bucket_marker
-                  else
-                    echo "::error title=Fetcher raw bucket mismatch::${provider_id} state belongs to a different Raw bucket" >&2
-                    exit 1
-                  fi
+                  echo "::error title=Fetcher raw bucket mismatch::${provider_id} state belongs to a different Raw bucket" >&2
+                  exit 1
                 fi
               elif sudo test -e "$raw_bucket_marker"; then
                 validate_raw_bucket_marker_mode

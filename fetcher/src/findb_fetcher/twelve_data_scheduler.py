@@ -127,17 +127,14 @@ class TwelveDataScheduledExecutor:
             if request is None:
                 query: dict[str, Any]
                 mapping_after_date = job.checkpoint_before
-                target_date = job.target_data_date or job.scheduled_date
+                target_date = job.target_data_date
                 if job.checkpoint_before is None:
-                    if self._schedule.schedule_version == 2:
-                        query = {
-                            "start_date": target_date,
-                            # Twelve Data treats end_date as an exclusive bound.
-                            "end_date": target_date + timedelta(days=1),
-                        }
-                        mapping_after_date = target_date - timedelta(days=1)
-                    else:
-                        query = {"outputsize": self._schedule.outputsize}
+                    query = {
+                        "start_date": target_date,
+                        # Twelve Data treats end_date as an exclusive bound.
+                        "end_date": target_date + timedelta(days=1),
+                    }
+                    mapping_after_date = target_date - timedelta(days=1)
                 else:
                     start_date = job.checkpoint_before + timedelta(days=1)
                     if start_date > target_date:
@@ -175,18 +172,11 @@ class TwelveDataScheduledExecutor:
                     canonical_symbol=job.canonical_symbol,
                     allowed_instrument_types=(self._universe.instrument_type,),
                     after_trade_date=mapping_after_date,
-                    through_trade_date=(
-                        target_date if self._schedule.schedule_version == 2 else None
-                    ),
-                    delivery=(
-                        _delivery_metadata(self._schedule, job)
-                        if self._schedule.schedule_version == 2
-                        else None
-                    ),
+                    through_trade_date=target_date,
+                    delivery=_delivery_metadata(self._schedule, job),
                 )
                 attach_raw_object(request, raw_object)
             try:
-                # New Fetcher delivery is stricter than the optional legacy v1 fields.
                 require_raw_provenance(request)
             except RawStorageUploadError:
                 return JobExecution(
@@ -201,8 +191,8 @@ class TwelveDataScheduledExecutor:
                     succeeded=False,
                 )
             checkpoint_after = _request_checkpoint(request)
-            target_date = job.target_data_date or job.scheduled_date
-            if self._schedule.schedule_version == 2 and checkpoint_after < target_date:
+            target_date = job.target_data_date
+            if checkpoint_after < target_date:
                 return JobExecution(
                     outcome="target_not_ready",
                     succeeded=False,
@@ -246,10 +236,8 @@ class TwelveDataScheduledExecutor:
                 run_id=run.run_id,
             )
         except TwelveDataNoNewDataError:
-            target_date = job.target_data_date or job.scheduled_date
-            if self._schedule.schedule_version == 2 and (
-                job.checkpoint_before is None or job.checkpoint_before < target_date
-            ):
+            target_date = job.target_data_date
+            if job.checkpoint_before is None or job.checkpoint_before < target_date:
                 return JobExecution(
                     outcome="target_not_ready",
                     succeeded=False,
@@ -319,9 +307,7 @@ class SchedulerService:
         if self._calendar is None:
             target_data_date = self._schedule.target_date(now)
         else:
-            target_data_date = scheduled_date
-            if self._schedule.schedule_version == 2:
-                target_data_date -= timedelta(days=self._schedule.target_date_lag_days)
+            target_data_date = scheduled_date - timedelta(days=self._schedule.target_date_lag_days)
             day, calendar_revision = self._calendar.get_day(
                 self._schedule.market,
                 target_data_date,
@@ -416,8 +402,8 @@ def _request_checkpoint(request: dict[str, Any]) -> date:
 
 
 def _delivery_metadata(schedule: ScheduleConfig, job: ScheduledJob) -> dict[str, str]:
-    """Stable scheduler identity carried to Source without changing v1 pilots."""
-    target_date = job.target_data_date or job.scheduled_date
+    """Stable current scheduler identity carried to Source."""
+    target_date = job.target_data_date
     scheduled = datetime.combine(
         job.scheduled_date,
         schedule.scheduled_local_time,

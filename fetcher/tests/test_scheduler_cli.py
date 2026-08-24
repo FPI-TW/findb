@@ -10,6 +10,22 @@ import pytest
 from findb_fetcher import scheduler_cli
 from findb_fetcher.twelve_data_scheduler import ScheduledJobResult, SchedulerRun
 
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.v2.json"
+
+
+def _check_args(state_path: Path, *extra: str) -> list[str]:
+    return [
+        "--schedule-file",
+        str(CONFIG_PATH),
+        "--slot-id",
+        "western_markets_window",
+        "--dataset-key",
+        "us_equity_eod",
+        "--state-path",
+        str(state_path),
+        *extra,
+    ]
+
 
 def _run(status_counts: dict[str, int]) -> SchedulerRun:
     return SchedulerRun(
@@ -71,12 +87,11 @@ def test_missing_schedule_fails_without_loading_secrets(
     monkeypatch.setattr(scheduler_cli.FetcherConfig, "from_env", unexpected_config)
 
     result = scheduler_cli.main(
-        [
+        _check_args(
+            tmp_path / "state.sqlite3",
             "--schedule-file",
             str(tmp_path / "missing.json"),
-            "--state-path",
-            str(tmp_path / "state.sqlite3"),
-        ]
+        )
     )
 
     assert result == scheduler_cli.EXIT_CONFIG_ERROR
@@ -103,18 +118,11 @@ def test_scheduler_modes_are_mutually_exclusive(arguments: list[str]) -> None:
         scheduler_cli.build_parser().parse_args(arguments)
 
 
-def test_v1_schedule_cannot_define_db_controlled_runtime_identity() -> None:
-    schedule = scheduler_cli.load_schedule_config(
-        Path(__file__).resolve().parents[1]
-        / "configs"
-        / "twelve_data_us_common_stocks_daily.v1.json"
-    )
-
-    with pytest.raises(
-        scheduler_cli.ScheduleError,
-        match="scheduler-control validation requires a v2 slot",
-    ):
-        scheduler_cli._expected_definition(schedule)
+def test_v1_schedule_is_rejected_before_runtime_identity_selection(tmp_path: Path) -> None:
+    path = tmp_path / "v1.json"
+    path.write_text('{"schedule_version":1}')
+    with pytest.raises(scheduler_cli.ScheduleError, match="v2 schedule keys"):
+        scheduler_cli._load_selected_schedule(path, None, None)
 
 
 def test_twelve_data_runtime_definition_uses_0815_without_changing_slot() -> None:
@@ -166,7 +174,7 @@ def test_check_validates_without_constructing_external_clients_or_enqueuing(
     monkeypatch.setattr(scheduler_cli, "R2RawPayloadStore", unexpected)
     monkeypatch.setattr(scheduler_cli.SchedulerState, "enqueue_due", unexpected)
 
-    result = scheduler_cli.main(["--check", "--state-path", str(state_path)])
+    result = scheduler_cli.main(_check_args(state_path, "--check"))
 
     assert result == scheduler_cli.EXIT_OK
     captured = capsys.readouterr()
@@ -184,7 +192,7 @@ def test_check_fails_safely_when_runtime_config_is_missing(
     monkeypatch.delenv("SOURCE_API_URL", raising=False)
     state_path = tmp_path / "state.sqlite3"
 
-    result = scheduler_cli.main(["--check", "--state-path", str(state_path)])
+    result = scheduler_cli.main(_check_args(state_path, "--check"))
 
     assert result == scheduler_cli.EXIT_CONFIG_ERROR
     assert not state_path.exists()
@@ -201,7 +209,7 @@ def test_check_fails_when_published_calendar_configuration_is_missing(
     _set_check_env(monkeypatch)
     monkeypatch.delenv("FINDB_SERVE_BASE_URL")
 
-    result = scheduler_cli.main(["--check", "--state-path", str(tmp_path / "state.sqlite3")])
+    result = scheduler_cli.main(_check_args(tmp_path / "state.sqlite3", "--check"))
 
     assert result == scheduler_cli.EXIT_CONFIG_ERROR
     assert json.loads(capsys.readouterr().err) == {"error": "scheduler_configuration_failed"}
@@ -238,7 +246,7 @@ def test_check_rejects_unsafe_source_origins_with_generic_error(
     monkeypatch.setenv("SOURCE_API_URL", source_url)
     state_path = tmp_path / "state.sqlite3"
 
-    result = scheduler_cli.main(["--check", "--state-path", str(state_path)])
+    result = scheduler_cli.main(_check_args(state_path, "--check"))
 
     assert result == scheduler_cli.EXIT_CONFIG_ERROR
     assert not state_path.exists()
@@ -258,16 +266,22 @@ def test_check_does_not_change_existing_jobs(
         connection.execute(
             """
             INSERT INTO scheduled_job (
-                job_key, schedule_id, scheduled_date, universe_id,
-                universe_version, symbol, canonical_symbol, exchange,
-                status, attempt_count, next_attempt_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                job_key, slot_id, provider, dataset_key, work_item, target_data_date,
+                schedule_id, scheduled_date, universe_id, universe_version, symbol,
+                canonical_symbol, exchange, status, attempt_count, next_attempt_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "sentinel-job",
-                "sentinel-schedule",
+                "western_markets_window",
+                "twelve_data",
+                "us_equity_eod",
+                "TEST",
                 "2026-07-24",
-                "sentinel-universe",
+                "twelve_data_western_markets_window_us_equity_eod",
+                "2026-07-24",
+                "twelve_data_us_common_stocks_v1",
                 1,
                 "TEST",
                 "TEST",
@@ -284,7 +298,7 @@ def test_check_does_not_change_existing_jobs(
             "SELECT job_key, status, attempt_count, updated_at FROM scheduled_job"
         ).fetchall()
 
-    result = scheduler_cli.main(["--check", "--state-path", str(state_path)])
+    result = scheduler_cli.main(_check_args(state_path, "--check"))
 
     assert result == scheduler_cli.EXIT_OK
     with sqlite3.connect(state_path) as connection:
@@ -304,7 +318,7 @@ def test_check_rejects_malformed_versioned_state_with_generic_error(
     with sqlite3.connect(state_path) as connection:
         connection.execute("PRAGMA user_version = 1")
 
-    result = scheduler_cli.main(["--check", "--state-path", str(state_path)])
+    result = scheduler_cli.main(_check_args(state_path, "--check"))
 
     assert result == scheduler_cli.EXIT_CONFIG_ERROR
     captured = capsys.readouterr()
@@ -321,7 +335,7 @@ def test_check_rejects_corrupt_state_with_generic_error(
     state_path = tmp_path / "corrupt.sqlite3"
     state_path.write_bytes(b"not a sqlite database")
 
-    result = scheduler_cli.main(["--check", "--state-path", str(state_path)])
+    result = scheduler_cli.main(_check_args(state_path, "--check"))
 
     assert result == scheduler_cli.EXIT_CONFIG_ERROR
     captured = capsys.readouterr()

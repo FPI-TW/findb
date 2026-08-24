@@ -28,7 +28,6 @@ from findb_fetcher.raw_storage import (
 from findb_fetcher.schedule import (
     ScheduleConfig,
     ScheduleError,
-    load_schedule_config,
     load_schedule_manifest,
 )
 from findb_fetcher.scheduler_control import (
@@ -216,8 +215,6 @@ def _expected_definition(
     schedule: ScheduleConfig,
 ) -> tuple[str, tuple[str, ...], str, str, str]:
     """Return the Twelve Data execution identity expected from DB control."""
-    if schedule.slot_id == "legacy":
-        raise ScheduleError("scheduler-control validation requires a v2 slot")
     return (
         schedule.provider,
         (schedule.dataset_key,),
@@ -339,14 +336,10 @@ def _default_schedule_file() -> Path:
     configured = os.getenv("FETCHER_SCHEDULE_FILE")
     if configured:
         return Path(configured)
-    container_path = Path("/app/configs/twelve_data_us_common_stocks_daily.v1.json")
+    container_path = Path("/app/configs/daily_scheduler.v2.json")
     if container_path.is_file():
         return container_path
-    return (
-        Path(__file__).resolve().parents[2]
-        / "configs"
-        / "twelve_data_us_common_stocks_daily.v1.json"
-    )
+    return Path(__file__).resolve().parents[2] / "configs" / "daily_scheduler.v2.json"
 
 
 def _default_state_path() -> Path:
@@ -361,10 +354,8 @@ def _load_selected_schedule(
     reject_disabled: bool = True,
 ):
     manifest = load_schedule_manifest(path)
-    if manifest.schedule_version == 1:
-        if slot_id is not None or dataset_key is not None:
-            raise ScheduleError("--slot-id and --dataset-key are only valid for v2 manifests")
-        return load_schedule_config(path)
+    if manifest.schedule_version != 2:
+        raise ScheduleError("only v2 schedule manifests are supported")
     if slot_id is None:
         raise ScheduleError("v2 manifests require --slot-id")
     matches = [

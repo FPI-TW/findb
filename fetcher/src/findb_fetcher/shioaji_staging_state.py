@@ -106,15 +106,32 @@ class ShioajiStagingState:
         try:
             self.contracts = ContractRegistry(_contracts_dir())
             self.db.execute("PRAGMA foreign_keys=ON")
-            self.db.execute("PRAGMA journal_mode=WAL")
             self._init()
+            self.db.execute("PRAGMA journal_mode=WAL")
         except Exception:
             self.db.close()
             raise
 
     def _init(self) -> None:
-        self.db.executescript(
-            f"""
+        existing_tables = {
+            str(row[0])
+            for row in self.db.execute(
+                "SELECT name FROM sqlite_schema WHERE type='table'"
+            ).fetchall()
+        }
+        if existing_tables:
+            if existing_tables != set(EXPECTED_COLUMNS):
+                raise ShioajiStagingStateError("staging state schema is incompatible")
+            schema_row = (
+                self.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+                if "meta" in existing_tables
+                else None
+            )
+            if schema_row != (SCHEMA_VERSION,):
+                raise ShioajiStagingStateError("staging state schema is incompatible")
+        else:
+            self.db.executescript(
+                f"""
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS daily_updates (
               daily_id TEXT PRIMARY KEY, target_date TEXT NOT NULL, universe_id TEXT NOT NULL,
@@ -177,12 +194,8 @@ class ShioajiStagingState:
             );
             CREATE TABLE IF NOT EXISTS limiter (used_at TEXT NOT NULL);
             """
-        )
-        row = self.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        if row is None:
+            )
             self.db.execute("INSERT INTO meta VALUES ('schema_version',?)", (SCHEMA_VERSION,))
-        elif row[0] != SCHEMA_VERSION:
-            raise ShioajiStagingStateError("staging state schema is incompatible")
         for table, expected in EXPECTED_COLUMNS.items():
             columns = tuple(
                 str(column[1]) for column in self.db.execute(f"PRAGMA table_info({table})")

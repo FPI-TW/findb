@@ -559,8 +559,10 @@ def test_state_rejects_schema_drift_and_persists_raw_checkpoint(tmp_path: Path) 
         "CREATE TABLE daily_updates (daily_id TEXT PRIMARY KEY);"
     )
     db.close()
+    before = path.read_bytes()
     with pytest.raises(ShioajiStagingStateError, match="schema"):
         ShioajiStagingState(path)
+    assert path.read_bytes() == before
 
     state = ShioajiStagingState(tmp_path / "good.sqlite")
     state.ensure("d", "2026-07-29", "u", "update", [dict(EXPECTED[0])], "2026-07-30")
@@ -569,6 +571,19 @@ def test_state_rejects_schema_drift_and_persists_raw_checkpoint(tmp_path: Path) 
     state = ShioajiStagingState(tmp_path / "good.sqlite")
     assert state.get_raw("d", "2330") == ("r2://bucket/raw/object", "a" * 64, 42)
     state.close()
+
+
+def test_state_rejects_extra_table_without_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "extra-table.sqlite"
+    state = ShioajiStagingState(path)
+    state.db.execute("CREATE TABLE unexpected (value TEXT)")
+    state.close()
+    before = path.read_bytes()
+
+    with pytest.raises(ShioajiStagingStateError, match="schema"):
+        ShioajiStagingState(path)
+
+    assert path.read_bytes() == before
 
 
 def test_state_rejects_semantic_corruption_and_prepared_identity_drift(
