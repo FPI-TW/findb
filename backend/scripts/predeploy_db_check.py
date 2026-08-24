@@ -12,7 +12,10 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.services.slot_identity import CANONICAL_SLOT_IDS
+
 DEFAULT_MINIMUM_CONNECTION_HEADROOM = 10
+_CANONICAL_SLOT_SQL = ", ".join(f"'{slot}'" for slot in CANONICAL_SLOT_IDS)
 
 
 def calculate_connection_headroom(
@@ -59,6 +62,93 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                         """)
                 )
             ).one()
+            noncanonical_scheduler_slots = int(
+                await connection.scalar(
+                    text(
+                        f"""
+                        SELECT count(*)
+                        FROM scheduler_control
+                        WHERE slot_id IS NULL
+                           OR slot_id NOT IN ({_CANONICAL_SLOT_SQL})
+                        """
+                    )
+                )
+                or 0
+            )
+            noncanonical_delivery_schedule_slots = int(
+                await connection.scalar(
+                    text(
+                        f"""
+                        SELECT count(*)
+                        FROM dataset_registry
+                        WHERE config->'delivery_expectation'->'schedule' IS NOT NULL
+                          AND jsonb_typeof(
+                                config->'delivery_expectation'->'schedule'
+                              ) <> 'null'
+                          AND (
+                                jsonb_typeof(
+                                    config->'delivery_expectation'->'schedule'
+                                ) <> 'object'
+                                OR COALESCE(
+                                    config#>>'{{delivery_expectation,schedule,slot_id}}', ''
+                                ) NOT IN ({_CANONICAL_SLOT_SQL})
+                          )
+                        """
+                    )
+                )
+                or 0
+            )
+            legacy_finlab_scheduler_keys = int(
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM scheduler_control
+                        WHERE scheduler_key = 'finlab_tw_1430_tw_equity_eod'
+                        """
+                    )
+                )
+                or 0
+            )
+            dataset_keys_projection_mismatches = int(
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM scheduler_control AS control
+                        WHERE EXISTS (
+                            SELECT projected.dataset_key
+                            FROM jsonb_array_elements_text(
+                                CASE
+                                    WHEN jsonb_typeof(control.dataset_keys) = 'array'
+                                    THEN control.dataset_keys
+                                    ELSE '[]'::jsonb
+                                END
+                            ) AS projected(dataset_key)
+                            EXCEPT
+                            SELECT association.dataset_key
+                            FROM scheduler_dataset AS association
+                            WHERE association.scheduler_key = control.scheduler_key
+                        )
+                        OR EXISTS (
+                            SELECT association.dataset_key
+                            FROM scheduler_dataset AS association
+                            WHERE association.scheduler_key = control.scheduler_key
+                            EXCEPT
+                            SELECT projected.dataset_key
+                            FROM jsonb_array_elements_text(
+                                CASE
+                                    WHEN jsonb_typeof(control.dataset_keys) = 'array'
+                                    THEN control.dataset_keys
+                                    ELSE '[]'::jsonb
+                                END
+                            ) AS projected(dataset_key)
+                        )
+                        """
+                    )
+                )
+                or 0
+            )
             max_connections = int(
                 await connection.scalar(text("SELECT current_setting('max_connections')::int")) or 0
             )
@@ -108,6 +198,10 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
         "duplicate_raw_run_ids": int(duplicate_run_ids or 0),
         "pending_or_processing_with_raw": int(pending_counts.with_raw or 0),
         "pending_or_processing_missing_raw": int(pending_counts.missing_raw or 0),
+        "noncanonical_scheduler_control_slots": noncanonical_scheduler_slots,
+        "noncanonical_dataset_delivery_schedule_slots": noncanonical_delivery_schedule_slots,
+        "legacy_finlab_scheduler_keys": legacy_finlab_scheduler_keys,
+        "dataset_keys_projection_mismatches": dataset_keys_projection_mismatches,
         "max_connections": max_connections,
         "reserved_connection_slots": reserved_connection_slots,
         "current_connections": current_connections,
@@ -135,6 +229,14 @@ def validate_predeploy_state(
         errors.append(
             f"database connection headroom is below {minimum_connection_headroom} connections"
         )
+    if state.get("noncanonical_scheduler_control_slots", 0):
+        errors.append("scheduler_control contains non-canonical slot_id values")
+    if state.get("noncanonical_dataset_delivery_schedule_slots", 0):
+        errors.append("dataset delivery schedules contain non-canonical slot_id values")
+    if state.get("legacy_finlab_scheduler_keys", 0):
+        errors.append("legacy FinLab scheduler keys are still present")
+    if state.get("dataset_keys_projection_mismatches", 0):
+        errors.append("dataset_keys projection does not match scheduler_dataset associations")
     return errors
 
 

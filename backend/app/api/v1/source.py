@@ -50,11 +50,10 @@ from app.services.ingress_contracts import (
 from app.services.scheduler_control import (
     SchedulerControlNotFoundError,
     SchedulerControlScopeError,
-    normalize_scheduler_key,
     poll_scheduler_control,
     scheduler_dataset_keys,
 )
-from app.services.slot_identity import CanonicalSlotId, normalize_slot_id
+from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -102,10 +101,10 @@ async def poll_scheduler(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     return SchedulerControlPollResponse(
-        scheduler_key=normalize_scheduler_key(row.scheduler_key),
+        scheduler_key=row.scheduler_key,
         provider=row.provider,
         dataset_keys=scheduler_dataset_keys(row),
-        slot_id=cast(CanonicalSlotId, normalize_slot_id(row.slot_id)),
+        slot_id=cast(CanonicalSlotId, row.slot_id),
         scheduled_local_time=row.scheduled_local_time,
         timezone=row.timezone,
         desired_state=cast(Literal["running", "stopped"], row.desired_state),

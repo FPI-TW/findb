@@ -112,9 +112,8 @@ class SchedulerControl(Base):
     scheduler_key: Mapped[str] = mapped_column(String(100), primary_key=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     # ``slot_id``, ``scheduled_local_time`` and ``timezone`` are the durable
-    # scheduler definition.  The Python defaults keep legacy ORM fixtures
-    # insertable while the definition migration backfills production rows.
-    slot_id: Mapped[str] = mapped_column(String(50), nullable=False, default="legacy")
+    # scheduler definition.  Runtime code must provide a canonical slot ID.
+    slot_id: Mapped[str] = mapped_column(String(50), nullable=False)
     scheduled_local_time: Mapped[time] = mapped_column(Time(), nullable=False, default=time(0, 0))
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     dataset_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
@@ -145,9 +144,10 @@ class SchedulerControl(Base):
 class SchedulerDataset(Base):
     """Normalized scheduler-to-dataset scope mapping.
 
-    ``SchedulerControl.dataset_keys`` remains as a compatibility projection for
-    older clients.  New scope checks and scheduler definition consumers use
-    this association table so a stale JSON projection cannot widen authority.
+    ``SchedulerControl.dataset_keys`` remains as a database projection during
+    the expand/contract rollout.  Application scope checks and scheduler
+    definition consumers use this association table exclusively so a stale
+    JSON projection cannot widen authority.
     """
 
     __tablename__ = "scheduler_dataset"

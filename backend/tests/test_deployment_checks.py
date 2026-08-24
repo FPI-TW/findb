@@ -1254,6 +1254,26 @@ def test_predeploy_database_state_reports_every_blocker() -> None:
     assert any("connection headroom" in error for error in errors)
 
 
+def test_predeploy_database_state_blocks_wave_four_contract_drift() -> None:
+    state = {
+        "duplicate_raw_run_ids": 0,
+        "long_transactions_over_5m": 0,
+        "connection_headroom": 120,
+        "noncanonical_scheduler_control_slots": 1,
+        "noncanonical_dataset_delivery_schedule_slots": 2,
+        "legacy_finlab_scheduler_keys": 1,
+        "dataset_keys_projection_mismatches": 3,
+    }
+
+    errors = validate_predeploy_state(state, minimum_connection_headroom=80)
+
+    assert len(errors) == 4
+    assert any("scheduler_control" in error for error in errors)
+    assert any("delivery schedules" in error for error in errors)
+    assert any("legacy FinLab" in error for error in errors)
+    assert any("projection" in error for error in errors)
+
+
 def test_queue_health_requires_recent_worker_and_no_expired_leases() -> None:
     assert (
         validate_queue_health(
