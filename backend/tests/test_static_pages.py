@@ -1,6 +1,4 @@
-"""
-Tests for static HTML pages.
-"""
+"""Tests for removed backend public/static surfaces."""
 
 from pathlib import Path
 
@@ -14,32 +12,21 @@ REPO_ROOT = BACKEND_ROOT.parent
 
 
 @pytest.mark.asyncio
-async def test_instrument_lookup_page_is_served():
-    """Ensure the legacy lookup page remains publicly available."""
+async def test_legacy_public_pages_and_html_assets_are_removed():
+    """Removed public pages and their direct static assets must return 404."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        static_response = await client.get("/static/instrument-lookup.html")
-        page_response = await client.get("/instrument-lookup")
+        responses = [
+            await client.get("/instrument-lookup"),
+            await client.get("/skill-install"),
+            await client.get("/static/instrument-lookup.html"),
+            await client.get("/static/skill-install.html"),
+            await client.get("/test"),
+            await client.get("/static/test_page.html"),
+            await client.get("/static/findb-api.skill"),
+        ]
 
-    assert static_response.status_code == 200
-    assert page_response.status_code == 200
-    assert "標的與宏觀查詢" in page_response.text
-    assert "/static/data/instruments.json" in page_response.text
-    assert "/static/data/macro-series.json" in page_response.text
-
-
-@pytest.mark.asyncio
-async def test_skill_install_page_and_archive_remain_public():
-    """Ensure the legacy Skill page and downloadable archive remain public."""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        page_response = await client.get("/skill-install")
-        archive_response = await client.get("/static/findb-api.skill")
-
-    assert page_response.status_code == 200
-    assert "Skill 安裝教學" in page_response.text
-    assert "/static/findb-api.skill" in page_response.text
-    assert archive_response.status_code == 200
+    assert all(response.status_code == 404 for response in responses)
 
 
 def test_instrument_cache_path_is_gitignored():

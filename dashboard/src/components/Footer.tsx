@@ -23,9 +23,6 @@ export default function Footer() {
           >
             Lookup
           </Link>
-          <Link className="font-bold text-ink hover:text-accent" to="/skill">
-            Skill
-          </Link>
           <Link
             className="font-bold text-ink hover:text-accent"
             to="/operations"

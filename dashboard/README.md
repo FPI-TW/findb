@@ -1,6 +1,6 @@
 # FinDB Dashboard
 
-TanStack Start 前端，整合公開的標的查詢、FinDB API Skill 安裝說明，以及需登入的唯讀營運台。
+TanStack Start 前端，整合公開的標的查詢，以及需登入的唯讀營運台。
 
 ## Routes
 
@@ -8,7 +8,6 @@ TanStack Start 前端，整合公開的標的查詢、FinDB API Skill 安裝說�
 | ------------------------------------ | ------ | ---------------------- |
 | `/dashboard/`                        | 公開   | 首頁與功能入口         |
 | `/dashboard/lookup`                  | 公開   | 金融商品與宏觀序列查詢 |
-| `/dashboard/skill`                   | 公開   | Skill 下載與安裝說明   |
 | `/dashboard/login`                   | 公開   | 操作人員登入           |
 | `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼     |
 | `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況 |

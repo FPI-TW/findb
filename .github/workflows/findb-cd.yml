@@ -565,7 +565,7 @@ jobs:
             fi
 
             echo "Checking public Dashboard routes through nginx"
-            for dashboard_path in /dashboard/ /dashboard/lookup /dashboard/skill; do
+            for dashboard_path in /dashboard/ /dashboard/lookup; do
               if ! docker compose -f docker-compose.prod.yml exec -T nginx \
                 wget -q --no-check-certificate --spider "https://127.0.0.1${dashboard_path}"; then
                 echo "::error title=Dashboard proxy check failed::${dashboard_path} is not reachable through nginx."

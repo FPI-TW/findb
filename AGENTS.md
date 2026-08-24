@@ -24,7 +24,7 @@ findb/
 |  |  |- services/normalize/ # 市場別 normalizers 與 mapping logic
 |  |  |- models/             # canonical、raw、registry ORM models
 |  |  |- schemas/            # Pydantic request/response models
-|  |  `- static/             # /test、/instrument-lookup、generated data cache
+|  |  `- static/             # static mount、generated data cache
 |  |- migrations/            # Alembic migration scripts
 |  |- configs/               # YAML configs，例如 partial_dump.yaml
 |  |- tests/                 # async API/service integration tests 與 unit tests
@@ -73,8 +73,7 @@ findb/
 | DQ 規則 | `backend/app/services/dq/validators.py` | `severity="error"` 會阻擋寫入，`warning` 不會 |
 | ORM/data model | `backend/app/models/` | raw schema、canonical tables、registry tables |
 | API schemas | `backend/app/schemas/` | request/response contracts |
-| 靜態 lookup/cache | `backend/app/static/instrument-lookup.html` + `backend/scripts/generate_instrument_cache.py` | `/instrument-lookup` UI 與 generated JSON cache |
-| 測試頁 | `backend/app/static/test_page.html` | static `/test` API tester；除非明確要求，避免修改 |
+| Instrument cache | `backend/app/services/instrument_cache.py` + `backend/scripts/generate_instrument_cache.py` | Admin 維護與 generated JSON cache；公開查詢頁為 Dashboard `/dashboard/lookup` |
 | 營運 Dashboard | `dashboard/` | TanStack Start 前端；子目錄規則見 `dashboard/AGENTS.md` |
 | 測試與 fixtures | `backend/tests/` + `backend/tests/conftest.py` | AsyncClient、ASGITransport、DB dependency overrides |
 | Alembic migrations | `backend/alembic.ini` + `backend/migrations/` | schema-as-code；`init_db()` 只驗證 revision，不自動建表 |
@@ -110,7 +109,7 @@ findb/
 - Source provider names 正規化為穩定 lowercase，例如 `twelve_data`、`finlab`、`shioaji`。
 - Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。
 - Schema 變更一律透過 Alembic migrations；runtime `init_db()` 只檢查 Alembic revision 與 required tables，不執行 `create_all()`。
-- 靜態 UI 位於 `backend/app/static/`，包含 `/test` 與 `/instrument-lookup`；`backend/app/static/test_page.html` 只在明確要求時修改。
+- 後端保留 `/static` mount 供 generated instrument／macro cache 使用；公開查詢頁位於 Dashboard 的 `/dashboard/lookup`。
 
 ## 專案反模式
 
@@ -131,7 +130,7 @@ findb/
 - Source API 只接受 versioned provider-neutral contracts；不提供 market-specific、provider-specific 或 `.../direct` compatibility routes。
 - staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 與 `shioaji/tw_etf_minute`。
 - Instrument 與 macro lookup data 是 generated cache files：`backend/app/static/data/instruments.json`、`backend/app/static/data/macro-series.json`，不是 source-of-truth data。
-- 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 Referer regex 比對，對 `/instrument-lookup` 靜態頁觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
+- 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 exact-host Referer regex 比對，對 Dashboard `/dashboard/lookup` 觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
 - Source allowlist、Cloudflare real-IP、Serve key 注入三組 `*.conf` 都是 deploy time 渲染；本機開發不會跑 nginx，FastAPI 自身只負責 API key、rate limit、ingest 邏輯。
 - Test suite 大量使用 async fixtures、ASGITransport 與 dependency overrides。
 - Rate limit state 在測試間會自動 reset。

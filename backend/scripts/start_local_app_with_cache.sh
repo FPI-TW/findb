@@ -19,25 +19,25 @@ trap cleanup INT TERM
 
 if [ "$generate_cache" = "true" ]; then
   (
-    echo "Waiting for app readiness before generating static lookup cache"
+    echo "Waiting for app readiness before generating static cache"
     attempt=1
     while [ "$attempt" -le "$cache_attempts" ]; do
       if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${port}/health', timeout=5)" >/dev/null 2>&1; then
-        echo "Generating static lookup cache from ${cache_base_url}"
+        echo "Generating static cache from ${cache_base_url}"
         if FINDB_STATIC_CACHE_BASE_URL="$cache_base_url" python /app/scripts/generate_instrument_cache.py; then
-          echo "Static lookup cache generated"
+          echo "Static cache generated"
         else
-          echo "Static lookup cache generation failed; app will keep running" >&2
+          echo "Static cache generation failed; app will keep running" >&2
         fi
         exit 0
       fi
 
-      echo "App not ready for static lookup cache generation (attempt ${attempt}/${cache_attempts}); waiting 5s..."
+      echo "App not ready for static cache generation (attempt ${attempt}/${cache_attempts}); waiting 5s..."
       attempt=$((attempt + 1))
       sleep 5
     done
 
-    echo "Static lookup cache generation skipped; app did not become ready in time" >&2
+    echo "Static cache generation skipped; app did not become ready in time" >&2
   ) &
 fi
 

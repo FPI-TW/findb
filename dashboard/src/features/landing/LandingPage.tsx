@@ -2,7 +2,6 @@ import { Link } from "@tanstack/react-router"
 import {
   Activity,
   ArrowRight,
-  BookOpenCheck,
   ChartNoAxesCombined,
   CircleCheckBig,
   Database,
@@ -59,7 +58,7 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_19rem]">
+      <div>
         <section aria-labelledby="primary-workspaces-title">
           <div className="mb-3 flex items-center justify-between gap-3 px-1">
             <div>
@@ -188,37 +187,6 @@ export default function LandingPage() {
             </Card>
           </div>
         </section>
-
-        <aside className="grid content-start gap-4" aria-label="輔助資源">
-          <div className="px-1">
-            <p className="font-mono text-xs font-medium tracking-widest text-muted uppercase">
-              Supporting resources
-            </p>
-            <h2 className="mt-1 text-xl font-bold tracking-tight">輔助資源</h2>
-          </div>
-
-          <Card className="gap-0 rounded-xl shadow-none">
-            <CardHeader className="py-5">
-              <span className="mb-2 inline-flex size-9 items-center justify-center rounded-lg bg-surface-soft text-accent">
-                <BookOpenCheck aria-hidden="true" />
-              </span>
-              <CardTitle asChild className="text-base">
-                <h3>FinDB Skill</h3>
-              </CardTitle>
-              <CardDescription className="leading-6">
-                查閱資料合約、查詢方式與 API 使用指引。
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pb-5">
-              <Button asChild variant="secondary" className="w-full">
-                <Link to="/skill" preload="intent">
-                  查看 Skill
-                  <ArrowRight aria-hidden="true" />
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </aside>
       </div>
     </main>
   )
