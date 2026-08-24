@@ -110,45 +110,80 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                 )
                 or 0
             )
-            dataset_keys_projection_mismatches = int(
+            # Wave 5 removes the projection column.  Keep this preflight
+            # compatible with both the c5 expand schema and the d6 contract
+            # schema: a missing projection is expected and represented by a
+            # zero mismatch count plus an explicit N/A status.
+            dataset_keys_projection_present = bool(
                 await connection.scalar(
                     text(
                         """
-                        SELECT count(*)
-                        FROM scheduler_control AS control
-                        WHERE EXISTS (
-                            SELECT projected.dataset_key
-                            FROM jsonb_array_elements_text(
-                                CASE
-                                    WHEN jsonb_typeof(control.dataset_keys) = 'array'
-                                    THEN control.dataset_keys
-                                    ELSE '[]'::jsonb
-                                END
-                            ) AS projected(dataset_key)
-                            EXCEPT
-                            SELECT association.dataset_key
-                            FROM scheduler_dataset AS association
-                            WHERE association.scheduler_key = control.scheduler_key
-                        )
-                        OR EXISTS (
-                            SELECT association.dataset_key
-                            FROM scheduler_dataset AS association
-                            WHERE association.scheduler_key = control.scheduler_key
-                            EXCEPT
-                            SELECT projected.dataset_key
-                            FROM jsonb_array_elements_text(
-                                CASE
-                                    WHEN jsonb_typeof(control.dataset_keys) = 'array'
-                                    THEN control.dataset_keys
-                                    ELSE '[]'::jsonb
-                                END
-                            ) AS projected(dataset_key)
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = 'scheduler_control'
+                              AND column_name = 'dataset_keys'
                         )
                         """
                     )
                 )
-                or 0
             )
+            if dataset_keys_projection_present:
+                dataset_keys_projection_mismatches = int(
+                    await connection.scalar(
+                        text(
+                            """
+                            SELECT count(*)
+                            FROM scheduler_control AS control
+                            WHERE control.dataset_keys IS NULL
+                               OR jsonb_typeof(control.dataset_keys) <> 'array'
+                               OR EXISTS (
+                                    SELECT 1
+                                    FROM jsonb_array_elements(
+                                        CASE
+                                            WHEN jsonb_typeof(control.dataset_keys) = 'array'
+                                            THEN control.dataset_keys
+                                            ELSE '[]'::jsonb
+                                        END
+                                    ) AS item(value)
+                                    WHERE jsonb_typeof(item.value) <> 'string'
+                               )
+                               OR EXISTS (
+                                    SELECT projected.dataset_key
+                                    FROM jsonb_array_elements_text(
+                                        CASE
+                                            WHEN jsonb_typeof(control.dataset_keys) = 'array'
+                                            THEN control.dataset_keys
+                                            ELSE '[]'::jsonb
+                                        END
+                                    ) AS projected(dataset_key)
+                                    EXCEPT
+                                    SELECT association.dataset_key
+                                    FROM scheduler_dataset AS association
+                                    WHERE association.scheduler_key = control.scheduler_key
+                               )
+                               OR EXISTS (
+                                    SELECT association.dataset_key
+                                    FROM scheduler_dataset AS association
+                                    WHERE association.scheduler_key = control.scheduler_key
+                                    EXCEPT
+                                    SELECT projected.dataset_key
+                                    FROM jsonb_array_elements_text(
+                                        CASE
+                                            WHEN jsonb_typeof(control.dataset_keys) = 'array'
+                                            THEN control.dataset_keys
+                                            ELSE '[]'::jsonb
+                                        END
+                                    ) AS projected(dataset_key)
+                               )
+                            """
+                        )
+                    )
+                    or 0
+                )
+            else:
+                dataset_keys_projection_mismatches = 0
             max_connections = int(
                 await connection.scalar(text("SELECT current_setting('max_connections')::int")) or 0
             )
@@ -202,6 +237,9 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
         "noncanonical_dataset_delivery_schedule_slots": noncanonical_delivery_schedule_slots,
         "legacy_finlab_scheduler_keys": legacy_finlab_scheduler_keys,
         "dataset_keys_projection_mismatches": dataset_keys_projection_mismatches,
+        "dataset_keys_projection_status": (
+            "present" if dataset_keys_projection_present else "not_applicable"
+        ),
         "max_connections": max_connections,
         "reserved_connection_slots": reserved_connection_slots,
         "current_connections": current_connections,

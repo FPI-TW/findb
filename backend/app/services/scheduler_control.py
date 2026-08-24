@@ -138,8 +138,7 @@ def _loaded_scheduler_dataset_keys(row: SchedulerControl) -> list[str]:
 def scheduler_dataset_keys(row: SchedulerControl) -> list[str]:
     """Return only eagerly loaded scheduler-to-dataset associations.
 
-    The JSON ``dataset_keys`` column remains a database projection during the
-    expand/contract rollout, but application reads must never use it.  Missing
+    ``SchedulerDataset`` is the sole source of scheduler dataset scope.  Missing
     or empty associations intentionally produce an empty list so Source scope
     checks and response projections fail closed without triggering async lazy
     loading.
