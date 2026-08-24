@@ -275,6 +275,116 @@ jobs:
               docker compose -f docker-compose.prod.yml logs --tail=200 "$@" || true
             }
 
+            verify_services_stopped() {
+              local failed=0
+              local service
+              local enumeration_sentinel="__FINDB_ENUMERATION_END__"
+              local raw_container_ids
+              local container_ids
+              local container_id
+              local state_line
+              local status
+              local running
+              local restarting
+
+              for service in "$@"; do
+                if ! raw_container_ids="$(
+                  docker compose -f docker-compose.prod.yml ps -aq "$service" || exit $?
+                  printf '%s' "$enumeration_sentinel"
+                )"; then
+                  echo "Writer stopped-state check failed: service ${service}, container enumeration failed, state=unknown"
+                  failed=1
+                  continue
+                fi
+                if [[ "$raw_container_ids" != *"$enumeration_sentinel" ]]; then
+                  echo "Writer stopped-state check failed: service ${service}, container enumeration sentinel missing, state=unknown"
+                  failed=1
+                  continue
+                fi
+                container_ids="${raw_container_ids%"$enumeration_sentinel"}"
+                if [ -z "$container_ids" ]; then
+                  echo "Writer stopped-state check: service ${service}, container=none, state=stopped (no container)"
+                  continue
+                fi
+
+                while IFS= read -r container_id || [ -n "$container_id" ]; do
+                  if [ -z "$container_id" ]; then
+                    echo "Writer stopped-state check failed: service ${service}, container=<empty>, state=unknown (invalid enumeration)"
+                    failed=1
+                    continue
+                  fi
+                  if ! state_line="$(docker inspect --format '{{.State.Status}} {{.State.Running}} {{.State.Restarting}}' "$container_id")"; then
+                    echo "Writer stopped-state check failed: service ${service}, container ${container_id}, state=inspect-failed"
+                    failed=1
+                    continue
+                  fi
+
+                  if [[ ! "$state_line" =~ ^([^[:space:]]+)\ (true|false)\ (true|false)$ ]]; then
+                    echo "Writer stopped-state check failed: service ${service}, container ${container_id}, state=unknown (invalid inspect output)"
+                    failed=1
+                    continue
+                  fi
+                  status="${BASH_REMATCH[1]}"
+                  running="${BASH_REMATCH[2]}"
+                  restarting="${BASH_REMATCH[3]}"
+                  echo "Writer stopped-state check: service ${service}, container ${container_id}, state=${status}, running=${running}, restarting=${restarting}"
+
+                  if [ "$running" != "false" ] || [ "$restarting" != "false" ]; then
+                    echo "Writer stopped-state check failed: service ${service}, container ${container_id}, state=${status}, running=${running}, restarting=${restarting}"
+                    failed=1
+                    continue
+                  fi
+                  case "$status" in
+                    exited|created)
+                      ;;
+                    *)
+                      echo "Writer stopped-state check failed: service ${service}, container ${container_id}, state=${status} (unsafe or unknown)"
+                      failed=1
+                      ;;
+                  esac
+                done < <(printf '%s' "$container_ids")
+              done
+
+              return "$failed"
+            }
+
+            diagnose_writer_services() {
+              local service
+              local container_ids
+              local container_id
+              local state_line
+
+              echo "Writer metadata at deployment failure"
+              if ! docker compose -f docker-compose.prod.yml ps -a "$@"; then
+                echo "Writer metadata: compose ps failed"
+              fi
+              for service in "$@"; do
+                if ! container_ids="$(docker compose -f docker-compose.prod.yml ps -aq "$service")"; then
+                  echo "Writer metadata: service ${service}, container enumeration failed, state=unknown"
+                  continue
+                fi
+                if [ -z "$container_ids" ]; then
+                  echo "Writer metadata: service ${service}, container=none, state=stopped (no container)"
+                  continue
+                fi
+                while IFS= read -r container_id || [ -n "$container_id" ]; do
+                  if [ -z "$container_id" ]; then
+                    echo "Writer metadata: service ${service}, container=<empty>, state=unknown"
+                    continue
+                  fi
+                  if ! state_line="$(docker inspect --format '{{.State.Status}} {{.State.Running}} {{.State.Restarting}}' "$container_id")"; then
+                    echo "Writer metadata: service ${service}, container ${container_id}, state=inspect-failed"
+                    continue
+                  fi
+                  if [[ "$state_line" =~ ^([^[:space:]]+)\ (true|false)\ (true|false)$ ]]; then
+                    echo "Writer metadata: service ${service}, container ${container_id}, state=${BASH_REMATCH[1]}, running=${BASH_REMATCH[2]}, restarting=${BASH_REMATCH[3]}"
+                  else
+                    echo "Writer metadata: service ${service}, container ${container_id}, state=unknown (invalid inspect output)"
+                  fi
+                done < <(printf '%s' "$container_ids")
+              done
+            }
+
             for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
               if [ ! -f "/home/ubuntu/etc/nginx/${conf}" ]; then
                 echo "::error title=Missing nginx config::/home/ubuntu/etc/nginx/${conf} not found on target host"
@@ -295,9 +405,19 @@ jobs:
             docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
               python /app/scripts/predeploy_db_check.py
 
+            writer_services=(ingest dispatcher worker raw-cleanup)
             echo "Pausing every database writer before schema migration"
-            docker compose -f docker-compose.prod.yml stop \
-              ingest dispatcher worker raw-cleanup 2>/dev/null || true
+            if ! docker compose -f docker-compose.prod.yml stop --timeout 30 "${writer_services[@]}"; then
+              echo "Writer stop failed; refusing to run Alembic migrations"
+              diagnose_writer_services "${writer_services[@]}"
+              exit 1
+            fi
+
+            if ! verify_services_stopped "${writer_services[@]}"; then
+              echo "Writer stopped-state verification failed; refusing to run Alembic migrations"
+              diagnose_writer_services "${writer_services[@]}"
+              exit 1
+            fi
 
             echo "Running Alembic migrations"
             docker compose -f docker-compose.prod.yml run --rm --no-deps ingest sh -euc '
