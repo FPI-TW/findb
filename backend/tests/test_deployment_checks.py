@@ -1159,6 +1159,238 @@ def test_deploy_does_not_gate_on_ec2_hardware_size() -> None:
     assert "sudo mkdir -p /var/lib/findb/rabbitmq" in deploy
 
 
+def _findb_deploy_script() -> str:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    return _named_step(workflow, "deploy", "Deploy to EC2")["with"]["script"]
+
+
+def test_deploy_stops_and_verifies_all_writers_before_alembic() -> None:
+    deploy = _findb_deploy_script()
+    pull = deploy.index("docker compose -f docker-compose.prod.yml pull")
+    predeploy = deploy.index("python /app/scripts/predeploy_db_check.py", pull)
+    stop = deploy.index(
+        'if ! docker compose -f docker-compose.prod.yml stop --timeout 30 "${writer_services[@]}"',
+        predeploy,
+    )
+    verification = deploy.index('if ! verify_services_stopped "${writer_services[@]}"', stop)
+    migration = deploy.index('echo "Running Alembic migrations"', verification)
+    stop_block = deploy[stop:verification]
+    gate = deploy[deploy.index("verify_services_stopped() {") : verification]
+    writer_diagnostics = deploy[deploy.index("diagnose_writer_services() {") : stop]
+
+    assert "writer_services=(ingest dispatcher worker raw-cleanup)" in deploy
+    assert "2>/dev/null" not in stop_block
+    assert "|| true" not in stop_block
+    assert 'stop --timeout 30 "${writer_services[@]}"; then' in stop_block
+    assert 'diagnose_writer_services "${writer_services[@]}"' in stop_block
+    assert 'diagnose_services "${writer_services[@]}"' not in stop_block
+    assert "docker compose -f docker-compose.prod.yml logs" not in deploy[stop:migration]
+    assert "docker compose -f docker-compose.prod.yml logs" not in writer_diagnostics
+    assert "{{.State.Status}} {{.State.Running}} {{.State.Restarting}}" in writer_diagnostics
+    assert pull < predeploy < stop < verification < migration
+    assert 'docker compose -f docker-compose.prod.yml ps -aq "$service"' in gate
+    assert "head -n 1" not in gate
+    assert "{{.State.Status}} {{.State.Running}} {{.State.Restarting}}" in gate
+    assert "enumeration_sentinel" in gate
+    assert "BASH_REMATCH" in gate
+    assert "read -r -a" not in gate
+    assert "([^[:space:]]+)\\ (true|false)\\ (true|false)" in gate
+    assert "exited|created" in gate
+    assert '[ "$running" != "false" ]' in gate
+    assert '[ "$restarting" != "false" ]' in gate
+
+
+def test_writer_stopped_gate_fails_closed_for_enumeration_and_state_failures() -> None:
+    deploy = _findb_deploy_script()
+    gate = deploy[deploy.index("verify_services_stopped() {") : deploy.index("\n\nfor conf in")]
+
+    assert "container enumeration failed" in gate
+    assert "inspect-failed" in gate
+    assert "invalid inspect output" in gate
+    assert 'if [ "$running" != "false" ] || [ "$restarting" != "false" ]; then' in gate
+    assert "failed=1" in gate
+    assert "state=unknown" in gate
+    assert "unsafe or unknown" in gate
+    assert 'case "$status" in' in gate
+    assert "exited|created)" in gate
+    assert 'return "$failed"' in gate
+
+
+_FAKE_WRITER_GATE_DOCKER = """#!/bin/sh
+set -eu
+state_dir="${FAKE_DOCKER_STATE:?}"
+operation="${1:-}"
+shift
+
+case "$operation" in
+  compose)
+    while [ "$#" -gt 0 ] && [ "$1" != ps ]; do
+      shift
+    done
+    [ "${1:-}" = ps ]
+    shift
+    [ "${1:-}" = -aq ]
+    service="${2:-}"
+    if [ "${FAKE_ENUM_FAIL_SERVICE:-}" = "$service" ]; then
+      echo "enumeration failed" >&2
+      exit 41
+    fi
+    if [ -f "$state_dir/service_${service}" ]; then
+      cat "$state_dir/service_${service}"
+    fi
+    ;;
+  inspect)
+    [ "${1:-}" = --format ]
+    shift 2
+    container_id="${1:-}"
+    if [ "${FAKE_INSPECT_FAIL_CONTAINER:-}" = "$container_id" ] || [ ! -f "$state_dir/state_${container_id}" ]; then
+      echo "inspect failed" >&2
+      exit 42
+    fi
+    cat "$state_dir/state_${container_id}"
+    ;;
+  *)
+    echo "unsupported fake docker operation: $operation" >&2
+    exit 43
+    ;;
+esac
+"""
+
+
+def _writer_gate_source() -> str:
+    deploy = _findb_deploy_script()
+    start = deploy.index("verify_services_stopped() {")
+    return deploy[start : deploy.index("\n\ndiagnose_writer_services()", start)]
+
+
+def _run_writer_gate(
+    tmp_path: Path,
+    *,
+    listing: str = "",
+    states: dict[str, str] | None = None,
+    enum_fail_service: str = "",
+    inspect_fail_container: str = "",
+) -> subprocess.CompletedProcess[str]:
+    state_dir = tmp_path / "writer-gate-state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "service_ingest").write_text(listing, encoding="utf-8")
+    for container_id, state in (states or {}).items():
+        (state_dir / f"state_{container_id}").write_text(state, encoding="utf-8")
+
+    fake_bin = tmp_path / "writer-gate-bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(_FAKE_WRITER_GATE_DOCKER, encoding="utf-8")
+    fake_docker.chmod(0o755)
+
+    harness = f"""set -euo pipefail
+{_writer_gate_source()}
+verify_services_stopped ingest dispatcher worker raw-cleanup
+"""
+    environment = dict(os.environ)
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        FAKE_DOCKER_STATE=str(state_dir),
+        FAKE_ENUM_FAIL_SERVICE=enum_fail_service,
+        FAKE_INSPECT_FAIL_CONTAINER=inspect_fail_container,
+    )
+    return subprocess.run(
+        ["bash", "-c", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+def test_writer_gate_behavior_accepts_zero_and_all_safe_containers(tmp_path: Path) -> None:
+    zero = _run_writer_gate(tmp_path / "zero")
+    assert zero.returncode == 0, zero.stderr
+    assert "service ingest, container=none, state=stopped" in zero.stdout
+
+    all_safe = _run_writer_gate(
+        tmp_path / "all-safe",
+        listing="container-one\ncontainer-two\n",
+        states={
+            "container-one": "exited false false",
+            "container-two": "created false false",
+        },
+    )
+    assert all_safe.returncode == 0, all_safe.stderr
+    assert "container container-one" in all_safe.stdout
+    assert "container container-two" in all_safe.stdout
+
+
+@pytest.mark.parametrize(
+    ("name", "listing", "states", "expected", "enum_fail_service", "inspect_fail_container"),
+    (
+        (
+            "second-running",
+            "container-one\ncontainer-two\n",
+            {"container-one": "exited false false", "container-two": "running true false"},
+            "container container-two, state=running",
+            "",
+            "",
+        ),
+        (
+            "restarting",
+            "container-one\n",
+            {"container-one": "running false true"},
+            "restarting=true",
+            "",
+            "",
+        ),
+        (
+            "unknown",
+            "container-one\n",
+            {"container-one": "paused false false"},
+            "state=paused",
+            "",
+            "",
+        ),
+        ("dead", "container-one\n", {"container-one": "dead false false"}, "state=dead", "", ""),
+        ("inspect-failure", "container-one\n", {}, "state=inspect-failed", "", "container-one"),
+        ("enumeration-failure", "", {}, "container enumeration failed", "ingest", ""),
+        (
+            "multiline-inspect",
+            "container-one\n",
+            {"container-one": "exited false false\nMALFORMED"},
+            "invalid inspect output",
+            "",
+            "",
+        ),
+        ("newline-only", "\n", {}, "container=<empty>", "", ""),
+        (
+            "empty-id",
+            "container-one\n\n",
+            {"container-one": "exited false false"},
+            "container=<empty>",
+            "",
+            "",
+        ),
+    ),
+)
+def test_writer_gate_behavior_fails_closed(
+    tmp_path: Path,
+    name: str,
+    listing: str,
+    states: dict[str, str],
+    expected: str,
+    enum_fail_service: str,
+    inspect_fail_container: str,
+) -> None:
+    completed = _run_writer_gate(
+        tmp_path / name,
+        listing=listing,
+        states=states,
+        enum_fail_service=enum_fail_service,
+        inspect_fail_container=inspect_fail_container,
+    )
+
+    assert completed.returncode != 0
+    assert expected in completed.stdout
+
+
 def test_deploy_uses_ordered_health_checks_with_failure_diagnostics() -> None:
     deploy = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
@@ -1252,6 +1484,26 @@ def test_predeploy_database_state_reports_every_blocker() -> None:
     assert any("duplicate" in error for error in errors)
     assert any("older than five minutes" in error for error in errors)
     assert any("connection headroom" in error for error in errors)
+
+
+def test_predeploy_database_state_blocks_wave_four_contract_drift() -> None:
+    state = {
+        "duplicate_raw_run_ids": 0,
+        "long_transactions_over_5m": 0,
+        "connection_headroom": 120,
+        "noncanonical_scheduler_control_slots": 1,
+        "noncanonical_dataset_delivery_schedule_slots": 2,
+        "legacy_finlab_scheduler_keys": 1,
+        "dataset_keys_projection_mismatches": 3,
+    }
+
+    errors = validate_predeploy_state(state, minimum_connection_headroom=80)
+
+    assert len(errors) == 4
+    assert any("scheduler_control" in error for error in errors)
+    assert any("delivery schedules" in error for error in errors)
+    assert any("legacy FinLab" in error for error in errors)
+    assert any("projection" in error for error in errors)
 
 
 def test_queue_health_requires_recent_worker_and_no_expired_leases() -> None:

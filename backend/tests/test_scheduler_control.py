@@ -15,10 +15,26 @@ from app.models.registry import (
     SchedulerDataset,
 )
 from app.services.api_keys import create_api_key
+from app.services.scheduler_control import scheduler_dataset_keys
 from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
 from app.utils import utc_now
 
 SCHEDULER_KEY = "finlab_tw_equity_eod_v1"
+
+
+def test_scheduler_dataset_keys_uses_loaded_association_only() -> None:
+    row = SchedulerControl(
+        scheduler_key=SCHEDULER_KEY,
+        provider="finlab",
+        slot_id="taiwan_market_window",
+        dataset_keys=["projection_only"],
+    )
+    assert scheduler_dataset_keys(row) == []
+
+    row.scheduler_datasets = [
+        SchedulerDataset(scheduler_key=SCHEDULER_KEY, dataset_key="association_only")
+    ]
+    assert scheduler_dataset_keys(row) == ["association_only"]
 
 
 async def _add_scheduler(
@@ -167,6 +183,21 @@ async def test_scheduler_admin_get_viewer_and_patch_revision_audit(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_admin_patch_rejects_legacy_key(
+    client: AsyncClient,
+    test_session: AsyncSession,
+):
+    await _add_scheduler(test_session)
+    owner_headers = await _admin_headers(test_session, role="owner")
+    response = await client.patch(
+        "/api/v1/admin/schedulers/finlab_tw_1430_tw_equity_eod",
+        headers=owner_headers,
+        json={"desired_state": "running", "expected_revision": 1},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_scheduler_admin_patch_is_owner_only(
     client: AsyncClient,
     test_session: AsyncSession,
@@ -216,9 +247,7 @@ async def test_scheduler_source_scope_and_heartbeat_update(
         headers=source_headers,
         json={"observed_state": "running"},
     )
-    assert legacy_alias.status_code == 200
-    assert legacy_alias.json()["scheduler_key"] == SCHEDULER_KEY
-    assert legacy_alias.json()["slot_id"] == "taiwan_market_window"
+    assert legacy_alias.status_code == 404
 
     row = await test_session.get(SchedulerControl, SCHEDULER_KEY)
     assert row is not None

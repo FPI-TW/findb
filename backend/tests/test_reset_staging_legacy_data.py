@@ -104,6 +104,7 @@ async def _seed_protected_rows(session: AsyncSession) -> tuple[DatasetRegistry, 
             SchedulerControl(
                 scheduler_key="staging-reset-test",
                 provider="test-provider",
+                slot_id="taiwan_market_window",
                 dataset_keys=["test.eod"],
             ),
         ]

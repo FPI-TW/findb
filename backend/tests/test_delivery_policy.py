@@ -161,11 +161,22 @@ def test_flat_delivery_expectation_is_backward_compatible() -> None:
     assert policy.freshness.maximum_fetch_age_hours == 48
 
 
-def test_legacy_schedule_slot_is_normalized_at_config_boundary() -> None:
+def test_schedule_requires_canonical_slot_id() -> None:
+    with pytest.raises(ValidationError):
+        FreshnessSchedule.model_validate(
+            {
+                "enabled": True,
+                "slot_id": "tw_1430",
+                "local_time": "14:30:00",
+                "timezone": "Asia/Taipei",
+                "expected_sources": ["finlab"],
+            }
+        )
+
     schedule = FreshnessSchedule.model_validate(
         {
             "enabled": True,
-            "slot_id": "tw_1430",
+            "slot_id": "taiwan_market_window",
             "local_time": "14:30:00",
             "timezone": "Asia/Taipei",
             "expected_sources": ["finlab"],

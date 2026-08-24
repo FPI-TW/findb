@@ -32,7 +32,6 @@ from app.services.delivery_policy import (
 )
 from app.services.scheduler_control import (
     list_scheduler_controls,
-    normalize_scheduler_key,
     scheduler_dataset_keys,
 )
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
@@ -378,16 +377,12 @@ async def _feed_freshness(
 
 def _definition_from_control(row: SchedulerControl) -> _SchedulerDefinition:
     keys = tuple(scheduler_dataset_keys(row))
-    try:
-        slot_id = normalize_slot_id(row.slot_id)
-    except ValueError:
-        slot_id = row.slot_id
     return _SchedulerDefinition(
-        scheduler_key=normalize_scheduler_key(row.scheduler_key),
+        scheduler_key=row.scheduler_key,
         provider=row.provider,
         providers=(row.provider,),
         dataset_keys=keys,
-        slot_id=slot_id,
+        slot_id=normalize_slot_id(row.slot_id),
         scheduled_local_time=row.scheduled_local_time,
         timezone=row.timezone,
         desired_state=cast(Literal["running", "stopped"], row.desired_state),
@@ -622,7 +617,7 @@ async def list_market_freshness(
 ) -> list[MarketFreshness]:
     """Build a scheduler-backed projection without mutating registry state."""
     evaluated_at = ensure_utc(now or utc_now())
-    normalized_slot_filter = normalize_slot_id(slot_id) if slot_id else None
+    validated_slot_filter = normalize_slot_id(slot_id) if slot_id else None
     controls = await list_scheduler_controls(db)
     if not controls:
         return []
@@ -643,7 +638,7 @@ async def list_market_freshness(
 
     results: list[MarketFreshness] = []
     for definition in definitions:
-        if normalized_slot_filter and definition.slot_id != normalized_slot_filter:
+        if validated_slot_filter and definition.slot_id != validated_slot_filter:
             continue
         mapped_markets = {
             datasets[key].market.upper() for key in definition.dataset_keys if key in datasets

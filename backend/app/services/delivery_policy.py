@@ -27,7 +27,6 @@ from app.models.registry import IngestionRun
 from app.schemas.ingress import DeliveryMode, IngressRequestV1
 from app.services.calendar_management import published_year
 from app.services.feed_scope import lock_feed_scope
-from app.services.slot_identity import normalize_slot_payload
 from app.utils import utc_now
 from app.vocabulary import SOURCE_NAME_PATTERN
 
@@ -285,14 +284,6 @@ class FreshnessSchedule(BaseModel):
     timezone: Literal["Asia/Taipei"]
     target_date_lag_days: int = Field(default=0, ge=0, le=366)
     expected_sources: list[str] = Field(default_factory=list, max_length=32)
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_slot_payload(cls, value: Any) -> Any:
-        # A legacy schedule may still arrive from an operator-owned JSONB
-        # config during rollout.  Normalize its ID and encoded clock before
-        # Literal validation; all model dumps are canonical thereafter.
-        return normalize_slot_payload(value)
 
     @field_validator("expected_sources")
     @classmethod

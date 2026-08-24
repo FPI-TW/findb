@@ -481,6 +481,12 @@ async def test_admin_filters_and_serve_redacts_feed_internals(
     )
     assert admin.status_code == 200
     assert admin.json()["data"][0]["feeds"] == []
+    for legacy_slot in ("us_0600", "global_0815", "tw_1430", "asia_1630"):
+        rejected = await client.get(
+            f"/api/v1/admin/market-freshness?slot_id={legacy_slot}",
+            headers=admin_headers,
+        )
+        assert rejected.status_code == 422
 
     settings = get_settings()
     original = settings.SERVE_REQUIRE_AUTH

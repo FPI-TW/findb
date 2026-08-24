@@ -84,7 +84,7 @@ def test_eod_contracts_reject_minute_only_sequenced_snapshot_delivery_mode():
 def test_market_eod_v1_accepts_optional_scheduler_delivery_metadata():
     value = _market_eod_request()
     value["delivery"] = {
-        "slot_id": "tw_1430",
+        "slot_id": "taiwan_market_window",
         "scheduled_for": "2026-07-21T16:30:00+08:00",
         "target_data_date": "2026-07-21",
         "work_item_id": "tw-eod-20260721-finlab",
@@ -97,10 +97,10 @@ def test_market_eod_v1_accepts_optional_scheduler_delivery_metadata():
     assert request.delivery.target_data_date.isoformat() == "2026-07-21"
 
 
-def test_global_slot_uses_market_semantics_and_normalizes_legacy_id():
+def test_global_slot_uses_market_semantics():
     value = _market_eod_request()
     value["delivery"] = {
-        "slot_id": "global_0815",
+        "slot_id": "global_markets_window",
         "scheduled_for": "2026-07-21T08:15:00+08:00",
         "target_data_date": "2026-07-21",
         "work_item_id": "global-eod-20260721",
@@ -117,9 +117,23 @@ def test_global_slot_uses_market_semantics_and_normalizes_legacy_id():
     assert "continuous_markets_window" not in slot_enum
 
 
+@pytest.mark.parametrize("slot_id", ["us_0600", "global_0815", "tw_1430", "asia_1630"])
+def test_ingress_rejects_legacy_scheduler_delivery_slots(slot_id: str):
+    value = _market_eod_request()
+    value["delivery"] = {
+        "slot_id": slot_id,
+        "scheduled_for": "2026-07-21T16:30:00+08:00",
+        "target_data_date": "2026-07-21",
+        "work_item_id": "legacy-slot-rejected",
+    }
+
+    with pytest.raises(ValidationError):
+        MarketEODIngressRequest.model_validate(value)
+
+
 def test_market_eod_v1_rejects_partial_scheduler_delivery_metadata():
     value = _market_eod_request()
-    value["delivery"] = {"slot_id": "tw_1430"}
+    value["delivery"] = {"slot_id": "taiwan_market_window"}
 
     with pytest.raises(ValidationError):
         MarketEODIngressRequest.model_validate(value)
