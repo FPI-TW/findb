@@ -246,8 +246,40 @@ jobs:
           envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE,DASHBOARD_IMAGE,IMAGE_TAG,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_URL,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,ADMIN_BREAK_GLASS_API_KEY,FINDB_QUEUE_HEALTH_ADMIN_API_KEY,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_STATIC_CACHE_SERVE_API_KEY,FINDB_LATEST_PRICE_WORKERS,CELERY_BROKER_URL,RABBITMQ_DEFAULT_USER,RABBITMQ_DEFAULT_PASS,RABBITMQ_ERLANG_COOKIE,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID,CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY,CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN,CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID,CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY,CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN
           script: |
             set -euo pipefail
+
+            retry_registry_command() {
+              local description="$1"
+              shift
+              local max_attempts=5
+              local delay_seconds=5
+              local attempt
+              local exit_code
+
+              for attempt in $(seq 1 "$max_attempts"); do
+                if "$@"; then
+                  return 0
+                else
+                  exit_code=$?
+                fi
+
+                if [ "$attempt" -eq "$max_attempts" ]; then
+                  echo "::error title=Registry operation failed::${description} failed after ${max_attempts} attempts"
+                  return "$exit_code"
+                fi
+
+                echo "${description} failed (attempt ${attempt}/${max_attempts}); retrying in ${delay_seconds}s..."
+                sleep "$delay_seconds"
+                delay_seconds=$((delay_seconds * 2))
+              done
+            }
+
+            ghcr_login() {
+              printf '%s\n' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            }
+
             echo "Logging in to GHCR"
-            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            retry_registry_command "GHCR login" ghcr_login
+            trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
             echo "Deploying image tag: ${IMAGE_TAG}"
             cd /opt/findb
@@ -399,7 +431,8 @@ jobs:
               echo "::error title=Missing TLS key::/home/ubuntu/etc/nginx/ssl/server.key not found on target host"
               exit 1
             fi
-            docker compose -f docker-compose.prod.yml pull
+            retry_registry_command "GHCR image pull" \
+              docker compose -f docker-compose.prod.yml pull
 
             echo "Checking production database before migration"
             docker compose -f docker-compose.prod.yml run --rm --no-deps ingest \
