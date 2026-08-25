@@ -153,6 +153,9 @@ findb/
 
 ## 測試環境
 
+- 任何程式碼或 workflow 變動後，交付前必須執行與影響範圍相符的測試；修正既有測試失敗時，
+  至少重跑原失敗測試與相關 test suite。靜態檢查不能取代測試執行；若受環境限制無法執行，
+  必須明確記錄未執行項目與原因，不得宣稱測試通過。
 - 預設測試 DB 是 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`，可用 `TEST_DATABASE_URL` 覆蓋。
 - `backend/tests/conftest.py` 會在需要時建立 `findb_test` database。
 - 測試資料表由 function-scope fixture 建立與清理。
