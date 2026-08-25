@@ -29,7 +29,6 @@ uv --directory backend run python scripts/dev.py seed-upsert --truncate
 ```text
 backend/scripts/backfill_instrument_names.py
 backend/scripts/backfill_world_names.py
-backend/scripts/fix_misrouted_tw_futures.py
 backend/scripts/cleanup_stale_instruments.py
 ```
 
@@ -40,10 +39,6 @@ backend/scripts/cleanup_stale_instruments.py
 
 TW舊Big5亂碼只有在候選集合已確認時才使用`--overwrite-existing`。Routing cleanup可能
 搬移或刪除重複instrument，不得跳過FK與下游影響檢查。
-
-`fix_misrouted_tw_futures.py`是deprecated的歷史殘留修復工具，只用於檢查或修正舊資料的
-TW futures誤分類；預設必須dry-run，確認候選集合後才能使用`--apply`。後續需先確認staging
-與production都沒有候選資料，再以獨立程式清理工作移除，不能在本次文件整理中直接刪除。
 
 ## Generated cache
 

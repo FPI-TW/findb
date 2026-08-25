@@ -39,18 +39,23 @@ backfill。Deployment不改寫DB scheduler desired state；啟用或停止由Das
 
 ## Environment與設定
 
-Deployment使用四個互相隔離的GitHub Environments：
+Workflow保留`staging`與`production` target及production manual dispatch能力；這只是預留的
+workflow capability，不代表對應GitHub Environment或AWS資源已建立。現況如下：
 
-```text
-staging-findb
-staging-fetcher
-production-findb
-production-fetcher
-```
+| Target／resource | Current state |
+| --- | --- |
+| `staging-findb` GitHub Environment | 已建立，為目前FinDB staging target |
+| `staging-fetcher` GitHub Environment | 已建立，為目前Fetcher staging target |
+| `production-findb` GitHub Environment | N/A（尚未建立） |
+| `production-fetcher` GitHub Environment | N/A（尚未建立） |
+| Production FinDB EC2 | N/A（尚未建立） |
+| Production FinDB RDS | N/A（尚未建立） |
+| Production promotion snapshot／dump／seed | N/A（尚未建立） |
 
-Push至`main`自動部署staging；production只允許manual dispatch。兩者都不配置GitHub
-Environment人工核准，仍以PR、required CI、protected branch及target隔離控制變更。每個job
-只能取得自己unit與target的設定；branch與Environment protection的實際外部設定需另行驗證。
+Push至`main`自動部署staging；production僅在上述Environment與target資源建立後允許
+manual dispatch。兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected
+branch及target隔離控制變更。每個job只能取得自己unit與target的設定；branch與Environment
+protection的實際外部設定需另行驗證。
 
 完整變數與secret名稱不在本runbook重複維護，以
 [infra/env契約](../../infra/env/README.md)、各target的`remote.env.example`、workflow及

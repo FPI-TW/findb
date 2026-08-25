@@ -65,7 +65,13 @@ def _payload() -> dict:
     }
 
 
-def _minute_request(dataset_key: str, *, close: str = "1005") -> dict:
+def _minute_request(
+    dataset_key: str,
+    *,
+    symbol: str = "2330",
+    source_symbol: str = "TSE:2330",
+    close: str = "1005",
+) -> dict:
     data_date = date(2026, 7, 30)
     digest = minute_sequence_key_digest(
         dataset_key=dataset_key,
@@ -91,18 +97,18 @@ def _minute_request(dataset_key: str, *, close: str = "1005") -> dict:
                 "snapshot_id": f"{dataset_key}-snapshot",
                 "daily_update_id": f"{dataset_key}-update",
                 "universe_id": f"{dataset_key}-universe",
-                "symbols_sha256": hashlib.sha256(b"2330").hexdigest(),
+                "symbols_sha256": hashlib.sha256(symbol.encode()).hexdigest(),
                 "sequence": 1,
                 "sequence_count": 1,
                 "provider_usage_before": {"requests_used": 1, "requests_limit": 500},
                 "provider_usage_after": {"requests_used": 2, "requests_limit": 500},
                 "anomalies": [],
             },
-            "symbol_statuses": [{"symbol": "2330", "outcome": "data"}],
+            "symbol_statuses": [{"symbol": symbol, "outcome": "data"}],
             "data": [
                 {
-                    "symbol": "2330",
-                    "source_symbol": "TSE:2330",
+                    "symbol": symbol,
+                    "source_symbol": source_symbol,
                     "trade_date": "2026-07-30",
                     "market_timezone": "Asia/Taipei",
                     "bar_start_time": "2026-07-30T09:00:00+08:00",
@@ -342,8 +348,11 @@ async def test_market_minute_source_precedence_and_fetched_at_control_upsert(tes
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("dataset_key", "asset_class"),
-    [("tw_equity_minute", "equity"), ("tw_etf_minute", "etf")],
+    ("dataset_key", "asset_class", "symbol", "source_symbol"),
+    [
+        ("tw_equity_minute", "equity", "2330", "2330"),
+        ("tw_etf_minute", "etf", "0050", "0050"),
+    ],
 )
 async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     client: AsyncClient,
@@ -352,6 +361,8 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     test_engine,
     dataset_key: str,
     asset_class: str,
+    symbol: str,
+    source_symbol: str,
 ) -> None:
     """Exercise Source acceptance and the real queue worker for both minute asset classes."""
     test_session.add(
@@ -367,7 +378,9 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     )
     await test_session.commit()
     response = await client.post(
-        "/api/v1/source/ingest", headers=source_headers, json=_minute_request(dataset_key)
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_minute_request(dataset_key, symbol=symbol, source_symbol=source_symbol),
     )
     assert response.status_code == 202, response.text
     run_id = UUID(response.json()["run_id"])
@@ -389,7 +402,8 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     instrument = (
         await test_session.execute(
             select(Instrument).where(
-                Instrument.asset_class == asset_class, Instrument.symbol == "2330"
+                Instrument.asset_class == asset_class,
+                Instrument.symbol == symbol,
             )
         )
     ).scalar_one()
@@ -400,7 +414,9 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
             )
         )
     ).scalar_one()
+    assert instrument.market == "TW"
     assert instrument.asset_class == asset_class
+    assert instrument.symbol == symbol
     assert minute.source == "shioaji"
 
     rerun_response = await client.post(
