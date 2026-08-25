@@ -28,6 +28,7 @@ from scripts.predeploy_db_check import (
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 WORKFLOWS_ROOT = REPO_ROOT / ".github" / "workflows"
+REQUIRED_CI_WORKFLOW = WORKFLOWS_ROOT / "required-ci.yml"
 FINDB_CI_WORKFLOW = WORKFLOWS_ROOT / "findb-ci.yml"
 FINDB_CD_WORKFLOW = WORKFLOWS_ROOT / "findb-cd.yml"
 FETCHER_CI_WORKFLOW = WORKFLOWS_ROOT / "fetcher-ci.yml"
@@ -78,6 +79,17 @@ def _named_step(workflow: dict[str, Any], job_name: str, step_name: str) -> dict
     return next(step for step in steps if step.get("name") == step_name)
 
 
+def _aggregate_ci_paths(unit: str) -> set[str]:
+    workflow = _load_workflow(REQUIRED_CI_WORKFLOW)
+    script = _named_step(workflow, "changes", "Classify changed paths")["run"]
+    match = re.search(
+        rf'case "\$path" in\s+(?P<patterns>[^)]+)\)\s+{unit}=true',
+        script,
+    )
+    assert match is not None
+    return {pattern.strip() for pattern in match.group("patterns").split("|")}
+
+
 def _secret_reference_paths(value: object, path: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
     references: list[tuple[str, ...]] = []
     if isinstance(value, dict):
@@ -109,6 +121,7 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
     assert not (WORKFLOWS_ROOT / "deploy.yml").exists()
 
     expected_names = {
+        "required-ci.yml",
         "findb-ci.yml",
         "findb-cd.yml",
         "fetcher-ci.yml",
@@ -178,7 +191,17 @@ def test_fetcher_finlab_smoke_symbols_remain_a_quoted_comma_delimited_choice() -
     assert re.search(r'^\s+- "2330,2317"$', source, re.MULTILINE)
 
 
-def test_main_push_runs_each_ci_workflow_only_through_its_cd_gate() -> None:
+def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> None:
+    required_ci = _load_workflow(REQUIRED_CI_WORKFLOW)
+    required_triggers = required_ci["on"]
+    assert required_triggers["pull_request"] == {"branches": ["main"]}
+    assert "push" not in required_triggers
+    assert required_ci["jobs"]["findb"]["uses"] == "./.github/workflows/findb-ci.yml"
+    assert required_ci["jobs"]["fetcher"]["uses"] == "./.github/workflows/fetcher-ci.yml"
+    assert required_ci["jobs"]["required"]["name"] == "Required CI"
+    assert required_ci["jobs"]["required"]["if"] == "${{ always() }}"
+    assert required_ci["jobs"]["required"]["needs"] == ["changes", "findb", "fetcher"]
+
     for ci_path, cd_path, reusable_path in (
         (FINDB_CI_WORKFLOW, FINDB_CD_WORKFLOW, "./.github/workflows/findb-ci.yml"),
         (FETCHER_CI_WORKFLOW, FETCHER_CD_WORKFLOW, "./.github/workflows/fetcher-ci.yml"),
@@ -186,8 +209,9 @@ def test_main_push_runs_each_ci_workflow_only_through_its_cd_gate() -> None:
         ci_workflow = _load_workflow(ci_path)
         ci_triggers = ci_workflow["on"]
         assert "push" not in ci_triggers
-        assert "pull_request" in ci_triggers
+        assert "pull_request" not in ci_triggers
         assert "workflow_call" in ci_triggers
+        assert "workflow_dispatch" in ci_triggers
 
         cd_workflow = _load_workflow(cd_path)
         assert cd_workflow["on"]["push"]["branches"] == ["main"]
@@ -318,11 +342,11 @@ def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
 
 
 def test_contract_changes_gate_both_ci_workflows_but_not_cd() -> None:
+    assert "contracts/**" in _aggregate_ci_paths("findb")
+    assert "contracts/**" in _aggregate_ci_paths("fetcher")
+
     for path in (FINDB_CI_WORKFLOW, FETCHER_CI_WORKFLOW):
-        workflow = _load_workflow(path)
-        triggers = workflow["on"]
-        assert "contracts/**" in triggers["pull_request"]["paths"]
-        assert "workflow_call" in triggers
+        assert "workflow_call" in _load_workflow(path)["on"]
 
     for path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
         workflow = _load_workflow(path)
@@ -338,9 +362,7 @@ def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> 
         "backend/scripts/export_ingress_contracts.py",
         "backend/tests/test_contract_artifacts.py",
     }
-    fetcher_ci = _load_workflow(FETCHER_CI_WORKFLOW)
-
-    assert required_paths <= set(fetcher_ci["on"]["pull_request"]["paths"])
+    assert required_paths <= _aggregate_ci_paths("fetcher")
 
 
 def test_fetcher_ci_retries_transient_container_build_failures() -> None:
@@ -363,15 +385,13 @@ def test_dashboard_image_inputs_gate_findb_ci_and_cd() -> None:
         "pnpm-lock.yaml",
     }
 
-    findb_ci = _load_workflow(FINDB_CI_WORKFLOW)
-    assert required_paths <= set(findb_ci["on"]["pull_request"]["paths"])
+    assert required_paths <= _aggregate_ci_paths("findb")
 
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
     assert required_paths <= set(findb_cd["on"]["push"]["paths"])
 
 
 def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy() -> None:
-    findb_ci = _load_workflow(FINDB_CI_WORKFLOW)
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
     fetcher_cd = _load_workflow(FETCHER_CD_WORKFLOW)
 
@@ -383,7 +403,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "docker-compose.prod.yml",
         "infra/nginx/**",
     }
-    assert required_findb_ci_paths <= set(findb_ci["on"]["pull_request"]["paths"])
+    assert required_findb_ci_paths <= _aggregate_ci_paths("findb")
 
     required_findb_cd_paths = {
         "backend/**",
