@@ -13,14 +13,10 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from tests.migration_database import get_active_migration_database_factory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BASE_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://findb:findb@localhost:5435/findb_test",
-)
 PRIOR_REVISION = "e5f6a7b8c9d0"
 REPAIR_REVISION = "f1a2b3c4d5e6"
 
@@ -39,29 +35,9 @@ async def _run_alembic(database_url: str, revision: str, *, command: str = "upgr
     )
 
 
-async def _drop_database(admin_engine: AsyncEngine, database_name: str) -> None:
-    async with admin_engine.connect() as connection:
-        await connection.execute(
-            text(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = :database_name AND pid <> pg_backend_pid()"
-            ),
-            {"database_name": database_name},
-        )
-        await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-
-
 @pytest.mark.asyncio
 async def test_scope_repair_upgrade_is_exact_and_downgrade_is_conservative() -> None:
     """Only active canonical empty scopes change, and rollback never revokes them."""
-
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_scope_repair_{uuid4().hex[:12]}"
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-    )
-    target_engine: AsyncEngine | None = None
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     rows = [
@@ -86,13 +62,9 @@ async def test_scope_repair_upgrade_is_exact_and_downgrade_is_conservative() -> 
         ("finlab-spaced", "finlab ", [], None, None, []),
     ]
 
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-
-        database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-        await _run_alembic(database_url, PRIOR_REVISION)
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone(
+        PRIOR_REVISION, "findb_scope_repair"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             for index, (name, source_name, scope, revoked_at, expires_at, _expected) in enumerate(
                 rows,
@@ -170,8 +142,3 @@ async def test_scope_repair_upgrade_is_exact_and_downgrade_is_conservative() -> 
                 row["name"]: dict(row) for row in (await connection.execute(query)).mappings()
             }
         assert after_downgrade == after_upgrade
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        await _drop_database(admin_engine, database_name)
-        await admin_engine.dispose()

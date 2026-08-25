@@ -18,11 +18,28 @@ from app.config import get_settings
 from app.dependencies import get_db
 from app.main import app
 from app.models.base import Base
+from tests.migration_database import (
+    MigrationDatabaseFactory,
+    set_active_migration_database_factory,
+)
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://findb:findb@localhost:5435/findb_test",
 )
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
+async def migration_database_factory():
+    """Manage immutable migration templates for the entire pytest session."""
+
+    factory = MigrationDatabaseFactory(TEST_DATABASE_URL)
+    set_active_migration_database_factory(factory)
+    try:
+        yield factory
+    finally:
+        set_active_migration_database_factory(None)
+        await factory.close()
 
 
 def _requests_fixture_directly(request, fixture_name: str) -> bool:
