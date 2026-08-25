@@ -1164,6 +1164,27 @@ def _findb_deploy_script() -> str:
     return _named_step(workflow, "deploy", "Deploy to EC2")["with"]["script"]
 
 
+def test_findb_deploy_retries_transient_ghcr_failures_before_database_preflight() -> None:
+    deploy = _findb_deploy_script()
+
+    helper = deploy[deploy.index("retry_registry_command() {") : deploy.index("ghcr_login() {")]
+    login = deploy.index('retry_registry_command "GHCR login" ghcr_login')
+    pull = deploy.index('retry_registry_command "GHCR image pull"')
+    predeploy = deploy.index("python /app/scripts/predeploy_db_check.py", pull)
+
+    assert "local max_attempts=5" in helper
+    assert "local delay_seconds=5" in helper
+    assert 'for attempt in $(seq 1 "$max_attempts")' in helper
+    assert "delay_seconds=$((delay_seconds * 2))" in helper
+    assert 'return "$exit_code"' in helper
+    assert "failed after ${max_attempts} attempts" in helper
+    assert deploy.count('retry_registry_command "') == 2
+    assert "printf '%s\\n' \"$GITHUB_TOKEN\"" in deploy
+    assert "docker login ghcr.io" in deploy
+    assert "trap 'docker logout ghcr.io" in deploy
+    assert login < pull < predeploy
+
+
 def test_deploy_stops_and_verifies_all_writers_before_alembic() -> None:
     deploy = _findb_deploy_script()
     pull = deploy.index("docker compose -f docker-compose.prod.yml pull")
