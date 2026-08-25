@@ -3,7 +3,7 @@
 > 狀態：待執行。本文是 staging AWS 控制面、部署身分與驗收的核心成熟化計畫；現行可操作
 > runbook 仍以 [`../operations/deployment.md`](../operations/deployment.md) 為準。
 >
-> 最後盤點：2026-08-21。Staging 目前正常運行，但「服務可用」不等同於部署身分、release
+> 最後盤點：2026-08-25。Staging 目前正常運行，但「服務可用」不等同於部署身分、release
 > 重播、secret 邊界與災難復原已完成。AWS、GitHub Environment 與 Cloudflare 的實際資源狀態
 > 尚未由 repo 自動驗證，表中標示 `待盤點` 的欄位不得視為已完成。
 
@@ -13,7 +13,8 @@
 
 - staging 是 production 的前置驗證站，預期三個月內開始建立 production；
 - staging 由小團隊共同維運，不要求正式 24/7 on-call；
-- protected `main` 合併後維持自動部署 staging，人工 Environment 核准留給 production；
+- protected `main` 合併後維持自動部署 staging；production採unit-specific Git tag加手動
+  artifact promotion，不另設Environment人工核准；
 - 本輪採核心安全與可復原基線，不一次導入 HA、全面 IaC import 或完整企業稽核；
 - IaC 只先管理新控制面資源，既有 EC2、RDS 與網路先盤點及引用，不因全面 import 阻塞 cutover。
 
@@ -49,6 +50,7 @@ protected main
 本計畫不包含：
 
 - 建立 production 資源或 production Environment；
+- 實作production promotion workflow；本計畫只定義未來promotion必須遵守的tag與artifact契約；
 - staging HA、Auto Scaling、多 EC2、blue/green 或 Multi-AZ 強制要求；
 - 全面 import 既有 AWS 資源到 IaC；
 - 擴大 active feed universe、production-scale backfill 或新增資料來源；
@@ -72,13 +74,14 @@ protected main
 | 項目 | 現況 | 核心基線仍缺少 |
 | --- | --- | --- |
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
-| CI gate | CD 以 `workflow_call` 執行同一 revision 的 CI | 受支援舊 revision migration upgrade、image runtime security 與 deploy bundle deterministic check |
+| CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
 | Image identity | Runtime 發布 commit SHA tag；FinDB 另發布 `latest`，Compose有`latest` fallback | 保存registry digest、以digest部署、移除所有`latest`部署路徑 |
 | EC2 transport | `appleboy/ssh-action`與`scp-action`已固定完整Action SHA | OIDC、service-specific deploy role、SSM、target tag restriction與command log |
 | Runtime secrets | GitHub Environment secrets逐一傳到遠端shell／container | Secrets Manager或SecureString、instance role、輪替與GitHub secret退場 |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check | RDS backup inventory、migration credential分權、restore rehearsal與release紀錄 |
 | Queue | RabbitMQ在FinDB EC2，以EBS path保存；PostgreSQL是durable truth | 容量告警、broker全毀重建演練與實測恢復時間 |
-| Fetcher state | 三個provider runtime隔離，SQLite state與Raw bucket binding有preflight | 一致性備份、SSM rollout與完整排程週期觀察 |
+| Fetcher state | 三個provider runtime隔離；container已採non-root、read-only、drop capabilities與no-new-privileges，SQLite與Raw bucket binding只接受current state並fail closed | 一致性備份、SSM rollout、自動化runtime security驗證與完整排程週期觀察 |
+| Legacy removal | 舊public routes、舊skill、Fetcher scheduler／SQLite compatibility及DB dataset projection已移除；predeploy仍拒絕非canonical state | 保存staging實際revision及legacy predeploy gates為零的外部證據；不得在新deploy helper恢復compatibility |
 | R2 | Raw與Canonical bucket／credential契約已拆分；2026-08-21已人工確認Raw lifecycle 30天與bucket lock 7天 | Canonical runtime不得宣稱已通過資料面驗收 |
 | Protection | workflow固定第三方Action SHA，repo政策要求PR | branch／Environment protection與required CI的外部驗證紀錄 |
 | Observability | 應用內已有health、queue與freshness checks | 關鍵CloudWatch alarms、log retention、告警接收者及synthetic test |
@@ -97,7 +100,8 @@ protected main
 
 兩個 CD 都由 protected `main` 的 path-filtered push 自動進入 staging，也可手動 dispatch；CD
 必須直接呼叫同 revision CI。Staging Environment只允許protected branch且不設人工核准；
-production建立後只允許manual dispatch，同樣不配置Environment人工核准。
+production建立後使用`findb-vMAJOR.MINOR.PATCH`或`fetcher-vMAJOR.MINOR.PATCH`宣告對應unit的
+release，再由operator手動dispatch artifact promotion；同樣不配置Environment人工核准。
 
 FinDB仍是一個deployment unit，backend與Dashboard各自記錄digest。Fetcher三個image同屬一個
 deployment unit，但release manifest必須列出三個digest，不能只用共同SHA tag代替。
@@ -119,7 +123,7 @@ hash或可比較片段。清冊完成前禁止停用現行SSH recovery path。
 | Secret prefix | `findb/staging/findb/` | `findb/staging/fetcher/` | 不共用DB、R2、provider、Source/Admin或deploy credential |
 | Deploy artifact | Private、versioned control-plane S3 prefix | 同bucket的獨立prefix或獨立bucket | exact SHA key、checksum、versioning；不使用application R2 bucket |
 | CloudWatch | 待盤點 | 待盤點 | Retention、owner與synthetic alarm結果有紀錄 |
-| Backup | RDS、RabbitMQ EBS與必要static state待盤點 | SQLite/checkpoint EBS待盤點 | 完成對應restore／rebuild rehearsal並記錄實測時間 |
+| Backup | RDS與RabbitMQ EBS待盤點；generated static cache不是source of truth | SQLite/checkpoint EBS待盤點 | 完成對應restore／rebuild rehearsal並記錄實測時間；static cache由canonical data重生驗證 |
 | Public endpoint | DNS/TLS待查證 | 無public inbound endpoint | 外部HTTPS readiness與certificate expiry可監控 |
 
 ## 身分、secret 與 release 設計
@@ -183,6 +187,18 @@ GitHub Environment variables或Parameter Store一般參數。
 - 成功後保存accepted manifest、Alembic revision、SSM command ID與acceptance結果；
 - 未來production promotion只能使用staging已接受的相同digests，不重新build。
 
+未來production採unit-specific tag加手動promotion：
+
+- FinDB Git tag使用`findb-vMAJOR.MINOR.PATCH`，Fetcher使用`fetcher-vMAJOR.MINOR.PATCH`；tag必須
+  指向protected `main`上已有對應accepted staging manifest的commit；
+- operator建立Git tag後再manual dispatch對應unit的promotion，workflow必須驗證tag、unit、commit
+  與accepted manifest一致；Git tag與manual dispatch共同構成發布授權，不另設Environment reviewer；
+- promotion只替manifest內的既有digests新增Docker `vMAJOR.MINOR.PATCH` tag；FinDB同時涵蓋backend
+  與Dashboard，Fetcher同時涵蓋generic、FinLab與Shioaji；
+- Docker release tag已指向相同digest時允許冪等重播，若已指向不同digest則fail closed且不得覆寫；
+- Git tag、SHA tag與Docker release tag都只作索引；production manifest從accepted staging
+  manifest衍生，實際deploy與rollback仍使用完整digest，不以tag取代image identity。
+
 ## IaC 邊界
 
 若團隊已有統一Terraform／OpenTofu工具與remote state，沿用該標準；否則採OpenTofu與encrypted
@@ -209,7 +225,8 @@ remote state。這次只納管新建或為cutover明確修改的控制面資源�
   branch且不設Environment人工核准，維持main合併後自動部署。
 - [ ] 依IaC邊界確認團隊既有工具與state owner；沒有既有標準時採OpenTofu，只納管新控制面。
 - [ ] 記錄目前accepted SHA、實際image identity、Alembic revision、running containers、RDS
-  snapshot／backup狀態與SSH recovery owner。
+  snapshot／backup狀態與SSH recovery owner；同時保存noncanonical scheduler、legacy FinLab key與
+  dataset projection等predeploy gates為零的結果。
 
 Exit gate：不存在未知的target、database、secret或backup owner；目前SSH部署仍可用；staging自動
 部署不會被Environment人工核准阻塞。
@@ -247,9 +264,12 @@ credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read。
 - [ ] Compose與deploy helper改為必填完整image reference；移除FinDB `latest`發布及所有fallback。
 - [ ] CI驗證manifest schema、SHA／digest格式、bundle checksum、deterministic generation與config
   render，缺值或`:latest`一律失敗。
-- [ ] 在空資料庫與所有受支援舊revision fixture執行migration upgrade，並驗證單一Alembic head。
-- [ ] 驗證container entrypoint、health command、non-root、read-only root filesystem、drop
-  capabilities與必要writable paths；不相容項目須修正或記錄具體、具期限的例外。
+- [ ] 保留現有獨立migration CI job、空資料庫upgrade、單一Alembic head與historical regression
+  suite；明確列出支援revision，並從Phase 0記錄的實際staging predecessor或其restore clone驗證
+  upgrade至candidate head。
+- [ ] 對Fetcher現有non-root、read-only root filesystem、drop capabilities、no-new-privileges與
+  writable paths加入自動化image/runtime驗證；FinDB backend、Dashboard與Compose須補齊相同基線
+  或記錄具體、具期限的例外，並驗證entrypoint與health command。
 - [ ] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests。
 
 Exit gate：相同manifest可重播且不重新build；tag漂移不影響部署；CI可攔截不安全的image、
@@ -262,7 +282,8 @@ manifest與migration。
 - [ ] 先停`ingest`、`dispatcher`、`worker`、`raw-cleanup`及所有DB writers，再以migration credential
   執行單一Alembic job；`serve`只在schema相容時保留。
 - [ ] 啟動candidate後驗證container、internal health、public TLS／readiness、queue topology、
-  worker ping、DB queue health與bounded DB transaction。
+  worker ping、DB queue health與bounded DB transaction；Dashboard public route只驗證
+  `/dashboard/`與`/dashboard/lookup`，不得恢復已移除的legacy public routes或skill入口。
 - [ ] 保存accepted manifest與SSM command ID；演練application-only previous digest rollback，並
   驗證schema不相容時拒絕回切、writers保持停止。
 
@@ -274,7 +295,8 @@ Exit gate：連續兩次FinDB staging deploy與一次rollback rehearsal不使用
 - [ ] 將Fetcher deploy與FinLab smoke改成OIDC＋SSM；停止workflow傳送provider、R2與Source
   credentials並移除SSH action。
 - [ ] 保留provider-specific state owner／mode、SQLite quick-check、Raw bucket marker與
-  single-writer reconciliation全部現行gate。
+  single-writer reconciliation全部現行gate；SSM deploy helper只接受current SQLite schema、
+  canonical slot identity與provider-scoped Raw marker，不新增legacy migration或compatibility path。
 - [ ] 以DB desired state=`stopped`部署三個exact digests；preflight通過後逐一恢復核准的
   scheduler desired state。
 - [ ] 驗證cross-provider secret isolation、calendar fail-closed、heartbeat與bounded terminal
@@ -294,6 +316,8 @@ cross-read；`FETCHER_EC2_*` secrets已移除。
   rehearsal並保存實測恢復時間與資料點。
 - [ ] 對Fetcher SQLite執行停止writer或SQLite online backup的一致性備份與復原；對RabbitMQ演練
   由PostgreSQL outbox重建queue，EBS backup只作快速恢復輔助。
+- [ ] 驗證generated instrument／macro cache可由canonical data重生；cache volume不列入durable
+  backup或restore來源。
 - [ ] FinDB與Fetcher各完成兩次SSM deployment且Session Manager recovery驗證成功後，移除兩台
   EC2的SSH ingress、GitHub SSH secrets與未使用key pair，保留SSM break-glass流程與audit trail。
 
@@ -326,6 +350,10 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 - [ ] `staging-findb`與`staging-fetcher`有獨立OIDC deploy role、EC2 instance role與secret path。
 - [ ] 日常deploy不使用SSH／SCP，EC2不開放SSH ingress，cross-unit IAM測試fail closed。
 - [ ] 所有application image以digest部署，accepted release manifest可重播並供production promotion。
+- [ ] Accepted release manifest具備未來promotion所需的unit、commit與完整digests；契約已固定為
+  `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH`加manual dispatch，Docker
+  `vMAJOR.MINOR.PATCH` tag只能附加到既有digest且碰撞時fail closed。Production不得重新build或
+  依tag部署；實作production promotion workflow本身不是本計畫完成條件。
 - [ ] Runtime secrets不在GitHub或persistent host env file，並完成一次實際輪替。
 - [ ] RDS private、backup／PITR／deletion protection與一次restore rehearsal有紀錄。
 - [ ] Migration停止所有writers，失敗與schema-incompatible rollback路徑已演練。
@@ -347,6 +375,7 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 | Private subnet＋ALB | 若public EC2移除SSH且只保留必要HTTPS，可暫緩 | Production network設計完成前，或public EC2風險不可接受 |
 | 全面AWS IaC import | 延後；本次只納管新控制面 | 現有resource owner確認、準備進行production環境複製或drift治理 |
 | Canonical R2資料面驗收 | 延後；只完成bucket與credential邊界 | Canonical publish/read/sign runtime完成 |
+| Production資源與promotion workflow | 延後；本次只定義unit-specific Git tag、Docker tag與accepted manifest promotion契約 | 開始建立production Environment、EC2、RDS、R2及正式promotion workflow |
 | 正式24/7 on-call與企業稽核 | 延後；使用具名owner與通知channel | Production SLA、法遵或客戶稽核需求確立 |
 
 這份檔案是暫時性執行計畫，不是永久runbook。不得在尚有未完成Phase、未搬移的操作知識或
