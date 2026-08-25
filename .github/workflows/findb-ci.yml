@@ -86,13 +86,61 @@ jobs:
           uv run python scripts/export_ingress_contracts.py --check
           uv run python scripts/export_archive_contracts.py --check
 
+      - name: Run tests
+        run: uv run pytest --tb=short -q --durations=20 --durations-min=0.5 --ignore-glob='tests/test_*migration*.py'
+
+  backend-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: findb
+          POSTGRES_PASSWORD: findb
+          POSTGRES_DB: findb_test
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U findb -d findb_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
+      TEST_DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.9.9"
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
       - name: Run migration smoke test
         run: |
           uv run alembic upgrade head
           uv run alembic current
 
-      - name: Run tests
-        run: uv run pytest --tb=short -q
+      - name: Run migration tests
+        run: uv run pytest --tb=short -q tests/test_*migration*.py --durations=20 --durations-min=0.5
 
   dashboard:
     runs-on: ubuntu-latest
