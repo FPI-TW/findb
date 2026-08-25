@@ -254,7 +254,18 @@ def cmd_test_db(_args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.setdefault("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     env["DEBUG"] = "true"
-    return _run(["uv", "run", "pytest", "--tb=short", "-q"], env=env)
+    return _run(
+        [
+            "uv",
+            "run",
+            "pytest",
+            "--tb=short",
+            "-q",
+            "--durations=20",
+            "--durations-min=0.5",
+        ],
+        env=env,
+    )
 
 
 def cmd_down(_args: argparse.Namespace) -> int:
