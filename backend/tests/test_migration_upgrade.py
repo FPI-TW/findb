@@ -10,14 +10,10 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
+
+from tests.migration_database import get_active_migration_database_factory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BASE_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://findb:findb@localhost:5435/findb_test",
-)
 SOURCE_CONTROL_TABLES = (
     "market_data_eod",
     "corporate_action",
@@ -48,21 +44,10 @@ async def _run_alembic(
 
 @pytest.mark.asyncio
 async def test_upgrade_from_early_f7_repairs_schema() -> None:
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_migration_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-    )
-    target_engine = None
-
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-
-        await _run_alembic(database_url, "f7a8b9c0d1e2")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone("f7a8b9c0d1e2", "findb_migration") as (
+        database_url,
+        target_engine,
+    ):
         async with target_engine.begin() as connection:
             await connection.execute(
                 text("""
@@ -638,13 +623,3 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
         assert delivery_column_count == 0
         assert missing_alert_table is None
         assert contract_config["delivery_expectation"]["operator_note"] == "preserve"
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        async with admin_engine.connect() as connection:
-            await connection.execute(
-                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :db"),
-                {"db": database_name},
-            )
-            await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-        await admin_engine.dispose()

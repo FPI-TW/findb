@@ -10,19 +10,16 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
-from uuid import uuid4
 
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from tests.migration_database import get_active_migration_database_factory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BASE_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL", "postgresql+asyncpg://findb:findb@localhost:5435/findb_test"
-)
 C5_REVISION = "c5d6e7f8a9b0"
 D6_REVISION = "d6e7f8a9b0c1"
 HISTORICAL_PROJECTION_CONSTRAINT = "ck_scheduler_control_ck_scheduler_control_dataset_keys_array"
@@ -52,32 +49,8 @@ async def _run_alembic(
 async def _c5_database(prefix: str) -> AsyncIterator[tuple[str, AsyncEngine]]:
     """Create a disposable database at the supported pre-Wave-5 revision."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"{prefix}_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine: AsyncEngine | None = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        result = await _run_alembic(database_url, C5_REVISION)
-        if result.returncode != 0:
-            pytest.fail(f"Alembic upgrade {C5_REVISION} failed:\n{result.stdout}\n{result.stderr}")
-        target_engine = create_async_engine(database_url)
-        yield database_url, target_engine
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
+    async with get_active_migration_database_factory().clone(C5_REVISION, prefix) as database:
+        yield database
 
 
 def test_wave5_is_single_linear_head_and_does_not_edit_c5() -> None:

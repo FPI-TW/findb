@@ -14,14 +14,11 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import create_async_engine
+
+from tests.migration_database import get_active_migration_database_factory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BASE_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL", "postgresql+asyncpg://findb:findb@localhost:5435/findb_test"
-)
 
 
 async def _run_alembic(database_url: str, revision: str, command: str = "upgrade") -> None:
@@ -62,30 +59,8 @@ async def _run_alembic_capture(
 async def _fresh_schedule_database(prefix: str) -> AsyncIterator[tuple[str, object]]:
     """Create a disposable database at the pre-08:15 schedule head."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"{prefix}_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        await _run_alembic(database_url, "b4c5d6e7f8a9")
-        target_engine = create_async_engine(database_url)
-        yield database_url, target_engine
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
+    async with get_active_migration_database_factory().clone("b4c5d6e7f8a9", prefix) as database:
+        yield database
 
 
 def test_tw_minute_migration_is_single_linear_head():
@@ -156,20 +131,9 @@ def test_minute_migration_downgrade_preserves_policy_provenance():
 async def test_twelve_data_schedule_migration_rejects_definition_drift(
     drift_kind: str,
 ) -> None:
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_twelve_schedule_guard_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        await _run_alembic(database_url, "d4e5f6a7b8c9")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone(
+        "d4e5f6a7b8c9", "twelve_schedule_guard"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             if drift_kind == "scheduler_time":
                 await connection.execute(
@@ -252,35 +216,15 @@ async def test_twelve_data_schedule_migration_rejects_definition_drift(
                     )
                     == "false"
                 )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_twelve_data_schedule_upgrade_rejects_mapping_drift_after_f2() -> None:
     """The 10:30 migration fails closed when f2's normalized mapping drifts."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_twelve_schedule_upgrade_mapping_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        await _run_alembic(database_url, "f2a3b4c5d6e7")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone(
+        "f2a3b4c5d6e7", "twelve_schedule_upgrade_mapping"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             await connection.execute(
                 text(
@@ -327,15 +271,6 @@ async def test_twelve_data_schedule_upgrade_rejects_mapping_drift_after_f2() -> 
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
                 "f2a3b4c5d6e7"
             )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -345,24 +280,10 @@ async def test_twelve_data_schedule_policy_step_failure_rolls_back_scheduler(
 ) -> None:
     """A forced policy update failure rolls back the scheduler update too."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_twelve_schedule_policy_failure_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        if direction == "upgrade":
-            await _run_alembic(database_url, "f2a3b4c5d6e7")
-        else:
-            await _run_alembic(database_url, "a3b4c5d6e7f8")
-
-        target_engine = create_async_engine(database_url)
+    revision = "f2a3b4c5d6e7" if direction == "upgrade" else "a3b4c5d6e7f8"
+    async with get_active_migration_database_factory().clone(
+        revision, "twelve_schedule_policy_failure"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             await connection.execute(
                 text(
@@ -427,33 +348,13 @@ async def test_twelve_data_schedule_policy_step_failure_rolls_back_scheduler(
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
                 expected_revision
             )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgrades() -> None:
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_twelve_schedule_json_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        await _run_alembic(database_url, "d4e5f6a7b8c9")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone(
+        "d4e5f6a7b8c9", "twelve_schedule_json"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             await connection.execute(
                 text(
@@ -552,15 +453,6 @@ async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgr
                         """
                 )
             ) == time(6, 30)
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -930,21 +822,10 @@ async def test_twelve_data_schedule_downgrade_leaves_one_sided_drift_untouched(
 ) -> None:
     """Downgrade must not repair either row after one governed side drifts."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_twelve_schedule_downgrade_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-        await _run_alembic(database_url, "f2a3b4c5d6e7")
+    async with get_active_migration_database_factory().clone(
+        "f2a3b4c5d6e7", "twelve_schedule_downgrade"
+    ) as (database_url, target_engine):
         await _run_alembic(database_url, "head")
-        target_engine = create_async_engine(database_url)
 
         async with target_engine.begin() as connection:
             if drift_kind == "scheduler_time":
@@ -1069,15 +950,6 @@ async def test_twelve_data_schedule_downgrade_leaves_one_sided_drift_untouched(
             )
         assert after == before
         assert after_mapping_count == before_mapping_count
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -1087,18 +959,10 @@ async def test_slot_identity_migration_rejects_unknown_ids_before_mutation(
 ) -> None:
     """Unknown governed IDs fail before A1 can rename or rewrite any row."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_slot_guard_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        await _run_alembic(database_url, "f4a5b6c7d8e9")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone("f4a5b6c7d8e9", "slot_guard") as (
+        database_url,
+        target_engine,
+    ):
         async with target_engine.begin() as connection:
             if invalid_location == "scheduler":
                 await connection.execute(
@@ -1170,34 +1034,16 @@ async def test_slot_identity_migration_rejects_unknown_ids_before_mutation(
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
                 == "f4a5b6c7d8e9"
             )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        async with admin_engine.connect() as connection:
-            await connection.execute(
-                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :db"),
-                {"db": database_name},
-            )
-            await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_slot_identity_migration_accepts_mixed_ids_and_preserves_custom_times() -> None:
     """Known mixed old/canonical rows converge without overwriting custom clocks."""
 
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_slot_mixed_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        await _run_alembic(database_url, "f4a5b6c7d8e9")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone("f4a5b6c7d8e9", "slot_mixed") as (
+        database_url,
+        target_engine,
+    ):
         async with target_engine.begin() as connection:
             await connection.execute(
                 text(
@@ -1313,29 +1159,11 @@ async def test_slot_identity_migration_accepts_mixed_ids_and_preserves_custom_ti
                 time(5, 45),
                 "UTC",
             )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        async with admin_engine.connect() as connection:
-            await connection.execute(
-                text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :db"),
-                {"db": database_name},
-            )
-            await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_minute_identity_migration_backfills_legacy_runs_safely():
     """The f4 upgrade recovers retained identity without blocking old runs."""
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_minute_identity_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
 
     valid_with_raw_id = uuid4()
     valid_with_run_id = uuid4()
@@ -1398,13 +1226,10 @@ async def test_minute_identity_migration_backfills_legacy_runs_safely():
             },
         )
 
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-
-        await _run_alembic(database_url, "e3f4a5b6c7d8")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone("e3f4a5b6c7d8", "minute_identity") as (
+        database_url,
+        target_engine,
+    ):
         async with target_engine.begin() as connection:
             # An operator-owned expectation is preserved byte-for-byte while
             # the absent policy on the equity dataset receives the seed.
@@ -1554,41 +1379,14 @@ async def test_minute_identity_migration_backfills_legacy_runs_safely():
                     text("UPDATE ingestion_run SET snapshot_id = 'partial' WHERE run_id = :run_id"),
                     {"run_id": non_minute_run},
                 )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                        "WHERE datname = :name"
-                    ),
-                    {"name": database_name},
-                )
-                await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
     """The scheduler definition migration is a lossless control-plane upgrade."""
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_scheduler_definition_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-    database_created = False
-
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-        database_created = True
-
-        await _run_alembic(database_url, "c1d2e3f4a5b6")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone(
+        "c1d2e3f4a5b6", "scheduler_definition"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             # Force the fresh-install shape: c1 has no EOD registry targets yet
             # (the seed runs after migrations).  d2 must materialize them before
@@ -1880,33 +1678,13 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                 )
                 == 2
             )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        if database_created:
-            async with admin_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-                )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_shioaji_pilot_activation_migration_is_reversible():
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_shioaji_activation_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-
-        await _run_alembic(database_url, "a9b0c1d2e3f4")
-        target_engine = create_async_engine(database_url)
+    async with get_active_migration_database_factory().clone(
+        "a9b0c1d2e3f4", "shioaji_activation"
+    ) as (database_url, target_engine):
         async with target_engine.begin() as connection:
             await connection.execute(
                 text(
@@ -1957,33 +1735,14 @@ async def test_shioaji_pilot_activation_migration_is_reversible():
                 ("tw_equity_minute", False),
                 ("tw_etf_minute", False),
             ]
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        async with admin_engine.connect() as connection:
-            await connection.execute(
-                text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-            )
-        await admin_engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_tw_minute_upgrade_downgrade_upgrade_round_trip():
-    base_url = make_url(BASE_DATABASE_URL)
-    database_name = f"findb_tw_minute_migration_{uuid4().hex[:12]}"
-    database_url = base_url.set(database=database_name).render_as_string(hide_password=False)
-    admin_engine = create_async_engine(
-        base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    target_engine = None
-
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-
-        await _run_alembic(database_url, "f8a9b0c1d2e3")
+    async with get_active_migration_database_factory().clone(
+        "f8a9b0c1d2e3", "tw_minute_migration"
+    ) as (database_url, target_engine):
         await _run_alembic(database_url, "a9b0c1d2e3f4")
-        target_engine = create_async_engine(database_url)
         async with target_engine.connect() as connection:
             assert await connection.scalar(text("SELECT to_regclass('public.market_data_minute')"))
             assert await connection.scalar(
@@ -2628,15 +2387,3 @@ async def test_tw_minute_upgrade_downgrade_upgrade_round_trip():
             assert await connection.scalar(
                 text("SELECT to_regclass('public.tw_minute_archive_chunk')")
             )
-    finally:
-        if target_engine is not None:
-            await target_engine.dispose()
-        async with admin_engine.connect() as connection:
-            await connection.execute(
-                text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :name"
-                ),
-                {"name": database_name},
-            )
-            await connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-        await admin_engine.dispose()
