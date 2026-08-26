@@ -465,7 +465,7 @@ jobs:
               aws logs filter-log-events \
                 --region "$AWS_REGION" \
                 --log-group-name "$AWS_SSM_LOG_GROUP" \
-                --log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout" \
+                --log-stream-name-prefix "${command_id}/${target_id}/aws-runShellScript/stdout" \
                 --filter-pattern "\"$failure_marker\"" \
                 --query 'length(events)' \
                 --output json 2>/dev/null
@@ -482,7 +482,7 @@ jobs:
               aws logs filter-log-events \
                 --region "$AWS_REGION" \
                 --log-group-name "$AWS_SSM_LOG_GROUP" \
-                --log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout" \
+                --log-stream-name-prefix "${command_id}/${target_id}/aws-runShellScript/stdout" \
                 --filter-pattern "\"$success_marker\"" \
                 --query 'length(events)' \
                 --output json 2>/dev/null
