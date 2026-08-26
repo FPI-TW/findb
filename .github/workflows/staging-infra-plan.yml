@@ -1,11 +1,7 @@
 name: Staging Infra Plan
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "infra/tofu/**"
-      - ".github/workflows/staging-infra-plan.yml"
+  workflow_call:
 
 permissions:
   contents: read
