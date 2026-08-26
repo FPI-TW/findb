@@ -124,13 +124,13 @@ def test_provider_and_instance_tag_contract_are_explicit_and_have_no_filesystem_
 def test_oidc_trust_is_exactly_bound_to_each_github_environment() -> None:
     iam = _read(STAGING_ROOT / "iam.tf")
     main = _read(STAGING_ROOT / "main.tf")
+    tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
 
     assert 'resource "aws_iam_openid_connect_provider" "github"' in main
     assert 'resource "terraform_data" "oidc_contract_guard"' in main
     assert 'manage_github_oidc_provider && var.github_oidc_provider_arn == ""' in main
-    assert "manage_github_oidc_provider  = false" in _read(
-        STAGING_ROOT / "terraform.tfvars.example"
-    )
+    assert 'github_oidc_provider_arn    = ""' in tfvars
+    assert "manage_github_oidc_provider = true" in tfvars
     assert 'data "aws_iam_openid_connect_provider" "github_existing"' in _read(
         STAGING_ROOT / "versions.tf"
     )
@@ -145,6 +145,176 @@ def test_oidc_trust_is_exactly_bound_to_each_github_environment() -> None:
         'data "aws_iam_policy_document" "instance_trust"', 1
     )[0]
     assert "StringLike" not in trust
+
+
+def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
+    plan = _read(STAGING_ROOT / "infra_plan.tf")
+    outputs = _read(STAGING_ROOT / "outputs.tf")
+    variables = _read(STAGING_ROOT / "variables.tf")
+    tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
+    readme = _read(TOFU_ROOT / "README.md")
+
+    assert 'data "aws_iam_policy_document" "infra_plan_trust"' in plan
+    assert 'resource "aws_iam_role" "infra_plan"' in plan
+    assert 'resource "aws_iam_role_policy" "infra_plan"' in plan
+    assert 'values   = ["sts.amazonaws.com"]' in plan
+    assert 'values   = ["repo:${var.github_repository}:pull_request"]' in plan
+    trust = plan.split('data "aws_iam_policy_document" "infra_plan_trust"', 1)[1].split(
+        'resource "aws_iam_role" "infra_plan"', 1
+    )[0]
+    assert "environment" not in trust
+
+    permissions = plan.split('data "aws_iam_policy_document" "infra_plan_permissions"', 1)[1].split(
+        'resource "aws_iam_role_policy" "infra_plan"', 1
+    )[0]
+    assert 'sid    = "ReadResourceLessMetadata"' in permissions
+    assert (
+        'actions = [\n      "ec2:DescribeInstanceAttribute",\n      "ec2:DescribeInstanceCreditSpecifications",\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "ec2:DescribeVolumes",\n      "ec2:DescribeVpcs",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "sts:GetCallerIdentity",\n    ]'
+        in permissions
+    )
+    assert 'resources = ["*"]' in permissions
+    assert 'sid    = "ReadExactDeployRoles"' in permissions
+    assert "resources = [for role in aws_iam_role.deploy : role.arn]" in permissions
+    assert 'sid    = "ReadExactInstanceRoles"' in permissions
+    assert "resources = [for role in aws_iam_role.instance : role.arn]" in permissions
+    assert 'sid    = "ReadExactInfraPlanRole"' in permissions
+    assert "resources = [aws_iam_role.infra_plan.arn]" in permissions
+    assert 'sid    = "ReadExactInstanceProfiles"' in permissions
+    assert (
+        "resources = [for profile in aws_iam_instance_profile.instance : profile.arn]"
+        in permissions
+    )
+    assert 'sid    = "ReadExactGithubOidcProvider"' in permissions
+    assert "resources = [local.github_oidc_provider_arn]" in permissions
+    assert 'sid    = "ReadExactDeployBundleKey"' in permissions
+    assert "resources = [aws_kms_key.deploy_bundle.arn]" in permissions
+    assert 'sid    = "ReadExactRuntimeSecretKeys"' in permissions
+    assert "resources = [for key in aws_kms_key.runtime_secrets : key.arn]" in permissions
+    assert 'sid    = "ReadExactSessionDocuments"' in permissions
+    assert (
+        "resources = [for document in aws_ssm_document.session_manager_preferences : document.arn]"
+        in permissions
+    )
+    assert "ssm:DescribeDocumentPermission" in permissions
+    assert 'sid       = "ReadExactSsmLogGroupTags"' in permissions
+    assert "resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]" in permissions
+    assert 'sid    = "ReadExactSecretMetadata"' in permissions
+    assert (
+        "resources = [for secret in aws_secretsmanager_secret.runtime : secret.arn]" in permissions
+    )
+    assert "secretsmanager:GetResourcePolicy" in permissions
+    assert 'sid       = "ReadExactStateObject"' in permissions
+    assert 'sid    = "ListExactStatePrefix"' in permissions
+    assert 'sid       = "GetExactStateBucketLocation"' in permissions
+    assert 'sid       = "ManageExactNativeStateLockfile"' in permissions
+    assert 'sid       = "DecryptExactStateObjects"' in permissions
+    assert 'sid       = "GenerateDataKeyForExactStateLockfile"' in permissions
+    for forbidden in (
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        '"kms:Encrypt"',
+        "iam:PassRole",
+        "iam:Create",
+        "iam:Delete",
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "sts:AssumeRole",
+    ):
+        assert forbidden not in permissions
+    assert 'actions   = ["s3:DeleteObject", "s3:GetObject", "s3:PutObject"]' in permissions
+    assert "resources = [local.infra_plan_lock_object_arn]" in permissions
+    assert 'test     = "StringEquals"' in permissions
+    assert 'variable = "s3:prefix"' in permissions
+    assert "StringLikeIfExists" not in permissions
+    state_location_statement = permissions.split('sid       = "GetExactStateBucketLocation"', 1)[
+        1
+    ].split('sid       = "ManageExactNativeStateLockfile"', 1)[0]
+    assert 'actions   = ["s3:GetBucketLocation"]' in state_location_statement
+    assert "resources = [local.infra_plan_state_bucket_arn]" in state_location_statement
+    assert "s3:prefix" not in state_location_statement
+    state_prefix_statement = permissions.split('sid    = "ListExactStatePrefix"', 1)[1].split(
+        'sid       = "GetExactStateBucketLocation"', 1
+    )[0]
+    assert 'actions   = ["s3:ListBucket"]' in state_prefix_statement
+    assert 'values   = [var.state_key, "${var.state_key}.tflock"]' in state_prefix_statement
+    assert 'actions   = ["kms:Decrypt"]' in permissions
+    assert "resources = [var.state_kms_key_arn]" in permissions
+    assert "iam:ListAttachedRolePolicies" in permissions
+
+    deploy_bucket_statement = permissions.split('sid    = "ReadExactDeployBundleBucket"', 1)[
+        1
+    ].split('sid       = "ReadExactStateObject"', 1)[0]
+    assert "resources = [aws_s3_bucket.deploy_bundle.arn]" in deploy_bucket_statement
+    for action in (
+        "s3:GetBucketAcl",
+        "s3:GetBucketCORS",
+        "s3:GetBucketLocation",
+        "s3:GetBucketLogging",
+        "s3:GetBucketNotification",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy",
+        "s3:GetBucketPolicyStatus",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketRequestPayment",
+        "s3:GetBucketTagging",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketWebsite",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetReplicationConfiguration",
+        "s3:ListBucket",
+        "s3:ListTagsForResource",
+    ):
+        assert action in deploy_bucket_statement
+    assert "s3:GetBucketLifecycleConfiguration" not in permissions
+
+    assert "s3:ListAllMyBuckets" not in permissions
+
+    generate_key_statement = permissions.split(
+        'sid       = "GenerateDataKeyForExactStateLockfile"', 1
+    )[1]
+    assert 'actions   = ["kms:GenerateDataKey"]' in generate_key_statement
+    assert "resources = [var.state_kms_key_arn]" in generate_key_statement
+    assert 'variable = "kms:ViaService"' in generate_key_statement
+    assert 'values   = ["s3.${var.aws_region}.amazonaws.com"]' in generate_key_statement
+    assert 'variable = "kms:EncryptionContext:aws:s3:arn"' in generate_key_statement
+    assert "values   = [local.infra_plan_state_bucket_arn]" in generate_key_statement
+    assert "aws_kms_key.runtime_secrets" not in generate_key_statement
+    assert "aws_kms_key.deploy_bundle" not in generate_key_statement
+
+    decrypt_key_statement = permissions.split('sid       = "DecryptExactStateObjects"', 1)[1].split(
+        'sid       = "GenerateDataKeyForExactStateLockfile"', 1
+    )[0]
+    assert 'actions   = ["kms:Decrypt"]' in decrypt_key_statement
+    assert 'variable = "kms:EncryptionContext:aws:s3:arn"' in decrypt_key_statement
+    assert "values   = [local.infra_plan_state_bucket_arn]" in decrypt_key_statement
+    assert "var.state_bucket_name" in plan
+    assert "var.state_key" in plan
+    assert 'output "infra_plan_role_arn"' in outputs
+    assert 'condition     = var.aws_region == "ap-southeast-1"' in variables
+    assert 'condition     = var.aws_account_id == "439622209937"' in variables
+    assert 'default     = "staging-infra-plan"' in variables
+    assert 'condition     = var.github_repository == "FPI-TW/findb"' in variables
+    assert (
+        "condition     = var.deploy_bundle_bucket_name == "
+        '"findb-staging-deploy-bundle-439622209937"'
+    ) in variables
+    assert re.search(r'github_repository\s*=\s*"FPI-TW/findb"', tfvars)
+    assert 'state_bucket_name    = "findb-staging-tofu-state-439622209937"' in tfvars
+    assert 'state_key            = "staging/control-plane.tfstate"' in tfvars
+    assert 'deploy_bundle_bucket_name = "findb-staging-deploy-bundle-439622209937"' in tfvars
+    assert (
+        'state_kms_key_arn    = "arn:aws:kms:ap-southeast-1:439622209937:key/'
+        '776159fc-3251-4cd0-98b0-24dfa9e9701d"'
+    ) in tfvars
+    assert "The current remote state owns" in readme
+    assert "exceptional, separately authorized operation" in readme
+    assert "separately authorized operator" in readme
+    assert "pull-request" in readme
+    assert "never authorizes an apply" in readme
+    assert "OpenTofu 1.12.6" in readme
+    assert "deploy_bundle_bucket_name=findb-staging-deploy-bundle-439622209937" in readme
 
 
 def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:

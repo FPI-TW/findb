@@ -1,10 +1,12 @@
 """Tests for deployment gates."""
 
 import hashlib
+import json
 import os
 import re
 import runpy
 import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,7 @@ DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
+PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 
 
 class UniqueKeyLoader(yaml.BaseLoader):
@@ -126,6 +129,7 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
         "findb-cd.yml",
         "fetcher-ci.yml",
         "fetcher-cd.yml",
+        "staging-infra-plan.yml",
     }
     actual_paths = tuple(
         sorted(
@@ -139,6 +143,277 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
     assert {path.name for path in actual_paths} == expected_names
     for path in actual_paths:
         _load_workflow(path)
+
+
+def test_staging_infra_plan_is_pr_only_exact_commit_and_bounded() -> None:
+    workflow_path = WORKFLOWS_ROOT / "staging-infra-plan.yml"
+    workflow = _load_workflow(workflow_path)
+    triggers = workflow["on"]
+
+    assert triggers == {
+        "pull_request": {
+            "branches": ["main"],
+            "paths": ["infra/tofu/**", ".github/workflows/staging-infra-plan.yml"],
+        }
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]) == {"plan"}
+    assert workflow["env"]["TOFU_VERSION"] == "1.12.6"
+
+    plan_job = workflow["jobs"]["plan"]
+    assert plan_job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert "environment" not in plan_job
+    steps = plan_job["steps"]
+    fork_guard = steps[0]
+    assert fork_guard["name"] == "Reject external fork pull requests"
+    assert fork_guard["env"] == {
+        "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+        "BASE_REPOSITORY": "${{ github.repository }}",
+    }
+    fork_guard_script = fork_guard["run"]
+    assert '-z "$PR_HEAD_REPOSITORY"' in fork_guard_script
+    assert '"$PR_HEAD_REPOSITORY" != "$BASE_REPOSITORY"' in fork_guard_script
+    assert "External fork pull requests are not eligible" in fork_guard_script
+    assert "exit 1" in fork_guard_script
+    checkout = next(
+        step for step in steps if step.get("name") == "Checkout exact pull request commit"
+    )
+    assert checkout["uses"] == ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+    assert checkout["with"] == {
+        "ref": "${{ github.event.pull_request.head.sha }}",
+        "fetch-depth": "1",
+        "persist-credentials": "false",
+    }
+
+    tofu_setup = next(step for step in steps if step.get("name") == "Set up pinned OpenTofu")
+    assert tofu_setup["uses"] == (
+        "opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4"
+    )
+    assert tofu_setup["with"] == {
+        "tofu_version": "${{ env.TOFU_VERSION }}",
+        "tofu_wrapper": "false",
+    }
+
+    verify_commit = next(step for step in steps if step.get("name") == "Verify checked out commit")
+    assert verify_commit["env"] == {
+        "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+    }
+    verify_script = verify_commit["run"]
+    assert re.search(r"\[\[ ! \"\$PR_HEAD_SHA\" =~ \^\[0-9a-fA-F\]\{40\}\$ \]\]", verify_script)
+    assert 'checked_out_sha="$(git rev-parse HEAD)"' in verify_script
+    assert '"$checked_out_sha" != "$PR_HEAD_SHA"' in verify_script
+    assert "exit 1" in verify_script
+
+    credential_step = next(
+        step for step in steps if step.get("name") == "Configure staging plan AWS credentials"
+    )
+    assert (
+        steps.index(fork_guard)
+        < steps.index(checkout)
+        < steps.index(verify_commit)
+        < steps.index(credential_step)
+    )
+    assert credential_step["uses"] == (
+        "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c"
+    )
+    assert credential_step["with"] == {
+        "role-to-assume": "${{ vars.STAGING_INFRA_PLAN_ROLE_ARN }}",
+        "aws-region": "${{ env.AWS_REGION }}",
+        "allowed-account-ids": "${{ env.AWS_ACCOUNT_ID }}",
+        "role-session-name": "staging-infra-plan-${{ github.run_id }}",
+    }
+
+    init_script = next(
+        step for step in steps if step.get("name") == "Initialize exact staging backend"
+    )["run"]
+    for setting in (
+        "-reconfigure",
+        "-lockfile=readonly",
+        "bucket=findb-staging-tofu-state-439622209937",
+        "key=staging/control-plane.tfstate",
+        "region=ap-southeast-1",
+        "encrypt=true",
+        "kms_key_id=arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d",
+        "use_lockfile=true",
+    ):
+        assert setting in init_script
+
+    plan_script = next(
+        step
+        for step in steps
+        if step.get("name") == "Refresh plan and reject delete or replace actions"
+    )["run"]
+    assert "-refresh=true" in plan_script
+    assert "-var-file=terraform.tfvars.example" in plan_script
+    assert '-out="$plan_file"' in plan_script
+    assert 'tofu -chdir=infra/tofu/staging show -json "$plan_file"' in plan_script
+    assert "python3 infra/tofu/plan_json_guard.py" in plan_script
+    assert "jq" not in plan_script
+    assert "fallback" not in plan_script.lower()
+    assert "delete/replace actions" in plan_script
+    assert "trap 'rm -rf \"$scratch\"' EXIT" in plan_script
+    assert "GITHUB_STEP_SUMMARY" in plan_script
+    assert "config_checksum" in plan_script
+    assert "lock_checksum" in plan_script
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert not re.search(r'echo\s+"[^"\n]*`', plan_script)
+    assert "printf -- '- commit: `%s`\\n' \"$PR_HEAD_SHA\"" in plan_script
+    assert (
+        'printf -- \'- configuration files: %s (sha256: `%s`)\\n\' "$config_count" "$config_checksum"'
+        in plan_script
+    )
+    assert "upload-artifact" not in workflow_text
+    assert "tofu apply" not in workflow_text
+    assert "${{ secrets." not in workflow_text
+
+
+def _plan_json_fixture() -> dict[str, object]:
+    return {
+        "format_version": "1.0",
+        "terraform_version": "1.12.6",
+        "planned_values": {"root_module": {"resources": [], "child_modules": []}},
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "expressions": {
+                            "statement": [
+                                {
+                                    "actions": {"constant_value": ["iam:GetRole"]},
+                                    "resources": {"references": ["aws_iam_role.example.arn"]},
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "module_calls": {},
+            }
+        },
+        "resource_changes": [],
+        "resource_drift": [],
+        "output_changes": {},
+        "deferred_changes": [],
+    }
+
+
+def _run_plan_json_guard(tmp_path: Path, payload: object) -> subprocess.CompletedProcess[str]:
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(payload), encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, str(PLAN_JSON_GUARD), str(plan_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_plan_json_guard_accepts_safe_plan_and_emits_only_bounded_counts(
+    tmp_path: Path,
+) -> None:
+    completed = _run_plan_json_guard(tmp_path, _plan_json_fixture())
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert completed.stdout.startswith("plan_guard=pass ")
+    assert "action_lists=0" in completed.stdout
+    assert "delete_actions=0" in completed.stdout
+    assert "resource_changes=0" in completed.stdout
+    assert "resource_drift=0" in completed.stdout
+    assert "output_changes=0" in completed.stdout
+    assert "deferred_changes=0" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    (
+        (
+            "resource-change delete",
+            lambda plan: plan["resource_changes"].append(
+                {"change": {"actions": ["delete", "create"]}}
+            ),
+        ),
+        (
+            "resource-drift delete",
+            lambda plan: plan["resource_drift"].append({"change": {"actions": ["delete"]}}),
+        ),
+        (
+            "output delete",
+            lambda plan: plan["output_changes"].update({"example": {"actions": ["delete"]}}),
+        ),
+        (
+            "nested future delete",
+            lambda plan: plan["deferred_changes"].append(
+                {
+                    "change": {"actions": ["no-op"]},
+                    "future": {"nested": {"actions": ["delete"]}},
+                }
+            ),
+        ),
+    ),
+)
+def test_plan_json_guard_rejects_delete_in_every_plan_action_section(
+    tmp_path: Path,
+    label: str,
+    mutate: Any,
+) -> None:
+    del label
+    plan = _plan_json_fixture()
+    mutate(plan)
+
+    completed = _run_plan_json_guard(tmp_path, plan)
+
+    assert completed.returncode != 0
+    assert "plan_guard=reject reason=delete" in completed.stderr
+    assert completed.stdout == ""
+    assert "example" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    (
+        ("non-object", []),
+        ("missing core configuration", {"format_version": "1.0"}),
+        (
+            "missing resource change collection",
+            {
+                key: value
+                for key, value in _plan_json_fixture().items()
+                if key != "resource_changes"
+            },
+        ),
+        (
+            "resource changes wrong collection type",
+            {**_plan_json_fixture(), "resource_changes": {}},
+        ),
+        (
+            "action list has non-string member",
+            {
+                **_plan_json_fixture(),
+                "resource_changes": [{"change": {"actions": ["create", 7]}}],
+            },
+        ),
+        (
+            "resource change missing action list",
+            {**_plan_json_fixture(), "resource_changes": [{"change": {}}]},
+        ),
+        (
+            "output change missing action list",
+            {**_plan_json_fixture(), "output_changes": {"example": {}}},
+        ),
+    ),
+)
+def test_plan_json_guard_rejects_malformed_or_incomplete_plan_json(
+    tmp_path: Path,
+    label: str,
+    payload: object,
+) -> None:
+    del label
+    completed = _run_plan_json_guard(tmp_path, payload)
+
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == "plan_guard=reject reason=malformed"
 
 
 def test_external_actions_are_pinned_to_full_commit_shas() -> None:

@@ -89,7 +89,7 @@ protected main
 | R2 | Raw與Canonical bucket／credential契約已拆分；2026-08-21已人工確認Raw lifecycle 30天與bucket lock 7天 | Canonical runtime不得宣稱已通過資料面驗收 |
 | Protection | workflow固定第三方Action SHA；GitHub組織ruleset `Main protection` 要求PR、禁止force-push與限制deletion；repo ruleset `FinDB required CI` 對default branch／`main`強制 `Required CI`；兩個Environment各只允許`main`且無reviewer／wait-timer；兩台EC2已有unit-specific required tags；protected `main`已實證兩個CD不受人工核准阻塞且target count各為1 | 持續維持always-created `Required CI`、Environment branch policy與unit-specific target tags一致；無Phase 1 blocker |
 | Observability | 應用內已有health、queue與freshness checks；CloudWatch已有`/findb/staging/findb/ssm`與`/findb/staging/fetcher/ssm`兩個KMS-encrypted、30-day log groups，兩個unit的bounded command stdout已成功寫入；alarms仍為0，RDS Database Insights Standard retention為7天 | EC2／application logs、關鍵alarms、完整retention、告警接收者及synthetic test |
-| IaC | Repo已有OpenTofu bootstrap與staging control-plane stacks；encrypted、versioned S3 remote state使用native lockfile與指定KMS key，Tyler (`tylercore`)為state owner；2026-08-26兩個stack plan均為`No changes` | 既有EC2／RDS／VPC等data-plane資源只引用與加required tags，不在本計畫全面import；Phase 6 alarms仍待實作 |
+| IaC | Repo已有OpenTofu bootstrap與staging control-plane stacks；encrypted、versioned S3 remote state使用native lockfile與指定KMS key，Tyler (`tylercore`)為state owner；2026-08-26兩個stack plan均為`No changes` | 建立IaC專用GitHub Actions PR plan gate與獨立OIDC plan role；既有EC2／RDS／VPC等data-plane資源只引用與加required tags，不在本計畫全面import；Phase 6 alarms仍待實作 |
 
 `.github/workflows/required-ci.yml`、兩份unit CI、兩份unit CD與
 `docker-compose.prod.yml` 是現行行為的 source of truth。本文不把尚未查證的 AWS console
@@ -316,6 +316,25 @@ buckets碰撞；套用後bootstrap與staging stacks均為`No changes`。全面�
 另案進行，不阻塞本次staging hardening；若後續發現外部owner，先import或交由原owner修改，
 禁止建立第二套同名資源。
 
+IaC原始碼同步與plan採以下過渡及長期契約：
+
+- IaC專用workflow完成前，CloudShell只接受由受信任operator從指定commit建立、僅含
+  `infra/tofu/`的單次archive。上傳前後都驗證SHA-256，從`/tmp`解壓，執行完即刪除source、
+  tfvars、plan與archive；source commit變更或合併到`main`後必須以新commit重新產生及驗證，
+  不把CloudShell副本視為可持續同步來源；
+- 長期由GitHub Actions checkout觸發workflow所屬的exact commit，不再把CloudShell上傳作為日常
+  同步方式。`infra/tofu/**`變更的PR必須執行recursive `fmt -check`、backend `init`、`validate`
+  與refresh-enabled `plan`，provider及OpenTofu版本依repo lockfile／workflow固定；
+- plan job使用獨立`staging-infra-plan` OIDC role。該role只允許讀取既有AWS資源、讀取及解密
+  staging state，並只為S3 native lockfile取得必要的建立／刪除鎖權限；不得修改受管AWS資源、
+  讀取runtime secret value或取得apply role；
+- workflow輸出綁定commit SHA與configuration／lockfile checksum的bounded plan摘要；完整plan不得
+  公開或跨commit重用。任何delete／replace action、初始化或驗證錯誤皆fail closed，除非另有具名
+  operator、理由、影響範圍與核准紀錄；
+- apply不由PR plan role執行。合併protected `main`後，operator以獨立apply身分重新checkout合併
+  commit、重新執行相同檢查與fresh plan，確認預期變更且零destroy後才可人工apply。PR plan只作
+  gate與預覽，不構成apply授權。
+
 ## 實作波次
 
 每一波各自提PR；先完成read-only或dual-path驗證，再移除舊路徑。不得在同一個deployment同時
@@ -391,6 +410,9 @@ aliases，因此尚未執行loader canary、secret寫入、credential輪替或co
 Environment secrets、persistent host credentials與SSH recovery必須保留，直到本Phase其餘驗收
 全部成功且撤銷條件另行確認。
 
+- [ ] 建立IaC專用GitHub Actions PR plan gate與`staging-infra-plan` OIDC role，依IaC邊界驗證
+  exact commit、bounded plan、零delete／replace及plan／apply身分分離；完成前只使用上述
+  commit-specific CloudShell archive過渡流程。
 - [ ] 依consumer邊界建立target-specific secrets與KMS policy；先寫入新版本，不刪GitHub值。
 - [ ] 新增host-side secret loader，以allowlist取值、寫入tmpfs、驗證owner／mode並於結束後清理。
 - [ ] 先用現行SSH CD完成一次非資料產生的deploy，改由instance role取secret，確認每個container
@@ -500,6 +522,9 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 - [x] aggregate加四個unit GitHub workflows的path、CI、Environment、concurrency與release unit matrix一致。
 - [x] Protected `main`自動部署staging且不受Environment人工核准阻塞；required CI與PR protection
   已完成外部驗證。
+- [ ] `infra/tofu/**`變更由IaC專用GitHub Actions在exact PR commit執行`fmt/init/validate/plan`；
+  `staging-infra-plan` OIDC role不能修改受管資源或讀取runtime secret value，delete／replace
+  fail closed，apply只可由protected `main`的fresh plan與獨立身分人工執行。
 - [ ] `staging-findb`與`staging-fetcher`有獨立OIDC deploy role、EC2 instance role與secret path。
 - [ ] 日常deploy不使用SSH／SCP，EC2不開放SSH ingress，cross-unit IAM測試fail closed。
 - [ ] 所有application image以digest部署，accepted release manifest可重播並供production promotion。

@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Fail-closed validation for an OpenTofu ``show -json`` plan.
+
+The guard deliberately does not deserialize or print plan values. It validates
+the small structural contract needed by the CI delete gate, then recursively
+checks every JSON member named ``actions`` so future plan sections cannot
+silently bypass the gate.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, NoReturn
+
+MAX_INPUT_BYTES = 64 * 1024 * 1024
+MAX_REPORTED_COUNT = 1_000_000
+CORE_KEYS = ("format_version", "terraform_version", "planned_values", "configuration")
+REQUIRED_COLLECTION_KEYS = ("resource_changes", "resource_drift", "output_changes")
+
+
+class GuardError(Exception):
+    """Expected malformed-plan or delete-action failure."""
+
+
+class DuplicateKeyError(ValueError):
+    """Raised when a JSON object repeats a key."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateKeyError
+        result[key] = value
+    return result
+
+
+def _reject_non_json_constant(_: str) -> NoReturn:
+    raise ValueError
+
+
+def _fail() -> NoReturn:
+    # Do not include a JSON path or value in an error. Plan details must never
+    # be reflected in CI logs, including when a malformed fixture is supplied.
+    raise GuardError
+
+
+def _bounded_count(value: int) -> int:
+    return min(value, MAX_REPORTED_COUNT)
+
+
+class Counts:
+    action_lists = 0
+    delete_actions = 0
+
+
+def _record_actions(value: Any, counts: Counts) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        _fail()
+    counts.action_lists = _bounded_count(counts.action_lists + 1)
+    counts.delete_actions = _bounded_count(
+        counts.delete_actions + sum(item == "delete" for item in value)
+    )
+
+
+def _walk_future_actions(value: Any, counts: Counts) -> None:
+    """Inspect unknown action-bearing plan sections without reading their values."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "actions":
+                _record_actions(child, counts)
+            else:
+                _walk_future_actions(child, counts)
+    elif isinstance(value, list):
+        for child in value:
+            _walk_future_actions(child, counts)
+
+
+def _validate_shape(plan: Any) -> tuple[dict[str, Any], Counts]:
+    if not isinstance(plan, dict):
+        _fail()
+    for key in CORE_KEYS:
+        if key not in plan:
+            _fail()
+    for key in REQUIRED_COLLECTION_KEYS:
+        if key not in plan:
+            _fail()
+
+    if not isinstance(plan["format_version"], str) or not plan["format_version"]:
+        _fail()
+    if not isinstance(plan["terraform_version"], str) or not plan["terraform_version"]:
+        _fail()
+    for key in ("planned_values", "configuration"):
+        if not isinstance(plan[key], dict):
+            _fail()
+        root_module = plan[key].get("root_module")
+        if not isinstance(root_module, dict):
+            _fail()
+
+    counts = Counts()
+    for key in ("resource_changes", "resource_drift"):
+        changes = plan[key]
+        if not isinstance(changes, list):
+            _fail()
+        for item in changes:
+            if not isinstance(item, dict):
+                _fail()
+            change = item.get("change")
+            if not isinstance(change, dict) or "actions" not in change:
+                _fail()
+            _record_actions(change["actions"], counts)
+
+    output_changes = plan["output_changes"]
+    if not isinstance(output_changes, dict):
+        _fail()
+    for item in output_changes.values():
+        if not isinstance(item, dict) or "actions" not in item:
+            _fail()
+        _record_actions(item["actions"], counts)
+
+    for key in ("checks", "deferred_changes", "relevant_attributes"):
+        if key not in plan:
+            continue
+        collection = plan[key]
+        if not isinstance(collection, list) or not all(
+            isinstance(item, dict) for item in collection
+        ):
+            _fail()
+
+    # Deferred changes and future top-level plan sections may introduce nested
+    # change representations. Inspect those recursively, while deliberately
+    # excluding configuration/state/value trees where a provider attribute can
+    # also legitimately be named "actions" without representing a plan action.
+    if "deferred_changes" in plan:
+        _walk_future_actions(plan["deferred_changes"], counts)
+    known_top_level = {
+        "checks",
+        "configuration",
+        "deferred_changes",
+        "errored",
+        "format_version",
+        "output_changes",
+        "planned_values",
+        "prior_state",
+        "relevant_attributes",
+        "resource_changes",
+        "resource_drift",
+        "terraform_version",
+        "timestamp",
+        "variables",
+    }
+    for key, value in plan.items():
+        if key not in known_top_level:
+            _walk_future_actions(value, counts)
+
+    return plan, counts
+
+
+def _load_plan(path_arg: str) -> Any:
+    if path_arg == "-":
+        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    else:
+        raw = Path(path_arg).read_bytes()
+    if len(raw) > MAX_INPUT_BYTES:
+        _fail()
+    return json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_reject_duplicate_keys,
+        parse_constant=_reject_non_json_constant,
+    )
+
+
+def _summary(plan: dict[str, Any], counts: Counts) -> str:
+    resource_changes = plan.get("resource_changes", [])
+    resource_drift = plan.get("resource_drift", [])
+    output_changes = plan.get("output_changes", {})
+    deferred_changes = plan.get("deferred_changes", [])
+    return (
+        "plan_guard=pass"
+        f" action_lists={counts.action_lists}"
+        f" delete_actions={counts.delete_actions}"
+        f" resource_changes={_bounded_count(len(resource_changes))}"
+        f" resource_drift={_bounded_count(len(resource_drift))}"
+        f" output_changes={_bounded_count(len(output_changes))}"
+        f" deferred_changes={_bounded_count(len(deferred_changes))}"
+    )
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("plan_guard=reject reason=usage", file=sys.stderr)
+        return 2
+
+    try:
+        plan, counts = _validate_shape(_load_plan(argv[1]))
+        if counts.delete_actions:
+            print(
+                "plan_guard=reject reason=delete"
+                f" action_lists={counts.action_lists}"
+                f" delete_actions={counts.delete_actions}",
+                file=sys.stderr,
+            )
+            return 1
+        print(_summary(plan, counts))
+        return 0
+    except GuardError:
+        print("plan_guard=reject reason=malformed", file=sys.stderr)
+        return 1
+    except Exception:
+        # Unexpected parser/runtime errors are also a rejection. Never expose
+        # exception text because it could contain decoded plan values.
+        print("plan_guard=reject reason=malformed", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

@@ -9,10 +9,15 @@ findb_instance_id   = "i-0942016913367a8b2"
 fetcher_instance_id = "i-05f518ef183bc31a9"
 
 github_repository       = "FPI-TW/findb"
-# Fill this from a read-only IAM inventory. Leave empty only when the inventory
-# proves the provider does not exist and creation is explicitly approved.
-github_oidc_provider_arn     = "arn:aws:iam::439622209937:oidc-provider/token.actions.githubusercontent.com"
-manage_github_oidc_provider  = false
+# The current remote state owns aws_iam_openid_connect_provider.github[0].
+# Keep the empty ARN and explicit management flag for that state-owned object.
+github_oidc_provider_arn    = ""
+manage_github_oidc_provider = true
+
+infra_plan_role_name = "staging-infra-plan"
+state_bucket_name    = "findb-staging-tofu-state-439622209937"
+state_key            = "staging/control-plane.tfstate"
+state_kms_key_arn    = "arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d"
 
 findb_deploy_role_name      = "findb-staging-deploy"
 fetcher_deploy_role_name    = "fetcher-staging-deploy"
@@ -21,7 +26,7 @@ fetcher_instance_role_name  = "fetcher-staging-instance"
 findb_instance_profile_name = "findb-staging-instance"
 fetcher_instance_profile_name = "fetcher-staging-instance"
 
-deploy_bundle_bucket_name = "replace-with-unique-findb-staging-deploy-bundle-bucket"
+deploy_bundle_bucket_name = "findb-staging-deploy-bundle-439622209937"
 deploy_bundle_kms_alias   = "alias/findb-staging-deploy-bundle"
 ssm_log_retention_days    = 30
 ssm_log_group_prefix      = "/findb/staging"

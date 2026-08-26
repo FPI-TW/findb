@@ -2,12 +2,22 @@ variable "aws_region" {
   description = "AWS region containing the existing staging EC2 instances."
   type        = string
   default     = "ap-southeast-1"
+
+  validation {
+    condition     = var.aws_region == "ap-southeast-1"
+    error_message = "aws_region must remain the reviewed ap-southeast-1 staging region."
+  }
 }
 
 variable "aws_account_id" {
   description = "Expected AWS account ID; apply fails if the provider is pointed at another account."
   type        = string
   default     = "439622209937"
+
+  validation {
+    condition     = var.aws_account_id == "439622209937"
+    error_message = "aws_account_id must remain the reviewed staging account."
+  }
 }
 
 variable "project_tag" {
@@ -49,6 +59,11 @@ variable "github_repository" {
   description = "GitHub repository in owner/name form used by the OIDC trust policies."
   type        = string
   default     = "FPI-TW/findb"
+
+  validation {
+    condition     = var.github_repository == "FPI-TW/findb"
+    error_message = "github_repository must remain the reviewed FPI-TW/findb repository."
+  }
 }
 
 variable "github_oidc_provider_arn" {
@@ -67,6 +82,50 @@ variable "github_oidc_thumbprint" {
   description = "Root CA thumbprint used only when this stack creates the GitHub OIDC provider."
   type        = string
   default     = "6938fd4d98bab03faadb97b34396831e3780aea1"
+}
+
+variable "infra_plan_role_name" {
+  description = "Dedicated OIDC role used only by pull-request refresh plans."
+  type        = string
+  default     = "staging-infra-plan"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9+=,.@_-]{1,64}$", var.infra_plan_role_name))
+    error_message = "infra_plan_role_name must be a valid IAM role name."
+  }
+}
+
+variable "state_bucket_name" {
+  description = "Fixed private S3 bucket holding the staging control-plane state."
+  type        = string
+  default     = "findb-staging-tofu-state-439622209937"
+
+  validation {
+    condition     = var.state_bucket_name == "findb-staging-tofu-state-439622209937"
+    error_message = "state_bucket_name must remain the reviewed staging state bucket."
+  }
+}
+
+variable "state_key" {
+  description = "Fixed state object key used by the staging control-plane backend."
+  type        = string
+  default     = "staging/control-plane.tfstate"
+
+  validation {
+    condition     = var.state_key == "staging/control-plane.tfstate"
+    error_message = "state_key must remain the reviewed staging control-plane key."
+  }
+}
+
+variable "state_kms_key_arn" {
+  description = "Fixed customer-managed KMS key used to encrypt staging control-plane state."
+  type        = string
+  default     = "arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d"
+
+  validation {
+    condition     = var.state_kms_key_arn == "arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d"
+    error_message = "state_kms_key_arn must remain the reviewed staging state key."
+  }
 }
 
 variable "findb_deploy_role_name" {
@@ -104,8 +163,8 @@ variable "deploy_bundle_bucket_name" {
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.deploy_bundle_bucket_name))
-    error_message = "deploy_bundle_bucket_name must be a valid S3 bucket name."
+    condition     = var.deploy_bundle_bucket_name == "findb-staging-deploy-bundle-439622209937"
+    error_message = "deploy_bundle_bucket_name must remain the reviewed staging deployment-bundle bucket."
   }
 }
 
