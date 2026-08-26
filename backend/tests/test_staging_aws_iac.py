@@ -1,5 +1,6 @@
-"""Focused structural checks for the Phase 1 staging AWS control plane."""
+"""Focused structural checks for the staging AWS control plane."""
 
+import json
 import re
 from pathlib import Path
 
@@ -8,6 +9,7 @@ REPO_ROOT = BACKEND_ROOT.parent
 TOFU_ROOT = REPO_ROOT / "infra" / "tofu"
 BOOTSTRAP_ROOT = TOFU_ROOT / "bootstrap"
 STAGING_ROOT = TOFU_ROOT / "staging"
+RUNTIME_SECRET_ROOT = REPO_ROOT / "infra" / "deploy" / "runtime-secrets"
 
 
 def _read(path: Path) -> str:
@@ -206,6 +208,53 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     )[0]
     assert "aws_cloudwatch_log_group.ssm[each.key].arn" in log_write_statement
     assert 'resources = ["*"]' not in log_write_statement
+
+
+def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> None:
+    secrets = _read(STAGING_ROOT / "secrets.tf")
+    iam = _read(STAGING_ROOT / "iam.tf")
+    outputs = _read(STAGING_ROOT / "outputs.tf")
+    all_staging = "\n".join(_read(path) for path in STAGING_ROOT.glob("*.tf"))
+
+    tofu_secret_ids = set(
+        re.findall(r'^    "((?:findb|fetcher)/[^\"]+)" = \{', secrets, re.MULTILINE)
+    )
+    catalog_secret_ids: set[str] = set()
+    for unit in ("findb", "fetcher"):
+        catalog = json.loads((RUNTIME_SECRET_ROOT / f"{unit}.json").read_text(encoding="utf-8"))
+        catalog_secret_ids.update(
+            f"{unit}/{secret['name']}"
+            for consumer in catalog["consumers"].values()
+            for secret in consumer["secrets"]
+        )
+    assert tofu_secret_ids == catalog_secret_ids
+    assert len(tofu_secret_ids) == 19
+    assert secrets.count('resource "aws_kms_key" "runtime_secrets"') == 1
+    assert 'name          = "alias/findb-staging-${each.key}-runtime-secrets"' in secrets
+    assert 'resource "aws_secretsmanager_secret" "runtime"' in secrets
+    assert "recovery_window_in_days = 30" in secrets
+    assert secrets.count("prevent_destroy = true") == 2
+    assert 'resource "aws_secretsmanager_secret_version"' not in all_staging
+    assert "secret_string" not in all_staging
+    assert "secret_binary" not in all_staging
+    assert 'sid    = "RuntimeRoleDecryptThroughSecretsManager"' in secrets
+    assert 'variable = "kms:ViaService"' in secrets
+    assert 'values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]' in secrets
+    assert 'variable = "kms:EncryptionContext:SecretARN"' in secrets
+
+    deploy_policy = iam.split('data "aws_iam_policy_document" "deploy_permissions"', 1)[1].split(
+        'resource "aws_iam_role_policy" "deploy_permissions"', 1
+    )[0]
+    assert "secretsmanager:GetSecretValue" not in deploy_policy
+    assert "DecryptOwnRuntimeSecrets" not in deploy_policy
+    instance_policy = iam.split('data "aws_iam_policy_document" "instance_permissions"', 1)[1]
+    assert 'sid    = "ReadOwnRuntimeSecrets"' in instance_policy
+    assert "aws_secretsmanager_secret.runtime[key].arn" in instance_policy
+    assert "if spec.unit == each.key" in instance_policy
+    assert 'sid       = "DecryptOwnRuntimeSecrets"' in instance_policy
+    assert "resources = [aws_kms_key.runtime_secrets[each.key].arn]" in instance_policy
+    assert 'output "runtime_secret_kms_key_arns"' in outputs
+    assert 'output "runtime_secret_names"' in outputs
 
 
 def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:

@@ -17,6 +17,20 @@ output "instance_role_arns" {
   }
 }
 
+output "runtime_secret_kms_key_arns" {
+  description = "Separate customer-managed KMS keys for each staging runtime-secret boundary."
+  value = {
+    for unit, key in aws_kms_key.runtime_secrets : unit => key.arn
+  }
+}
+
+output "runtime_secret_names" {
+  description = "Metadata-only Secrets Manager names. Secret values are populated outside OpenTofu state."
+  value = {
+    for key, secret in aws_secretsmanager_secret.runtime : key => secret.name
+  }
+}
+
 output "instance_profile_names" {
   description = "Instance profile names to associate with the existing EC2 targets."
   value = {
