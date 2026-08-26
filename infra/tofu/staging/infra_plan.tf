@@ -46,9 +46,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     effect = "Allow"
 
     actions = [
+      "ec2:DescribeInstanceAttribute",
+      "ec2:DescribeInstanceCreditSpecifications",
       "ec2:DescribeInstances",
       "ec2:DescribeInstanceTypes",
       "ec2:DescribeTags",
+      "ec2:DescribeVolumes",
+      "ec2:DescribeVpcs",
       "kms:ListAliases",
       "logs:DescribeLogGroups",
       "sts:GetCallerIdentity",
@@ -160,6 +164,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     effect = "Allow"
 
     actions = [
+      "ssm:DescribeDocumentPermission",
       "ssm:DescribeDocument",
       "ssm:GetDocument",
       "ssm:ListTagsForResource",
@@ -181,6 +186,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
 
     actions = [
       "secretsmanager:DescribeSecret",
+      "secretsmanager:GetResourcePolicy",
       "secretsmanager:ListTagsForResource",
     ]
 
@@ -201,10 +207,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "s3:GetBucketLocation",
       "s3:GetBucketLogging",
       "s3:GetBucketNotification",
+      "s3:GetBucketObjectLockConfiguration",
       "s3:GetBucketOwnershipControls",
       "s3:GetBucketPolicy",
       "s3:GetBucketPolicyStatus",
       "s3:GetBucketPublicAccessBlock",
+      "s3:GetBucketReplication",
+      "s3:GetBucketRequestPayment",
       "s3:GetBucketTagging",
       "s3:GetBucketVersioning",
       "s3:GetBucketWebsite",

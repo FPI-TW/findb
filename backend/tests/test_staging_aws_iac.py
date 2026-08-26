@@ -169,7 +169,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     )[0]
     assert 'sid    = "ReadResourceLessMetadata"' in permissions
     assert (
-        'actions = [\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "sts:GetCallerIdentity",\n    ]'
+        'actions = [\n      "ec2:DescribeInstanceAttribute",\n      "ec2:DescribeInstanceCreditSpecifications",\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "ec2:DescribeVolumes",\n      "ec2:DescribeVpcs",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "sts:GetCallerIdentity",\n    ]'
         in permissions
     )
     assert 'resources = ["*"]' in permissions
@@ -195,12 +195,14 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         "resources = [for document in aws_ssm_document.session_manager_preferences : document.arn]"
         in permissions
     )
+    assert "ssm:DescribeDocumentPermission" in permissions
     assert 'sid       = "ReadExactSsmLogGroupTags"' in permissions
     assert "resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]" in permissions
     assert 'sid    = "ReadExactSecretMetadata"' in permissions
     assert (
         "resources = [for secret in aws_secretsmanager_secret.runtime : secret.arn]" in permissions
     )
+    assert "secretsmanager:GetResourcePolicy" in permissions
     assert 'sid       = "ReadExactStateObject"' in permissions
     assert 'sid    = "ListExactStatePrefix"' in permissions
     assert 'sid       = "GetExactStateBucketLocation"' in permissions
@@ -249,10 +251,13 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         "s3:GetBucketLocation",
         "s3:GetBucketLogging",
         "s3:GetBucketNotification",
+        "s3:GetBucketObjectLockConfiguration",
         "s3:GetBucketOwnershipControls",
         "s3:GetBucketPolicy",
         "s3:GetBucketPolicyStatus",
         "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketReplication",
+        "s3:GetBucketRequestPayment",
         "s3:GetBucketTagging",
         "s3:GetBucketVersioning",
         "s3:GetBucketWebsite",
