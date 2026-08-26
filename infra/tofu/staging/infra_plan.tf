@@ -89,9 +89,9 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid       = "ReadExactInfraPlanRole"
-    effect    = "Allow"
-    actions   = [
+    sid    = "ReadExactInfraPlanRole"
+    effect = "Allow"
+    actions = [
       "iam:GetRole",
       "iam:GetRolePolicy",
       "iam:ListAttachedRolePolicies",

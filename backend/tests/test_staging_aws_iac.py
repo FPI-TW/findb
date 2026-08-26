@@ -177,7 +177,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     assert "resources = [for role in aws_iam_role.deploy : role.arn]" in permissions
     assert 'sid    = "ReadExactInstanceRoles"' in permissions
     assert "resources = [for role in aws_iam_role.instance : role.arn]" in permissions
-    assert 'sid       = "ReadExactInfraPlanRole"' in permissions
+    assert 'sid    = "ReadExactInfraPlanRole"' in permissions
     assert "resources = [aws_iam_role.infra_plan.arn]" in permissions
     assert 'sid    = "ReadExactInstanceProfiles"' in permissions
     assert (

@@ -272,7 +272,23 @@ def _plan_json_fixture() -> dict[str, object]:
         "format_version": "1.0",
         "terraform_version": "1.12.6",
         "planned_values": {"root_module": {"resources": [], "child_modules": []}},
-        "configuration": {"root_module": {"resources": [], "module_calls": {}}},
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "expressions": {
+                            "statement": [
+                                {
+                                    "actions": {"constant_value": ["iam:GetRole"]},
+                                    "resources": {"references": ["aws_iam_role.example.arn"]},
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "module_calls": {},
+            }
+        },
         "resource_changes": [],
         "resource_drift": [],
         "output_changes": {},
