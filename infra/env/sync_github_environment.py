@@ -14,6 +14,14 @@ from dotenv import dotenv_values
 REPOSITORY: Final = "FPI-TW/findb"
 ENV_ROOT: Final = Path(__file__).resolve().parent
 DEPLOYMENT_TARGETS: Final = ("staging", "production")
+STAGING_AWS_VARIABLES: Final = (
+    "AWS_REGION",
+    "AWS_ACCOUNT_ID",
+    "AWS_DEPLOY_ROLE_ARN",
+    "AWS_INSTANCE_PROFILE_NAME",
+    "AWS_SSM_LOG_GROUP",
+    "AWS_DNS_CHECK_NAME",
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +29,12 @@ class ServiceConfig:
     variables: tuple[str, ...]
     secrets: tuple[str, ...]
     optional_secrets: tuple[str, ...] = ()
+
+    def variables_for(self, target: str) -> tuple[str, ...]:
+        """Return the non-secret variable contract for one deployment target."""
+        if target == "staging":
+            return (*self.variables, *STAGING_AWS_VARIABLES)
+        return self.variables
 
 
 SERVICE_CONFIGS: Final = {
@@ -328,7 +342,7 @@ def main() -> int:
         if canonical_contract_error:
             print(canonical_contract_error)
             return 1
-    variables = config.variables
+    variables = config.variables_for(arguments.target)
     missing = sorted(name for name in (*variables, *required_secrets) if not values.get(name))
     if (
         arguments.service == "findb"
