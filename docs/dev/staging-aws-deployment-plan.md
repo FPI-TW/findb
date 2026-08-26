@@ -1,12 +1,13 @@
 # Staging AWS Deployment Completion Plan
 
-> 狀態：Phase 0 完成；Phase 1 待執行。本文是 staging AWS 控制面、部署身分與驗收的核心
+> 狀態：Phase 0 完成；Phase 1 AWS foundation 已套用，protected `main` OIDC preflight 待驗收。本文是 staging AWS 控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
 > [`../operations/deployment.md`](../operations/deployment.md) 為準。
 >
-> 最後盤點：2026-08-25。Staging 目前正常運行；本次 read-only 證據已確認部分 GitHub、EC2
-> 與 runtime 狀態，但「服務可用」不等同於部署身分、release 重播、secret 邊界與災難復原已完成。
-> Phase 0 已通過 exit gate；下方標示 `未驗證` 或 `尚待後續 Phase` 的欄位不得視為已完成。
+> 最後盤點：2026-08-26。Staging 目前正常運行；OpenTofu remote state、OIDC/IAM、instance
+> profiles、required tags、SSM managed nodes、Session Manager 與 unit-specific SSM logs 已有 live
+> evidence，但「服務可用」不等同於 workflow OIDC、release 重播、secret 邊界與災難復原已完成。
+> Phase 0 已通過 exit gate；Phase 1 尚未完成的 protected `main` workflow 驗收不得視為已完成。
 
 ## 決策背景
 
@@ -77,16 +78,16 @@ protected main
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
 | Image identity | Runtime 發布 commit SHA tag；FinDB 另發布 `latest`，Compose有`latest` fallback | 保存registry digest、以digest部署、移除所有`latest`部署路徑 |
-| EC2 transport | `appleboy/ssh-action`與`scp-action`已固定完整Action SHA | OIDC、service-specific deploy role、SSM、target tag restriction與command log |
+| EC2 transport | 現行部署仍使用固定完整Action SHA的`appleboy/ssh-action`／`scp-action`；兩份CD已有OIDC＋SSM bounded preflight，AWS端service-specific roles、target tags、managed nodes與command logs已套用，兩個Environment的六項非敏感AWS variables已發布並回讀一致 | 從protected `main`實跑兩個OIDC preflight；日常deployment transport切換留在Phase 4／5 |
 | Runtime secrets | GitHub Environment secrets逐一傳到遠端shell／container | Secrets Manager或SecureString、instance role、輪替與GitHub secret退場 |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；Console已確認private、encryption、deletion protection、10-day automated backup與PITR inventory | migration credential分權、成功restore rehearsal與release紀錄；RDS tags count為0 |
 | Queue | RabbitMQ在FinDB EC2，以root EBS path保存；PostgreSQL是durable truth | current root EBS snapshot／backup policy、容量告警、broker全毀重建演練與實測恢復時間 |
 | Fetcher state | 三個provider runtime隔離；container已採non-root、read-only、drop capabilities與no-new-privileges，SQLite與Raw bucket binding只接受current state並fail closed | 一致性備份、SSM rollout、自動化runtime security驗證與完整排程週期觀察 |
 | Legacy removal | 舊public routes、舊skill、Fetcher scheduler／SQLite compatibility及DB dataset projection已移除；predeploy仍拒絕非canonical state | 保存staging實際revision及legacy predeploy gates為零的外部證據；不得在新deploy helper恢復compatibility |
 | R2 | Raw與Canonical bucket／credential契約已拆分；2026-08-21已人工確認Raw lifecycle 30天與bucket lock 7天 | Canonical runtime不得宣稱已通過資料面驗收 |
-| Protection | workflow固定第三方Action SHA；GitHub組織ruleset `Main protection` 要求PR、禁止force-push與限制deletion；repo ruleset `FinDB required CI` 對default branch／`main`強制 `Required CI`；兩個Environment各只允許`main`且無reviewer／wait-timer | EC2 required target tags與SSM selector尚未就緒 |
-| Observability | 應用內已有health、queue與freshness checks；CloudWatch目前alarms為0、log groups為0，RDS Database Insights Standard retention為7天 | EC2／SSM／application log groups、關鍵alarms、完整retention、告警接收者及synthetic test |
-| IaC | Repo內尚無AWS IaC；未發現既有 repo／external IaC 或 state owner evidence | 新控制面資源選用 OpenTofu，由 Tyler (`tylercore`) 擔任 remote-state owner；encrypted backend／locking 尚待 Phase 1 實作，既有data-plane資源先盤點 |
+| Protection | workflow固定第三方Action SHA；GitHub組織ruleset `Main protection` 要求PR、禁止force-push與限制deletion；repo ruleset `FinDB required CI` 對default branch／`main`強制 `Required CI`；兩個Environment各只允許`main`且無reviewer／wait-timer；兩台EC2已有unit-specific required tags；Phase 1 AWS variables已發布 | Live OIDC target-count preflight仍待protected `main`驗收 |
+| Observability | 應用內已有health、queue與freshness checks；CloudWatch已有`/findb/staging/findb/ssm`與`/findb/staging/fetcher/ssm`兩個KMS-encrypted、30-day log groups，兩個unit的bounded command stdout已成功寫入；alarms仍為0，RDS Database Insights Standard retention為7天 | EC2／application logs、關鍵alarms、完整retention、告警接收者及synthetic test |
+| IaC | Repo已有OpenTofu bootstrap與staging control-plane stacks；encrypted、versioned S3 remote state使用native lockfile與指定KMS key，Tyler (`tylercore`)為state owner；2026-08-26兩個stack plan均為`No changes` | 既有EC2／RDS／VPC等data-plane資源只引用與加required tags，不在本計畫全面import；Phase 6 alarms仍待實作 |
 
 `.github/workflows/required-ci.yml`、兩份unit CI、兩份unit CD與
 `docker-compose.prod.yml` 是現行行為的 source of truth。本文不把尚未查證的 AWS console
@@ -114,24 +115,24 @@ deployment unit，但release manifest必須列出三個digest，不能只用共�
 
 ## Staging 資源清冊
 
-Phase 0 必須填入target-specific、非敏感的實際識別資料。Secret只記錄ARN或name，不得貼值、
-hash或可比較片段。清冊完成前禁止停用現行SSH recovery path。
+清冊只記錄target-specific、非敏感的實際識別資料。Secret只記錄ARN或name，不得貼值、hash或
+可比較片段。SSH recovery path依Phase 1／6 exit condition管理，不因SSM首次上線立即移除。
 
 | 類別 | `staging-findb` | `staging-fetcher` | 驗收要求 |
 | --- | --- | --- | --- |
 | AWS account / Region | `439622209937` / `ap-southeast-1`（SSH + IMDSv2、AWS Console 已驗證） | `439622209937` / `ap-southeast-1`（SSH + IMDSv2、AWS Console 已驗證） | Workflow明確檢查STS account與region |
 | VPC / subnet | `vpc-0865afcf10442bf4d` / `subnet-0aba2a175b5912c24` | `vpc-0865afcf10442bf4d` / `subnet-0cde9e8dc33bec41e` | RDS private；public EC2若保留須記錄例外與production前檢查點 |
-| EC2 target / tags | `i-0942016913367a8b2`（`findb-staging`、`m7i.large`、`ap-southeast-1c`；ARN `arn:aws:ec2:ap-southeast-1:439622209937:instance/i-0942016913367a8b2`）；running、3/3 status checks；僅 `Name` tag，`Project`／`Environment`／`DeploymentUnit`／`Owner`／`BackupOwner` tags absent | `i-05f518ef183bc31a9`（`findb-fetcher-staging`、`t3.small`、`ap-southeast-1a`；ARN `arn:aws:ec2:ap-southeast-1:439622209937:instance/i-05f518ef183bc31a9`）；running、3/3 status checks；僅 `Name` tag，`Project`／`Environment`／`DeploymentUnit`／`Owner`／`BackupOwner` tags absent | AWS Console目前列出恰兩台 running instances；未補齊 required tags 前，SSM tag selector 不可接受 |
+| EC2 target / tags | `i-0942016913367a8b2`（`findb-staging`、`m7i.large`、`ap-southeast-1c`；ARN `arn:aws:ec2:ap-southeast-1:439622209937:instance/i-0942016913367a8b2`）；required tags為`Project=findb`、`Environment=staging`、`DeploymentUnit=findb`、`Owner=tylercore`、`BackupOwner=tylercore` | `i-05f518ef183bc31a9`（`findb-fetcher-staging`、`t3.small`、`ap-southeast-1a`；ARN `arn:aws:ec2:ap-southeast-1:439622209937:instance/i-05f518ef183bc31a9`）；required tags與FinDB相同但`DeploymentUnit=fetcher` | IAM simulator已驗證各deploy role只允許本單元target，跨單元為`implicitDeny`；live workflow仍須驗證target count恰為1 |
 | EC2 security group / root EBS | `sg-0194615fe18784889`（`ec2-rds-1`）、`sg-070694f093a25cb31`（`launch-wizard-1`）；public inbound HTTP 80、HTTPS 443、SSH 22 from `0.0.0.0/0`，另有 8080 `/32`；`vol-0784675e2ada6642e`（50 GiB）in-use、未加密、delete-on-termination | `sg-0c98f59c6961a00d2`；僅 public inbound SSH 22 from `0.0.0.0/0`，無 public application port；`vol-0201fa5249fe44c39`（30 GiB）in-use、未加密、delete-on-termination | Tyler 為 owner；RabbitMQ／Fetcher state目前均在root EBS。SSH 22 是保留至 SSM 成功前的 Phase 0 例外；補償控制為 environment-scoped SSH keys、protected-main audited GitHub deployments、現有 recovery reachability、不得擴大 SSH 使用，並保留明確 recovery path。EBS補償控制與Phase 6 close condition見下文 |
-| Instance role | `Managed=false`、無 IAM role／instance profile | `Managed=false`、無 IAM role／instance profile | 只讀自己的secret path與deploy bundle；可寫自己的log／metrics |
-| GitHub deploy role | 現行workflow未使用OIDC deploy role；AWS IAM inventory未查證，Phase 1建立或引用前須排除既有同名owner | 現行workflow未使用OIDC deploy role；AWS IAM inventory未查證，Phase 1建立或引用前須排除既有同名owner | OIDC subject綁定對應Environment；不得讀runtime secrets |
-| SSM managed node | Fleet Manager `getting-started`、無 managed nodes；`amazon-ssm-agent` inactive | Fleet Manager `getting-started`、無 managed nodes；`amazon-ssm-agent` inactive | Online、command output送unit-specific CloudWatch log group |
+| Instance role | `findb-staging-instance` profile／role已關聯；只允許FinDB future secret／parameter path、`findb/` deploy bundle、SSM core與FinDB log group | `fetcher-staging-instance` profile／role已關聯；只允許Fetcher future secret／parameter path、`fetcher/` deploy bundle、SSM core與Fetcher log group | Live IMDSv2 preflight已確認兩台profile exact match；不共用runtime path或bundle prefix |
+| GitHub deploy role | `arn:aws:iam::439622209937:role/findb-staging-deploy` | `arn:aws:iam::439622209937:role/fetcher-staging-deploy` | OIDC trust的`aud=sts.amazonaws.com`且`sub`精確綁定對應Environment；IAM simulator已驗證deploy role secret read與cross-unit target/log均拒絕，actual GitHub OIDC assume仍待workflow驗收 |
+| SSM managed node | Online；agent `3.3.4793.0`；Session document `SSM-SessionManagerRunShell-findb-staging` | Online；agent `3.3.4793.0`；Session document `SSM-SessionManagerRunShell-fetcher-staging` | 兩台bounded command與unit-specific Session Manager recovery均成功；command output送各自CloudWatch log group |
 | RDS / security group | `fin-db`；ARN `arn:aws:rds:ap-southeast-1:439622209937:db:fin-db`、resource ID `db-ENXUOKJALHEX5BZJ3NVXKN4I7I`；PostgreSQL 16.13、available、`db.t3.micro`、`ap-southeast-1c`、VPC `vpc-0865afcf10442bf4d`、Multi-AZ No、private；`rds-ec2-1` `sg-0faf978bb6c67ca20` 僅允許 5432 from FinDB SG `sg-0194615fe18784889`；connected compute 僅 FinDB；encryption enabled with `aws/rds` KMS、deletion protection enabled、gp3 20 GiB（autoscaling max 1000 GiB）；RDS tags count 0 | RDS不適用；RDS SG沒有Fetcher inbound rule，connected compute也只有FinDB instance | `PubliclyAccessible=false`；只允許FinDB EC2 SG；backup/PITR啟用 |
 | Data classification | Staging raw／canonical market data與workflow registry；RDS是durable truth，RabbitMQ可由PostgreSQL重建，generated cache不是source of truth | Provider scheduler／checkpoint SQLite與Raw R2 market payload；不持有RDS、RabbitMQ、Admin或Canonical R2資料 | 資料與credential依unit、target及durability分級，不因同VPC而共用權限 |
 | Secret prefix | 規劃`findb/staging/findb/`；目前runtime secrets仍在`staging-findb` Environment，consumer-specific secret ownership與migration留待Phase 2 | 規劃`findb/staging/fetcher/`；目前runtime secrets仍在`staging-fetcher` Environment，consumer-specific secret ownership與migration留待Phase 2 | Tyler 是 resource owner；Phase 2 依 consumer boundary 建立與輪替，不共用DB、R2、provider、Source/Admin或deploy credential |
-| Owner | Tyler（GitHub `tylercore`；AWS evidence `PowerUserAccess/Tyler`）同時擔任 resource、backup、SSH recovery、alert 與 OpenTofu/IaC remote-state owner | Tyler（GitHub `tylercore`；AWS evidence `PowerUserAccess/Tyler`）同時擔任 resource、backup、SSH recovery、alert 與 OpenTofu/IaC remote-state owner | 這是依使用者授權完成的正式 owner assignment，不僅是 provenance；Phase 6 仍須建立並測試 automated notification channel |
-| Deploy artifact | Private、versioned control-plane S3 prefix | 同bucket的獨立prefix或獨立bucket | exact SHA key、checksum、versioning；不使用application R2 bucket |
-| CloudWatch | account／region alarms `0`（all states）、log groups `0`；RDS Database Insights Standard retention 7 days | account／region alarms `0`（all states）、log groups `0` | EC2／SSM／application logs、required alarms、retention與recipient/channel 尚未建立 |
+| Owner | Tyler（GitHub `tylercore`；Phase 1 apply evidence `AdministratorAccess/Tyler`）同時擔任 resource、backup、SSH recovery、alert 與 OpenTofu/IaC remote-state owner | Tyler（GitHub `tylercore`；Phase 1 apply evidence `AdministratorAccess/Tyler`）同時擔任 resource、backup、SSH recovery、alert 與 OpenTofu/IaC remote-state owner | 這是依使用者授權完成的正式 owner assignment，不僅是 provenance；Phase 6 仍須建立並測試 automated notification channel |
+| Deploy artifact | Private、versioned、KMS-encrypted bucket `findb-staging-deploy-bundle-439622209937`的`findb/` prefix | 同bucket的`fetcher/` prefix | exact SHA key、checksum、versioning與exact CMK header policy；不使用application R2 bucket |
+| CloudWatch | `/findb/staging/findb/ssm`，KMS encryption、retention 30 days；bounded command stdout stream已驗證 | `/findb/staging/fetcher/ssm`，KMS encryption、retention 30 days；bounded command stdout stream已驗證 | account／region alarms仍為0；EC2／application logs、required alarms、recipient/channel與synthetic test留待Phase 6 |
 | Backup | RDS automated backups enabled 10 days；latest restore time `2026-08-25 13:55 +08`；backup window `08:00-08:30 UTC`；12 available automated snapshots；尚無成功 restore rehearsal。FinDB root EBS 無 current-volume snapshot 或 DLM automated policy | Fetcher root EBS 無 current-volume snapshot 或 DLM automated policy；SQLite/checkpoint state在root EBS | Tyler 接受 current EBS residual risk。RDS remains encrypted durable truth with 10-day backups/PITR；RabbitMQ 可由 PostgreSQL rebuild；generated cache 可由 canonical data regenerate。任何 host-storage replacement／termination 或 storage-destructive maintenance 前，必須先做 current-volume manual snapshot；Fetcher 另須 stopped-writer 或 SQLite online backup，否則 no-go。現有 historical snapshot 不視為 current-volume backup；這些是 policy／conditions，不是既有 snapshots |
 | Public endpoint | `/dashboard/`、`/dashboard/lookup` public HTTPS read-only acceptance passed；certificate expiry monitoring 未完成 | 無public inbound endpoint | 外部HTTPS readiness與certificate expiry可監控 |
 
@@ -294,16 +295,24 @@ GitHub Environment variables或Parameter Store一般參數。
 
 ## IaC 邊界
 
-若團隊已有統一Terraform／OpenTofu工具與remote state，沿用該標準；否則採OpenTofu與encrypted
-remote state。這次只納管新建或為cutover明確修改的控制面資源：
+本repo採OpenTofu管理本計畫新建或為cutover明確修改的控制面資源。Bootstrap stack建立
+`findb-staging-tofu-state-439622209937` private、versioned S3 bucket與
+`alias/findb-staging-tofu-state` KMS key；bootstrap與control-plane state分別使用
+`staging/bootstrap.tfstate`與`staging/control-plane.tfstate`，並以S3 native lockfile鎖定。兩份
+state object皆已驗證使用exact state CMK與bucket key，操作期backend設定由ignored
+`bootstrap/backend.tf`依tracked template產生，不進入Git history。
+
+本次只納管下列控制面資源：
 
 - GitHub OIDC provider引用、FinDB／Fetcher deploy roles與instance roles；
 - SSM、KMS／secret policies、CloudWatch log groups及必要alarms；
 - private、versioned deploy bundle／release manifest S3 bucket與權限。
 
 既有EC2、RDS、VPC、subnet、security groups、R2與DNS先用read-only data source或資源清冊引用。
-若實作中發現已有外部IaC owner，先import或交由原owner修改，禁止建立第二套同名資源。全面納管
-既有AWS data plane另案進行，不阻塞本次staging hardening。
+2026-08-26套用前已排除同名OIDC provider、roles、profiles、documents、KMS aliases、log groups與
+buckets碰撞；套用後bootstrap與staging stacks均為`No changes`。全面納管既有AWS data plane
+另案進行，不阻塞本次staging hardening；若後續發現外部owner，先import或交由原owner修改，
+禁止建立第二套同名資源。
 
 ## 實作波次
 
@@ -339,12 +348,30 @@ aggregate workflow、`Required CI` context與ruleset一致，不得倒退為path
 
 ### Phase 1：OIDC、SSM與instance role基礎
 
-- [ ] 建立或引用GitHub OIDC provider，建立兩個staging deploy roles，trust綁定各自Environment。
-- [ ] 為兩台EC2建立獨立instance profile、必要target tags、SSM agent與Session Manager設定。
-- [ ] SSM command output送到unit-specific CloudWatch log group，設定retention且禁止secret輸出。
+- [x] 建立GitHub OIDC provider與兩個staging deploy roles，trust精確綁定各自Environment。
+- [x] 為兩台EC2建立獨立instance profile、必要target tags、SSM agent與Session Manager設定。
+- [x] SSM command output送到unit-specific CloudWatch log group，設定30-day retention且禁止secret輸出。
 - [ ] 以OIDC執行無副作用preflight：STS account／role、target count恰為1、environment marker、
   Docker／Compose版本、disk／inode、time sync、DNS與instance profile。
-- [ ] SSM穩定前保留受限SSH recovery，不在本Phase提前移除TCP/22。
+- [x] SSM首次live acceptance與兩個unit-specific Session Manager recovery成功；依既定範圍保留
+  SSH recovery與TCP/22，不在本Phase提前移除。
+
+#### Phase 1 work record（2026-08-26）
+
+| Action | Evidence | Result |
+| --- | --- | --- |
+| 建立與遷移OpenTofu state | Bootstrap apply `8 added / 0 changed / 0 destroyed`；state bucket `findb-staging-tofu-state-439622209937`啟用versioning、public access block、native lockfile與KMS；local bootstrap state經驗證後遷移到`staging/bootstrap.tfstate` | Bootstrap與control-plane state objects均有version ID，SSE為`aws:kms`，exact key為`arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d`；兩個stack最終plan均為`No changes` |
+| 建立Phase 1 AWS foundation | Staging apply `38 added / 0 changed / 0 destroyed`；建立GitHub OIDC provider、兩個deploy roles、兩個instance roles/profiles、required EC2 tags、兩份Session documents、兩個KMS-encrypted SSM log groups與private deploy-bundle bucket | OIDC issuer `token.actions.githubusercontent.com`、audience `sts.amazonaws.com`；trust subject分別精確綁定`staging-findb`／`staging-fetcher`，deploy bundle以unit prefix與exact CMK policy隔離 |
+| 關聯instance profiles並啟用SSM | FinDB association `iip-assoc-025dc561d8df3ea85`；Fetcher association `iip-assoc-09519a3019afd0407`；兩台snap agent均為`3.3.4793.0` | `i-0942016913367a8b2`與`i-05f518ef183bc31a9`均為SSM `Online`，IMDSv2回報的profile與unit exact match |
+| Live bounded host acceptance | Run Command驗證instance ID/profile、Docker/Compose、root disk、inode、UTC與`findb-staging.tingfong.com` DNS；兩台response code 0、stderr空白 | FinDB root disk/inode使用18%／4%，Fetcher為24%／7%；stdout已寫入各自CloudWatch log group，不讀取env或runtime config |
+| 修正live acceptance發現的最小IAM缺口 | 首次command成功但agent log證明CloudWatch publisher缺`DescribeLogGroups`／unit-scoped`CreateLogGroup`，association loop缺`ListInstanceAssociations`；同時補齊`UpdateInstanceAssociationStatus` | 精確plan為`0 added / 4 changed / 0 destroyed`；修正後兩個stdout streams建立成功，recent agent check無實際AccessDenied／ERROR |
+| 驗證recovery與least privilege | 兩份unit-specific Session Manager documents各建立一次session並正常退出；IAM simulator以實際role、target tags與ARN測試 | 本單元`ssm:SendCommand`與log read為`allowed`；cross-unit target/log與deploy-role `secretsmanager:GetSecretValue`為`implicitDeny` |
+| 發布GitHub Environment variables | `staging-findb`與`staging-fetcher`各發布`AWS_REGION`、`AWS_ACCOUNT_ID`、unit-specific deploy role ARN、instance profile、SSM log group與DNS check name；透過GitHub API回讀鍵值 | 12個非敏感值與accepted OpenTofu outputs一致；未變更既有Variables、Secrets、branch policy或reviewer設定 |
+| 保留既有recovery與secret邊界 | 未修改security groups、SSH keys、TCP/22、runtime secrets、RDS或application containers | SSH與未加密／無backup EBS仍依Phase 0 owner、補償控制與Phase 6條件管理；secret migration只在Phase 2執行 |
+
+尚待的Phase 1項目只有從protected `main`的兩個GitHub Environments實際取得OIDC token並跑完
+workflow bounded preflight。必要的非敏感Environment variables已發布並回讀一致，但該驗收不得
+以AWS administrator session代替；完成前Phase 1維持部分完成。
 
 Exit gate：兩個Environment只能命中各自一台EC2；cross-unit SSM與secret read均被IAM拒絕；
 Session Manager recovery可用。

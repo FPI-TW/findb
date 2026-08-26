@@ -94,6 +94,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      id-token: write
 
     env:
       GITHUB_ACTOR: ${{ github.actor }}
@@ -186,6 +187,296 @@ jobs:
             --key "${FINDB_LOOKUP_SERVE_API_KEY:-}" \
             --public-host "$FINDB_PUBLIC_HOST" \
             --output infra/nginx/serve-key.conf
+
+      - name: Configure staging AWS credentials
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: findb-staging-preflight-${{ github.run_id }}
+
+      - name: Run staging AWS and SSM preflight
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
+        shell: bash
+        env:
+          DEPLOYMENT_UNIT: findb
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          AWS_INSTANCE_PROFILE_NAME: ${{ vars.AWS_INSTANCE_PROFILE_NAME }}
+          AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+          AWS_DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
+          PREFLIGHT_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-findb
+        run: |
+          set -euo pipefail
+
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=Missing staging AWS preflight variable::$name must be configured in the staging-findb Environment"
+              exit 1
+            fi
+          done
+          if ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error title=Invalid staging AWS account::AWS_ACCOUNT_ID must be a 12-digit account identifier"
+            exit 1
+          fi
+          if ! [[ "$AWS_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$ ]] || [[ "$AWS_DEPLOY_ROLE_ARN" != "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]; then
+            echo "::error title=Invalid staging deploy role::AWS_DEPLOY_ROLE_ARN must be an IAM role ARN in the expected account"
+            exit 1
+          fi
+          if ! [[ "$AWS_INSTANCE_PROFILE_NAME" =~ ^[A-Za-z0-9+=,.@_-]+$ ]]; then
+            echo "::error title=Invalid staging instance profile::AWS_INSTANCE_PROFILE_NAME must use IAM name characters without a path"
+            exit 1
+          fi
+          if ! [[ "$AWS_SSM_LOG_GROUP" =~ ^[A-Za-z0-9_.\/#-]+$ ]] || [ "${#AWS_SSM_LOG_GROUP}" -gt 512 ]; then
+            echo "::error title=Invalid staging SSM log group::AWS_SSM_LOG_GROUP contains unsupported CloudWatch Logs name characters"
+            exit 1
+          fi
+          if ! [[ "$AWS_DNS_CHECK_NAME" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            echo "::error title=Invalid staging DNS check::AWS_DNS_CHECK_NAME contains unsafe characters"
+            exit 1
+          fi
+          if [ "${#AWS_DNS_CHECK_NAME}" -gt 253 ]; then
+            echo "::error title=Invalid staging DNS check::AWS_DNS_CHECK_NAME exceeds the DNS name length limit"
+            exit 1
+          fi
+          if ! [[ "$PREFLIGHT_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error title=Invalid preflight marker::The bounded marker token contains unsupported characters"
+            exit 1
+          fi
+
+          caller_account="$(aws sts get-caller-identity --region "$AWS_REGION" --query Account --output text)"
+          caller_arn="$(aws sts get-caller-identity --region "$AWS_REGION" --query Arn --output text)"
+          if [ "$caller_account" != "$AWS_ACCOUNT_ID" ]; then
+            echo "::error title=AWS account guard failed::STS account does not match AWS_ACCOUNT_ID"
+            exit 1
+          fi
+          expected_role_name="${AWS_DEPLOY_ROLE_ARN#*:role/}"
+          actual_role_name="${caller_arn#*:assumed-role/}"
+          actual_role_name="${actual_role_name%/*}"
+          if [ -z "$expected_role_name" ] || [ "$actual_role_name" != "$expected_role_name" ]; then
+            echo "::error title=AWS role guard failed::STS identity is not the expected unit deploy role"
+            exit 1
+          fi
+          echo "sts_identity=ok account_guard=ok role_guard=ok"
+
+          target_ids_json="$(
+            aws ec2 describe-instances \
+              --region "$AWS_REGION" \
+              --filters \
+                Name=instance-state-name,Values=running \
+                Name=tag:Project,Values=findb \
+                Name=tag:Environment,Values=staging \
+                Name=tag:DeploymentUnit,Values=findb \
+              --query 'Reservations[].Instances[].InstanceId' \
+              --output json
+          )"
+          target_count="$(jq -r 'length' <<<"$target_ids_json")"
+          if [ "$target_count" -ne 1 ]; then
+            echo "::error title=Staging target cardinality failed::Expected exactly one running findb target"
+            exit 1
+          fi
+          target_id="$(jq -r '.[0]' <<<"$target_ids_json")"
+          echo "target_selector=exact-tags target_count=1"
+
+          profile_arn="$(
+            aws ec2 describe-instances \
+              --region "$AWS_REGION" \
+              --instance-ids "$target_id" \
+              --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' \
+              --output text
+          )"
+          profile_name="${profile_arn##*/}"
+          if [ -z "$profile_arn" ] || [ "$profile_arn" = "None" ] || [ "$profile_name" != "$AWS_INSTANCE_PROFILE_NAME" ]; then
+            echo "::error title=Instance profile guard failed::Target does not use the expected instance profile"
+            exit 1
+          fi
+          ping_status="$(
+            aws ssm describe-instance-information \
+              --region "$AWS_REGION" \
+              --filters "Key=InstanceIds,Values=${target_id}" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text
+          )"
+          if [ "$ping_status" != "Online" ]; then
+            echo "::error title=SSM target offline::Target instance is not Online in Systems Manager"
+            exit 1
+          fi
+          echo "instance_profile=ok ssm_ping=Online"
+
+          probe_secret_arn="arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:findb/staging/${DEPLOYMENT_UNIT}/phase1-preflight-denial-probe"
+          probe_stderr="$(mktemp)"
+          cleanup_probe() { rm -f -- "$probe_stderr" >/dev/null 2>&1 || true; }
+          trap cleanup_probe EXIT
+          if aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$probe_secret_arn" >/dev/null 2>"$probe_stderr"; then
+            echo "::error title=Deploy role secret boundary failed::Secret denial probe unexpectedly succeeded"
+            exit 1
+          fi
+          if ! grep -Fq "AccessDenied" "$probe_stderr" 2>/dev/null; then
+            echo "::error title=Deploy role secret boundary failed::Secret denial probe did not return AccessDenied"
+            exit 1
+          fi
+          echo "secret_read_denial=AccessDenied"
+
+          printf -v expected_instance_id_q '%q' "$target_id"
+          printf -v expected_instance_profile_name_q '%q' "$AWS_INSTANCE_PROFILE_NAME"
+          printf -v expected_dns_name_q '%q' "$AWS_DNS_CHECK_NAME"
+          printf -v expected_unit_q '%q' "$DEPLOYMENT_UNIT"
+          printf -v expected_marker_token_q '%q' "$PREFLIGHT_MARKER_TOKEN"
+          host_script="$(cat <<'HOST_SCRIPT'
+          set -eu
+
+          preflight_succeeded=0
+          emit_preflight_failure() {
+            trap - EXIT
+            if [ "$preflight_succeeded" -ne 1 ]; then
+              printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token"
+            fi
+          }
+          trap emit_preflight_failure EXIT
+
+          imds_token="$(curl --silent --fail --noproxy '*' --max-time 5 -X PUT \
+            -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+            http://169.254.169.254/latest/api/token 2>/dev/null)"
+          imds_instance_id="$(curl --silent --fail --noproxy '*' --max-time 5 \
+            -H "X-aws-ec2-metadata-token: $imds_token" \
+            http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)"
+          imds_profile_arn="$(curl --silent --fail --noproxy '*' --max-time 5 \
+            -H "X-aws-ec2-metadata-token: $imds_token" \
+            http://169.254.169.254/latest/meta-data/iam/info 2>/dev/null | \
+            sed -n 's/.*"InstanceProfileArn"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | \
+            sed -n '1p')"
+          imds_profile_name="${imds_profile_arn##*/}"
+          if [ "$imds_instance_id" != "$expected_instance_id" ]; then
+            echo "instance_id_match=failed"
+            exit 1
+          fi
+          if [ "$imds_profile_name" != "$expected_instance_profile_name" ]; then
+            echo "instance_profile_match=failed"
+            exit 1
+          fi
+          printf 'instance_id_match=ok instance_profile_match=ok unit=%s\n' "$expected_unit"
+
+          if ! systemctl is-active --quiet amazon-ssm-agent >/dev/null 2>&1; then
+            echo "ssm_agent=inactive"
+            exit 1
+          fi
+          echo "ssm_agent=active"
+
+          docker_version="$(docker --version 2>/dev/null | cut -c1-128)"
+          compose_version="$(docker compose version --short 2>/dev/null | cut -c1-128)"
+          if [ -z "$docker_version" ] || [ -z "$compose_version" ]; then
+            echo "docker_runtime=missing"
+            exit 1
+          fi
+          printf 'docker=%s compose=%s\n' "$docker_version" "$compose_version"
+
+          disk_free_percent="$(df -P / 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print 100 - $5 }')"
+          inode_free_percent="$(df -Pi / 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print 100 - $5 }')"
+          case "$disk_free_percent" in
+            ''|*[!0-9]*)
+              echo "disk_free_percent=invalid"
+              exit 1
+              ;;
+          esac
+          if [ "$disk_free_percent" -lt 15 ]; then
+            echo "disk_free_percent=below-threshold"
+            exit 1
+          fi
+          case "$inode_free_percent" in
+            ''|*[!0-9]*)
+              echo "inode_free_percent=invalid"
+              exit 1
+              ;;
+          esac
+          if [ "$inode_free_percent" -lt 10 ]; then
+            echo "inode_free_percent=below-threshold"
+            exit 1
+          fi
+          printf 'disk_free_percent=%s inode_free_percent=%s\n' "$disk_free_percent" "$inode_free_percent"
+
+          time_sync="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+          case "$time_sync" in
+            yes|true|1) ;;
+            *)
+              echo "time_sync=unsynchronized"
+              exit 1
+              ;;
+          esac
+          printf 'utc_now=%s time_sync=ok\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          if ! getent ahosts "$expected_dns_name" >/dev/null 2>&1; then
+            echo "dns_resolution=failed"
+            exit 1
+          fi
+          printf 'dns_resolution=ok name=%s\n' "$expected_dns_name"
+          printf 'phase1_preflight_marker=%s status=success\n' "$expected_marker_token"
+          preflight_succeeded=1
+          HOST_SCRIPT
+          )"
+          host_script="expected_instance_id=${expected_instance_id_q}
+          expected_instance_profile_name=${expected_instance_profile_name_q}
+          expected_dns_name=${expected_dns_name_q}
+          expected_unit=${expected_unit_q}
+          expected_marker_token=${expected_marker_token_q}
+          ${host_script}"
+          parameters_json="$(jq -nc --arg command "$host_script" '{commands: [$command]}')"
+          command_id="$(
+            aws ssm send-command \
+              --region "$AWS_REGION" \
+              --document-name AWS-RunShellScript \
+              --instance-ids "$target_id" \
+              --parameters "$parameters_json" \
+              --comment "Phase 1 bounded preflight (${DEPLOYMENT_UNIT})" \
+              --timeout-seconds 300 \
+              --max-concurrency 1 \
+              --max-errors 0 \
+              --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+          if [ -z "$command_id" ] || [ "$command_id" = "None" ]; then
+            echo "::error title=SSM preflight dispatch failed::No command ID was returned"
+            exit 1
+          fi
+          success_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=success"
+          failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
+          marker_state="pending"
+          for attempt in $(seq 1 36); do
+            # Read only event IDs from this unit's group; never retrieve log text.
+            failure_event_id="$(
+              aws logs filter-log-events \
+                --region "$AWS_REGION" \
+                --log-group-name "$AWS_SSM_LOG_GROUP" \
+                --filter-pattern "\"$failure_marker\"" \
+                --query 'events[0].eventId' \
+                --output text 2>/dev/null || true
+            )"
+            if [ -n "$failure_event_id" ] && [ "$failure_event_id" != "None" ]; then
+              echo "::error title=SSM host preflight failed::Bounded host failure marker observed; command_id=${command_id}"
+              exit 1
+            fi
+            success_event_id="$(
+              aws logs filter-log-events \
+                --region "$AWS_REGION" \
+                --log-group-name "$AWS_SSM_LOG_GROUP" \
+                --filter-pattern "\"$success_marker\"" \
+                --query 'events[0].eventId' \
+                --output text 2>/dev/null || true
+            )"
+            if [ -n "$success_event_id" ] && [ "$success_event_id" != "None" ]; then
+              marker_state="success"
+              echo "ssm_preflight_status=Success command_id=${command_id} marker_event_id=${success_event_id}"
+              break
+            fi
+            sleep 5
+          done
+          if [ "$marker_state" != "success" ]; then
+            echo "::error title=SSM host preflight timed out::No bounded marker observed; command_id=${command_id}"
+            exit 1
+          fi
 
       - name: Prepare deploy directories on EC2
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1

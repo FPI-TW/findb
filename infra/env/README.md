@@ -25,6 +25,34 @@ infra/env/
 `.env.remote` contains real values, must remain ignored with mode `0600`, and
 must never be copied to EC2 or committed.
 
+Phase 1 adds six non-sensitive AWS/SSM variables to the two staging contracts
+only. Populate the role, profile, and log-group values from the accepted
+OpenTofu staging outputs after review; the region, account, and DNS name must
+match the accepted staging OpenTofu variables and target contract:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_REGION` | Region containing the existing staging EC2 targets. |
+| `AWS_ACCOUNT_ID` | Expected account guard for OIDC credentials and STS. |
+| `AWS_DEPLOY_ROLE_ARN` | Unit-specific, environment-bound GitHub OIDC deploy role. |
+| `AWS_INSTANCE_PROFILE_NAME` | Exact profile/role name expected on the existing EC2 target. |
+| `AWS_SSM_LOG_GROUP` | Unit-specific CloudWatch log group for bounded SSM preflight output. |
+| `AWS_DNS_CHECK_NAME` | DNS name resolved by the bounded host preflight. |
+
+For example, review `deploy_role_arns`, `instance_profile_names`, and
+`ssm_log_group_names` from:
+
+```bash
+tofu -chdir=infra/tofu/staging output -json deploy_role_arns
+tofu -chdir=infra/tofu/staging output -json instance_profile_names
+tofu -chdir=infra/tofu/staging output -json ssm_log_group_names
+```
+
+The six names are required only by `staging-findb` and `staging-fetcher`.
+Production resources and workflows are outside Phase 1 and remain on the
+current SSH deployment contract. Keep all existing SSH secrets, including the
+host, user, and key values, until the separately approved Phase 6 migration.
+
 Each target and service pair publishes to an isolated GitHub Environment:
 
 | Target | Service | Local source | GitHub Environment |

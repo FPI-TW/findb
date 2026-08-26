@@ -1,0 +1,9 @@
+terraform {
+  # Copy this file to backend.tf only after the first local-state apply has
+  # created the bucket and KMS key. Then migrate with the explicit backend
+  # configuration documented in ../README.md.
+  backend "s3" {
+    encrypt      = true
+    use_lockfile = true
+  }
+}

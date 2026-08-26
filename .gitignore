@@ -36,6 +36,15 @@ artifacts/
 backend/app/static/data/instruments.json
 backend/app/static/data/macro-series.json
 
+# OpenTofu local state, provider cache, plans, and operator variable files.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+infra/tofu/bootstrap/backend.tf
+
 .idea/
 .vscode/
 .DS_Store

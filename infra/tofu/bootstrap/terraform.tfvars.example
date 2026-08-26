@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars outside the repository and review before apply.
+aws_region       = "ap-southeast-1"
+aws_account_id   = "439622209937"
+state_bucket_name = "replace-with-a-globally-unique-findb-staging-state-bucket"
+state_kms_alias   = "alias/findb-staging-tofu-state"
+
+tags = {
+  Project        = "findb"
+  Environment    = "staging"
+  DeploymentUnit = "control-plane"
+  Owner          = "tylercore"
+  BackupOwner    = "tylercore"
+}

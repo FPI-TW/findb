@@ -236,8 +236,197 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
                     )
                 )
             }
-            documented_names = set((*config.variables, *config.secrets, *config.optional_secrets))
+            documented_names = set(
+                (*config.variables_for(target), *config.secrets, *config.optional_secrets)
+            )
             assert configured_names == documented_names
+
+
+def test_phase1_aws_variables_are_staging_only_and_match_examples() -> None:
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    phase1_names = set(namespace["STAGING_AWS_VARIABLES"])
+    expected_values = {
+        "findb": {
+            "AWS_REGION": "ap-southeast-1",
+            "AWS_ACCOUNT_ID": "439622209937",
+            "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/findb-staging-deploy",
+            "AWS_INSTANCE_PROFILE_NAME": "findb-staging-instance",
+            "AWS_SSM_LOG_GROUP": "/findb/staging/findb/ssm",
+            "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
+        },
+        "fetcher": {
+            "AWS_REGION": "ap-southeast-1",
+            "AWS_ACCOUNT_ID": "439622209937",
+            "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/fetcher-staging-deploy",
+            "AWS_INSTANCE_PROFILE_NAME": "fetcher-staging-instance",
+            "AWS_SSM_LOG_GROUP": "/findb/staging/fetcher/ssm",
+            "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
+        },
+    }
+
+    for service, config in namespace["SERVICE_CONFIGS"].items():
+        assert phase1_names <= set(config.variables_for("staging"))
+        assert not phase1_names & set(config.variables_for("production"))
+
+        staging_example = ENV_CONFIG_ROOT / "staging" / service / "remote.env.example"
+        staging_values = {
+            key: value
+            for key, value in (
+                line.split("=", 1)
+                for line in staging_example.read_text(encoding="utf-8").splitlines()
+                if line and not line.startswith("#") and "=" in line
+            )
+        }
+        assert {name: staging_values[name] for name in phase1_names} == expected_values[service]
+
+        production_example = ENV_CONFIG_ROOT / "production" / service / "remote.env.example"
+        production_text = production_example.read_text(encoding="utf-8")
+        assert not any(f"{name}=" in production_text for name in phase1_names)
+
+
+def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
+    action_sha = "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c"
+    common_script_markers = (
+        "aws sts get-caller-identity",
+        "Name=tag:Project,Values=findb",
+        "Name=tag:Environment,Values=staging",
+        "--query 'Reservations[].Instances[].InstanceId'",
+        "IamInstanceProfile.Arn",
+        "describe-instance-information",
+        "Online",
+        "AWS-RunShellScript",
+        '--instance-ids "$target_id"',
+        "CloudWatchOutputEnabled=true",
+        "AWS_SSM_LOG_GROUP",
+        "filter-log-events",
+        '--log-group-name "$AWS_SSM_LOG_GROUP"',
+        "--query 'events[0].eventId'",
+        "phase1_preflight_marker=",
+        "status=success",
+        "status=failed",
+        "169.254.169.254/latest/api/token",
+        "amazon-ssm-agent",
+        "docker --version",
+        "docker compose version",
+        "disk_free_percent",
+        "inode_free_percent",
+        "timedatectl show -p NTPSynchronized",
+        "date -u",
+        "getent ahosts",
+    )
+
+    for workflow_path, unit in (
+        (FINDB_CD_WORKFLOW, "findb"),
+        (FETCHER_CD_WORKFLOW, "fetcher"),
+    ):
+        workflow = _load_workflow(workflow_path)
+        jobs = workflow["jobs"]
+        deploy = jobs["deploy"]
+        assert deploy["permissions"]["id-token"] == "write"
+        for job_name, job in jobs.items():
+            if job_name != "deploy":
+                assert job.get("permissions", {}).get("id-token") != "write"
+
+        credential_step = _named_step(workflow, "deploy", "Configure staging AWS credentials")
+        preflight_step = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")
+        assert credential_step["uses"] == action_sha
+        assert (
+            credential_step["if"] == "${{ (inputs.deployment_target || 'staging') == 'staging' }}"
+        )
+        assert credential_step["with"] == {
+            "role-to-assume": "${{ vars.AWS_DEPLOY_ROLE_ARN }}",
+            "aws-region": "${{ vars.AWS_REGION }}",
+            "allowed-account-ids": "${{ vars.AWS_ACCOUNT_ID }}",
+            "role-session-name": f"{unit}-staging-preflight-${{{{ github.run_id }}}}",
+        }
+        assert preflight_step["if"] == credential_step["if"]
+        assert preflight_step["env"]["DEPLOYMENT_UNIT"] == unit
+        assert preflight_step["env"]["PREFLIGHT_MARKER_TOKEN"] == (
+            f"${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{unit}"
+        )
+        script = preflight_step["run"]
+        for marker in common_script_markers:
+            assert marker in script
+        assert f"Name=tag:DeploymentUnit,Values={unit}" in script
+        assert "AWS_ACCOUNT_ID" in script
+        assert "AWS_DEPLOY_ROLE_ARN" in script
+        assert "AWS_INSTANCE_PROFILE_NAME" in script
+        assert "AWS_DNS_CHECK_NAME" in script
+        assert "get-secret-value" in script
+        assert "phase1-preflight-denial-probe" in script
+        assert "findb/staging/${DEPLOYMENT_UNIT}/phase1-preflight-denial-probe" in script
+        assert "arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$" in script
+        assert 'AWS_INSTANCE_PROFILE_NAME" =~ ^[A-Za-z0-9+=,.@_-]+$' in script
+        assert 'AWS_SSM_LOG_GROUP" =~ ^[A-Za-z0-9_.\\/#-]+$' in script
+        assert ">/dev/null 2>&1" in script
+        assert "unexpectedly succeeded" in script
+        assert 'probe_stderr="$(mktemp)"' in script
+        assert "trap cleanup_probe EXIT" in script
+        assert (
+            'get-secret-value --region "$AWS_REGION" --secret-id "$probe_secret_arn" >/dev/null 2>"$probe_stderr"'
+            in script
+        )
+        assert 'grep -Fq "AccessDenied" "$probe_stderr" 2>/dev/null' in script
+        assert "Secret denial probe did not return AccessDenied" in script
+        assert "secret_read_denial=AccessDenied" in script
+        assert "--query StandardOutputContent" not in script
+        assert "--query StandardErrorContent" not in script
+        assert "send-command" in script
+        assert "get-command-invocation" not in script
+        assert "--query Status" not in script
+        assert "StandardOutputContent" not in script
+        assert "StandardErrorContent" not in script
+        send_command = script.split("aws ssm send-command", 1)[1].split('if [ -z "$command_id"', 1)[
+            0
+        ]
+        assert send_command.count('--instance-ids "$target_id"') == 1
+        assert "--cloud-watch-output-config" in script
+        assert "--output text 2>/dev/null || true" in script
+        assert script.count("aws logs filter-log-events") == 2
+        assert script.count('--log-group-name "$AWS_SSM_LOG_GROUP"') == 2
+        assert script.count("--query 'events[0].eventId'") == 2
+        assert "Read only event IDs" in script
+        assert "marker_event_id=${success_event_id}" in script
+        assert "command_id=${command_id}" in script
+        host_start = script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n") + len(
+            "host_script=\"$(cat <<'HOST_SCRIPT'\n"
+        )
+        host_end = script.index("\nHOST_SCRIPT\n", host_start)
+        host_script = script[host_start:host_end]
+        assert "security-credentials/" not in host_script
+        assert "meta-data/iam/info" in host_script
+        assert "InstanceProfileArn" in host_script
+        assert "sed -n" in host_script
+        assert "jq" not in host_script
+        assert "instance_profile_match" in host_script
+        assert "trap emit_preflight_failure EXIT" in host_script
+        assert "trap - EXIT" in host_script
+        assert "phase1_preflight_marker=%s status=failed" in host_script
+        assert "phase1_preflight_marker=%s status=success" in host_script
+
+        step_indices = deploy["steps"]
+        credential_index = step_indices.index(credential_step)
+        preflight_index = step_indices.index(preflight_step)
+        ssh_indices = [
+            index
+            for index, step in enumerate(step_indices)
+            if str(step.get("uses", "")).startswith("appleboy/")
+        ]
+        assert ssh_indices
+        assert credential_index < preflight_index < min(ssh_indices)
+
+        production = (ENV_CONFIG_ROOT / "production" / unit / "remote.env.example").read_text(
+            encoding="utf-8"
+        )
+        for aws_name in (
+            "AWS_REGION",
+            "AWS_ACCOUNT_ID",
+            "AWS_DEPLOY_ROLE_ARN",
+            "AWS_INSTANCE_PROFILE_NAME",
+            "AWS_SSM_LOG_GROUP",
+            "AWS_DNS_CHECK_NAME",
+        ):
+            assert f"{aws_name}=" not in production
 
 
 def test_fetcher_r2_sync_contract_is_raw_only() -> None:
