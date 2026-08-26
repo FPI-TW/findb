@@ -169,7 +169,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     )[0]
     assert 'sid    = "ReadResourceLessMetadata"' in permissions
     assert (
-        'actions = [\n      "ec2:DescribeInstances",\n      "ec2:DescribeTags",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "sts:GetCallerIdentity",\n    ]'
+        'actions = [\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "sts:GetCallerIdentity",\n    ]'
         in permissions
     )
     assert 'resources = ["*"]' in permissions
@@ -255,6 +255,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         "s3:GetBucketPublicAccessBlock",
         "s3:GetBucketTagging",
         "s3:GetBucketVersioning",
+        "s3:GetBucketWebsite",
         "s3:GetEncryptionConfiguration",
         "s3:GetLifecycleConfiguration",
         "s3:ListBucket",
