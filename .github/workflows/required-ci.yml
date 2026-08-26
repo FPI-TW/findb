@@ -19,6 +19,7 @@ jobs:
     outputs:
       findb: ${{ steps.classify.outputs.findb }}
       fetcher: ${{ steps.classify.outputs.fetcher }}
+      infra: ${{ steps.classify.outputs.infra }}
 
     steps:
       - name: Checkout pull request history
@@ -45,6 +46,7 @@ jobs:
           changed_paths="$(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")"
           findb=false
           fetcher=false
+          infra=false
 
           while IFS= read -r path; do
             [[ -z "$path" ]] && continue
@@ -58,10 +60,16 @@ jobs:
                 fetcher=true
                 ;;
             esac
+            case "$path" in
+              infra/tofu/**|.github/workflows/required-ci.yml|.github/workflows/staging-infra-plan.yml)
+                infra=true
+                ;;
+            esac
           done <<< "$changed_paths"
 
           echo "findb=$findb" >> "$GITHUB_OUTPUT"
           echo "fetcher=$fetcher" >> "$GITHUB_OUTPUT"
+          echo "infra=$infra" >> "$GITHUB_OUTPUT"
 
   findb:
     name: FinDB CI
@@ -75,10 +83,19 @@ jobs:
     if: ${{ needs.changes.outputs.fetcher == 'true' }}
     uses: ./.github/workflows/fetcher-ci.yml
 
+  staging-infra-plan:
+    name: Staging Infra Plan
+    needs: changes
+    if: ${{ needs.changes.outputs.infra == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/staging-infra-plan.yml
+
   required:
     name: Required CI
     if: ${{ always() }}
-    needs: [changes, findb, fetcher]
+    needs: [changes, findb, fetcher, staging-infra-plan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -89,12 +106,14 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           FINDB_RESULT: ${{ needs.findb.result }}
           FETCHER_RESULT: ${{ needs.fetcher.result }}
+          INFRA_RESULT: ${{ needs.staging-infra-plan.result }}
           FINDB_EXPECTED: ${{ needs.changes.outputs.findb }}
           FETCHER_EXPECTED: ${{ needs.changes.outputs.fetcher }}
+          INFRA_EXPECTED: ${{ needs.changes.outputs.infra }}
         run: |
           set -euo pipefail
 
-          echo "changes=$CHANGES_RESULT findb=$FINDB_RESULT fetcher=$FETCHER_RESULT"
+          echo "changes=$CHANGES_RESULT findb=$FINDB_RESULT fetcher=$FETCHER_RESULT infra=$INFRA_RESULT"
 
           if [[ "$CHANGES_RESULT" != "success" ]]; then
             echo "Required CI failed: changes classification did not succeed" >&2
@@ -123,3 +142,4 @@ jobs:
 
           verify_child "findb" "$FINDB_EXPECTED" "$FINDB_RESULT"
           verify_child "fetcher" "$FETCHER_EXPECTED" "$FETCHER_RESULT"
+          verify_child "staging-infra-plan" "$INFRA_EXPECTED" "$INFRA_RESULT"

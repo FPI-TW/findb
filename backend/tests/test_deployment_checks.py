@@ -145,17 +145,12 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
         _load_workflow(path)
 
 
-def test_staging_infra_plan_is_pr_only_exact_commit_and_bounded() -> None:
+def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     workflow_path = WORKFLOWS_ROOT / "staging-infra-plan.yml"
     workflow = _load_workflow(workflow_path)
     triggers = workflow["on"]
 
-    assert triggers == {
-        "pull_request": {
-            "branches": ["main"],
-            "paths": ["infra/tofu/**", ".github/workflows/staging-infra-plan.yml"],
-        }
-    }
+    assert set(triggers) == {"workflow_call"}
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"plan"}
     assert workflow["env"]["TOFU_VERSION"] == "1.12.6"
@@ -473,9 +468,41 @@ def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> Non
     assert "push" not in required_triggers
     assert required_ci["jobs"]["findb"]["uses"] == "./.github/workflows/findb-ci.yml"
     assert required_ci["jobs"]["fetcher"]["uses"] == "./.github/workflows/fetcher-ci.yml"
+    assert required_ci["jobs"]["staging-infra-plan"]["uses"] == (
+        "./.github/workflows/staging-infra-plan.yml"
+    )
+    assert required_ci["jobs"]["staging-infra-plan"]["if"] == (
+        "${{ needs.changes.outputs.infra == 'true' }}"
+    )
+    assert required_ci["jobs"]["staging-infra-plan"]["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+    }
     assert required_ci["jobs"]["required"]["name"] == "Required CI"
     assert required_ci["jobs"]["required"]["if"] == "${{ always() }}"
-    assert required_ci["jobs"]["required"]["needs"] == ["changes", "findb", "fetcher"]
+    assert required_ci["jobs"]["required"]["needs"] == [
+        "changes",
+        "findb",
+        "fetcher",
+        "staging-infra-plan",
+    ]
+
+    changes = required_ci["jobs"]["changes"]
+    assert changes["outputs"]["infra"] == "${{ steps.classify.outputs.infra }}"
+    classify_script = _named_step(required_ci, "changes", "Classify changed paths")["run"]
+    infra_match = re.search(
+        r'case "\$path" in\s+(?P<patterns>[^)]+)\)\s+infra=true',
+        classify_script,
+    )
+    assert infra_match is not None
+    assert {pattern.strip() for pattern in infra_match.group("patterns").split("|")} == {
+        "infra/tofu/**",
+        ".github/workflows/required-ci.yml",
+        ".github/workflows/staging-infra-plan.yml",
+    }
+
+    verify_script = _named_step(required_ci, "required", "Verify routed CI results")["run"]
+    assert 'verify_child "staging-infra-plan" "$INFRA_EXPECTED" "$INFRA_RESULT"' in (verify_script)
 
     for ci_path, cd_path, reusable_path in (
         (FINDB_CI_WORKFLOW, FINDB_CD_WORKFLOW, "./.github/workflows/findb-ci.yml"),
