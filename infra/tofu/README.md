@@ -1,9 +1,11 @@
 # Staging OpenTofu control plane
 
-This directory contains the Phase 1 control-plane foundation only. It creates
-new IAM, KMS, S3, CloudWatch, and SSM resources and references the two existing
-staging EC2 instances. It does not import or recreate EC2, RDS, VPC, subnets,
-security groups, Cloudflare R2 buckets, DNS, or application runtime secrets.
+This directory contains the Phase 1 control-plane foundation and the Phase 2
+runtime-secret metadata foundation. It creates IAM, target-specific KMS keys,
+Secrets Manager metadata, S3, CloudWatch, and SSM resources and references the
+two existing staging EC2 instances. It does not put secret versions or values
+in OpenTofu state, and it does not import or recreate EC2, RDS, VPC, subnets,
+security groups, Cloudflare R2 buckets, or DNS.
 
 ## State bootstrap
 
@@ -145,10 +147,49 @@ only bounded marker event IDs from their own CloudWatch log group, and use their
 own future deployment-bundle prefix. They cannot
 call `secretsmanager:GetSecretValue`, read RDS, access another unit's target,
 or use another unit's bundle prefix. Instance roles use a scoped SSM agent
-transport policy and have future-only access to their own Secrets Manager/SSM
-parameter path and deployment-bundle prefix; the agent policy intentionally
+transport policy and have exact access to their own declared Secrets Manager
+resources, their own runtime-secret KMS key, their own SSM parameter path, and
+their deployment-bundle prefix. The agent transport policy itself intentionally
 does not grant parameter or secret reads. This does not migrate or delete the
 current GitHub Environment runtime secrets.
+
+## Phase 2 runtime-secret metadata and loader
+
+`staging/secrets.tf` declares metadata only for the FinDB and Fetcher runtime
+secret catalogs. Each unit has a separate customer-managed KMS key and alias;
+the corresponding instance role can decrypt only through Secrets Manager and
+only when the encryption context names its own secret prefix. No
+`aws_secretsmanager_secret_version`, `secret_string`, provider credential, RDS
+URL, API key, or registry token belongs in OpenTofu configuration or state.
+
+The versioned catalogs and host loader live in
+`infra/deploy/runtime-secrets/`. The loader accepts only a named consumer from
+the catalog, validates the exact JSON keys, rejects credential reuse required
+by the catalog, and writes a shell-sourceable `0600` file only at
+`/run/findb-runtime-secrets/<consumer>/runtime.env` after verifying the opened
+root and consumer directories are both backed by `tmpfs`. Directory-relative, no-follow creation
+prevents a symlink or parent-directory race from redirecting the write.
+`--check-only` removes the file through the already-open directory immediately
+after validation. A deployment caller must remove a normal output file after
+sourcing it and unset the loaded shell variables when the operation ends.
+
+The loader deliberately requires the AWS CLI and fails closed with the bounded
+reason `aws_cli_missing`; it does not install packages or fall back to a
+different credential path. On 2026-08-26 both staging hosts installed AWS CLI
+v2.36.31 and verified their unit-specific instance-role identity. The same
+acceptance verified the loader's open-file-descriptor check sees `/run` as
+`tmpfs` and that the installation staging directory was removed. AWS CLI
+installation remains an explicit host prerequisite outside this stack. The
+post-install inventory confirmed that no `findb/staging/` secrets and no
+runtime-secret KMS aliases existed yet. Review a fresh plan and require zero
+destroys before applying this metadata foundation.
+
+After apply, a trusted operator writes each first `AWSCURRENT` version directly
+to Secrets Manager without routing values through GitHub Actions, shell command
+arguments, OpenTofu variables, or state. Keep existing GitHub Environment
+runtime secrets until the `aws-check` canary and consumer-specific deployment
+acceptance succeed; rotation and revocation are separate, ordered cutover
+actions.
 
 Run Command and Session Manager output is sent to the unit log group. The
 preflight only emits bounded host facts (account, role/profile identity,

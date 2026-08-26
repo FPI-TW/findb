@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "unit": "fetcher",
+  "secret_prefix": "findb/staging/fetcher/",
+  "consumers": {
+    "registry": {
+      "secrets": [
+        {"name": "registry/ghcr-pull", "required_keys": ["GHCR_USERNAME", "GHCR_TOKEN"]}
+      ]
+    },
+    "twelve-data": {
+      "secrets": [
+        {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
+        {"name": "api/source/twelve-data", "required_keys": ["FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"]},
+        {"name": "provider/twelve-data", "required_keys": ["TWELVE_DATA_API_KEY"]},
+        {"name": "r2/raw", "required_keys": ["CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_RAW_SESSION_TOKEN"]}
+      ],
+      "distinct_keys": [["FETCHER_CALENDAR_SERVE_API_KEY", "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"]]
+    },
+    "finlab": {
+      "secrets": [
+        {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
+        {"name": "api/source/finlab", "required_keys": ["FETCHER_FINLAB_SOURCE_CLIENT_KEY"]},
+        {"name": "provider/finlab", "required_keys": ["FINLAB_API_TOKEN"]},
+        {"name": "r2/raw", "required_keys": ["CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_RAW_SESSION_TOKEN"]}
+      ],
+      "distinct_keys": [["FETCHER_CALENDAR_SERVE_API_KEY", "FETCHER_FINLAB_SOURCE_CLIENT_KEY"]]
+    },
+    "shioaji": {
+      "secrets": [
+        {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
+        {"name": "api/source/shioaji", "required_keys": ["FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"]},
+        {"name": "provider/shioaji", "required_keys": ["SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"]},
+        {"name": "r2/raw", "required_keys": ["CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_RAW_SESSION_TOKEN"]}
+      ],
+      "distinct_keys": [["FETCHER_CALENDAR_SERVE_API_KEY", "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"]]
+    },
+    "canary": {
+      "secrets": [
+        {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
+        {"name": "api/source/twelve-data", "required_keys": ["FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"]},
+        {"name": "api/source/finlab", "required_keys": ["FETCHER_FINLAB_SOURCE_CLIENT_KEY"]},
+        {"name": "api/source/shioaji", "required_keys": ["FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"]},
+        {"name": "provider/twelve-data", "required_keys": ["TWELVE_DATA_API_KEY"]},
+        {"name": "provider/finlab", "required_keys": ["FINLAB_API_TOKEN"]},
+        {"name": "provider/shioaji", "required_keys": ["SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"]},
+        {"name": "r2/raw", "required_keys": ["CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_RAW_SESSION_TOKEN"]},
+        {"name": "registry/ghcr-pull", "required_keys": ["GHCR_USERNAME", "GHCR_TOKEN"]}
+      ],
+      "distinct_keys": [["FETCHER_CALENDAR_SERVE_API_KEY", "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY", "FETCHER_FINLAB_SOURCE_CLIENT_KEY", "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"]]
+    }
+  }
+}

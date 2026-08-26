@@ -249,7 +249,7 @@ data "aws_iam_policy_document" "instance_permissions" {
   for_each = local.unit_config
 
   statement {
-    sid    = "ReadOwnFutureSecrets"
+    sid    = "ReadOwnRuntimeSecrets"
     effect = "Allow"
 
     actions = [
@@ -258,8 +258,30 @@ data "aws_iam_policy_document" "instance_permissions" {
     ]
 
     resources = [
-      "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${each.value.secret_path}*",
+      for key, spec in local.runtime_secret_specs : aws_secretsmanager_secret.runtime[key].arn
+      if spec.unit == each.key
     ]
+  }
+
+  statement {
+    sid       = "DecryptOwnRuntimeSecrets"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.runtime_secrets[each.key].arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:SecretARN"
+      values = [
+        "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${each.value.secret_path}*",
+      ]
+    }
   }
 
   statement {
