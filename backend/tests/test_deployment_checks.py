@@ -300,7 +300,9 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         "AWS_SSM_LOG_GROUP",
         "filter-log-events",
         '--log-group-name "$AWS_SSM_LOG_GROUP"',
-        "--query 'events[0].eventId'",
+        '--log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout"',
+        "--query 'length(events)'",
+        "--output json",
         "phase1_preflight_marker=",
         "status=success",
         "status=failed",
@@ -376,17 +378,42 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "--query Status" not in script
         assert "StandardOutputContent" not in script
         assert "StandardErrorContent" not in script
+        assert "events[0].eventId" not in script
+        assert "None" not in script.split("failure_event_count=", 1)[1]
+        assert "None" not in script.split("success_event_count=", 1)[1]
+        assert "--no-paginate" not in script
+        assert "for attempt in $(seq 1 36); do" in script
         send_command = script.split("aws ssm send-command", 1)[1].split('if [ -z "$command_id"', 1)[
             0
         ]
         assert send_command.count('--instance-ids "$target_id"') == 1
         assert "--cloud-watch-output-config" in script
-        assert "--output text 2>/dev/null || true" in script
+        assert "--output json 2>/dev/null" in script
         assert script.count("aws logs filter-log-events") == 2
         assert script.count('--log-group-name "$AWS_SSM_LOG_GROUP"') == 2
-        assert script.count("--query 'events[0].eventId'") == 2
-        assert "Read only event IDs" in script
-        assert "marker_event_id=${success_event_id}" in script
+        assert (
+            script.count(
+                '--log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout"'
+            )
+            == 2
+        )
+        assert script.count("--query 'length(events)'") == 2
+        for marker_count in ("failure_event_count", "success_event_count"):
+            marker_guard = re.search(
+                rf'if ! \[\[ "\${marker_count}" =~ \^\[0-9\]\+\$ \]\]; then(?P<body>.*?)\n\s+fi',
+                script,
+                re.DOTALL,
+            )
+            assert marker_guard is not None
+            assert "exit 1" in marker_guard.group("body")
+        assert 'if [ "$failure_event_count" -gt 0 ]; then' in script
+        assert 'if [ "$success_event_count" -gt 0 ]; then' in script
+        assert "marker_event_count=${success_event_count}" in script
+        failure_query = script.index('failure_event_count="$(')
+        success_query = script.index('success_event_count="$(')
+        failure_decision = script.index('if [ "$failure_event_count" -gt 0 ]; then')
+        success_decision = script.index('if [ "$success_event_count" -gt 0 ]; then')
+        assert failure_query < failure_decision < success_query < success_decision
         assert "command_id=${command_id}" in script
         host_start = script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n") + len(
             "host_script=\"$(cat <<'HOST_SCRIPT'\n"
@@ -432,6 +459,122 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
             "AWS_DNS_CHECK_NAME",
         ):
             assert f"{aws_name}=" not in production
+
+
+def _run_staging_ssm_marker_polling_case(
+    workflow_path: Path,
+    *,
+    failure_count: str,
+    success_count: str,
+    aws_query_status: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    """Run the workflow's marker polling block with an offline AWS CLI stub."""
+
+    workflow = _load_workflow(workflow_path)
+    script = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")["run"]
+    polling_start = script.index('success_marker="')
+    polling_end = script.index('if [ "$marker_state" != "success" ]', polling_start)
+    polling_script = script[polling_start:polling_end]
+
+    harness = (
+        """
+set -euo pipefail
+
+aws() {
+  if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
+    return "$AWS_QUERY_STATUS"
+  fi
+  local filter_pattern=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --filter-pattern)
+        filter_pattern="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  case "$filter_pattern" in
+    *"status=failed"*)
+      printf '%s\n' "$FAILURE_COUNT"
+      ;;
+    *"status=success"*)
+      printf '%s\n' "$SUCCESS_COUNT"
+      ;;
+    *)
+      return 42
+      ;;
+  esac
+}
+
+sleep() { :; }
+
+AWS_REGION=test-region
+AWS_SSM_LOG_GROUP=test-log-group
+PREFLIGHT_MARKER_TOKEN=test-token
+command_id=test-command
+target_id=test-target
+"""
+        + polling_script
+        + """
+if [ "$marker_state" != "success" ]; then
+  exit 1
+fi
+"""
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "FAILURE_COUNT": failure_count,
+            "SUCCESS_COUNT": success_count,
+            "AWS_QUERY_STATUS": str(aws_query_status),
+        }
+    )
+    return subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "failure_count", "success_count", "aws_query_status", "expected_returncode"),
+    (
+        ("zero means not found", "0", "0", 0, 1),
+        ("positive failure marker is rejected", "2", "1", 0, 1),
+        ("positive success marker passes", "0", "3", 0, 0),
+        ("empty failure count fails closed", "", "1", 0, 1),
+        ("non-numeric failure count fails closed", "None", "1", 0, 1),
+        ("empty success count fails closed", "0", "", 0, 1),
+        ("non-numeric success count fails closed", "0", "invalid", 0, 1),
+        ("AWS query failure fails closed", "0", "1", 7, 1),
+    ),
+)
+def test_staging_ssm_marker_count_polling_behavior(
+    case: str,
+    failure_count: str,
+    success_count: str,
+    aws_query_status: int,
+    expected_returncode: int,
+) -> None:
+    del case
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        completed = _run_staging_ssm_marker_polling_case(
+            workflow_path,
+            failure_count=failure_count,
+            success_count=success_count,
+            aws_query_status=aws_query_status,
+        )
+        message = f"{workflow_path.name}: stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        if expected_returncode == 0:
+            assert completed.returncode == 0, message
+        else:
+            assert completed.returncode != 0, message
 
 
 def test_fetcher_r2_sync_contract_is_raw_only() -> None:

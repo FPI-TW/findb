@@ -455,30 +455,40 @@ jobs:
           failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
           marker_state="pending"
           for attempt in $(seq 1 36); do
-            # Read only event IDs from this unit's group; never retrieve log text.
-            failure_event_id="$(
+            # Read only the marker event count from this command's stdout stream; never retrieve log text.
+            failure_event_count="$(
               aws logs filter-log-events \
                 --region "$AWS_REGION" \
                 --log-group-name "$AWS_SSM_LOG_GROUP" \
+                --log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout" \
                 --filter-pattern "\"$failure_marker\"" \
-                --query 'events[0].eventId' \
-                --output text 2>/dev/null || true
+                --query 'length(events)' \
+                --output json 2>/dev/null
             )"
-            if [ -n "$failure_event_id" ] && [ "$failure_event_id" != "None" ]; then
+            if ! [[ "$failure_event_count" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Invalid SSM marker count::CloudWatch returned a non-numeric failure marker event count"
+              exit 1
+            fi
+            if [ "$failure_event_count" -gt 0 ]; then
               echo "::error title=SSM host preflight failed::Bounded host failure marker observed; command_id=${command_id}"
               exit 1
             fi
-            success_event_id="$(
+            success_event_count="$(
               aws logs filter-log-events \
                 --region "$AWS_REGION" \
                 --log-group-name "$AWS_SSM_LOG_GROUP" \
+                --log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout" \
                 --filter-pattern "\"$success_marker\"" \
-                --query 'events[0].eventId' \
-                --output text 2>/dev/null || true
+                --query 'length(events)' \
+                --output json 2>/dev/null
             )"
-            if [ -n "$success_event_id" ] && [ "$success_event_id" != "None" ]; then
+            if ! [[ "$success_event_count" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Invalid SSM marker count::CloudWatch returned a non-numeric success marker event count"
+              exit 1
+            fi
+            if [ "$success_event_count" -gt 0 ]; then
               marker_state="success"
-              echo "ssm_preflight_status=Success command_id=${command_id} marker_event_id=${success_event_id}"
+              echo "ssm_preflight_status=Success command_id=${command_id} marker_event_count=${success_event_count}"
               break
             fi
             sleep 5
