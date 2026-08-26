@@ -300,7 +300,7 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         "AWS_SSM_LOG_GROUP",
         "filter-log-events",
         '--log-group-name "$AWS_SSM_LOG_GROUP"',
-        '--log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout"',
+        '--log-stream-name-prefix "${command_id}/${target_id}/aws-runShellScript/stdout"',
         "--query 'length(events)'",
         "--output json",
         "phase1_preflight_marker=",
@@ -379,6 +379,7 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "StandardOutputContent" not in script
         assert "StandardErrorContent" not in script
         assert "events[0].eventId" not in script
+        assert "--log-stream-names" not in script
         assert "None" not in script.split("failure_event_count=", 1)[1]
         assert "None" not in script.split("success_event_count=", 1)[1]
         assert "--no-paginate" not in script
@@ -393,7 +394,7 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert script.count('--log-group-name "$AWS_SSM_LOG_GROUP"') == 2
         assert (
             script.count(
-                '--log-stream-names "${command_id}/${target_id}/aws-runShellScript/stdout"'
+                '--log-stream-name-prefix "${command_id}/${target_id}/aws-runShellScript/stdout"'
             )
             == 2
         )
@@ -462,10 +463,11 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
 
 
 def _run_staging_ssm_marker_polling_case(
+    tmp_path: Path,
     workflow_path: Path,
     *,
-    failure_count: str,
-    success_count: str,
+    failure_counts: tuple[str, ...],
+    success_counts: tuple[str, ...],
     aws_query_status: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """Run the workflow's marker polling block with an offline AWS CLI stub."""
@@ -475,6 +477,8 @@ def _run_staging_ssm_marker_polling_case(
     polling_start = script.index('success_marker="')
     polling_end = script.index('if [ "$marker_state" != "success" ]', polling_start)
     polling_script = script[polling_start:polling_end]
+    state_dir = tmp_path / workflow_path.stem
+    state_dir.mkdir()
 
     harness = (
         """
@@ -484,9 +488,14 @@ aws() {
   if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
     return "$AWS_QUERY_STATUS"
   fi
+  local log_stream_prefix=""
   local filter_pattern=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --log-stream-name-prefix)
+        log_stream_prefix="$2"
+        shift 2
+        ;;
       --filter-pattern)
         filter_pattern="$2"
         shift 2
@@ -496,12 +505,31 @@ aws() {
         ;;
     esac
   done
+  if [ "$log_stream_prefix" != "${command_id}/${target_id}/aws-runShellScript/stdout" ]; then
+    return 41
+  fi
   case "$filter_pattern" in
     *"status=failed"*)
-      printf '%s\n' "$FAILURE_COUNT"
+      query_index="$(<"$FAILURE_QUERY_INDEX_FILE")"
+      if [ "$query_index" -lt "${#FAILURE_COUNTS[@]}" ]; then
+        count_value="${FAILURE_COUNTS[$query_index]}"
+      else
+        count_value="${FAILURE_COUNTS[$(( ${#FAILURE_COUNTS[@]} - 1 ))]}"
+      fi
+      [ "$count_value" = "__EMPTY__" ] && count_value=""
+      printf '%s\n' "$count_value"
+      printf '%s\n' "$((query_index + 1))" > "$FAILURE_QUERY_INDEX_FILE"
       ;;
     *"status=success"*)
-      printf '%s\n' "$SUCCESS_COUNT"
+      query_index="$(<"$SUCCESS_QUERY_INDEX_FILE")"
+      if [ "$query_index" -lt "${#SUCCESS_COUNTS[@]}" ]; then
+        count_value="${SUCCESS_COUNTS[$query_index]}"
+      else
+        count_value="${SUCCESS_COUNTS[$(( ${#SUCCESS_COUNTS[@]} - 1 ))]}"
+      fi
+      [ "$count_value" = "__EMPTY__" ] && count_value=""
+      printf '%s\n' "$count_value"
+      printf '%s\n' "$((query_index + 1))" > "$SUCCESS_QUERY_INDEX_FILE"
       ;;
     *)
       return 42
@@ -516,6 +544,12 @@ AWS_SSM_LOG_GROUP=test-log-group
 PREFLIGHT_MARKER_TOKEN=test-token
 command_id=test-command
 target_id=test-target
+IFS='|' read -r -a FAILURE_COUNTS <<< "$FAILURE_COUNT_SEQUENCE"
+IFS='|' read -r -a SUCCESS_COUNTS <<< "$SUCCESS_COUNT_SEQUENCE"
+FAILURE_QUERY_INDEX_FILE="$STATE_DIR/failure_query_index"
+SUCCESS_QUERY_INDEX_FILE="$STATE_DIR/success_query_index"
+printf '0\n' > "$FAILURE_QUERY_INDEX_FILE"
+printf '0\n' > "$SUCCESS_QUERY_INDEX_FILE"
 """
         + polling_script
         + """
@@ -527,9 +561,14 @@ fi
     environment = os.environ.copy()
     environment.update(
         {
-            "FAILURE_COUNT": failure_count,
-            "SUCCESS_COUNT": success_count,
+            "FAILURE_COUNT_SEQUENCE": "|".join(
+                "__EMPTY__" if count == "" else count for count in failure_counts
+            ),
+            "SUCCESS_COUNT_SEQUENCE": "|".join(
+                "__EMPTY__" if count == "" else count for count in success_counts
+            ),
             "AWS_QUERY_STATUS": str(aws_query_status),
+            "STATE_DIR": str(state_dir),
         }
     )
     return subprocess.run(
@@ -543,31 +582,33 @@ fi
 
 
 @pytest.mark.parametrize(
-    ("case", "failure_count", "success_count", "aws_query_status", "expected_returncode"),
+    ("case", "failure_counts", "success_counts", "aws_query_status", "expected_returncode"),
     (
-        ("zero means not found", "0", "0", 0, 1),
-        ("positive failure marker is rejected", "2", "1", 0, 1),
-        ("positive success marker passes", "0", "3", 0, 0),
-        ("empty failure count fails closed", "", "1", 0, 1),
-        ("non-numeric failure count fails closed", "None", "1", 0, 1),
-        ("empty success count fails closed", "0", "", 0, 1),
-        ("non-numeric success count fails closed", "0", "invalid", 0, 1),
-        ("AWS query failure fails closed", "0", "1", 7, 1),
+        ("stream absent/count 0 times out", ("0",), ("0",), 0, 1),
+        ("stream absent then success passes", ("0", "0"), ("0", "3"), 0, 0),
+        ("failure marker takes priority", ("2",), ("3",), 0, 1),
+        ("empty failure count fails closed", ("",), ("1",), 0, 1),
+        ("non-numeric failure count fails closed", ("None",), ("1",), 0, 1),
+        ("empty success count fails closed", ("0",), ("",), 0, 1),
+        ("non-numeric success count fails closed", ("0",), ("invalid",), 0, 1),
+        ("AWS query failure fails closed", ("0",), ("1",), 7, 1),
     ),
 )
 def test_staging_ssm_marker_count_polling_behavior(
+    tmp_path: Path,
     case: str,
-    failure_count: str,
-    success_count: str,
+    failure_counts: tuple[str, ...],
+    success_counts: tuple[str, ...],
     aws_query_status: int,
     expected_returncode: int,
 ) -> None:
     del case
     for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
         completed = _run_staging_ssm_marker_polling_case(
+            tmp_path,
             workflow_path,
-            failure_count=failure_count,
-            success_count=success_count,
+            failure_counts=failure_counts,
+            success_counts=success_counts,
             aws_query_status=aws_query_status,
         )
         message = f"{workflow_path.name}: stdout={completed.stdout!r} stderr={completed.stderr!r}"
