@@ -364,11 +364,21 @@ jobs:
           fi
           printf 'instance_id_match=ok instance_profile_match=ok unit=%s\n' "$expected_unit"
 
-          if ! systemctl is-active --quiet amazon-ssm-agent >/dev/null 2>&1; then
+          ssm_agent_service=""
+          for candidate in \
+            amazon-ssm-agent.service \
+            snap.amazon-ssm-agent.amazon-ssm-agent.service
+          do
+            if systemctl is-active --quiet "$candidate" >/dev/null 2>&1; then
+              ssm_agent_service="$candidate"
+              break
+            fi
+          done
+          if [ -z "$ssm_agent_service" ]; then
             echo "ssm_agent=inactive"
             exit 1
           fi
-          echo "ssm_agent=active"
+          printf 'ssm_agent=active service=%s\n' "$ssm_agent_service"
 
           docker_version="$(docker --version 2>/dev/null | cut -c1-128)"
           compose_version="$(docker compose version --short 2>/dev/null | cut -c1-128)"

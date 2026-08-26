@@ -399,6 +399,11 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "sed -n" in host_script
         assert "jq" not in host_script
         assert "instance_profile_match" in host_script
+        assert "amazon-ssm-agent.service" in host_script
+        assert "snap.amazon-ssm-agent.amazon-ssm-agent.service" in host_script
+        assert 'systemctl is-active --quiet "$candidate"' in host_script
+        assert 'if [ -z "$ssm_agent_service" ]' in host_script
+        assert "ssm_agent=active service=%s" in host_script
         assert "trap emit_preflight_failure EXIT" in host_script
         assert "trap - EXIT" in host_script
         assert "phase1_preflight_marker=%s status=failed" in host_script
