@@ -175,12 +175,14 @@ sourcing it and unset the loaded shell variables when the operation ends.
 
 The loader deliberately requires the AWS CLI and fails closed with the bounded
 reason `aws_cli_missing`; it does not install packages or fall back to a
-different credential path. The 2026-08-26 read-only inventory found `/run` on
-both staging hosts is `tmpfs`, but neither host currently has the AWS CLI.
-Installing and verifying the CLI is therefore a cutover prerequisite, not an
-action performed by this stack. The same inventory confirmed that no
-`findb/staging/` secrets and no runtime-secret KMS aliases existed yet. Review a
-fresh plan and require zero destroys before applying this metadata foundation.
+different credential path. On 2026-08-26 both staging hosts installed AWS CLI
+v2.36.31 and verified their unit-specific instance-role identity. The same
+acceptance verified the loader's open-file-descriptor check sees `/run` as
+`tmpfs` and that the installation staging directory was removed. AWS CLI
+installation remains an explicit host prerequisite outside this stack. The
+post-install inventory confirmed that no `findb/staging/` secrets and no
+runtime-secret KMS aliases existed yet. Review a fresh plan and require zero
+destroys before applying this metadata foundation.
 
 After apply, a trusted operator writes each first `AWSCURRENT` version directly
 to Secrets Manager without routing values through GitHub Actions, shell command

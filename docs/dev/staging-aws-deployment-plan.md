@@ -384,6 +384,13 @@ Session Manager recovery均可用。
 
 ### Phase 2：Runtime secrets遷移
 
+2026-08-26 prerequisite evidence：FinDB與Fetcher staging hosts均已安裝AWS CLI v2.36.31，
+各自以unit-specific instance role完成STS identity驗證，並通過`/run` open-file-descriptor tmpfs
+檢查。當次inventory仍未發現`findb/staging/` Secrets Manager metadata或runtime-secret KMS
+aliases，因此尚未執行loader canary、secret寫入、credential輪替或consumer cutover。既有GitHub
+Environment secrets、persistent host credentials與SSH recovery必須保留，直到本Phase其餘驗收
+全部成功且撤銷條件另行確認。
+
 - [ ] 依consumer邊界建立target-specific secrets與KMS policy；先寫入新版本，不刪GitHub值。
 - [ ] 新增host-side secret loader，以allowlist取值、寫入tmpfs、驗證owner／mode並於結束後清理。
 - [ ] 先用現行SSH CD完成一次非資料產生的deploy，改由instance role取secret，確認每個container
