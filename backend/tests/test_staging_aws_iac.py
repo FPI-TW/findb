@@ -264,6 +264,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         "s3:GetEncryptionConfiguration",
         "s3:GetLifecycleConfiguration",
         "s3:ListBucket",
+        "s3:ListTagsForResource",
     ):
         assert action in deploy_bucket_statement
     assert "s3:GetBucketLifecycleConfiguration" not in permissions

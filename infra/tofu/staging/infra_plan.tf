@@ -220,6 +220,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "s3:GetEncryptionConfiguration",
       "s3:GetLifecycleConfiguration",
       "s3:ListBucket",
+      "s3:ListTagsForResource",
     ]
 
     resources = [aws_s3_bucket.deploy_bundle.arn]
