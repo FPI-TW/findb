@@ -1,0 +1,149 @@
+name: Staging Infra Plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "infra/tofu/**"
+      - ".github/workflows/staging-infra-plan.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-infra-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-southeast-1
+  AWS_ACCOUNT_ID: "439622209937"
+  TOFU_VERSION: "1.12.6"
+  TOFU_STATE_BUCKET: findb-staging-tofu-state-439622209937
+  TOFU_STATE_KEY: staging/control-plane.tfstate
+  TOFU_STATE_KMS_KEY_ARN: arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d
+
+jobs:
+  plan:
+    name: Refresh staging OpenTofu plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Reject external fork pull requests
+        env:
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PR_HEAD_REPOSITORY" || "$PR_HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]]; then
+            echo "External fork pull requests are not eligible for the staging plan identity" >&2
+            exit 1
+          fi
+
+      - name: Checkout exact pull request commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up pinned OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Verify checked out commit
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Invalid pull request head SHA" >&2
+            exit 1
+          fi
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$PR_HEAD_SHA" ]]; then
+            echo "Checkout is not the pull request head commit" >&2
+            exit 1
+          fi
+
+      - name: Configure staging plan AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v5
+        with:
+          role-to-assume: ${{ vars.STAGING_INFRA_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: staging-infra-plan-${{ github.run_id }}
+
+      - name: Check OpenTofu formatting recursively
+        run: tofu fmt -check -recursive infra/tofu
+
+      - name: Initialize exact staging backend
+        run: |
+          set -euo pipefail
+          tofu -chdir=infra/tofu/staging init -reconfigure -input=false \
+            -lockfile=readonly \
+            -backend-config="bucket=findb-staging-tofu-state-439622209937" \
+            -backend-config="key=staging/control-plane.tfstate" \
+            -backend-config="region=ap-southeast-1" \
+            -backend-config="encrypt=true" \
+            -backend-config="kms_key_id=arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d" \
+            -backend-config="use_lockfile=true"
+
+      - name: Validate staging configuration
+        run: tofu -chdir=infra/tofu/staging validate -no-color
+
+      - name: Refresh plan and reject delete or replace actions
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d "${RUNNER_TEMP}/staging-infra-plan.XXXXXX")"
+          trap 'rm -rf "$scratch"' EXIT
+
+          config_files="$scratch/config-files"
+          git ls-files 'infra/tofu/**/*.tf' 'infra/tofu/**/*.hcl' 'infra/tofu/**/*.tfvars.example' | sort > "$config_files"
+          config_count="$(wc -l < "$config_files" | tr -d ' ')"
+          config_checksum="$(while IFS= read -r path; do sha256sum "$path"; done < "$config_files" | sha256sum | awk '{print $1}')"
+          lock_checksum="$(sha256sum infra/tofu/staging/.terraform.lock.hcl | awk '{print $1}')"
+
+          plan_file="$scratch/plan"
+          show_file="$scratch/plan.json"
+          if ! tofu -chdir=infra/tofu/staging plan -refresh=true -input=false -no-color \
+            -var-file=terraform.tfvars.example -out="$plan_file" > "$scratch/plan.log" 2>&1; then
+            echo "OpenTofu refresh plan failed" >&2
+            exit 1
+          fi
+
+          if ! tofu -chdir=infra/tofu/staging show -json "$plan_file" > "$show_file" 2> "$scratch/show.log"; then
+            echo "OpenTofu plan inspection failed" >&2
+            exit 1
+          fi
+
+          guard_summary="$(python3 infra/tofu/plan_json_guard.py "$show_file")"
+          if [[ "$guard_summary" == *$'\n'* || ! "$guard_summary" =~ ^plan_guard=pass[[:space:]]action_lists=[0-9]+[[:space:]]delete_actions=[0-9]+[[:space:]]resource_changes=[0-9]+[[:space:]]resource_drift=[0-9]+[[:space:]]output_changes=[0-9]+[[:space:]]deferred_changes=[0-9]+$ ]]; then
+            echo "OpenTofu plan delete guard returned an invalid result" >&2
+            exit 1
+          fi
+
+          read -r guard_status action_list_field delete_action_field resource_change_field resource_drift_field output_change_field deferred_change_field <<< "$guard_summary"
+          delete_count="${delete_action_field#delete_actions=}"
+          resource_count="${resource_change_field#resource_changes=}"
+          if [[ "$guard_status" != "plan_guard=pass" || "$delete_count" != "0" ]]; then
+            echo "OpenTofu plan contains delete or replace actions" >&2
+            exit 1
+          fi
+
+          {
+            printf -- '%s\n' '### Staging OpenTofu refresh plan'
+            printf -- '- commit: `%s`\n' "$PR_HEAD_SHA"
+            printf -- '- configuration files: %s (sha256: `%s`)\n' "$config_count" "$config_checksum"
+            printf -- '- provider lockfile: sha256 `%s`\n' "$lock_checksum"
+            printf -- '- resource changes inspected: %s\n' "$resource_count"
+            printf -- '- delete/replace actions: %s\n' "$delete_count"
+          } >> "$GITHUB_STEP_SUMMARY"

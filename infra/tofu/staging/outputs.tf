@@ -3,6 +3,11 @@ output "github_oidc_provider_arn" {
   value       = local.github_oidc_provider_arn
 }
 
+output "infra_plan_role_arn" {
+  description = "Dedicated pull-request OpenTofu refresh-plan role ARN."
+  value       = aws_iam_role.infra_plan.arn
+}
+
 output "deploy_role_arns" {
   description = "Separate OIDC deploy role ARN for each staging environment."
   value = {

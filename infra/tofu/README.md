@@ -53,16 +53,19 @@ from `backend.s3.tf.example`.
 
 ## Staging foundation
 
-Before applying, review `staging/terraform.tfvars.example` and set
-`github_oidc_provider_arn` to the existing provider ARN when one exists. The
-stack references that provider and never recreates it. Only when an IAM
-inventory proves that the provider does not exist may an operator explicitly
-set `manage_github_oidc_provider = true` with an empty ARN to create it. This
-prevents a second provider from being created under a different owner.
+The current remote state owns
+`aws_iam_openid_connect_provider.github[0]`. The checked-in
+`staging/terraform.tfvars.example` therefore intentionally has
+`github_oidc_provider_arn = ""` and
+`manage_github_oidc_provider = true`: the resource is resolved from this
+state's address and is not recreated. Do not copy those values into a fresh
+stack without first establishing ownership and state.
 
-If the provider already exists but ownership is intentionally being transferred
-to this state, inventory it first, set `manage_github_oidc_provider = true`,
-then import the exact ARN before planning:
+An ownership transfer is an exceptional, separately authorized operation. A
+trusted operator must first inventory the provider and its current state owner,
+coordinate removal from the old state without deleting the AWS object, set
+`manage_github_oidc_provider = true` with an empty ARN, and import the exact
+provider ARN before planning:
 
 ```bash
 aws iam list-open-id-connect-providers --region ap-southeast-1
@@ -72,6 +75,45 @@ tofu -chdir=infra/tofu/staging import \
 ```
 
 Never apply with an empty provider ARN and the default `false` management flag.
+
+## Pull-request plan gate
+
+`.github/workflows/staging-infra-plan.yml` runs only for pull requests to
+`main` that change `infra/tofu/**` or the workflow itself. It checks out the
+same-repository pull-request head only (external fork PRs are rejected before
+checkout or AWS credentials), uses pinned OpenTofu 1.12.6 and AWS actions,
+initializes the remote backend with the reviewed bucket, state key, region,
+KMS key, encryption, and native S3 lockfile settings, then runs recursive
+format, validate, and refresh-enabled plan checks.
+
+The gate uses the reviewed nonsecret backend contract
+`bucket=findb-staging-tofu-state-439622209937`,
+`key=staging/control-plane.tfstate`, `region=ap-southeast-1`,
+`encrypt=true`, `kms_key_id=arn:aws:kms:ap-southeast-1:439622209937:key/776159fc-3251-4cd0-98b0-24dfa9e9701d`,
+`use_lockfile=true`, and
+`deploy_bundle_bucket_name=findb-staging-deploy-bundle-439622209937`.
+
+The `staging-infra-plan` OIDC role is a distinct identity from both deployment
+roles. Its trust is limited to
+`repo:FPI-TW/findb:pull_request` with `aud=sts.amazonaws.com`; it has only the
+read APIs needed to refresh this stack, exact state-object read/list access,
+exact state KMS decrypt, and native lockfile Get/Put/Delete access. Its only
+KMS GenerateDataKey exception is the exact state CMK through S3 with the state
+bucket-key encryption context. It cannot read runtime secret values or mutate
+managed AWS resources. The workflow
+inspects an ephemeral JSON plan and fails closed for any delete action,
+including replacement, without uploading a plan artifact; its summary contains
+only the commit, configuration/lockfile checksums and bounded counts.
+
+After the role is created, configure its output as the nonsecret repository
+variable `STAGING_INFRA_PLAN_ROLE_ARN`. The PR workflow does not read a GitHub
+secret or environment secret for this identity.
+
+The first creation of the plan role requires a separately authorized operator
+apply because a role cannot bootstrap its own OIDC credentials. A pull-request
+plan never authorizes an apply. After merge, a protected-`main` process must
+use a separate apply identity, re-check the merged commit, and produce a fresh
+zero-delete plan before any authorized apply.
 
 ```bash
 tofu -chdir=infra/tofu/staging init \
