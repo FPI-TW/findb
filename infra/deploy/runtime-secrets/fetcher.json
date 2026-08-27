@@ -35,6 +35,11 @@
       ],
       "distinct_keys": [["FETCHER_CALENDAR_SERVE_API_KEY", "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"]]
     },
+    "finlab-smoke": {
+      "secrets": [
+        {"name": "provider/finlab", "required_keys": ["FINLAB_API_TOKEN"]}
+      ]
+    },
     "canary": {
       "secrets": [
         {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},

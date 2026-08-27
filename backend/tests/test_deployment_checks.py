@@ -433,14 +433,20 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         jobs = workflow["jobs"]
         assert isinstance(jobs, dict)
         assert jobs["verify"]["uses"] == ci_path
-        assert jobs["build-push"]["needs"] == "verify"
         if service == "fetcher":
+            assert jobs["build-push"]["needs"] == [
+                "verify",
+                "validate-runtime-secret-source",
+            ]
             assert jobs["deploy"]["needs"] == [
                 "build-push",
+                "validate-runtime-secret-source",
                 "validate-r2-bucket-configuration",
                 "validate-fetcher-credential-isolation",
+                "validate-fetcher-credential-isolation-aws",
             ]
         else:
+            assert jobs["build-push"]["needs"] == "verify"
             assert jobs["deploy"]["needs"] == "build-push"
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
@@ -448,6 +454,390 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         target_input = workflow["on"]["workflow_dispatch"]["inputs"]["deployment_target"]
         assert target_input["default"] == "staging"
         assert target_input["options"] == ["staging", "production"]
+        source_input = workflow["on"]["workflow_dispatch"]["inputs"]["secret_source"]
+        assert source_input["default"] == "legacy-github"
+        assert source_input["options"] == ["legacy-github", "aws-secrets-manager"]
+
+
+def test_runtime_secret_cutover_is_staging_only_and_legacy_is_explicit_rollback() -> None:
+    for path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(path)
+        source_expression = "${{ inputs.secret_source || 'legacy-github' }}"
+        assert workflow["env"]["SECRET_SOURCE"] == source_expression
+        assert workflow["jobs"]["deploy"]["env"]["SECRET_SOURCE"] == source_expression
+
+        validate = _named_step(workflow, "deploy", "Validate runtime secret source")
+        assert validate["env"] == {
+            "DEPLOYMENT_TARGET": "${{ inputs.deployment_target || 'staging' }}",
+            "SECRET_SOURCE": source_expression,
+        }
+        validation_script = validate["run"]
+        assert "legacy-github)" in validation_script
+        assert "aws-secrets-manager)" in validation_script
+        assert "AWS Secrets Manager mode is staging-only" in validation_script
+        assert 'if [ "$DEPLOYMENT_TARGET" != "staging" ]' in validation_script
+        assert "Expected legacy-github or aws-secrets-manager" in validation_script
+
+        deploy_steps = workflow["jobs"]["deploy"]["steps"]
+        legacy_steps = [
+            step
+            for step in deploy_steps
+            if step.get("if")
+            == "${{ (inputs.secret_source || 'legacy-github') == 'legacy-github' }}"
+        ]
+        aws_steps = [
+            step for step in deploy_steps if "aws-secrets-manager" in str(step.get("if", ""))
+        ]
+        assert legacy_steps, f"{path.name} must keep an explicit legacy rollback path"
+        assert aws_steps, f"{path.name} must expose explicit AWS-mode steps"
+        assert all("legacy-github" in step["if"] for step in legacy_steps)
+        for step in aws_steps:
+            # SSH connection/recovery credentials remain the only secrets allowed
+            # in an AWS-mode transport step; runtime values must come from the host.
+            step_env = json.dumps(step.get("env", {}), sort_keys=True)
+            step_envs = str(step.get("with", {}).get("envs", ""))
+            step_script = str(step.get("with", {}).get("script", ""))
+            assert "${{ secrets." not in step_env
+            assert "${{ secrets." not in step_envs
+            assert "${{ secrets." not in step_script
+            assert "GITHUB_TOKEN" not in step_env
+            assert "GITHUB_TOKEN" not in step_envs
+            assert "GITHUB_TOKEN" not in step_script
+
+
+def test_fetcher_runtime_secret_selector_is_validated_before_job_routing() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    jobs = workflow["jobs"]
+    validation = jobs["validate-runtime-secret-source"]
+    assert "if" not in validation
+    assert validation["permissions"] == {"contents": "read"}
+    step = _named_step(
+        workflow,
+        "validate-runtime-secret-source",
+        "Validate runtime secret source before routing",
+    )
+    script = step["run"]
+    assert "Expected legacy-github or aws-secrets-manager" in script
+    assert "AWS Secrets Manager mode is staging-only" in script
+    assert "Expected staging or production" in script
+    assert "validate-runtime-secret-source" in jobs["build-push"]["needs"]
+    assert "validate-runtime-secret-source" in jobs["deploy"]["needs"]
+    assert "needs.validate-runtime-secret-source.result == 'success'" in jobs["deploy"]["if"]
+    assert "validate-runtime-secret-source" in jobs["finlab-acquisition-smoke"]["needs"]
+
+
+def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
+    expected = {
+        FINDB_CD_WORKFLOW: (
+            "Run FinDB AWS runtime-secret canary",
+            ("Deploy to EC2 with AWS runtime secrets",),
+        ),
+        FETCHER_CD_WORKFLOW: (
+            "Run Fetcher AWS runtime-secret canary",
+            (
+                "Release Twelve Data scheduler with AWS runtime secrets",
+                "Release FinLab scheduler with AWS runtime secrets",
+                "Release Shioaji scheduler with AWS runtime secrets",
+            ),
+        ),
+    }
+    for workflow_path, (canary_name, deployment_names) in expected.items():
+        workflow = _load_workflow(workflow_path)
+        steps = workflow["jobs"]["deploy"]["steps"]
+        canary_index = next(
+            index for index, step in enumerate(steps) if step.get("name") == canary_name
+        )
+        assert "--check-only" in steps[canary_index]["with"]["script"]
+        for deployment_name in deployment_names:
+            deployment_index = next(
+                index for index, step in enumerate(steps) if step.get("name") == deployment_name
+            )
+            assert canary_index < deployment_index
+
+
+def test_aws_runtime_bundles_are_verified_from_staging_then_installed() -> None:
+    findb_workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    findb_sync = _named_step(
+        findb_workflow, "deploy", "Sync AWS runtime-secret loader and exact FinDB catalog"
+    )
+    assert findb_sync["with"]["target"] == "/tmp/findb-runtime-secrets"
+    assert "strip_components" not in findb_sync["with"]
+    for source in (
+        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+        "infra/deploy/runtime-secrets/findb.json",
+        "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
+        "docker-compose.prod.yml",
+        "infra/nginx/nginx.conf",
+        "infra/nginx/source-allowlist.conf",
+        "infra/nginx/cloudflare-real-ip.conf",
+    ):
+        assert source in findb_sync["with"]["source"]
+    findb_verify = _named_step(
+        findb_workflow,
+        "deploy",
+        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
+    )["with"]["script"]
+    assert "staging_root=/tmp/findb-runtime-secrets" in findb_verify
+    assert 'sha256sum "$staging_root/$relative_path"' in findb_verify
+    assert "sudo install -o root -g root" in findb_verify
+    assert "/opt/findb/docker-compose.prod.yml" in findb_verify
+    assert '"/home/ubuntu/etc/nginx/$file"' in findb_verify
+    assert "ubuntu:ubuntu:644" in findb_verify
+    assert "Deploy artifact install failed" in findb_verify
+    assert "Nginx artifact install failed" in findb_verify
+    assert findb_verify.index('sha256sum "$staging_root/$relative_path"') < findb_verify.index(
+        "sudo install -o root -g root"
+    )
+
+    aws_render = _named_step(
+        findb_workflow,
+        "deploy",
+        "Render nonsecret nginx configs for AWS runtime secrets",
+    )
+    assert "render_nginx_source_allowlist.py" in aws_render["run"]
+    assert "render_nginx_cloudflare_real_ip.py" in aws_render["run"]
+    assert "render_nginx_serve_key.py" not in aws_render["run"]
+    assert "${{ secrets." not in json.dumps(aws_render, sort_keys=True)
+    aws_validation = _named_step(
+        findb_workflow,
+        "deploy",
+        "Validate AWS runtime deployment configuration",
+    )
+    assert 'if [ "${PORT:-}" != "8080" ]' in aws_validation["run"]
+    assert "${{ secrets." not in json.dumps(aws_validation, sort_keys=True)
+    bootstrap_step = _named_step(
+        findb_workflow,
+        "deploy",
+        "Install FinDB boot-time runtime-secret dependency",
+    )
+    assert "install_findb_bootstrap.sh" in bootstrap_step["with"]["script"]
+    steps = findb_workflow["jobs"]["deploy"]["steps"]
+    verify_step = _named_step(
+        findb_workflow,
+        "deploy",
+        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
+    )
+    canary_step = _named_step(
+        findb_workflow,
+        "deploy",
+        "Run FinDB AWS runtime-secret canary",
+    )
+    assert steps.index(verify_step) < steps.index(bootstrap_step) < steps.index(canary_step)
+
+    fetcher_workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    fetcher_sync = _named_step(
+        fetcher_workflow,
+        "deploy",
+        "Sync AWS runtime-secret loader and exact Fetcher catalog",
+    )
+    assert fetcher_sync["with"]["target"] == "/tmp/fetcher-runtime-secrets"
+    assert "strip_components" not in fetcher_sync["with"]
+    fetcher_verify = _named_step(
+        fetcher_workflow,
+        "deploy",
+        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
+    )["with"]["script"]
+    assert "staging_root=/tmp/fetcher-runtime-secrets/infra/deploy/runtime-secrets" in (
+        fetcher_verify
+    )
+    assert 'sha256sum "$staging_root/$file"' in fetcher_verify
+    assert "sudo install -o root -g root" in fetcher_verify
+    assert fetcher_verify.index('sha256sum "$staging_root/$file"') < fetcher_verify.index(
+        "sudo install -o root -g root"
+    )
+
+    findb_prepare = _named_step(
+        findb_workflow, "deploy", "Prepare AWS runtime-secret directories on EC2"
+    )["with"]["script"]
+    assert "sudo rm -rf -- /tmp/findb-runtime-secrets" in findb_prepare
+    assert "-o ubuntu -g ubuntu -m 0700 /tmp/findb-runtime-secrets" in findb_prepare
+    fetcher_prepare = _named_step(
+        fetcher_workflow,
+        "deploy",
+        "Prepare AWS runtime-secret directories on Fetcher EC2",
+    )["with"]["script"]
+    assert "sudo rm -rf -- /tmp/fetcher-runtime-secrets" in fetcher_prepare
+    assert "-o ubuntu -g ubuntu -m 0700 /tmp/fetcher-runtime-secrets" in fetcher_prepare
+
+
+def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> None:
+    findb_workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    findb_workflow_scripts = "\n".join(
+        str(step.get("with", {}).get("script", ""))
+        for step in findb_workflow["jobs"]["deploy"]["steps"]
+        if "aws-secrets-manager" in str(step.get("if", ""))
+    )
+    findb_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--consumer canary" in findb_workflow_scripts
+    assert "--consumer registry" in findb_helper
+    assert "--consumer compose" in findb_helper
+    assert "--consumer migration" in findb_helper
+    assert "MIGRATION_DATABASE_URL=DATABASE_URL" in findb_helper
+    assert "FINDB_LOOKUP_SERVE_API_KEY" not in findb_helper
+    nginx_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--consumer nginx" in nginx_helper
+
+    fetcher_workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    fetcher_steps = {
+        step["name"]: step["with"]["script"]
+        for step in fetcher_workflow["jobs"]["deploy"]["steps"]
+        if "aws-secrets-manager" in str(step.get("if", ""))
+        and "with" in step
+        and "script" in step["with"]
+    }
+    assert "--consumer canary" in fetcher_steps["Run Fetcher AWS runtime-secret canary"]
+    for name, consumer in (
+        ("Release Twelve Data scheduler with AWS runtime secrets", "twelve-data"),
+        ("Release FinLab scheduler with AWS runtime secrets", "finlab"),
+        ("Release Shioaji scheduler with AWS runtime secrets", "shioaji"),
+    ):
+        script = fetcher_steps[name]
+        assert script.count("--consumer registry") == 1
+        assert script.count(f"--consumer {consumer}") == 1
+        assert "--consumer canary" not in script
+    smoke_step = _named_step(
+        fetcher_workflow,
+        "finlab-acquisition-smoke",
+        "Run bounded FinLab acquisition smoke with AWS runtime secrets",
+    )
+    smoke_canary_step = _named_step(
+        fetcher_workflow,
+        "finlab-acquisition-smoke",
+        "Run Fetcher AWS runtime-secret canary before FinLab smoke",
+    )
+    smoke_validation = _named_step(
+        fetcher_workflow,
+        "finlab-acquisition-smoke",
+        "Validate runtime secret source for FinLab smoke",
+    )
+    smoke_steps = fetcher_workflow["jobs"]["finlab-acquisition-smoke"]["steps"]
+    assert smoke_steps.index(smoke_validation) < smoke_steps.index(smoke_canary_step)
+    assert "AWS Secrets Manager mode is staging-only" in smoke_validation["run"]
+    assert smoke_steps.index(smoke_canary_step) < smoke_steps.index(smoke_step)
+    assert "--check-only" in smoke_canary_step["with"]["script"]
+    smoke_script = smoke_step["with"]["script"]
+    assert smoke_script.count("--consumer registry") == 1
+    assert smoke_script.count("--consumer finlab-smoke") == 1
+    assert "FETCHER_CALENDAR_SERVE_API_KEY" not in smoke_script
+    assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" not in smoke_script
+    assert "CLOUDFLARE_R2_RAW_" not in smoke_script
+    assert "${{ secrets." not in json.dumps(smoke_step.get("env", {}), sort_keys=True)
+    assert "${{ secrets." not in smoke_step["with"]["envs"]
+    assert "GITHUB_TOKEN" not in smoke_step["with"]["envs"]
+
+
+def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -> None:
+    command = (REPO_ROOT / "infra/deploy/runtime-secrets/runtime_secret_command.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "set +x" in command
+    assert 'findmnt -n -o FSTYPE -T "$runtime_root"' in command
+    assert 'findmnt -n -o FSTYPE -T "$output"' in command
+    assert 'loaded_files+=("$output")' in command
+    assert 'rm -f -- "$output"' in command
+    assert 'rm -f -- "$file"' in command
+    assert 'unset "$key"' in command
+    assert "unset DOCKER_CONFIG" in command
+    assert 'mktemp -d "$runtime_root/docker-config.XXXXXX"' in command
+    assert "docker logout ghcr.io" in command
+    assert "docker inspect Config.Env" not in command
+    assert " docker compose" not in command
+    assert " env " not in command
+
+    findb = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    migration_start = findb.index("run_runtime --consumer migration")
+    migration_end = findb.index("writer_services=", migration_start)
+    migration_block = findb[migration_start:migration_end]
+    assert "MIGRATION_DATABASE_URL=DATABASE_URL" in migration_block
+    assert "run --rm --no-deps" in migration_block
+    assert " up " not in migration_block
+    assert findb.count("--map MIGRATION_DATABASE_URL=DATABASE_URL") == 2
+    second_migration_start = findb.rindex("run_runtime --consumer migration")
+    long_lived_start = findb.index("run_runtime --consumer compose", second_migration_start)
+    assert "MIGRATION_DATABASE_URL" not in findb[long_lived_start:]
+
+
+def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persistent_key() -> None:
+    compose = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))
+    nginx_volumes = compose["services"]["nginx"]["volumes"]
+    assert (
+        "/run/findb-runtime-secrets/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro"
+        in nginx_volumes
+    )
+    assert not any("/home/ubuntu/etc/nginx/serve-key.conf:" in volume for volume in nginx_volumes)
+
+    renderer = (REPO_ROOT / "infra/deploy/runtime-secrets/render_serve_key.py").read_text(
+        encoding="utf-8"
+    )
+    assert "/run/findb-runtime-secrets" in renderer
+    assert "os.O_NOFOLLOW" in renderer
+    assert "0o600" in renderer
+    findb = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "render_nginx_runtime.sh" in findb
+    assert "/home/ubuntu/etc/nginx/serve-key.conf" not in findb
+    nginx_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "/run/findb-runtime-secrets/nginx/serve-key.conf" in nginx_helper
+
+
+def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_inputs() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    for name in (
+        "TWELVE_DATA_BASE_URL",
+        "TWELVE_DATA_TIMEOUT_SECONDS",
+        "TWELVE_DATA_MAX_RESPONSE_BYTES",
+    ):
+        assert f"--env {name}" in helper
+
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    shioaji = _named_step(
+        workflow,
+        "deploy",
+        "Release Shioaji scheduler with AWS runtime secrets",
+    )["with"]["script"]
+    assert "/var/lib/findb-shioaji-fetcher/cache" in shioaji
+
+
+def test_aws_fetcher_release_recovers_on_errors_and_signals_before_deleting_previous() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "trap 'recover \"$?\"' ERR" in helper
+    assert "trap 'recover 130' INT" in helper
+    assert "trap 'recover 143' TERM" in helper
+    assert "trap 'recover 129' HUP" in helper
+    assert 'docker rm -f "$stable"' in helper
+    final_running_check = helper.rindex("stable_not_running")
+    previous_removal = helper.rindex('docker rm "$previous"')
+    assert final_running_check < previous_removal
+
+
+def test_findb_bootstrap_recreates_tmpfs_key_before_docker_and_fails_closed() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/install_findb_bootstrap.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "Before=docker.service" in helper
+    assert "Requires=findb-runtime-nginx.service" in helper
+    assert "After=findb-runtime-nginx.service" in helper
+    assert "network-online.target" in helper
+    assert "/run/findb-runtime-secrets/nginx" in helper
+    assert "render_nginx_runtime.sh" in helper
+    assert "ConditionPathExists" not in helper
+    assert "RemainAfterExit" not in helper
+    assert "systemd-analyze verify" in helper
+    assert "systemctl enable findb-runtime-nginx.service" in helper
+    assert "FINDB_LOOKUP_SERVE_API_KEY" not in helper
 
 
 def test_fetcher_finlab_smoke_symbols_remain_a_quoted_comma_delimited_choice() -> None:
@@ -1084,6 +1474,27 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "infra/nginx/**",
     }
     assert required_findb_ci_paths <= _aggregate_ci_paths("findb")
+    shared_runtime_paths = {
+        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+        "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+    }
+    assert shared_runtime_paths <= _aggregate_ci_paths("findb")
+    assert shared_runtime_paths <= _aggregate_ci_paths("fetcher")
+    assert {
+        "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
+        "infra/deploy/runtime-secrets/render_serve_key.py",
+        "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
+        "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+        "infra/deploy/runtime-secrets/findb.json",
+    } <= _aggregate_ci_paths("findb")
+    assert {
+        "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+        "infra/deploy/runtime-secrets/fetcher.json",
+    } <= _aggregate_ci_paths("fetcher")
+    assert "infra/deploy/runtime-secrets/release_fetcher_provider.sh" not in _aggregate_ci_paths(
+        "findb"
+    )
+    assert "infra/deploy/runtime-secrets/findb.json" not in _aggregate_ci_paths("fetcher")
 
     required_findb_cd_paths = {
         "backend/**",
@@ -1100,6 +1511,10 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
     fetcher_cd_paths = set(fetcher_cd["on"]["push"]["paths"])
     assert fetcher_cd_paths == {
         "fetcher/**",
+        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+        "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+        "infra/deploy/runtime-secrets/fetcher.json",
         ".github/workflows/fetcher-cd.yml",
     }
 
@@ -1817,8 +2232,10 @@ def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolatio
     assert "inputs.run_finlab_smoke != true" in isolation["if"]
     assert deploy["needs"] == [
         "build-push",
+        "validate-runtime-secret-source",
         "validate-r2-bucket-configuration",
         "validate-fetcher-credential-isolation",
+        "validate-fetcher-credential-isolation-aws",
     ]
     assert predeploy["env"] == {
         "DEPLOYMENT_TARGET": "${{ inputs.deployment_target || 'staging' }}",
@@ -1923,7 +2340,9 @@ def test_deploy_stops_and_verifies_all_writers_before_alembic() -> None:
 
 def test_writer_stopped_gate_fails_closed_for_enumeration_and_state_failures() -> None:
     deploy = _findb_deploy_script()
-    gate = deploy[deploy.index("verify_services_stopped() {") : deploy.index("\n\nfor conf in")]
+    gate = deploy[
+        deploy.index("verify_services_stopped() {") : deploy.index("\n\n# Legacy mode may stage")
+    ]
 
     assert "container enumeration failed" in gate
     assert "inspect-failed" in gate

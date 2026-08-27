@@ -51,12 +51,12 @@ jobs:
           while IFS= read -r path; do
             [[ -z "$path" ]] && continue
             case "$path" in
-              backend/**|dashboard/**|contracts/**|docker-compose.yml|docker-compose.prod.yml|infra/nginx/**|package.json|pnpm-workspace.yaml|pnpm-lock.yaml|.github/workflows/findb-ci.yml|.github/workflows/findb-cd.yml|.github/workflows/required-ci.yml)
+              backend/**|dashboard/**|contracts/**|docker-compose.yml|docker-compose.prod.yml|infra/nginx/**|infra/deploy/runtime-secrets/load_runtime_secrets.py|infra/deploy/runtime-secrets/runtime_secret_command.sh|infra/deploy/runtime-secrets/render_nginx_runtime.sh|infra/deploy/runtime-secrets/render_serve_key.py|infra/deploy/runtime-secrets/install_findb_bootstrap.sh|infra/deploy/runtime-secrets/deploy_findb_aws.sh|infra/deploy/runtime-secrets/findb.json|package.json|pnpm-workspace.yaml|pnpm-lock.yaml|.github/workflows/findb-ci.yml|.github/workflows/findb-cd.yml|.github/workflows/required-ci.yml)
                 findb=true
                 ;;
             esac
             case "$path" in
-              fetcher/**|contracts/**|backend/app/**|backend/pyproject.toml|backend/uv.lock|backend/scripts/export_ingress_contracts.py|backend/scripts/export_archive_contracts.py|backend/tests/test_contract_artifacts.py|.github/workflows/fetcher-ci.yml|.github/workflows/fetcher-cd.yml|.github/workflows/required-ci.yml)
+              fetcher/**|contracts/**|backend/app/**|backend/pyproject.toml|backend/uv.lock|backend/scripts/export_ingress_contracts.py|backend/scripts/export_archive_contracts.py|backend/tests/test_contract_artifacts.py|infra/deploy/runtime-secrets/load_runtime_secrets.py|infra/deploy/runtime-secrets/runtime_secret_command.sh|infra/deploy/runtime-secrets/release_fetcher_provider.sh|infra/deploy/runtime-secrets/fetcher.json|.github/workflows/fetcher-ci.yml|.github/workflows/fetcher-cd.yml|.github/workflows/required-ci.yml)
                 fetcher=true
                 ;;
             esac

@@ -15,10 +15,19 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOADER_PATH = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "load_runtime_secrets.py"
 CATALOG_ROOT = LOADER_PATH.parent
+RENDERER_PATH = CATALOG_ROOT / "render_serve_key.py"
 
 
 def _loader() -> ModuleType:
     spec = importlib.util.spec_from_file_location("runtime_secret_loader", LOADER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _renderer() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("runtime_secret_renderer", RENDERER_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -99,6 +108,41 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
     }
     assert "FINLAB_API_TOKEN" not in loaded
     assert "SHIOAJI_API_KEY" not in loaded
+
+
+def test_fetcher_finlab_smoke_consumer_is_provider_only() -> None:
+    loader = _loader()
+    catalog = _catalog("fetcher")
+    fetched: list[str] = []
+
+    def fetch(secret_name: str) -> str:
+        fetched.append(secret_name)
+        return json.dumps({"FINLAB_API_TOKEN": "finlab-token"})
+
+    loaded = loader.load_consumer(catalog, "finlab-smoke", fetch)
+
+    assert loaded == {"FINLAB_API_TOKEN": "finlab-token"}
+    assert fetched == ["findb/staging/fetcher/provider/finlab"]
+    assert not {
+        "FETCHER_CALENDAR_SERVE_API_KEY",
+        "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
+        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
+    } & set(loaded)
+
+
+def test_lookup_renderer_rejects_injection_and_keeps_output_contract_bounded() -> None:
+    renderer = _renderer()
+
+    rendered = renderer._render("lookup-token", "staging.example.com")
+
+    assert '"lookup-token"' in rendered
+    assert r"staging\.example\.com/dashboard/lookup" in rendered
+    assert "$http_x_api_key" in rendered
+    with pytest.raises(ValueError, match="lookup_key_invalid"):
+        renderer._render("lookup-token\nmalicious", "staging.example.com")
+    with pytest.raises(ValueError, match="public_host_invalid"):
+        renderer._render("lookup-token", "staging.example.com/evil")
 
 
 @pytest.mark.parametrize("unsafe", ["line\nvalue", "line\rvalue", "nul\x00value"])

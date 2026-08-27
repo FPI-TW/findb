@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - "fetcher/**"
+      - "infra/deploy/runtime-secrets/load_runtime_secrets.py"
+      - "infra/deploy/runtime-secrets/runtime_secret_command.sh"
+      - "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
+      - "infra/deploy/runtime-secrets/fetcher.json"
       - ".github/workflows/fetcher-cd.yml"
   workflow_dispatch:
     inputs:
@@ -16,6 +20,14 @@ on:
         options:
           - staging
           - production
+      secret_source:
+        description: Runtime secret source (AWS Secrets Manager is staging-only)
+        required: true
+        default: legacy-github
+        type: choice
+        options:
+          - legacy-github
+          - aws-secrets-manager
       run_finlab_smoke:
         description: Run the isolated FinLab acquisition smoke on staging (never deploys data)
         required: true
@@ -48,13 +60,48 @@ env:
   FETCHER_FINLAB_IMAGE: ghcr.io/fpi-tw/findb-fetcher-finlab
   FETCHER_SHIOAJI_IMAGE: ghcr.io/fpi-tw/findb-fetcher-shioaji
   FETCHER_IMAGE_TAG: ${{ github.sha }}
+  SECRET_SOURCE: ${{ inputs.secret_source || 'legacy-github' }}
 
 jobs:
   verify:
     uses: ./.github/workflows/fetcher-ci.yml
 
+  validate-runtime-secret-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Validate runtime secret source before routing
+        shell: bash
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          SECRET_SOURCE: ${{ inputs.secret_source || 'legacy-github' }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOYMENT_TARGET" in
+            staging|production) ;;
+            *)
+              echo "::error title=Invalid Fetcher deployment target::Expected staging or production"
+              exit 1
+              ;;
+          esac
+          case "$SECRET_SOURCE" in
+            legacy-github) ;;
+            aws-secrets-manager)
+              if [ "$DEPLOYMENT_TARGET" != "staging" ]; then
+                echo "::error title=Unsupported runtime secret source::AWS Secrets Manager mode is staging-only"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error title=Invalid runtime secret source::Expected legacy-github or aws-secrets-manager"
+              exit 1
+              ;;
+          esac
+
   build-push:
-    needs: verify
+    needs: [verify, validate-runtime-secret-source]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -137,8 +184,8 @@ jobs:
   validate-fetcher-credential-isolation:
     needs: build-push
     if: >-
-      github.event_name != 'workflow_dispatch' ||
-      inputs.run_finlab_smoke != true
+      (inputs.secret_source || 'legacy-github') == 'legacy-github' &&
+      (github.event_name != 'workflow_dispatch' || inputs.run_finlab_smoke != true)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
@@ -178,11 +225,40 @@ jobs:
           done
           echo "Fetcher credential isolation check passed without printing credential values"
 
-  deploy:
-    needs: [build-push, validate-r2-bucket-configuration, validate-fetcher-credential-isolation]
+  validate-fetcher-credential-isolation-aws:
+    needs: build-push
     if: >-
-      github.event_name != 'workflow_dispatch' ||
-      inputs.run_finlab_smoke != true
+      (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' &&
+      (github.event_name != 'workflow_dispatch' || inputs.run_finlab_smoke != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm AWS consumer isolation is host-enforced
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS runtime-secret consumer isolation is enforced by the target loader catalog"
+
+  deploy:
+    needs: [build-push, validate-runtime-secret-source, validate-r2-bucket-configuration, validate-fetcher-credential-isolation, validate-fetcher-credential-isolation-aws]
+    if: >-
+      always() &&
+      (github.event_name != 'workflow_dispatch' || inputs.run_finlab_smoke != true) &&
+      needs.build-push.result == 'success' &&
+      needs.validate-runtime-secret-source.result == 'success' &&
+      needs.validate-r2-bucket-configuration.result == 'success' &&
+      (
+        ((inputs.secret_source || 'legacy-github') == 'legacy-github' &&
+          needs.validate-fetcher-credential-isolation.result == 'success' &&
+          needs.validate-fetcher-credential-isolation-aws.result == 'skipped') ||
+        ((inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' &&
+          needs.validate-fetcher-credential-isolation.result == 'skipped' &&
+          needs.validate-fetcher-credential-isolation-aws.result == 'success')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
@@ -192,7 +268,31 @@ jobs:
       packages: read
       id-token: write
 
+    env:
+      SECRET_SOURCE: ${{ inputs.secret_source || 'legacy-github' }}
+
     steps:
+      - name: Validate runtime secret source
+        shell: bash
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          SECRET_SOURCE: ${{ inputs.secret_source || 'legacy-github' }}
+        run: |
+          set -euo pipefail
+          case "$SECRET_SOURCE" in
+            legacy-github) ;;
+            aws-secrets-manager)
+              if [ "$DEPLOYMENT_TARGET" != "staging" ]; then
+                echo "::error title=Unsupported runtime secret source::AWS Secrets Manager mode is staging-only"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error title=Invalid runtime secret source::Expected legacy-github or aws-secrets-manager"
+              exit 1
+              ;;
+          esac
+
       - name: Configure staging AWS credentials
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -503,7 +603,250 @@ jobs:
             exit 1
           fi
 
+      - name: Calculate AWS runtime-secret bundle checksums
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        id: runtime_secret_checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            infra/deploy/runtime-secrets/load_runtime_secrets.py \
+            infra/deploy/runtime-secrets/runtime_secret_command.sh \
+            infra/deploy/runtime-secrets/release_fetcher_provider.sh \
+            infra/deploy/runtime-secrets/fetcher.json; do
+            name="$(basename "$file" | tr '.-' '__')"
+            checksum="$(sha256sum "$file" | cut -d ' ' -f1)"
+            printf '%s=%s\n' "$name" "$checksum" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Prepare AWS runtime-secret directories on Fetcher EC2
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            sudo install -d -o root -g root -m 0755 /opt/fetcher/runtime-secrets
+            sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets
+            sudo rm -rf -- /tmp/fetcher-runtime-secrets
+            sudo install -d -o ubuntu -g ubuntu -m 0700 /tmp/fetcher-runtime-secrets
+
+      - name: Sync AWS runtime-secret loader and exact Fetcher catalog
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          source: "infra/deploy/runtime-secrets/load_runtime_secrets.py,infra/deploy/runtime-secrets/runtime_secret_command.sh,infra/deploy/runtime-secrets/release_fetcher_provider.sh,infra/deploy/runtime-secrets/fetcher.json"
+          target: /tmp/fetcher-runtime-secrets
+          overwrite: true
+
+      - name: Verify AWS runtime-secret bundle ownership, mode, and checksum
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          LOADER_SHA256: ${{ steps.runtime_secret_checksums.outputs.load_runtime_secrets_py }}
+          COMMAND_SHA256: ${{ steps.runtime_secret_checksums.outputs.runtime_secret_command_sh }}
+          RELEASE_SHA256: ${{ steps.runtime_secret_checksums.outputs.release_fetcher_provider_sh }}
+          CATALOG_SHA256: ${{ steps.runtime_secret_checksums.outputs.fetcher_json }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          envs: LOADER_SHA256,COMMAND_SHA256,RELEASE_SHA256,CATALOG_SHA256
+          script: |
+            set -euo pipefail
+            runtime_dir=/opt/fetcher/runtime-secrets
+            staging_root=/tmp/fetcher-runtime-secrets/infra/deploy/runtime-secrets
+            for file in load_runtime_secrets.py runtime_secret_command.sh release_fetcher_provider.sh fetcher.json; do
+              if [ ! -f "$staging_root/$file" ] || [ -L "$staging_root/$file" ]; then
+                echo "::error title=Runtime-secret bundle missing::${file} is not a regular staged file"
+                exit 1
+              fi
+            done
+            declare -A expected=(
+              [load_runtime_secrets.py]="$LOADER_SHA256"
+              [runtime_secret_command.sh]="$COMMAND_SHA256"
+              [release_fetcher_provider.sh]="$RELEASE_SHA256"
+              [fetcher.json]="$CATALOG_SHA256"
+            )
+            for file in "${!expected[@]}"; do
+              actual="$(sha256sum "$staging_root/$file" | cut -d ' ' -f1)"
+              if [ -z "${expected[$file]}" ] || [ "$actual" != "${expected[$file]}" ]; then
+                echo "::error title=Runtime-secret bundle checksum failed::${file} does not match the checked-out artifact"
+                exit 1
+              fi
+            done
+            for file in load_runtime_secrets.py runtime_secret_command.sh release_fetcher_provider.sh fetcher.json; do
+              case "$file" in
+                fetcher.json) install_mode=0644; expected_mode=644 ;;
+                *) install_mode=0755; expected_mode=755 ;;
+              esac
+              sudo install -o root -g root -m "$install_mode" "$staging_root/$file" "$runtime_dir/$file"
+              if [ "$(sudo stat -c '%u:%g:%a' "$runtime_dir/$file")" != "0:0:$expected_mode" ]; then
+                echo "::error title=Runtime-secret bundle metadata failed::${file} ownership or mode is unsafe"
+                exit 1
+              fi
+              actual="$(sudo sha256sum "$runtime_dir/$file" | cut -d ' ' -f1)"
+              if [ "$actual" != "${expected[$file]}" ]; then
+                echo "::error title=Runtime-secret bundle install failed::${file} checksum changed during install"
+                exit 1
+              fi
+            done
+            sudo rm -rf -- /tmp/fetcher-runtime-secrets
+            echo "runtime_secret_bundle=verified files=4"
+
+      - name: Run Fetcher AWS runtime-secret canary
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          envs: AWS_REGION
+          script: |
+            set -euo pipefail
+            sudo python3 /opt/fetcher/runtime-secrets/load_runtime_secrets.py \
+              --catalog /opt/fetcher/runtime-secrets/fetcher.json \
+              --consumer canary \
+              --region "$AWS_REGION" \
+              --output /run/findb-runtime-secrets/canary/runtime.env \
+              --owner 0:0 \
+              --check-only
+
+      - name: Release Twelve Data scheduler with AWS runtime secrets
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          FETCHER_IMAGE: ${{ env.FETCHER_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
+          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
+          TWELVE_DATA_BASE_URL: ${{ vars.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com' }}
+          TWELVE_DATA_TIMEOUT_SECONDS: ${{ vars.TWELVE_DATA_TIMEOUT_SECONDS || '30' }}
+          TWELVE_DATA_MAX_RESPONSE_BYTES: ${{ vars.TWELVE_DATA_MAX_RESPONSE_BYTES || '8388608' }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
+          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: AWS_REGION,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          script: |
+            set -euo pipefail
+            sudo --preserve-env=AWS_REGION,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS \
+              /opt/fetcher/runtime-secrets/runtime_secret_command.sh \
+              --catalog /opt/fetcher/runtime-secrets/fetcher.json \
+              --region "$AWS_REGION" \
+              --consumer registry \
+              --consumer twelve-data \
+              --docker-login -- \
+              /opt/fetcher/runtime-secrets/release_fetcher_provider.sh \
+              twelve-data "$FETCHER_IMAGE:$FETCHER_IMAGE_TAG" \
+              /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
+              findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
+              findb-fetcher-scheduler-preflight - \
+              findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.v2.json \
+              --slot-id western_markets_window --dataset-key us_equity_eod
+
+      - name: Release FinLab scheduler with AWS runtime secrets
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
+          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
+          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: AWS_REGION,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          script: |
+            set -euo pipefail
+            sudo --preserve-env=AWS_REGION,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS \
+              /opt/fetcher/runtime-secrets/runtime_secret_command.sh \
+              --catalog /opt/fetcher/runtime-secrets/fetcher.json \
+              --region "$AWS_REGION" \
+              --consumer registry \
+              --consumer finlab \
+              --docker-login -- \
+              /opt/fetcher/runtime-secrets/release_fetcher_provider.sh \
+              finlab "$FETCHER_FINLAB_IMAGE:$FETCHER_IMAGE_TAG" \
+              /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
+              findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
+              findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache \
+              findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json \
+              --slot-id taiwan_market_window --dataset-key tw_equity_eod
+
+      - name: Release Shioaji scheduler with AWS runtime secrets
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          FETCHER_SHIOAJI_IMAGE: ${{ env.FETCHER_SHIOAJI_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
+          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
+          SHIOAJI_SIMULATION: ${{ vars.SHIOAJI_SIMULATION || 'true' }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
+          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: AWS_REGION,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
+          script: |
+            set -euo pipefail
+            sudo --preserve-env=AWS_REGION,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS \
+              /opt/fetcher/runtime-secrets/runtime_secret_command.sh \
+              --catalog /opt/fetcher/runtime-secrets/fetcher.json \
+              --region "$AWS_REGION" \
+              --consumer registry \
+              --consumer shioaji \
+              --docker-login -- \
+              /opt/fetcher/runtime-secrets/release_fetcher_provider.sh \
+              shioaji "$FETCHER_SHIOAJI_IMAGE:$FETCHER_IMAGE_TAG" \
+              /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
+              findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
+              findb-fetcher-shioaji-scheduler-preflight /var/lib/findb-shioaji-fetcher/cache \
+              findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json
+
       - name: Release and validate Twelve Data scheduler on Fetcher EC2
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'legacy-github' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -806,6 +1149,7 @@ jobs:
             # END FETCHER TWELVE SCHEDULER RECONCILIATION
 
       - name: Release and validate FinLab scheduler on Fetcher EC2
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'legacy-github' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -973,6 +1317,7 @@ jobs:
             # END FETCHER FINLAB SCHEDULER RECONCILIATION
 
       - name: Release and validate Shioaji scheduler on Fetcher EC2
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'legacy-github' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1096,7 +1441,7 @@ jobs:
             # END FETCHER SHIOAJI SCHEDULER RECONCILIATION
 
   finlab-acquisition-smoke:
-    needs: build-push
+    needs: [build-push, validate-runtime-secret-source]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.run_finlab_smoke == true
@@ -1110,7 +1455,49 @@ jobs:
       packages: read
 
     steps:
+      - name: Validate runtime secret source for FinLab smoke
+        shell: bash
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          SECRET_SOURCE: ${{ inputs.secret_source || 'legacy-github' }}
+        run: |
+          set -euo pipefail
+          case "$SECRET_SOURCE" in
+            legacy-github) ;;
+            aws-secrets-manager)
+              if [ "$DEPLOYMENT_TARGET" != "staging" ]; then
+                echo "::error title=Unsupported runtime secret source::AWS Secrets Manager mode is staging-only"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error title=Invalid runtime secret source::Expected legacy-github or aws-secrets-manager"
+              exit 1
+              ;;
+          esac
+
+      - name: Run Fetcher AWS runtime-secret canary before FinLab smoke
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          envs: AWS_REGION
+          script: |
+            set -euo pipefail
+            sudo python3 /opt/fetcher/runtime-secrets/load_runtime_secrets.py \
+              --catalog /opt/fetcher/runtime-secrets/fetcher.json \
+              --consumer canary \
+              --region "$AWS_REGION" \
+              --output /run/findb-runtime-secrets/canary/runtime.env \
+              --owner 0:0 \
+              --check-only
+
       - name: Run bounded FinLab acquisition smoke on Fetcher staging EC2
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'legacy-github' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1168,3 +1555,57 @@ jobs:
               findb-fetch-finlab-smoke \
               --target-date "$FINLAB_SMOKE_TARGET_DATE" \
               --symbols "$FINLAB_SMOKE_SYMBOLS"
+
+      - name: Run bounded FinLab acquisition smoke with AWS runtime secrets
+        if: ${{ (inputs.secret_source || 'legacy-github') == 'aws-secrets-manager' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          FETCHER_FINLAB_IMAGE: ${{ env.FETCHER_FINLAB_IMAGE }}
+          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          FINLAB_SMOKE_TARGET_DATE: ${{ inputs.finlab_target_date }}
+          FINLAB_SMOKE_SYMBOLS: ${{ inputs.finlab_symbols }}
+        with:
+          host: ${{ secrets.FETCHER_EC2_HOST }}
+          username: ${{ secrets.FETCHER_EC2_USER }}
+          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
+          command_timeout: 10m
+          envs: AWS_REGION,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS
+          script: |
+            set -euo pipefail
+            if [ -z "${FINLAB_SMOKE_TARGET_DATE:-}" ]; then
+              echo "::error title=FinLab smoke arguments missing::An explicit ISO target date is required"
+              exit 1
+            fi
+            sudo --preserve-env=AWS_REGION,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS \
+              /opt/fetcher/runtime-secrets/runtime_secret_command.sh \
+              --catalog /opt/fetcher/runtime-secrets/fetcher.json \
+              --region "$AWS_REGION" \
+              --consumer registry \
+              --consumer finlab-smoke \
+              --docker-login -- bash -s <<'SMOKE_SCRIPT'
+            set -euo pipefail
+            image="${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}"
+            docker image prune -af
+            docker pull "$image"
+            cache_dir=/var/lib/findb-finlab-smoke-cache
+            sudo mkdir -p "$cache_dir"
+            sudo chown 10001:10001 "$cache_dir"
+            sudo chmod 0700 "$cache_dir"
+            if [ "$(stat -c '%u:%g:%a' "$cache_dir")" != "10001:10001:700" ]; then
+              echo "::error title=FinLab smoke cache rejected::Provider cache ownership or mode is unsafe"
+              exit 1
+            fi
+            docker run --rm \
+              --name findb-finlab-acquisition-smoke \
+              --user 10001:10001 \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --mount "type=bind,src=$cache_dir,dst=/home/fetcher" \
+              --env FINLAB_API_TOKEN \
+              "$image" \
+              findb-fetch-finlab-smoke \
+              --target-date "$FINLAB_SMOKE_TARGET_DATE" \
+              --symbols "$FINLAB_SMOKE_SYMBOLS"
+            SMOKE_SCRIPT
