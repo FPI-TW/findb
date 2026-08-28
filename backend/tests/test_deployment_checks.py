@@ -448,6 +448,10 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         else:
             assert jobs["build-push-production"]["needs"] == "verify"
             assert jobs["deploy"]["needs"] == "build-push"
+            assert jobs["deploy"]["if"] == (
+                "always() && github.event_name == 'workflow_dispatch' "
+                "&& needs.build-push.result == 'success'"
+            )
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
