@@ -22,6 +22,9 @@
 - [ ] 驗證staging branch protection、required CI及Environment protected-branch restriction。
 - [ ] 依[staging AWS deployment plan](staging-aws-deployment-plan.md)完成OIDC、SSM、
   runtime secrets、image digest、release manifest、backup、監控與rollback rehearsal。
+- [ ] 完成staging credential hygiene：取得Cloudflare與三個provider的action-time authority，
+  分別輪替Raw／Canonical R2、Twelve Data／FinLab／Shioaji及RabbitMQ runtime credentials；
+  以consumer reload、last-used／health與舊值撤銷留證後，才移除GitHub Environment runtime copies。
 
 ## P1：資料完整性與效能
 
