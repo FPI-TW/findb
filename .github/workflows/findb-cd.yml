@@ -230,7 +230,7 @@ jobs:
 
   deploy:
     needs: build-push
-    if: github.event_name == 'workflow_dispatch' && needs.build-push.result == 'success'
+    if: always() && github.event_name == 'workflow_dispatch' && needs.build-push.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: ${{ inputs.deployment_target || 'staging' }}-findb
