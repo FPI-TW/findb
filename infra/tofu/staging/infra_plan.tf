@@ -197,7 +197,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "secretsmanager:ListTagsForResource",
     ]
 
-    resources = [for secret in aws_secretsmanager_secret.runtime : secret.arn]
+    resources = [for secret in aws_secretsmanager_secret.active_runtime : secret.arn]
   }
 
   statement {

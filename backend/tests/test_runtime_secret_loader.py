@@ -90,10 +90,11 @@ def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> No
     assert "GHCR_USERNAME" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
     assert "GHCR_TOKEN" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
     metadata = (REPO_ROOT / "infra" / "tofu" / "staging" / "secrets.tf").read_text(encoding="utf-8")
-    # Protected transitional metadata is deliberately not an active runtime
-    # catalog entry and must not be retired before separate live authorization.
-    assert metadata.count('relative_name = "registry/ghcr-pull"') == 2
-    assert metadata.count("prevent_destroy = true") >= 2
+    # Retirement reduces the managed metadata collection to the active catalog;
+    # the two legacy GHCR state addresses are intentionally absent from config.
+    assert 'relative_name = "registry/ghcr-pull"' not in metadata
+    assert 'resource "aws_secretsmanager_secret" "active_runtime"' in metadata
+    assert "prevent_destroy = true" in metadata
 
 
 def test_runtime_command_uses_only_bounded_instance_role_ecr_login() -> None:

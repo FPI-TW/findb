@@ -78,9 +78,17 @@ receive GitHub or GHCR credentials.
 Production remains on its separate GHCR/GitHub-secret compatibility path until
 a separately authorized production migration.
 
-The transitional `registry/ghcr-pull` Secrets Manager metadata resources are
-intentionally retained with deletion protection. They are not active runtime
-catalog entries and must not be removed or revoked as part of this activation.
+The transitional `registry/ghcr-pull` Secrets Manager metadata resources have
+not been retired. The pull-request gate is preflight only: it may prove the
+bounded two-delete plan, but it never authorizes or performs an apply. Their
+Secrets Manager recovery window is 30 days when retirement is eventually
+scheduled.
+
+`staging/runtime_secret_moves.tf` preserves state-address history for all 17
+active catalog entries: each legacy `runtime` instance moves to the protected
+`active_runtime` instance without recreation. The two GHCR legacy addresses
+are intentionally the only unmoved instances and therefore the only planned
+deletes. Do not remove or alter those exact mappings.
 
 ### Controlled staging ECR rollback
 
@@ -153,9 +161,16 @@ exact state KMS decrypt, and native lockfile Get/Put/Delete access. Its only
 KMS GenerateDataKey exception is the exact state CMK through S3 with the state
 bucket-key encryption context. It cannot read runtime secret values or mutate
 managed AWS resources. The workflow
-inspects an ephemeral JSON plan and fails closed for any delete action,
-including replacement, without uploading a plan artifact; its summary contains
-only the commit, configuration/lockfile checksums and bounded counts.
+inspects an ephemeral JSON plan and normally fails closed for every delete
+action, including replacement, without uploading a plan artifact. Ordinary
+infrastructure pull requests call their local reusable workflow with the
+default zero-delete policy. Only the dedicated
+`chore/staging-phase2-retirement` route pins the reviewed workflow and enables
+the two pre-authorized metadata-only deletes. That exception is a PR preflight
+rule, not apply authority: retirement mode may show either the bounded two
+deletes before retirement or zero deletes after a separately completed
+retirement. Its summary contains only the commit, configuration/lockfile
+checksums and bounded counts.
 
 After the role is created, configure its output as the nonsecret repository
 variable `STAGING_INFRA_PLAN_ROLE_ARN`. The PR workflow does not read a GitHub
@@ -163,9 +178,17 @@ secret or environment secret for this identity.
 
 The first creation of the plan role requires a separately authorized operator
 apply because a role cannot bootstrap its own OIDC credentials. A pull-request
-plan never authorizes an apply. After merge, a protected-`main` process must
-use a separate apply identity, re-check the merged commit, and produce a fresh
-zero-delete plan before any authorized apply.
+plan never authorizes an apply. For the two transitional metadata resources,
+the destructive retirement runbook is stricter: after the reviewed retirement
+PR is merged, a trusted operator must use a clean checkout whose `HEAD` exactly
+matches the merged `origin/main` SHA, live-verify that both exact Secret IDs
+have no versions or values, and create a fresh saved plan from that checkout.
+The immutable guard must receive that exact saved plan with the two approved
+addresses and prove `delete_count=2` with no other delete. Only after an
+action-time user confirmation may a separate apply identity apply that exact
+saved plan. Then verify both 30-day scheduled deletions, an active catalog of
+17, and a fresh protected-`main` zero-delete plan. No PR-local plan or
+workflow is an apply authority.
 
 ```bash
 tofu -chdir=infra/tofu/staging init \

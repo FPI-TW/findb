@@ -54,12 +54,6 @@ locals {
       consumer      = "serve"
       status        = "active"
     }
-    "findb/registry/ghcr-pull" = {
-      unit          = "findb"
-      relative_name = "registry/ghcr-pull"
-      consumer      = "host-registry-retirement"
-      status        = "transitional-inactive"
-    }
     "fetcher/api/calendar-serve" = {
       unit          = "fetcher"
       relative_name = "api/calendar-serve"
@@ -108,17 +102,9 @@ locals {
       consumer      = "all-providers"
       status        = "active"
     }
-    "fetcher/registry/ghcr-pull" = {
-      unit          = "fetcher"
-      relative_name = "registry/ghcr-pull"
-      consumer      = "host-registry-retirement"
-      status        = "transitional-inactive"
-    }
   }
 
-  # Transitional GHCR metadata remains protected until its separately authorized
-  # retirement. It is deliberately excluded from every runtime read/decrypt
-  # grant; only the metadata resource itself remains under Terraform control.
+  # Runtime decrypt grants are derived exclusively from the active catalog.
   active_runtime_secret_arn_patterns_by_unit = {
     for unit in keys(local.unit_config) : unit => [
       for _, spec in local.runtime_secret_specs :
@@ -191,7 +177,7 @@ resource "aws_kms_alias" "runtime_secrets" {
   target_key_id = aws_kms_key.runtime_secrets[each.key].key_id
 }
 
-resource "aws_secretsmanager_secret" "runtime" {
+resource "aws_secretsmanager_secret" "active_runtime" {
   for_each = local.runtime_secret_specs
 
   name                    = "${local.unit_config[each.value.unit].secret_path}${each.value.relative_name}"
