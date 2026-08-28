@@ -1,22 +1,23 @@
 # Staging AWS Deployment Completion Plan
 
-> 狀態：Phase 0–1完成；Phase 2的runtime-secret/ECR cutover與GHCR metadata retirement apply已完成，
-> DB-backed runtime credential rotation已完成；R2、provider、RabbitMQ rotation及完整provider cycle
-> 仍在驗收。本文是staging AWS控制面、部署身分與驗收的核心
+> 狀態：Phase 0–1完成；Phase 2A的runtime-secret／ECR cutover、GHCR metadata retirement apply與
+> DB-backed runtime credential rotation已完成，僅剩accepted SHA後的完整原生provider cycle時間
+> gate，尚未宣告完成；Phase 2B的R2、provider、RabbitMQ rotation與GitHub runtime copies移除仍未
+> 完成。本文是staging AWS控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
 > [`../operations/deployment.md`](../operations/deployment.md) 為準。
 >
-> 最後盤點：2026-08-28。Phase 1 evidence 的 protected `main` merge SHA
+> 最後盤點：2026-08-29。Phase 1 evidence 的 protected `main` merge SHA
 > `77212ce47b3138c2e21c6984e989b66239fd3cce` 已由兩個 GitHub Environments 完成 OIDC／SSM
 > preflight及既有SSH deployment，OpenTofu remote state、OIDC/IAM、instance profiles、required
 > tags、SSM managed nodes、Session Manager與unit-specific SSM logs均有live evidence。Phase 0與
 > Phase 1已通過exit gate；「服務可用」仍不等同於Phase 2–6的secret遷移、digest／manifest、
 > SSM deployment cutover、監控與災難復原已完成。Staging 已完成 Amazon ECR foundation、publisher
-> roles、workflow cutover與live deployment驗收；Phase 2的R2、provider、RabbitMQ rotation與完整
-> provider cycle仍未完成。GHCR metadata retirement apply已完成，兩筆實體metadata待2026-09-27
+> roles、workflow cutover與live deployment驗收；Phase 2A的完整provider cycle及Phase 2B的R2、
+> provider、RabbitMQ rotation仍未完成。GHCR metadata retirement apply已完成，兩筆實體metadata待2026-09-27
 > recovery window
 > 結束後刪除。當前accepted application deployment為protected `main` SHA
-> `0e2e28089498237b4261169aa0c6885f215a1d9e`。
+> `570e3c1e935210c7f084c9d8b5a7f711cdf9300b`。
 
 ## ECR foundation 與啟用契約（已完成；持續驗收）
 
@@ -35,8 +36,8 @@ IAM role、GitHub variable、OpenTofu apply或deployment變更仍須各自授權
    trigger staging workflows。
 4. triggered workflows publish immutable commit-SHA images並執行host rollout；其後完成cutover的
    live acceptance與observation。若acceptance失敗，立即將gate設回`false`，這只會freeze並阻擋
-   新的staging rollout，**不是**GHCR fallback。此流程已以accepted SHA
-   `0e2e28089498237b4261169aa0c6885f215a1d9e`再次完成live deployment驗收。
+   新的staging rollout，**不是**GHCR fallback。此流程已以目前accepted SHA
+   `570e3c1e935210c7f084c9d8b5a7f711cdf9300b`完成live deployment驗收。
 
 任何其他值一律 fail closed，staging 不可 build/push/deploy 到 ECR。
 
@@ -114,7 +115,8 @@ protected main
 | --- | --- | --- |
 | Phase 0：盤點與保護 | 必要 | 確認實際 target、資料與復原 owner；不要求全面 IaC import，也不對 staging 加Environment人工核准 |
 | Phase 1：OIDC、SSM、instance role | 必要 | 建立service-specific AWS trust boundary與可稽核的SSM recovery，作為後續移除長效SSH deployment identity的前置條件 |
-| Phase 2：Runtime secrets與ECR registry cutover | 必要 | 避免runtime secrets經GitHub runner與遠端shell傳遞；改由instance role取得ECR短效token，並完成credential rotation與GHCR credential退役 |
+| Phase 2A：Runtime-secret transport與ECR registry cutover | 必要 | 避免runtime secrets經GitHub runner與遠端shell傳遞；改由instance role讀取Secrets Manager、取得ECR短效token，並完成DB-backed credential rotation與GHCR credential退役 |
+| Phase 2B：External credential hygiene | 必要但獨立收尾 | R2、provider與RabbitMQ需要不同external authority或停機窗口；各自完成rotation、舊值撤銷與health證據後，才移除GitHub Environment runtime copies，不回頭阻塞ECR cutover判定 |
 | Phase 3：Digest、manifest、CI gate | 必要 | staging 必須能重播並把相同 artifact promotion 到 production，不能依賴 `latest` 或可漂移 tag |
 | Phase 4：FinDB SSM cutover | 必要 | 保留既有 migration 與 queue safety gate，只替換部署傳輸與secret來源 |
 | Phase 5：Fetcher SSM cutover | 必要 | 保留 SQLite、Raw bucket binding 與 single-writer gate，只替換部署傳輸與secret來源 |
@@ -500,10 +502,17 @@ FinDB與Fetcher staging hosts均已安裝AWS CLI v2.36.31，各自以unit-specif
 identity驗證，並通過`/run` open-file-descriptor tmpfs檢查。Staging ECR foundation、publisher roles、
 workflow cutover與live deployment 已完成。Secrets Manager active catalog 已收斂為17筆；兩筆空
 GHCR transitional metadata已在2026-08-28排程30天刪除，且均無secret version。兩枚staging GHCR
-pull PAT已刪除；已知legacy `/opt/findb/.env`與`/opt/findb-fetcher/.env`均不存在，兩台host的
-`/run/findb-runtime-secrets`也沒有殘留檔案。GitHub Environment的runtime copies必須保留到其餘
-非等待gate全部完成。七枚DB-backed runtime credentials已完成輪替、部署、使用驗證與舊值撤銷；
-R2／provider／RabbitMQ credential rotation與舊值撤銷仍未完成。
+pull PAT已刪除；已知legacy `/opt/findb/.env`與`/opt/findb-fetcher/.env`均不存在；FinDB的
+`/run/findb-runtime-secrets`只保留nginx運行所需的`serve-key.conf`，兩台host皆無暫存bundle殘留。
+GitHub Environment的runtime copies必須保留到
+credential hygiene gate全部完成。七枚DB-backed runtime credentials已完成輪替、部署、使用驗證與
+舊值撤銷；R2／provider／RabbitMQ credential rotation與舊值撤銷仍未完成。
+
+為避免ECR cutover被不同權限、停機窗口與外部服務流程無限延長，Phase 2自2026-08-29起依
+責任邊界收斂為兩段：**2A ECR／runtime-secret transport**只剩accepted SHA後的原生排程週期
+觀察；**2B credential hygiene**承接R2、provider與RabbitMQ外部credential輪替、舊值撤銷及
+GitHub Environment runtime copies移除。2B仍是未完成的安全工作，不得因拆段而宣稱已輪替或
+先行刪除GitHub copies；但它不再阻塞ECR cutover本身的完成判定。
 
 - [x] 建立IaC專用GitHub Actions PR plan gate與`staging-infra-plan` OIDC role，驗證 exact commit、
   bounded plan與plan／apply身分分離；PR plan只作preflight。Retirement另以protected-`main`
@@ -516,31 +525,39 @@ R2／provider／RabbitMQ credential rotation與舊值撤銷仍未完成。
   pull policies，並完成 immutable tags、AES-256、basic scan-on-push 與 untagged 7天 lifecycle 驗收。
 - [x] staging build/push/pull 已切換到ECR，FinDB與Fetcher完成ECR登入、pull與live deployment驗收；
   staging不dual-publish且不把`GITHUB_TOKEN`／PAT傳到EC2。
-- [ ] 逐一輪替DB-backed keys、R2、provider與RabbitMQ credentials，觀察完整排程週期。
-- [ ] 確認last-used與health後，撤銷GitHub Environment及persistent host env中的舊runtime secrets；
+- [x] 七枚DB-backed keys已逐一輪替、驗證last-used並撤銷舊值。
+- [ ] 在accepted SHA後觀察一次完整原生排程週期；不得以repair rerun取代。
+- [ ] Phase 2B逐一輪替R2、provider與RabbitMQ credentials並撤銷舊值；需要Cloudflare／provider
+  account authority及RabbitMQ協調停機窗口，不以repo或AWS admin權限代替。
+- [ ] Phase 2B確認last-used與health後，撤銷GitHub Environment中的runtime copies；
   GitHub只保留role ARN、region、target selector、public host與secret identifier等非敏感值。
 - [x] 兩枚 staging GHCR pull PAT 已刪除；不記錄token值。
 - [x] 以retirement PR把active runtime-secret集合收斂為17筆；apply只刪除兩筆空GHCR metadata，
   使用30天recovery window，並符合本節的protected-`main`、live verification、saved plan、
   immutable guard與action-time confirmation邊界。
 
-#### Phase 2 work record（2026-08-28）
+#### Phase 2 work record（2026-08-28–29）
 
 | Action | Evidence | Result |
 | --- | --- | --- |
 | ECR foundation 與 cutover | Staging ECR foundation、publisher roles、workflow cutover及FinDB／Fetcher live deployments已完成驗收 | staging 僅由instance role取得ECR短效token，不保留GHCR credential |
 | Runtime secret retirement | Retirement apply由protected `main` SHA `e995fa251f86627982d8be292905bc933ac776f6`產生fresh saved plan，guard精確證明`0 add / 1 change / 2 destroy`且僅含兩個核准地址 | CloudTrail兩筆`DeleteSecret`均於2026-08-28 08:09:03Z成功、`recoveryWindowInDays=30`、無`forceDeleteWithoutRecovery`；預定2026-09-27刪除 |
 | Runtime secret inventory | `list-secrets --include-planned-deletion`回報17筆無`DeletedDate`的active entries加兩筆planned-deletion GHCR metadata；兩筆GHCR各為0個version | 17筆active secret各有且僅有一個`AWSCURRENT`；application DB及七筆已輪替DB-backed secret保留`AWSPREVIOUS`供版本稽核，其餘外部credential尚未完成實際rotation |
-| Legacy GHCR／host material | 兩枚staging GHCR pull PAT已刪除；兩台host均無legacy persistent `.env`，`/run/findb-runtime-secrets`無殘留檔案 | GitHub Environment目前仍有`staging-findb` 16筆、`staging-fetcher` 13筆secret entries（含runtime copies與SSH recovery）；直到其餘非等待gate通過前不撤銷 |
+| Legacy GHCR／host material | 兩枚staging GHCR pull PAT已刪除；兩台host均無legacy persistent `.env`；FinDB tmpfs只保留nginx運行所需檔案，其餘暫存bundle已清理 | GitHub Environment目前仍有`staging-findb` 16筆、`staging-fetcher` 13筆secret entries（含runtime copies與SSH recovery）；直到Phase 2B credential hygiene通過前不撤銷runtime copies |
 | 合併版本部署與EOD repair | Manual FinDB run [33161513278](https://github.com/FPI-TW/findb/actions/runs/33161513278)成功部署merge SHA `0e2e28089498237b4261169aa0c6885f215a1d9e`；六個FinDB service使用該ECR SHA，queue／DLQ active gauges為0 | 原FinLab run因application role嘗試partition DDL而失敗；修正後精確rerun `01a047d7-d0f4-7477-9d9f-ceb0eb36959a`一次完成、attempt 1、2/2 rows、failure為null，application role仍無`public CREATE` |
 | Scheduler observation | Shioaji兩個feed在2026-08-28 fresh；Twelve Data在2026-08-27 fresh；repair rerun成功但freshness契約明確排除`is_rerun` | 完整三provider post-deploy原生排程週期仍待2026-08-29 Twelve Data 00:15Z及FinLab／Shioaji 06:30Z後驗收，rerun不得取代此gate |
 | Fetcher DB-backed credential rotation | Manual Fetcher run [33163966538](https://github.com/FPI-TW/findb/actions/runs/33163966538)成功部署accepted SHA；calendar Serve與Twelve Data、FinLab、Shioaji Source consumer fingerprint均精確對應四枚新credential，且有持續last-used／usage evidence | 四枚被取代credential及FinLab自2026-07-30後未使用的更舊前身共五枚均已撤銷；三個scheduler維持ECR accepted SHA運行 |
 | FinDB DB-backed credential rotation | Lookup Serve、static-cache Serve與queue-health Admin三枚credential已輪替至各自Secrets Manager secret；Manual FinDB run [33164657004](https://github.com/FPI-TW/findb/actions/runs/33164657004)通過CI、runtime-secret canary、部署、queue health、public routes與cache生成 | serve／ingest／nginx實際載入fingerprint均精確對應新credential；三枚新key各有200 response與durable usage evidence後，三枚被取代credential均已撤銷 |
-| Nginx lookup key重新掛載修復 | 舊lookup credential撤銷後，同源Referer的public Serve request回403；host tmpfs檔已是新fingerprint，但nginx對外仍注入已撤銷的舊key，`nginx -s reload`無效，接著`docker restart findb-nginx`後恢復200；PR #188 run [33179469093](https://github.com/FPI-TW/findb/actions/runs/33179469093)與PR #189 merge SHA的run [33187135766](https://github.com/FPI-TW/findb/actions/runs/33187135766)皆全綠且lookup probe通過，但`findb-nginx` ID／StartedAt未變、Docker events無replace；後者log在main Compose up後即結束，顯示stdin控制流程未完成 | 修正待將透過`bash -s`傳入的UP script內Docker／Compose commands隔離為`</dev/null`，再以驗證project/service labels的精確old ID執行graceful `docker stop --time 30`與`docker rm`、Compose建立new ID，並在health／functional probe前驗證old ID消失、new ID／StartedAt、唯讀tmpfs mount source；protected `main`合併與再次live deploy仍待完成 |
+| Nginx lookup key重新掛載修復 | 舊lookup credential撤銷後，同源Referer的public Serve request回403；host tmpfs檔已是新fingerprint，但nginx對外仍注入已撤銷的舊key。PR #188與#189雖全綠，live ID／events證明nginx未replace；根因是`bash -s`內的main Compose up繼承stdin並消耗其後script。PR #190將不需stdin的Docker／Compose commands全部隔離為`</dev/null`，合併SHA `570e3c1e935210c7f084c9d8b5a7f711cdf9300b`後manual run [33193026381](https://github.com/FPI-TW/findb/actions/runs/33193026381)完成 | Deploy log在新nginx create／start後輸出`findb_aws_deploy=ready`；live events精確證明舊ID `8f16b2e98ffa`已kill／stop／die／destroy、新ID `c1c2ac638a05`已create／start且healthy。新container具正確Compose labels及唯讀`/run/findb-runtime-secrets/nginx/serve-key.conf` mount，internal exact-Referer與public lookup皆200，六個application containers均為accepted SHA；獨立Validator判定PASS |
 
-Exit gate：deploy role無法讀secret value；workflow log與SSM command不含runtime secret；舊
-credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read；兩個unit皆以instance role取得
-ECR短效token，staging無GHCR credential，active runtime-secret catalog恰為17筆。
+Phase 2A exit gate：deploy role無法讀secret value；workflow log與SSM command不含runtime
+secret；七枚DB-backed舊credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read；兩個
+unit皆以instance role取得ECR短效token，staging無GHCR credential，active runtime-secret catalog
+恰為17筆；accepted SHA後的完整原生排程週期通過。除最後一項時間門檻外均已通過。
+
+Phase 2B exit gate：R2、provider與RabbitMQ credential均完成新舊值overlap、consumer reload、
+last-used／health驗證與舊值撤銷；GitHub Environment runtime copies已移除。這些外部操作尚未取得
+本輪action-time authority，因此保持未完成且GitHub copies維持不動。
 
 ### Phase 3：Digest、release manifest與CI gate
 
