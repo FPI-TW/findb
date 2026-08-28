@@ -43,7 +43,8 @@ fi
 
 repository_name="${image#"$expected_registry/"}"
 error_file="$(mktemp)"
-trap 'rm -f -- "$error_file"' EXIT
+hex_file="$(mktemp)"
+trap 'rm -f -- "$error_file" "$hex_file"' EXIT
 
 if aws ecr describe-images \
   --region "$AWS_REGION" \
@@ -55,12 +56,38 @@ if aws ecr describe-images \
   exit 0
 fi
 
-error_text="$(<"$error_file")"
-# Only a single, complete AWS CLI DescribeImages ImageNotFoundException proves
-# that this immutable tag is absent. Wrapped, mixed, or forged diagnostics fail
-# closed rather than causing a publish after an ambiguous inspection failure.
-if [[ "$error_text" == *$'\n'* ]] \
-  || ! [[ "$error_text" =~ ^An\ error\ occurred\ \(ImageNotFoundException\)\ when\ calling\ the\ DescribeImages\ operation:\ .+$ ]]; then
+# Reject NUL bytes before command substitution: Bash silently removes them
+# while reading a file into a shell string. Capture and verify `od` separately
+# so a scan failure also fails closed before the textual dump is inspected.
+if ! LC_ALL=C od -An -v -tx1 "$error_file" > "$hex_file"; then
+  echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
+  exit 1
+fi
+
+nul_scan_status=0
+LC_ALL=C grep -Eq '(^|[[:space:]])00([[:space:]]|$)' "$hex_file" \
+  || nul_scan_status=$?
+if [ "$nul_scan_status" -ne 1 ]; then
+  echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
+  exit 1
+fi
+
+# Only one complete, known AWS CLI DescribeImages ImageNotFoundException proves
+# that this immutable tag is absent. Accept both CLI prefixes and both observed
+# ECR bodies, binding every variable field to this exact lookup. Wrapped,
+# mixed, malformed, or forged diagnostics fail closed rather than causing a
+# publish after an ambiguous inspection failure.
+legacy_body="The image with imageId {imageTag=$image_tag} does not exist within the repository with name $repository_name in the registry with id 439622209937"
+service_body="The image with imageId {imageDigest:'null', imageTag:'$image_tag'} does not exist within the repository with name '$repository_name' in the registry with id '439622209937'"
+legacy_prefix='An error occurred (ImageNotFoundException) when calling the DescribeImages operation: '
+current_prefix='aws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: '
+
+if ! awk 'END { exit NR == 1 ? 0 : 1 }' "$error_file" \
+  || ! error_text="$(<"$error_file")" \
+  || ! { [ "$error_text" = "$legacy_prefix$legacy_body" ] \
+    || [ "$error_text" = "$current_prefix$legacy_body" ] \
+    || [ "$error_text" = "$legacy_prefix$service_body" ] \
+    || [ "$error_text" = "$current_prefix$service_body" ]; }; then
   echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
   exit 1
 fi
