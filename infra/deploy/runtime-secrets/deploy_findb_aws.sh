@@ -182,9 +182,9 @@ docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
   python /app/scripts/check_queue_health.py \
   --attempts 12 --interval 5 --maximum-heartbeat-age 90 >/dev/null
 
-# The lookup key is a single-file bind mount from tmpfs. Restarting keeps the
-# existing mount/inode, so force a container recreation after each render.
-# This must happen before public route acceptance to pick up a rotated key.
+# The prior compose restart did not reliably load the newly rendered single-file
+# tmpfs bind mount. Force recreation from the current source path after each
+# render; the functional probe below verifies the rotated key is active.
 docker compose -f "$compose_file" up -d --no-deps --force-recreate nginx >/dev/null
 ready=0
 for attempt in 1 2 3 4 5 6; do
