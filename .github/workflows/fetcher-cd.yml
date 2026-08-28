@@ -267,6 +267,7 @@ jobs:
   validate-r2-bucket-configuration:
     needs: build-push
     if: >-
+      always() &&
       github.event_name == 'workflow_dispatch' &&
       inputs.run_finlab_smoke != true &&
       needs.build-push.result == 'success'
@@ -296,6 +297,7 @@ jobs:
   validate-fetcher-credential-isolation:
     needs: build-push
     if: >-
+      always() &&
       (inputs.deployment_target || 'staging') == 'production' &&
       github.event_name == 'workflow_dispatch' &&
       inputs.run_finlab_smoke != true &&
@@ -342,6 +344,7 @@ jobs:
   validate-fetcher-credential-isolation-aws:
     needs: build-push
     if: >-
+      always() &&
       (inputs.deployment_target || 'staging') == 'staging' &&
       vars.STAGING_ECR_CUTOVER_ENABLED == 'true' &&
       github.event_name == 'workflow_dispatch' &&
@@ -1548,6 +1551,7 @@ jobs:
   finlab-acquisition-smoke:
     needs: [build-push, validate-target-routing]
     if: >-
+      always() &&
       github.event_name == 'workflow_dispatch' &&
       inputs.run_finlab_smoke == true &&
       (inputs.deployment_target || 'staging') == 'staging' &&
