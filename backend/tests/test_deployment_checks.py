@@ -151,6 +151,16 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     triggers = workflow["on"]
 
     assert set(triggers) == {"workflow_call"}
+    assert triggers["workflow_call"]["inputs"] == {
+        "allow_ghcr_metadata_retirement": {
+            "description": (
+                "Allow only the separately approved legacy GHCR metadata retirement pair."
+            ),
+            "required": "false",
+            "type": "boolean",
+            "default": "false",
+        }
+    }
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"plan"}
     assert workflow["env"]["TOFU_VERSION"] == "1.12.6"
@@ -180,6 +190,110 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         "persist-credentials": "false",
     }
 
+    retirement_authorization = next(
+        step for step in steps if step.get("name") == "Authorize bounded GHCR metadata retirement"
+    )
+    assert retirement_authorization["id"] == "retirement_authorization"
+    assert retirement_authorization["env"] == {
+        "RETIREMENT_REQUESTED": "${{ inputs.allow_ghcr_metadata_retirement }}",
+        "CALLER_REPOSITORY": "${{ github.repository }}",
+        "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+        "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+        "EVENT_NAME": "${{ github.event_name }}",
+        "PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+        "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "TRUSTED_WORKFLOW_REPOSITORY": "${{ job.workflow_repository }}",
+        "TRUSTED_WORKFLOW_SHA": "${{ job.workflow_sha }}",
+        "TRUSTED_WORKFLOW_REF": "${{ job.workflow_ref }}",
+        "TRUSTED_WORKFLOW_FILE_PATH": "${{ job.workflow_file_path }}",
+    }
+    retirement_script = retirement_authorization["run"]
+    assert '"$CALLER_REPOSITORY" != "FPI-TW/findb"' in retirement_script
+    assert '"$PR_HEAD_REPOSITORY" != "FPI-TW/findb"' in retirement_script
+    assert '"$PR_HEAD_REF" != "chore/staging-phase2-retirement"' in retirement_script
+    assert '"$EVENT_NAME" != "pull_request"' in retirement_script
+    assert '"$PR_BASE_REF" != "main"' in retirement_script
+    assert re.search(r'! "\$PR_BASE_SHA" =~ \^\[0-9a-fA-F\]\{40\}\$', retirement_script)
+    assert '"$TRUSTED_WORKFLOW_REPOSITORY" != "FPI-TW/findb"' in retirement_script
+    assert re.search(r'! "\$TRUSTED_WORKFLOW_SHA" =~ \^\[0-9a-fA-F\]\{40\}\$', retirement_script)
+    assert (
+        'expected_workflow_ref="FPI-TW/findb/.github/workflows/staging-infra-plan.yml@$TRUSTED_WORKFLOW_SHA"'
+        in retirement_script
+    )
+    assert "A PR-local reusable workflow is reported as @refs/pull/<n>/merge." in retirement_script
+    assert "to an immutable SHA, which is the only accepted workflow_ref." in retirement_script
+    assert '"$TRUSTED_WORKFLOW_REF" != "$expected_workflow_ref"' in retirement_script
+    assert '"$TRUSTED_WORKFLOW_FILE_PATH" != ".github/workflows/staging-infra-plan.yml"' in (
+        retirement_script
+    )
+    assert 'echo "retirement_mode=true" >> "$GITHUB_OUTPUT"' in retirement_script
+    assert 'echo "retirement_mode=false" >> "$GITHUB_OUTPUT"' in retirement_script
+
+    trusted_checkout = next(
+        step for step in steps if step.get("name") == "Checkout trusted guard source"
+    )
+    assert trusted_checkout["uses"] == ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+    assert trusted_checkout["with"] == {
+        "repository": "${{ job.workflow_repository }}",
+        "ref": "${{ job.workflow_sha }}",
+        "path": ".trusted-staging-infra-plan",
+        "sparse-checkout": "infra/tofu/plan_json_guard.py\ninfra/tofu/staging/.terraform.lock.hcl\n",
+        "sparse-checkout-cone-mode": "false",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
+    trusted_source_verification = next(
+        step for step in steps if step.get("name") == "Verify trusted guard source"
+    )
+    assert trusted_source_verification["env"] == {
+        "RETIREMENT_MODE": "${{ steps.retirement_authorization.outputs.retirement_mode }}",
+        "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "TRUSTED_WORKFLOW_SHA": "${{ job.workflow_sha }}",
+    }
+    trusted_source_script = trusted_source_verification["run"]
+    assert 'trusted_root="$GITHUB_WORKSPACE/.trusted-staging-infra-plan"' in trusted_source_script
+    assert 'git -C "$trusted_root" rev-parse HEAD' in trusted_source_script
+    assert '"$trusted_sha" != "$TRUSTED_WORKFLOW_SHA"' in trusted_source_script
+    assert re.search(
+        r'\[\[ ! "\$PR_BASE_SHA" =~ \^\[0-9a-fA-F\]\{40\}\$ \]\]', trusted_source_script
+    )
+    assert 'git -C "$trusted_root" cat-file -e "$PR_BASE_SHA^{commit}"' in trusted_source_script
+    assert (
+        'git -C "$trusted_root" merge-base --is-ancestor "$TRUSTED_WORKFLOW_SHA" "$PR_BASE_SHA"'
+        in trusted_source_script
+    )
+    assert 'lockfile_path="infra/tofu/staging/.terraform.lock.hcl"' in trusted_source_script
+    assert 'git -C "$trusted_root" cat-file -e "$TRUSTED_WORKFLOW_SHA:$lockfile_path"' in (
+        trusted_source_script
+    )
+    assert (
+        'git -C "$trusted_root" show "$TRUSTED_WORKFLOW_SHA:$lockfile_path" | sha256sum'
+        in trusted_source_script
+    )
+    assert 'sha256sum "$GITHUB_WORKSPACE/$lockfile_path"' in trusted_source_script
+    assert '"$trusted_lockfile_sha256" != "$pr_lockfile_sha256"' in trusted_source_script
+
+    trusted_source_capture = next(
+        step for step in steps if step.get("name") == "Capture verified plan guard source"
+    )
+    assert trusted_source_capture["id"] == "trusted_guard_source"
+    assert trusted_source_capture["env"] == {
+        "TRUSTED_WORKFLOW_SHA": "${{ job.workflow_sha }}",
+    }
+    trusted_capture_script = trusted_source_capture["run"]
+    assert 'git -C "$trusted_root" show "$TRUSTED_WORKFLOW_SHA:infra/tofu/plan_json_guard.py"' in (
+        trusted_capture_script
+    )
+    assert "base64 --wrap=0" in trusted_capture_script
+    assert "base64 --decode" in trusted_capture_script
+    assert "sha256sum" in trusted_capture_script
+    assert 'echo "source_base64=$guard_source_base64" >> "$GITHUB_OUTPUT"' in (
+        trusted_capture_script
+    )
+    assert 'echo "source_sha256=$guard_source_sha256" >> "$GITHUB_OUTPUT"' in (
+        trusted_capture_script
+    )
+
     tofu_setup = next(step for step in steps if step.get("name") == "Set up pinned OpenTofu")
     assert tofu_setup["uses"] == (
         "opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4"
@@ -206,6 +320,11 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         steps.index(fork_guard)
         < steps.index(checkout)
         < steps.index(verify_commit)
+        < steps.index(retirement_authorization)
+        < steps.index(trusted_checkout)
+        < steps.index(trusted_source_verification)
+        < steps.index(trusted_source_capture)
+        < steps.index(tofu_setup)
         < steps.index(credential_step)
     )
     assert credential_step["uses"] == (
@@ -218,9 +337,13 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         "role-session-name": "staging-infra-plan-${{ github.run_id }}",
     }
 
-    init_script = next(
+    formatting_step = next(
+        step for step in steps if step.get("name") == "Check OpenTofu formatting recursively"
+    )
+    init_step = next(
         step for step in steps if step.get("name") == "Initialize exact staging backend"
-    )["run"]
+    )
+    init_script = init_step["run"]
     for setting in (
         "-reconfigure",
         "-lockfile=readonly",
@@ -233,18 +356,37 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     ):
         assert setting in init_script
 
-    plan_script = next(
+    validate_step = next(
+        step for step in steps if step.get("name") == "Validate staging configuration"
+    )
+
+    plan_step = next(
         step
         for step in steps
-        if step.get("name") == "Refresh plan and reject delete or replace actions"
-    )["run"]
+        if step.get("name") == "Refresh plan and enforce bounded delete policy"
+    )
+    plan_script = plan_step["run"]
     assert "-refresh=true" in plan_script
     assert "-var-file=terraform.tfvars.example" in plan_script
     assert '-out="$plan_file"' in plan_script
     assert 'tofu -chdir=infra/tofu/staging show -json "$plan_file"' in plan_script
-    assert "python3 infra/tofu/plan_json_guard.py" in plan_script
+    assert 'python3 -c "$trusted_guard_source"' in plan_script
+    assert ".trusted-staging-infra-plan/infra/tofu/plan_json_guard.py" not in plan_script
+    assert "TRUSTED_GUARD_SOURCE_BASE64" in plan_script
+    assert "TRUSTED_GUARD_SOURCE_SHA256" in plan_script
+    assert "base64 --decode" in plan_script
+    assert "sha256sum" in plan_script
+    assert "unset trusted_guard_source" in plan_script
+    assert "RETIREMENT_MODE: ${{ steps.retirement_authorization.outputs.retirement_mode }}" in (
+        workflow_path.read_text(encoding="utf-8")
+    )
+    assert "--allow-delete-address" in plan_script
+    assert 'aws_secretsmanager_secret.runtime["findb/registry/ghcr-pull"]' in plan_script
+    assert 'aws_secretsmanager_secret.runtime["fetcher/registry/ghcr-pull"]' in plan_script
+    assert '"$delete_count" != "0" && "$delete_count" != "2"' in plan_script
     assert "jq" not in plan_script
     assert "fallback" not in plan_script.lower()
+    assert "authorized metadata retirements" in plan_script
     assert "delete/replace actions" in plan_script
     assert "trap 'rm -rf \"$scratch\"' EXIT" in plan_script
     assert "GITHUB_STEP_SUMMARY" in plan_script
@@ -260,6 +402,17 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     assert "upload-artifact" not in workflow_text
     assert "tofu apply" not in workflow_text
     assert "${{ secrets." not in workflow_text
+    assert (
+        steps.index(trusted_checkout)
+        < steps.index(trusted_source_verification)
+        < steps.index(trusted_source_capture)
+        < steps.index(tofu_setup)
+        < steps.index(credential_step)
+        < steps.index(formatting_step)
+        < steps.index(init_step)
+        < steps.index(validate_step)
+        < steps.index(plan_step)
+    )
 
 
 def _plan_json_fixture() -> dict[str, object]:
@@ -369,6 +522,24 @@ def test_plan_json_guard_allows_a_zero_delete_retirement_rerun_with_default_summ
 
     assert retirement_completed.returncode == 0, retirement_completed.stderr
     assert retirement_completed.stdout == default_completed.stdout
+
+
+def test_plan_json_guard_allows_moved_noop_with_previous_address_in_retirement_mode(
+    tmp_path: Path,
+) -> None:
+    plan = _plan_json_fixture()
+    plan["resource_changes"] = [
+        {
+            "address": 'aws_secretsmanager_secret.active_runtime["findb/database/application"]',
+            "previous_address": 'aws_secretsmanager_secret.runtime["findb/database/application"]',
+            "change": {"actions": ["no-op"]},
+        }
+    ]
+
+    completed = _run_plan_json_guard(tmp_path, plan, RETIREMENT_DELETE_ADDRESSES)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "delete_actions=0" in completed.stdout
 
 
 @pytest.mark.parametrize(
@@ -1608,6 +1779,7 @@ def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> Non
     assert required_ci["jobs"]["staging-infra-plan"]["uses"] == (
         "./.github/workflows/staging-infra-plan.yml"
     )
+    assert "with" not in required_ci["jobs"]["staging-infra-plan"]
     assert required_ci["jobs"]["staging-infra-plan"]["if"] == (
         "${{ needs.changes.outputs.infra == 'true' }}"
     )
