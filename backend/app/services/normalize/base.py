@@ -42,6 +42,10 @@ class NormalizeResult:
     error_message: Optional[str] = None
 
 
+class EODPartitionUnavailableError(RuntimeError):
+    """The migration-owned yearly EOD partition is not attached."""
+
+
 class BaseNormalizer(ABC):
     """
     Abstract base class for data normalizers.
@@ -463,17 +467,29 @@ class BaseNormalizer(ABC):
         await self.db.execute(stmt)
 
     async def ensure_eod_partition(self, trade_date_value: date) -> None:
-        """Create the yearly EOD partition before writes reach the default partition."""
+        """Fail closed unless the migration-owned yearly EOD partition is attached."""
         year = trade_date_value.year
         if year in self._eod_partition_cache:
             return
-        await self.db.execute(
-            text(f"""
-                CREATE TABLE IF NOT EXISTS market_data_eod_y{year}
-                PARTITION OF market_data_eod
-                FOR VALUES FROM ('{year}-01-01') TO ('{year + 1}-01-01')
-                """)
+        partition_name = f"market_data_eod_y{year}"
+        attached = await self.db.scalar(
+            text("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_inherits
+                    JOIN pg_class AS child ON child.oid = pg_inherits.inhrelid
+                    JOIN pg_class AS parent ON parent.oid = pg_inherits.inhparent
+                    WHERE parent.oid = to_regclass('public.market_data_eod')
+                      AND child.relnamespace = parent.relnamespace
+                      AND child.relname = :partition_name
+                )
+                """),
+            {"partition_name": partition_name},
         )
+        if attached is not True:
+            raise EODPartitionUnavailableError(
+                f"migration-owned EOD partition is unavailable for year {year}"
+            )
         self._eod_partition_cache.add(year)
 
     async def check_duplicate_in_db(
@@ -747,7 +763,7 @@ class BaseNormalizer(ABC):
                     else:
                         result.precedence_rejected_records += 1
 
-                except SQLAlchemyError:
+                except (EODPartitionUnavailableError, SQLAlchemyError):
                     raise
                 except Exception as e:
                     result.failed_records += 1
