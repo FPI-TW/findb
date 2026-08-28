@@ -427,9 +427,12 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     assert 'variable = "kms:EncryptionContext:SecretARN"' in secrets
     assert "active_runtime_secret_arn_patterns_by_unit" in secrets
     for secret_id in transitional_secret_ids:
-        assert secret_id not in secrets.split(
-            "active_runtime_secret_arn_patterns_by_unit", 1
-        )[1].split("}\n}\n\ndata", 1)[0]
+        assert (
+            secret_id
+            not in secrets.split("active_runtime_secret_arn_patterns_by_unit", 1)[1].split(
+                "}\n}\n\ndata", 1
+            )[0]
+        )
 
     deploy_policy = iam.split('data "aws_iam_policy_document" "deploy_permissions"', 1)[1].split(
         'resource "aws_iam_role_policy" "deploy_permissions"', 1
@@ -442,7 +445,9 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     assert 'if spec.unit == each.key && spec.status == "active"' in instance_policy
     assert 'sid       = "DecryptOwnRuntimeSecrets"' in instance_policy
     assert "resources = [aws_kms_key.runtime_secrets[each.key].arn]" in instance_policy
-    assert "values   = local.active_runtime_secret_arn_patterns_by_unit[each.key]" in instance_policy
+    assert (
+        "values   = local.active_runtime_secret_arn_patterns_by_unit[each.key]" in instance_policy
+    )
     kms_policy = secrets.split('data "aws_iam_policy_document" "runtime_secrets_kms"', 1)[1].split(
         'resource "aws_kms_key" "runtime_secrets"', 1
     )[0]

@@ -89,9 +89,7 @@ def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> No
     assert "registry/ghcr-pull" not in configured
     assert "GHCR_USERNAME" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
     assert "GHCR_TOKEN" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
-    metadata = (REPO_ROOT / "infra" / "tofu" / "staging" / "secrets.tf").read_text(
-        encoding="utf-8"
-    )
+    metadata = (REPO_ROOT / "infra" / "tofu" / "staging" / "secrets.tf").read_text(encoding="utf-8")
     # Protected transitional metadata is deliberately not an active runtime
     # catalog entry and must not be retired before separate live authorization.
     assert metadata.count('relative_name = "registry/ghcr-pull"') == 2
