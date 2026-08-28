@@ -1355,7 +1355,7 @@ jobs:
             fi
 
             echo "Waiting for DB-authoritative queue health"
-            if ! docker compose -f docker-compose.prod.yml exec -T ingest \
+            if ! docker compose -f docker-compose.prod.yml exec -T -e CELERY_BROKER_URL ingest \
               python /app/scripts/check_queue_health.py \
               --attempts 24 --interval 5 --maximum-heartbeat-age 90; then
               diagnose_services ingest dispatcher worker

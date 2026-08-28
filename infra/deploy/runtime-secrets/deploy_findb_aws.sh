@@ -178,7 +178,7 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-docker compose -f "$compose_file" exec -T ingest \
+docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
   python /app/scripts/check_queue_health.py \
   --attempts 12 --interval 5 --maximum-heartbeat-age 90 >/dev/null
 

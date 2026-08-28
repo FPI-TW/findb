@@ -37,6 +37,7 @@ FETCHER_CI_WORKFLOW = WORKFLOWS_ROOT / "fetcher-ci.yml"
 FETCHER_CD_WORKFLOW = WORKFLOWS_ROOT / "fetcher-cd.yml"
 DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
+INGESTION_RUNBOOK = REPO_ROOT / "docs" / "operations" / "ingestion.md"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
@@ -1560,6 +1561,21 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     second_migration_start = findb.rindex("run_runtime --consumer migration")
     long_lived_start = findb.index("run_runtime --consumer compose", second_migration_start)
     assert "MIGRATION_DATABASE_URL" not in findb[long_lived_start:]
+    up_script = findb.split("<<'UP_SCRIPT'\n", 1)[1].split("\nUP_SCRIPT", 1)[0]
+    assert "exec -T -e CELERY_BROKER_URL ingest" in up_script
+
+    runbook = INGESTION_RUNBOOK.read_text(encoding="utf-8")
+    assert "runtime-secret wrapper" in runbook
+    assert "persistent `.env`" in runbook
+    assert "`export` `CELERY_BROKER_URL`" in runbook
+    assert (
+        "sudo /opt/findb/runtime-secrets/runtime_secret_command.sh \\\n"
+        "  --catalog /opt/findb/runtime-secrets/findb.json \\\n"
+        "  --region ap-southeast-1 \\\n"
+        "  --consumer compose \\\n"
+        "  -- docker exec -e CELERY_BROKER_URL findb-ingest \\\n"
+        "  python /app/scripts/check_queue_health.py"
+    ) in runbook
 
 
 def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persistent_key() -> None:
@@ -2628,6 +2644,8 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
 
     forwarded = set(deploy["with"]["envs"].split(","))
     assert "ADMIN_BREAK_GLASS_API_KEY" in forwarded
+    assert deploy["env"]["CELERY_BROKER_URL"] == "${{ secrets.CELERY_BROKER_URL }}"
+    assert "CELERY_BROKER_URL" in forwarded
     assert "FINDB_LOOKUP_SERVE_API_KEY" not in forwarded
     assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" in forwarded
     assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" in forwarded
@@ -2639,8 +2657,10 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
     ) in compose
     assert 'FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:' in compose
     parsed_compose = yaml.safe_load(compose)
+    ingest_env = parsed_compose["services"]["ingest"]["environment"]
     serve_env = parsed_compose["services"]["serve"]["environment"]
     worker_env = parsed_compose["services"]["worker"]["environment"]
+    assert "CELERY_BROKER_URL" not in ingest_env
     assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" in serve_env
     assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" not in serve_env
     assert "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID" in worker_env
@@ -2651,6 +2671,10 @@ def test_findb_deployment_uses_dedicated_credentials_and_queue_health_key() -> N
         assert "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID" not in environment
     assert "DASHBOARD_USERNAME" not in compose
     assert "DASHBOARD_PASSWORD" not in compose
+
+    legacy_script = deploy["with"]["script"]
+    assert "exec -T -e CELERY_BROKER_URL ingest" in legacy_script
+    assert "export CELERY_BROKER_URL" not in legacy_script
 
 
 def test_retired_shared_credential_identifiers_are_absent_from_runtime_contracts() -> None:
