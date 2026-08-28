@@ -46,6 +46,24 @@ locals {
     }
   }
 
+  ecr_repository_config = {
+    findb_backend       = { name = var.ecr_repository_names["findb_backend"], unit = "findb" }
+    findb_dashboard     = { name = var.ecr_repository_names["findb_dashboard"], unit = "findb" }
+    fetcher_twelve_data = { name = var.ecr_repository_names["fetcher_twelve_data"], unit = "fetcher" }
+    fetcher_finlab      = { name = var.ecr_repository_names["fetcher_finlab"], unit = "fetcher" }
+    fetcher_shioaji     = { name = var.ecr_repository_names["fetcher_shioaji"], unit = "fetcher" }
+  }
+
+  ecr_repository_keys_by_unit = {
+    findb   = toset(["findb_backend", "findb_dashboard"])
+    fetcher = toset(["fetcher_twelve_data", "fetcher_finlab", "fetcher_shioaji"])
+  }
+
+  ecr_publisher_role_config = {
+    findb   = { role_name = var.findb_ecr_publisher_role_name }
+    fetcher = { role_name = var.fetcher_ecr_publisher_role_name }
+  }
+
   required_instance_tags = merge([
     for unit, config in local.unit_config : {
       for key, value in config.tags : "${unit}:${key}" => {
@@ -95,6 +113,25 @@ resource "terraform_data" "oidc_contract_guard" {
         && contains(data.aws_iam_openid_connect_provider.github_existing[0].client_id_list, "sts.amazonaws.com")
       )
       error_message = "The referenced GitHub OIDC provider must use the GitHub URL and sts.amazonaws.com audience."
+    }
+  }
+}
+
+resource "terraform_data" "ecr_role_separation_guard" {
+  input = concat(
+    [var.findb_ecr_publisher_role_name, var.fetcher_ecr_publisher_role_name],
+    [for unit, config in local.unit_config : config.deploy_role_name],
+    [for unit, config in local.unit_config : config.instance_role_name],
+  )
+
+  lifecycle {
+    precondition {
+      condition = length(distinct(concat(
+        [var.findb_ecr_publisher_role_name, var.fetcher_ecr_publisher_role_name],
+        [for unit, config in local.unit_config : config.deploy_role_name],
+        [for unit, config in local.unit_config : config.instance_role_name],
+      ))) == 6
+      error_message = "ECR publisher, deploy, and instance role names must remain six distinct identities."
     }
   }
 }

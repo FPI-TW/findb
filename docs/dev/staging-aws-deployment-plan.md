@@ -12,14 +12,53 @@
 > SSM deployment cutover、監控與災難復原已完成。Staging registry已決策改採Amazon ECR，但ECR
 > repositories、publisher roles、workflow cutover、apply與live acceptance均為待建立／待驗收項目。
 
+## ECR foundation 與啟用契約（待授權）
+
+本分支定義、但**不宣稱已建立或已驗收**的 staging ECR foundation：五個 private repositories、
+main-only publisher roles、instance pull 權限與 read-only infra plan refresh 權限。任何 ECR resource、
+IAM role、GitHub variable、OpenTofu apply 或 deployment 都必須另行授權與執行；本次程式碼變更不會
+對 AWS 或 GitHub 外部狀態做寫入。
+
+`STAGING_ECR_CUTOVER_ENABLED` 是唯一的 repository variable activation gate。啟用順序如下：
+
+1. gate 維持未設定或 `false`；在受保護 `main` 上，另行授權執行 fresh zero-delete plan 與 foundation
+   apply，建立 ECR/IAM resources。
+2. 先完成 foundation-level acceptance：確認五個 repositories 與 exact settings、publisher/deploy/
+   instance role boundaries，以及安全的 authentication／authorization checks（包括 instance role
+   只能取得 authorization token 並 pull 自身允許的 images）。此階段不要求 gated application rollout。
+3. foundation acceptance 完成後，operator 才可把 repository variable 設為**精確字串** `true`，並手動
+   trigger staging workflows。
+4. triggered workflows publish immutable commit-SHA images 並執行 host rollout；其後完成 cutover 的
+   live acceptance 與 observation。若 acceptance 失敗，立即將 gate 設回 `false`，這只會 freeze 並阻擋
+   新的 staging rollout，**不是** GHCR fallback；本分支不宣稱任何外部 action 已發生。
+
+任何其他值一律 fail closed，staging 不可 build/push/deploy 到 ECR。
+
+啟用後 staging 僅使用 `439622209937.dkr.ecr.ap-southeast-1.amazonaws.com` 和 AWS Secrets Manager
+runtime mode；EC2 不接收 `GITHUB_TOKEN`、PAT、`GHCR_USERNAME` 或 `GHCR_TOKEN`。Production 維持
+GHCR 與既有 GitHub runtime secret 相容路徑，且不會 assume staging publisher role 或拉取 staging ECR。
+這一輪暫以 immutable commit SHA tag 部署；digest manifest／promotion 是明確保留給 Phase 3 的邊界。
+
+受控 rollback 不會恢復 transitional GHCR access。gate 維持精確 `true`，operator 在 protected `main`
+手動 dispatch 對應 FinDB 或 Fetcher workflow，選擇 `deployment_target=staging` 並填入已接受的
+小寫 40-hex `image_tag`。有指定 `image_tag` 時 workflow 先驗證該 commit 可從當前 protected `main`
+到達，並確認 current checkout 的 `docker-compose.prod.yml`、`infra/deploy/runtime-secrets/` 與
+`infra/nginx/` deployment-contract scope 與舊 image SHA 無差異；只有契約不變時才允許 current scripts
+搭配 old images，否則 fail closed，必須先做 forward compatibility fix。FinDB 只驗證
+其 backend、dashboard 兩個固定 staging ECR repositories；Fetcher 只驗證其 Twelve Data、FinLab、Shioaji
+三個固定 staging ECR repositories。任一所屬 repository 不存在該 immutable SHA tag 即在 host rollout 前
+失敗，絕不重建目前 SHA。此介面不接受 mutable tag、非 main artifact、跨 repository 或 registry image；
+rollback 後仍須完整記錄 SHA 並重跑單元 acceptance。這不是 digest promotion，Phase 3 範圍不因此提前實作。
+
 ## 決策背景
 
 本計畫依下列已確認前提收斂，不以完整企業級治理作為 staging 完成條件：
 
 - staging 是 production 的前置驗證站，預期三個月內開始建立 production；
 - staging 由小團隊共同維運，不要求正式 24/7 on-call；
-- protected `main` 合併後維持自動部署 staging；production採unit-specific Git tag加手動
-  artifact promotion，不另設Environment人工核准；
+- 本計畫 pre-cutover 原先曾規劃 protected `main` 合併後自動部署 staging；目前實際行為為
+  FinDB／Fetcher 均僅接受 protected `main` 上的 manual dispatch，production採unit-specific
+  Git tag加手動 artifact promotion，不另設Environment人工核准；
 - 本輪採核心安全與可復原基線，不一次導入 HA、全面 IaC import 或完整企業稽核；
 - IaC 只先管理新控制面資源，既有 EC2、RDS 與網路先盤點及引用，不因全面 import 阻塞 cutover。
 
@@ -109,8 +148,9 @@ protected main
 unrouted job非skipped時fail closed。兩個unit CI不再直接接收`pull_request`，但保留
 `workflow_call`與`workflow_dispatch`。
 
-兩個 CD 都由 protected `main` 的 path-filtered push 自動進入 staging，也可手動 dispatch；CD
-必須直接呼叫同 revision CI。Staging Environment只允許protected branch且不設人工核准；
+兩個 CD 的 protected `main` path-filtered push 只執行同 revision CI 與完成 no-op bridge；staging
+ECR build、publish、host rollout 一律由 manual dispatch 啟動。CD 必須直接呼叫同 revision CI。
+Staging Environment只允許protected branch且不設人工核准；
 production建立後使用`findb-vMAJOR.MINOR.PATCH`或`fetcher-vMAJOR.MINOR.PATCH`宣告對應unit的
 release，再由operator手動dispatch artifact promotion；同樣不配置Environment人工核准。
 
@@ -384,7 +424,8 @@ IaC原始碼同步與plan採以下過渡及長期契約：
 - [x] 填完staging資源清冊，記錄owner、AWS account/region、resource ARN/ID、資料分類、backup
   policy、告警接收者與公開網路例外。
 - [x] 驗證`main`的required CI與PR protection；`staging-findb`、`staging-fetcher`只允許protected
-  branch且不設Environment人工核准，維持main合併後自動部署。
+  branch且不設Environment人工核准；目前 staging 部署由 protected `main` 上的 manual dispatch
+  啟動。
 - [x] 依IaC邊界確認團隊既有工具與state owner；沒有既有標準時採OpenTofu，只納管新控制面；Tyler
   (`tylercore`) 擔任 OpenTofu/IaC remote-state owner，encrypted backend／locking 留待 Phase 1。
 - [x] 記錄目前accepted SHA、實際image identity、Alembic revision、running containers、RDS
@@ -403,7 +444,7 @@ Phase 0 執行註記：四項 checklist 均完成。文件只保存長期有效�
 
 Phase 0 exit gate **已達成**：target、database、secret／backup owner與residual exceptions都有具名
 紀錄；repo required CI enforcement與既有PR protection已由GitHub設定頁外部驗證；SSH recovery
-仍可用，且staging自動部署不會被Environment人工核准阻塞。後續變更必須維持always-created
+仍可用，且staging manual dispatch 不會被Environment人工核准阻塞。後續變更必須維持always-created
 aggregate workflow、`Required CI` context與ruleset一致，不得倒退為path-filtered required contexts。
 
 ### Phase 1：OIDC、SSM與instance role基礎
@@ -570,8 +611,9 @@ migration chain的forward fix。
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 
 - [x] aggregate加四個unit GitHub workflows的path、CI、Environment、concurrency與release unit matrix一致。
-- [x] Protected `main`自動部署staging且不受Environment人工核准阻塞；required CI與PR protection
-  已完成外部驗證。
+- [x] Protected `main` 的 CD push path 僅完成同 revision CI 與 no-op bridge；staging 部署改由
+  protected `main` 上的 manual dispatch 啟動，且不受Environment人工核准阻塞；required CI與PR
+  protection 已完成外部驗證。
 - [ ] `infra/tofu/**`變更由IaC專用GitHub Actions在exact PR commit執行`fmt/init/validate/plan`；
   `staging-infra-plan` OIDC role不能修改受管資源或讀取runtime secret value，delete／replace
   fail closed，apply只可由protected `main`的fresh plan與獨立身分人工執行。

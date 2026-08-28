@@ -94,6 +94,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
+    sid       = "ReadExactEcrPublisherRoles"
+    effect    = "Allow"
+    actions   = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole", "iam:ListRolePolicies", "iam:ListRoleTags"]
+    resources = [for role in aws_iam_role.ecr_publisher : role.arn]
+  }
+
+  statement {
     sid    = "ReadExactInfraPlanRole"
     effect = "Allow"
     actions = [
@@ -191,6 +198,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     ]
 
     resources = [for secret in aws_secretsmanager_secret.runtime : secret.arn]
+  }
+
+  statement {
+    sid       = "ReadExactEcrRepositories"
+    effect    = "Allow"
+    actions   = ["ecr:DescribeRepositories", "ecr:GetLifecyclePolicy", "ecr:ListTagsForResource"]
+    resources = [for repository in aws_ecr_repository.staging : repository.arn]
   }
 
   # The aws_s3_bucket resource and its v6 provider refresh path use bucket

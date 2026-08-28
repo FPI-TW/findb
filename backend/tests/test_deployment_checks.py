@@ -434,19 +434,19 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         assert isinstance(jobs, dict)
         assert jobs["verify"]["uses"] == ci_path
         if service == "fetcher":
-            assert jobs["build-push"]["needs"] == [
+            assert jobs["build-push-production"]["needs"] == [
                 "verify",
-                "validate-runtime-secret-source",
+                "validate-target-routing",
             ]
             assert jobs["deploy"]["needs"] == [
                 "build-push",
-                "validate-runtime-secret-source",
+                "validate-target-routing",
                 "validate-r2-bucket-configuration",
                 "validate-fetcher-credential-isolation",
                 "validate-fetcher-credential-isolation-aws",
             ]
         else:
-            assert jobs["build-push"]["needs"] == "verify"
+            assert jobs["build-push-production"]["needs"] == "verify"
             assert jobs["deploy"]["needs"] == "build-push"
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
@@ -454,76 +454,417 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         target_input = workflow["on"]["workflow_dispatch"]["inputs"]["deployment_target"]
         assert target_input["default"] == "staging"
         assert target_input["options"] == ["staging", "production"]
-        source_input = workflow["on"]["workflow_dispatch"]["inputs"]["secret_source"]
-        assert source_input["default"] == "legacy-github"
-        assert source_input["options"] == ["legacy-github", "aws-secrets-manager"]
+        assert "secret_source" not in workflow["on"]["workflow_dispatch"]["inputs"]
+        rollback_input = workflow["on"]["workflow_dispatch"]["inputs"]["image_tag"]
+        assert rollback_input["default"] == ""
+        assert workflow["env"]["STAGING_ECR_REGISTRY"] == "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+        assert workflow["jobs"]["build-push-production"]["permissions"] == {"contents": "read", "packages": "write"}
+        expected_bridge_needs = ["verify"] if service == "findb" else [
+            "verify",
+            "validate-target-routing",
+        ]
+        expected_bridge_needs.extend(
+            ["build-push-production", "build-push-staging-ecr", "staging-ecr-cutover-disabled"]
+        )
+        assert workflow["jobs"]["build-push"]["needs"] == expected_bridge_needs
+        assert workflow["jobs"]["build-push-staging-ecr"]["permissions"] == {"contents": "read", "id-token": "write"}
 
 
-def test_runtime_secret_cutover_is_staging_only_and_legacy_is_explicit_rollback() -> None:
+def test_runtime_secret_cutover_is_target_derived_and_staging_ecr_is_gated() -> None:
     for path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
         workflow = _load_workflow(path)
-        source_expression = "${{ inputs.secret_source || 'legacy-github' }}"
-        assert workflow["env"]["SECRET_SOURCE"] == source_expression
-        assert workflow["jobs"]["deploy"]["env"]["SECRET_SOURCE"] == source_expression
+        assert "secret_source" not in workflow["on"]["workflow_dispatch"]["inputs"]
+        staged = workflow["jobs"]["build-push-staging-ecr"]
+        assert "github.event_name == 'workflow_dispatch'" in staged["if"]
+        selection = _named_step(workflow, "build-push-staging-ecr", "Validate staging ECR release selection")
+        assert "git merge-base --is-ancestor" in selection["run"]
+        assert "reachable from protected main" in selection["run"]
+        assert "git diff --quiet \"$ECR_IMAGE_TAG\" HEAD" in selection["run"]
+        assert "Incompatible staging rollback" in selection["run"]
+        for contract_scope in (
+            "docker-compose.prod.yml",
+            "infra/deploy/runtime-secrets",
+            "infra/nginx",
+        ):
+            assert contract_scope in selection["run"]
+        assert "rollback_contract_files" not in selection["run"]
+        credential_index = next(
+            index
+            for index, step in enumerate(staged["steps"])
+            if step.get("uses", "").startswith("aws-actions/configure-aws-credentials")
+        )
+        assert staged["steps"].index(selection) < credential_index
+        assert selection["run"]
+        assert staged["steps"][0]["with"]["fetch-depth"] == "0"
+        assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in staged["if"]
+        assert "packages" not in staged["permissions"]
+        assert "ghcr.io" not in json.dumps(staged, sort_keys=True)
+        disabled = workflow["jobs"]["staging-ecr-cutover-disabled"]
+        assert "github.event_name == 'workflow_dispatch'" in disabled["if"]
+        assert "vars.STAGING_ECR_CUTOVER_ENABLED != 'true'" in disabled["if"]
+        bridge = workflow["jobs"]["build-push"]
+        assert bridge["if"] == "always()"
+        assert "STAGING_ECR_BUILD" in bridge["steps"][0]["env"]
+        assert "PRODUCTION_BUILD" in bridge["steps"][0]["env"]
+        bridge_script = bridge["steps"][0]["run"]
+        assert 'if [ "$EVENT_NAME" = workflow_dispatch ]; then' in bridge_script
+        assert "image_tag is available only for staging ECR rollback" in bridge_script
+        assert "github.event_name == 'workflow_dispatch'" in workflow["jobs"]["deploy"]["if"]
 
-        validate = _named_step(workflow, "deploy", "Validate runtime secret source")
-        assert validate["env"] == {
-            "DEPLOYMENT_TARGET": "${{ inputs.deployment_target || 'staging' }}",
-            "SECRET_SOURCE": source_expression,
-        }
-        validation_script = validate["run"]
-        assert "legacy-github)" in validation_script
-        assert "aws-secrets-manager)" in validation_script
-        assert "AWS Secrets Manager mode is staging-only" in validation_script
-        assert 'if [ "$DEPLOYMENT_TARGET" != "staging" ]' in validation_script
-        assert "Expected legacy-github or aws-secrets-manager" in validation_script
 
-        deploy_steps = workflow["jobs"]["deploy"]["steps"]
-        legacy_steps = [
+def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr_credentials() -> None:
+    ecr_registry = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(workflow_path)
+        jobs = workflow["jobs"]
+        deploy = jobs["deploy"]
+        assert deploy["needs"] == "build-push" or "build-push" in deploy["needs"]
+        assert "needs.build-push.result == 'success'" in deploy["if"]
+        staging_steps = [
             step
-            for step in deploy_steps
-            if step.get("if")
-            == "${{ (inputs.secret_source || 'legacy-github') == 'legacy-github' }}"
+            for step in deploy["steps"]
+            if "STAGING_ECR_CUTOVER_ENABLED == 'true'" in str(step.get("if", ""))
         ]
-        aws_steps = [
-            step for step in deploy_steps if "aws-secrets-manager" in str(step.get("if", ""))
-        ]
-        assert legacy_steps, f"{path.name} must keep an explicit legacy rollback path"
-        assert aws_steps, f"{path.name} must expose explicit AWS-mode steps"
-        assert all("legacy-github" in step["if"] for step in legacy_steps)
-        for step in aws_steps:
-            # SSH connection/recovery credentials remain the only secrets allowed
-            # in an AWS-mode transport step; runtime values must come from the host.
-            step_env = json.dumps(step.get("env", {}), sort_keys=True)
-            step_envs = str(step.get("with", {}).get("envs", ""))
-            step_script = str(step.get("with", {}).get("script", ""))
-            assert "${{ secrets." not in step_env
-            assert "${{ secrets." not in step_envs
-            assert "${{ secrets." not in step_script
-            assert "GITHUB_TOKEN" not in step_env
-            assert "GITHUB_TOKEN" not in step_envs
-            assert "GITHUB_TOKEN" not in step_script
+        assert staging_steps
+        assert all(
+            token not in json.dumps(staging_steps, sort_keys=True)
+            for token in ("GITHUB_TOKEN", "GITHUB_ACTOR", "GHCR_USERNAME", "GHCR_TOKEN", "ghcr.io")
+        )
+
+    findb = _load_workflow(FINDB_CD_WORKFLOW)
+    findb_rollout = _named_step(findb, "deploy", "Deploy to EC2 with AWS runtime secrets")
+    assert findb_rollout["env"]["ECR_REGISTRY"] == ecr_registry
+    assert findb_rollout["env"]["FINDB_IMAGE"] == f"{ecr_registry}/findb/staging/backend"
+    assert findb_rollout["env"]["DASHBOARD_IMAGE"] == f"{ecr_registry}/findb/staging/dashboard"
+    assert findb_rollout["env"]["IMAGE_TAG"] == "${{ inputs.image_tag || github.sha }}"
+    assert "ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE" in findb_rollout["with"]["envs"]
+
+    fetcher = _load_workflow(FETCHER_CD_WORKFLOW)
+    for name, image in (
+        ("Release Twelve Data scheduler with AWS runtime secrets", "fetcher/twelve-data"),
+        ("Release FinLab scheduler with AWS runtime secrets", "fetcher/finlab"),
+        ("Release Shioaji scheduler with AWS runtime secrets", "fetcher/shioaji"),
+    ):
+        step = _named_step(fetcher, "deploy", name)
+        assert step["env"]["ECR_REGISTRY"] == ecr_registry
+        assert step["env"].get("FETCHER_IMAGE", step["env"].get("FETCHER_FINLAB_IMAGE", step["env"].get("FETCHER_SHIOAJI_IMAGE"))) == f"{ecr_registry}/findb/staging/{image}"
+        assert "ECR_REGISTRY" in step["with"]["envs"]
+        assert "--ecr-registry \"$ECR_REGISTRY\" --docker-login" in step["with"]["script"]
+
+    smoke = _named_step(fetcher, "finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke with AWS runtime secrets")
+    assert smoke["env"]["ECR_REGISTRY"] == ecr_registry
+    assert smoke["env"]["FETCHER_FINLAB_IMAGE"] == f"{ecr_registry}/findb/staging/fetcher/finlab"
+
+    for workflow_path, expected_images in (
+        (FINDB_CD_WORKFLOW, ("FINDB_IMAGE", "DASHBOARD_IMAGE")),
+        (FETCHER_CD_WORKFLOW, ("TWELVE_IMAGE", "FINLAB_IMAGE", "SHIOAJI_IMAGE")),
+    ):
+        staged_steps = _load_workflow(workflow_path)["jobs"]["build-push-staging-ecr"]["steps"]
+        build_steps = [step for step in staged_steps if "Build or reuse immutable" in step.get("name", "")]
+        assert len(build_steps) == len(expected_images)
+        for variable, step in zip(expected_images, build_steps, strict=True):
+            assert "build_ecr_image_if_missing.sh" in step["run"]
+            assert f'"${variable}"' in step["run"]
+        assert _load_workflow(workflow_path)["jobs"]["build-push-staging-ecr"]["env"][
+            "ECR_REUSE_ONLY"
+        ] == "${{ inputs.image_tag != '' }}"
 
 
-def test_fetcher_runtime_secret_selector_is_validated_before_job_routing() -> None:
+def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentials(tmp_path: Path) -> None:
+    findb_helper = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh"
+    fetcher_helper = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "release_fetcher_provider.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_log = tmp_path / "docker.log"
+    (fake_bin / "docker").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {docker_log}\nexit 99\n", encoding="utf-8"
+    )
+    (fake_bin / "docker").chmod(0o755)
+    environment = dict(
+        os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", AWS_REGION="ap-southeast-1"
+    )
+
+    invalid_findb = subprocess.run(
+        ["bash", str(findb_helper)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **environment,
+            "AWS_REGION": "ap-southeast-1",
+            "IMAGE_TAG": "A" * 40,
+            "ECR_REGISTRY": "evil.example",
+            "FINDB_IMAGE": "evil.example/backend",
+            "DASHBOARD_IMAGE": "evil.example/dashboard",
+            "FINDB_PUBLIC_HOST": "findb.example.test",
+        },
+    )
+    assert invalid_findb.returncode != 0
+    assert "reason=ecr_image_contract" in invalid_findb.stderr
+
+    valid_findb = subprocess.run(
+        ["bash", str(findb_helper)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **environment,
+            "AWS_REGION": "ap-southeast-1",
+            "IMAGE_TAG": "a" * 40,
+            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
+            "FINDB_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend",
+            "DASHBOARD_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard",
+            "FINDB_PUBLIC_HOST": "findb.example.test",
+        },
+    )
+    assert valid_findb.returncode != 0
+    assert "reason=compose_missing" in valid_findb.stderr
+
+    rejected_fetcher = subprocess.run(
+        [
+            "bash", str(fetcher_helper), "finlab",
+            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji:" + "a" * 40,
+            "/tmp/state", "/tmp/state/state.sqlite3", "stable", "candidate", "previous", "preflight", "-", "scheduler",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert rejected_fetcher.returncode != 0
+    assert "reason=ecr_image_contract" in rejected_fetcher.stderr
+
+    accepted_fetcher = subprocess.run(
+        [
+            "bash", str(fetcher_helper), "finlab",
+            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab:" + "a" * 40,
+            "/tmp/state", "/tmp/state/state.sqlite3", "stable", "candidate", "previous", "preflight", "-", "scheduler",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert accepted_fetcher.returncode != 0
+    assert "reason=required_value_missing" in accepted_fetcher.stderr
+
+    unsafe_shioaji = subprocess.run(
+        [
+            "bash", str(fetcher_helper), "shioaji",
+            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji:" + "a" * 40,
+            "/tmp/state", "/tmp/state/state.sqlite3", "stable", "candidate", "previous", "preflight", "-", "scheduler",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**environment, "SHIOAJI_SIMULATION": "false"},
+    )
+    assert unsafe_shioaji.returncode != 0
+    assert "reason=shioaji_simulation_required" in unsafe_shioaji.stderr
+    assert not docker_log.exists()
+
+    runtime_command = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "runtime_secret_command.sh"
+    rejected_runtime_region = subprocess.run(
+        [
+            "bash",
+            str(runtime_command),
+            "--catalog",
+            "/opt/findb/runtime-secrets/findb.json",
+            "--region",
+            "us-east-1",
+            "--consumer",
+            "compose",
+            "--",
+            "true",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert rejected_runtime_region.returncode != 0
+    assert "runtime_secret_command=failed reason=region_invalid" in rejected_runtime_region.stderr
+
+    for helper, arguments, expected_reason in (
+        (
+            findb_helper,
+            [],
+            "findb_aws_deploy=failed reason=region_invalid",
+        ),
+        (
+            fetcher_helper,
+            [
+                "finlab",
+                "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab:"
+                + "a" * 40,
+                "/tmp/state",
+                "/tmp/state/state.sqlite3",
+                "stable",
+                "candidate",
+                "previous",
+                "preflight",
+                "-",
+                "scheduler",
+            ],
+            "release_fetcher_provider=failed reason=region_invalid",
+        ),
+    ):
+        rejected_region = subprocess.run(
+            ["bash", str(helper), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **environment,
+                "AWS_REGION": "us-east-1",
+                "IMAGE_TAG": "a" * 40,
+                "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
+                "FINDB_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend",
+                "DASHBOARD_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard",
+                "FINDB_PUBLIC_HOST": "findb.example.test",
+            },
+        )
+        assert rejected_region.returncode != 0
+        assert expected_reason in rejected_region.stderr
+    assert not docker_log.exists()
+
+
+def test_immutable_ecr_build_helper_reuses_or_builds_only_after_exact_tag_inspection(
+    tmp_path: Path,
+) -> None:
+    helper = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "build_ecr_image_if_missing.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_log = tmp_path / "docker.log"
+    (fake_bin / "aws").write_text(
+        """#!/bin/sh
+case "${ECR_TEST_MODE:?}" in
+  present) printf '%s\\n' 'sha256:already-present' ;;
+  absent) printf '%s\\n' 'An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageTag=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa} does not exist within the repository with name findb/staging/backend in the registry with id 439622209937' >&2; exit 255 ;;
+  error) printf '%s\\n' 'An error occurred (ThrottlingException)' >&2; exit 255 ;;
+  mixed) printf '%s\\n' 'An error occurred (ImageNotFoundException) when calling the DescribeImages operation: absent' 'An error occurred (ThrottlingException) when calling the DescribeImages operation: retry later' >&2; exit 255 ;;
+  forged) printf '%s\\n' 'ImageNotFoundException: absent' >&2; exit 255 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {docker_log}\n", encoding="utf-8"
+    )
+    for command in ("aws", "docker"):
+        (fake_bin / command).chmod(0o755)
+    base_environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "AWS_REGION": "ap-southeast-1",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": "a" * 40,
+    }
+    image = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend"
+
+    present = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "present"},
+    )
+    assert present.returncode == 0, present.stderr
+    assert "staging_ecr_build=reused" in present.stdout
+    assert not docker_log.exists()
+
+    absent = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "absent"},
+    )
+    assert absent.returncode == 0, absent.stderr
+    assert "staging_ecr_build=pushed" in absent.stdout
+    assert "buildx build" in docker_log.read_text(encoding="utf-8")
+
+    docker_log.unlink()
+    inspection_error = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "error"},
+    )
+    assert inspection_error.returncode != 0
+    assert "reason=ecr_tag_inspection_failed" in inspection_error.stderr
+    assert not docker_log.exists()
+
+    for mode in ("mixed", "forged"):
+        rejected = subprocess.run(
+            ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**base_environment, "ECR_TEST_MODE": mode},
+        )
+        assert rejected.returncode != 0
+        assert "reason=ecr_tag_inspection_failed" in rejected.stderr
+        assert not docker_log.exists()
+
+    rollback_absent = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **base_environment,
+            "ECR_TEST_MODE": "absent",
+            "ECR_IMAGE_TAG": "b" * 40,
+            "ECR_REUSE_ONLY": "true",
+        },
+    )
+    assert rollback_absent.returncode != 0
+    assert "reason=rollback_tag_not_found" in rollback_absent.stderr
+    assert not docker_log.exists()
+
+    aws_log = tmp_path / "aws.log"
+    (fake_bin / "aws").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {aws_log}\nexit 99\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "aws").chmod(0o755)
+    forward_tag_mismatch = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **base_environment,
+            "ECR_IMAGE_TAG": "b" * 40,
+            "ECR_REUSE_ONLY": "false",
+        },
+    )
+    assert forward_tag_mismatch.returncode != 0
+    assert "reason=publisher_identity_or_sha_contract" in forward_tag_mismatch.stderr
+    assert not aws_log.exists()
+    assert not docker_log.exists()
+
+
+def test_fetcher_target_route_is_validated_before_job_routing() -> None:
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
     jobs = workflow["jobs"]
-    validation = jobs["validate-runtime-secret-source"]
+    validation = jobs["validate-target-routing"]
     assert "if" not in validation
     assert validation["permissions"] == {"contents": "read"}
     step = _named_step(
         workflow,
-        "validate-runtime-secret-source",
-        "Validate runtime secret source before routing",
+        "validate-target-routing",
+        "Validate target-derived runtime route before build",
     )
     script = step["run"]
-    assert "Expected legacy-github or aws-secrets-manager" in script
-    assert "AWS Secrets Manager mode is staging-only" in script
     assert "Expected staging or production" in script
-    assert "validate-runtime-secret-source" in jobs["build-push"]["needs"]
-    assert "validate-runtime-secret-source" in jobs["deploy"]["needs"]
-    assert "needs.validate-runtime-secret-source.result == 'success'" in jobs["deploy"]["if"]
-    assert "validate-runtime-secret-source" in jobs["finlab-acquisition-smoke"]["needs"]
+    assert "STAGING_ECR_CUTOVER_ENABLED" in script
+    assert "validate-target-routing" in jobs["build-push-production"]["needs"]
+    assert "validate-target-routing" in jobs["deploy"]["needs"]
+    assert "needs.validate-target-routing.result == 'success'" in jobs["deploy"]["if"]
+    assert "validate-target-routing" in jobs["finlab-acquisition-smoke"]["needs"]
 
 
 def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
@@ -665,13 +1006,13 @@ def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> 
     findb_workflow_scripts = "\n".join(
         str(step.get("with", {}).get("script", ""))
         for step in findb_workflow["jobs"]["deploy"]["steps"]
-        if "aws-secrets-manager" in str(step.get("if", ""))
+        if "STAGING_ECR_CUTOVER_ENABLED" in str(step.get("if", ""))
     )
     findb_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
     assert "--consumer canary" in findb_workflow_scripts
-    assert "--consumer registry" in findb_helper
+    assert "--ecr-registry" in findb_helper
     assert "--consumer compose" in findb_helper
     assert "--consumer migration" in findb_helper
     assert "MIGRATION_DATABASE_URL=DATABASE_URL" in findb_helper
@@ -685,7 +1026,7 @@ def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> 
     fetcher_steps = {
         step["name"]: step["with"]["script"]
         for step in fetcher_workflow["jobs"]["deploy"]["steps"]
-        if "aws-secrets-manager" in str(step.get("if", ""))
+        if "STAGING_ECR_CUTOVER_ENABLED" in str(step.get("if", ""))
         and "with" in step
         and "script" in step["with"]
     }
@@ -696,8 +1037,9 @@ def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> 
         ("Release Shioaji scheduler with AWS runtime secrets", "shioaji"),
     ):
         script = fetcher_steps[name]
-        assert script.count("--consumer registry") == 1
+        assert "--consumer registry" not in script
         assert script.count(f"--consumer {consumer}") == 1
+        assert "--ecr-registry \"$ECR_REGISTRY\"" in script
         assert "--consumer canary" not in script
     smoke_step = _named_step(
         fetcher_workflow,
@@ -709,19 +1051,20 @@ def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> 
         "finlab-acquisition-smoke",
         "Run Fetcher AWS runtime-secret canary before FinLab smoke",
     )
-    smoke_validation = _named_step(
-        fetcher_workflow,
-        "finlab-acquisition-smoke",
-        "Validate runtime secret source for FinLab smoke",
-    )
     smoke_steps = fetcher_workflow["jobs"]["finlab-acquisition-smoke"]["steps"]
-    assert smoke_steps.index(smoke_validation) < smoke_steps.index(smoke_canary_step)
-    assert "AWS Secrets Manager mode is staging-only" in smoke_validation["run"]
     assert smoke_steps.index(smoke_canary_step) < smoke_steps.index(smoke_step)
     assert "--check-only" in smoke_canary_step["with"]["script"]
     smoke_script = smoke_step["with"]["script"]
-    assert smoke_script.count("--consumer registry") == 1
+    assert "--consumer registry" not in smoke_script
     assert smoke_script.count("--consumer finlab-smoke") == 1
+    assert "--ecr-registry \"$ECR_REGISTRY\"" in smoke_script
+    assert 'expected_region=ap-southeast-1' in smoke_script
+    assert 'expected_image=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab' in smoke_script
+    assert '[[ ! "$FETCHER_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]' in smoke_script
+    assert 'expected_full_image="${expected_image}:${FETCHER_IMAGE_TAG}"' in smoke_script
+    assert 'requested_image="${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}"' in smoke_script
+    assert '[ "$requested_image" = "$expected_full_image" ]' in smoke_script
+    assert smoke_script.index("expected_full_image=") < smoke_script.index("runtime_secret_command.sh")
     assert "FETCHER_CALENDAR_SERVE_API_KEY" not in smoke_script
     assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" not in smoke_script
     assert "CLOUDFLARE_R2_RAW_" not in smoke_script
@@ -743,7 +1086,7 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert 'unset "$key"' in command
     assert "unset DOCKER_CONFIG" in command
     assert 'mktemp -d "$runtime_root/docker-config.XXXXXX"' in command
-    assert "docker logout ghcr.io" in command
+    assert 'docker logout "$ecr_registry"' in command
     assert "docker inspect Config.Env" not in command
     assert " docker compose" not in command
     assert " env " not in command
@@ -1018,7 +1361,7 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         deploy = jobs["deploy"]
         assert deploy["permissions"]["id-token"] == "write"
         for job_name, job in jobs.items():
-            if job_name != "deploy":
+            if job_name not in {"deploy", "build-push-staging-ecr"}:
                 assert job.get("permissions", {}).get("id-token") != "write"
 
         credential_step = _named_step(workflow, "deploy", "Configure staging AWS credentials")
@@ -1029,12 +1372,13 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         )
         assert credential_step["with"] == {
             "role-to-assume": "${{ vars.AWS_DEPLOY_ROLE_ARN }}",
-            "aws-region": "${{ vars.AWS_REGION }}",
+            "aws-region": "ap-southeast-1",
             "allowed-account-ids": "${{ vars.AWS_ACCOUNT_ID }}",
             "role-session-name": f"{unit}-staging-preflight-${{{{ github.run_id }}}}",
         }
         assert preflight_step["if"] == credential_step["if"]
         assert preflight_step["env"]["DEPLOYMENT_UNIT"] == unit
+        assert preflight_step["env"]["AWS_REGION"] == "ap-southeast-1"
         assert preflight_step["env"]["PREFLIGHT_MARKER_TOKEN"] == (
             f"${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{unit}"
         )
@@ -1477,6 +1821,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
     shared_runtime_paths = {
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
     }
     assert shared_runtime_paths <= _aggregate_ci_paths("findb")
     assert shared_runtime_paths <= _aggregate_ci_paths("fetcher")
@@ -1514,6 +1859,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+        "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         ".github/workflows/fetcher-cd.yml",
     }
@@ -1523,16 +1869,16 @@ def test_root_context_images_use_service_specific_dockerignore_files() -> None:
     assert not (REPO_ROOT / ".dockerignore").exists()
 
     findb_cd = _load_workflow(FINDB_CD_WORKFLOW)
-    dashboard_build = _named_step(findb_cd, "build-push", "Build and push dashboard image")
+    dashboard_build = _named_step(findb_cd, "build-push-production", "Build and push dashboard image")
     assert dashboard_build["with"]["context"] == "."
     assert dashboard_build["with"]["file"] == "dashboard/Dockerfile"
-    backend_build = _named_step(findb_cd, "build-push", "Build and push backend image")
+    backend_build = _named_step(findb_cd, "build-push-production", "Build and push backend image")
     assert backend_build["with"]["context"] == "./backend"
     assert "${{ env.IMAGE }}:${{ github.sha }}" in backend_build["with"]["tags"]
     assert "${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}" in dashboard_build["with"]["tags"]
 
     fetcher_cd = _load_workflow(FETCHER_CD_WORKFLOW)
-    fetcher_build = _named_step(fetcher_cd, "build-push", "Build and push Fetcher image")
+    fetcher_build = _named_step(fetcher_cd, "build-push-production", "Build and push Fetcher image")
     assert fetcher_build["with"]["context"] == "."
     assert fetcher_build["with"]["file"] == "fetcher/Dockerfile"
     assert fetcher_build["with"]["tags"] == (
@@ -1727,10 +2073,13 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
 
 def test_fetcher_cd_builds_and_pushes_three_immutable_images() -> None:
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    assert workflow["env"]["FETCHER_IMAGE"] == "ghcr.io/fpi-tw/findb-fetcher"
-    assert workflow["env"]["FETCHER_FINLAB_IMAGE"] == "ghcr.io/fpi-tw/findb-fetcher-finlab"
-    assert workflow["env"]["FETCHER_SHIOAJI_IMAGE"] == "ghcr.io/fpi-tw/findb-fetcher-shioaji"
-    assert workflow["env"]["FETCHER_IMAGE_TAG"] == "${{ github.sha }}"
+    assert workflow["env"]["FETCHER_IMAGE_TAG"] == "${{ inputs.image_tag || github.sha }}"
+    production_build = workflow["jobs"]["build-push-production"]
+    assert production_build["env"] == {
+        "FETCHER_IMAGE": "ghcr.io/fpi-tw/findb-fetcher",
+        "FETCHER_FINLAB_IMAGE": "ghcr.io/fpi-tw/findb-fetcher-finlab",
+        "FETCHER_SHIOAJI_IMAGE": "ghcr.io/fpi-tw/findb-fetcher-shioaji",
+    }
 
     expected = {
         "Build and push Fetcher image": (
@@ -1747,7 +2096,7 @@ def test_fetcher_cd_builds_and_pushes_three_immutable_images() -> None:
         ),
     }
     for name, (dockerfile, tag) in expected.items():
-        step = _named_step(workflow, "build-push", name)
+        step = _named_step(workflow, "build-push-production", name)
         assert step["with"]["context"] == "."
         assert step["with"]["file"] == dockerfile
         assert str(step["with"]["push"]).lower() == "true"
@@ -1877,7 +2226,7 @@ def test_fetcher_smoke_prunes_only_unused_images_before_pull() -> None:
     step = _named_step(
         workflow,
         "finlab-acquisition-smoke",
-        "Run bounded FinLab acquisition smoke on Fetcher staging EC2",
+        "Run bounded FinLab acquisition smoke with AWS runtime secrets",
     )
     script = step["with"]["script"]
 
@@ -1887,6 +2236,8 @@ def test_fetcher_smoke_prunes_only_unused_images_before_pull() -> None:
     assert script.count("docker image prune -af") == 1
     assert "docker system prune" not in script
     assert "docker volume prune" not in script
+    assert '[[ "$FETCHER_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]' in script
+    assert script.index('[[ "$FETCHER_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]') < image_pull
 
 
 def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
@@ -2232,7 +2583,7 @@ def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolatio
     assert "inputs.run_finlab_smoke != true" in isolation["if"]
     assert deploy["needs"] == [
         "build-push",
-        "validate-runtime-secret-source",
+        "validate-target-routing",
         "validate-r2-bucket-configuration",
         "validate-fetcher-credential-isolation",
         "validate-fetcher-credential-isolation-aws",

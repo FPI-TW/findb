@@ -3,11 +3,6 @@
   "unit": "findb",
   "secret_prefix": "findb/staging/findb/",
   "consumers": {
-    "registry": {
-      "secrets": [
-        {"name": "registry/ghcr-pull", "required_keys": ["GHCR_USERNAME", "GHCR_TOKEN"]}
-      ]
-    },
     "migration": {
       "secrets": [
         {"name": "database/migration", "required_keys": ["MIGRATION_DATABASE_URL"]}
@@ -43,8 +38,7 @@
         {"name": "api/static-cache-serve", "required_keys": ["FINDB_STATIC_CACHE_SERVE_API_KEY"]},
         {"name": "rabbitmq/runtime", "required_keys": ["CELERY_BROKER_URL", "RABBITMQ_DEFAULT_USER", "RABBITMQ_DEFAULT_PASS", "RABBITMQ_ERLANG_COOKIE"]},
         {"name": "r2/canonical-publisher", "required_keys": ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN"]},
-        {"name": "r2/canonical-reader", "required_keys": ["CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"]},
-        {"name": "registry/ghcr-pull", "required_keys": ["GHCR_USERNAME", "GHCR_TOKEN"]}
+        {"name": "r2/canonical-reader", "required_keys": ["CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"]}
       ],
       "distinct_keys": [
         ["DATABASE_URL", "MIGRATION_DATABASE_URL"],

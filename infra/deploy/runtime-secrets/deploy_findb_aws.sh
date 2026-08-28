@@ -15,10 +15,32 @@ nginx_runtime="$runtime_dir/render_nginx_runtime.sh"
 : "${IMAGE_TAG:?IMAGE_TAG is required}"
 : "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE is required}"
 : "${FINDB_PUBLIC_HOST:?FINDB_PUBLIC_HOST is required}"
+: "${ECR_REGISTRY:?ECR_REGISTRY is required}"
+: "${FINDB_IMAGE:?FINDB_IMAGE is required}"
+
+if [ "$AWS_REGION" != "ap-southeast-1" ]; then
+  echo "findb_aws_deploy=failed reason=region_invalid" >&2
+  exit 1
+fi
+
+expected_ecr_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+expected_findb_image="$expected_ecr_registry/findb/staging/backend"
+expected_dashboard_image="$expected_ecr_registry/findb/staging/dashboard"
+
+if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
+  || [ "$FINDB_IMAGE" != "$expected_findb_image" ] \
+  || [ "$DASHBOARD_IMAGE" != "$expected_dashboard_image" ]; then
+  echo "findb_aws_deploy=failed reason=ecr_image_contract" >&2
+  exit 1
+fi
+if ! printf '%s' "$IMAGE_TAG" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "findb_aws_deploy=failed reason=image_tag_not_lowercase_sha" >&2
+  exit 1
+fi
 
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=AWS_REGION,IMAGE_TAG,DASHBOARD_IMAGE,FINDB_PUBLIC_HOST,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+preserve_env=AWS_REGION,IMAGE_TAG,ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE,FINDB_PUBLIC_HOST,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -46,7 +68,7 @@ done
 
 # Compose interpolation needs the compose consumer while pulling images. The
 # registry token is confined to the same tmpfs Docker config and command.
-run_runtime --consumer registry --consumer compose --docker-login -- bash -s -- "$compose_file" <<'PULL_SCRIPT'
+run_runtime --consumer compose --ecr-registry "$ECR_REGISTRY" --docker-login -- bash -s -- "$compose_file" <<'PULL_SCRIPT'
 set -euo pipefail
 compose_file="$1"
 docker compose -f "$compose_file" pull

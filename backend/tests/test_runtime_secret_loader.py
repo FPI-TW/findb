@@ -52,7 +52,6 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             "rabbitmq/runtime",
             "r2/canonical-publisher",
             "r2/canonical-reader",
-            "registry/ghcr-pull",
         },
         "fetcher": {
             "api/calendar-serve",
@@ -63,7 +62,6 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             "provider/finlab",
             "provider/shioaji",
             "r2/raw",
-            "registry/ghcr-pull",
         },
     }
     for unit, names in expected.items():
@@ -78,6 +76,45 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
         }
         assert configured == names
         assert "canary" in catalog["consumers"]
+
+
+def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> None:
+    configured = {
+        secret["name"]
+        for unit in ("findb", "fetcher")
+        for consumer in _catalog(unit)["consumers"].values()
+        for secret in consumer["secrets"]
+    }
+    assert len(configured) == 17
+    assert "registry/ghcr-pull" not in configured
+    assert "GHCR_USERNAME" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
+    assert "GHCR_TOKEN" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
+    metadata = (REPO_ROOT / "infra" / "tofu" / "staging" / "secrets.tf").read_text(
+        encoding="utf-8"
+    )
+    # Protected transitional metadata is deliberately not an active runtime
+    # catalog entry and must not be retired before separate live authorization.
+    assert metadata.count('relative_name = "registry/ghcr-pull"') == 2
+    assert metadata.count("prevent_destroy = true") >= 2
+
+
+def test_runtime_command_uses_only_bounded_instance_role_ecr_login() -> None:
+    command = (CATALOG_ROOT / "runtime_secret_command.sh").read_text(encoding="utf-8")
+    assert "--ecr-registry" in command
+    assert "439622209937\\.dkr\\.ecr\\.ap-southeast-1\\.amazonaws\\.com" in command
+    assert 'aws ecr get-login-password --region "$region"' in command
+    assert 'docker login --username AWS --password-stdin "$ecr_registry"' in command
+    assert 'docker logout "$ecr_registry"' in command
+    assert 'rm -rf -- "$docker_config"' in command
+    assert "GHCR_USERNAME" not in command
+    assert "GHCR_TOKEN" not in command
+
+
+def test_runtime_loader_rejects_an_unapproved_region_before_secret_access() -> None:
+    loader = _loader()
+
+    with pytest.raises(loader.LoaderError, match="region_invalid"):
+        loader._aws_fetcher("us-east-1")
 
 
 def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:

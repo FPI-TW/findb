@@ -15,6 +15,26 @@ output "deploy_role_arns" {
   }
 }
 
+output "ecr_publisher_role_arns" {
+  description = "Separate main-only GitHub OIDC publisher role ARN for each staging ECR unit."
+  value       = { for unit, role in aws_iam_role.ecr_publisher : unit => role.arn }
+}
+
+output "ecr_repository_names" {
+  description = "Fixed private staging ECR repository names keyed by image role."
+  value       = { for key, repository in aws_ecr_repository.staging : key => repository.name }
+}
+
+output "ecr_repository_urls" {
+  description = "Private staging ECR repository URLs keyed by image role."
+  value       = { for key, repository in aws_ecr_repository.staging : key => repository.repository_url }
+}
+
+output "ecr_repository_arns" {
+  description = "Private staging ECR repository ARNs keyed by image role."
+  value       = { for key, repository in aws_ecr_repository.staging : key => repository.arn }
+}
+
 output "instance_role_arns" {
   description = "Separate EC2 instance role ARN for each staging unit."
   value = {

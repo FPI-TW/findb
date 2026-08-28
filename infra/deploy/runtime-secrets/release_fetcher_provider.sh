@@ -4,6 +4,12 @@
 set -euo pipefail
 set +x
 
+: "${AWS_REGION:?AWS_REGION is required}"
+if [ "$AWS_REGION" != "ap-southeast-1" ]; then
+  echo "release_fetcher_provider=failed reason=region_invalid" >&2
+  exit 1
+fi
+
 provider="${1:?provider required}"
 image="${2:?image required}"
 state_dir="${3:?state directory required}"
@@ -18,6 +24,7 @@ shift 9
 
 case "$provider" in
   twelve-data)
+    expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data"
     source_key="${FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY:-}"
     provider_key="${TWELVE_DATA_API_KEY:-}"
     provider_env=(
@@ -28,11 +35,17 @@ case "$provider" in
     )
     ;;
   finlab)
+    expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab"
     source_key="${FETCHER_FINLAB_SOURCE_CLIENT_KEY:-}"
     provider_key="${FINLAB_API_TOKEN:-}"
     provider_env=(--env FINLAB_API_TOKEN)
     ;;
   shioaji)
+    expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji"
+    if [ "${SHIOAJI_SIMULATION:-}" != "true" ]; then
+      echo "release_fetcher_provider=failed reason=shioaji_simulation_required" >&2
+      exit 1
+    fi
     source_key="${FETCHER_SHIOAJI_SOURCE_CLIENT_KEY:-}"
     provider_key="${SHIOAJI_API_KEY:-}"
     provider_secret_key="${SHIOAJI_SECRET_KEY:-}"
@@ -43,6 +56,13 @@ case "$provider" in
     exit 1
     ;;
 esac
+
+image_tag="${image##*:}"
+if ! printf '%s' "$image_tag" | grep -Eq '^[0-9a-f]{40}$' \
+  || [ "$image" != "$expected_image_repository:$image_tag" ]; then
+  echo "release_fetcher_provider=failed reason=ecr_image_contract" >&2
+  exit 1
+fi
 
 require_value() {
   [ -n "$2" ] || { echo "release_fetcher_provider=failed reason=required_value_missing" >&2; exit 1; }

@@ -7,7 +7,7 @@ set +x
 umask 077
 
 usage() {
-  echo "usage: runtime_secret_command.sh --catalog PATH --region REGION --consumer NAME [--consumer NAME ...] [--map SOURCE=DEST] [--docker-login] -- COMMAND [ARG ...]" >&2
+  echo "usage: runtime_secret_command.sh --catalog PATH --region REGION --consumer NAME [--consumer NAME ...] [--map SOURCE=DEST] [--ecr-registry REGISTRY] --docker-login -- COMMAND [ARG ...]" >&2
   exit 2
 }
 
@@ -16,6 +16,7 @@ region=""
 declare -a consumers=()
 declare -a mappings=()
 docker_login_requested=0
+ecr_registry=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -43,6 +44,11 @@ while [ "$#" -gt 0 ]; do
       docker_login_requested=1
       shift
       ;;
+    --ecr-registry)
+      [ "$#" -ge 2 ] || usage
+      ecr_registry="$2"
+      shift 2
+      ;;
     --)
       shift
       break
@@ -57,6 +63,11 @@ done
 [ -n "$region" ] || usage
 [ "${#consumers[@]}" -gt 0 ] || usage
 [ "$#" -gt 0 ] || usage
+
+if [ "$region" != "ap-southeast-1" ]; then
+  echo "runtime_secret_command=failed reason=region_invalid" >&2
+  exit 1
+fi
 
 case "$catalog" in
   /opt/*/runtime-secrets/*.json) ;;
@@ -105,7 +116,7 @@ cleanup() {
     [ -e "$file" ] && rm -f -- "$file"
   done
   if [ "$docker_login_done" -eq 1 ]; then
-    docker logout ghcr.io >/dev/null 2>&1 || true
+    docker logout "$ecr_registry" >/dev/null 2>&1 || true
   fi
   if [ -n "$docker_config" ]; then
     rm -rf -- "$docker_config"
@@ -188,21 +199,18 @@ for mapping in "${mappings[@]}"; do
 done
 
 if [ "$docker_login_requested" -eq 1 ]; then
-  if [ -z "${GHCR_USERNAME+x}" ] || [ -z "${GHCR_TOKEN+x}" ]; then
-    echo "runtime_secret_command=failed reason=registry_credentials_missing" >&2
+  if ! [[ "$ecr_registry" =~ ^439622209937\.dkr\.ecr\.ap-southeast-1\.amazonaws\.com$ ]]; then
+    echo "runtime_secret_command=failed reason=ecr_registry_invalid" >&2
     exit 1
   fi
   docker_config="$(mktemp -d "$runtime_root/docker-config.XXXXXX")"
   chmod 700 "$docker_config"
   export DOCKER_CONFIG="$docker_config"
-  if ! printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null; then
-    echo "runtime_secret_command=failed reason=registry_login_failed" >&2
+  if ! aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$ecr_registry" >/dev/null; then
+    echo "runtime_secret_command=failed reason=ecr_login_failed" >&2
     exit 1
   fi
   docker_login_done=1
-  # Docker has the credential in its tmpfs config now; do not expose it to the
-  # bounded application/deployment command that follows.
-  unset GHCR_USERNAME GHCR_TOKEN
 fi
 
 "$@"
