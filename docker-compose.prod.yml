@@ -1,24 +1,22 @@
 x-normalization-consumer-timeout: &normalization-consumer-timeout "3600000"
 
 x-app-environment: &app-environment
-  APP_NAME: "${APP_NAME:?APP_NAME must be set in GitHub Actions variables}"
-  APP_VERSION: "${APP_VERSION:?APP_VERSION must be set in GitHub Actions variables}"
+  APP_NAME: "${APP_NAME:?APP_NAME must be set in deployment variables}"
+  APP_VERSION: "${APP_VERSION:?APP_VERSION must be set in deployment variables}"
   APP_ROLE: "${APP_ROLE:-all}"
-  DEBUG: "${DEBUG:?DEBUG must be set in GitHub Actions variables}"
-  PORT: "${PORT:?PORT must be set in GitHub Actions variables}"
-  DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in GitHub Actions secrets}"
-  DATABASE_POOL_SIZE: "${DATABASE_POOL_SIZE:?DATABASE_POOL_SIZE must be set in GitHub Actions variables}"
-  DATABASE_MAX_OVERFLOW: "${DATABASE_MAX_OVERFLOW:?DATABASE_MAX_OVERFLOW must be set in GitHub Actions variables}"
-  API_V1_PREFIX: "${API_V1_PREFIX:?API_V1_PREFIX must be set in GitHub Actions variables}"
-  API_KEY_HEADER: "${API_KEY_HEADER:?API_KEY_HEADER must be set in GitHub Actions variables}"
-  SOURCE_TRUST_PROXY_HEADERS: "${SOURCE_TRUST_PROXY_HEADERS:?SOURCE_TRUST_PROXY_HEADERS must be set in GitHub Actions variables}"
-  SERVE_REQUIRE_AUTH: "${SERVE_REQUIRE_AUTH:?SERVE_REQUIRE_AUTH must be set in GitHub Actions variables}"
-  ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:?ADMIN_BREAK_GLASS_API_KEY must be set in GitHub Actions secrets}"
-  RATE_LIMIT_REQUESTS: "${RATE_LIMIT_REQUESTS:?RATE_LIMIT_REQUESTS must be set in GitHub Actions variables}"
-  RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:?RATE_LIMIT_WINDOW must be set in GitHub Actions variables}"
-  RAW_RETENTION_ENABLED: "${RAW_RETENTION_ENABLED:?RAW_RETENTION_ENABLED must be set in GitHub Actions variables}"
-  RAW_RETENTION_DAYS: "${RAW_RETENTION_DAYS:?RAW_RETENTION_DAYS must be set in GitHub Actions variables}"
-  CELERY_BROKER_URL: "${CELERY_BROKER_URL:?CELERY_BROKER_URL must be set in GitHub Actions secrets}"
+  DEBUG: "${DEBUG:?DEBUG must be set in deployment variables}"
+  PORT: "${PORT:?PORT must be set in deployment variables}"
+  DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in deployment runtime secrets}"
+  DATABASE_POOL_SIZE: "${DATABASE_POOL_SIZE:?DATABASE_POOL_SIZE must be set in deployment variables}"
+  DATABASE_MAX_OVERFLOW: "${DATABASE_MAX_OVERFLOW:?DATABASE_MAX_OVERFLOW must be set in deployment variables}"
+  API_V1_PREFIX: "${API_V1_PREFIX:?API_V1_PREFIX must be set in deployment variables}"
+  API_KEY_HEADER: "${API_KEY_HEADER:?API_KEY_HEADER must be set in deployment variables}"
+  SOURCE_TRUST_PROXY_HEADERS: "${SOURCE_TRUST_PROXY_HEADERS:?SOURCE_TRUST_PROXY_HEADERS must be set in deployment variables}"
+  SERVE_REQUIRE_AUTH: "${SERVE_REQUIRE_AUTH:?SERVE_REQUIRE_AUTH must be set in deployment variables}"
+  RATE_LIMIT_REQUESTS: "${RATE_LIMIT_REQUESTS:?RATE_LIMIT_REQUESTS must be set in deployment variables}"
+  RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:?RATE_LIMIT_WINDOW must be set in deployment variables}"
+  RAW_RETENTION_ENABLED: "${RAW_RETENTION_ENABLED:?RAW_RETENTION_ENABLED must be set in deployment variables}"
+  RAW_RETENTION_DAYS: "${RAW_RETENTION_DAYS:?RAW_RETENTION_DAYS must be set in deployment variables}"
   NORMALIZATION_EXCHANGE: "findb.ingestion.v1"
   NORMALIZATION_QUEUE: "findb.normalize.v1"
   NORMALIZATION_DLQ: "findb.normalize.dlq.v1"
@@ -41,52 +39,53 @@ x-app-healthcheck: &app-healthcheck
 
 services:
   serve:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "${FINDB_IMAGE:-ghcr.io/fpi-tw/findb}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     container_name: findb-serve
     environment:
       <<: *app-environment
       APP_ROLE: "serve"
       DATABASE_POOL_SIZE: "${SERVE_DATABASE_POOL_SIZE:-5}"
       DATABASE_MAX_OVERFLOW: "${SERVE_DATABASE_MAX_OVERFLOW:-10}"
-      FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://127.0.0.1:${PORT:?PORT must be set in GitHub Actions variables}}"
+      FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://127.0.0.1:${PORT:?PORT must be set in deployment variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
-      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
+      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in deployment variables}"
       # Canonical R2 reader credentials are intentionally limited to Serve.
-      CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in GitHub Actions variables}"
-      CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in GitHub Actions variables}"
-      CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID: "${CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID:?CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID must be set in GitHub Actions secrets}"
-      CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY: "${CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY must be set in GitHub Actions secrets}"
+      CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in deployment variables}"
+      CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in deployment variables}"
+      CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID: "${CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID:?CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID must be set in deployment runtime secrets}"
+      CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY: "${CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY must be set in deployment runtime secrets}"
       CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: "${CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN:-}"
     restart: unless-stopped
     healthcheck: *app-healthcheck
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 2"
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in deployment variables} --workers 2"
     volumes:
       - findb-static-data:/app/app/static/data
 
   ingest:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "${FINDB_IMAGE:-ghcr.io/fpi-tw/findb}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     container_name: findb-ingest
     environment:
       <<: *app-environment
       APP_ROLE: "ingest"
       DATABASE_POOL_SIZE: "${INGEST_DATABASE_POOL_SIZE:-3}"
       DATABASE_MAX_OVERFLOW: "${INGEST_DATABASE_MAX_OVERFLOW:-5}"
-      FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://serve:${PORT:?PORT must be set in GitHub Actions variables}}"
+      FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://serve:${PORT:?PORT must be set in deployment variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
-      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in GitHub Actions variables}"
-      FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:?FINDB_QUEUE_HEALTH_ADMIN_API_KEY must be set in GitHub Actions secrets}"
+      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in deployment variables}"
+      ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:?ADMIN_BREAK_GLASS_API_KEY must be set in deployment runtime secrets}"
+      FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:?FINDB_QUEUE_HEALTH_ADMIN_API_KEY must be set in deployment runtime secrets}"
     restart: unless-stopped
     healthcheck: *app-healthcheck
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in GitHub Actions variables} --workers 1"
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in deployment variables} --workers 1"
     volumes:
       - findb-static-data:/app/app/static/data
 
   dashboard:
-    image: "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE must be set by deployment}:${IMAGE_TAG:-latest}"
+    image: "${DASHBOARD_IMAGE:-ghcr.io/fpi-tw/findb-dashboard}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     container_name: findb-dashboard
     environment:
       PORT: "3333"
-      FINDB_API_BASE_URL: "http://ingest:${PORT:?PORT must be set in GitHub Actions variables}"
+      FINDB_API_BASE_URL: "http://ingest:${PORT:?PORT must be set in deployment variables}"
     depends_on:
       ingest:
         condition: service_healthy
@@ -108,10 +107,10 @@ services:
     hostname: findb-rabbitmq
     environment:
       RABBITMQ_NODENAME: "rabbit@findb-rabbitmq"
-      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?RabbitMQ user must be set in GitHub Actions secrets}"
-      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?RabbitMQ password must be set in GitHub Actions secrets}"
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?RabbitMQ user must be set in deployment runtime secrets}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?RabbitMQ password must be set in deployment runtime secrets}"
       RABBITMQ_DEFAULT_VHOST: "/findb"
-      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in GitHub Actions secrets}"
+      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in deployment runtime secrets}"
       RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit vm_memory_high_watermark 0.60 disk_free_limit 2147483648"
     volumes:
       - /var/lib/findb/rabbitmq:/var/lib/rabbitmq
@@ -129,7 +128,7 @@ services:
     image: "rabbitmq:4.2-management@sha256:a29528adc5fa512cdadf60204e3336602ee400f8e026f5637b281959d2d51426"
     container_name: findb-rabbitmq-policy
     environment:
-      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in GitHub Actions secrets}"
+      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE:?Erlang cookie must be set in deployment runtime secrets}"
       NORMALIZATION_CONSUMER_TIMEOUT_MS: *normalization-consumer-timeout
     depends_on:
       rabbitmq:
@@ -147,10 +146,11 @@ services:
     restart: "no"
 
   dispatcher:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "${FINDB_IMAGE:-ghcr.io/fpi-tw/findb}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     container_name: findb-dispatcher
     environment:
       <<: *app-environment
+      CELERY_BROKER_URL: "${CELERY_BROKER_URL:?CELERY_BROKER_URL must be set in deployment runtime secrets}"
     command: python /app/scripts/dispatch_outbox.py
     depends_on:
       rabbitmq-policy:
@@ -158,15 +158,16 @@ services:
     restart: unless-stopped
 
   worker:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "${FINDB_IMAGE:-ghcr.io/fpi-tw/findb}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     container_name: findb-worker
     environment:
       <<: *app-environment
+      CELERY_BROKER_URL: "${CELERY_BROKER_URL:?CELERY_BROKER_URL must be set in deployment runtime secrets}"
       # Canonical R2 publisher credentials are intentionally limited to Worker.
-      CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in GitHub Actions variables}"
-      CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in GitHub Actions variables}"
-      CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID:?CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID must be set in GitHub Actions secrets}"
-      CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY must be set in GitHub Actions secrets}"
+      CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in deployment variables}"
+      CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in deployment variables}"
+      CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID:?CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID must be set in deployment runtime secrets}"
+      CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY:?CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY must be set in deployment runtime secrets}"
       CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN: "${CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN:-}"
     command: celery -A app.task_queue:celery_app worker --loglevel=INFO --queues=findb.normalize.v1 --pool=prefork --concurrency=2
     depends_on:
@@ -194,7 +195,7 @@ services:
         - /home/ubuntu/etc/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
         - /home/ubuntu/etc/nginx/cloudflare-real-ip.conf:/etc/nginx/cloudflare-real-ip.conf:ro
         - /home/ubuntu/etc/nginx/source-allowlist.conf:/etc/nginx/source-allowlist.conf:ro
-        - /home/ubuntu/etc/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro
+        - /run/findb-runtime-secrets/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro
         - /home/ubuntu/etc/nginx/ssl/server.crt:/etc/nginx/ssl/server.crt:ro
         - /home/ubuntu/etc/nginx/ssl/server.key:/etc/nginx/ssl/server.key:ro
       healthcheck:
@@ -210,7 +211,7 @@ services:
       restart: unless-stopped
 
   raw-cleanup:
-    image: "ghcr.io/fpi-tw/findb:${IMAGE_TAG:-latest}"
+    image: "${FINDB_IMAGE:-ghcr.io/fpi-tw/findb}:${IMAGE_TAG:?IMAGE_TAG must be set}"
     container_name: findb-raw-cleanup
     environment:
       <<: *app-environment

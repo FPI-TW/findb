@@ -7,6 +7,14 @@ on:
       - "backend/**"
       - "dashboard/**"
       - "infra/nginx/**"
+      - "infra/deploy/runtime-secrets/load_runtime_secrets.py"
+      - "infra/deploy/runtime-secrets/runtime_secret_command.sh"
+      - "infra/deploy/runtime-secrets/render_nginx_runtime.sh"
+      - "infra/deploy/runtime-secrets/render_serve_key.py"
+      - "infra/deploy/runtime-secrets/install_findb_bootstrap.sh"
+      - "infra/deploy/runtime-secrets/deploy_findb_aws.sh"
+      - "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh"
+      - "infra/deploy/runtime-secrets/findb.json"
       - "docker-compose.prod.yml"
       - "package.json"
       - "pnpm-workspace.yaml"
@@ -22,6 +30,11 @@ on:
         options:
           - staging
           - production
+      image_tag:
+        description: Optional existing staging ECR 40-character lowercase SHA to roll back to (staging only)
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: ${{ inputs.deployment_target || 'staging' }}-findb
@@ -31,18 +44,20 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/fpi-tw/findb
-  DASHBOARD_IMAGE: ghcr.io/fpi-tw/findb-dashboard
+  STAGING_ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
 
 jobs:
   verify:
     uses: ./.github/workflows/findb-ci.yml
 
-  build-push:
+  build-push-production:
     needs: verify
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'production' && inputs.image_tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/fpi-tw/findb
+      DASHBOARD_IMAGE: ghcr.io/fpi-tw/findb-dashboard
 
     permissions:
       contents: read
@@ -85,20 +100,147 @@ jobs:
           cache-from: type=gha,scope=dashboard
           cache-to: type=gha,mode=max,scope=dashboard
 
+  build-push-staging-ecr:
+    needs: verify
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.deployment_target || 'staging') == 'staging' &&
+      vars.STAGING_ECR_CUTOVER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-1
+      AWS_ACCOUNT_ID: '439622209937'
+      ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+      FINDB_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend
+      DASHBOARD_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard
+      ECR_IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+      ECR_REUSE_ONLY: ${{ inputs.image_tag != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Validate staging ECR release selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF" = refs/heads/main ]
+          if [ -n "$ECR_IMAGE_TAG" ]; then
+            [[ "$ECR_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error title=Invalid staging rollback tag::image_tag must be a lowercase 40-character commit SHA"
+              exit 1
+            }
+            git rev-parse --verify "$ECR_IMAGE_TAG^{commit}" >/dev/null
+            git merge-base --is-ancestor "$ECR_IMAGE_TAG" HEAD || {
+              echo "::error title=Invalid staging rollback tag::image_tag must be reachable from protected main"
+              exit 1
+            }
+            if [ "$ECR_REUSE_ONLY" = true ]; then
+              if ! git diff --quiet "$ECR_IMAGE_TAG" HEAD -- docker-compose.prod.yml infra/deploy/runtime-secrets infra/nginx; then
+                echo "::error title=Incompatible staging rollback::Deployment contract files differ from the selected image SHA; deploy a forward compatibility fix before retrying rollback"
+                exit 1
+              fi
+            fi
+          fi
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::439622209937:role/findb-staging-ecr-publisher
+          aws-region: ap-southeast-1
+          allowed-account-ids: '439622209937'
+          role-session-name: findb-staging-ecr-${{ github.run_id }}
+      - name: Fail closed on exact ECR cutover activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "${{ vars.STAGING_ECR_CUTOVER_ENABLED }}" = true ]
+          [ "$(aws sts get-caller-identity --query Account --output text)" = 439622209937 ]
+      - name: Log in to private ECR
+        shell: bash
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Build or reuse immutable backend image
+        shell: bash
+        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FINDB_IMAGE" ./backend ./backend/Dockerfile
+      - name: Build or reuse immutable dashboard image
+        shell: bash
+        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$DASHBOARD_IMAGE" . ./dashboard/Dockerfile
+
+  staging-ecr-cutover-disabled:
+    needs: verify
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.deployment_target || 'staging') == 'staging' &&
+      vars.STAGING_ECR_CUTOVER_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - name: Fail closed until separately authorized foundation acceptance
+        run: exit 1
+
+  build-push:
+    needs: [verify, build-push-production, build-push-staging-ecr, staging-ecr-cutover-disabled]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - name: Confirm the exact target-specific image build succeeded
+        shell: bash
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
+          PRODUCTION_BUILD: ${{ needs.build-push-production.result }}
+          STAGING_ECR_BUILD: ${{ needs.build-push-staging-ecr.result }}
+          CUTOVER_DISABLED: ${{ needs.staging-ecr-cutover-disabled.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          set -euo pipefail
+          [ "$VERIFY_RESULT" = success ]
+          case "$DEPLOYMENT_TARGET" in
+            production)
+              [ -z "$IMAGE_TAG_INPUT" ] || {
+                echo "::error title=Invalid production image tag::image_tag is available only for staging ECR rollback"
+                exit 1
+              }
+              [ "$PRODUCTION_BUILD" = success ]
+              [ "$STAGING_ECR_BUILD" = skipped ]
+              [ "$CUTOVER_DISABLED" = skipped ]
+              ;;
+            staging)
+              if [ "$EVENT_NAME" = workflow_dispatch ]; then
+                [ "$STAGING_ECR_BUILD" = success ]
+                [ "$PRODUCTION_BUILD" = skipped ]
+                [ "$CUTOVER_DISABLED" = skipped ]
+              else
+                [ "$STAGING_ECR_BUILD" = skipped ]
+                [ "$PRODUCTION_BUILD" = skipped ]
+                [ "$CUTOVER_DISABLED" = skipped ]
+              fi
+              ;;
+            *)
+              echo "::error title=Invalid deployment target::Expected staging or production"
+              exit 1
+              ;;
+          esac
+
   deploy:
     needs: build-push
+    if: github.event_name == 'workflow_dispatch' && needs.build-push.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: ${{ inputs.deployment_target || 'staging' }}-findb
 
     permissions:
       contents: read
-      packages: read
       id-token: write
 
     env:
-      GITHUB_ACTOR: ${{ github.actor }}
-      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
       APP_NAME: ${{ vars.APP_NAME }}
       APP_VERSION: ${{ vars.APP_VERSION }}
       DEBUG: ${{ vars.DEBUG }}
@@ -123,7 +265,29 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Validate target-derived deployment route
+        shell: bash
+        env:
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
+          STAGING_ECR_CUTOVER_ENABLED: ${{ vars.STAGING_ECR_CUTOVER_ENABLED }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOYMENT_TARGET" in
+            production) ;;
+            staging)
+              [ "$STAGING_ECR_CUTOVER_ENABLED" = true ] || {
+                echo "::error title=Staging ECR cutover disabled::Activation must be exactly true"
+                exit 1
+              }
+              ;;
+            *)
+              echo "::error title=Invalid deployment target::Expected staging or production"
+              exit 1
+              ;;
+          esac
+
       - name: Validate deployment configuration
+        if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ADMIN_BREAK_GLASS_API_KEY: ${{ secrets.ADMIN_BREAK_GLASS_API_KEY }}
@@ -143,7 +307,7 @@ jobs:
           missing=0
           for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_URL DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH ADMIN_BREAK_GLASS_API_KEY FINDB_QUEUE_HEALTH_ADMIN_API_KEY RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CELERY_BROKER_URL RABBITMQ_DEFAULT_USER RABBITMQ_DEFAULT_PASS RABBITMQ_ERLANG_COOKIE CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY; do
             if [ -z "${!name:-}" ]; then
-              echo "::error title=Missing deployment variable::$name must be configured in GitHub Actions secrets or variables"
+              echo "::error title=Missing deployment setting::$name must be configured for the selected legacy deployment path"
               missing=1
             fi
           done
@@ -169,7 +333,26 @@ jobs:
           fi
           exit "$missing"
 
+      - name: Validate AWS runtime deployment configuration
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=Missing deployment setting::$name must be configured for the AWS runtime-secret path"
+              missing=1
+            fi
+          done
+          if [ "${PORT:-}" != "8080" ]; then
+            echo "::error title=PORT mismatch::infra/nginx/nginx.conf requires PORT=8080"
+            missing=1
+          fi
+          exit "$missing"
+
       - name: Render nginx configs
+        if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
         env:
           FINDB_LOOKUP_SERVE_API_KEY: ${{ secrets.FINDB_LOOKUP_SERVE_API_KEY }}
         run: |
@@ -188,12 +371,27 @@ jobs:
             --public-host "$FINDB_PUBLIC_HOST" \
             --output infra/nginx/serve-key.conf
 
+      - name: Render nonsecret nginx configs for AWS runtime secrets
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/render_nginx_public_host.py \
+            --host "$FINDB_PUBLIC_HOST" \
+            --template infra/nginx/nginx.conf \
+            --output infra/nginx/nginx.conf
+          python backend/scripts/render_nginx_source_allowlist.py \
+            --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
+            --output infra/nginx/source-allowlist.conf
+          python backend/scripts/render_nginx_cloudflare_real_ip.py \
+            --output infra/nginx/cloudflare-real-ip.conf
+
       - name: Configure staging AWS credentials
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ap-southeast-1
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           role-session-name: findb-staging-preflight-${{ github.run_id }}
 
@@ -202,7 +400,7 @@ jobs:
         shell: bash
         env:
           DEPLOYMENT_UNIT: findb
-          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_REGION: ap-southeast-1
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
           AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           AWS_INSTANCE_PROFILE_NAME: ${{ vars.AWS_INSTANCE_PROFILE_NAME }}
@@ -498,7 +696,31 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare deploy directories on EC2
+      - name: Calculate AWS runtime-secret bundle checksums
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        id: runtime_secret_checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            infra/deploy/runtime-secrets/load_runtime_secrets.py \
+            infra/deploy/runtime-secrets/runtime_secret_command.sh \
+            infra/deploy/runtime-secrets/render_nginx_runtime.sh \
+            infra/deploy/runtime-secrets/render_serve_key.py \
+            infra/deploy/runtime-secrets/install_findb_bootstrap.sh \
+            infra/deploy/runtime-secrets/deploy_findb_aws.sh \
+            infra/deploy/runtime-secrets/findb.json \
+            docker-compose.prod.yml \
+            infra/nginx/nginx.conf \
+            infra/nginx/source-allowlist.conf \
+            infra/nginx/cloudflare-real-ip.conf; do
+            name="$(basename "$file" | tr '.-' '__')"
+            checksum="$(sha256sum "$file" | cut -d ' ' -f1)"
+            printf '%s=%s\n' "$name" "$checksum" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Prepare AWS runtime-secret directories on EC2
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.FINDB_EC2_HOST }}
@@ -506,11 +728,242 @@ jobs:
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           script: |
             set -euo pipefail
-            sudo mkdir -p /var/lib/findb/rabbitmq
+            sudo install -d -o root -g root -m 0755 /opt/findb/runtime-secrets
+            sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets
+            sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets/nginx
+            sudo mkdir -p /var/lib/findb/rabbitmq /home/ubuntu/etc/nginx/ssl
+            sudo chown -R 999:999 /var/lib/findb/rabbitmq
+            sudo chown ubuntu:ubuntu /opt/findb /home/ubuntu/etc/nginx
+            sudo chown root:root /home/ubuntu/etc/nginx/ssl
+            sudo rm -rf -- /tmp/findb-runtime-secrets
+            sudo install -d -o ubuntu -g ubuntu -m 0700 /tmp/findb-runtime-secrets
+
+      - name: Sync AWS runtime-secret loader and exact FinDB catalog
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          source: "infra/deploy/runtime-secrets/load_runtime_secrets.py,infra/deploy/runtime-secrets/runtime_secret_command.sh,infra/deploy/runtime-secrets/render_nginx_runtime.sh,infra/deploy/runtime-secrets/render_serve_key.py,infra/deploy/runtime-secrets/install_findb_bootstrap.sh,infra/deploy/runtime-secrets/deploy_findb_aws.sh,infra/deploy/runtime-secrets/findb.json,docker-compose.prod.yml,infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf"
+          target: /tmp/findb-runtime-secrets
+          overwrite: true
+
+      - name: Verify AWS runtime-secret bundle ownership, mode, and checksum
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          LOADER_SHA256: ${{ steps.runtime_secret_checksums.outputs.load_runtime_secrets_py }}
+          COMMAND_SHA256: ${{ steps.runtime_secret_checksums.outputs.runtime_secret_command_sh }}
+          NGINX_SHA256: ${{ steps.runtime_secret_checksums.outputs.render_nginx_runtime_sh }}
+          RENDER_SHA256: ${{ steps.runtime_secret_checksums.outputs.render_serve_key_py }}
+          BOOTSTRAP_SHA256: ${{ steps.runtime_secret_checksums.outputs.install_findb_bootstrap_sh }}
+          DEPLOY_SHA256: ${{ steps.runtime_secret_checksums.outputs.deploy_findb_aws_sh }}
+          CATALOG_SHA256: ${{ steps.runtime_secret_checksums.outputs.findb_json }}
+          COMPOSE_SHA256: ${{ steps.runtime_secret_checksums.outputs.docker_compose_prod_yml }}
+          NGINX_CONFIG_SHA256: ${{ steps.runtime_secret_checksums.outputs.nginx_conf }}
+          SOURCE_ALLOWLIST_SHA256: ${{ steps.runtime_secret_checksums.outputs.source_allowlist_conf }}
+          CLOUDFLARE_REAL_IP_SHA256: ${{ steps.runtime_secret_checksums.outputs.cloudflare_real_ip_conf }}
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          envs: LOADER_SHA256,COMMAND_SHA256,NGINX_SHA256,RENDER_SHA256,BOOTSTRAP_SHA256,DEPLOY_SHA256,CATALOG_SHA256,COMPOSE_SHA256,NGINX_CONFIG_SHA256,SOURCE_ALLOWLIST_SHA256,CLOUDFLARE_REAL_IP_SHA256
+          script: |
+            set -euo pipefail
+            runtime_dir=/opt/findb/runtime-secrets
+            staging_root=/tmp/findb-runtime-secrets
+            for relative_path in \
+              infra/deploy/runtime-secrets/load_runtime_secrets.py \
+              infra/deploy/runtime-secrets/runtime_secret_command.sh \
+              infra/deploy/runtime-secrets/render_nginx_runtime.sh \
+              infra/deploy/runtime-secrets/render_serve_key.py \
+              infra/deploy/runtime-secrets/install_findb_bootstrap.sh \
+              infra/deploy/runtime-secrets/deploy_findb_aws.sh \
+              infra/deploy/runtime-secrets/findb.json \
+              docker-compose.prod.yml \
+              infra/nginx/nginx.conf \
+              infra/nginx/source-allowlist.conf \
+              infra/nginx/cloudflare-real-ip.conf; do
+              if [ ! -f "$staging_root/$relative_path" ] || [ -L "$staging_root/$relative_path" ]; then
+                echo "::error title=Runtime-secret bundle missing::${relative_path} is not a regular staged file"
+                exit 1
+              fi
+            done
+            declare -A expected_staged=(
+              [infra/deploy/runtime-secrets/load_runtime_secrets.py]="$LOADER_SHA256"
+              [infra/deploy/runtime-secrets/runtime_secret_command.sh]="$COMMAND_SHA256"
+              [infra/deploy/runtime-secrets/render_nginx_runtime.sh]="$NGINX_SHA256"
+              [infra/deploy/runtime-secrets/render_serve_key.py]="$RENDER_SHA256"
+              [infra/deploy/runtime-secrets/install_findb_bootstrap.sh]="$BOOTSTRAP_SHA256"
+              [infra/deploy/runtime-secrets/deploy_findb_aws.sh]="$DEPLOY_SHA256"
+              [infra/deploy/runtime-secrets/findb.json]="$CATALOG_SHA256"
+              [docker-compose.prod.yml]="$COMPOSE_SHA256"
+              [infra/nginx/nginx.conf]="$NGINX_CONFIG_SHA256"
+              [infra/nginx/source-allowlist.conf]="$SOURCE_ALLOWLIST_SHA256"
+              [infra/nginx/cloudflare-real-ip.conf]="$CLOUDFLARE_REAL_IP_SHA256"
+            )
+            for relative_path in "${!expected_staged[@]}"; do
+              actual="$(sha256sum "$staging_root/$relative_path" | cut -d ' ' -f1)"
+              if [ -z "${expected_staged[$relative_path]}" ] || [ "$actual" != "${expected_staged[$relative_path]}" ]; then
+                echo "::error title=Runtime-secret bundle checksum failed::${relative_path} does not match the checked-out artifact"
+                exit 1
+              fi
+            done
+            for file in \
+              load_runtime_secrets.py \
+              runtime_secret_command.sh \
+              render_nginx_runtime.sh \
+              render_serve_key.py \
+              install_findb_bootstrap.sh \
+              deploy_findb_aws.sh \
+              findb.json; do
+              case "$file" in
+                findb.json) install_mode=0644; expected_mode=644 ;;
+                *) install_mode=0755; expected_mode=755 ;;
+              esac
+              sudo install -o root -g root -m "$install_mode" \
+                "$staging_root/infra/deploy/runtime-secrets/$file" "$runtime_dir/$file"
+              if [ "$(sudo stat -c '%u:%g:%a' "$runtime_dir/$file")" != "0:0:$expected_mode" ]; then
+                echo "::error title=Runtime-secret bundle metadata failed::${file} ownership or mode is unsafe"
+                exit 1
+              fi
+            done
+            declare -A expected=(
+              [load_runtime_secrets.py]="$LOADER_SHA256"
+              [runtime_secret_command.sh]="$COMMAND_SHA256"
+              [render_nginx_runtime.sh]="$NGINX_SHA256"
+              [render_serve_key.py]="$RENDER_SHA256"
+              [deploy_findb_aws.sh]="$DEPLOY_SHA256"
+              [findb.json]="$CATALOG_SHA256"
+            )
+            for file in "${!expected[@]}"; do
+              actual="$(sudo sha256sum "$runtime_dir/$file" | cut -d ' ' -f1)"
+              if [ -z "${expected[$file]}" ] || [ "$actual" != "${expected[$file]}" ]; then
+                echo "::error title=Runtime-secret bundle checksum failed::${file} does not match the checked-out artifact"
+                exit 1
+              fi
+            done
+            sudo install -o ubuntu -g ubuntu -m 0644 \
+              "$staging_root/docker-compose.prod.yml" /opt/findb/docker-compose.prod.yml
+            if [ "$(sudo stat -c '%U:%G:%a' /opt/findb/docker-compose.prod.yml)" != "ubuntu:ubuntu:644" ] \
+              || [ "$(sudo sha256sum /opt/findb/docker-compose.prod.yml | cut -d ' ' -f1)" != "$COMPOSE_SHA256" ]; then
+              echo "::error title=Deploy artifact install failed::docker-compose.prod.yml metadata or checksum is invalid"
+              exit 1
+            fi
+            for file in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
+              sudo install -o ubuntu -g ubuntu -m 0644 \
+                "$staging_root/infra/nginx/$file" "/home/ubuntu/etc/nginx/$file"
+            done
+            declare -A installed_nginx=(
+              [nginx.conf]="$NGINX_CONFIG_SHA256"
+              [source-allowlist.conf]="$SOURCE_ALLOWLIST_SHA256"
+              [cloudflare-real-ip.conf]="$CLOUDFLARE_REAL_IP_SHA256"
+            )
+            for file in "${!installed_nginx[@]}"; do
+              if [ "$(sudo stat -c '%U:%G:%a' "/home/ubuntu/etc/nginx/$file")" != "ubuntu:ubuntu:644" ] \
+                || [ "$(sudo sha256sum "/home/ubuntu/etc/nginx/$file" | cut -d ' ' -f1)" != "${installed_nginx[$file]}" ]; then
+                echo "::error title=Nginx artifact install failed::${file} metadata or checksum is invalid"
+                exit 1
+              fi
+            done
+            sudo rm -rf -- /tmp/findb-runtime-secrets
+            echo "runtime_secret_bundle=verified files=11"
+
+      - name: Install FinDB boot-time runtime-secret dependency
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ap-southeast-1
+          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          envs: AWS_REGION,FINDB_PUBLIC_HOST
+          script: |
+            set -euo pipefail
+            sudo /opt/findb/runtime-secrets/install_findb_bootstrap.sh \
+              "$AWS_REGION" "$FINDB_PUBLIC_HOST"
+
+      - name: Run FinDB AWS runtime-secret canary
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ap-southeast-1
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          envs: AWS_REGION
+          script: |
+            set -euo pipefail
+            sudo python3 /opt/findb/runtime-secrets/load_runtime_secrets.py \
+              --catalog /opt/findb/runtime-secrets/findb.json \
+              --consumer canary \
+              --region "$AWS_REGION" \
+              --output /run/findb-runtime-secrets/canary/runtime.env \
+              --owner 0:0 \
+              --check-only
+
+      - name: Deploy to EC2 with AWS runtime secrets
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ap-southeast-1
+          IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+          ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+          FINDB_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend
+          DASHBOARD_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard
+          APP_NAME: ${{ vars.APP_NAME }}
+          APP_VERSION: ${{ vars.APP_VERSION }}
+          DEBUG: ${{ vars.DEBUG }}
+          PORT: ${{ vars.PORT }}
+          DATABASE_POOL_SIZE: ${{ vars.DATABASE_POOL_SIZE }}
+          DATABASE_MAX_OVERFLOW: ${{ vars.DATABASE_MAX_OVERFLOW }}
+          API_V1_PREFIX: ${{ vars.API_V1_PREFIX }}
+          API_KEY_HEADER: ${{ vars.API_KEY_HEADER }}
+          SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
+          SOURCE_TRUST_PROXY_HEADERS: ${{ vars.SOURCE_TRUST_PROXY_HEADERS }}
+          SERVE_REQUIRE_AUTH: ${{ vars.SERVE_REQUIRE_AUTH }}
+          RATE_LIMIT_REQUESTS: ${{ vars.RATE_LIMIT_REQUESTS }}
+          RATE_LIMIT_WINDOW: ${{ vars.RATE_LIMIT_WINDOW }}
+          RAW_RETENTION_ENABLED: ${{ vars.RAW_RETENTION_ENABLED }}
+          RAW_RETENTION_DAYS: ${{ vars.RAW_RETENTION_DAYS }}
+          FINDB_STATIC_CACHE_BASE_URL: ${{ vars.FINDB_STATIC_CACHE_BASE_URL }}
+          FINDB_LATEST_PRICE_WORKERS: ${{ vars.FINDB_LATEST_PRICE_WORKERS }}
+          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_CANONICAL_BUCKET: ${{ vars.CLOUDFLARE_R2_CANONICAL_BUCKET }}
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          command_timeout: 30m
+          envs: AWS_REGION,IMAGE_TAG,ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+          script: |
+            set -euo pipefail
+            sudo --preserve-env=AWS_REGION,IMAGE_TAG,ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET \
+              /opt/findb/runtime-secrets/deploy_findb_aws.sh
+
+      - name: Prepare deploy directories on EC2
+        if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            sudo mkdir -p /var/lib/findb/rabbitmq /run/findb-runtime-secrets/nginx
             mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
             sudo chown -R 999:999 /var/lib/findb/rabbitmq
+            sudo chown root:root /run/findb-runtime-secrets /run/findb-runtime-secrets/nginx
+            sudo chmod 0711 /run/findb-runtime-secrets
+            sudo chmod 0700 /run/findb-runtime-secrets/nginx
 
       - name: Sync deploy artifacts to EC2
+        if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
         with:
           host: ${{ secrets.FINDB_EC2_HOST }}
@@ -521,6 +974,7 @@ jobs:
           overwrite: true
 
       - name: Sync nginx.conf to EC2 nginx path
+        if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
         with:
           host: ${{ secrets.FINDB_EC2_HOST }}
@@ -532,9 +986,13 @@ jobs:
           overwrite: true
 
       - name: Deploy to EC2
+        if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          IMAGE: ghcr.io/fpi-tw/findb
+          DASHBOARD_IMAGE: ghcr.io/fpi-tw/findb-dashboard
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ADMIN_BREAK_GLASS_API_KEY: ${{ secrets.ADMIN_BREAK_GLASS_API_KEY }}
           FINDB_QUEUE_HEALTH_ADMIN_API_KEY: ${{ secrets.FINDB_QUEUE_HEALTH_ADMIN_API_KEY }}
@@ -728,12 +1186,30 @@ jobs:
               done
             }
 
-            for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf serve-key.conf; do
+            # Legacy mode may stage the generated key through the SSH transport,
+            # but the final Compose mount is always the /run tmpfs path.
+            if [ "$(findmnt -n -o FSTYPE -T /run/findb-runtime-secrets/nginx 2>/dev/null || true)" != "tmpfs" ]; then
+              echo "::error title=Runtime secret mount missing::/run/findb-runtime-secrets must be a tmpfs mount"
+              exit 1
+            fi
+            sudo install -D -m 0600 /home/ubuntu/etc/nginx/serve-key.conf \
+              /run/findb-runtime-secrets/nginx/serve-key.conf
+            sudo chown root:root /run/findb-runtime-secrets/nginx/serve-key.conf
+            if [ "$(sudo stat -c '%u:%g:%a' /run/findb-runtime-secrets/nginx/serve-key.conf)" != "0:0:600" ]; then
+              echo "::error title=Runtime lookup key metadata failed::Generated nginx key file ownership or mode is unsafe"
+              exit 1
+            fi
+            sudo rm -f -- /home/ubuntu/etc/nginx/serve-key.conf
+            for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
               if [ ! -f "/home/ubuntu/etc/nginx/${conf}" ]; then
                 echo "::error title=Missing nginx config::/home/ubuntu/etc/nginx/${conf} not found on target host"
                 exit 1
               fi
             done
+            if [ ! -f /run/findb-runtime-secrets/nginx/serve-key.conf ]; then
+              echo "::error title=Missing nginx config::/run/findb-runtime-secrets/nginx/serve-key.conf not found on target host"
+              exit 1
+            fi
             if [ ! -f /home/ubuntu/etc/nginx/ssl/server.crt ]; then
               echo "::error title=Missing TLS cert::/home/ubuntu/etc/nginx/ssl/server.crt not found on target host"
               exit 1

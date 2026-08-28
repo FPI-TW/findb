@@ -15,10 +15,19 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOADER_PATH = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "load_runtime_secrets.py"
 CATALOG_ROOT = LOADER_PATH.parent
+RENDERER_PATH = CATALOG_ROOT / "render_serve_key.py"
 
 
 def _loader() -> ModuleType:
     spec = importlib.util.spec_from_file_location("runtime_secret_loader", LOADER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _renderer() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("runtime_secret_renderer", RENDERER_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -43,7 +52,6 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             "rabbitmq/runtime",
             "r2/canonical-publisher",
             "r2/canonical-reader",
-            "registry/ghcr-pull",
         },
         "fetcher": {
             "api/calendar-serve",
@@ -54,7 +62,6 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             "provider/finlab",
             "provider/shioaji",
             "r2/raw",
-            "registry/ghcr-pull",
         },
     }
     for unit, names in expected.items():
@@ -69,6 +76,43 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
         }
         assert configured == names
         assert "canary" in catalog["consumers"]
+
+
+def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> None:
+    configured = {
+        secret["name"]
+        for unit in ("findb", "fetcher")
+        for consumer in _catalog(unit)["consumers"].values()
+        for secret in consumer["secrets"]
+    }
+    assert len(configured) == 17
+    assert "registry/ghcr-pull" not in configured
+    assert "GHCR_USERNAME" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
+    assert "GHCR_TOKEN" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
+    metadata = (REPO_ROOT / "infra" / "tofu" / "staging" / "secrets.tf").read_text(encoding="utf-8")
+    # Protected transitional metadata is deliberately not an active runtime
+    # catalog entry and must not be retired before separate live authorization.
+    assert metadata.count('relative_name = "registry/ghcr-pull"') == 2
+    assert metadata.count("prevent_destroy = true") >= 2
+
+
+def test_runtime_command_uses_only_bounded_instance_role_ecr_login() -> None:
+    command = (CATALOG_ROOT / "runtime_secret_command.sh").read_text(encoding="utf-8")
+    assert "--ecr-registry" in command
+    assert "439622209937\\.dkr\\.ecr\\.ap-southeast-1\\.amazonaws\\.com" in command
+    assert 'aws ecr get-login-password --region "$region"' in command
+    assert 'docker login --username AWS --password-stdin "$ecr_registry"' in command
+    assert 'docker logout "$ecr_registry"' in command
+    assert 'rm -rf -- "$docker_config"' in command
+    assert "GHCR_USERNAME" not in command
+    assert "GHCR_TOKEN" not in command
+
+
+def test_runtime_loader_rejects_an_unapproved_region_before_secret_access() -> None:
+    loader = _loader()
+
+    with pytest.raises(loader.LoaderError, match="region_invalid"):
+        loader._aws_fetcher("us-east-1")
 
 
 def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
@@ -99,6 +143,41 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
     }
     assert "FINLAB_API_TOKEN" not in loaded
     assert "SHIOAJI_API_KEY" not in loaded
+
+
+def test_fetcher_finlab_smoke_consumer_is_provider_only() -> None:
+    loader = _loader()
+    catalog = _catalog("fetcher")
+    fetched: list[str] = []
+
+    def fetch(secret_name: str) -> str:
+        fetched.append(secret_name)
+        return json.dumps({"FINLAB_API_TOKEN": "finlab-token"})
+
+    loaded = loader.load_consumer(catalog, "finlab-smoke", fetch)
+
+    assert loaded == {"FINLAB_API_TOKEN": "finlab-token"}
+    assert fetched == ["findb/staging/fetcher/provider/finlab"]
+    assert not {
+        "FETCHER_CALENDAR_SERVE_API_KEY",
+        "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
+        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
+        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY",
+    } & set(loaded)
+
+
+def test_lookup_renderer_rejects_injection_and_keeps_output_contract_bounded() -> None:
+    renderer = _renderer()
+
+    rendered = renderer._render("lookup-token", "staging.example.com")
+
+    assert '"lookup-token"' in rendered
+    assert r"staging\.example\.com/dashboard/lookup" in rendered
+    assert "$http_x_api_key" in rendered
+    with pytest.raises(ValueError, match="lookup_key_invalid"):
+        renderer._render("lookup-token\nmalicious", "staging.example.com")
+    with pytest.raises(ValueError, match="public_host_invalid"):
+        renderer._render("lookup-token", "staging.example.com/evil")
 
 
 @pytest.mark.parametrize("unsafe", ["line\nvalue", "line\rvalue", "nul\x00value"])

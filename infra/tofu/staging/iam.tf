@@ -40,6 +40,29 @@ data "aws_iam_policy_document" "instance_trust" {
   }
 }
 
+data "aws_iam_policy_document" "ecr_publisher_trust" {
+  for_each = local.ecr_publisher_role_config
+  statement {
+    sid     = "GitHubActionsMainOnly"
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [local.github_oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+    }
+  }
+}
+
 resource "aws_iam_role" "deploy" {
   for_each = local.unit_config
 
@@ -58,6 +81,14 @@ resource "aws_iam_role" "instance" {
   tags                 = merge(local.common_tags, { DeploymentUnit = each.key })
 }
 
+resource "aws_iam_role" "ecr_publisher" {
+  for_each             = local.ecr_publisher_role_config
+  name                 = each.value.role_name
+  assume_role_policy   = data.aws_iam_policy_document.ecr_publisher_trust[each.key].json
+  max_session_duration = 3600
+  tags                 = merge(local.common_tags, { DeploymentUnit = "${each.key}-ecr-publisher" })
+}
+
 resource "aws_iam_instance_profile" "instance" {
   for_each = local.unit_config
 
@@ -67,9 +98,7 @@ resource "aws_iam_instance_profile" "instance" {
 }
 
 // The agent transport needs broad resource="*" for the regional SSM message
-// endpoints, but it intentionally omits GetParameter/GetParameters and all
-// secret APIs. Runtime parameter reads are granted only by the unit-scoped
-// policy below.
+// endpoints, but it intentionally omits Parameter Store and all secret APIs.
 data "aws_iam_policy_document" "ssm_agent" {
   for_each = local.unit_config
 
@@ -259,7 +288,7 @@ data "aws_iam_policy_document" "instance_permissions" {
 
     resources = [
       for key, spec in local.runtime_secret_specs : aws_secretsmanager_secret.runtime[key].arn
-      if spec.unit == each.key
+      if spec.unit == each.key && spec.status == "active"
     ]
   }
 
@@ -278,25 +307,8 @@ data "aws_iam_policy_document" "instance_permissions" {
     condition {
       test     = "StringLike"
       variable = "kms:EncryptionContext:SecretARN"
-      values = [
-        "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${each.value.secret_path}*",
-      ]
+      values   = local.active_runtime_secret_arn_patterns_by_unit[each.key]
     }
-  }
-
-  statement {
-    sid    = "ReadOwnFutureSecureParameters"
-    effect = "Allow"
-
-    actions = [
-      "ssm:GetParameter",
-      "ssm:GetParameters",
-      "ssm:GetParametersByPath",
-    ]
-
-    resources = [
-      "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${each.value.parameter_path}*",
-    ]
   }
 
   statement {
@@ -368,6 +380,27 @@ data "aws_iam_policy_document" "instance_permissions" {
     actions   = ["logs:DescribeLogGroups"]
     resources = ["*"]
   }
+
+  # ECR authorization tokens are regional and cannot be restricted to a
+  # repository ARN; every pull/inspection action remains unit-scoped below.
+  statement {
+    sid       = "GetEcrAuthorizationToken"
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "PullAndInspectOwnEcrImages"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:DescribeImages",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = [for repository_key in local.ecr_repository_keys_by_unit[each.key] : aws_ecr_repository.staging[repository_key].arn]
+  }
 }
 
 resource "aws_iam_role_policy" "instance_permissions" {
@@ -376,4 +409,30 @@ resource "aws_iam_role_policy" "instance_permissions" {
   name   = "${each.key}-staging-instance-scope"
   role   = aws_iam_role.instance[each.key].id
   policy = data.aws_iam_policy_document.instance_permissions[each.key].json
+}
+
+data "aws_iam_policy_document" "ecr_publisher_permissions" {
+  for_each = local.ecr_publisher_role_config
+  statement {
+    sid       = "GetEcrAuthorizationToken"
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+  statement {
+    sid    = "PushAndInspectOwnEcrImages"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart",
+    ]
+    resources = [for repository_key in local.ecr_repository_keys_by_unit[each.key] : aws_ecr_repository.staging[repository_key].arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ecr_publisher_permissions" {
+  for_each = local.ecr_publisher_role_config
+  name     = "${each.key}-staging-ecr-publisher"
+  role     = aws_iam_role.ecr_publisher[each.key].id
+  policy   = data.aws_iam_policy_document.ecr_publisher_permissions[each.key].json
 }

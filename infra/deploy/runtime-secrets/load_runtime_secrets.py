@@ -23,6 +23,7 @@ class LoaderError(RuntimeError):
 SecretFetcher = Callable[[str], str]
 ENVIRONMENT_KEY = re.compile(r"[A-Z_][A-Z0-9_]*")
 SECRET_RELATIVE_NAME = re.compile(r"[a-z0-9][a-z0-9/-]*")
+STAGING_AWS_REGION = "ap-southeast-1"
 
 
 def _catalog(path: Path) -> dict[str, Any]:
@@ -46,6 +47,9 @@ def _catalog(path: Path) -> dict[str, Any]:
 
 
 def _aws_fetcher(region: str) -> SecretFetcher:
+    if region != STAGING_AWS_REGION:
+        raise LoaderError("region_invalid")
+
     def fetch(secret_id: str) -> str:
         try:
             completed = subprocess.run(

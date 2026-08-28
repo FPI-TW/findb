@@ -4,12 +4,51 @@
 > 成熟化計畫；現行可操作 runbook 仍以
 > [`../operations/deployment.md`](../operations/deployment.md) 為準。
 >
-> 最後盤點：2026-08-26。Protected `main` 的 merge SHA
+> 最後盤點：2026-08-27。Protected `main` 的 merge SHA
 > `77212ce47b3138c2e21c6984e989b66239fd3cce` 已由兩個 GitHub Environments 完成 OIDC／SSM
 > preflight及既有SSH deployment，OpenTofu remote state、OIDC/IAM、instance profiles、required
 > tags、SSM managed nodes、Session Manager與unit-specific SSM logs均有live evidence。Phase 0與
 > Phase 1已通過exit gate；「服務可用」仍不等同於Phase 2–6的secret遷移、digest／manifest、
-> SSM deployment cutover、監控與災難復原已完成。
+> SSM deployment cutover、監控與災難復原已完成。Staging registry已決策改採Amazon ECR，但ECR
+> repositories、publisher roles、workflow cutover、apply與live acceptance均為待建立／待驗收項目。
+
+## ECR foundation 與啟用契約（待授權）
+
+本分支定義、但**不宣稱已建立或已驗收**的 staging ECR foundation：五個 private repositories、
+main-only publisher roles、instance pull 權限與 read-only infra plan refresh 權限。任何 ECR resource、
+IAM role、GitHub variable、OpenTofu apply 或 deployment 都必須另行授權與執行；本次程式碼變更不會
+對 AWS 或 GitHub 外部狀態做寫入。
+
+`STAGING_ECR_CUTOVER_ENABLED` 是唯一的 repository variable activation gate。啟用順序如下：
+
+1. gate 維持未設定或 `false`；在受保護 `main` 上，另行授權執行 fresh zero-delete plan 與 foundation
+   apply，建立 ECR/IAM resources。
+2. 先完成 foundation-level acceptance：確認五個 repositories 與 exact settings、publisher/deploy/
+   instance role boundaries，以及安全的 authentication／authorization checks（包括 instance role
+   只能取得 authorization token 並 pull 自身允許的 images）。此階段不要求 gated application rollout。
+3. foundation acceptance 完成後，operator 才可把 repository variable 設為**精確字串** `true`，並手動
+   trigger staging workflows。
+4. triggered workflows publish immutable commit-SHA images 並執行 host rollout；其後完成 cutover 的
+   live acceptance 與 observation。若 acceptance 失敗，立即將 gate 設回 `false`，這只會 freeze 並阻擋
+   新的 staging rollout，**不是** GHCR fallback；本分支不宣稱任何外部 action 已發生。
+
+任何其他值一律 fail closed，staging 不可 build/push/deploy 到 ECR。
+
+啟用後 staging 僅使用 `439622209937.dkr.ecr.ap-southeast-1.amazonaws.com` 和 AWS Secrets Manager
+runtime mode；EC2 不接收 `GITHUB_TOKEN`、PAT、`GHCR_USERNAME` 或 `GHCR_TOKEN`。Production 維持
+GHCR 與既有 GitHub runtime secret 相容路徑，且不會 assume staging publisher role 或拉取 staging ECR。
+這一輪暫以 immutable commit SHA tag 部署；digest manifest／promotion 是明確保留給 Phase 3 的邊界。
+
+受控 rollback 不會恢復 transitional GHCR access。gate 維持精確 `true`，operator 在 protected `main`
+手動 dispatch 對應 FinDB 或 Fetcher workflow，選擇 `deployment_target=staging` 並填入已接受的
+小寫 40-hex `image_tag`。有指定 `image_tag` 時 workflow 先驗證該 commit 可從當前 protected `main`
+到達，並確認 current checkout 的 `docker-compose.prod.yml`、`infra/deploy/runtime-secrets/` 與
+`infra/nginx/` deployment-contract scope 與舊 image SHA 無差異；只有契約不變時才允許 current scripts
+搭配 old images，否則 fail closed，必須先做 forward compatibility fix。FinDB 只驗證
+其 backend、dashboard 兩個固定 staging ECR repositories；Fetcher 只驗證其 Twelve Data、FinLab、Shioaji
+三個固定 staging ECR repositories。任一所屬 repository 不存在該 immutable SHA tag 即在 host rollout 前
+失敗，絕不重建目前 SHA。此介面不接受 mutable tag、非 main artifact、跨 repository 或 registry image；
+rollback 後仍須完整記錄 SHA 並重跑單元 acceptance。這不是 digest promotion，Phase 3 範圍不因此提前實作。
 
 ## 決策背景
 
@@ -17,8 +56,9 @@
 
 - staging 是 production 的前置驗證站，預期三個月內開始建立 production；
 - staging 由小團隊共同維運，不要求正式 24/7 on-call；
-- protected `main` 合併後維持自動部署 staging；production採unit-specific Git tag加手動
-  artifact promotion，不另設Environment人工核准；
+- 本計畫 pre-cutover 原先曾規劃 protected `main` 合併後自動部署 staging；目前實際行為為
+  FinDB／Fetcher 均僅接受 protected `main` 上的 manual dispatch，production採unit-specific
+  Git tag加手動 artifact promotion，不另設Environment人工核准；
 - 本輪採核心安全與可復原基線，不一次導入 HA、全面 IaC import 或完整企業稽核；
 - IaC 只先管理新控制面資源，既有 EC2、RDS 與網路先盤點及引用，不因全面 import 阻塞 cutover。
 
@@ -33,7 +73,8 @@ staging 部署，收斂為：
 ```text
 protected main
   -> reusable CI for the same commit
-  -> build images once and record exact digests
+  -> unit-specific OIDC publisher role
+  -> build images once, push to staging ECR and record exact digests
   -> GitHub Environment: staging-findb / staging-fetcher
   -> GitHub OIDC
   -> service-specific AWS deploy role
@@ -67,7 +108,7 @@ protected main
 | --- | --- | --- |
 | Phase 0：盤點與保護 | 必要 | 確認實際 target、資料與復原 owner；不要求全面 IaC import，也不對 staging 加Environment人工核准 |
 | Phase 1：OIDC、SSM、instance role | 必要 | 建立service-specific AWS trust boundary與可稽核的SSM recovery，作為後續移除長效SSH deployment identity的前置條件 |
-| Phase 2：Runtime secrets | 必要 | 避免 runtime secrets 經 GitHub runner 與遠端 shell傳遞，並完成 credential rotation |
+| Phase 2：Runtime secrets與ECR registry cutover | 必要 | 避免runtime secrets經GitHub runner與遠端shell傳遞；改由instance role取得ECR短效token，並完成credential rotation與GHCR credential退役 |
 | Phase 3：Digest、manifest、CI gate | 必要 | staging 必須能重播並把相同 artifact promotion 到 production，不能依賴 `latest` 或可漂移 tag |
 | Phase 4：FinDB SSM cutover | 必要 | 保留既有 migration 與 queue safety gate，只替換部署傳輸與secret來源 |
 | Phase 5：Fetcher SSM cutover | 必要 | 保留 SQLite、Raw bucket binding 與 single-writer gate，只替換部署傳輸與secret來源 |
@@ -79,7 +120,7 @@ protected main
 | --- | --- | --- |
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
-| Image identity | Runtime 發布 commit SHA tag；FinDB 另發布 `latest`，Compose有`latest` fallback | 保存registry digest、以digest部署、移除所有`latest`部署路徑 |
+| Image identity | Runtime目前發布GHCR commit SHA tag；FinDB另發布`latest`，Compose有`latest` fallback。Staging改採ECR已決策但尚未建立、apply或驗收 | 建立五個target-specific ECR repositories、保存registry digest、以digest部署並移除所有`latest`部署路徑 |
 | EC2 transport | 現行部署仍使用固定完整Action SHA的`appleboy/ssh-action`／`scp-action`；兩份CD已有OIDC＋SSM bounded preflight，AWS端service-specific roles、target tags、managed nodes與command logs已套用。Protected `main` merge SHA `77212ce47b3138c2e21c6984e989b66239fd3cce`的FinDB與Fetcher CD均已通過live OIDC preflight | 日常deployment transport切換留在Phase 4／5；本次成功preflight不等同於SSH／SCP已退場 |
 | Runtime secrets | GitHub Environment secrets逐一傳到遠端shell／container | Secrets Manager或SecureString、instance role、輪替與GitHub secret退場 |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；Console已確認private、encryption、deletion protection、10-day automated backup與PITR inventory | migration credential分權、成功restore rehearsal與release紀錄；RDS tags count為0 |
@@ -107,8 +148,9 @@ protected main
 unrouted job非skipped時fail closed。兩個unit CI不再直接接收`pull_request`，但保留
 `workflow_call`與`workflow_dispatch`。
 
-兩個 CD 都由 protected `main` 的 path-filtered push 自動進入 staging，也可手動 dispatch；CD
-必須直接呼叫同 revision CI。Staging Environment只允許protected branch且不設人工核准；
+兩個 CD 的 protected `main` path-filtered push 只執行同 revision CI 與完成 no-op bridge；staging
+ECR build、publish、host rollout 一律由 manual dispatch 啟動。CD 必須直接呼叫同 revision CI。
+Staging Environment只允許protected branch且不設人工核准；
 production建立後使用`findb-vMAJOR.MINOR.PATCH`或`fetcher-vMAJOR.MINOR.PATCH`宣告對應unit的
 release，再由operator手動dispatch artifact promotion；同樣不配置Environment人工核准。
 
@@ -235,26 +277,60 @@ sub (FinDB):  repo:FPI-TW/findb:environment:staging-findb
 sub (Fetcher): repo:FPI-TW/findb:environment:staging-fetcher
 ```
 
-實作前以實際OIDC claim確認owner大小寫。只有deploy job取得`id-token: write`；CI與build job
-不得取得AWS身分。Deploy role只可查驗target、上傳release artifact及對對應tag的唯一EC2執行
-SSM command，不得讀Secrets Manager value、RDS data、R2 credential或另一unit的target。
+現行只有deploy job取得`id-token: write`，CI與build job尚未取得AWS身分。ECR foundation建立後，
+FinDB與Fetcher build jobs各自改用獨立、main-only的publisher role；trust限定
+`repo:FPI-TW/findb:ref:refs/heads/main`與`aud=sts.amazonaws.com`，且只可publish／inspect自身ECR
+repositories。Publisher、deploy與instance roles不得共用：deploy role只可查驗target、上傳release
+artifact及對對應tag的唯一EC2執行SSM command，不得讀Secrets Manager value、RDS data、R2
+credential、另一unit的target或publish image。
 
 EC2 instance role負責讀取自身runtime secrets與deploy bundle。FinDB與Fetcher的deploy role、
 instance role、secret path及KMS policy scope不得重用。
 
+### Staging ECR registry
+
+2026-08-27已決策staging改採帳號`439622209937`、區域`ap-southeast-1`內的Amazon ECR；下列
+repositories均為待建立／待apply／待驗收，不得從本節推論資源已存在：
+
+- `findb/staging/backend`；
+- `findb/staging/dashboard`；
+- `findb/staging/fetcher/twelve-data`；
+- `findb/staging/fetcher/finlab`；
+- `findb/staging/fetcher/shioaji`。
+
+五個repositories皆採private、immutable tags、AES-256與basic scan-on-push；`force_delete=false`，
+IaC以`prevent_destroy`保護。Lifecycle只自動清理超過7天的untagged images，不得使用會刪除
+accepted digest的blind tagged-image rule；後續如需控制tagged image成本，必須先有manifest-aware
+retention並保護所有仍可rollback／promotion的digests。
+
+FinDB與Fetcher各自使用main-only publisher role push自身repositories。兩台EC2只以unit-specific
+instance role取得`ecr:GetAuthorizationToken`所需的12小時authorization token，並只pull自身exact
+repository ARNs；token只寫入`/run` tmpfs Docker config，命令結束即logout及清理，不寫入Secrets
+Manager、GitHub或persistent host設定。Deploy role不得取得ECR publish或runtime pull權限。
+
+Staging完成cutover後不再dual-publish GHCR；既有production GHCR流程暫作相容路徑，直到正式
+production ECR repositories與promotion workflow另案完成。本計畫不將該相容路徑誤列為最終
+production artifact契約。
+
 ### Runtime secrets
 
-預設使用Secrets Manager保存需要版本與輪替紀錄的RDS、provider、R2、DB-backed API key、
-RabbitMQ及GHCR pull credential；簡單且低頻變更的敏感值可使用SSM SecureString。非敏感設定留在
-GitHub Environment variables或Parameter Store一般參數。
+預設使用Secrets Manager保存需要版本與輪替紀錄的RDS、provider、R2、DB-backed API key與
+RabbitMQ credentials；簡單且低頻變更的敏感值可使用SSM SecureString。ECR authorization token
+由instance role即時取得，不是runtime secret。非敏感設定留在GitHub Environment variables或
+Parameter Store一般參數。
+
+目前共有19筆Secrets Manager metadata，其中17筆為目標runtime catalog，兩筆
+`findb/staging/findb/registry/ghcr-pull`與`findb/staging/fetcher/registry/ghcr-pull`是待退役的空
+過渡資源。ECR live acceptance完成後，catalog與IaC active runtime-secret集合必須收斂為17筆；
+retirement apply只可排程刪除上述兩筆且保留30天recovery window。兩個已建立但未使用的
+package-read-only PAT同樣在ECR驗收後撤銷，文件與操作紀錄均不得保存token內容。
 
 至少維持下列邊界：
 
 - RDS migration credential不得常駐注入application containers；
 - RDS application、Canonical publisher與Canonical reader依用途分離；
 - Fetcher shared、各provider與Raw R2 credential只供對應consumer；
-- GHCR若維持private，使用package-read-only credential並由instance role載入，不再轉送workflow
-  `GITHUB_TOKEN`；若未來packages改為public，移除此credential；
+- Staging EC2不得接收`GITHUB_TOKEN`、PAT或GHCR credential；ECR pull只使用instance role短效token；
 - Host-side loader只以allowlist取值，寫入`tmpfs`上的`0600`檔案並在結束後清理；不得echo、寫入
   persistent `.env`、放入SSM command參數或diagnostic output。
 
@@ -268,7 +344,7 @@ GitHub Environment variables或Parameter Store一般參數。
   "deployment_target": "staging",
   "deployment_unit": "findb-or-fetcher",
   "commit_sha": "40-char SHA",
-  "images": {"name": "registry/repository@sha256:..."},
+  "images": {"name": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/repository@sha256:..."},
   "migration_revision": "alembic revision or none",
   "contract_versions": ["versioned contracts"],
   "deployment_bundle_sha256": "...",
@@ -276,12 +352,12 @@ GitHub Environment variables或Parameter Store一般參數。
 }
 ```
 
-- Build job從registry取得每個image digest；SHA tag只作索引，不作部署或rollback identity；
+- Build job從ECR取得每個image digest；SHA tag只作索引，不作部署或rollback identity；
 - Compose與Fetcher deploy helper只接受完整`image@sha256:...`，缺值或`:latest`一律fail closed；
 - Deploy bundle使用private、versioned的AWS S3 control-plane bucket，與Raw／Canonical R2分離；
 - Host在停止writer前先驗證manifest、bundle checksum、target、pull exact digests並render config；
 - 成功後保存accepted manifest、Alembic revision、SSM command ID與acceptance結果；
-- 未來production promotion只能使用staging已接受的相同digests，不重新build。
+- 未來production promotion只能使用staging ECR已接受的相同OCI artifacts與digests，不重新build。
 
 未來production採unit-specific tag加手動promotion：
 
@@ -289,8 +365,9 @@ GitHub Environment variables或Parameter Store一般參數。
   指向protected `main`上已有對應accepted staging manifest的commit；
 - operator建立Git tag後再manual dispatch對應unit的promotion，workflow必須驗證tag、unit、commit
   與accepted manifest一致；Git tag與manual dispatch共同構成發布授權，不另設Environment reviewer；
-- promotion只替manifest內的既有digests新增Docker `vMAJOR.MINOR.PATCH` tag；FinDB同時涵蓋backend
-  與Dashboard，Fetcher同時涵蓋generic、FinLab與Shioaji；
+- promotion將accepted staging OCI artifact複製到target-specific production ECR repository，
+  驗證digest不變後才新增Docker `vMAJOR.MINOR.PATCH` tag；FinDB同時涵蓋backend與Dashboard，
+  Fetcher同時涵蓋generic、FinLab與Shioaji；
 - Docker release tag已指向相同digest時允許冪等重播，若已指向不同digest則fail closed且不得覆寫；
 - Git tag、SHA tag與Docker release tag都只作索引；production manifest從accepted staging
   manifest衍生，實際deploy與rollback仍使用完整digest，不以tag取代image identity。
@@ -307,6 +384,8 @@ state object皆已驗證使用exact state CMK與bucket key，操作期backend設
 本次只納管下列控制面資源：
 
 - GitHub OIDC provider引用、FinDB／Fetcher deploy roles與instance roles；
+- 五個staging ECR repositories、FinDB／Fetcher publisher roles、instance pull policies與安全的
+  image lifecycle；
 - SSM、KMS／secret policies、CloudWatch log groups及必要alarms；
 - private、versioned deploy bundle／release manifest S3 bucket與權限。
 
@@ -345,7 +424,8 @@ IaC原始碼同步與plan採以下過渡及長期契約：
 - [x] 填完staging資源清冊，記錄owner、AWS account/region、resource ARN/ID、資料分類、backup
   policy、告警接收者與公開網路例外。
 - [x] 驗證`main`的required CI與PR protection；`staging-findb`、`staging-fetcher`只允許protected
-  branch且不設Environment人工核准，維持main合併後自動部署。
+  branch且不設Environment人工核准；目前 staging 部署由 protected `main` 上的 manual dispatch
+  啟動。
 - [x] 依IaC邊界確認團隊既有工具與state owner；沒有既有標準時採OpenTofu，只納管新控制面；Tyler
   (`tylercore`) 擔任 OpenTofu/IaC remote-state owner，encrypted backend／locking 留待 Phase 1。
 - [x] 記錄目前accepted SHA、實際image identity、Alembic revision、running containers、RDS
@@ -364,7 +444,7 @@ Phase 0 執行註記：四項 checklist 均完成。文件只保存長期有效�
 
 Phase 0 exit gate **已達成**：target、database、secret／backup owner與residual exceptions都有具名
 紀錄；repo required CI enforcement與既有PR protection已由GitHub設定頁外部驗證；SSH recovery
-仍可用，且staging自動部署不會被Environment人工核准阻塞。後續變更必須維持always-created
+仍可用，且staging manual dispatch 不會被Environment人工核准阻塞。後續變更必須維持always-created
 aggregate workflow、`Required CI` context與ruleset一致，不得倒退為path-filtered required contexts。
 
 ### Phase 1：OIDC、SSM與instance role基礎
@@ -401,14 +481,15 @@ Phase 1 exit gate **已達成**：兩個Environment各自只命中一台EC2；cr
 IAM simulator維持`implicitDeny`，live deploy role secret read為`AccessDenied`；兩個unit-specific
 Session Manager recovery均可用。
 
-### Phase 2：Runtime secrets遷移
+### Phase 2：Runtime secrets與ECR registry cutover
 
-2026-08-26 prerequisite evidence：FinDB與Fetcher staging hosts均已安裝AWS CLI v2.36.31，
-各自以unit-specific instance role完成STS identity驗證，並通過`/run` open-file-descriptor tmpfs
-檢查。當次inventory仍未發現`findb/staging/` Secrets Manager metadata或runtime-secret KMS
-aliases，因此尚未執行loader canary、secret寫入、credential輪替或consumer cutover。既有GitHub
-Environment secrets、persistent host credentials與SSH recovery必須保留，直到本Phase其餘驗收
-全部成功且撤銷條件另行確認。
+目前狀態以「已決策／待建立／待驗收／驗收後退役」管理，不記錄branch是否已commit或準備合併等
+會隨Git history失真的瞬時狀態。FinDB與Fetcher staging hosts均已安裝AWS CLI v2.36.31，各自以
+unit-specific instance role完成STS identity驗證，並通過`/run` open-file-descriptor tmpfs檢查。
+Secrets Manager已有19筆metadata；17筆目標runtime entries已建立版本，兩筆GHCR pull entries為空
+且列為驗收後退役。Staging ECR foundation、publisher roles、workflow cutover與live deployment均仍
+待建立或待驗收。既有GitHub Environment secrets、persistent host credentials與SSH recovery必須
+保留，直到本Phase其餘驗收全部成功且撤銷條件另行確認。
 
 - [ ] 建立IaC專用GitHub Actions PR plan gate與`staging-infra-plan` OIDC role，依IaC邊界驗證
   exact commit、bounded plan、零delete／replace及plan／apply身分分離；完成前只使用上述
@@ -417,17 +498,27 @@ Environment secrets、persistent host credentials與SSH recovery必須保留，�
 - [ ] 新增host-side secret loader，以allowlist取值、寫入tmpfs、驗證owner／mode並於結束後清理。
 - [ ] 先用現行SSH CD完成一次非資料產生的deploy，改由instance role取secret，確認每個container
   只取得必要credential。
-- [ ] 逐一輪替DB-backed keys、R2、provider、RabbitMQ與GHCR credentials，觀察完整排程週期。
+- [ ] Foundation PR建立五個ECR repositories、兩個main-only publisher roles及unit-specific instance
+  pull policies；合併後以fresh zero-destroy plan人工apply，驗證immutable tags、AES-256、basic
+  scan-on-push與untagged 7天lifecycle。此步不得同時切換workflow。
+- [ ] Foundation apply完成後，另以cutover PR將staging build/push/pull切換到ECR；staging與暫留的
+  production GHCR相容路徑必須由互斥、fail-closed jobs處理，staging不得dual-publish或把
+  `GITHUB_TOKEN`／PAT傳到EC2。FinDB與Fetcher各完成ECR登入、pull與live deployment驗收。
+- [ ] 逐一輪替DB-backed keys、R2、provider與RabbitMQ credentials，觀察完整排程週期。
 - [ ] 確認last-used與health後，撤銷GitHub Environment及persistent host env中的舊runtime secrets；
   GitHub只保留role ARN、region、target selector、public host與secret identifier等非敏感值。
+- [ ] ECR驗收後以retirement PR把active runtime-secret集合收斂為17筆；OpenTofu plan只可刪除兩筆
+  空GHCR metadata並使用30天recovery window。同一驗收波次撤銷兩個未使用PAT，不記錄token值。
 
 Exit gate：deploy role無法讀secret value；workflow log與SSM command不含runtime secret；舊
-credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read。
+credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read；兩個unit皆以instance role取得
+ECR短效token，staging無GHCR credential，active runtime-secret catalog恰為17筆。
 
 ### Phase 3：Digest、release manifest與CI gate
 
 - [ ] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend＋Dashboard，Fetcher記錄
-  generic＋FinLab＋Shioaji。
+  generic＋FinLab＋Shioaji；五個image reference均為完整staging ECR
+  `repository@sha256:...`。
 - [ ] 建立versioned deploy bundle，納入Compose、nginx templates與deploy helper checksum。
 - [ ] Compose與deploy helper改為必填完整image reference；移除FinDB `latest`發布及所有fallback。
 - [ ] CI驗證manifest schema、SHA／digest格式、bundle checksum、deterministic generation與config
@@ -440,8 +531,8 @@ credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read。
   或記錄具體、具期限的例外，並驗證entrypoint與health command。
 - [ ] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests。
 
-Exit gate：相同manifest可重播且不重新build；tag漂移不影響部署；CI可攔截不安全的image、
-manifest與migration。
+Exit gate：五個ECR digests可由相同manifest重播且不重新build；tag漂移不影響部署；CI可攔截
+不安全的image、manifest與migration。
 
 ### Phase 4：FinDB改走SSM
 
@@ -520,19 +611,26 @@ migration chain的forward fix。
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 
 - [x] aggregate加四個unit GitHub workflows的path、CI、Environment、concurrency與release unit matrix一致。
-- [x] Protected `main`自動部署staging且不受Environment人工核准阻塞；required CI與PR protection
-  已完成外部驗證。
+- [x] Protected `main` 的 CD push path 僅完成同 revision CI 與 no-op bridge；staging 部署改由
+  protected `main` 上的 manual dispatch 啟動，且不受Environment人工核准阻塞；required CI與PR
+  protection 已完成外部驗證。
 - [ ] `infra/tofu/**`變更由IaC專用GitHub Actions在exact PR commit執行`fmt/init/validate/plan`；
   `staging-infra-plan` OIDC role不能修改受管資源或讀取runtime secret value，delete／replace
   fail closed，apply只可由protected `main`的fresh plan與獨立身分人工執行。
 - [ ] `staging-findb`與`staging-fetcher`有獨立OIDC deploy role、EC2 instance role與secret path。
+- [ ] 五個private staging ECR repositories均為immutable、AES-256、basic scan-on-push，且只有
+  對應unit的publisher role可push、instance role可pull；兩個unit均以instance role取得短效token，
+  staging不保存或傳送GHCR credential。
 - [ ] 日常deploy不使用SSH／SCP，EC2不開放SSH ingress，cross-unit IAM測試fail closed。
-- [ ] 所有application image以digest部署，accepted release manifest可重播並供production promotion。
+- [ ] 所有application image以digest部署，accepted release manifest包含五個完整ECR digests、可重播
+  並供production promotion。
 - [ ] Accepted release manifest具備未來promotion所需的unit、commit與完整digests；契約已固定為
   `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH`加manual dispatch，Docker
-  `vMAJOR.MINOR.PATCH` tag只能附加到既有digest且碰撞時fail closed。Production不得重新build或
-  依tag部署；實作production promotion workflow本身不是本計畫完成條件。
-- [ ] Runtime secrets不在GitHub或persistent host env file，並完成一次實際輪替。
+  `vMAJOR.MINOR.PATCH` tag只能在target-specific production ECR repository附加到相同OCI digest，
+  碰撞時fail closed。Production不得重新build或依tag部署；實作production promotion workflow本身
+  不是本計畫完成條件。
+- [ ] Runtime secrets不在GitHub或persistent host env file，active catalog恰為17筆，兩筆空GHCR
+  metadata已排程退役、兩個未使用PAT已撤銷，並完成一次實際runtime credential輪替。
 - [ ] RDS private、backup／PITR／deletion protection與一次restore rehearsal有紀錄。
 - [ ] Migration停止所有writers，失敗與schema-incompatible rollback路徑已演練。
 - [ ] FinDB與Fetcher各完成兩次SSM deploy，通過bounded acceptance與完整排程週期觀察。
@@ -553,7 +651,7 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 | Private subnet＋ALB | 若public EC2移除SSH且只保留必要HTTPS，可暫緩 | Production network設計完成前，或public EC2風險不可接受 |
 | 全面AWS IaC import | 延後；本次只納管新控制面 | 既有resource inventory／drift responsibility 已由 Tyler 持有，待 production 環境複製或 drift治理需求確立 |
 | Canonical R2資料面驗收 | 延後；只完成bucket與credential邊界 | Canonical publish/read/sign runtime完成 |
-| Production資源與promotion workflow | 延後；本次只定義unit-specific Git tag、Docker tag與accepted manifest promotion契約 | 開始建立production Environment、EC2、RDS、R2及正式promotion workflow |
+| Production資源與promotion workflow | 延後；既有GHCR流程只作暫時相容。本次定義unit-specific Git tag、target-specific production ECR、Docker tag與accepted manifest promotion契約 | 開始建立production Environment、ECR、EC2、RDS、R2及正式promotion workflow |
 | 正式24/7 on-call與企業稽核 | 延後；使用具名owner與通知channel | Production SLA、法遵或客戶稽核需求確立 |
 
 這份檔案是暫時性執行計畫，不是永久runbook。不得在尚有未完成Phase、未搬移的操作知識或

@@ -158,6 +158,55 @@ variable "fetcher_instance_profile_name" {
   default = "fetcher-staging-instance"
 }
 
+variable "ecr_repository_names" {
+  description = "Fixed private staging ECR repository names, split by deployment unit."
+  type        = map(string)
+  default = {
+    findb_backend       = "findb/staging/backend"
+    findb_dashboard     = "findb/staging/dashboard"
+    fetcher_twelve_data = "findb/staging/fetcher/twelve-data"
+    fetcher_finlab      = "findb/staging/fetcher/finlab"
+    fetcher_shioaji     = "findb/staging/fetcher/shioaji"
+  }
+  validation {
+    condition = length(var.ecr_repository_names) == 5 && alltrue([
+      try(var.ecr_repository_names["findb_backend"], null) == "findb/staging/backend",
+      try(var.ecr_repository_names["findb_dashboard"], null) == "findb/staging/dashboard",
+      try(var.ecr_repository_names["fetcher_twelve_data"], null) == "findb/staging/fetcher/twelve-data",
+      try(var.ecr_repository_names["fetcher_finlab"], null) == "findb/staging/fetcher/finlab",
+      try(var.ecr_repository_names["fetcher_shioaji"], null) == "findb/staging/fetcher/shioaji",
+    ])
+    error_message = "ecr_repository_names must remain the five reviewed staging ECR repository names."
+  }
+}
+
+variable "ecr_untagged_image_retention_days" {
+  type    = number
+  default = 7
+  validation {
+    condition     = var.ecr_untagged_image_retention_days == 7
+    error_message = "ecr_untagged_image_retention_days must remain the reviewed seven-day retention period."
+  }
+}
+
+variable "findb_ecr_publisher_role_name" {
+  type    = string
+  default = "findb-staging-ecr-publisher"
+  validation {
+    condition     = var.findb_ecr_publisher_role_name == "findb-staging-ecr-publisher"
+    error_message = "findb_ecr_publisher_role_name must remain findb-staging-ecr-publisher."
+  }
+}
+
+variable "fetcher_ecr_publisher_role_name" {
+  type    = string
+  default = "fetcher-staging-ecr-publisher"
+  validation {
+    condition     = var.fetcher_ecr_publisher_role_name == "fetcher-staging-ecr-publisher"
+    error_message = "fetcher_ecr_publisher_role_name must remain fetcher-staging-ecr-publisher."
+  }
+}
+
 variable "deploy_bundle_bucket_name" {
   description = "Private S3 control-plane bucket for versioned deployment bundles and manifests."
   type        = string
