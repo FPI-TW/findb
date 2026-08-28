@@ -2,6 +2,12 @@ name: Staging Infra Plan
 
 on:
   workflow_call:
+    inputs:
+      allow_ghcr_metadata_retirement:
+        description: Allow only the separately approved legacy GHCR metadata retirement pair.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,12 +53,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Set up pinned OpenTofu
-        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
-        with:
-          tofu_version: ${{ env.TOFU_VERSION }}
-          tofu_wrapper: false
-
       - name: Verify checked out commit
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -67,6 +67,143 @@ jobs:
             echo "Checkout is not the pull request head commit" >&2
             exit 1
           fi
+
+      - name: Authorize bounded GHCR metadata retirement
+        id: retirement_authorization
+        env:
+          RETIREMENT_REQUESTED: ${{ inputs.allow_ghcr_metadata_retirement }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TRUSTED_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          TRUSTED_WORKFLOW_REF: ${{ job.workflow_ref }}
+          TRUSTED_WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+        run: |
+          set -euo pipefail
+          case "$RETIREMENT_REQUESTED" in
+            false)
+              echo "retirement_mode=false" >> "$GITHUB_OUTPUT"
+              ;;
+            true)
+              # A PR-local reusable workflow is reported as @refs/pull/<n>/merge.
+              # Retirement therefore requires a caller that pins this workflow
+              # to an immutable SHA, which is the only accepted workflow_ref.
+              expected_workflow_ref="FPI-TW/findb/.github/workflows/staging-infra-plan.yml@$TRUSTED_WORKFLOW_SHA"
+              if [[ "$CALLER_REPOSITORY" != "FPI-TW/findb" \
+                || "$PR_HEAD_REPOSITORY" != "FPI-TW/findb" \
+                || "$PR_HEAD_REF" != "chore/staging-phase2-retirement" \
+                || "$EVENT_NAME" != "pull_request" \
+                || "$PR_BASE_REF" != "main" \
+                || ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ \
+                || "$TRUSTED_WORKFLOW_REPOSITORY" != "FPI-TW/findb" \
+                || ! "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-fA-F]{40}$ \
+                || "$TRUSTED_WORKFLOW_REF" != "$expected_workflow_ref" \
+                || "$TRUSTED_WORKFLOW_FILE_PATH" != ".github/workflows/staging-infra-plan.yml" ]]; then
+                echo "GHCR metadata retirement is not authorized for this workflow run" >&2
+                exit 1
+              fi
+              echo "retirement_mode=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Invalid retirement authorization mode" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout trusted guard source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .trusted-staging-infra-plan
+          sparse-checkout: |
+            infra/tofu/plan_json_guard.py
+            infra/tofu/staging/.terraform.lock.hcl
+          sparse-checkout-cone-mode: false
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify trusted guard source
+        env:
+          RETIREMENT_MODE: ${{ steps.retirement_authorization.outputs.retirement_mode }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="$GITHUB_WORKSPACE/.trusted-staging-infra-plan"
+          if [[ ! -f "$trusted_root/infra/tofu/plan_json_guard.py" ]]; then
+            echo "Trusted plan guard source is missing" >&2
+            exit 1
+          fi
+          trusted_sha="$(git -C "$trusted_root" rev-parse HEAD)"
+          if [[ "$trusted_sha" != "$TRUSTED_WORKFLOW_SHA" ]]; then
+            echo "Trusted plan guard source does not match the reusable workflow SHA" >&2
+            exit 1
+          fi
+          if [[ "$RETIREMENT_MODE" == "true" ]]; then
+            if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "Invalid pull request base SHA" >&2
+              exit 1
+            fi
+            if ! git -C "$trusted_root" cat-file -e "$PR_BASE_SHA^{commit}"; then
+              echo "Pull request base SHA is unavailable in trusted workflow history" >&2
+              exit 1
+            fi
+            if ! git -C "$trusted_root" merge-base --is-ancestor "$TRUSTED_WORKFLOW_SHA" "$PR_BASE_SHA"; then
+              echo "Trusted workflow SHA is not merged into the pull request base" >&2
+              exit 1
+            fi
+
+            lockfile_path="infra/tofu/staging/.terraform.lock.hcl"
+            if [[ ! -f "$GITHUB_WORKSPACE/$lockfile_path" ]] \
+              || ! git -C "$trusted_root" cat-file -e "$TRUSTED_WORKFLOW_SHA:$lockfile_path"; then
+              echo "Required trusted OpenTofu lockfile is missing" >&2
+              exit 1
+            fi
+            trusted_lockfile_sha256="$(git -C "$trusted_root" show "$TRUSTED_WORKFLOW_SHA:$lockfile_path" | sha256sum | awk '{print $1}')"
+            pr_lockfile_sha256="$(sha256sum "$GITHUB_WORKSPACE/$lockfile_path" | awk '{print $1}')"
+            if [[ "$trusted_lockfile_sha256" != "$pr_lockfile_sha256" ]]; then
+              echo "Pull request OpenTofu lockfile does not match the trusted workflow SHA" >&2
+              exit 1
+            fi
+          elif [[ "$RETIREMENT_MODE" != "false" ]]; then
+            echo "Invalid retirement authorization mode" >&2
+            exit 1
+          fi
+
+      # The OpenTofu provider runs after this point and is therefore treated
+      # as able to modify the PR workspace. Keep the reviewed guard in a step
+      # output sourced from the verified Git object; never execute it by path.
+      - name: Capture verified plan guard source
+        id: trusted_guard_source
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="$GITHUB_WORKSPACE/.trusted-staging-infra-plan"
+          guard_source_base64="$(git -C "$trusted_root" show "$TRUSTED_WORKFLOW_SHA:infra/tofu/plan_json_guard.py" | base64 --wrap=0)"
+          if [[ -z "$guard_source_base64" ]] \
+            || ! printf '%s' "$guard_source_base64" | base64 --decode >/dev/null; then
+            echo "Verified plan guard source is invalid" >&2
+            exit 1
+          fi
+          guard_source_sha256="$(printf '%s' "$guard_source_base64" | base64 --decode | sha256sum | awk '{print $1}')"
+          if [[ ! "$guard_source_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Verified plan guard source digest is invalid" >&2
+            exit 1
+          fi
+          echo "source_base64=$guard_source_base64" >> "$GITHUB_OUTPUT"
+          echo "source_sha256=$guard_source_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pinned OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
 
       - name: Configure staging plan AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v5
@@ -94,9 +231,12 @@ jobs:
       - name: Validate staging configuration
         run: tofu -chdir=infra/tofu/staging validate -no-color
 
-      - name: Refresh plan and reject delete or replace actions
+      - name: Refresh plan and enforce bounded delete policy
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RETIREMENT_MODE: ${{ steps.retirement_authorization.outputs.retirement_mode }}
+          TRUSTED_GUARD_SOURCE_BASE64: ${{ steps.trusted_guard_source.outputs.source_base64 }}
+          TRUSTED_GUARD_SOURCE_SHA256: ${{ steps.trusted_guard_source.outputs.source_sha256 }}
         run: |
           set -euo pipefail
           scratch="$(mktemp -d "${RUNNER_TEMP}/staging-infra-plan.XXXXXX")"
@@ -121,7 +261,30 @@ jobs:
             exit 1
           fi
 
-          guard_summary="$(python3 infra/tofu/plan_json_guard.py "$show_file")"
+          guard_args=()
+          if [[ "$RETIREMENT_MODE" == "true" ]]; then
+            guard_args=(
+              --allow-delete-address 'aws_secretsmanager_secret.runtime["findb/registry/ghcr-pull"]'
+              --allow-delete-address 'aws_secretsmanager_secret.runtime["fetcher/registry/ghcr-pull"]'
+            )
+          elif [[ "$RETIREMENT_MODE" != "false" ]]; then
+            echo "Invalid retirement authorization mode" >&2
+            exit 1
+          fi
+
+          if [[ -z "$TRUSTED_GUARD_SOURCE_BASE64" ]] \
+            || ! printf '%s' "$TRUSTED_GUARD_SOURCE_BASE64" | base64 --decode >/dev/null; then
+            echo "Trusted plan guard source is invalid" >&2
+            exit 1
+          fi
+          guard_source_sha256="$(printf '%s' "$TRUSTED_GUARD_SOURCE_BASE64" | base64 --decode | sha256sum | awk '{print $1}')"
+          if [[ "$guard_source_sha256" != "$TRUSTED_GUARD_SOURCE_SHA256" ]]; then
+            echo "Trusted plan guard source digest does not match" >&2
+            exit 1
+          fi
+          trusted_guard_source="$(printf '%s' "$TRUSTED_GUARD_SOURCE_BASE64" | base64 --decode)"
+          guard_summary="$(python3 -c "$trusted_guard_source" "${guard_args[@]}" "$show_file")"
+          unset trusted_guard_source
           if [[ "$guard_summary" == *$'\n'* || ! "$guard_summary" =~ ^plan_guard=pass[[:space:]]action_lists=[0-9]+[[:space:]]delete_actions=[0-9]+[[:space:]]resource_changes=[0-9]+[[:space:]]resource_drift=[0-9]+[[:space:]]output_changes=[0-9]+[[:space:]]deferred_changes=[0-9]+$ ]]; then
             echo "OpenTofu plan delete guard returned an invalid result" >&2
             exit 1
@@ -130,8 +293,17 @@ jobs:
           read -r guard_status action_list_field delete_action_field resource_change_field resource_drift_field output_change_field deferred_change_field <<< "$guard_summary"
           delete_count="${delete_action_field#delete_actions=}"
           resource_count="${resource_change_field#resource_changes=}"
-          if [[ "$guard_status" != "plan_guard=pass" || "$delete_count" != "0" ]]; then
+          if [[ "$guard_status" != "plan_guard=pass" ]]; then
             echo "OpenTofu plan contains delete or replace actions" >&2
+            exit 1
+          fi
+          if [[ "$RETIREMENT_MODE" == "true" ]]; then
+            if [[ "$delete_count" != "0" && "$delete_count" != "2" ]]; then
+              echo "OpenTofu retirement plan has an invalid delete count" >&2
+              exit 1
+            fi
+          elif [[ "$delete_count" != "0" ]]; then
+            echo "OpenTofu standard plan contains delete or replace actions" >&2
             exit 1
           fi
 
@@ -141,5 +313,9 @@ jobs:
             printf -- '- configuration files: %s (sha256: `%s`)\n' "$config_count" "$config_checksum"
             printf -- '- provider lockfile: sha256 `%s`\n' "$lock_checksum"
             printf -- '- resource changes inspected: %s\n' "$resource_count"
-            printf -- '- delete/replace actions: %s\n' "$delete_count"
+            if [[ "$RETIREMENT_MODE" == "true" ]]; then
+              printf -- '- authorized metadata retirements: %s\n' "$delete_count"
+            else
+              printf -- '- delete/replace actions: %s\n' "$delete_count"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
