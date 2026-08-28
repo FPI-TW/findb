@@ -1604,23 +1604,171 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     assert "/run/findb-runtime-secrets/nginx/serve-key.conf" in nginx_helper
 
 
-def test_findb_runtime_secret_deploy_recreates_nginx_after_rendering_lookup_key() -> None:
+def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_lookup_key() -> None:
     deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
 
     render_at = deploy.index('"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"')
-    recreate_at = deploy.index(
-        'docker compose -f "$compose_file" up -d --no-deps --force-recreate nginx'
-    )
-    nginx_health_at = deploy.index('health_status="$(docker inspect', recreate_at)
+    old_id_at = deploy.index('nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx)"')
+    stop_at = deploy.index('docker stop --time 30 "$nginx_old_id"')
+    remove_at = deploy.index('docker rm "$nginx_old_id"')
+    old_absent_at = deploy.index('docker inspect "$nginx_old_id" >/dev/null 2>&1')
+    create_at = deploy.index('docker compose -f "$compose_file" up -d --no-deps nginx')
+    new_id_at = deploy.index('nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx)"')
+    nginx_health_at = deploy.index('health_status="$(docker inspect', create_at)
     public_acceptance_at = deploy.index("for dashboard_path in /dashboard/ /dashboard/lookup")
     lookup_probe_at = deploy.index('lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"')
 
-    assert render_at < recreate_at < nginx_health_at < public_acceptance_at < lookup_probe_at
+    assert render_at < old_id_at < stop_at < remove_at < old_absent_at < create_at < new_id_at
+    assert new_id_at < nginx_health_at < public_acceptance_at < lookup_probe_at
     assert 'docker compose -f "$compose_file" restart nginx' not in deploy
+    assert "--force-recreate nginx" not in deploy
+    assert "nginx_expected_project=findb" in deploy
+    assert "nginx_expected_service=nginx" in deploy
+    assert "reason=nginx_container_identity_invalid" in deploy
+    assert "reason=nginx_old_container_still_exists" in deploy
+    assert "reason=nginx_container_not_replaced" in deploy
+    assert "reason=nginx_started_at_unchanged" in deploy
+    assert "reason=nginx_replacement_contract_invalid" in deploy
+    assert "nginx_serve_key_source=/run/findb-runtime-secrets/nginx/serve-key.conf" in deploy
+    assert "{{.Source}} {{.RW}}" in deploy
     assert '--header="Referer: $lookup_referer"' in deploy
     assert '"https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"' in deploy
+
+
+def test_findb_nginx_replacement_shell_contract_is_verified_and_fail_closed(tmp_path: Path) -> None:
+    deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    replacement_start = deploy.index("nginx_expected_project=findb")
+    replacement_end = deploy.index("ready=0", replacement_start)
+    replacement = deploy[replacement_start:replacement_end]
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_log = tmp_path / "docker.log"
+    state_file = tmp_path / "nginx-state"
+    state_file.write_text("old-container", encoding="utf-8")
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+state="$(cat "$FAKE_NGINX_STATE")"
+case "$1" in
+  compose)
+    case "$*" in
+      *" ps -q nginx")
+        [ "$state" = "removed" ] && exit 0
+        printf '%s\\n' "$state"
+        ;;
+      *" up -d --no-deps nginx")
+        if [ "${FAKE_FAIL_COMMAND:-}" = "compose-create" ]; then exit 96; fi
+        if [ "${FAKE_SAME_ID:-}" = "1" ]; then
+          printf '%s' old-container > "$FAKE_NGINX_STATE"
+        else
+          printf '%s' new-container > "$FAKE_NGINX_STATE"
+        fi
+        ;;
+      *) exit 90 ;;
+    esac
+    ;;
+  stop)
+    [ "$2" = "--time" ] && [ "$3" = "30" ] && [ "$4" = "old-container" ] || exit 91
+    if [ "${FAKE_FAIL_COMMAND:-}" = "stop" ]; then exit 97; fi
+    ;;
+  rm)
+    [ "$2" = "old-container" ] || exit 92
+    if [ "${FAKE_FAIL_COMMAND:-}" = "rm" ]; then exit 98; fi
+    printf '%s' removed > "$FAKE_NGINX_STATE"
+    ;;
+  inspect)
+    if [ "$2" = "--format" ]; then
+      format="$3"
+      container="$4"
+      case "$format" in
+        *"com.docker.compose.project"*) printf '%s\\n' "${FAKE_PROJECT:-findb}" ;;
+        *"com.docker.compose.service"*) printf '%s\\n' "${FAKE_SERVICE:-nginx}" ;;
+        *".State.StartedAt"*)
+          [ "$container" = "old-container" ] && printf '%s\\n' old-start || printf '%s\\n' new-start
+          ;;
+        *"serve-key.conf"*)
+          printf '%s\\n' "${FAKE_NGINX_MOUNT:-/run/findb-runtime-secrets/nginx/serve-key.conf false}"
+          ;;
+        *) exit 93 ;;
+      esac
+    elif [ "$2" = "old-container" ] && [ "$state" = "removed" ]; then
+      exit 1
+    else
+      exit 94
+    fi
+    ;;
+  *) exit 95 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_LOG": str(docker_log),
+        "FAKE_NGINX_STATE": str(state_file),
+    }
+    after_marker = tmp_path / "after-replacement"
+    command = (
+        f"set -euo pipefail\ncompose_file=/tmp/compose.yml\n{replacement}"
+        'touch "$FAKE_AFTER_MARKER"\n'
+    )
+    environment["FAKE_AFTER_MARKER"] = str(after_marker)
+
+    completed = subprocess.run(
+        ["bash", "-c", command], capture_output=True, text=True, check=False, env=environment
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert state_file.read_text(encoding="utf-8") == "new-container"
+    assert after_marker.exists()
+    assert docker_log.read_text(encoding="utf-8").splitlines() == [
+        "compose -f /tmp/compose.yml ps -q nginx",
+        'inspect --format {{index .Config.Labels "com.docker.compose.project"}} old-container',
+        'inspect --format {{index .Config.Labels "com.docker.compose.service"}} old-container',
+        "inspect --format {{.State.StartedAt}} old-container",
+        "stop --time 30 old-container",
+        "rm old-container",
+        "inspect old-container",
+        "compose -f /tmp/compose.yml up -d --no-deps nginx",
+        "compose -f /tmp/compose.yml ps -q nginx",
+        "inspect --format {{.State.StartedAt}} new-container",
+        'inspect --format {{index .Config.Labels "com.docker.compose.project"}} new-container',
+        'inspect --format {{index .Config.Labels "com.docker.compose.service"}} new-container',
+        'inspect --format {{range .Mounts}}{{if eq .Destination "/etc/nginx/serve-key.conf"}}{{.Source}} {{.RW}}{{end}}{{end}} new-container',
+    ]
+
+    for overrides, expected_error in (
+        ({"FAKE_PROJECT": "unexpected"}, "reason=nginx_container_identity_invalid"),
+        ({"FAKE_FAIL_COMMAND": "stop"}, ""),
+        ({"FAKE_FAIL_COMMAND": "rm"}, ""),
+        ({"FAKE_FAIL_COMMAND": "compose-create"}, ""),
+        ({"FAKE_SAME_ID": "1"}, "reason=nginx_container_not_replaced"),
+        (
+            {"FAKE_NGINX_MOUNT": "/tmp/unexpected true"},
+            "reason=nginx_replacement_contract_invalid",
+        ),
+    ):
+        state_file.write_text("old-container", encoding="utf-8")
+        docker_log.write_text("", encoding="utf-8")
+        after_marker.unlink(missing_ok=True)
+        rejected = subprocess.run(
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**environment, **overrides},
+        )
+        assert rejected.returncode != 0
+        assert expected_error in rejected.stderr
+        assert not after_marker.exists()
 
 
 def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_inputs() -> None:

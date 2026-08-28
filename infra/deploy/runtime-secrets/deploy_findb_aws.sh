@@ -183,9 +183,50 @@ docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
   --attempts 12 --interval 5 --maximum-heartbeat-age 90 >/dev/null
 
 # The prior compose restart did not reliably load the newly rendered single-file
-# tmpfs bind mount. Force recreation from the current source path after each
-# render; the functional probe below verifies the rotated key is active.
-docker compose -f "$compose_file" up -d --no-deps --force-recreate nginx >/dev/null
+# tmpfs bind mount. Replace the exact, verified nginx container so Docker mounts
+# the current source path; verify that replacement before health and key probes.
+nginx_expected_project=findb
+nginx_expected_service=nginx
+nginx_serve_key_source=/run/findb-runtime-secrets/nginx/serve-key.conf
+nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx)"
+if [ -z "$nginx_old_id" ]; then
+  echo "findb_aws_deploy=failed reason=nginx_container_missing" >&2
+  exit 1
+fi
+nginx_old_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$nginx_old_id")"
+nginx_old_service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$nginx_old_id")"
+if [ "$nginx_old_project" != "$nginx_expected_project" ] \
+  || [ "$nginx_old_service" != "$nginx_expected_service" ]; then
+  echo "findb_aws_deploy=failed reason=nginx_container_identity_invalid" >&2
+  exit 1
+fi
+nginx_old_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$nginx_old_id")"
+docker stop --time 30 "$nginx_old_id" >/dev/null
+docker rm "$nginx_old_id" >/dev/null
+if docker inspect "$nginx_old_id" >/dev/null 2>&1; then
+  echo "findb_aws_deploy=failed reason=nginx_old_container_still_exists" >&2
+  exit 1
+fi
+docker compose -f "$compose_file" up -d --no-deps nginx >/dev/null
+nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx)"
+if [ -z "$nginx_new_id" ] || [ "$nginx_new_id" = "$nginx_old_id" ]; then
+  echo "findb_aws_deploy=failed reason=nginx_container_not_replaced" >&2
+  exit 1
+fi
+nginx_new_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$nginx_new_id")"
+if [ "$nginx_new_started_at" = "$nginx_old_started_at" ]; then
+  echo "findb_aws_deploy=failed reason=nginx_started_at_unchanged" >&2
+  exit 1
+fi
+nginx_new_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$nginx_new_id")"
+nginx_new_service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$nginx_new_id")"
+nginx_serve_key_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/nginx/serve-key.conf"}}{{.Source}} {{.RW}}{{end}}{{end}}' "$nginx_new_id")"
+if [ "$nginx_new_project" != "$nginx_expected_project" ] \
+  || [ "$nginx_new_service" != "$nginx_expected_service" ] \
+  || [ "$nginx_serve_key_mount" != "$nginx_serve_key_source false" ]; then
+  echo "findb_aws_deploy=failed reason=nginx_replacement_contract_invalid" >&2
+  exit 1
+fi
 ready=0
 for attempt in 1 2 3 4 5 6; do
   health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx 2>/dev/null || true)"
