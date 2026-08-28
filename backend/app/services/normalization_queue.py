@@ -26,6 +26,7 @@ from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
     validate_dataset_contract_scope,
 )
+from app.services.normalize.base import EODPartitionUnavailableError
 from app.task_queue import celery_app
 from app.utils import utc_now, uuid7
 
@@ -547,6 +548,16 @@ async def execute_normalization(
                     run.failure_code = None
                     run.next_retry_at = None
                     await session.commit()
+                except EODPartitionUnavailableError as exc:
+                    await session.rollback()
+                    failure = PermanentNormalizationError("EOD_PARTITION_UNAVAILABLE")
+                    logger.warning(
+                        "Normalization permanently failed (run_id=%s, code=%s): %s",
+                        run_id,
+                        failure.failure_code,
+                        exc,
+                    )
+                    await _mark_permanent_failure(session, job_id, run_id, failure)
                 except PermanentNormalizationError as exc:
                     await session.rollback()
                     logger.warning(

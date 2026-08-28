@@ -144,6 +144,13 @@ uv --directory backend run alembic upgrade head
 Autogenerate後人工審查schema/table、enum、constraint、index、data backfill、lock／rewrite、
 partition及可逆性。涉及既有資料時在clone或partial dump驗證，不只測空DB。
 
+`market_data_eod`的年度partition屬migration-owned schema state。只有使用
+`MIGRATION_DATABASE_URL`的migration job可以建立或附掛partition；application runtime只以
+PostgreSQL catalog唯讀確認目標年度的exact partition已附掛，不持有schema DDL權限。若缺少
+partition，normalization以`EOD_PARTITION_UNAVAILABLE`永久失敗，operator必須先由Alembic
+補齊schema再重送；不得為了恢復ingest而授予application role `CREATE`。年度邊界前應在
+migration測試與staging preflight確認下一年度partition已存在。
+
 Staging rollout：
 
 1. **Operator pre-deploy**：確認backup／PITR與可用的restore紀錄，暫停provider並確認沒有

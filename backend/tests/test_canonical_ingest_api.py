@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import date, timedelta
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import pytest
@@ -41,6 +42,7 @@ from app.services.ingestion_attempts import (
 )
 from app.services.ingress_contracts import validate_ingress_request
 from app.services.normalization_queue import execute_normalization
+from app.services.normalize.base import EODPartitionUnavailableError
 from app.services.source_clients import create_source_client
 from app.utils import utc_now, uuid7
 
@@ -361,6 +363,46 @@ async def test_canonical_market_eod_normalizes_without_provider_specific_fields(
     assert str(eod.close) == "1015.00000000"
     assert eod.source == "finlab"
     assert run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_missing_eod_partition_fails_permanently_without_retry(
+    client: AsyncClient,
+    source_headers: dict,
+    test_session,
+    test_engine,
+):
+    await _seed_dataset(test_session)
+    response = await client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+    run_id = UUID(response.json()["run_id"])
+
+    with patch(
+        "app.services.normalize.base.BaseNormalizer.ensure_eod_partition",
+        new=AsyncMock(
+            side_effect=EODPartitionUnavailableError(
+                "migration-owned EOD partition is unavailable for year 2026"
+            )
+        ),
+    ):
+        await _execute_run(test_session, test_engine, run_id)
+
+    run = await test_session.get(IngestionRun, run_id)
+    job = (
+        await test_session.execute(
+            select(NormalizationJob).where(NormalizationJob.run_id == run_id)
+        )
+    ).scalar_one()
+    assert run is not None
+    assert run.status == "failed"
+    assert run.failure_code == "EOD_PARTITION_UNAVAILABLE"
+    assert run.attempt_count == 1
+    assert run.next_retry_at is None
+    assert job.status == "failed"
+    assert job.attempt_count == 1
 
 
 @pytest.mark.asyncio
