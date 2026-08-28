@@ -959,6 +959,25 @@ def test_fetcher_target_route_is_validated_before_job_routing() -> None:
     assert "validate-target-routing" in jobs["finlab-acquisition-smoke"]["needs"]
 
 
+def test_fetcher_deploy_checks_out_pinned_repository_before_local_artifact_steps() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    deploy = workflow["jobs"]["deploy"]
+    steps = deploy["steps"]
+    checkout = steps[0]
+
+    assert deploy["permissions"] == {"contents": "read", "id-token": "write"}
+    assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+
+    for step_name in (
+        "Validate target-derived deployment route",
+        "Run staging AWS and SSM preflight",
+        "Calculate AWS runtime-secret bundle checksums",
+        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
+        "Sync AWS runtime-secret loader and exact Fetcher catalog",
+    ):
+        assert steps.index(checkout) < steps.index(_named_step(workflow, "deploy", step_name))
+
+
 def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
     expected = {
         FINDB_CD_WORKFLOW: (
