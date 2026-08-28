@@ -291,11 +291,26 @@ def _plan_json_fixture() -> dict[str, object]:
     }
 
 
-def _run_plan_json_guard(tmp_path: Path, payload: object) -> subprocess.CompletedProcess[str]:
+def _run_plan_json_guard(
+    tmp_path: Path,
+    payload: object,
+    allowed_delete_addresses: tuple[str, ...] = (),
+    guard_args: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(payload), encoding="utf-8")
     return subprocess.run(
-        [sys.executable, str(PLAN_JSON_GUARD), str(plan_path)],
+        [
+            sys.executable,
+            str(PLAN_JSON_GUARD),
+            *(
+                argument
+                for address in allowed_delete_addresses
+                for argument in ("--allow-delete-address", address)
+            ),
+            *guard_args,
+            str(plan_path),
+        ],
         capture_output=True,
         check=False,
         text=True,
@@ -319,49 +334,203 @@ def test_plan_json_guard_accepts_safe_plan_and_emits_only_bounded_counts(
     assert "deferred_changes=0" in completed.stdout
 
 
+RETIREMENT_DELETE_ADDRESSES = (
+    'aws_secretsmanager_secret.runtime["findb/registry/ghcr-pull"]',
+    'aws_secretsmanager_secret.runtime["fetcher/registry/ghcr-pull"]',
+)
+
+
+def test_plan_json_guard_allows_only_the_exact_pure_retirement_delete_pair(
+    tmp_path: Path,
+) -> None:
+    plan = _plan_json_fixture()
+    plan["resource_changes"] = [
+        {"address": address, "change": {"actions": ["delete"]}}
+        for address in RETIREMENT_DELETE_ADDRESSES
+    ]
+
+    completed = _run_plan_json_guard(tmp_path, plan, RETIREMENT_DELETE_ADDRESSES)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "delete_actions=2" in completed.stdout
+    assert "ghcr-pull" not in completed.stdout
+    assert "authorized_delete_actions" not in completed.stdout
+
+
+def test_plan_json_guard_allows_a_zero_delete_retirement_rerun_with_default_summary(
+    tmp_path: Path,
+) -> None:
+    default_completed = _run_plan_json_guard(tmp_path, _plan_json_fixture())
+    retirement_completed = _run_plan_json_guard(
+        tmp_path,
+        _plan_json_fixture(),
+        RETIREMENT_DELETE_ADDRESSES,
+    )
+
+    assert retirement_completed.returncode == 0, retirement_completed.stderr
+    assert retirement_completed.stdout == default_completed.stdout
+
+
 @pytest.mark.parametrize(
-    ("label", "mutate"),
+    ("label", "mutate", "allow_deletes"),
     (
         (
-            "resource-change delete",
+            "default exact resource-change delete",
             lambda plan: plan["resource_changes"].append(
-                {"change": {"actions": ["delete", "create"]}}
+                {
+                    "address": RETIREMENT_DELETE_ADDRESSES[0],
+                    "change": {"actions": ["delete"]},
+                }
             ),
+            (),
+        ),
+        (
+            "replacement",
+            lambda plan: plan["resource_changes"].append(
+                {
+                    "address": RETIREMENT_DELETE_ADDRESSES[0],
+                    "change": {"actions": ["delete", "create"]},
+                }
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "incomplete allowed delete pair",
+            lambda plan: plan["resource_changes"].append(
+                {
+                    "address": RETIREMENT_DELETE_ADDRESSES[0],
+                    "change": {"actions": ["delete"]},
+                }
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "unauthorized delete",
+            lambda plan: plan["resource_changes"].append(
+                {
+                    "address": 'aws_secretsmanager_secret.runtime["other"]',
+                    "change": {"actions": ["delete"]},
+                }
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "duplicate delete address",
+            lambda plan: plan["resource_changes"].extend(
+                [
+                    {
+                        "address": RETIREMENT_DELETE_ADDRESSES[0],
+                        "change": {"actions": ["delete"]},
+                    },
+                    {
+                        "address": RETIREMENT_DELETE_ADDRESSES[0],
+                        "change": {"actions": ["delete"]},
+                    },
+                ]
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "previous address",
+            lambda plan: plan["resource_changes"].append(
+                {
+                    "address": RETIREMENT_DELETE_ADDRESSES[0],
+                    "previous_address": "legacy",
+                    "change": {"actions": ["delete"]},
+                }
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "deposed instance",
+            lambda plan: plan["resource_changes"].append(
+                {
+                    "address": RETIREMENT_DELETE_ADDRESSES[0],
+                    "deposed": "deposed-instance",
+                    "change": {"actions": ["delete"]},
+                }
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "null deposed instance",
+            lambda plan: plan["resource_changes"].append(
+                {
+                    "address": RETIREMENT_DELETE_ADDRESSES[0],
+                    "deposed": None,
+                    "change": {"actions": ["delete"]},
+                }
+            ),
+            RETIREMENT_DELETE_ADDRESSES,
         ),
         (
             "resource-drift delete",
             lambda plan: plan["resource_drift"].append({"change": {"actions": ["delete"]}}),
+            RETIREMENT_DELETE_ADDRESSES,
         ),
         (
             "output delete",
             lambda plan: plan["output_changes"].update({"example": {"actions": ["delete"]}}),
+            RETIREMENT_DELETE_ADDRESSES,
         ),
         (
-            "nested future delete",
+            "nested deferred delete",
             lambda plan: plan["deferred_changes"].append(
                 {
                     "change": {"actions": ["no-op"]},
                     "future": {"nested": {"actions": ["delete"]}},
                 }
             ),
+            RETIREMENT_DELETE_ADDRESSES,
+        ),
+        (
+            "unknown future delete",
+            lambda plan: plan.update({"future": {"nested": {"actions": ["delete"]}}}),
+            RETIREMENT_DELETE_ADDRESSES,
         ),
     ),
 )
-def test_plan_json_guard_rejects_delete_in_every_plan_action_section(
+def test_plan_json_guard_rejects_delete_outside_the_bounded_exception(
     tmp_path: Path,
     label: str,
     mutate: Any,
+    allow_deletes: tuple[str, ...],
 ) -> None:
     del label
     plan = _plan_json_fixture()
     mutate(plan)
 
-    completed = _run_plan_json_guard(tmp_path, plan)
+    completed = _run_plan_json_guard(tmp_path, plan, allow_deletes)
 
     assert completed.returncode != 0
     assert "plan_guard=reject reason=delete" in completed.stderr
     assert completed.stdout == ""
     assert "example" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "guard_args",
+    (
+        ("--unknown",),
+        ("--allow-delete-address", RETIREMENT_DELETE_ADDRESSES[0]),
+        (
+            "--allow-delete-address",
+            RETIREMENT_DELETE_ADDRESSES[0],
+            "--allow-delete-address",
+            RETIREMENT_DELETE_ADDRESSES[0],
+        ),
+        ("--allow-delete-address", 'aws_secretsmanager_secret.runtime["other"]'),
+    ),
+)
+def test_plan_json_guard_rejects_invalid_retirement_allowlist_arguments(
+    tmp_path: Path,
+    guard_args: tuple[str, ...],
+) -> None:
+    completed = _run_plan_json_guard(tmp_path, _plan_json_fixture(), guard_args=guard_args)
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == "plan_guard=reject reason=usage"
 
 
 @pytest.mark.parametrize(
