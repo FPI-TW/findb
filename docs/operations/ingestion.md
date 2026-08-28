@@ -57,11 +57,20 @@ Staging驗收完整功能，不累積資料量。執行前依
 
 基礎檢查：
 
+在 staging，以下 queue-health command 必須在 runtime-secret wrapper 的 child command 內執行，且
+wrapper 必須以 `--consumer compose` 載入後清理 runtime secrets。不得在 host persistent `.env` 寫入或
+`export` `CELERY_BROKER_URL`；以 `docker exec -e` 只把它短暫傳給該次 ingest process。
+
 ```bash
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmq-diagnostics -q ping
 docker compose -f docker-compose.prod.yml exec -T rabbitmq rabbitmqctl list_queues -p /findb name messages durable arguments
 docker compose -f docker-compose.prod.yml exec -T worker celery -A app.task_queue inspect ping --timeout=10
-docker compose -f docker-compose.prod.yml exec -T ingest python /app/scripts/check_queue_health.py
+sudo /opt/findb/runtime-secrets/runtime_secret_command.sh \
+  --catalog /opt/findb/runtime-secrets/findb.json \
+  --region ap-southeast-1 \
+  --consumer compose \
+  -- docker exec -e CELERY_BROKER_URL findb-ingest \
+  python /app/scripts/check_queue_health.py
 ```
 
 以固定bounded identity送出pilot並確認：
