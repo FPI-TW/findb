@@ -2701,6 +2701,67 @@ def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolatio
     assert "without printing credential values" in isolation_script
 
 
+def test_fetcher_postbuild_gates_always_evaluate_their_existing_fail_closed_conditions() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    jobs = workflow["jobs"]
+    expected_gates = {
+        "validate-r2-bucket-configuration": (
+            "github.event_name == 'workflow_dispatch'",
+            "inputs.run_finlab_smoke != true",
+            "needs.build-push.result == 'success'",
+        ),
+        "validate-fetcher-credential-isolation": (
+            "(inputs.deployment_target || 'staging') == 'production'",
+            "github.event_name == 'workflow_dispatch'",
+            "inputs.run_finlab_smoke != true",
+            "needs.build-push.result == 'success'",
+        ),
+        "validate-fetcher-credential-isolation-aws": (
+            "(inputs.deployment_target || 'staging') == 'staging'",
+            "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'",
+            "github.event_name == 'workflow_dispatch'",
+            "inputs.run_finlab_smoke != true",
+            "needs.build-push.result == 'success'",
+        ),
+        "finlab-acquisition-smoke": (
+            "github.event_name == 'workflow_dispatch'",
+            "inputs.run_finlab_smoke == true",
+            "(inputs.deployment_target || 'staging') == 'staging'",
+            "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'",
+            "needs.build-push.result == 'success'",
+            "needs.validate-target-routing.result == 'success'",
+        ),
+    }
+
+    for job_name, gates in expected_gates.items():
+        condition = jobs[job_name]["if"]
+        assert condition.startswith("always() &&")
+        for gate in gates:
+            assert gate in condition
+
+
+def test_fetcher_deploy_retains_the_complete_fail_closed_postbuild_result_matrix() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    condition = " ".join(workflow["jobs"]["deploy"]["if"].split())
+
+    assert condition == (
+        "always() && "
+        "github.event_name == 'workflow_dispatch' && "
+        "(github.event_name != 'workflow_dispatch' || inputs.run_finlab_smoke != true) && "
+        "needs.build-push.result == 'success' && "
+        "needs.validate-target-routing.result == 'success' && "
+        "needs.validate-r2-bucket-configuration.result == 'success' && "
+        "( "
+        "((inputs.deployment_target || 'staging') == 'production' && "
+        "needs.validate-fetcher-credential-isolation.result == 'success' && "
+        "needs.validate-fetcher-credential-isolation-aws.result == 'skipped') || "
+        "((inputs.deployment_target || 'staging') == 'staging' && "
+        "needs.validate-fetcher-credential-isolation.result == 'skipped' && "
+        "needs.validate-fetcher-credential-isolation-aws.result == 'success') "
+        ")"
+    )
+
+
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
     setup_script = (BACKEND_ROOT / "scripts" / "setup_ec2.sh").read_text(encoding="utf-8")
 
