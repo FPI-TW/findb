@@ -287,7 +287,7 @@ data "aws_iam_policy_document" "instance_permissions" {
     ]
 
     resources = [
-      for key, spec in local.runtime_secret_specs : aws_secretsmanager_secret.runtime[key].arn
+      for key, spec in local.runtime_secret_specs : aws_secretsmanager_secret.active_runtime[key].arn
       if spec.unit == each.key && spec.status == "active"
     ]
   }

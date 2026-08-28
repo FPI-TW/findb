@@ -52,7 +52,7 @@ output "runtime_secret_kms_key_arns" {
 output "runtime_secret_names" {
   description = "Metadata-only Secrets Manager names. Secret values are populated outside OpenTofu state."
   value = {
-    for key, secret in aws_secretsmanager_secret.runtime : key => secret.name
+    for key, secret in aws_secretsmanager_secret.active_runtime : key => secret.name
   }
 }
 

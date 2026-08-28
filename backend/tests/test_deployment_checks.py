@@ -1776,14 +1776,29 @@ def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> Non
     assert "push" not in required_triggers
     assert required_ci["jobs"]["findb"]["uses"] == "./.github/workflows/findb-ci.yml"
     assert required_ci["jobs"]["fetcher"]["uses"] == "./.github/workflows/fetcher-ci.yml"
-    assert required_ci["jobs"]["staging-infra-plan"]["uses"] == (
-        "./.github/workflows/staging-infra-plan.yml"
+    normal_infra_plan = required_ci["jobs"]["staging-infra-plan"]
+    assert normal_infra_plan["uses"] == "./.github/workflows/staging-infra-plan.yml"
+    assert "with" not in normal_infra_plan
+    assert normal_infra_plan["if"] == (
+        "${{ needs.changes.outputs.infra == 'true' && "
+        "github.event.pull_request.head.ref != 'chore/staging-phase2-retirement' }}"
     )
-    assert "with" not in required_ci["jobs"]["staging-infra-plan"]
-    assert required_ci["jobs"]["staging-infra-plan"]["if"] == (
-        "${{ needs.changes.outputs.infra == 'true' }}"
+    assert normal_infra_plan["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+    }
+
+    retirement_infra_plan = required_ci["jobs"]["staging-infra-retirement-plan"]
+    assert retirement_infra_plan["uses"] == (
+        "FPI-TW/findb/.github/workflows/staging-infra-plan.yml@"
+        "efe573be9267a52a0b7e3090d00445f38df9945a"
     )
-    assert required_ci["jobs"]["staging-infra-plan"]["permissions"] == {
+    assert retirement_infra_plan["with"] == {"allow_ghcr_metadata_retirement": "true"}
+    assert retirement_infra_plan["if"] == (
+        "${{ needs.changes.outputs.infra == 'true' && "
+        "github.event.pull_request.head.ref == 'chore/staging-phase2-retirement' }}"
+    )
+    assert retirement_infra_plan["permissions"] == {
         "contents": "read",
         "id-token": "write",
     }
@@ -1794,6 +1809,7 @@ def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> Non
         "findb",
         "fetcher",
         "staging-infra-plan",
+        "staging-infra-retirement-plan",
     ]
 
     changes = required_ci["jobs"]["changes"]
@@ -1811,7 +1827,25 @@ def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> Non
     }
 
     verify_script = _named_step(required_ci, "required", "Verify routed CI results")["run"]
-    assert 'verify_child "staging-infra-plan" "$INFRA_EXPECTED" "$INFRA_RESULT"' in (verify_script)
+    assert "INFRA_NORMAL_RESULT" in verify_script
+    assert "INFRA_RETIREMENT_RESULT" in verify_script
+    assert '"$INFRA_EXPECTED" == "false"' in verify_script
+    assert (
+        '"$INFRA_EXPECTED" == "true" && "$PR_HEAD_REF" == "chore/staging-phase2-retirement"'
+        in verify_script
+    )
+    assert (
+        '"$INFRA_NORMAL_RESULT" != "skipped" || "$INFRA_RETIREMENT_RESULT" != "skipped"'
+        in verify_script
+    )
+    assert (
+        '"$INFRA_NORMAL_RESULT" != "skipped" || "$INFRA_RETIREMENT_RESULT" != "success"'
+        in verify_script
+    )
+    assert (
+        '"$INFRA_NORMAL_RESULT" != "success" || "$INFRA_RETIREMENT_RESULT" != "skipped"'
+        in verify_script
+    )
 
     for ci_path, cd_path, reusable_path in (
         (FINDB_CI_WORKFLOW, FINDB_CD_WORKFLOW, "./.github/workflows/findb-ci.yml"),
@@ -1827,6 +1861,50 @@ def test_pull_requests_use_aggregate_ci_and_main_push_uses_each_cd_gate() -> Non
         cd_workflow = _load_workflow(cd_path)
         assert cd_workflow["on"]["push"]["branches"] == ["main"]
         assert cd_workflow["jobs"]["verify"]["uses"] == reusable_path
+
+
+@pytest.mark.parametrize(
+    ("infra_expected", "head_ref", "normal_result", "retirement_result", "expected_returncode"),
+    [
+        ("false", "feature/no-infra", "skipped", "skipped", 0),
+        ("true", "chore/staging-phase2-retirement", "skipped", "success", 0),
+        ("true", "feat/ordinary-infra", "success", "skipped", 0),
+        ("false", "feature/no-infra", "success", "skipped", 1),
+        ("true", "chore/staging-phase2-retirement", "success", "skipped", 1),
+        ("true", "feat/ordinary-infra", "skipped", "success", 1),
+    ],
+)
+def test_required_ci_infrastructure_routing_truth_table(
+    infra_expected: str,
+    head_ref: str,
+    normal_result: str,
+    retirement_result: str,
+    expected_returncode: int,
+) -> None:
+    required_ci = _load_workflow(REQUIRED_CI_WORKFLOW)
+    verify_script = _named_step(required_ci, "required", "Verify routed CI results")["run"]
+    assert isinstance(verify_script, str)
+
+    completed = subprocess.run(
+        ["bash", "-c", verify_script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CHANGES_RESULT": "success",
+            "FINDB_RESULT": "skipped",
+            "FETCHER_RESULT": "skipped",
+            "INFRA_NORMAL_RESULT": normal_result,
+            "INFRA_RETIREMENT_RESULT": retirement_result,
+            "FINDB_EXPECTED": "false",
+            "FETCHER_EXPECTED": "false",
+            "INFRA_EXPECTED": infra_expected,
+            "PR_HEAD_REF": head_ref,
+        },
+    )
+
+    assert completed.returncode == expected_returncode, completed.stderr
 
 
 def test_remote_env_examples_cover_the_sync_contract() -> None:

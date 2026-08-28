@@ -200,7 +200,8 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     assert "resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]" in permissions
     assert 'sid    = "ReadExactSecretMetadata"' in permissions
     assert (
-        "resources = [for secret in aws_secretsmanager_secret.runtime : secret.arn]" in permissions
+        "resources = [for secret in aws_secretsmanager_secret.active_runtime : secret.arn]"
+        in permissions
     )
     assert "secretsmanager:GetResourcePolicy" in permissions
     assert 'sid       = "ReadExactStateObject"' in permissions
@@ -398,22 +399,17 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             for consumer in catalog["consumers"].values()
             for secret in consumer["secrets"]
         )
-    transitional_secret_ids = {
-        "findb/registry/ghcr-pull",
-        "fetcher/registry/ghcr-pull",
-    }
     assert len(catalog_secret_ids) == 17
-    assert catalog_secret_ids.isdisjoint(transitional_secret_ids)
-    assert tofu_secret_ids == catalog_secret_ids | transitional_secret_ids
-    assert len(tofu_secret_ids) == 19
-    for secret_id in transitional_secret_ids:
-        assert f'"{secret_id}" = {{' in secrets
-    assert secrets.count('status        = "transitional-inactive"') == 2
+    assert tofu_secret_ids == catalog_secret_ids
+    assert len(tofu_secret_ids) == 17
+    assert "registry/ghcr-pull" not in secrets
     assert secrets.count('status        = "active"') == 17
     assert secrets.count('resource "aws_kms_key" "runtime_secrets"') == 1
     assert 'name          = "alias/findb-staging-${each.key}-runtime-secrets"' in secrets
-    assert 'resource "aws_secretsmanager_secret" "runtime"' in secrets
-    runtime_secret_resource = secrets.split('resource "aws_secretsmanager_secret" "runtime"', 1)[1]
+    assert 'resource "aws_secretsmanager_secret" "active_runtime"' in secrets
+    runtime_secret_resource = secrets.split(
+        'resource "aws_secretsmanager_secret" "active_runtime"', 1
+    )[1]
     assert "for_each = local.runtime_secret_specs" in runtime_secret_resource
     assert "prevent_destroy = true" in runtime_secret_resource
     assert "recovery_window_in_days = 30" in secrets
@@ -426,14 +422,6 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     assert 'values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]' in secrets
     assert 'variable = "kms:EncryptionContext:SecretARN"' in secrets
     assert "active_runtime_secret_arn_patterns_by_unit" in secrets
-    for secret_id in transitional_secret_ids:
-        assert (
-            secret_id
-            not in secrets.split("active_runtime_secret_arn_patterns_by_unit", 1)[1].split(
-                "}\n}\n\ndata", 1
-            )[0]
-        )
-
     deploy_policy = iam.split('data "aws_iam_policy_document" "deploy_permissions"', 1)[1].split(
         'resource "aws_iam_role_policy" "deploy_permissions"', 1
     )[0]
@@ -441,7 +429,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     assert "DecryptOwnRuntimeSecrets" not in deploy_policy
     instance_policy = iam.split('data "aws_iam_policy_document" "instance_permissions"', 1)[1]
     assert 'sid    = "ReadOwnRuntimeSecrets"' in instance_policy
-    assert "aws_secretsmanager_secret.runtime[key].arn" in instance_policy
+    assert "aws_secretsmanager_secret.active_runtime[key].arn" in instance_policy
     assert 'if spec.unit == each.key && spec.status == "active"' in instance_policy
     assert 'sid       = "DecryptOwnRuntimeSecrets"' in instance_policy
     assert "resources = [aws_kms_key.runtime_secrets[each.key].arn]" in instance_policy
@@ -451,10 +439,22 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     kms_policy = secrets.split('data "aws_iam_policy_document" "runtime_secrets_kms"', 1)[1].split(
         'resource "aws_kms_key" "runtime_secrets"', 1
     )[0]
-    assert "aws_secretsmanager_secret.runtime" not in kms_policy
+    assert "aws_secretsmanager_secret.active_runtime" not in kms_policy
     assert "values   = local.active_runtime_secret_arn_patterns_by_unit[each.key]" in kms_policy
     assert 'output "runtime_secret_kms_key_arns"' in outputs
     assert 'output "runtime_secret_names"' in outputs
+
+    moves = _read(STAGING_ROOT / "runtime_secret_moves.tf")
+    moved_pairs = set(
+        re.findall(
+            r'from = aws_secretsmanager_secret\.runtime\["([^"]+)"\]\s+'
+            r'to   = aws_secretsmanager_secret\.active_runtime\["([^"]+)"\]',
+            moves,
+        )
+    )
+    assert moved_pairs == {(secret_id, secret_id) for secret_id in catalog_secret_ids}
+    assert len(moved_pairs) == 17
+    assert "registry/ghcr-pull" not in moves
 
 
 def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:

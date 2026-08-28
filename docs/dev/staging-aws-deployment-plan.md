@@ -4,15 +4,18 @@
 > 成熟化計畫；現行可操作 runbook 仍以
 > [`../operations/deployment.md`](../operations/deployment.md) 為準。
 >
-> 最後盤點：2026-08-27。Protected `main` 的 merge SHA
+> 最後盤點：2026-08-28。Phase 1 evidence 的 protected `main` merge SHA
 > `77212ce47b3138c2e21c6984e989b66239fd3cce` 已由兩個 GitHub Environments 完成 OIDC／SSM
 > preflight及既有SSH deployment，OpenTofu remote state、OIDC/IAM、instance profiles、required
 > tags、SSM managed nodes、Session Manager與unit-specific SSM logs均有live evidence。Phase 0與
 > Phase 1已通過exit gate；「服務可用」仍不等同於Phase 2–6的secret遷移、digest／manifest、
-> SSM deployment cutover、監控與災難復原已完成。Staging registry已決策改採Amazon ECR，但ECR
-> repositories、publisher roles、workflow cutover、apply與live acceptance均為待建立／待驗收項目。
+> SSM deployment cutover、監控與災難復原已完成。Staging 已完成 Amazon ECR foundation、publisher
+> roles、workflow cutover 與 live deployment 驗收；Phase 2 的 credential rotation、GHCR metadata
+> retirement 與完整 provider cycle 仍未完成。當前 protected-`main` workflow foundation SHA 為
+> `efe573be9267a52a0b7e3090d00445f38df9945a`；此 SHA 只記錄 workflow foundation，並不宣稱
+> application runtime 已由該 SHA 部署。
 
-## ECR foundation 與啟用契約（待授權）
+## ECR foundation 與啟用契約（已完成；持續驗收）
 
 本分支定義、但**不宣稱已建立或已驗收**的 staging ECR foundation：五個 private repositories、
 main-only publisher roles、instance pull 權限與 read-only infra plan refresh 權限。任何 ECR resource、
@@ -323,7 +326,14 @@ Parameter Store一般參數。
 `findb/staging/findb/registry/ghcr-pull`與`findb/staging/fetcher/registry/ghcr-pull`是待退役的空
 過渡資源。ECR live acceptance完成後，catalog與IaC active runtime-secret集合必須收斂為17筆；
 retirement apply只可排程刪除上述兩筆且保留30天recovery window。兩個已建立但未使用的
-package-read-only PAT同樣在ECR驗收後撤銷，文件與操作紀錄均不得保存token內容。
+package-read-only PAT已撤銷，文件與操作紀錄均不得保存token內容。
+
+Retirement PR 的 CI 僅是 preflight，不能作為 apply authority。實際刪除只能在 reviewed retirement
+PR 合併到 protected `main` 後進行：operator 必須以乾淨 checkout 讓 `HEAD` 精確等於合併後的
+`origin/main` SHA，live 驗證兩個 exact Secret ID 都沒有 versions 或 values，從該 SHA 產生 fresh
+saved plan，並以 immutable guard 加上兩個 exact allow addresses 驗證 `delete_count=2` 且沒有其他
+delete。取得 action-time user confirmation 後，獨立 apply identity 才可 apply 那份 exact saved
+plan；隨後驗證兩筆皆為30天 scheduled deletion、active catalog 為17，並重跑 fresh zero-delete plan。
 
 至少維持下列邊界：
 
@@ -408,11 +418,13 @@ IaC原始碼同步與plan採以下過渡及長期契約：
   staging state，並只為S3 native lockfile取得必要的建立／刪除鎖權限；不得修改受管AWS資源、
   讀取runtime secret value或取得apply role；
 - workflow輸出綁定commit SHA與configuration／lockfile checksum的bounded plan摘要；完整plan不得
-  公開或跨commit重用。任何delete／replace action、初始化或驗證錯誤皆fail closed，除非另有具名
-  operator、理由、影響範圍與核准紀錄；
-- apply不由PR plan role執行。合併protected `main`後，operator以獨立apply身分重新checkout合併
-  commit、重新執行相同檢查與fresh plan，確認預期變更且零destroy後才可人工apply。PR plan只作
-  gate與預覽，不構成apply授權。
+  公開或跨commit重用。預設任何delete／replace action、初始化或驗證錯誤皆fail closed；retirement
+  PR 的唯一例外只允許兩個 exact metadata deletes，且仍僅為 preflight；
+- apply不由PR plan role執行。retirement apply 必須在 reviewed PR 合併後，以 `HEAD` 精確等於
+  `origin/main` merged SHA 的乾淨 checkout、live empty-secret 驗證、fresh saved plan、immutable
+  guard 的 exact two-delete proof 與 action-time user confirmation 為前提，再由獨立 apply identity
+  apply exact saved plan；之後驗證30天 scheduled deletion、17筆 active catalog及fresh zero-delete
+  plan。PR plan只作 gate與預覽，不構成apply授權。
 
 ## 實作波次
 
@@ -483,32 +495,42 @@ Session Manager recovery均可用。
 
 ### Phase 2：Runtime secrets與ECR registry cutover
 
-目前狀態以「已決策／待建立／待驗收／驗收後退役」管理，不記錄branch是否已commit或準備合併等
-會隨Git history失真的瞬時狀態。FinDB與Fetcher staging hosts均已安裝AWS CLI v2.36.31，各自以
-unit-specific instance role完成STS identity驗證，並通過`/run` open-file-descriptor tmpfs檢查。
-Secrets Manager已有19筆metadata；17筆目標runtime entries已建立版本，兩筆GHCR pull entries為空
-且列為驗收後退役。Staging ECR foundation、publisher roles、workflow cutover與live deployment均仍
-待建立或待驗收。既有GitHub Environment secrets、persistent host credentials與SSH recovery必須
-保留，直到本Phase其餘驗收全部成功且撤銷條件另行確認。
+FinDB與Fetcher staging hosts均已安裝AWS CLI v2.36.31，各自以unit-specific instance role完成STS
+identity驗證，並通過`/run` open-file-descriptor tmpfs檢查。Staging ECR foundation、publisher roles、
+workflow cutover與live deployment 已完成。Secrets Manager 為17筆 active runtime entries 加兩筆
+empty GHCR transitional metadata；retirement 是目前 PR 的規劃，尚未 apply。兩枚 staging GHCR pull
+PAT 已刪除；已知 legacy `/opt/findb/.env` 已永久移除，移除後 health 驗收通過。GitHub Environment
+的 runtime copies 必須保留到其餘非等待 gate 全部完成。DB-backed／R2／provider／RabbitMQ credential
+rotation 與舊值撤銷仍未完成。
 
-- [ ] 建立IaC專用GitHub Actions PR plan gate與`staging-infra-plan` OIDC role，依IaC邊界驗證
-  exact commit、bounded plan、零delete／replace及plan／apply身分分離；完成前只使用上述
-  commit-specific CloudShell archive過渡流程。
-- [ ] 依consumer邊界建立target-specific secrets與KMS policy；先寫入新版本，不刪GitHub值。
-- [ ] 新增host-side secret loader，以allowlist取值、寫入tmpfs、驗證owner／mode並於結束後清理。
-- [ ] 先用現行SSH CD完成一次非資料產生的deploy，改由instance role取secret，確認每個container
-  只取得必要credential。
-- [ ] Foundation PR建立五個ECR repositories、兩個main-only publisher roles及unit-specific instance
-  pull policies；合併後以fresh zero-destroy plan人工apply，驗證immutable tags、AES-256、basic
-  scan-on-push與untagged 7天lifecycle。此步不得同時切換workflow。
-- [ ] Foundation apply完成後，另以cutover PR將staging build/push/pull切換到ECR；staging與暫留的
-  production GHCR相容路徑必須由互斥、fail-closed jobs處理，staging不得dual-publish或把
-  `GITHUB_TOKEN`／PAT傳到EC2。FinDB與Fetcher各完成ECR登入、pull與live deployment驗收。
+- [x] 建立IaC專用GitHub Actions PR plan gate與`staging-infra-plan` OIDC role，驗證 exact commit、
+  bounded plan與plan／apply身分分離；PR plan只作 preflight，retirement 的 destructive apply仍待
+  protected-`main` fresh saved plan與action-time confirmation。
+- [x] 依consumer邊界建立target-specific secrets與KMS policy；17筆 active runtime entries已建立，
+  GitHub值尚未刪除。
+- [x] 新增host-side secret loader，以allowlist取值、寫入tmpfs、驗證owner／mode並於結束後清理。
+- [x] 完成runtime-secret deployment驗收；每個container僅取得必要credential。
+- [x] Foundation 已建立五個ECR repositories、兩個main-only publisher roles及unit-specific instance
+  pull policies，並完成 immutable tags、AES-256、basic scan-on-push 與 untagged 7天 lifecycle 驗收。
+- [x] staging build/push/pull 已切換到ECR，FinDB與Fetcher完成ECR登入、pull與live deployment驗收；
+  staging不dual-publish且不把`GITHUB_TOKEN`／PAT傳到EC2。
 - [ ] 逐一輪替DB-backed keys、R2、provider與RabbitMQ credentials，觀察完整排程週期。
 - [ ] 確認last-used與health後，撤銷GitHub Environment及persistent host env中的舊runtime secrets；
   GitHub只保留role ARN、region、target selector、public host與secret identifier等非敏感值。
-- [ ] ECR驗收後以retirement PR把active runtime-secret集合收斂為17筆；OpenTofu plan只可刪除兩筆
-  空GHCR metadata並使用30天recovery window。同一驗收波次撤銷兩個未使用PAT，不記錄token值。
+- [x] 兩枚 staging GHCR pull PAT 已刪除；不記錄token值。
+- [ ] 以retirement PR把active runtime-secret集合收斂為17筆；尚未 apply。apply只可刪除兩筆空GHCR
+  metadata並使用30天recovery window，且須符合本節的 protected-`main`、live verification、saved
+  plan、immutable guard 與 action-time confirmation 邊界。
+
+#### Phase 2 work record（2026-08-28）
+
+| Action | Evidence | Result |
+| --- | --- | --- |
+| ECR foundation 與 cutover | Staging ECR foundation、publisher roles、workflow cutover及FinDB／Fetcher live deployments已完成驗收 | staging 僅由instance role取得ECR短效token，不保留GHCR credential |
+| Runtime secret inventory | Secrets Manager metadata 為17筆active entries加兩筆empty GHCR transitional metadata | active catalog 尚未因retirement apply收斂；兩筆metadata仍存在 |
+| Legacy GHCR／host material | 兩枚staging GHCR pull PAT已刪除；已知legacy `/opt/findb/.env`已永久移除，移除後health驗收通過 | GitHub Environment runtime copies仍保留，直到其餘非等待gate通過 |
+| Scheduler observation | FinLab與Shioaji於2026-08-28 14:40完成cycle，fresh且`last_error=null` | Twelve Data完整cycle仍等待2026-08-29 08:15觀察 |
+| Credential rotation 與 retirement | DB-backed／R2／provider／RabbitMQ rotation及舊值撤銷未完成；retirement為current PR規劃 | 未執行retirement apply；不得把PR CI或preflight視為apply authority |
 
 Exit gate：deploy role無法讀secret value；workflow log與SSM command不含runtime secret；舊
 credential已撤銷而非只複製；FinDB與Fetcher無cross-secret read；兩個unit皆以instance role取得
