@@ -182,7 +182,10 @@ docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
   python /app/scripts/check_queue_health.py \
   --attempts 12 --interval 5 --maximum-heartbeat-age 90 >/dev/null
 
-docker compose -f "$compose_file" restart nginx >/dev/null
+# The prior compose restart did not reliably load the newly rendered single-file
+# tmpfs bind mount. Force recreation from the current source path after each
+# render; the functional probe below verifies the rotated key is active.
+docker compose -f "$compose_file" up -d --no-deps --force-recreate nginx >/dev/null
 ready=0
 for attempt in 1 2 3 4 5 6; do
   health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx 2>/dev/null || true)"
@@ -201,6 +204,15 @@ for dashboard_path in /dashboard/ /dashboard/lookup; do
   docker compose -f "$compose_file" exec -T nginx \
     wget -q --no-check-certificate --spider "https://127.0.0.1$dashboard_path"
 done
+
+# Prove the recreated nginx container reads the current tmpfs lookup key.
+# This is a small, read-only request that only receives the key through the
+# exact same-origin Referer map used by Dashboard lookup requests.
+lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"
+docker compose -f "$compose_file" exec -T nginx \
+  wget -q --no-check-certificate --spider \
+    --header="Referer: $lookup_referer" \
+    "https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"
 
 docker compose -f "$compose_file" exec -T serve \
   sh -lc 'python /app/scripts/generate_instrument_cache.py' >/dev/null

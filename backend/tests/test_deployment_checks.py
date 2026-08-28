@@ -1604,6 +1604,25 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     assert "/run/findb-runtime-secrets/nginx/serve-key.conf" in nginx_helper
 
 
+def test_findb_runtime_secret_deploy_recreates_nginx_after_rendering_lookup_key() -> None:
+    deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+
+    render_at = deploy.index('"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"')
+    recreate_at = deploy.index(
+        'docker compose -f "$compose_file" up -d --no-deps --force-recreate nginx'
+    )
+    nginx_health_at = deploy.index('health_status="$(docker inspect', recreate_at)
+    public_acceptance_at = deploy.index("for dashboard_path in /dashboard/ /dashboard/lookup")
+    lookup_probe_at = deploy.index('lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"')
+
+    assert render_at < recreate_at < nginx_health_at < public_acceptance_at < lookup_probe_at
+    assert 'docker compose -f "$compose_file" restart nginx' not in deploy
+    assert '--header="Referer: $lookup_referer"' in deploy
+    assert '"https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"' in deploy
+
+
 def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_inputs() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
         encoding="utf-8"
