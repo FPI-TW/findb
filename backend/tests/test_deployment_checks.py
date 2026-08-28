@@ -804,12 +804,21 @@ def test_immutable_ecr_build_helper_reuses_or_builds_only_after_exact_tag_inspec
     docker_log = tmp_path / "docker.log"
     (fake_bin / "aws").write_text(
         """#!/bin/sh
+test_tag="${ECR_IMAGE_TAG:-${GITHUB_SHA:?}}"
 case "${ECR_TEST_MODE:?}" in
   present) printf '%s\\n' 'sha256:already-present' ;;
-  absent) printf '%s\\n' 'An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageTag=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa} does not exist within the repository with name findb/staging/backend in the registry with id 439622209937' >&2; exit 255 ;;
+  absent) printf '%s\\n' "An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageTag=$test_tag} does not exist within the repository with name findb/staging/backend in the registry with id 439622209937" >&2; exit 255 ;;
+  absent_current) printf '%s\\n' "aws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageTag=$test_tag} does not exist within the repository with name findb/staging/backend in the registry with id 439622209937" >&2; exit 255 ;;
+  absent_service) printf '%s\\n' "aws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageDigest:'null', imageTag:'$test_tag'} does not exist within the repository with name 'findb/staging/backend' in the registry with id '439622209937'" >&2; exit 255 ;;
+  nul) printf '%s\\0' "An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageTag=$test_tag} does not exist within the repository with name findb/staging/backend in the registry with id 439622209937" >&2; exit 255 ;;
   error) printf '%s\\n' 'An error occurred (ThrottlingException)' >&2; exit 255 ;;
   mixed) printf '%s\\n' 'An error occurred (ImageNotFoundException) when calling the DescribeImages operation: absent' 'An error occurred (ThrottlingException) when calling the DescribeImages operation: retry later' >&2; exit 255 ;;
+  short_full_header) printf '%s\\n' 'aws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: absent' >&2; exit 255 ;;
   forged) printf '%s\\n' 'ImageNotFoundException: absent' >&2; exit 255 ;;
+  malformed_prefix) printf '%s\\n' 'aws: [ERROR] An error occurred (ImageNotFoundException) when calling the DescribeImages operation: absent' >&2; exit 255 ;;
+  access_denied) printf '%s\\n' 'aws: [ERROR]: An error occurred (AccessDeniedException) when calling the DescribeImages operation: denied' >&2; exit 255 ;;
+  trailing_blank) printf '%s\\n\\n' 'aws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: absent' >&2; exit 255 ;;
+  leading_blank) printf '\\n%s\\n' 'An error occurred (ImageNotFoundException) when calling the DescribeImages operation: absent' >&2; exit 255 ;;
 esac
 """,
         encoding="utf-8",
@@ -851,6 +860,30 @@ esac
     assert "buildx build" in docker_log.read_text(encoding="utf-8")
 
     docker_log.unlink()
+    absent_current = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "absent_current"},
+    )
+    assert absent_current.returncode == 0, absent_current.stderr
+    assert "staging_ecr_build=pushed" in absent_current.stdout
+    assert "buildx build" in docker_log.read_text(encoding="utf-8")
+
+    docker_log.unlink()
+    absent_service = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "absent_service"},
+    )
+    assert absent_service.returncode == 0, absent_service.stderr
+    assert "staging_ecr_build=pushed" in absent_service.stdout
+    assert "buildx build" in docker_log.read_text(encoding="utf-8")
+
+    docker_log.unlink()
     inspection_error = subprocess.run(
         ["bash", str(helper), image, ".", "./backend/Dockerfile"],
         capture_output=True,
@@ -862,7 +895,16 @@ esac
     assert "reason=ecr_tag_inspection_failed" in inspection_error.stderr
     assert not docker_log.exists()
 
-    for mode in ("mixed", "forged"):
+    for mode in (
+        "mixed",
+        "nul",
+        "short_full_header",
+        "forged",
+        "malformed_prefix",
+        "access_denied",
+        "trailing_blank",
+        "leading_blank",
+    ):
         rejected = subprocess.run(
             ["bash", str(helper), image, ".", "./backend/Dockerfile"],
             capture_output=True,
