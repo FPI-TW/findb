@@ -24,6 +24,7 @@ shift 9
 
 case "$provider" in
   twelve-data)
+    marker_identity="twelve"
     expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data"
     source_key="${FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY:-}"
     provider_key="${TWELVE_DATA_API_KEY:-}"
@@ -35,12 +36,14 @@ case "$provider" in
     )
     ;;
   finlab)
+    marker_identity="finlab"
     expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab"
     source_key="${FETCHER_FINLAB_SOURCE_CLIENT_KEY:-}"
     provider_key="${FINLAB_API_TOKEN:-}"
     provider_env=(--env FINLAB_API_TOKEN)
     ;;
   shioaji)
+    marker_identity="shioaji"
     expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji"
     if [ "${SHIOAJI_SIMULATION:-}" != "true" ]; then
       echo "release_fetcher_provider=failed reason=shioaji_simulation_required" >&2
@@ -146,7 +149,7 @@ if [ "$cache_dir" != "-" ]; then
 fi
 
 raw_marker="$state_dir/raw-bucket.sha256"
-fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$provider" | sha256sum | cut -d ' ' -f1)"
+fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$marker_identity" | sha256sum | cut -d ' ' -f1)"
 write_marker() {
   marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
   printf '%s\n' "$fingerprint" | sudo tee "$marker_tmp" >/dev/null

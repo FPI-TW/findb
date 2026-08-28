@@ -1268,6 +1268,125 @@ def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_input
     assert "/var/lib/findb-shioaji-fetcher/cache" in shioaji
 
 
+def test_aws_fetcher_release_preserves_staging_raw_marker_identities() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    expected_markers = {
+        "twelve-data": (
+            "twelve",
+            "92b76aa7bc713b08fe36ba8abe76aa17d67add8ac5f8dae868c147d78a5db45f",
+        ),
+        "finlab": (
+            "finlab",
+            "99b6f6dde7c65ac33573f3d766ba6fd0686e4303641c0cf23e44d7819931b812",
+        ),
+        "shioaji": (
+            "shioaji",
+            "d5d296ea62e87b971916f6e0ec7025c172aba9cbe0a0060dc8ac3675970bffcc",
+        ),
+    }
+    account_id = "ef6190725fbf3a4331203b901a2d2961"
+    raw_bucket = "findb-staging-raw"
+
+    for selector, (identity, expected_marker) in expected_markers.items():
+        assert re.search(
+            rf"{re.escape(selector)}\)\n    marker_identity=\"{re.escape(identity)}\"",
+            helper,
+        )
+        marker = hashlib.sha256(f"{account_id}\n{raw_bucket}\n{identity}".encode()).hexdigest()
+        assert marker == expected_marker
+
+    assert '"$CLOUDFLARE_R2_RAW_BUCKET" "$marker_identity"' in helper
+
+
+def _run_twelve_fetcher_release_with_marker(
+    tmp_path: Path, *, marker_identity: str
+) -> subprocess.CompletedProcess[str]:
+    helper = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
+    state_dir = tmp_path / "state"
+    cache_dir = tmp_path / "cache"
+    fake_bin = tmp_path / "bin"
+    state_dir.mkdir(parents=True)
+    fake_bin.mkdir()
+    state_path = state_dir / "state.sqlite3"
+    state_path.write_text("durable-state\n", encoding="utf-8")
+    marker = hashlib.sha256(
+        f"ef6190725fbf3a4331203b901a2d2961\nfindb-staging-raw\n{marker_identity}".encode()
+    ).hexdigest()
+    (state_dir / "raw-bucket.sha256").write_text(marker + "\n", encoding="utf-8")
+
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
+    fake_docker.chmod(0o755)
+    fake_sudo = fake_bin / "sudo"
+    fake_sudo.write_text(_FAKE_SUDO, encoding="utf-8")
+    fake_sudo.chmod(0o755)
+    fake_sleep = fake_bin / "sleep"
+    fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_sleep.chmod(0o755)
+
+    image = (
+        "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data:"
+        + "a" * 40
+    )
+    environment = dict(os.environ)
+    environment.update(
+        AWS_REGION="ap-southeast-1",
+        FETCHER_SOURCE_API_URL="https://findb.example.test",
+        FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY="source-key",
+        TWELVE_DATA_API_KEY="provider-key",
+        FINDB_SERVE_BASE_URL="https://findb.example.test",
+        FETCHER_CALENDAR_SERVE_API_KEY="calendar-key",
+        CLOUDFLARE_R2_ACCOUNT_ID="ef6190725fbf3a4331203b901a2d2961",
+        CLOUDFLARE_R2_RAW_BUCKET="findb-staging-raw",
+        CLOUDFLARE_R2_RAW_ACCESS_KEY_ID="r2-access-key",
+        CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY="r2-secret-key",
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        FAKE_DOCKER_STATE=str(state_dir),
+        FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
+        FAKE_IMAGE=image,
+    )
+    return subprocess.run(
+        [
+            "bash",
+            str(helper),
+            "twelve-data",
+            image,
+            str(state_dir),
+            str(state_path),
+            "stable",
+            "candidate",
+            "previous",
+            "preflight",
+            str(cache_dir),
+            "scheduler",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+def test_aws_fetcher_release_accepts_legacy_twelve_raw_marker_and_rejects_selector_marker(
+    tmp_path: Path,
+) -> None:
+    accepted = _run_twelve_fetcher_release_with_marker(
+        tmp_path / "accepted", marker_identity="twelve"
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert "raw_bucket_mismatch" not in accepted.stderr
+
+    rejected = _run_twelve_fetcher_release_with_marker(
+        tmp_path / "rejected", marker_identity="twelve-data"
+    )
+
+    assert rejected.returncode != 0
+    assert "reason=raw_bucket_mismatch" in rejected.stderr
+
+
 def test_aws_fetcher_release_recovers_on_errors_and_signals_before_deleting_previous() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
         encoding="utf-8"
