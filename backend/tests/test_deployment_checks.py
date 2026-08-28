@@ -1610,17 +1610,31 @@ def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_loo
     )
 
     render_at = deploy.index('"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"')
-    old_id_at = deploy.index('nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx)"')
+    main_up_at = deploy.index('docker compose -f "$compose_file" up -d --remove-orphans </dev/null')
+    old_id_at = deploy.index(
+        'nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"'
+    )
     stop_at = deploy.index('docker stop --time 30 "$nginx_old_id"')
     remove_at = deploy.index('docker rm "$nginx_old_id"')
-    old_absent_at = deploy.index('docker inspect "$nginx_old_id" >/dev/null 2>&1')
-    create_at = deploy.index('docker compose -f "$compose_file" up -d --no-deps nginx')
-    new_id_at = deploy.index('nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx)"')
+    old_absent_at = deploy.index('docker inspect "$nginx_old_id" </dev/null >/dev/null 2>&1')
+    create_at = deploy.index('docker compose -f "$compose_file" up -d --no-deps nginx </dev/null')
+    new_id_at = deploy.index(
+        'nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"'
+    )
     nginx_health_at = deploy.index('health_status="$(docker inspect', create_at)
     public_acceptance_at = deploy.index("for dashboard_path in /dashboard/ /dashboard/lookup")
     lookup_probe_at = deploy.index('lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"')
 
-    assert render_at < old_id_at < stop_at < remove_at < old_absent_at < create_at < new_id_at
+    assert (
+        render_at
+        < main_up_at
+        < old_id_at
+        < stop_at
+        < remove_at
+        < old_absent_at
+        < create_at
+        < new_id_at
+    )
     assert new_id_at < nginx_health_at < public_acceptance_at < lookup_probe_at
     assert 'docker compose -f "$compose_file" restart nginx' not in deploy
     assert "--force-recreate nginx" not in deploy
@@ -1769,6 +1783,96 @@ esac
         assert rejected.returncode != 0
         assert expected_error in rejected.stderr
         assert not after_marker.exists()
+
+
+def test_findb_up_script_isolates_docker_stdin_before_nginx_replacement(tmp_path: Path) -> None:
+    deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    up_script = deploy.split("<<'UP_SCRIPT'\n", 1)[1].split("\nUP_SCRIPT", 1)[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_log = tmp_path / "docker.log"
+    state_file = tmp_path / "nginx-state"
+    state_file.write_text("old-container", encoding="utf-8")
+    marker = tmp_path / "after-up-script"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+state="$(cat "$FAKE_NGINX_STATE")"
+case "$1" in
+  compose)
+    case "$*" in
+      *" up -d --remove-orphans") cat >/dev/null ;;
+      *" up -d --no-deps nginx") cat >/dev/null; printf '%s' new-container > "$FAKE_NGINX_STATE" ;;
+      *" ps -q nginx")
+        [ "$state" = "removed" ] && exit 0
+        printf '%s\\n' "$state"
+        ;;
+      *" ps --status running --services") printf '%s\\n' dispatcher worker ;;
+      *" exec "*) : ;;
+      *) exit 90 ;;
+    esac
+    ;;
+  stop) [ "$2" = "--time" ] && [ "$3" = "30" ] && [ "$4" = "old-container" ] || exit 91 ;;
+  rm) [ "$2" = "old-container" ] || exit 92; printf '%s' removed > "$FAKE_NGINX_STATE" ;;
+  inspect)
+    if [ "$2" = "--format" ]; then
+      format="$3"
+      container="$4"
+      case "$format" in
+        *"com.docker.compose.project"*) printf '%s\\n' findb ;;
+        *"com.docker.compose.service"*) printf '%s\\n' nginx ;;
+        *".State.StartedAt"*)
+          [ "$container" = "old-container" ] && printf '%s\\n' old-start || printf '%s\\n' new-start
+          ;;
+        *"serve-key.conf"*) printf '%s\\n' '/run/findb-runtime-secrets/nginx/serve-key.conf false' ;;
+        *".State.Health"*) printf '%s\\n' healthy ;;
+        *) exit 93 ;;
+      esac
+    elif [ "$2" = "old-container" ] && [ "$state" = "removed" ]; then
+      exit 1
+    else
+      exit 94
+    fi
+    ;;
+  image) : ;;
+  *) exit 95 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    completed = subprocess.run(
+        ["bash", "-s", "--", "/tmp/compose.yml"],
+        input=f'{up_script}\ntouch "$FAKE_AFTER_UP_SCRIPT"\n',
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "FAKE_DOCKER_LOG": str(docker_log),
+            "FAKE_NGINX_STATE": str(state_file),
+            "FAKE_AFTER_UP_SCRIPT": str(marker),
+            "FINDB_PUBLIC_HOST": "findb.example.test",
+            "IMAGE_TAG": "a" * 40,
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert marker.exists()
+    commands = docker_log.read_text(encoding="utf-8").splitlines()
+    main_up_at = commands.index("compose -f /tmp/compose.yml up -d --remove-orphans")
+    replacement_up_at = commands.index("compose -f /tmp/compose.yml up -d --no-deps nginx")
+    lookup_probe_at = commands.index(
+        "compose -f /tmp/compose.yml exec -T nginx wget -q --no-check-certificate --spider "
+        "--header=Referer: https://findb.example.test/dashboard/lookup "
+        "https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"
+    )
+    assert main_up_at < replacement_up_at < lookup_probe_at
 
 
 def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_inputs() -> None:

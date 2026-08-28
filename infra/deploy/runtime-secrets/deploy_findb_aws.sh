@@ -127,16 +127,16 @@ MIGRATION_SCRIPT
 run_runtime --consumer compose -- bash -s -- "$compose_file" <<'UP_SCRIPT'
 set -euo pipefail
 compose_file="$1"
-docker compose -f "$compose_file" up -d --remove-orphans
+docker compose -f "$compose_file" up -d --remove-orphans </dev/null
 
-if ! docker compose -f "$compose_file" exec -T rabbitmq rabbitmq-diagnostics -q ping >/dev/null; then
+if ! docker compose -f "$compose_file" exec -T rabbitmq rabbitmq-diagnostics -q ping </dev/null >/dev/null; then
   echo "findb_aws_deploy=failed reason=rabbitmq_unhealthy" >&2
   exit 1
 fi
 for service in dispatcher worker; do
   ready=0
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if docker compose -f "$compose_file" ps --status running --services | grep -qx "$service"; then
+    if docker compose -f "$compose_file" ps --status running --services </dev/null | grep -qx "$service"; then
       ready=1
       break
     fi
@@ -153,7 +153,7 @@ for service in serve ingest; do
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if docker compose -f "$compose_file" exec -T "$service" \
       sh -lc 'python -c "import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"' \
-      >/dev/null 2>&1; then
+      </dev/null >/dev/null 2>&1; then
       ready=1
       break
     fi
@@ -167,7 +167,7 @@ done
 
 ready=0
 for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  if docker compose -f "$compose_file" exec -T dashboard wget -q --spider http://127.0.0.1:3333/dashboard/; then
+  if docker compose -f "$compose_file" exec -T dashboard wget -q --spider http://127.0.0.1:3333/dashboard/ </dev/null; then
     ready=1
     break
   fi
@@ -180,7 +180,7 @@ fi
 
 docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
   python /app/scripts/check_queue_health.py \
-  --attempts 12 --interval 5 --maximum-heartbeat-age 90 >/dev/null
+  --attempts 12 --interval 5 --maximum-heartbeat-age 90 </dev/null >/dev/null
 
 # The prior compose restart did not reliably load the newly rendered single-file
 # tmpfs bind mount. Replace the exact, verified nginx container so Docker mounts
@@ -188,39 +188,39 @@ docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
 nginx_expected_project=findb
 nginx_expected_service=nginx
 nginx_serve_key_source=/run/findb-runtime-secrets/nginx/serve-key.conf
-nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx)"
+nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"
 if [ -z "$nginx_old_id" ]; then
   echo "findb_aws_deploy=failed reason=nginx_container_missing" >&2
   exit 1
 fi
-nginx_old_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$nginx_old_id")"
-nginx_old_service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$nginx_old_id")"
+nginx_old_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$nginx_old_id" </dev/null)"
+nginx_old_service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$nginx_old_id" </dev/null)"
 if [ "$nginx_old_project" != "$nginx_expected_project" ] \
   || [ "$nginx_old_service" != "$nginx_expected_service" ]; then
   echo "findb_aws_deploy=failed reason=nginx_container_identity_invalid" >&2
   exit 1
 fi
-nginx_old_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$nginx_old_id")"
-docker stop --time 30 "$nginx_old_id" >/dev/null
-docker rm "$nginx_old_id" >/dev/null
-if docker inspect "$nginx_old_id" >/dev/null 2>&1; then
+nginx_old_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$nginx_old_id" </dev/null)"
+docker stop --time 30 "$nginx_old_id" </dev/null >/dev/null
+docker rm "$nginx_old_id" </dev/null >/dev/null
+if docker inspect "$nginx_old_id" </dev/null >/dev/null 2>&1; then
   echo "findb_aws_deploy=failed reason=nginx_old_container_still_exists" >&2
   exit 1
 fi
-docker compose -f "$compose_file" up -d --no-deps nginx >/dev/null
-nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx)"
+docker compose -f "$compose_file" up -d --no-deps nginx </dev/null >/dev/null
+nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"
 if [ -z "$nginx_new_id" ] || [ "$nginx_new_id" = "$nginx_old_id" ]; then
   echo "findb_aws_deploy=failed reason=nginx_container_not_replaced" >&2
   exit 1
 fi
-nginx_new_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$nginx_new_id")"
+nginx_new_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$nginx_new_id" </dev/null)"
 if [ "$nginx_new_started_at" = "$nginx_old_started_at" ]; then
   echo "findb_aws_deploy=failed reason=nginx_started_at_unchanged" >&2
   exit 1
 fi
-nginx_new_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$nginx_new_id")"
-nginx_new_service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$nginx_new_id")"
-nginx_serve_key_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/nginx/serve-key.conf"}}{{.Source}} {{.RW}}{{end}}{{end}}' "$nginx_new_id")"
+nginx_new_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$nginx_new_id" </dev/null)"
+nginx_new_service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$nginx_new_id" </dev/null)"
+nginx_serve_key_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/nginx/serve-key.conf"}}{{.Source}} {{.RW}}{{end}}{{end}}' "$nginx_new_id" </dev/null)"
 if [ "$nginx_new_project" != "$nginx_expected_project" ] \
   || [ "$nginx_new_service" != "$nginx_expected_service" ] \
   || [ "$nginx_serve_key_mount" != "$nginx_serve_key_source false" ]; then
@@ -229,7 +229,7 @@ if [ "$nginx_new_project" != "$nginx_expected_project" ] \
 fi
 ready=0
 for attempt in 1 2 3 4 5 6; do
-  health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx 2>/dev/null || true)"
+  health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx </dev/null 2>/dev/null || true)"
   if [ "$health_status" = "healthy" ]; then
     ready=1
     break
@@ -243,7 +243,7 @@ fi
 
 for dashboard_path in /dashboard/ /dashboard/lookup; do
   docker compose -f "$compose_file" exec -T nginx \
-    wget -q --no-check-certificate --spider "https://127.0.0.1$dashboard_path"
+    wget -q --no-check-certificate --spider "https://127.0.0.1$dashboard_path" </dev/null
 done
 
 # Prove the recreated nginx container reads the current tmpfs lookup key.
@@ -253,13 +253,13 @@ lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"
 docker compose -f "$compose_file" exec -T nginx \
   wget -q --no-check-certificate --spider \
     --header="Referer: $lookup_referer" \
-    "https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"
+    "https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1" </dev/null
 
 docker compose -f "$compose_file" exec -T serve \
-  sh -lc 'python /app/scripts/generate_instrument_cache.py' >/dev/null
+  sh -lc 'python /app/scripts/generate_instrument_cache.py' </dev/null >/dev/null
 docker compose -f "$compose_file" exec -T serve \
   sh -lc 'python -c "import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"' \
-  >/dev/null
-docker image prune -af --filter "until=168h" >/dev/null
+  </dev/null >/dev/null
+docker image prune -af --filter "until=168h" </dev/null >/dev/null
 echo "findb_aws_deploy=ready image_tag=$IMAGE_TAG"
 UP_SCRIPT
