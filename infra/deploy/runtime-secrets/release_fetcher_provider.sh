@@ -60,9 +60,7 @@ case "$provider" in
     ;;
 esac
 
-image_tag="${image##*:}"
-if ! printf '%s' "$image_tag" | grep -Eq '^[0-9a-f]{40}$' \
-  || [ "$image" != "$expected_image_repository:$image_tag" ]; then
+if ! printf '%s' "$image" | grep -Eq "^${expected_image_repository}@sha256:[0-9a-f]{64}$"; then
   echo "release_fetcher_provider=failed reason=ecr_image_contract" >&2
   exit 1
 fi

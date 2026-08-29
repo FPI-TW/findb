@@ -112,31 +112,32 @@ def _legacy_rollback_runtime_paths(workflow_path: Path) -> set[str]:
 
 
 def _host_runtime_contract_paths(workflow_path: Path) -> set[str]:
-    workflow = _load_workflow(workflow_path)
-    unit = "FinDB" if workflow_path == FINDB_CD_WORKFLOW else "Fetcher"
-    synced = _named_step(
-        workflow,
-        "deploy",
-        f"Sync AWS runtime-secret loader and exact {unit} catalog",
-    )["with"]["source"]
-    paths = set(synced.split(","))
+    # The explicit pre-foundation rollback gate remains bound to the old host
+    # runtime contract.  Post-foundation staging instead uses the validated
+    # bundle, so this set must not be inferred from removed SCP steps.
     if workflow_path == FINDB_CD_WORKFLOW:
-        renderer = _named_step(
-            workflow,
-            "deploy",
-            "Render nonsecret nginx configs for AWS runtime secrets",
-        )["run"]
-        rendered_scripts = set(
-            re.findall(r"python backend/scripts/(render_nginx_[a-z_]+\.py)", renderer)
-        )
-        assert rendered_scripts == {
-            "render_nginx_public_host.py",
-            "render_nginx_source_allowlist.py",
-            "render_nginx_cloudflare_real_ip.py",
+        return {
+            "docker-compose.prod.yml",
+            "infra/nginx/nginx.conf",
+            "infra/nginx/source-allowlist.conf",
+            "infra/nginx/cloudflare-real-ip.conf",
+            "backend/scripts/render_nginx_public_host.py",
+            "backend/scripts/render_nginx_source_allowlist.py",
+            "backend/scripts/render_nginx_cloudflare_real_ip.py",
+            "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+            "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+            "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
+            "infra/deploy/runtime-secrets/render_serve_key.py",
+            "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
+            "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+            "infra/deploy/runtime-secrets/findb.json",
         }
-        assert "render_nginx_serve_key.py" not in renderer
-        paths.update(f"backend/scripts/{script}" for script in rendered_scripts)
-    return paths
+    return {
+        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+        "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+        "infra/deploy/runtime-secrets/fetcher.json",
+    }
 
 
 def _aggregate_ci_paths(unit: str) -> set[str]:
@@ -947,10 +948,15 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
     findb = _load_workflow(FINDB_CD_WORKFLOW)
     findb_rollout = _named_step(findb, "deploy", "Deploy to EC2 with AWS runtime secrets")
     assert findb_rollout["env"]["ECR_REGISTRY"] == ecr_registry
-    assert findb_rollout["env"]["FINDB_IMAGE"] == f"{ecr_registry}/findb/staging/backend"
-    assert findb_rollout["env"]["DASHBOARD_IMAGE"] == f"{ecr_registry}/findb/staging/dashboard"
-    assert findb_rollout["env"]["IMAGE_TAG"] == "${{ inputs.image_tag || github.sha }}"
-    assert "ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE" in findb_rollout["with"]["envs"]
+    assert (
+        findb_rollout["env"]["FINDB_IMAGE_REF"]
+        == "${{ needs.build-push.outputs.backend_image_ref }}"
+    )
+    assert (
+        findb_rollout["env"]["DASHBOARD_IMAGE_REF"]
+        == "${{ needs.build-push.outputs.dashboard_image_ref }}"
+    )
+    assert "ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF" in findb_rollout["with"]["envs"]
 
     fetcher = _load_workflow(FETCHER_CD_WORKFLOW)
     for name, image in (
@@ -976,7 +982,11 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
         "Run bounded FinLab acquisition smoke with AWS runtime secrets",
     )
     assert smoke["env"]["ECR_REGISTRY"] == ecr_registry
-    assert smoke["env"]["FETCHER_FINLAB_IMAGE"] == f"{ecr_registry}/findb/staging/fetcher/finlab"
+    assert (
+        smoke["env"]["FETCHER_FINLAB_IMAGE_REF"]
+        == "${{ needs.build-push.outputs.finlab_image_ref }}"
+    )
+    assert smoke["env"]["RELEASE_ROOT"] == "${{ needs.deploy.outputs.release_root }}"
 
     for workflow_path, expected_images in (
         (FINDB_CD_WORKFLOW, ("FINDB_IMAGE", "DASHBOARD_IMAGE")),
@@ -1013,7 +1023,7 @@ def test_staging_digest_refs_reach_bounded_ssm_pull_and_inspection() -> None:
         bridge = workflow["jobs"]["build-push"]
         selection = bridge["steps"][0]
         assert selection["id"] == "release_selection"
-        assert set(bridge["outputs"]) == set(image_outputs)
+        assert set(image_outputs).issubset(bridge["outputs"])
 
         for output_name, repository in image_outputs.items():
             assert bridge["outputs"][output_name] == (
@@ -1100,14 +1110,22 @@ def test_staging_release_bridge_rejects_missing_or_cross_unit_digest(
     }
     for index, (variable, repository) in enumerate(repositories.items(), start=1):
         env[variable] = f"{registry}/{repository}@sha256:{index:064x}"
+    if workflow_path == FINDB_CD_WORKFLOW:
+        env["BUNDLE_SHA256"] = "a" * 64
+        env["MIGRATION_REVISION"] = "b" * 12
+        env["VALIDATOR_SHA256"] = "c" * 64
 
     accepted = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
     assert accepted.returncode == 0, accepted.stderr
     output_lines = output_path.read_text(encoding="utf-8").splitlines()
-    assert len(output_lines) == len(repositories)
+    assert len(output_lines) == len(repositories) + (3 if workflow_path == FINDB_CD_WORKFLOW else 0)
     for variable, repository in repositories.items():
         output_name = variable.lower()
         assert f"{output_name}={env[variable]}" in output_lines
+    if workflow_path == FINDB_CD_WORKFLOW:
+        assert f"bundle_sha256={env['BUNDLE_SHA256']}" in output_lines
+        assert f"migration_revision={env['MIGRATION_REVISION']}" in output_lines
+        assert f"validator_sha256={env['VALIDATOR_SHA256']}" in output_lines
 
     output_path.unlink()
     first_variable = next(iter(repositories))
@@ -1135,7 +1153,7 @@ def test_staging_builds_publish_digest_only_release_manifest_artifacts() -> None
         workflow = _load_workflow(workflow_path)
         staged = workflow["jobs"]["build-push-staging-ecr"]
         assert "infra/deploy/release_manifest.py" in workflow["on"]["push"]["paths"]
-        assert set(staged["outputs"]) == {f"{step}_ref" for step in image_steps}
+        assert {f"{step}_ref" for step in image_steps}.issubset(staged["outputs"])
         for image_step in image_steps:
             assert staged["outputs"][f"{image_step}_ref"] == (
                 f"${{{{ steps.{image_step}.outputs.image_ref }}}}"
@@ -1191,7 +1209,9 @@ def test_staging_builds_publish_digest_only_release_manifest_artifacts() -> None
             if step.get("name") == "Upload staging release manifest"
         )
         assert upload["uses"] == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-        assert upload["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert upload["if"] == (
+            "${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}"
+        )
         assert upload["with"] == {
             "name": artifact_name,
             "path": f"${{{{ runner.temp }}}}/{manifest_name}",
@@ -1222,7 +1242,9 @@ def test_staging_release_manifest_contracts_come_from_the_selected_source_root()
             if step.get("name") == "Materialize selected deployment source inputs"
         )
         assert source_bundle["id"] == "selected_source_bundle"
-        assert source_bundle["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert source_bundle["if"] == (
+            "${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}"
+        )
         assert (
             'git archive --format=tar "$ECR_IMAGE_TAG" | tar -x -C "$source_root"'
             in (source_bundle["run"])
@@ -1264,7 +1286,9 @@ def test_selected_manifest_tool_policy_is_immutable_with_bounded_legacy_rollback
             for step in staged["steps"]
             if step.get("name") == "Generate and validate staging release manifest"
         )
-        assert generate["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert generate["if"] == (
+            "${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}"
+        )
         assert (
             'python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" generate'
             in (generate["run"])
@@ -1420,7 +1444,9 @@ def test_selected_manifest_protocol_is_exact_and_never_a_legacy_fallback(
         )
         protocol = steps[protocol_index]
         assert materialize_index < protocol_index < generate_index
-        assert protocol["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert protocol["if"] == (
+            "${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}"
+        )
         assert protocol["env"] == {
             "SOURCE_BUNDLE_ROOT": "${{ steps.selected_source_bundle.outputs.path }}"
         }
@@ -1461,6 +1487,221 @@ def test_selected_manifest_protocol_is_exact_and_never_a_legacy_fallback(
                     else "Selected manifest protocol invalid"
                 )
                 assert expected_title in result.stdout
+
+
+def test_staging_bundle_replay_contract_is_unit_scoped_and_preflighted_before_host_mutation() -> (
+    None
+):
+    """Keep the replay boundary executable/ordered, not merely documented text.
+
+    The selected-bundle shell programs are deliberately inspected as the
+    release contract: they are the only runner-side code allowed to write a
+    candidate or select an accepted replay bundle.
+    """
+
+    for workflow_path, unit, images, migration in (
+        (
+            FINDB_CD_WORKFLOW,
+            "findb",
+            ("BACKEND_IMAGE_REF", "DASHBOARD_IMAGE_REF"),
+            '"$MIGRATION_REVISION"',
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            "fetcher",
+            ("TWELVE_IMAGE_REF", "FINLAB_IMAGE_REF", "SHIOAJI_IMAGE_REF"),
+            "none",
+        ),
+    ):
+        display_unit = "FinDB" if unit == "findb" else "Fetcher"
+        workflow = _load_workflow(workflow_path)
+        staged = workflow["jobs"]["build-push-staging-ecr"]
+        # ECR publication has no deployment-bucket authority; its only
+        # cross-job handoff is the exact uploaded artifact.
+        publisher_program = "\n".join(
+            step.get("run", "") for step in staged["steps"] if isinstance(step, dict)
+        )
+        assert "DEPLOY_BUNDLE_BUCKET" not in publisher_program
+        assert "s3api put-object" not in publisher_program
+        assert "s3api get-object" not in publisher_program
+        bundle_upload = _named_step(
+            workflow, "build-push-staging-ecr", "Upload exact staging deployment bundle"
+        )
+        assert bundle_upload["uses"].startswith("actions/upload-artifact@")
+        assert bundle_upload["if"].endswith("inputs.accepted_bundle_key == '' }}")
+
+        deploy_steps = workflow["jobs"]["deploy"]["steps"]
+        credential = _named_step(workflow, "deploy", "Configure staging AWS credentials")
+        download = _named_step(
+            workflow, "deploy", f"Download current {display_unit} deployment bundle artifact"
+        )
+        selected = _named_step(
+            workflow, "deploy", f"Select immutable {display_unit} deployment bundle"
+        )
+        preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")
+        assert (
+            deploy_steps.index(credential)
+            < deploy_steps.index(download)
+            < deploy_steps.index(selected)
+        )
+        assert selected["env"]["ACCEPTED_BUNDLE_KEY"] == "${{ inputs.accepted_bundle_key }}"
+        select_script = selected["run"]
+        assert f"^{unit}/accepted/${{SELECTED_COMMIT}}/" in select_script
+        assert f'"{unit}/candidates/${{SELECTED_COMMIT}}/' in select_script
+        assert "acceptance.json" in select_script and "object_pairs_hook=unique" in select_script
+        assert 'record["state"] != "accepted"' in select_script
+        assert "aws s3api get-object" in select_script
+        assert "validate-bundle" in select_script
+        assert f"--unit {unit}" in select_script
+        assert f"--migration-revision {migration}" in select_script
+        for image in images:
+            assert image in select_script
+        # Only the normal branch persists a candidate, using immutable KMS
+        # object creation; replay selects exactly the accepted object and has
+        # no regeneration command.
+        normal_branch = select_script.split('if [ "$replay" = false ]; then', 1)[1]
+        assert "s3api put-object" in normal_branch
+        assert "--if-none-match '*'" in normal_branch
+        assert "--server-side-encryption aws:kms" in normal_branch
+        assert '--ssekms-key-id "$DEPLOY_BUNDLE_KMS_KEY_ARN"' in normal_branch
+        assert 'selected_key="$ACCEPTED_BUNDLE_KEY"' in select_script
+        assert " generate " not in select_script and " bundle \\" not in select_script
+
+        preflight_script = preflight["run"]
+        host_start = preflight_script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n")
+        host_end = preflight_script.index("\nHOST_SCRIPT\n", host_start)
+        host_program = preflight_script[host_start:host_end]
+        assert "BUNDLE_REPLAY" in preflight_script
+        assert (
+            f"^{unit}/accepted/" in preflight_script and f"^{unit}/candidates/" in preflight_script
+        )
+        validate_at = host_program.index("validate-bundle")
+        # Runtime capability probes are read-only. The validation must precede
+        # the first image pull and any host-side writer interruption.
+        for mutation in ('docker --config "$docker_config" pull', " stop --timeout "):
+            position = host_program.find(mutation)
+            if position >= 0:
+                assert validate_at < position
+
+        accepted = _named_step(
+            workflow,
+            "deploy",
+            f"Persist immutable accepted {display_unit} deployment bundle",
+        )
+        assert "success()" in accepted["if"] and "outputs.replay == 'false'" in accepted["if"]
+        accepted_script = accepted["run"]
+        assert f"{unit}/candidates/" in accepted_script and f"{unit}/accepted/" in accepted_script
+        assert accepted_script.count("s3api put-object") == 2
+        assert accepted_script.count("--if-none-match '*'") == 2
+
+
+def test_accepted_replay_is_manual_staging_only_with_an_explicit_sha() -> None:
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(workflow_path)
+        if workflow_path == FINDB_CD_WORKFLOW:
+            routing = _named_step(
+                workflow, "build-push", "Confirm the exact target-specific image build succeeded"
+            )
+        else:
+            routing = _named_step(
+                workflow,
+                "validate-target-routing",
+                "Validate target-derived runtime route before build",
+            )
+        assert routing["env"]["EVENT_NAME"] == "${{ github.event_name }}"
+        assert '[ "$EVENT_NAME" = workflow_dispatch ]' in routing["run"]
+        assert '[ "$DEPLOYMENT_TARGET" = staging ]' in routing["run"]
+        assert "IMAGE_TAG_INPUT" in routing["run"]
+
+
+def test_staging_candidate_generation_requires_no_historical_sha_and_no_replay_key() -> None:
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(workflow_path)
+        selection = _named_step(
+            workflow, "build-push-staging-ecr", "Validate staging ECR release selection"
+        )
+        script = selection["run"]
+        assert 'if [ -n "$IMAGE_TAG_INPUT" ]; then' in script
+        assert '[ -n "$ACCEPTED_BUNDLE_KEY" ]' in script
+        assert '[ -z "$ACCEPTED_BUNDLE_KEY" ]' in script
+        assert workflow["jobs"]["build-push-staging-ecr"]["env"]["IMAGE_TAG_INPUT"] == (
+            "${{ inputs.image_tag }}"
+        )
+        assert workflow["jobs"]["build-push-staging-ecr"]["env"]["ACCEPTED_BUNDLE_KEY"] == (
+            "${{ inputs.accepted_bundle_key }}"
+        )
+
+
+def test_bundle_validator_digest_is_an_independent_host_trust_anchor() -> None:
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(workflow_path)
+        publisher = workflow["jobs"]["build-push-staging-ecr"]
+        assert "validator_sha256" in publisher["outputs"]
+        selected = _named_step(
+            workflow,
+            "deploy",
+            f"Select immutable {'FinDB' if workflow_path == FINDB_CD_WORKFLOW else 'Fetcher'} deployment bundle",
+        )["run"]
+        assert "validator_sha256" in selected
+        preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")["run"]
+        assert "DEPLOY_VALIDATOR_SHA256" in preflight
+        assert "expected_deploy_validator_sha256" in preflight
+        assert 'sha256sum "$bundle_root/release_manifest.py"' in preflight
+
+
+def test_ssm_bootstrap_scans_match_the_canonical_bundle_mode_map() -> None:
+    mode_map = runpy.run_path(str(REPO_ROOT / "infra/deploy/release_manifest.py"))
+    expected_executables = set(mode_map["EXECUTABLE_BUNDLE_FILES"])
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        preflight = _named_step(
+            _load_workflow(workflow_path), "deploy", "Run staging AWS and SSM preflight"
+        )["run"]
+        scanner = preflight.split("executable_members = frozenset((", 1)[1].split("))", 1)[0]
+        scanned_executables = set(re.findall(r'"([^"]+)"', scanner))
+        assert scanned_executables == expected_executables
+        assert "item.mode != 0o755" in preflight
+        assert "member.mode != (0o755 if member.name in executable_members else 0o644)" in preflight
+
+
+def test_findb_replay_bridge_allows_historical_bundle_sha_with_current_migration() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    selection = _named_step(
+        workflow, "build-push", "Confirm the exact target-specific image build succeeded"
+    )
+    script = selection["run"]
+    # An accepted replay has no current-run artifact SHA; it must still carry
+    # the selected tree's valid Alembic head into acceptance-record validation.
+    replay_branch = script.split('if [ -n "${ACCEPTED_BUNDLE_KEY:-}" ]; then', 1)[1].split(
+        "else", 1
+    )[0]
+    assert '[ -z "${BUNDLE_SHA256:-}" ] || exit 1' in replay_branch
+    assert '[[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]] || exit 1' in replay_branch
+    assert "migration_revision=%s\\n" in replay_branch
+    normal_branch = script.split("else", 1)[1].split("fi", 1)[0]
+    assert '[[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1' in normal_branch
+    assert "bundle_sha256=%s\\n" in normal_branch
+
+
+def test_replay_acceptance_records_reject_noncanonical_ssm_command_ids() -> None:
+    uuid_shape = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    assert uuid_shape.fullmatch("0f12ab34-5678-9abc-def0-123456789abc")
+    for invalid in (
+        "0F12AB34-5678-9abc-def0-123456789abc",
+        "0f12ab34-5678-9abc-def0-123456789ab",
+        "0f12ab34-5678-9abc-def0-123456789abc ",
+        "ssm-command-id",
+        "",
+    ):
+        assert uuid_shape.fullmatch(invalid) is None
+
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        selected = _named_step(
+            _load_workflow(workflow_path),
+            "deploy",
+            f"Select immutable {'FinDB' if workflow_path == FINDB_CD_WORKFLOW else 'Fetcher'} deployment bundle",
+        )["run"]
+        assert 'record["ssm_command_id"]' in selected
+        assert "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" in selected
 
 
 def test_legacy_rollback_checks_only_exact_host_runtime_contract_paths() -> None:
@@ -1610,10 +1851,9 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         env={
             **environment,
             "AWS_REGION": "ap-southeast-1",
-            "IMAGE_TAG": "A" * 40,
             "ECR_REGISTRY": "evil.example",
-            "FINDB_IMAGE": "evil.example/backend",
-            "DASHBOARD_IMAGE": "evil.example/dashboard",
+            "FINDB_IMAGE_REF": "evil.example/backend@sha256:" + "a" * 64,
+            "DASHBOARD_IMAGE_REF": "evil.example/dashboard@sha256:" + "a" * 64,
             "FINDB_PUBLIC_HOST": "findb.example.test",
         },
     )
@@ -1628,10 +1868,11 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         env={
             **environment,
             "AWS_REGION": "ap-southeast-1",
-            "IMAGE_TAG": "a" * 40,
             "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
-            "FINDB_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend",
-            "DASHBOARD_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard",
+            "FINDB_IMAGE_REF": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend@sha256:"
+            + "a" * 64,
+            "DASHBOARD_IMAGE_REF": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard@sha256:"
+            + "b" * 64,
             "FINDB_PUBLIC_HOST": "findb.example.test",
         },
     )
@@ -1667,8 +1908,8 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
             "bash",
             str(fetcher_helper),
             "finlab",
-            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab:"
-            + "a" * 40,
+            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab@sha256:"
+            + "a" * 64,
             "/tmp/state",
             "/tmp/state/state.sqlite3",
             "stable",
@@ -2026,6 +2267,11 @@ def test_fetcher_target_route_is_validated_before_job_routing() -> None:
     assert "validate-target-routing" in jobs["deploy"]["needs"]
     assert "needs.validate-target-routing.result == 'success'" in jobs["deploy"]["if"]
     assert "validate-target-routing" in jobs["finlab-acquisition-smoke"]["needs"]
+    assert "deploy" in jobs["finlab-acquisition-smoke"]["needs"]
+    assert (
+        jobs["deploy"]["outputs"]["release_root"]
+        == "${{ steps.ssm_preflight.outputs.release_root }}"
+    )
 
 
 def test_fetcher_deploy_checks_out_pinned_repository_before_local_artifact_steps() -> None:
@@ -2040,9 +2286,8 @@ def test_fetcher_deploy_checks_out_pinned_repository_before_local_artifact_steps
     for step_name in (
         "Validate target-derived deployment route",
         "Run staging AWS and SSM preflight",
-        "Calculate AWS runtime-secret bundle checksums",
-        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
-        "Sync AWS runtime-secret loader and exact Fetcher catalog",
+        "Prepare AWS runtime-secret directories on Fetcher EC2",
+        "Run Fetcher AWS runtime-secret canary",
     ):
         assert steps.index(checkout) < steps.index(_named_step(workflow, "deploy", step_name))
 
@@ -2076,109 +2321,83 @@ def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
             assert canary_index < deployment_index
 
 
-def test_aws_runtime_bundles_are_verified_from_staging_then_installed() -> None:
-    findb_workflow = _load_workflow(FINDB_CD_WORKFLOW)
-    findb_sync = _named_step(
-        findb_workflow, "deploy", "Sync AWS runtime-secret loader and exact FinDB catalog"
-    )
-    assert findb_sync["with"]["target"] == "/tmp/findb-runtime-secrets"
-    assert "strip_components" not in findb_sync["with"]
-    for source in (
-        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
-        "infra/deploy/runtime-secrets/findb.json",
-        "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
-        "docker-compose.prod.yml",
-        "infra/nginx/nginx.conf",
-        "infra/nginx/source-allowlist.conf",
-        "infra/nginx/cloudflare-real-ip.conf",
+def test_aws_runtime_uses_validated_bundle_without_staging_scp_replacement() -> None:
+    for workflow_path, unit, runtime_dir in (
+        (FINDB_CD_WORKFLOW, "findb", "/opt/findb/runtime-secrets"),
+        (FETCHER_CD_WORKFLOW, "fetcher", "/opt/fetcher/runtime-secrets"),
     ):
-        assert source in findb_sync["with"]["source"]
-    findb_verify = _named_step(
-        findb_workflow,
-        "deploy",
-        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
-    )["with"]["script"]
-    assert "staging_root=/tmp/findb-runtime-secrets" in findb_verify
-    assert 'sha256sum "$staging_root/$relative_path"' in findb_verify
-    assert "sudo install -o root -g root" in findb_verify
-    assert "/opt/findb/docker-compose.prod.yml" in findb_verify
-    assert '"/home/ubuntu/etc/nginx/$file"' in findb_verify
-    assert "ubuntu:ubuntu:644" in findb_verify
-    assert "Deploy artifact install failed" in findb_verify
-    assert "Nginx artifact install failed" in findb_verify
-    assert findb_verify.index('sha256sum "$staging_root/$relative_path"') < findb_verify.index(
-        "sudo install -o root -g root"
-    )
+        workflow = _load_workflow(workflow_path)
+        steps = workflow["jobs"]["deploy"]["steps"]
+        names = {step.get("name") for step in steps}
+        assert "Calculate AWS runtime-secret bundle checksums" not in names
+        assert "Verify AWS runtime-secret bundle ownership, mode, and checksum" not in names
+        assert "if: ${{ false }}" not in workflow_path.read_text(encoding="utf-8")
 
-    aws_render = _named_step(
-        findb_workflow,
-        "deploy",
-        "Render nonsecret nginx configs for AWS runtime secrets",
-    )
-    assert "render_nginx_source_allowlist.py" in aws_render["run"]
-    assert "render_nginx_cloudflare_real_ip.py" in aws_render["run"]
-    assert "render_nginx_serve_key.py" not in aws_render["run"]
-    assert "${{ secrets." not in json.dumps(aws_render, sort_keys=True)
-    aws_validation = _named_step(
-        findb_workflow,
-        "deploy",
-        "Validate AWS runtime deployment configuration",
-    )
+        preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")["run"]
+        host_start = preflight.index("host_script=\"$(cat <<'HOST_SCRIPT'\n")
+        host_end = preflight.index("\nHOST_SCRIPT\n", host_start)
+        host = preflight[host_start:host_end]
+        assert "validate-bundle" in host and "materialize-bundle" in host
+        assert f"/opt/{unit}/releases/" in host
+        assert runtime_dir not in host
+        assert "tar --extract" not in host and "archive.extract(" not in host
+
+    findb = _load_workflow(FINDB_CD_WORKFLOW)
+    findb_preflight = _named_step(findb, "deploy", "Run staging AWS and SSM preflight")["run"]
+    findb_host = findb_preflight.split("host_script=\"$(cat <<'HOST_SCRIPT'\n", 1)[1].split(
+        "\nHOST_SCRIPT\n", 1
+    )[0]
+    findb_host_after_bootstrap_scan = findb_host.split("\nPY\n", 1)[1]
+    assert "render_nginx_public_host.py" not in findb_host_after_bootstrap_scan
+    assert "render_nginx_source_allowlist.py" not in findb_host_after_bootstrap_scan
+    assert "render_nginx_cloudflare_real_ip.py" not in findb_host_after_bootstrap_scan
+    assert "render_nginx_serve_key.py" not in findb_host_after_bootstrap_scan
+    aws_validation = _named_step(findb, "deploy", "Validate AWS runtime deployment configuration")
     assert 'if [ "${PORT:-}" != "8080" ]' in aws_validation["run"]
-    assert "${{ secrets." not in json.dumps(aws_validation, sort_keys=True)
-    bootstrap_step = _named_step(
-        findb_workflow,
-        "deploy",
-        "Install FinDB boot-time runtime-secret dependency",
+    activation = _named_step(
+        findb, "deploy", "Activate validated FinDB release after health acceptance"
     )
-    assert "install_findb_bootstrap.sh" in bootstrap_step["with"]["script"]
-    steps = findb_workflow["jobs"]["deploy"]["steps"]
-    verify_step = _named_step(
-        findb_workflow,
-        "deploy",
-        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
-    )
-    canary_step = _named_step(
-        findb_workflow,
-        "deploy",
-        "Run FinDB AWS runtime-secret canary",
-    )
-    assert steps.index(verify_step) < steps.index(bootstrap_step) < steps.index(canary_step)
+    assert "install_findb_bootstrap.sh" in activation["with"]["script"]
 
-    fetcher_workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    fetcher_sync = _named_step(
-        fetcher_workflow,
-        "deploy",
-        "Sync AWS runtime-secret loader and exact Fetcher catalog",
-    )
-    assert fetcher_sync["with"]["target"] == "/tmp/fetcher-runtime-secrets"
-    assert "strip_components" not in fetcher_sync["with"]
-    fetcher_verify = _named_step(
-        fetcher_workflow,
-        "deploy",
-        "Verify AWS runtime-secret bundle ownership, mode, and checksum",
-    )["with"]["script"]
-    assert "staging_root=/tmp/fetcher-runtime-secrets/infra/deploy/runtime-secrets" in (
-        fetcher_verify
-    )
-    assert 'sha256sum "$staging_root/$file"' in fetcher_verify
-    assert "sudo install -o root -g root" in fetcher_verify
-    assert fetcher_verify.index('sha256sum "$staging_root/$file"') < fetcher_verify.index(
-        "sudo install -o root -g root"
-    )
 
-    findb_prepare = _named_step(
-        findb_workflow, "deploy", "Prepare AWS runtime-secret directories on EC2"
-    )["with"]["script"]
-    assert "sudo rm -rf -- /tmp/findb-runtime-secrets" in findb_prepare
-    assert "-o ubuntu -g ubuntu -m 0700 /tmp/findb-runtime-secrets" in findb_prepare
-    fetcher_prepare = _named_step(
-        fetcher_workflow,
-        "deploy",
-        "Prepare AWS runtime-secret directories on Fetcher EC2",
-    )["with"]["script"]
-    assert "sudo rm -rf -- /tmp/fetcher-runtime-secrets" in fetcher_prepare
-    assert "-o ubuntu -g ubuntu -m 0700 /tmp/fetcher-runtime-secrets" in fetcher_prepare
+def test_staging_activation_follows_health_and_precedes_the_accepted_record_commit_point() -> None:
+    for workflow_path, unit, deploy_name, activation_name in (
+        (
+            FINDB_CD_WORKFLOW,
+            "findb",
+            "Deploy to EC2 with AWS runtime secrets",
+            "Activate validated FinDB release after health acceptance",
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            "fetcher",
+            "Release Shioaji scheduler with AWS runtime secrets",
+            "Activate validated Fetcher release after health acceptance",
+        ),
+    ):
+        workflow = _load_workflow(workflow_path)
+        steps = workflow["jobs"]["deploy"]["steps"]
+        preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")
+        activation = _named_step(workflow, "deploy", activation_name)
+        accepted = _named_step(
+            workflow,
+            "deploy",
+            f"Persist immutable accepted {unit.title() if unit == 'fetcher' else 'FinDB'} deployment bundle",
+        )
+        assert steps.index(preflight) < steps.index(_named_step(workflow, "deploy", deploy_name))
+        assert steps.index(_named_step(workflow, "deploy", deploy_name)) < steps.index(activation)
+        assert steps.index(activation) < steps.index(accepted)
+        assert "ln -sfn" in activation["with"]["script"]
+        preflight_script = preflight["run"]
+        host_start = preflight_script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n")
+        host_end = preflight_script.index("\nHOST_SCRIPT\n", host_start)
+        host = preflight_script[host_start:host_end]
+        host_after_bootstrap_scan = host.split("\nPY\n", 1)[1]
+        assert "/current" not in host_after_bootstrap_scan
+        assert "install_findb_bootstrap.sh" not in host_after_bootstrap_scan
+        assert f"/opt/{unit}/runtime-secrets" not in host_after_bootstrap_scan
+        assert f"/opt/{unit} /opt/{unit}/releases" in host_after_bootstrap_scan
+        assert "root:root:755" in host_after_bootstrap_scan
 
 
 def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> None:
@@ -2239,16 +2458,18 @@ def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> 
     assert smoke_script.count("--consumer finlab-smoke") == 1
     assert '--ecr-registry "$ECR_REGISTRY"' in smoke_script
     assert "expected_region=ap-southeast-1" in smoke_script
+    assert "fetcher/finlab@sha256:[0-9a-f]{64}" in smoke_script
+    assert '[[ "$FETCHER_FINLAB_IMAGE_REF" =~' in smoke_script
+    assert 'image="$FETCHER_FINLAB_IMAGE_REF"' in smoke_script
+    assert "FETCHER_IMAGE_TAG" not in smoke_script
+    assert "/opt/fetcher/current" not in smoke_script
+    assert '"$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh"' in smoke_script
+    assert '"$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json"' in smoke_script
+    assert "RELEASE_ROOT" in smoke_canary_step["with"]["envs"]
+    assert "/opt/fetcher/current" not in smoke_canary_step["with"]["script"]
     assert (
-        "expected_image=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab"
-        in smoke_script
-    )
-    assert '[[ ! "$FETCHER_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]' in smoke_script
-    assert 'expected_full_image="${expected_image}:${FETCHER_IMAGE_TAG}"' in smoke_script
-    assert 'requested_image="${FETCHER_FINLAB_IMAGE}:${FETCHER_IMAGE_TAG}"' in smoke_script
-    assert '[ "$requested_image" = "$expected_full_image" ]' in smoke_script
-    assert smoke_script.index("expected_full_image=") < smoke_script.index(
-        "runtime_secret_command.sh"
+        '"$RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py"'
+        in smoke_canary_step["with"]["script"]
     )
     assert "FETCHER_CALENDAR_SERVE_API_KEY" not in smoke_script
     assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" not in smoke_script
@@ -2314,6 +2535,11 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
         in nginx_volumes
     )
     assert not any("/home/ubuntu/etc/nginx/serve-key.conf:" in volume for volume in nginx_volumes)
+    for config in ("nginx.conf", "cloudflare-real-ip.conf", "source-allowlist.conf"):
+        assert any(
+            f"${{FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}}/{config}:" in volume
+            for volume in nginx_volumes
+        )
 
     renderer = (REPO_ROOT / "infra/deploy/runtime-secrets/render_serve_key.py").read_text(
         encoding="utf-8"
@@ -2326,10 +2552,69 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     )
     assert "render_nginx_runtime.sh" in findb
     assert "/home/ubuntu/etc/nginx/serve-key.conf" not in findb
+    assert 'nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"' in findb
+    assert '[ "$nginx_config_dir" != /etc/findb/nginx ]' in findb
+    assert "require_root_owned_nginx_directory /etc/findb" in findb
+    assert "nginx_config_target_unsafe" in findb
+    assert "nginx_config_metadata_invalid" in findb
     nginx_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh").read_text(
         encoding="utf-8"
     )
     assert "/run/findb-runtime-secrets/nginx/serve-key.conf" in nginx_helper
+    assert (
+        "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb"
+        in nginx_helper
+    )
+    assert '[ "$catalog" = /opt/findb/runtime-secrets/findb.json ]' in nginx_helper
+    assert 'runtime_dir="${catalog%/findb.json}"' in nginx_helper
+    assert 'renderer="$runtime_dir/render_serve_key.py"' in nginx_helper
+    assert "renderer_metadata_invalid" in nginx_helper
+    assert 'python3 "$renderer"' in nginx_helper
+    assert "/opt/findb/runtime-secrets/render_serve_key.py" not in nginx_helper
+
+
+def test_staging_findb_nginx_config_uses_root_owned_nonsecret_path() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    prepare = _named_step(workflow, "deploy", "Prepare AWS runtime-secret directories on EC2")
+    deploy = _named_step(workflow, "deploy", "Deploy to EC2 with AWS runtime secrets")
+
+    assert "install -d -o root -g root -m 0755 /etc/findb" in prepare["with"]["script"]
+    assert "install -d -o root -g root -m 0755 /etc/findb/nginx" in prepare["with"]["script"]
+    assert "for trusted_path in /etc /etc/findb /etc/findb/nginx" in prepare["with"]["script"]
+    assert prepare["with"]["script"].index('[ ! -L "$trusted_path" ] || exit 1') < prepare["with"][
+        "script"
+    ].index("install -d -o root -g root -m 0755 /etc/findb")
+    assert deploy["env"]["FINDB_NGINX_CONFIG_DIR"] == "/etc/findb/nginx"
+    assert "FINDB_NGINX_CONFIG_DIR" in deploy["with"]["envs"]
+    assert "/home/ubuntu/etc/nginx/ssl" not in prepare["with"]["script"]
+    assert "/home/ubuntu/etc/nginx" not in deploy["with"]["script"]
+
+
+def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    setup = helper.split('catalog="$runtime_dir/findb.json"', 1)[0]
+    for environment, expected in (
+        (
+            {"FINDB_RELEASE_ROOT": "/opt/findb/releases/demo"},
+            "/opt/findb/releases/demo/infra/deploy/runtime-secrets|/opt/findb/releases/demo/docker-compose.prod.yml",
+        ),
+        ({}, "/opt/findb/runtime-secrets|/opt/findb/docker-compose.prod.yml"),
+    ):
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'{setup}\nprintf "%s|%s\\n" "$runtime_dir" "$compose_file"',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **environment},
+        )
+        assert result.returncode == 0
+        assert result.stdout == f"{expected}\n"
 
 
 def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_lookup_key() -> None:
@@ -2682,8 +2967,8 @@ def _run_twelve_fetcher_release_with_marker(
     fake_sleep.chmod(0o755)
 
     image = (
-        "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data:"
-        + "a" * 40
+        "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data@sha256:"
+        + "a" * 64
     )
     environment = dict(os.environ)
     environment.update(
@@ -3938,8 +4223,9 @@ def test_fetcher_smoke_prunes_only_unused_images_before_pull() -> None:
     assert script.count("docker image prune -af") == 1
     assert "docker system prune" not in script
     assert "docker volume prune" not in script
-    assert '[[ "$FETCHER_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]' in script
-    assert script.index('[[ "$FETCHER_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]') < image_pull
+    assert '[[ "$FETCHER_FINLAB_IMAGE_REF" =~' in script
+    assert script.index('[[ "$FETCHER_FINLAB_IMAGE_REF" =~') < image_pull
+    assert "FETCHER_IMAGE_TAG" not in script
 
 
 def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
@@ -4281,8 +4567,8 @@ def test_fetcher_cd_validates_target_specific_r2_buckets_and_credential_isolatio
 
     assert predeploy["needs"] == "build-push"
     assert isolation["needs"] == "build-push"
-    assert "inputs.run_finlab_smoke != true" in predeploy["if"]
-    assert "inputs.run_finlab_smoke != true" in isolation["if"]
+    assert "inputs.run_finlab_smoke != true" not in predeploy["if"]
+    assert "inputs.run_finlab_smoke != true" not in isolation["if"]
     assert deploy["needs"] == [
         "build-push",
         "validate-target-routing",
@@ -4310,20 +4596,17 @@ def test_fetcher_postbuild_gates_always_evaluate_their_existing_fail_closed_cond
     expected_gates = {
         "validate-r2-bucket-configuration": (
             "github.event_name == 'workflow_dispatch'",
-            "inputs.run_finlab_smoke != true",
             "needs.build-push.result == 'success'",
         ),
         "validate-fetcher-credential-isolation": (
             "(inputs.deployment_target || 'staging') == 'production'",
             "github.event_name == 'workflow_dispatch'",
-            "inputs.run_finlab_smoke != true",
             "needs.build-push.result == 'success'",
         ),
         "validate-fetcher-credential-isolation-aws": (
             "(inputs.deployment_target || 'staging') == 'staging'",
             "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'",
             "github.event_name == 'workflow_dispatch'",
-            "inputs.run_finlab_smoke != true",
             "needs.build-push.result == 'success'",
         ),
         "finlab-acquisition-smoke": (
@@ -4331,6 +4614,7 @@ def test_fetcher_postbuild_gates_always_evaluate_their_existing_fail_closed_cond
             "inputs.run_finlab_smoke == true",
             "(inputs.deployment_target || 'staging') == 'staging'",
             "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'",
+            "needs.deploy.result == 'success'",
             "needs.build-push.result == 'success'",
             "needs.validate-target-routing.result == 'success'",
         ),
@@ -4350,7 +4634,6 @@ def test_fetcher_deploy_retains_the_complete_fail_closed_postbuild_result_matrix
     assert condition == (
         "always() && "
         "github.event_name == 'workflow_dispatch' && "
-        "(github.event_name != 'workflow_dispatch' || inputs.run_finlab_smoke != true) && "
         "needs.build-push.result == 'success' && "
         "needs.validate-target-routing.result == 'success' && "
         "needs.validate-r2-bucket-configuration.result == 'success' && "

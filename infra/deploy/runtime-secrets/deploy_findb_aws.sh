@@ -5,42 +5,50 @@
 set -euo pipefail
 set +x
 
-runtime_dir=/opt/findb/runtime-secrets
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  release_root="$FINDB_RELEASE_ROOT"
+  runtime_dir="$release_root/infra/deploy/runtime-secrets"
+  compose_file="$release_root/docker-compose.prod.yml"
+else
+  # Explicit production compatibility: staging always supplies a validated
+  # release root, while legacy production retains its established layout.
+  release_root=/opt/findb
+  runtime_dir=/opt/findb/runtime-secrets
+  compose_file=/opt/findb/docker-compose.prod.yml
+fi
 catalog="$runtime_dir/findb.json"
 runtime_command="$runtime_dir/runtime_secret_command.sh"
-compose_file=/opt/findb/docker-compose.prod.yml
 nginx_runtime="$runtime_dir/render_nginx_runtime.sh"
+# Production retains its established host path.  A validated staging release
+# must opt into the root-owned path below; it must never render as root below
+# an SSH user's home directory.
+nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"
 
 : "${AWS_REGION:?AWS_REGION is required}"
-: "${IMAGE_TAG:?IMAGE_TAG is required}"
-: "${DASHBOARD_IMAGE:?DASHBOARD_IMAGE is required}"
-: "${FINDB_PUBLIC_HOST:?FINDB_PUBLIC_HOST is required}"
-: "${ECR_REGISTRY:?ECR_REGISTRY is required}"
-: "${FINDB_IMAGE:?FINDB_IMAGE is required}"
 
 if [ "$AWS_REGION" != "ap-southeast-1" ]; then
   echo "findb_aws_deploy=failed reason=region_invalid" >&2
   exit 1
 fi
 
+: "${DASHBOARD_IMAGE_REF:?DASHBOARD_IMAGE_REF is required}"
+: "${FINDB_PUBLIC_HOST:?FINDB_PUBLIC_HOST is required}"
+: "${ECR_REGISTRY:?ECR_REGISTRY is required}"
+: "${FINDB_IMAGE_REF:?FINDB_IMAGE_REF is required}"
+
 expected_ecr_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
-expected_findb_image="$expected_ecr_registry/findb/staging/backend"
-expected_dashboard_image="$expected_ecr_registry/findb/staging/dashboard"
+expected_findb_image="$expected_ecr_registry/findb/staging/backend@sha256:"
+expected_dashboard_image="$expected_ecr_registry/findb/staging/dashboard@sha256:"
 
 if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
-  || [ "$FINDB_IMAGE" != "$expected_findb_image" ] \
-  || [ "$DASHBOARD_IMAGE" != "$expected_dashboard_image" ]; then
+  || ! printf '%s' "$FINDB_IMAGE_REF" | grep -Eq "^${expected_findb_image}[0-9a-f]{64}$" \
+  || ! printf '%s' "$DASHBOARD_IMAGE_REF" | grep -Eq "^${expected_dashboard_image}[0-9a-f]{64}$"; then
   echo "findb_aws_deploy=failed reason=ecr_image_contract" >&2
   exit 1
 fi
-if ! printf '%s' "$IMAGE_TAG" | grep -Eq '^[0-9a-f]{40}$'; then
-  echo "findb_aws_deploy=failed reason=image_tag_not_lowercase_sha" >&2
-  exit 1
-fi
-
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=AWS_REGION,IMAGE_TAG,ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE,FINDB_PUBLIC_HOST,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+preserve_env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -53,9 +61,47 @@ if [ ! -f "$compose_file" ]; then
   echo "findb_aws_deploy=failed reason=compose_missing" >&2
   exit 1
 fi
+
+require_root_owned_nginx_directory() {
+  local directory="$1"
+  [ -d "$directory" ] && [ ! -L "$directory" ] \
+    && [ "$(stat -c '%u:%g:%a' "$directory")" = "0:0:755" ] || {
+      echo "findb_aws_deploy=failed reason=nginx_config_directory_unsafe" >&2
+      exit 1
+    }
+}
+
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  if [ "$nginx_config_dir" != /etc/findb/nginx ]; then
+    echo "findb_aws_deploy=failed reason=staging_nginx_config_path_invalid" >&2
+    exit 1
+  fi
+  require_root_owned_nginx_directory /etc
+  require_root_owned_nginx_directory /etc/findb
+  require_root_owned_nginx_directory "$nginx_config_dir"
+  for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
+    if [ -e "$nginx_config_dir/$conf" ] \
+      && { [ -L "$nginx_config_dir/$conf" ] || [ ! -f "$nginx_config_dir/$conf" ]; }; then
+      echo "findb_aws_deploy=failed reason=nginx_config_target_unsafe" >&2
+      exit 1
+    fi
+  done
+  python3 "$release_root/backend/scripts/render_nginx_public_host.py" \
+    --host "$FINDB_PUBLIC_HOST" --template "$release_root/infra/nginx/nginx.conf" \
+    --output "$nginx_config_dir/nginx.conf"
+  python3 "$release_root/backend/scripts/render_nginx_source_allowlist.py" \
+    --cidrs "$SOURCE_ALLOWLIST_CIDRS" --output "$nginx_config_dir/source-allowlist.conf"
+  python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
+    --output "$nginx_config_dir/cloudflare-real-ip.conf"
+fi
 for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
-  if [ ! -f "/home/ubuntu/etc/nginx/$conf" ]; then
-    echo "findb_aws_deploy=failed reason=nginx_config_missing" >&2
+  if [ ! -f "$nginx_config_dir/$conf" ] || [ -L "$nginx_config_dir/$conf" ]; then
+    echo "findb_aws_deploy=failed reason=nginx_config_missing_or_unsafe" >&2
+    exit 1
+  fi
+  if [ -n "${FINDB_RELEASE_ROOT:-}" ] \
+    && [ "$(stat -c '%u:%g:%a' "$nginx_config_dir/$conf")" != "0:0:644" ]; then
+    echo "findb_aws_deploy=failed reason=nginx_config_metadata_invalid" >&2
     exit 1
   fi
 done
@@ -261,5 +307,5 @@ docker compose -f "$compose_file" exec -T serve \
   sh -lc 'python -c "import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"' \
   </dev/null >/dev/null
 docker image prune -af --filter "until=168h" </dev/null >/dev/null
-echo "findb_aws_deploy=ready image_tag=$IMAGE_TAG"
+echo "findb_aws_deploy=ready image_refs=exact-digests"
 UP_SCRIPT

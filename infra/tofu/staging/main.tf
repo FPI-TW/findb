@@ -268,7 +268,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "deploy_bundle" {
       sse_algorithm     = "aws:kms"
     }
 
-    bucket_key_enabled = true
+    # Prefix-scoped KMS encryption-context conditions below require the object
+    # ARN. S3 Bucket Keys replace it with a bucket-level context, so keep them
+    # disabled for this small control-plane bucket.
+    bucket_key_enabled = false
   }
 }
 
@@ -350,6 +353,27 @@ data "aws_iam_policy_document" "deploy_bundle_bucket" {
       test     = "StringNotEquals"
       variable = "s3:x-amz-server-side-encryption"
       values   = ["aws:kms"]
+    }
+  }
+
+  statement {
+    sid    = "DenyAcceptedBundleOverwrite"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.deploy_bundle.arn}/findb/accepted/*",
+      "${aws_s3_bucket.deploy_bundle.arn}/fetcher/accepted/*",
+    ]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:if-none-match"
+      values   = ["*"]
     }
   }
 }

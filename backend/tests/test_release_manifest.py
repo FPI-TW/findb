@@ -1,11 +1,14 @@
 """Fail-closed contract tests for the stdlib staging release manifest tool."""
 
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import stat
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -293,6 +296,168 @@ def test_selected_source_contract_manifest_rejects_root_swap_before_open(
     with pytest.raises(release_manifest.ManifestError, match="root is not a directory"):
         with release_manifest.SourceBundleReader(root):
             pass
+
+
+def test_deployment_bundle_is_deterministic_and_rejects_tampering(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    _write_selected_source_bundle(root, "findb")
+    manifest = _manifest("findb")
+    with release_manifest.SourceBundleReader(root) as source_bundle:
+        manifest["deployment_source_bundle_sha256"] = source_bundle.deployment_source_bundle_sha256(
+            "findb"
+        )
+    manifest_path = tmp_path / "release.json"
+    manifest_path.write_bytes(release_manifest.canonical_json(manifest))
+    first = release_manifest.build_bundle(root, manifest_path, "findb")
+    second = release_manifest.build_bundle(root, manifest_path, "findb")
+    assert first == second
+    digest = hashlib.sha256(first).hexdigest()
+    validated = release_manifest.validate_bundle_bytes(first, expected_sha256=digest, unit="findb")
+    assert validated["images"] == manifest["images"]
+    with pytest.raises(release_manifest.ManifestError, match="SHA256"):
+        release_manifest.validate_bundle_bytes(first + b"x", expected_sha256=digest, unit="findb")
+    output = tmp_path / "release"
+    release_manifest.materialize_validated_bundle(
+        first, expected_sha256=digest, unit="findb", output=output
+    )
+    assert (output / "infra/deploy/release_manifest.py").is_file()
+    for relative in release_manifest.EXECUTABLE_BUNDLE_FILES:
+        if relative in release_manifest.FINDB_BUNDLE_FILES:
+            assert stat.S_IMODE((output / relative).stat().st_mode) == 0o755
+    for relative in (
+        "docker-compose.prod.yml",
+        "infra/deploy/runtime-secrets/findb.json",
+        "contracts/manifest.json",
+    ):
+        assert stat.S_IMODE((output / relative).stat().st_mode) == 0o644
+    assert not (output / "release-manifest.json").exists()
+    with pytest.raises(release_manifest.ManifestError, match="already exists"):
+        release_manifest.materialize_validated_bundle(
+            first, expected_sha256=digest, unit="findb", output=output
+        )
+
+
+def test_bundle_rejects_tampered_member_mode_and_materializes_runnable_tools(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    _write_selected_source_bundle(root, "findb")
+    for relative in release_manifest.EXECUTABLE_BUNDLE_FILES:
+        if relative not in release_manifest.FINDB_BUNDLE_FILES:
+            continue
+        source = REPO_ROOT / relative
+        if source.is_file():
+            (root / relative).write_bytes(source.read_bytes())
+    manifest = _manifest("findb")
+    with release_manifest.SourceBundleReader(root) as source_bundle:
+        manifest["deployment_source_bundle_sha256"] = source_bundle.deployment_source_bundle_sha256(
+            "findb"
+        )
+    manifest_path = tmp_path / "release.json"
+    manifest_path.write_bytes(release_manifest.canonical_json(manifest))
+    bundle = release_manifest.build_bundle(root, manifest_path, "findb")
+
+    tampered_stream = io.BytesIO()
+    with (
+        tarfile.open(fileobj=io.BytesIO(bundle), mode="r:") as source_archive,
+        tarfile.open(
+            fileobj=tampered_stream, mode="w", format=tarfile.GNU_FORMAT
+        ) as tampered_archive,
+    ):
+        for member in source_archive.getmembers():
+            content = source_archive.extractfile(member)
+            assert content is not None
+            copied = tarfile.TarInfo(member.name)
+            copied.size = member.size
+            copied.mode = (
+                0o644 if member.name == "infra/deploy/release_manifest.py" else member.mode
+            )
+            copied.uid = member.uid
+            copied.gid = member.gid
+            copied.mtime = member.mtime
+            copied.uname = member.uname
+            copied.gname = member.gname
+            copied.type = member.type
+            tampered_archive.addfile(copied, content)
+    tampered = tampered_stream.getvalue()
+    with pytest.raises(release_manifest.ManifestError, match="noncanonical"):
+        release_manifest.validate_bundle_bytes(
+            tampered,
+            expected_sha256=hashlib.sha256(tampered).hexdigest(),
+            unit="findb",
+        )
+
+    output = tmp_path / "runnable-release"
+    release_manifest.materialize_validated_bundle(
+        bundle,
+        expected_sha256=hashlib.sha256(bundle).hexdigest(),
+        unit="findb",
+        output=output,
+    )
+    validator = output / "infra/deploy/release_manifest.py"
+    protocol = subprocess.run([str(validator), "protocol"], capture_output=True, check=False)
+    assert protocol.returncode == 0
+    assert protocol.stdout == b"findb-release-manifest-v1\n"
+    for relative in (
+        "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+        "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
+    ):
+        tool = output / relative
+        assert stat.S_IMODE(tool.stat().st_mode) == 0o755
+        assert subprocess.run(["bash", "-n", str(tool)], check=False).returncode == 0
+
+
+def test_deployment_bundle_resource_limits_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    _write_selected_source_bundle(root, "findb")
+    manifest = _manifest("findb")
+    with release_manifest.SourceBundleReader(root) as source_bundle:
+        manifest["deployment_source_bundle_sha256"] = source_bundle.deployment_source_bundle_sha256(
+            "findb"
+        )
+    manifest_path = tmp_path / "release.json"
+    manifest_path.write_bytes(release_manifest.canonical_json(manifest))
+    bundle = release_manifest.build_bundle(root, manifest_path, "findb")
+    digest = hashlib.sha256(bundle).hexdigest()
+    for name, value, message in (
+        ("MAX_BUNDLE_BYTES", len(bundle) - 1, "maximum permitted size"),
+        ("MAX_BUNDLE_MEMBERS", 1, "too many members"),
+        ("MAX_BUNDLE_MEMBER_BYTES", 1, "member exceeds"),
+        ("MAX_BUNDLE_UNCOMPRESSED_BYTES", 1, "maximum uncompressed size"),
+    ):
+        monkeypatch.setattr(release_manifest, name, value)
+        with pytest.raises(release_manifest.ManifestError, match=message):
+            release_manifest.validate_bundle_bytes(bundle, expected_sha256=digest, unit="findb")
+        monkeypatch.undo()
+
+
+def test_bundle_materialization_rejects_symlinked_output_ancestor(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    _write_selected_source_bundle(root, "findb")
+    manifest = _manifest("findb")
+    with release_manifest.SourceBundleReader(root) as source_bundle:
+        manifest["deployment_source_bundle_sha256"] = source_bundle.deployment_source_bundle_sha256(
+            "findb"
+        )
+    manifest_path = tmp_path / "release.json"
+    manifest_path.write_bytes(release_manifest.canonical_json(manifest))
+    bundle = release_manifest.build_bundle(root, manifest_path, "findb")
+    external = tmp_path / "external"
+    external.mkdir()
+    link_parent = tmp_path / "link-parent"
+    link_parent.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(release_manifest.ManifestError, match="ancestor is not a directory"):
+        release_manifest.materialize_validated_bundle(
+            bundle,
+            expected_sha256=hashlib.sha256(bundle).hexdigest(),
+            unit="findb",
+            output=link_parent / "release",
+        )
+    assert not (external / "release").exists()
 
 
 def test_contract_manifest_parser_rejects_malformed_or_ambiguous_entries(tmp_path: Path) -> None:
