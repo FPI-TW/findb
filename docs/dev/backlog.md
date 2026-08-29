@@ -22,11 +22,12 @@
 - [ ] 驗證staging branch protection、required CI及Environment protected-branch restriction。
 - [ ] 依[staging AWS deployment plan](staging-aws-deployment-plan.md)完成OIDC、SSM、
   runtime secrets、image digest、release manifest、backup、監控與rollback rehearsal。
-- [ ] 以一個獨立PR完成Raw與Canonical R2 runtime credentials rotation；取得Cloudflare action-time
-  authority，完成consumer reload、health及舊值失效證據後，才移除GitHub Environment runtime copies。
-  Twelve Data／FinLab／Shioaji provider scope項目依使用者核准變更acceptance criterion而視為完成；既有值
-  維持，實際未輪替、未替換、未撤銷，且不構成rotation evidence。RabbitMQ rotation已完成。SSH recovery
-  項目仍依staging deployment plan的Phase 6 exit gate保留。
+- [ ] 在完整原生provider cycle gate通過後，另行取得移除授權並確認last-used與health，再撤銷GitHub
+  Environment runtime copies；此項不與R2實際rotation綁定。Raw與Canonical R2 scope已依使用者核准的
+  acceptance criterion變更而完成：既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，故不構成
+  rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
+  provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation已完成。SSH recovery項目仍依
+  staging deployment plan的Phase 6 exit gate保留。
 
 ## P1：資料完整性與效能
 
