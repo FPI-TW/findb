@@ -545,6 +545,16 @@ def test_plan_json_guard_accepts_safe_plan_and_emits_only_bounded_counts(
     assert "deferred_changes=0" in completed.stdout
 
 
+def test_plan_json_guard_accepts_missing_zero_drift_collection(tmp_path: Path) -> None:
+    plan = _plan_json_fixture()
+    del plan["resource_drift"]
+
+    completed = _run_plan_json_guard(tmp_path, plan)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "resource_drift=0" in completed.stdout
+
+
 RETIREMENT_DELETE_ADDRESSES = (
     'aws_secretsmanager_secret.runtime["findb/registry/ghcr-pull"]',
     'aws_secretsmanager_secret.runtime["fetcher/registry/ghcr-pull"]',
@@ -803,6 +813,24 @@ def test_plan_json_guard_rejects_malformed_or_incomplete_plan_json(
 ) -> None:
     del label
     completed = _run_plan_json_guard(tmp_path, payload)
+
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert completed.stderr.strip() == "plan_guard=reject reason=malformed"
+
+
+@pytest.mark.parametrize(
+    "resource_drift",
+    (None, {}, "not-a-list", 7, [{}], [{"change": {}}]),
+)
+def test_plan_json_guard_rejects_present_invalid_resource_drift_collection(
+    tmp_path: Path,
+    resource_drift: object,
+) -> None:
+    completed = _run_plan_json_guard(
+        tmp_path,
+        {**_plan_json_fixture(), "resource_drift": resource_drift},
+    )
 
     assert completed.returncode != 0
     assert completed.stdout == ""

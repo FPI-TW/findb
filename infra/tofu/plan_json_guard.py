@@ -16,7 +16,7 @@ from typing import Any, NoReturn
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_REPORTED_COUNT = 1_000_000
 CORE_KEYS = ("format_version", "terraform_version", "planned_values", "configuration")
-REQUIRED_COLLECTION_KEYS = ("resource_changes", "resource_drift", "output_changes")
+REQUIRED_COLLECTION_KEYS = ("resource_changes", "output_changes")
 ALLOWED_RETIREMENT_DELETE_ADDRESSES = frozenset(
     {
         'aws_secretsmanager_secret.runtime["findb/registry/ghcr-pull"]',
@@ -155,7 +155,10 @@ def _validate_shape(
     ):
         _reject_delete()
 
-    resource_drift = plan["resource_drift"]
+    # OpenTofu omits this field when refresh finds no drift. Its absence has
+    # the same semantics as an empty collection, but an explicitly supplied
+    # value remains subject to the normal strict validation below.
+    resource_drift = plan.get("resource_drift", [])
     if not isinstance(resource_drift, list):
         _fail()
     for item in resource_drift:
