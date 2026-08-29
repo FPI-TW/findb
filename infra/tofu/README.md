@@ -78,6 +78,12 @@ receive GitHub or GHCR credentials.
 Production remains on its separate GHCR/GitHub-secret compatibility path until
 a separately authorized production migration.
 
+The FinDB publisher has one additional repository-scoped read capability:
+`ecr:GetDownloadUrlForLayer` for `findb/staging/backend` only. FinDB CD uses
+it to run `alembic heads` from the selected immutable backend digest before
+emitting a release manifest. Fetcher publishers do not receive layer-download
+permission, and no publisher receives cross-unit repository access.
+
 The transitional `registry/ghcr-pull` Secrets Manager metadata resources have
 not been retired. The pull-request gate is preflight only: it may prove the
 bounded two-delete plan, but it never authorizes or performs an apply. Their
