@@ -264,6 +264,12 @@ data "aws_iam_policy_document" "deploy_permissions" {
       variable = "kms:ViaService"
       values   = ["s3.${var.aws_region}.amazonaws.com"]
     }
+
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = ["${aws_s3_bucket.deploy_bundle.arn}/${each.value.bundle_prefix}*"]
+    }
   }
 }
 

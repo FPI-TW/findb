@@ -16,6 +16,18 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _statement_by_sid(policy: str, sid: str) -> str:
+    match = re.search(
+        rf'''(?msx)^[ \t]*statement[ \t]*\{{
+        (?:(?!^[ \t]*statement[ \t]*\{{).)*?
+        ^[ \t]*sid[ \t]*=[ \t]*"{re.escape(sid)}"[ \t]*$
+        .*?(?=^[ \t]*statement[ \t]*\{{|\Z)''',
+        policy,
+    )
+    assert match is not None, f"statement with sid {sid!r} was not found"
+    return match.group(0)
+
+
 def test_provider_lockfiles_pin_the_same_signed_aws_provider() -> None:
     bootstrap_lock = _read(BOOTSTRAP_ROOT / ".terraform.lock.hcl")
     staging_lock = _read(STAGING_ROOT / ".terraform.lock.hcl")
@@ -329,12 +341,20 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     assert 'actions   = ["ssm:SendCommand"]' in iam
     assert '"${aws_s3_bucket.deploy_bundle.arn}/${each.value.bundle_prefix}*"' in iam
     assert 'variable = "s3:prefix"' in iam
-    assert '"findb/"' in main
-    assert '"fetcher/"' in main
+    unit_bundle_prefixes = dict(
+        re.findall(
+            r"""(?msx)^[ \t]*(findb|fetcher)[ \t]*=[ \t]*\{
+            (?:(?!^[ \t]*(?:findb|fetcher)[ \t]*=[ \t]*\{).)*?
+            ^[ \t]*bundle_prefix[ \t]*=[ \t]*"([^"]+)"[ \t]*$""",
+            main,
+        )
+    )
+    assert unit_bundle_prefixes == {"findb": "findb/", "fetcher": "fetcher/"}
 
     deploy_policy = iam.split('data "aws_iam_policy_document" "deploy_permissions"', 1)[1].split(
         'resource "aws_iam_role_policy" "deploy_permissions"', 1
     )[0]
+    assert "for_each = local.unit_config" in deploy_policy
     assert 'sid    = "SendAwsOwnedRunShellScriptDocument"' in deploy_policy
     assert (
         "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}::document/AWS-RunShellScript"
@@ -361,6 +381,23 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     assert "secretsmanager:GetSecretValue" not in deploy_policy
     assert "rds:" not in deploy_policy.lower()
     assert "r2" not in deploy_policy.lower()
+
+    deploy_bundle_kms_statement = _statement_by_sid(deploy_policy, "EncryptOwnDeploymentBundle")
+    assert '"kms:Decrypt"' in deploy_bundle_kms_statement
+    assert '"kms:Encrypt"' in deploy_bundle_kms_statement
+    assert '"kms:GenerateDataKey"' in deploy_bundle_kms_statement
+    assert "resources = [aws_kms_key.deploy_bundle.arn]" in deploy_bundle_kms_statement
+    assert 'variable = "kms:ViaService"' in deploy_bundle_kms_statement
+    assert 'values   = ["s3.${var.aws_region}.amazonaws.com"]' in deploy_bundle_kms_statement
+    assert 'variable = "kms:EncryptionContext:aws:s3:arn"' in deploy_bundle_kms_statement
+    assert 'values   = ["${aws_s3_bucket.deploy_bundle.arn}/${each.value.bundle_prefix}*"]' in (
+        deploy_bundle_kms_statement
+    )
+
+    deploy_bundle_encryption = main.split(
+        'resource "aws_s3_bucket_server_side_encryption_configuration" "deploy_bundle"', 1
+    )[1].split('data "aws_iam_policy_document" "deploy_bundle_bucket"', 1)[0]
+    assert "bucket_key_enabled = false" in deploy_bundle_encryption
 
     ssm_agent_policy = iam.split('data "aws_iam_policy_document" "ssm_agent"', 1)[1].split(
         'resource "aws_iam_role_policy" "ssm_agent"', 1
