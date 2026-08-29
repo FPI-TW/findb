@@ -49,6 +49,42 @@ API failure都不得enqueue。
 - Source client的provider與dataset scope正確。
 - Scheduler definition、published calendar、reviewed universe與desired state一致。
 
+## RabbitMQ runtime credential rotation
+
+此程序只輪替`findb/staging/findb/rabbitmq/runtime`，不輸出secret值，也不以刪除
+`AWSPREVIOUS`取代舊值失效驗證。先停止三個provider stable schedulers，避免rotation期間建立新
+delivery；保留RabbitMQ persistent volume、node name、vhost與topology。持久化volume存在時，
+`RABBITMQ_DEFAULT_PASS`環境變數只用於首次bootstrap，**不會**更新既有internal user的password。
+
+1. 記錄目前Secrets Manager version IDs與stages；停止三個provider stable schedulers後，先確認queue／DLQ、
+   unpublished outbox與active delivery處於安全狀態，並確認既有broker container/node仍在運行、管理context持有
+   舊cookie。若任一前提不成立，立即中止，保持schedulers停止，不得刪除或改動persistent volume。
+2. 僅在仍運行、持有舊cookie的既有broker container/node context內，安全地只將新的`AWSCURRENT` password
+   傳給既有internal user的in-broker `rabbitmqctl change_password`（或同等、可稽核的broker管理操作）。此步驟
+   不得source、替換或注入新的`RABBITMQ_ERLANG_COOKIE`；立即以新password驗證auth成功，並確認舊password被
+   broker拒絕。若舊cookie precondition或管理命令失敗，立即中止，保持schedulers停止，不得刪除或改動persistent volume。
+3. 完成password變更與新auth驗證後，才以protected `main` deploy重新載入runtime-secret consumer，重建rabbit、policy、dispatcher與worker；
+   不刪volume、不重建node identity，也不在persistent host env寫入broker credential。official RabbitMQ
+   container在此重建時以新的`RABBITMQ_ERLANG_COOKIE`更新cookie。
+4. 在相同image、network、指定node `rabbit@findb-rabbitmq`與完全相同的probe command下，以current與
+   previous cookie各執行兩次differential probe。current必須兩次成功；previous必須兩次明確非零，且診斷
+   證明為authentication／cookie rejection。不得把任何固定exit code視為可重用runbook契約。
+5. 驗證rabbit healthy、policy exit code為0、worker healthy，並確認新password auth成功、舊password收到
+   broker拒絕。驗證queue與DLQ為0，且DB-authoritative queue health的expired leases、missing deliveries、
+   unpublished outbox均為0，worker heartbeat正常；確認volume、node、vhost及topology存在。
+6. 使用protected `main`的既有accepted image執行一次FinDB manual deployment／health驗收，保存workflow
+   SHA、image SHA及上述結果。未通過時保持provider schedulers停止，收集不含secret的診斷後forward fix。
+7. 所有broker驗收通過後才恢復三個provider stable schedulers，記錄running、restart count與image SHA。
+   scheduler恢復本身不等同於完成原生provider cycle；該時間gate須另有cycle evidence。
+
+2026-08-29的已完成紀錄：舊version `65fbff30-c417-54b5-b582-0b0fc0f89bc4`為`AWSPREVIOUS`，新version
+`1b2a8db6-6c97-44c0-a21f-9cf384c2571d`為`AWSCURRENT`。先以新password對`rabbit@findb-rabbitmq`的
+既有internal user完成in-broker password更新並確認新auth成功，再於05:04Z完成重建及broker／queue驗收。
+official container重建後，在相同image、network、node與probe command下，current cookie兩次結果為
+`[0,0]`，previous cookie兩次結果為`[69,69]`；後者的診斷為cookie authentication rejection，該`69`
+僅為本次歷史結果，不是runbook契約。05:06:47Z三個scheduler恢復running、restart count 0；它們仍使用
+accepted ECR SHA `0e2e28089498237b4261169aa0c6885f215a1d9e`。舊version未刪除，僅保留為`AWSPREVIOUS`。
+
 ## Bounded end-to-end acceptance
 
 Staging驗收完整功能，不累積資料量。執行前依
