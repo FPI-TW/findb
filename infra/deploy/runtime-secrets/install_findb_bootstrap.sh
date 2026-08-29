@@ -7,6 +7,7 @@ set +x
 
 region="${1:?AWS region required}"
 public_host="${2:?FinDB public host required}"
+release_root="${3:-/opt/findb}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "install_findb_bootstrap=failed reason=root_required" >&2
@@ -49,7 +50,7 @@ Before=docker.service
 Type=oneshot
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /run/findb-runtime-secrets
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /run/findb-runtime-secrets/nginx
-ExecStart=/opt/findb/runtime-secrets/render_nginx_runtime.sh /opt/findb/runtime-secrets/findb.json $region $public_host
+ExecStart=$release_root/infra/deploy/runtime-secrets/render_nginx_runtime.sh $release_root/infra/deploy/runtime-secrets/findb.json $region $public_host
 
 [Install]
 WantedBy=multi-user.target

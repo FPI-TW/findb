@@ -36,6 +36,11 @@ on:
         required: false
         default: ""
         type: string
+      accepted_bundle_key:
+        description: Optional exact accepted findb/accepted/... bundle key for protected-main staging replay
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: ${{ inputs.deployment_target || 'staging' }}-findb
@@ -84,7 +89,6 @@ jobs:
           context: ./backend
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -96,7 +100,6 @@ jobs:
           file: dashboard/Dockerfile
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ${{ env.DASHBOARD_IMAGE }}:latest
             ${{ env.DASHBOARD_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=dashboard
           cache-to: type=gha,mode=max,scope=dashboard
@@ -116,6 +119,9 @@ jobs:
     outputs:
       backend_image_ref: ${{ steps.backend_image.outputs.image_ref }}
       dashboard_image_ref: ${{ steps.dashboard_image.outputs.image_ref }}
+      bundle_sha256: ${{ steps.deployment_bundle.outputs.bundle_sha256 }}
+      migration_revision: ${{ steps.backend_alembic_head.outputs.migration_revision }}
+      validator_sha256: ${{ steps.deployment_bundle.outputs.validator_sha256 }}
     env:
       AWS_REGION: ap-southeast-1
       AWS_ACCOUNT_ID: '439622209937'
@@ -124,6 +130,8 @@ jobs:
       DASHBOARD_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard
       ECR_IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
       ECR_REUSE_ONLY: ${{ inputs.image_tag != '' }}
+      IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
+      ACCEPTED_BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -133,6 +141,11 @@ jobs:
         run: |
           set -euo pipefail
           [ "$GITHUB_REF" = refs/heads/main ]
+          if [ -n "$IMAGE_TAG_INPUT" ]; then
+            [ -n "$ACCEPTED_BUNDLE_KEY" ] || { echo "::error title=Accepted replay required::staging image_tag requires accepted_bundle_key"; exit 1; }
+          else
+            [ -z "$ACCEPTED_BUNDLE_KEY" ] || { echo "::error title=Accepted replay commit required::accepted_bundle_key requires image_tag"; exit 1; }
+          fi
           if [ -n "$ECR_IMAGE_TAG" ]; then
             [[ "$ECR_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || {
               echo "::error title=Invalid staging rollback tag::image_tag must be a lowercase 40-character commit SHA"
@@ -245,7 +258,7 @@ jobs:
           fi
       - name: Materialize selected deployment source inputs
         id: selected_source_bundle
-        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        if: ${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -254,7 +267,7 @@ jobs:
           git archive --format=tar "$ECR_IMAGE_TAG" | tar -x -C "$source_root"
           printf 'path=%s\n' "$source_root" >> "$GITHUB_OUTPUT"
       - name: Verify selected release manifest protocol
-        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        if: ${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}
         shell: bash
         env:
           SOURCE_BUNDLE_ROOT: ${{ steps.selected_source_bundle.outputs.path }}
@@ -285,7 +298,8 @@ jobs:
           fi
           printf 'migration_revision=%s\n' "${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
       - name: Generate and validate staging release manifest
-        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        id: deployment_bundle
+        if: ${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}
         shell: bash
         env:
           BACKEND_IMAGE_REF: ${{ steps.backend_image.outputs.image_ref }}
@@ -314,8 +328,36 @@ jobs:
             --image "dashboard=$DASHBOARD_IMAGE_REF" \
             --created-by-run-id "$GITHUB_RUN_ID" \
             --manifest "$RUNNER_TEMP/findb-staging-release-manifest.json"
+          python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" bundle \
+            --repo-root "$SOURCE_BUNDLE_ROOT" \
+            --unit findb \
+            --manifest "$RUNNER_TEMP/findb-staging-release-manifest.json" \
+            --output "$RUNNER_TEMP/findb-staging-deployment-bundle.tar"
+          bundle_sha256="$(sha256sum "$RUNNER_TEMP/findb-staging-deployment-bundle.tar" | cut -d ' ' -f1)"
+          validator_sha256="$(sha256sum "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" | cut -d ' ' -f1)"
+          python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" validate-bundle \
+            --bundle "$RUNNER_TEMP/findb-staging-deployment-bundle.tar" \
+            --expected-bundle-sha256 "$bundle_sha256" \
+            --unit findb \
+            --commit-sha "$ECR_IMAGE_TAG" \
+            --migration-revision "$MIGRATION_REVISION" \
+            --image "backend=$BACKEND_IMAGE_REF" \
+            --image "dashboard=$DASHBOARD_IMAGE_REF" \
+            --created-by-run-id "$GITHUB_RUN_ID"
+          printf 'bundle_sha256=%s\n' "$bundle_sha256" >> "$GITHUB_OUTPUT"
+          printf 'validator_sha256=%s\n' "$validator_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload exact staging deployment bundle
+        if: ${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-findb-deployment-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/findb-staging-deployment-bundle.tar
+            ${{ runner.temp }}/findb-staging-release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload staging release manifest
-        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        if: ${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}
@@ -344,6 +386,9 @@ jobs:
     outputs:
       backend_image_ref: ${{ steps.release_selection.outputs.backend_image_ref }}
       dashboard_image_ref: ${{ steps.release_selection.outputs.dashboard_image_ref }}
+      bundle_sha256: ${{ steps.release_selection.outputs.bundle_sha256 }}
+      migration_revision: ${{ steps.release_selection.outputs.migration_revision }}
+      validator_sha256: ${{ steps.release_selection.outputs.validator_sha256 }}
     steps:
       - name: Confirm the exact target-specific image build succeeded
         id: release_selection
@@ -358,6 +403,10 @@ jobs:
           VERIFY_RESULT: ${{ needs.verify.result }}
           BACKEND_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.backend_image_ref }}
           DASHBOARD_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.dashboard_image_ref }}
+          BUNDLE_SHA256: ${{ needs.build-push-staging-ecr.outputs.bundle_sha256 }}
+          MIGRATION_REVISION: ${{ needs.build-push-staging-ecr.outputs.migration_revision }}
+          ACCEPTED_BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+          VALIDATOR_SHA256: ${{ needs.build-push-staging-ecr.outputs.validator_sha256 }}
         run: |
           set -euo pipefail
           [ "$VERIFY_RESULT" = success ]
@@ -383,6 +432,18 @@ jobs:
                 fi
                 printf 'backend_image_ref=%s\n' "$BACKEND_IMAGE_REF" >> "$GITHUB_OUTPUT"
                 printf 'dashboard_image_ref=%s\n' "$DASHBOARD_IMAGE_REF" >> "$GITHUB_OUTPUT"
+                if [ -n "${ACCEPTED_BUNDLE_KEY:-}" ]; then
+                  [ -z "${BUNDLE_SHA256:-}" ] || exit 1
+                  [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]] || exit 1
+                  printf 'migration_revision=%s\n' "$MIGRATION_REVISION" >> "$GITHUB_OUTPUT"
+                else
+                  [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+                  [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]] || exit 1
+                  printf 'bundle_sha256=%s\n' "$BUNDLE_SHA256" >> "$GITHUB_OUTPUT"
+                  printf 'migration_revision=%s\n' "$MIGRATION_REVISION" >> "$GITHUB_OUTPUT"
+                  [[ "$VALIDATOR_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+                  printf 'validator_sha256=%s\n' "$VALIDATOR_SHA256" >> "$GITHUB_OUTPUT"
+                fi
               else
                 [ "$STAGING_ECR_BUILD" = skipped ]
                 [ "$PRODUCTION_BUILD" = skipped ]
@@ -394,6 +455,9 @@ jobs:
               exit 1
               ;;
           esac
+          if [ -n "${ACCEPTED_BUNDLE_KEY:-}" ]; then
+            [ "$EVENT_NAME" = workflow_dispatch ] && [ "$DEPLOYMENT_TARGET" = staging ] && [ -n "${IMAGE_TAG_INPUT:-}" ] || exit 1
+          fi
 
   deploy:
     needs: build-push
@@ -538,21 +602,6 @@ jobs:
             --public-host "$FINDB_PUBLIC_HOST" \
             --output infra/nginx/serve-key.conf
 
-      - name: Render nonsecret nginx configs for AWS runtime secrets
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python backend/scripts/render_nginx_public_host.py \
-            --host "$FINDB_PUBLIC_HOST" \
-            --template infra/nginx/nginx.conf \
-            --output infra/nginx/nginx.conf
-          python backend/scripts/render_nginx_source_allowlist.py \
-            --cidrs "$SOURCE_ALLOWLIST_CIDRS" \
-            --output infra/nginx/source-allowlist.conf
-          python backend/scripts/render_nginx_cloudflare_real_ip.py \
-            --output infra/nginx/cloudflare-real-ip.conf
-
       - name: Configure staging AWS credentials
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -562,7 +611,87 @@ jobs:
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           role-session-name: findb-staging-preflight-${{ github.run_id }}
 
+      - name: Download current FinDB deployment bundle artifact
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && inputs.accepted_bundle_key == '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: staging-findb-deployment-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/findb-deployment-bundle
+
+      - name: Select immutable FinDB deployment bundle
+        id: selected_bundle
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
+        shell: bash
+        env:
+          DEPLOY_BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          DEPLOY_BUNDLE_KMS_KEY_ARN: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+          ACCEPTED_BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+          SELECTED_COMMIT: ${{ inputs.image_tag || github.sha }}
+          BACKEND_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
+          DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
+          MIGRATION_REVISION: ${{ needs.build-push.outputs.migration_revision }}
+          BUNDLE_SHA256: ${{ needs.build-push.outputs.bundle_sha256 }}
+          VALIDATOR_SHA256: ${{ needs.build-push.outputs.validator_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_BUNDLE_BUCKET" = findb-staging-deploy-bundle-439622209937 ]] || exit 1
+          [[ "$DEPLOY_BUNDLE_KMS_KEY_ARN" =~ ^arn:aws:kms:ap-southeast-1:439622209937:key/[0-9a-f-]{36}$ ]] || exit 1
+          [[ "$SELECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          bundle_file="$RUNNER_TEMP/findb-selected-bundle.tar"
+          replay=false
+          if [ -n "$ACCEPTED_BUNDLE_KEY" ]; then
+            [[ "$ACCEPTED_BUNDLE_KEY" =~ ^findb/accepted/${SELECTED_COMMIT}/[0-9a-f]{64}[.]tar$ ]] || exit 1
+            bundle_length="$(aws s3api head-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$ACCEPTED_BUNDLE_KEY" --query ContentLength --output text)"
+            [[ "$bundle_length" =~ ^[0-9]+$ ]] && [ "$bundle_length" -le 16777216 ] || exit 1
+            record_key="${ACCEPTED_BUNDLE_KEY%.tar}.acceptance.json"
+            record_file="$RUNNER_TEMP/findb-accepted-record.json"
+            aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$record_key" "$record_file" >/dev/null
+            python3 - "$record_file" "$SELECTED_COMMIT" "$ACCEPTED_BUNDLE_KEY" "$BACKEND_IMAGE_REF" "$DASHBOARD_IMAGE_REF" "$MIGRATION_REVISION" <<'PY'
+          import json, re, sys
+          def unique(pairs):
+              out = {}
+              for key, value in pairs:
+                  if key in out: raise ValueError("duplicate key")
+                  out[key] = value
+              return out
+          record = json.load(open(sys.argv[1], encoding="utf-8"), object_pairs_hook=unique)
+          required = {"unit","commit_sha","bundle_sha256","bundle_key","validator_sha256","migration_revision","workflow_run_id","workflow_run_attempt","ssm_command_id","images","state"}
+          if not isinstance(record, dict) or set(record) != required or record["unit"] != "findb" or record["commit_sha"] != sys.argv[2] or record["bundle_key"] != sys.argv[3] or record["migration_revision"] != sys.argv[6] or record["images"] != {"backend":sys.argv[4],"dashboard":sys.argv[5]} or record["state"] != "accepted" or not all(isinstance(record[k], str) for k in required - {"images"}) or not re.fullmatch(r"[0-9a-f]{64}", record["bundle_sha256"]) or not re.fullmatch(r"[0-9a-f]{64}", record["validator_sha256"]) or not re.fullmatch(r"[0-9]+", record["workflow_run_id"]) or not re.fullmatch(r"[0-9]+", record["workflow_run_attempt"]) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", record["ssm_command_id"]):
+              raise SystemExit(1)
+          PY
+            bundle_sha256="$(jq -r '.bundle_sha256' "$record_file")"
+            validator_sha256="$(jq -r '.validator_sha256' "$record_file")"
+            [ "$(jq -r '.unit' "$record_file")" = findb ] && [ "$(jq -r '.commit_sha' "$record_file")" = "$SELECTED_COMMIT" ] && [ "$(jq -r '.bundle_key' "$record_file")" = "$ACCEPTED_BUNDLE_KEY" ] && [ "$(jq -r '.state' "$record_file")" = accepted ]
+            aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$ACCEPTED_BUNDLE_KEY" "$bundle_file" >/dev/null
+            replay=true
+          else
+            bundle_file="$RUNNER_TEMP/findb-deployment-bundle/findb-staging-deployment-bundle.tar"
+            bundle_sha256="$BUNDLE_SHA256"
+            validator_sha256="$VALIDATOR_SHA256"
+            [[ "$bundle_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$validator_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          fi
+          [ "$(sha256sum "$bundle_file" | cut -d ' ' -f1)" = "$bundle_sha256" ]
+          created_args=()
+          [ "$replay" = true ] || created_args=(--created-by-run-id "$GITHUB_RUN_ID")
+          python3 infra/deploy/release_manifest.py validate-bundle --bundle "$bundle_file" --expected-bundle-sha256 "$bundle_sha256" --unit findb --commit-sha "$SELECTED_COMMIT" --migration-revision "$MIGRATION_REVISION" --image "backend=$BACKEND_IMAGE_REF" --image "dashboard=$DASHBOARD_IMAGE_REF" "${created_args[@]}"
+          if [ "$replay" = false ]; then
+            candidate_key="findb/candidates/${SELECTED_COMMIT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${bundle_sha256}.tar"
+            aws s3api put-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$candidate_key" --body "$bundle_file" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$DEPLOY_BUNDLE_KMS_KEY_ARN" >/dev/null
+            selected_key="$candidate_key"
+            created_by_run_id="$GITHUB_RUN_ID"
+          else
+            selected_key="$ACCEPTED_BUNDLE_KEY"
+            created_by_run_id=""
+          fi
+          printf 'bundle_key=%s\n' "$selected_key" >> "$GITHUB_OUTPUT"
+          printf 'bundle_sha256=%s\n' "$bundle_sha256" >> "$GITHUB_OUTPUT"
+          printf 'validator_sha256=%s\n' "$validator_sha256" >> "$GITHUB_OUTPUT"
+          printf 'replay=%s\n' "$replay" >> "$GITHUB_OUTPUT"
+          printf 'created_by_run_id=%s\n' "$created_by_run_id" >> "$GITHUB_OUTPUT"
+
       - name: Run staging AWS and SSM preflight
+        id: ssm_preflight
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}
         shell: bash
         env:
@@ -576,10 +705,19 @@ jobs:
           PREFLIGHT_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-findb
           BACKEND_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
           DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
+          DEPLOY_BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          DEPLOY_BUNDLE_KMS_KEY_ARN: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+          DEPLOY_BUNDLE_KEY: ${{ steps.selected_bundle.outputs.bundle_key }}
+          DEPLOY_BUNDLE_SHA256: ${{ steps.selected_bundle.outputs.bundle_sha256 }}
+          DEPLOY_VALIDATOR_SHA256: ${{ steps.selected_bundle.outputs.validator_sha256 }}
+          BUNDLE_CREATED_BY_RUN_ID: ${{ steps.selected_bundle.outputs.created_by_run_id }}
+          BUNDLE_REPLAY: ${{ steps.selected_bundle.outputs.replay }}
+          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
+          SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
         run: |
           set -euo pipefail
 
-          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME BACKEND_IMAGE_REF DASHBOARD_IMAGE_REF; do
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME BACKEND_IMAGE_REF DASHBOARD_IMAGE_REF DEPLOY_BUNDLE_BUCKET DEPLOY_BUNDLE_KMS_KEY_ARN DEPLOY_BUNDLE_KEY DEPLOY_BUNDLE_SHA256 DEPLOY_VALIDATOR_SHA256 BUNDLE_REPLAY FINDB_PUBLIC_HOST SOURCE_ALLOWLIST_CIDRS; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing staging AWS preflight variable::$name must be configured in the staging-findb Environment"
               exit 1
@@ -619,6 +757,15 @@ jobs:
             echo "::error title=Invalid FinDB digest selection::SSM preflight requires both exact unit-scoped ECR digests"
             exit 1
           fi
+          [[ "$DEPLOY_BUNDLE_BUCKET" = findb-staging-deploy-bundle-439622209937 ]] || exit 1
+          [[ "$DEPLOY_BUNDLE_KMS_KEY_ARN" =~ ^arn:aws:kms:ap-southeast-1:439622209937:key/[0-9a-f-]{36}$ ]] || exit 1
+          if [ "$BUNDLE_REPLAY" = true ]; then
+            [[ "$DEPLOY_BUNDLE_KEY" =~ ^findb/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
+          else
+            [ "$BUNDLE_REPLAY" = false ] && [[ "$DEPLOY_BUNDLE_KEY" =~ ^findb/candidates/[0-9a-f]{40}/[0-9]+-[0-9]+-[0-9a-f]{64}[.]tar$ ]]
+          fi || exit 1
+          [[ "$DEPLOY_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [[ "$DEPLOY_VALIDATOR_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
 
           caller_account="$(aws sts get-caller-identity --region "$AWS_REGION" --query Account --output text)"
           caller_arn="$(aws sts get-caller-identity --region "$AWS_REGION" --query Arn --output text)"
@@ -702,15 +849,27 @@ jobs:
           printf -v expected_ecr_registry_q '%q' "$expected_ecr_registry"
           printf -v expected_backend_image_ref_q '%q' "$BACKEND_IMAGE_REF"
           printf -v expected_dashboard_image_ref_q '%q' "$DASHBOARD_IMAGE_REF"
+          printf -v expected_deploy_bundle_bucket_q '%q' "$DEPLOY_BUNDLE_BUCKET"
+          printf -v expected_deploy_bundle_key_q '%q' "$DEPLOY_BUNDLE_KEY"
+          printf -v expected_deploy_bundle_sha256_q '%q' "$DEPLOY_BUNDLE_SHA256"
+          printf -v expected_deploy_validator_sha256_q '%q' "$DEPLOY_VALIDATOR_SHA256"
+          printf -v expected_bundle_created_by_run_id_q '%q' "$BUNDLE_CREATED_BY_RUN_ID"
+          printf -v expected_bundle_replay_q '%q' "$BUNDLE_REPLAY"
+          printf -v expected_findb_public_host_q '%q' "$FINDB_PUBLIC_HOST"
+          printf -v expected_source_allowlist_cidrs_q '%q' "$SOURCE_ALLOWLIST_CIDRS"
           host_script="$(cat <<'HOST_SCRIPT'
           set -eu
 
           preflight_succeeded=0
           docker_config=""
+          bundle_root=""
           emit_preflight_failure() {
             trap - EXIT
             case "$docker_config" in
               /run/findb-ecr-preflight.*) rm -rf -- "$docker_config" ;;
+            esac
+            case "$bundle_root" in
+              /run/findb-deploy-bundle.*) rm -rf -- "$bundle_root" ;;
             esac
             if [ "$preflight_succeeded" -ne 1 ]; then
               printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token"
@@ -763,6 +922,60 @@ jobs:
             exit 1
           fi
           printf 'docker=%s compose=%s\n' "$docker_version" "$compose_version"
+
+          bundle_root="$(mktemp -d /run/findb-deploy-bundle.XXXXXX)"
+          chmod 0700 "$bundle_root"
+          bundle_file="$bundle_root/bundle.tar"
+          bundle_length="$(aws s3api head-object --region "$expected_aws_region" --bucket "$expected_deploy_bundle_bucket" --key "$expected_deploy_bundle_key" --query ContentLength --output text)"
+          [[ "$bundle_length" =~ ^[0-9]+$ ]] && [ "$bundle_length" -le 16777216 ] || exit 1
+          aws s3api get-object --region "$expected_aws_region" \
+            --bucket "$expected_deploy_bundle_bucket" --key "$expected_deploy_bundle_key" \
+            "$bundle_file" >/dev/null
+          actual_bundle_sha256="$(sha256sum "$bundle_file" | cut -d ' ' -f1)"
+          [ "$actual_bundle_sha256" = "$expected_deploy_bundle_sha256" ] || exit 1
+          python3 - "$bundle_file" "$bundle_root/release_manifest.py" <<'PY'
+          import os, sys, tarfile
+          executable_members = frozenset((
+              "infra/deploy/release_manifest.py",
+              "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+              "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+              "backend/scripts/render_nginx_cloudflare_real_ip.py",
+              "backend/scripts/render_nginx_public_host.py",
+              "backend/scripts/render_nginx_source_allowlist.py",
+              "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+              "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
+              "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
+              "infra/deploy/runtime-secrets/render_serve_key.py",
+              "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+          ))
+          with tarfile.open(sys.argv[1], "r:") as archive:
+              members = archive.getmembers(); names = [item.name for item in members]
+              if len(names) != len(set(names)): raise SystemExit(1)
+              item = next((item for item in members if item.name == "infra/deploy/release_manifest.py"), None)
+              if item is None or item.mode != 0o755 or any(member.name.startswith("/") or "\\" in member.name or any(part in ("", ".", "..") for part in member.name.split("/")) or not member.isreg() or member.issym() or member.islnk() or member.linkname or member.uid != 0 or member.gid != 0 or member.mode != (0o755 if member.name in executable_members else 0o644) or member.mtime != 0 for member in members): raise SystemExit(1)
+              source = archive.extractfile(item)
+              if source is None: raise SystemExit(1)
+              fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+              with os.fdopen(fd, "wb") as destination: destination.write(source.read())
+          PY
+          [ "$(sha256sum "$bundle_root/release_manifest.py" | cut -d ' ' -f1)" = "$expected_deploy_validator_sha256" ] || exit 1
+          bundle_created_args=""
+          if [ "$expected_bundle_replay" = false ]; then bundle_created_args="--created-by-run-id $expected_bundle_created_by_run_id"; fi
+          python3 "$bundle_root/release_manifest.py" validate-bundle \
+            --bundle "$bundle_file" --expected-bundle-sha256 "$expected_deploy_bundle_sha256" \
+            --unit findb --commit-sha "$expected_commit_sha" \
+            --migration-revision "$expected_migration_revision" \
+            --image "backend=$expected_backend_image_ref" \
+            --image "dashboard=$expected_dashboard_image_ref" \
+            $bundle_created_args
+          for trusted_path in /opt/findb /opt/findb/releases; do
+            [ ! -L "$trusted_path" ] || exit 1
+            install -d -o root -g root -m 0755 "$trusted_path"
+            [ "$(stat -c '%U:%G:%a' "$trusted_path")" = root:root:755 ] || exit 1
+          done
+          release_root="/opt/findb/releases/${expected_deploy_bundle_sha256}-${expected_marker_token}"
+          python3 "$bundle_root/release_manifest.py" materialize-bundle --bundle "$bundle_file" --expected-bundle-sha256 "$expected_deploy_bundle_sha256" --unit findb --output "$release_root" --commit-sha "$expected_commit_sha" --migration-revision "$expected_migration_revision" --image "backend=$expected_backend_image_ref" --image "dashboard=$expected_dashboard_image_ref" $bundle_created_args
+          echo "deployment_bundle=validated unit=findb"
 
           docker_config="$(mktemp -d /run/findb-ecr-preflight.XXXXXX)"
           chmod 0700 "$docker_config"
@@ -833,6 +1046,17 @@ jobs:
           expected_ecr_registry=${expected_ecr_registry_q}
           expected_backend_image_ref=${expected_backend_image_ref_q}
           expected_dashboard_image_ref=${expected_dashboard_image_ref_q}
+          expected_deploy_bundle_bucket=${expected_deploy_bundle_bucket_q}
+          expected_deploy_bundle_key=${expected_deploy_bundle_key_q}
+          expected_deploy_bundle_sha256=${expected_deploy_bundle_sha256_q}
+          expected_deploy_validator_sha256=${expected_deploy_validator_sha256_q}
+          expected_bundle_created_by_run_id=${expected_bundle_created_by_run_id_q}
+          expected_bundle_replay=${expected_bundle_replay_q}
+          expected_findb_public_host=${expected_findb_public_host_q}
+          expected_source_allowlist_cidrs=${expected_source_allowlist_cidrs_q}
+          expected_commit_sha=$(printf '%q' "${{ inputs.image_tag || github.sha }}")
+          expected_migration_revision=$(printf '%q' "${{ needs.build-push.outputs.migration_revision }}")
+          expected_created_by_run_id=$(printf '%q' "$GITHUB_RUN_ID")
           ${host_script}"
           parameters_json="$(jq -nc --arg command "$host_script" '{commands: [$command]}')"
           command_id="$(
@@ -853,6 +1077,8 @@ jobs:
             echo "::error title=SSM preflight dispatch failed::No command ID was returned"
             exit 1
           fi
+          printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+          printf 'release_root=/opt/findb/releases/%s-%s\n' "$DEPLOY_BUNDLE_SHA256" "$PREFLIGHT_MARKER_TOKEN" >> "$GITHUB_OUTPUT"
           success_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=success"
           failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
           marker_state="pending"
@@ -900,29 +1126,6 @@ jobs:
             exit 1
           fi
 
-      - name: Calculate AWS runtime-secret bundle checksums
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        id: runtime_secret_checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          for file in \
-            infra/deploy/runtime-secrets/load_runtime_secrets.py \
-            infra/deploy/runtime-secrets/runtime_secret_command.sh \
-            infra/deploy/runtime-secrets/render_nginx_runtime.sh \
-            infra/deploy/runtime-secrets/render_serve_key.py \
-            infra/deploy/runtime-secrets/install_findb_bootstrap.sh \
-            infra/deploy/runtime-secrets/deploy_findb_aws.sh \
-            infra/deploy/runtime-secrets/findb.json \
-            docker-compose.prod.yml \
-            infra/nginx/nginx.conf \
-            infra/nginx/source-allowlist.conf \
-            infra/nginx/cloudflare-real-ip.conf; do
-            name="$(basename "$file" | tr '.-' '__')"
-            checksum="$(sha256sum "$file" | cut -d ' ' -f1)"
-            printf '%s=%s\n' "$name" "$checksum" >> "$GITHUB_OUTPUT"
-          done
-
       - name: Prepare AWS runtime-secret directories on EC2
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
@@ -932,178 +1135,34 @@ jobs:
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           script: |
             set -euo pipefail
-            sudo install -d -o root -g root -m 0755 /opt/findb/runtime-secrets
             sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets
             sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets/nginx
-            sudo mkdir -p /var/lib/findb/rabbitmq /home/ubuntu/etc/nginx/ssl
+            for trusted_path in /etc /etc/findb /etc/findb/nginx; do
+              [ ! -L "$trusted_path" ] || exit 1
+            done
+            sudo install -d -o root -g root -m 0755 /etc/findb
+            sudo install -d -o root -g root -m 0755 /etc/findb/nginx
+            for trusted_path in /etc /etc/findb /etc/findb/nginx; do
+              [ ! -L "$trusted_path" ] \
+                && [ "$(sudo stat -c '%u:%g:%a' "$trusted_path")" = "0:0:755" ] || exit 1
+            done
+            sudo mkdir -p /var/lib/findb/rabbitmq
             sudo chown -R 999:999 /var/lib/findb/rabbitmq
-            sudo chown ubuntu:ubuntu /opt/findb /home/ubuntu/etc/nginx
-            sudo chown root:root /home/ubuntu/etc/nginx/ssl
-            sudo rm -rf -- /tmp/findb-runtime-secrets
-            sudo install -d -o ubuntu -g ubuntu -m 0700 /tmp/findb-runtime-secrets
-
-      - name: Sync AWS runtime-secret loader and exact FinDB catalog
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          source: "infra/deploy/runtime-secrets/load_runtime_secrets.py,infra/deploy/runtime-secrets/runtime_secret_command.sh,infra/deploy/runtime-secrets/render_nginx_runtime.sh,infra/deploy/runtime-secrets/render_serve_key.py,infra/deploy/runtime-secrets/install_findb_bootstrap.sh,infra/deploy/runtime-secrets/deploy_findb_aws.sh,infra/deploy/runtime-secrets/findb.json,docker-compose.prod.yml,infra/nginx/nginx.conf,infra/nginx/source-allowlist.conf,infra/nginx/cloudflare-real-ip.conf"
-          target: /tmp/findb-runtime-secrets
-          overwrite: true
-
-      - name: Verify AWS runtime-secret bundle ownership, mode, and checksum
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          LOADER_SHA256: ${{ steps.runtime_secret_checksums.outputs.load_runtime_secrets_py }}
-          COMMAND_SHA256: ${{ steps.runtime_secret_checksums.outputs.runtime_secret_command_sh }}
-          NGINX_SHA256: ${{ steps.runtime_secret_checksums.outputs.render_nginx_runtime_sh }}
-          RENDER_SHA256: ${{ steps.runtime_secret_checksums.outputs.render_serve_key_py }}
-          BOOTSTRAP_SHA256: ${{ steps.runtime_secret_checksums.outputs.install_findb_bootstrap_sh }}
-          DEPLOY_SHA256: ${{ steps.runtime_secret_checksums.outputs.deploy_findb_aws_sh }}
-          CATALOG_SHA256: ${{ steps.runtime_secret_checksums.outputs.findb_json }}
-          COMPOSE_SHA256: ${{ steps.runtime_secret_checksums.outputs.docker_compose_prod_yml }}
-          NGINX_CONFIG_SHA256: ${{ steps.runtime_secret_checksums.outputs.nginx_conf }}
-          SOURCE_ALLOWLIST_SHA256: ${{ steps.runtime_secret_checksums.outputs.source_allowlist_conf }}
-          CLOUDFLARE_REAL_IP_SHA256: ${{ steps.runtime_secret_checksums.outputs.cloudflare_real_ip_conf }}
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          envs: LOADER_SHA256,COMMAND_SHA256,NGINX_SHA256,RENDER_SHA256,BOOTSTRAP_SHA256,DEPLOY_SHA256,CATALOG_SHA256,COMPOSE_SHA256,NGINX_CONFIG_SHA256,SOURCE_ALLOWLIST_SHA256,CLOUDFLARE_REAL_IP_SHA256
-          script: |
-            set -euo pipefail
-            runtime_dir=/opt/findb/runtime-secrets
-            staging_root=/tmp/findb-runtime-secrets
-            for relative_path in \
-              infra/deploy/runtime-secrets/load_runtime_secrets.py \
-              infra/deploy/runtime-secrets/runtime_secret_command.sh \
-              infra/deploy/runtime-secrets/render_nginx_runtime.sh \
-              infra/deploy/runtime-secrets/render_serve_key.py \
-              infra/deploy/runtime-secrets/install_findb_bootstrap.sh \
-              infra/deploy/runtime-secrets/deploy_findb_aws.sh \
-              infra/deploy/runtime-secrets/findb.json \
-              docker-compose.prod.yml \
-              infra/nginx/nginx.conf \
-              infra/nginx/source-allowlist.conf \
-              infra/nginx/cloudflare-real-ip.conf; do
-              if [ ! -f "$staging_root/$relative_path" ] || [ -L "$staging_root/$relative_path" ]; then
-                echo "::error title=Runtime-secret bundle missing::${relative_path} is not a regular staged file"
-                exit 1
-              fi
-            done
-            declare -A expected_staged=(
-              [infra/deploy/runtime-secrets/load_runtime_secrets.py]="$LOADER_SHA256"
-              [infra/deploy/runtime-secrets/runtime_secret_command.sh]="$COMMAND_SHA256"
-              [infra/deploy/runtime-secrets/render_nginx_runtime.sh]="$NGINX_SHA256"
-              [infra/deploy/runtime-secrets/render_serve_key.py]="$RENDER_SHA256"
-              [infra/deploy/runtime-secrets/install_findb_bootstrap.sh]="$BOOTSTRAP_SHA256"
-              [infra/deploy/runtime-secrets/deploy_findb_aws.sh]="$DEPLOY_SHA256"
-              [infra/deploy/runtime-secrets/findb.json]="$CATALOG_SHA256"
-              [docker-compose.prod.yml]="$COMPOSE_SHA256"
-              [infra/nginx/nginx.conf]="$NGINX_CONFIG_SHA256"
-              [infra/nginx/source-allowlist.conf]="$SOURCE_ALLOWLIST_SHA256"
-              [infra/nginx/cloudflare-real-ip.conf]="$CLOUDFLARE_REAL_IP_SHA256"
-            )
-            for relative_path in "${!expected_staged[@]}"; do
-              actual="$(sha256sum "$staging_root/$relative_path" | cut -d ' ' -f1)"
-              if [ -z "${expected_staged[$relative_path]}" ] || [ "$actual" != "${expected_staged[$relative_path]}" ]; then
-                echo "::error title=Runtime-secret bundle checksum failed::${relative_path} does not match the checked-out artifact"
-                exit 1
-              fi
-            done
-            for file in \
-              load_runtime_secrets.py \
-              runtime_secret_command.sh \
-              render_nginx_runtime.sh \
-              render_serve_key.py \
-              install_findb_bootstrap.sh \
-              deploy_findb_aws.sh \
-              findb.json; do
-              case "$file" in
-                findb.json) install_mode=0644; expected_mode=644 ;;
-                *) install_mode=0755; expected_mode=755 ;;
-              esac
-              sudo install -o root -g root -m "$install_mode" \
-                "$staging_root/infra/deploy/runtime-secrets/$file" "$runtime_dir/$file"
-              if [ "$(sudo stat -c '%u:%g:%a' "$runtime_dir/$file")" != "0:0:$expected_mode" ]; then
-                echo "::error title=Runtime-secret bundle metadata failed::${file} ownership or mode is unsafe"
-                exit 1
-              fi
-            done
-            declare -A expected=(
-              [load_runtime_secrets.py]="$LOADER_SHA256"
-              [runtime_secret_command.sh]="$COMMAND_SHA256"
-              [render_nginx_runtime.sh]="$NGINX_SHA256"
-              [render_serve_key.py]="$RENDER_SHA256"
-              [deploy_findb_aws.sh]="$DEPLOY_SHA256"
-              [findb.json]="$CATALOG_SHA256"
-            )
-            for file in "${!expected[@]}"; do
-              actual="$(sudo sha256sum "$runtime_dir/$file" | cut -d ' ' -f1)"
-              if [ -z "${expected[$file]}" ] || [ "$actual" != "${expected[$file]}" ]; then
-                echo "::error title=Runtime-secret bundle checksum failed::${file} does not match the checked-out artifact"
-                exit 1
-              fi
-            done
-            sudo install -o ubuntu -g ubuntu -m 0644 \
-              "$staging_root/docker-compose.prod.yml" /opt/findb/docker-compose.prod.yml
-            if [ "$(sudo stat -c '%U:%G:%a' /opt/findb/docker-compose.prod.yml)" != "ubuntu:ubuntu:644" ] \
-              || [ "$(sudo sha256sum /opt/findb/docker-compose.prod.yml | cut -d ' ' -f1)" != "$COMPOSE_SHA256" ]; then
-              echo "::error title=Deploy artifact install failed::docker-compose.prod.yml metadata or checksum is invalid"
-              exit 1
-            fi
-            for file in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
-              sudo install -o ubuntu -g ubuntu -m 0644 \
-                "$staging_root/infra/nginx/$file" "/home/ubuntu/etc/nginx/$file"
-            done
-            declare -A installed_nginx=(
-              [nginx.conf]="$NGINX_CONFIG_SHA256"
-              [source-allowlist.conf]="$SOURCE_ALLOWLIST_SHA256"
-              [cloudflare-real-ip.conf]="$CLOUDFLARE_REAL_IP_SHA256"
-            )
-            for file in "${!installed_nginx[@]}"; do
-              if [ "$(sudo stat -c '%U:%G:%a' "/home/ubuntu/etc/nginx/$file")" != "ubuntu:ubuntu:644" ] \
-                || [ "$(sudo sha256sum "/home/ubuntu/etc/nginx/$file" | cut -d ' ' -f1)" != "${installed_nginx[$file]}" ]; then
-                echo "::error title=Nginx artifact install failed::${file} metadata or checksum is invalid"
-                exit 1
-              fi
-            done
-            sudo rm -rf -- /tmp/findb-runtime-secrets
-            echo "runtime_secret_bundle=verified files=11"
-
-      - name: Install FinDB boot-time runtime-secret dependency
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
-          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          envs: AWS_REGION,FINDB_PUBLIC_HOST
-          script: |
-            set -euo pipefail
-            sudo /opt/findb/runtime-secrets/install_findb_bootstrap.sh \
-              "$AWS_REGION" "$FINDB_PUBLIC_HOST"
-
       - name: Run FinDB AWS runtime-secret canary
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           AWS_REGION: ap-southeast-1
+          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
         with:
           host: ${{ secrets.FINDB_EC2_HOST }}
           username: ${{ secrets.FINDB_EC2_USER }}
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          envs: AWS_REGION
+          envs: AWS_REGION,RELEASE_ROOT
           script: |
             set -euo pipefail
-            sudo python3 /opt/findb/runtime-secrets/load_runtime_secrets.py \
-              --catalog /opt/findb/runtime-secrets/findb.json \
+            sudo python3 "$RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py" \
+              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/findb.json" \
               --consumer canary \
               --region "$AWS_REGION" \
               --output /run/findb-runtime-secrets/canary/runtime.env \
@@ -1115,10 +1174,9 @@ jobs:
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           AWS_REGION: ap-southeast-1
-          IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
           ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-          FINDB_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend
-          DASHBOARD_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard
+          FINDB_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
+          DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
           APP_NAME: ${{ vars.APP_NAME }}
           APP_VERSION: ${{ vars.APP_VERSION }}
           DEBUG: ${{ vars.DEBUG }}
@@ -1139,16 +1197,81 @@ jobs:
           FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_CANONICAL_BUCKET: ${{ vars.CLOUDFLARE_R2_CANONICAL_BUCKET }}
+          FINDB_RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
+          FINDB_NGINX_CONFIG_DIR: /etc/findb/nginx
         with:
           host: ${{ secrets.FINDB_EC2_HOST }}
           username: ${{ secrets.FINDB_EC2_USER }}
           key: ${{ secrets.FINDB_EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: AWS_REGION,IMAGE_TAG,ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+          envs: AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR
           script: |
             set -euo pipefail
-            sudo --preserve-env=AWS_REGION,IMAGE_TAG,ECR_REGISTRY,FINDB_IMAGE,DASHBOARD_IMAGE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET \
-              /opt/findb/runtime-secrets/deploy_findb_aws.sh
+            sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR \
+              "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_findb_aws.sh"
+
+      - name: Activate validated FinDB release after health acceptance
+        if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        env:
+          AWS_REGION: ap-southeast-1
+          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
+          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
+        with:
+          host: ${{ secrets.FINDB_EC2_HOST }}
+          username: ${{ secrets.FINDB_EC2_USER }}
+          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
+          envs: AWS_REGION,FINDB_PUBLIC_HOST,RELEASE_ROOT
+          script: |
+            set -euo pipefail
+            [ -d "$RELEASE_ROOT" ] && [ ! -L "$RELEASE_ROOT" ]
+            sudo "$RELEASE_ROOT/infra/deploy/runtime-secrets/install_findb_bootstrap.sh" \
+              "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$RELEASE_ROOT"
+            sudo ln -sfn "$RELEASE_ROOT" /opt/findb/current
+
+      - name: Persist immutable accepted FinDB deployment bundle
+        if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' && steps.selected_bundle.outputs.replay == 'false' }}
+        shell: bash
+        env:
+          DEPLOY_BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          DEPLOY_BUNDLE_KMS_KEY_ARN: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+          CANDIDATE_KEY: ${{ steps.selected_bundle.outputs.bundle_key }}
+          BUNDLE_SHA256: ${{ steps.selected_bundle.outputs.bundle_sha256 }}
+          VALIDATOR_SHA256: ${{ steps.selected_bundle.outputs.validator_sha256 }}
+          MIGRATION_REVISION: ${{ needs.build-push.outputs.migration_revision }}
+          SSM_COMMAND_ID: ${{ steps.ssm_preflight.outputs.command_id }}
+          BACKEND_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
+          DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_KEY" =~ ^findb/candidates/[0-9a-f]{40}/[0-9]+-[0-9]+-[0-9a-f]{64}[.]tar$ ]] || exit 1
+          accepted_key="findb/accepted/${{ github.sha }}/${BUNDLE_SHA256}.tar"
+          record_key="${accepted_key%.tar}.acceptance.json"
+          bundle_file="$(mktemp "$RUNNER_TEMP/findb-accepted-bundle.XXXXXX")"
+          trap 'rm -f -- "$bundle_file"' EXIT
+          aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$CANDIDATE_KEY" "$bundle_file" >/dev/null
+          [ "$(sha256sum "$bundle_file" | cut -d ' ' -f1)" = "$BUNDLE_SHA256" ]
+          if ! aws s3api put-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$accepted_key" --body "$bundle_file" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$DEPLOY_BUNDLE_KMS_KEY_ARN" >/dev/null; then
+            aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$accepted_key" "$bundle_file.existing" >/dev/null
+            [ "$(sha256sum "$bundle_file.existing" | cut -d ' ' -f1)" = "$BUNDLE_SHA256" ] || exit 1
+          fi
+          jq -cn --arg unit findb --arg commit "${{ github.sha }}" --arg bundle_sha256 "$BUNDLE_SHA256" --arg bundle_key "$accepted_key" --arg validator_sha256 "$VALIDATOR_SHA256" --arg migration_revision "$MIGRATION_REVISION" --arg workflow_run_id "$GITHUB_RUN_ID" --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" --arg ssm_command_id "$SSM_COMMAND_ID" --arg backend_image_ref "$BACKEND_IMAGE_REF" --arg dashboard_image_ref "$DASHBOARD_IMAGE_REF" '{unit:$unit,commit_sha:$commit,bundle_sha256:$bundle_sha256,bundle_key:$bundle_key,validator_sha256:$validator_sha256,migration_revision:$migration_revision,workflow_run_id:$workflow_run_id,workflow_run_attempt:$workflow_run_attempt,ssm_command_id:$ssm_command_id,images:{backend:$backend_image_ref,dashboard:$dashboard_image_ref},state:"accepted"}' > "$bundle_file.record"
+          if ! aws s3api put-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$record_key" --body "$bundle_file.record" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$DEPLOY_BUNDLE_KMS_KEY_ARN" >/dev/null; then
+            aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "$record_key" "$bundle_file.existing-record" >/dev/null
+            python3 - "$bundle_file.existing-record" "$accepted_key" "$BUNDLE_SHA256" "$VALIDATOR_SHA256" "$MIGRATION_REVISION" "$BACKEND_IMAGE_REF" "$DASHBOARD_IMAGE_REF" <<'PY'
+          import json, re, sys
+          def unique(pairs):
+              out = {}
+              for key, value in pairs:
+                  if key in out: raise ValueError("duplicate key")
+                  out[key] = value
+              return out
+          record = json.load(open(sys.argv[1], encoding="utf-8"), object_pairs_hook=unique)
+          required = {"unit","commit_sha","bundle_sha256","bundle_key","validator_sha256","migration_revision","workflow_run_id","workflow_run_attempt","ssm_command_id","images","state"}
+          valid = isinstance(record, dict) and set(record) == required and record["unit"] == "findb" and record["commit_sha"] == "${{ github.sha }}" and record["bundle_key"] == sys.argv[2] and record["bundle_sha256"] == sys.argv[3] and record["validator_sha256"] == sys.argv[4] and record["migration_revision"] == sys.argv[5] and record["images"] == {"backend":sys.argv[6],"dashboard":sys.argv[7]} and record["state"] == "accepted" and all(isinstance(record[k], str) for k in required - {"images"}) and re.fullmatch(r"[0-9]+", record["workflow_run_id"]) and re.fullmatch(r"[0-9]+", record["workflow_run_attempt"]) and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", record["ssm_command_id"])
+          if not valid: raise SystemExit(1)
+          PY
+          fi
 
       - name: Prepare deploy directories on EC2
         if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
@@ -1255,6 +1378,10 @@ jobs:
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
             echo "Deploying image tag: ${IMAGE_TAG}"
+            # Explicit legacy production compatibility only. Staging never
+            # reaches this path and always passes repository@sha256 refs.
+            export FINDB_IMAGE_REF="${IMAGE}:${IMAGE_TAG}"
+            export DASHBOARD_IMAGE_REF="${DASHBOARD_IMAGE}:${IMAGE_TAG}"
             cd /opt/findb
 
             diagnose_services() {

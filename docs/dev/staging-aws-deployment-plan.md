@@ -46,19 +46,18 @@ IAM role、GitHub variable、OpenTofu apply或deployment變更仍須各自授權
 啟用後 staging 僅使用 `439622209937.dkr.ecr.ap-southeast-1.amazonaws.com` 和 AWS Secrets Manager
 runtime mode；EC2 不接收 `GITHUB_TOKEN`、PAT、`GHCR_USERNAME` 或 `GHCR_TOKEN`。Production 維持
 GHCR 與既有 GitHub runtime secret 相容路徑，且不會 assume staging publisher role 或拉取 staging ECR。
-這一輪暫以 immutable commit SHA tag 部署；digest manifest／promotion 是明確保留給 Phase 3 的邊界。
+Phase 3 wave 1 code已準備staging exact-digest bundle與accepted replay：SHA tag僅是ECR build/reuse的
+selected commit索引，staging deploy identity是validated bundle中的`repository@sha256`。這仍是code-prepared
+狀態，尚未有merged protected-main live acceptance，不可標記Phase 3完成。
 
-受控 rollback 不會恢復 transitional GHCR access。gate 維持精確 `true`，operator 在 protected `main`
-手動 dispatch 對應 FinDB 或 Fetcher workflow，選擇 `deployment_target=staging` 並填入已接受的
-小寫 40-hex `image_tag`。有指定 `image_tag` 時 workflow 先驗證該 commit 可從當前 protected `main`
-到達，並確認 current checkout 的精確 staging runtime inputs 與舊 image SHA 無差異：FinDB 的
-`docker-compose.prod.yml`、三個 staging-rendered nginx inputs、三個 renderer 與其 host loader／command／
-render／install／deploy／catalog；Fetcher 的 host loader／command／provider release／catalog。只有契約不變
-時才允許 current scripts 搭配 old images，否則 fail closed，必須先做 forward compatibility fix。FinDB 只驗證
-其 backend、dashboard 兩個固定 staging ECR repositories；Fetcher 只驗證其 Twelve Data、FinLab、Shioaji
-三個固定 staging ECR repositories。任一所屬 repository 不存在該 immutable SHA tag 即在 host rollout 前
-失敗，絕不重建目前 SHA。此介面不接受 mutable tag、非 main artifact、跨 repository 或 registry image；
-rollback 後仍須完整記錄 SHA 並重跑單元 acceptance。這不是 digest promotion，Phase 3 範圍不因此提前實作。
+受控 rollback 不會恢復 transitional GHCR access，也不再有current-checkout generation或相容性橋接。
+gate維持精確`true`；operator只能在protected `main`手動dispatch對應workflow並選擇
+`deployment_target=staging`。正常部署的`image_tag`與`accepted_bundle_key`都必須留白；任何歷史
+`image_tag`必須同時提供該unit、該commit的accepted bundle key。workflow從strict acceptance record取得
+歷史accepted bytes、bundle／validator SHA、migration與完整`repository@sha256` image map，再由host驗證及
+materialize；不得重建manifest或混用current checkout。健康成功後才activate該immutable release；replay不重寫
+accepted bundle或record。candidate、cross-unit、mutable／unsafe key、缺image tag、production及record不匹配
+一律fail closed。
 
 ## 決策背景
 
@@ -369,10 +368,10 @@ plan；隨後驗證兩筆皆為30天 scheduled deletion、active catalog 為17�
 }
 ```
 
-Phase 3 foundation 的 selected tool 會先執行 `protocol`，且 raw stdout 必須精確為
-`findb-release-manifest-v1\n`（stderr、extra bytes 或失敗皆 fail closed）。只有 selected Git tree 中
-完全沒有該 tool 的 protected-main explicit SHA rollback 才是 pre-foundation legacy；存在但 protocol 不相容
-不能降級為 legacy。
+selected bundle的validator先執行`protocol`，raw stdout必須精確為
+`findb-release-manifest-v1\n`（stderr、extra bytes或失敗皆fail closed）；workflow與host均以strict
+validator SHA trust anchor驗證其bytes後才執行。沒有legacy SHA-tag rollback或current-checkout compatibility
+branch可繞過此驗證。
 
 同一份 selected source root 由 descriptor-safe root FD pin 住；每個 allowlisted path 的首次 bytes 讀取會
 固定於單一 snapshot，contract parser、schema checksum 與 source checksum 都重用該 bytes，避免重開
@@ -596,76 +595,30 @@ cycle gate通過後另行取得移除授權，並完成last-used與health確認�
 
 ### Phase 3：Digest、release manifest與CI gate
 
-Phase 3 foundation 已開始並完成 repository／CI artifact 能力：staging build helper 在 immutable
-SHA tag reuse 或 push 後均由 ECR 讀取並驗證單一完整 digest；兩個 staging build job 生成、驗證並
-上傳 deterministic、unit-scoped manifest。FinDB artifact 記錄 backend＋Dashboard，Fetcher artifact
-記錄 Twelve Data＋FinLab＋Shioaji，所有 image reference 都是完整 staging ECR
-`repository@sha256:...`。bundle checksum 只涵蓋明確 allowlisted 的 repo-relative staging Compose、
-三個 staging nginx inputs、三個 renderer 與 deploy/runtime-secret helper/catalog，另含 selected contracts
-manifest 與 manifest tool 自身；不納入 current CI-only ECR build helper、secret 或 env。這是 deterministic
-source/template checksum contract，不是 render 後的 host deploy bundle、可重播／versioned packaged bundle，
-也尚未有 private S3 persistence。
-image `contract_versions` 則由 selected `ECR_IMAGE_TAG` source root 的 `contracts/manifest.json` 取得；工具以
-同一 pinned root FD descriptor-safe 讀取每個 entry 指向的 schema，並要求實際 schema SHA-256 等於 entry
-宣告值，才把 canonical semantic manifest SHA-256 寫入 artifact。workflow 不另行 materialize 第二份 contract
-manifest。bundle checksum仍是 selected commit 的 deterministic source/template inputs（包含 selected contract
-manifest content digest），不是 render 後 host deploy bundle、accepted replay bundle 或 live deploy evidence。
+Wave 1 程式已準備 deterministic、unit-scoped versioned bundle。每個bundle含selected SHA own
+validator、canonical manifest及allowlisted deployment sources；manifest將FinDB的backend／Dashboard及
+Fetcher的三個provider固定為 staging ECR `repository@sha256:...`。SSM在任何SSH、SCP或writer
+interruption之前，以instance role取得同一份bundle，驗證外部bundle及validator SHA、manifest、commit、
+migration和全部image digest，然後只materialize至root-owned immutable release root。後續staging helper、
+Compose、nginx render與provider/smoke均由該release root執行；preflight不覆寫active path。
+FinDB staging的三份非secret nginx rendered config只寫入root-owned、非group/world-writable的
+`/etc/findb/nginx`，並由Compose的`FINDB_NGINX_CONFIG_DIR` mount；TLS檔及tmpfs serve key維持各自
+既有路徑，其中TLS路徑僅作read-only prerequisite，staging workflow不得在其下mkdir或chown。
+Production相容路徑仍可使用`/home/ubuntu/etc/nginx`，不構成staging bundle path。
 
-artifact 名稱固定映射為 `findb` →
-`staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`、`fetcher` →
-`staging-fetcher-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`；run attempt 包含在名稱中，
-rerun 不會覆寫既有 artifact。
+正常staging部署只接受空白`image_tag`與空白`accepted_bundle_key`，為當前commit建立candidate bundle。
+health成功並完成release activation後，workflow才以conditional writes持久化同一bundle及嚴格acceptance
+record；record是accepted replay的唯一commit point。bundle單獨存在不代表已accepted。
 
-Manifest policy/tool 由 selected SHA own：workflow 只執行 selected source root 中的
-`infra/deploy/release_manifest.py`。Phase 3 foundation 之前，明確 `image_tag` 且已通過 protected-main
-ancestor 驗證的 rollback 若 selected SHA 沒有此工具，會 warning 後保留既有 SHA-tag rollback，不產生
-manifest artifact；此 legacy 分支只允許 `ECR_REUSE_ONLY=true`。foundation 之後的 selected SHA 缺少或
-無法執行其自身工具一律 fail closed，不得把其他 manifest error 降級或 skip。
-legacy rollback 的相容性檢查只涵蓋實際 staging host runtime contract：FinDB 的 Compose、三個
-staging-rendered nginx inputs、三個 renderer 及 loader／command／host render／install／deploy／catalog，
-Fetcher 的 loader／command／provider release／catalog。`serve-key.conf` 與
-`render_nginx_serve_key.py` 非 staging 前置 input，故排除。純 CI ECR build helper 與 release-manifest tool
-不在此集合，避免 foundation-only 差異阻斷 pre-foundation rollback；集合內任何檔案差異仍 fail closed。
+受控staging rollback是accepted replay，而不是SHA-tag compatibility bridge：僅protected `main`的manual
+dispatch可用，任何歷史`image_tag`必須同時提供匹配該unit accepted prefix、同一commit的
+`accepted_bundle_key`；key沒有`image_tag`、candidate／cross-unit／mutable key、production及不匹配的
+record一律拒絕。replay下載歷史accepted bytes與strict record，重驗證其bundle SHA、validator SHA、commit、
+migration及完整digest image map，不重新生成manifest或使用current checkout。健康檢查成功後才切換current
+release；replay不覆寫既有accepted bundle／record。
 
-Foundation live acceptance 已完成：Fetcher run
-[33244760600](https://github.com/FPI-TW/findb/actions/runs/33244760600) 的三枚manifest digest經獨立SSM
-command `56127a67-2eed-4535-a670-86faad915e21` 與host RepoDigest逐一比對，三個scheduler均running且
-restart count 0；FinDB run [33245539837](https://github.com/FPI-TW/findb/actions/runs/33245539837)
-的兩枚manifest digest經獨立SSM command `b6cb3d90-61c3-4a9f-bd80-3ad854dadd69`逐一比對，Alembic
-`d6e7f8a9b0c1`、RabbitMQ、Serve、Ingest、Dashboard與Nginx皆健康。這些是artifact-to-live
-RepoDigest一致性證據，不是digest deployment或accepted replay evidence。
-
-實際 deployment 與 rollback 仍使用 SHA tag，manifest 尚未成為 deploy／rollback identity 或 accepted
-manifest。staging build bridge現會把經repository/digest格式驗證的unit image refs傳至deploy job；bounded
-SSM preflight會在任何SSH或writer interruption之前，使用instance role與tmpfs Docker config pull並inspect
-所有exact digests。合併後自動化路徑已由共同merge SHA
-`228989afe857c82d619cd53d15dbb29873d6710a`完成live驗收：FinDB run
-[33246701516](https://github.com/FPI-TW/findb/actions/runs/33246701516) 的SSM command
-`d6437246-f584-4545-9224-88867b8bdef9`為`Success`／exit 0並輸出
-`ecr_digest_pull_inspect=ok images=2`；Fetcher run
-[33246700446](https://github.com/FPI-TW/findb/actions/runs/33246700446) 的SSM command
-`9e4596ca-1888-44bf-acef-89858f9b35d4`為`Success`／exit 0並輸出
-`ecr_digest_pull_inspect=ok images=3`。兩個deploy與後續health／scheduler驗證均成功，兩份artifact亦由repo
-validator重新驗證通過。Compose/helper digest cutover、private S3 accepted manifest與production promotion仍未完成；
-因此不可勾選本 Phase exit gate。
-
-- [x] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend＋Dashboard，Fetcher記錄
-  Twelve Data＋FinLab＋Shioaji；五個image reference均為完整staging ECR `repository@sha256:...`。
-- [ ] 建立versioned deploy bundle，納入Compose、nginx templates與deploy helper checksum。
-- [ ] Compose與deploy helper改為必填完整image reference；移除FinDB `latest`發布及所有fallback。
-- [ ] CI驗證manifest schema、SHA／digest格式、bundle checksum、deterministic generation與config
-  render，缺值或`:latest`一律失敗。
-- [ ] 保留現有獨立migration CI job、空資料庫upgrade、單一Alembic head與historical regression
-  suite；明確列出支援revision，並從Phase 0記錄的實際staging predecessor或其restore clone驗證
-  upgrade至candidate head。
-- [ ] 對Fetcher現有non-root、read-only root filesystem、drop capabilities、no-new-privileges與
-  writable paths加入自動化image/runtime驗證；FinDB backend、Dashboard與Compose須補齊相同基線
-  或記錄具體、具期限的例外，並驗證entrypoint與health command。
-- [x] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests；FinDB與Fetcher合併後live run
-  已分別驗證兩枚與三枚exact digests。
-
-Exit gate：五個ECR digests可由相同manifest重播且不重新build；tag漂移不影響部署；CI可攔截
-不安全的image、manifest與migration。
+這是 code-prepared 狀態；尚無merged protected-main的wave 1 live acceptance或accepted replay rehearsal。
+因此 **Phase 3 不可標示為完成**。Production資源及workflow實作不是這個staging完成判定的一部分。
 
 ### Phase 4：FinDB改走SSM
 
@@ -740,6 +693,15 @@ delete或R2 object搬移來強迫部署。Schema已改且舊image不相容時保
 migration chain的forward fix。
 
 ## 完成定義
+
+### Phase 3 wave 1 實作狀態（非完成宣告）
+
+本分支加入 selected-SHA deterministic deployment bundle、private KMS S3 candidate/accepted
+records、SSM host-side bundle/digest preflight，以及 FinDB/Fetcher staging exact digest deployment
+boundary。這只是 code/IaC contract preparation；尚未完成 IaC apply、Environment variable 設定、
+live SSM/health acceptance 或 replay rehearsal，故 **Phase 3 不可標示為完成**，也不可把 wave 1
+描述為 live-accepted。Production resources 與 production workflow implementation 仍不是目前
+staging completion condition。
 
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 

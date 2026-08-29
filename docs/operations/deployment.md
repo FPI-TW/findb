@@ -18,8 +18,8 @@ Deployment concurrency一律`cancel-in-progress: false`。CD直接呼叫同revis
 需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
-Fetcher的三個provider images是另一個unit。現行workflow仍以commit SHA **tag**部署；
-Phase 3 foundation會在 staging build／reuse 後從 ECR exact SHA tag 取得並嚴格驗證 digest，
+Fetcher的三個provider images是另一個unit。production與pre-foundation legacy rollback仍以commit SHA
+**tag**相容路徑部署；Phase 3 wave 1的staging path則在 build／reuse 後從 ECR exact SHA tag取得並嚴格驗證 digest，
 產生 unit-scoped、canonical JSON release manifest artifact（FinDB兩張、Fetcher三張完整
 `repository@sha256:...` references）。manifest 不含 secret，並記錄 allowlisted deployment
 bundle checksum。image 的 `contract_versions` 直接由 selected source root 的
@@ -33,8 +33,8 @@ bundle checksum 現命名為 `deployment_source_bundle_sha256`，只描述 selec
 source/template inputs（包括 selected `contracts/manifest.json` 與 selected manifest tool 的內容 digest）。
 它涵蓋與 staging host contract 相同的 unit-scoped sources，另加這兩個 manifest inputs；不含 current
 CI-only ECR build helper、secret、env、production-only serve-key template／renderer。它不是 render 後 host
-deploy bundle、accepted replay bundle 或 live deploy evidence。因此實際 versioned/rendered deploy bundle
-checklist 仍未完成。
+deploy bundle、accepted replay bundle 或 live deploy evidence。實際 versioned/rendered deploy bundle與
+accepted-replay程式契約已實作，但尚未有合併後的live acceptance evidence，不能標記為完成。
 
 Artifact 名稱為 `findb` →
 `staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`、`fetcher` →
@@ -232,6 +232,29 @@ Staging rollout：
 `alembic stamp`只可在schema已人工證明與revision完全一致時使用，不能掩蓋drift。
 
 ## Acceptance與rollback
+
+### Staging deployment bundle（Phase 3 wave 1，尚未完成 live acceptance）
+
+Staging release 會由 selected commit 的 stdlib `release_manifest.py` 產生 deterministic tar
+bundle；內容只含該 unit 的 allowlist、契約 manifest/schema 與 release manifest。workflow 以
+外部 SHA-256 將 immutable candidate 上傳到 private、versioned、SSE-KMS 的 deployment-bundle
+bucket（`findb/` 或 `fetcher/` prefix），SSM preflight 先以 instance role 下載、比對 SHA、驗證
+bundle/manifest 與 exact `repository@sha256` image refs，才會 pull image 或中斷 writer。
+
+健康驗收成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA 命名的 `*/accepted/` key；strict
+acceptance record 才是 accepted 的 commit point，只有 bundle 而無等價 record 不可 replay。條件寫入遇到既有
+bundle時會重新驗證 SHA，遇到既有 record 時只接受相同 immutable identity，因此可安全完成 orphan bundle 的
+record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit 的 accepted immutable key，不能使用
+candidate、latest 或跨 unit key，也不可重新產生 manifest。此程式契約尚未構成已完成或已 live
+accepted 的 Phase 3 證據；日常 transport 目前仍是 SSH/SCP，SSM transport cutover 屬後續 phase。
+
+SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
+安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
+root-owned immutable release directory；SSM preflight 不會改寫 active Compose、runtime helper 或 Nginx
+paths。staging canary/deploy/provider helper、catalog、Compose 與 Nginx render scripts 都從該 release root
+執行，僅在 deployment health 成功後更新 current pointer。acceptance record同時綁定 validator SHA，host在執行
+archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
+且 bucket keys 關閉以保留 unit-prefix KMS encryption context。
 
 Deploy後至少完成：
 

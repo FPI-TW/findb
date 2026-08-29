@@ -11,17 +11,23 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+import io
 import json
 import os
 import re
 import secrets
 import stat
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any
 
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_BUNDLE_BYTES = 16 * 1024 * 1024
+MAX_BUNDLE_MEMBERS = 128
+MAX_BUNDLE_MEMBER_BYTES = 4 * 1024 * 1024
+MAX_BUNDLE_UNCOMPRESSED_BYTES = 12 * 1024 * 1024
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID_RE = re.compile(r"^[0-9]+$")
 ALEMBIC_REVISION_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -72,6 +78,28 @@ FINDB_BUNDLE_FILES = (
     *FINDB_RUNTIME_SECRET_FILES,
 )
 FETCHER_BUNDLE_FILES = (*COMMON_BUNDLE_FILES, *FETCHER_RUNTIME_SECRET_FILES)
+
+# This map is part of the bundle format, not a reflection of the source
+# checkout mode.  The bundle executes these selected tools directly on the
+# host, so their root-owned materialized form must remain executable.  Every
+# other allowlisted member is data/configuration and is deliberately 0644.
+EXECUTABLE_BUNDLE_FILES = frozenset(
+    (
+        "infra/deploy/release_manifest.py",
+        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
+        "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "backend/scripts/render_nginx_cloudflare_real_ip.py",
+        "backend/scripts/render_nginx_public_host.py",
+        "backend/scripts/render_nginx_source_allowlist.py",
+        "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+        "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
+        "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
+        "infra/deploy/runtime-secrets/render_serve_key.py",
+        "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+    )
+)
+BUNDLE_FILE_MODES = {path: 0o755 for path in EXECUTABLE_BUNDLE_FILES}
+BUNDLE_DATA_MODE = 0o644
 
 
 class ManifestError(ValueError):
@@ -164,6 +192,25 @@ def bundle_paths(unit: str) -> tuple[str, ...]:
         return {"findb": FINDB_BUNDLE_FILES, "fetcher": FETCHER_BUNDLE_FILES}[unit]
     except KeyError as exc:
         raise ManifestError("unit must be findb or fetcher") from exc
+
+
+def bundle_source_paths(unit: str, contract_manifest: ContractManifest) -> tuple[str, ...]:
+    """Return the complete allowlist captured in a deployable unit bundle.
+
+    Contract schemas are included even though they are not runtime scripts: the
+    selected manifest tool validates their claimed checksums before it accepts
+    the release manifest.  Keeping them in the archive makes that validation
+    self-contained on the SSM host.
+    """
+    contract_paths = tuple(
+        f"contracts/{contract['path']}" for contract in contract_manifest.parsed["contracts"]
+    )
+    return (*bundle_paths(unit), *contract_paths)
+
+
+def bundle_file_mode(relative: str) -> int:
+    """Return the one canonical archive/materialization mode for a member."""
+    return BUNDLE_FILE_MODES.get(relative, BUNDLE_DATA_MODE)
 
 
 def _require_descriptor_safety() -> None:
@@ -485,7 +532,7 @@ def validate_expected_release_inputs(
     unit: str,
     commit_sha: str,
     migration_revision: str,
-    created_by_run_id: str,
+    created_by_run_id: str | None,
     images: dict[str, str],
 ) -> None:
     """Bind validation to the exact release inputs selected by the workflow."""
@@ -494,9 +541,10 @@ def validate_expected_release_inputs(
         "unit": unit,
         "commit_sha": commit_sha,
         "migration_revision": migration_revision,
-        "created_by_run_id": created_by_run_id,
         "images": images,
     }
+    if created_by_run_id is not None:
+        expected["created_by_run_id"] = created_by_run_id
     for field, expected_value in expected.items():
         if manifest.get(field) != expected_value:
             raise ManifestError(f"manifest {field} does not match validation inputs")
@@ -506,8 +554,333 @@ def canonical_json(manifest: dict[str, Any]) -> bytes:
     return canonical_json_bytes(manifest) + b"\n"
 
 
+BUNDLE_MANIFEST_PATH = "release-manifest.json"
+
+
+def _load_manifest_bytes(raw: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"invalid manifest JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ManifestError("manifest root must be an object")
+    return parsed
+
+
+def _bundle_tarinfo(relative: str, content: bytes) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(relative)
+    info.size = len(content)
+    info.mode = bundle_file_mode(relative)
+    info.uid = 0
+    info.gid = 0
+    info.mtime = 0
+    info.uname = ""
+    info.gname = ""
+    info.type = tarfile.REGTYPE
+    return info
+
+
+def build_bundle(repo_root: Path, manifest_path: Path, unit: str) -> bytes:
+    """Build deterministic tar bytes for the manifest and selected unit files.
+
+    The archive deliberately has no self-checksum.  Its external SHA256 is the
+    immutable S3 object identity recorded by the workflow and acceptance
+    record, avoiding a manifest/archive checksum cycle.
+    """
+    manifest_raw = manifest_path.read_bytes()
+    manifest = _load_manifest_bytes(manifest_raw)
+    with SourceBundleReader(repo_root) as source_bundle:
+        contract_manifest = source_bundle.load_selected_contract_manifest(
+            repo_root / "contracts" / "manifest.json"
+        )
+        validate_manifest(manifest, contract_manifest, source_bundle)
+        if manifest["unit"] != unit:
+            raise ManifestError("bundle unit does not match release manifest")
+        entries = [(BUNDLE_MANIFEST_PATH, canonical_json(manifest))]
+        entries.extend(
+            (relative, source_bundle.read(relative))
+            for relative in sorted(bundle_source_paths(unit, contract_manifest))
+        )
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        for relative, content in entries:
+            archive.addfile(_bundle_tarinfo(relative, content), io.BytesIO(content))
+    return stream.getvalue()
+
+
+def _validate_bundle_member(info: tarfile.TarInfo, expected_path: str) -> None:
+    if (
+        info.name != expected_path
+        or not info.isreg()
+        or info.issym()
+        or info.islnk()
+        or info.linkname
+        or info.uid != 0
+        or info.gid != 0
+        or info.mtime != 0
+        or info.mode != bundle_file_mode(expected_path)
+    ):
+        raise ManifestError(f"bundle member is unsafe or noncanonical: {expected_path}")
+
+
+def validate_bundle_bytes(
+    raw: bytes,
+    *,
+    expected_sha256: str,
+    unit: str,
+    expected_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate an immutable bundle without extracting attacker-controlled paths."""
+    if len(raw) > MAX_BUNDLE_BYTES:
+        raise ManifestError("bundle exceeds the maximum permitted size")
+    if (
+        not SHA256_RE.fullmatch(expected_sha256)
+        or hashlib.sha256(raw).hexdigest() != expected_sha256
+    ):
+        raise ManifestError("bundle SHA256 does not match the externally expected value")
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+    except (tarfile.TarError, OSError) as exc:
+        raise ManifestError("bundle is not a valid uncompressed tar archive") from exc
+    with archive:
+        members = archive.getmembers()
+        if len(members) > MAX_BUNDLE_MEMBERS:
+            raise ManifestError("bundle has too many members")
+        total_size = 0
+        for member in members:
+            if member.size < 0 or member.size > MAX_BUNDLE_MEMBER_BYTES:
+                raise ManifestError("bundle member exceeds the maximum permitted size")
+            total_size += member.size
+            if total_size > MAX_BUNDLE_UNCOMPRESSED_BYTES:
+                raise ManifestError("bundle exceeds the maximum uncompressed size")
+        names = [member.name for member in members]
+        if len(names) != len(set(names)):
+            raise ManifestError("bundle contains duplicate member paths")
+        if any(
+            Path(name).is_absolute()
+            or "\\" in name
+            or any(part in ("", ".", "..") for part in name.split("/"))
+            for name in names
+        ):
+            raise ManifestError("bundle contains an unsafe member path")
+        manifest_member = next(
+            (member for member in members if member.name == BUNDLE_MANIFEST_PATH), None
+        )
+        if manifest_member is None:
+            raise ManifestError("bundle release manifest is missing")
+        _validate_bundle_member(manifest_member, BUNDLE_MANIFEST_PATH)
+        extracted = archive.extractfile(manifest_member)
+        if extracted is None:
+            raise ManifestError("bundle release manifest is unreadable")
+        manifest = _load_manifest_bytes(extracted.read())
+        if manifest.get("unit") != unit:
+            raise ManifestError("bundle unit does not match expected unit")
+        expected_paths = set(bundle_paths(unit))
+        # The contract manifest identifies the schema members expected in the archive.
+        contract_member = next(
+            (member for member in members if member.name == "contracts/manifest.json"), None
+        )
+        if contract_member is None:
+            raise ManifestError("bundle contract manifest is missing")
+        _validate_bundle_member(contract_member, "contracts/manifest.json")
+        contract_raw = archive.extractfile(contract_member)
+        if contract_raw is None:
+            raise ManifestError("bundle contract manifest is unreadable")
+        contract_manifest = _parse_contract_manifest_bytes(contract_raw.read())
+        expected_paths.update(bundle_source_paths(unit, contract_manifest))
+        if set(names) != ({BUNDLE_MANIFEST_PATH} | expected_paths):
+            raise ManifestError("bundle members do not match the unit allowlist")
+        contents: dict[str, bytes] = {}
+        for member in members:
+            _validate_bundle_member(member, member.name)
+            fileobj = archive.extractfile(member)
+            if fileobj is None:
+                raise ManifestError(f"bundle member is unreadable: {member.name}")
+            contents[member.name] = fileobj.read()
+        for contract in contract_manifest.parsed["contracts"]:
+            path = f"contracts/{contract['path']}"
+            if hashlib.sha256(contents[path]).hexdigest() != contract["sha256"]:
+                raise ManifestError(f"bundle contract schema checksum mismatch: {contract['path']}")
+        source_records = [
+            {"path": path, "sha256": hashlib.sha256(contents[path]).hexdigest()}
+            for path in sorted(bundle_paths(unit))
+        ]
+        source_sha = hashlib.sha256(canonical_json_bytes(source_records)).hexdigest()
+        if manifest.get("deployment_source_bundle_sha256") != source_sha:
+            raise ManifestError("bundle deployment source checksum mismatch")
+        validate_manifest(manifest, contract_manifest)
+        if expected_inputs is not None:
+            validate_expected_release_inputs(manifest, **expected_inputs)
+        return manifest
+
+
+def materialize_validated_bundle(
+    raw: bytes,
+    *,
+    expected_sha256: str,
+    unit: str,
+    output: Path,
+    expected_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate first, then write the fixed allowlist through directory FDs.
+
+    `tarfile.extract*` is deliberately never used: archive paths are untrusted
+    until validation completes and each output file is created with
+    O_NOFOLLOW|O_EXCL below a newly-created root.
+    """
+    manifest = validate_bundle_bytes(
+        raw,
+        expected_sha256=expected_sha256,
+        unit=unit,
+        expected_inputs=expected_inputs,
+    )
+    root_fd = _create_materialization_root(output)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            for member in archive.getmembers():
+                if member.name == BUNDLE_MANIFEST_PATH:
+                    continue
+                content_file = archive.extractfile(member)
+                if content_file is None:
+                    raise ManifestError(f"bundle member is unreadable: {member.name}")
+                _write_materialized_file(
+                    root_fd,
+                    member.name,
+                    content_file.read(),
+                    bundle_file_mode(member.name),
+                )
+    finally:
+        os.close(root_fd)
+    return manifest
+
+
+def _create_materialization_root(output: Path) -> int:
+    """Create and pin a new output directory without resolving any aliases.
+
+    The caller has already validated the archive bytes.  This boundary still
+    must treat the destination path as hostile: every ancestor is opened from
+    ``/`` by descriptor, and the new leaf's inode is checked after opening so
+    a symlink or rename race cannot redirect later writes.
+    """
+    _require_output_descriptor_safety()
+    output = _absolute_unresolved_path(output)
+    if not output.is_absolute() or output.name in ("", ".", ".."):
+        raise ManifestError("bundle materialization output path is invalid")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+
+    current_fd: int | None = None
+    try:
+        current_fd = os.open(os.sep, directory_flags)
+        if not stat.S_ISDIR(os.fstat(current_fd).st_mode):
+            raise ManifestError("bundle materialization output root is not a directory")
+        for component in output.parts[1:-1]:
+            current_fd = _open_or_create_output_directory(current_fd, component)
+        try:
+            os.mkdir(output.name, 0o700, dir_fd=current_fd)
+        except FileExistsError as exc:
+            raise ManifestError("bundle materialization output already exists") from exc
+        try:
+            created_info = os.stat(output.name, dir_fd=current_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(created_info.st_mode):
+                raise ManifestError("bundle materialization output is not a directory")
+            leaf_fd = os.open(output.name, directory_flags, dir_fd=current_fd)
+            opened_info = os.fstat(leaf_fd)
+            if (opened_info.st_dev, opened_info.st_ino) != (
+                created_info.st_dev,
+                created_info.st_ino,
+            ):
+                os.close(leaf_fd)
+                raise ManifestError("bundle materialization output changed while opening")
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise ManifestError("bundle materialization output is not a directory") from exc
+            raise ManifestError("unable to securely create bundle materialization output") from exc
+        os.close(current_fd)
+        current_fd = None
+        return leaf_fd
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise ManifestError(
+                "bundle materialization output ancestor is not a directory"
+            ) from exc
+        raise ManifestError("unable to securely open bundle materialization output") from exc
+    finally:
+        if current_fd is not None:
+            os.close(current_fd)
+
+
+def _open_or_create_output_directory(parent_fd: int, component: str) -> int:
+    """Open one safe output ancestor, creating it only when absent."""
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+    try:
+        info = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            os.mkdir(component, 0o755, dir_fd=parent_fd)
+        except FileExistsError as exc:
+            raise ManifestError("bundle materialization output ancestor changed") from exc
+        info = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode):
+        raise ManifestError("bundle materialization output ancestor is not a directory")
+    opened_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+    opened_info = os.fstat(opened_fd)
+    if (opened_info.st_dev, opened_info.st_ino) != (info.st_dev, info.st_ino):
+        os.close(opened_fd)
+        raise ManifestError("bundle materialization output ancestor changed while opening")
+    os.close(parent_fd)
+    return opened_fd
+
+
+def _write_materialized_file(root_fd: int, relative: str, content: bytes, mode: int) -> None:
+    relative = _normalize_source_relative_path(relative)
+    parts = Path(relative).parts
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+    directories: list[int] = []
+    file_fd: int | None = None
+    try:
+        current_fd = root_fd
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, 0o700, dir_fd=current_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            directories.append(next_fd)
+            current_fd = next_fd
+        if mode != bundle_file_mode(relative):
+            raise ManifestError(f"bundle materialization mode is invalid: {relative}")
+        file_fd = os.open(parts[-1], file_flags, mode, dir_fd=current_fd)
+        os.fchmod(file_fd, mode)
+        offset = 0
+        while offset < len(content):
+            written = os.write(file_fd, content[offset:])
+            if written <= 0:
+                raise ManifestError("bundle materialization write made no progress")
+            offset += written
+        os.fsync(file_fd)
+        materialized = os.fstat(file_fd)
+        if stat.S_IMODE(materialized.st_mode) != mode:
+            raise ManifestError(f"bundle materialization mode changed while writing: {relative}")
+    except OSError as exc:
+        raise ManifestError(f"unable to safely materialize bundle path: {relative}") from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for directory_fd in reversed(directories):
+            os.close(directory_fd)
+
+
 def _require_output_descriptor_safety() -> None:
-    required = (os.open, os.stat, os.unlink)
+    required = (os.open, os.stat, os.unlink, os.mkdir)
     if (
         not hasattr(os, "O_NOFOLLOW")
         or not hasattr(os, "O_DIRECTORY")
@@ -668,6 +1041,62 @@ def generate(args: argparse.Namespace) -> None:
     _write_manifest_atomically(_absolute_unresolved_path(args.output), canonical_json(manifest))
 
 
+def bundle(args: argparse.Namespace) -> None:
+    repo_root = _absolute_unresolved_path(args.repo_root)
+    manifest_path = _absolute_unresolved_path(args.manifest)
+    content = build_bundle(repo_root, manifest_path, args.unit)
+    _write_manifest_atomically(_absolute_unresolved_path(args.output), content)
+
+
+def validate_bundle(args: argparse.Namespace) -> None:
+    bundle_path = _absolute_unresolved_path(args.bundle)
+    if bundle_path.stat().st_size > MAX_BUNDLE_BYTES:
+        raise ManifestError("bundle exceeds the maximum permitted size")
+    raw = bundle_path.read_bytes()
+    expected_inputs = None
+    if args.commit_sha is not None:
+        if None in (args.migration_revision, args.image):
+            raise ManifestError("expected bundle validation inputs must be complete")
+        expected_inputs = {
+            "unit": args.unit,
+            "commit_sha": args.commit_sha,
+            "migration_revision": args.migration_revision,
+            "created_by_run_id": args.created_by_run_id,
+            "images": parse_images(args.image),
+        }
+    validate_bundle_bytes(
+        raw,
+        expected_sha256=args.expected_bundle_sha256,
+        unit=args.unit,
+        expected_inputs=expected_inputs,
+    )
+
+
+def materialize_bundle(args: argparse.Namespace) -> None:
+    bundle_path = _absolute_unresolved_path(args.bundle)
+    if bundle_path.stat().st_size > MAX_BUNDLE_BYTES:
+        raise ManifestError("bundle exceeds the maximum permitted size")
+    raw = bundle_path.read_bytes()
+    expected_inputs = None
+    if args.commit_sha is not None:
+        if None in (args.migration_revision, args.image):
+            raise ManifestError("expected bundle validation inputs must be complete")
+        expected_inputs = {
+            "unit": args.unit,
+            "commit_sha": args.commit_sha,
+            "migration_revision": args.migration_revision,
+            "created_by_run_id": args.created_by_run_id,
+            "images": parse_images(args.image),
+        }
+    materialize_validated_bundle(
+        raw,
+        expected_sha256=args.expected_bundle_sha256,
+        unit=args.unit,
+        output=_absolute_unresolved_path(args.output),
+        expected_inputs=expected_inputs,
+    )
+
+
 def _absolute_unresolved_path(path: Path) -> Path:
     """Make an absolute path without resolving symlinks before the secure open."""
     return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
@@ -686,6 +1115,28 @@ def main(argv: list[str] | None = None) -> int:
     generate_parser.add_argument("--image", action="append", required=True)
     generate_parser.add_argument("--created-by-run-id", required=True)
     generate_parser.add_argument("--output", type=Path, required=True)
+    bundle_parser = subparsers.add_parser("bundle")
+    bundle_parser.add_argument("--repo-root", type=Path, required=True)
+    bundle_parser.add_argument("--unit", choices=("findb", "fetcher"), required=True)
+    bundle_parser.add_argument("--manifest", type=Path, required=True)
+    bundle_parser.add_argument("--output", type=Path, required=True)
+    bundle_parser = subparsers.add_parser("validate-bundle")
+    bundle_parser.add_argument("--bundle", type=Path, required=True)
+    bundle_parser.add_argument("--expected-bundle-sha256", required=True)
+    bundle_parser.add_argument("--unit", choices=("findb", "fetcher"), required=True)
+    bundle_parser.add_argument("--commit-sha")
+    bundle_parser.add_argument("--migration-revision")
+    bundle_parser.add_argument("--image", action="append")
+    bundle_parser.add_argument("--created-by-run-id")
+    materialize_parser = subparsers.add_parser("materialize-bundle")
+    materialize_parser.add_argument("--bundle", type=Path, required=True)
+    materialize_parser.add_argument("--expected-bundle-sha256", required=True)
+    materialize_parser.add_argument("--unit", choices=("findb", "fetcher"), required=True)
+    materialize_parser.add_argument("--output", type=Path, required=True)
+    materialize_parser.add_argument("--commit-sha")
+    materialize_parser.add_argument("--migration-revision")
+    materialize_parser.add_argument("--image", action="append")
+    materialize_parser.add_argument("--created-by-run-id")
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("--repo-root", type=Path, required=True)
     validate_parser.add_argument("--unit", choices=("findb", "fetcher"), required=True)
@@ -701,6 +1152,12 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write("findb-release-manifest-v1\n")
         elif args.command == "generate":
             generate(args)
+        elif args.command == "bundle":
+            bundle(args)
+        elif args.command == "validate-bundle":
+            validate_bundle(args)
+        elif args.command == "materialize-bundle":
+            materialize_bundle(args)
         else:
             repo_root = _absolute_unresolved_path(args.repo_root)
             with SourceBundleReader(repo_root) as source_bundle:
