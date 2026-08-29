@@ -13,14 +13,13 @@
 > tags、SSM managed nodes、Session Manager與unit-specific SSM logs均有live evidence。Phase 0與
 > Phase 1已通過exit gate；「服務可用」仍不等同於Phase 2–6的secret遷移、digest／manifest、
 > SSM deployment cutover、監控與災難復原已完成。Staging 已完成 Amazon ECR foundation、publisher
-> roles、workflow cutover與live deployment驗收；Phase 3 foundation的五枚digest manifest亦完成兩個unit的
-> artifact與host RepoDigest驗收。Phase 2A的完整provider cycle，以及Phase 2B的GitHub
+> roles、workflow cutover與live deployment驗收；Phase 3 foundation的五枚digest manifest已完成兩個unit的
+> artifact、host RepoDigest與合併後自動化SSM exact-digest preflight驗收。Phase 2A的完整provider cycle，以及Phase 2B的GitHub
 > runtime copies移除仍未完成。Phase 2B的provider與R2 acceptance-criterion scope項目已依使用者
 > 核准完成，RabbitMQ rotation已有live evidence。GHCR metadata retirement apply已完成，兩筆實體metadata待2026-09-27
 > recovery window
-> 結束後刪除。當前foundation acceptance為Fetcher SHA
-> `141b4f0a2479305d961fb67218f32b00bfe1b8d0`與FinDB SHA
-> `8ef74d99543fcda721bccf5946ee9e4b30e86d05`。
+> 結束後刪除。當前自動化preflight acceptance為兩個unit共同的protected `main` merge SHA
+> `228989afe857c82d619cd53d15dbb29873d6710a`。
 
 ## ECR foundation 與啟用契約（已完成；持續驗收）
 
@@ -639,8 +638,16 @@ RepoDigest一致性證據，不是digest deployment或accepted replay evidence�
 實際 deployment 與 rollback 仍使用 SHA tag，manifest 尚未成為 deploy／rollback identity 或 accepted
 manifest。staging build bridge現會把經repository/digest格式驗證的unit image refs傳至deploy job；bounded
 SSM preflight會在任何SSH或writer interruption之前，使用instance role與tmpfs Docker config pull並inspect
-所有exact digests。此自動化路徑仍待合併後兩個unit各一次live run才可勾選。Compose/helper digest cutover、
-private S3 accepted manifest與production promotion仍未完成；因此不可勾選本 Phase exit gate。
+所有exact digests。合併後自動化路徑已由共同merge SHA
+`228989afe857c82d619cd53d15dbb29873d6710a`完成live驗收：FinDB run
+[33246701516](https://github.com/FPI-TW/findb/actions/runs/33246701516) 的SSM command
+`d6437246-f584-4545-9224-88867b8bdef9`為`Success`／exit 0並輸出
+`ecr_digest_pull_inspect=ok images=2`；Fetcher run
+[33246700446](https://github.com/FPI-TW/findb/actions/runs/33246700446) 的SSM command
+`9e4596ca-1888-44bf-acef-89858f9b35d4`為`Success`／exit 0並輸出
+`ecr_digest_pull_inspect=ok images=3`。兩個deploy與後續health／scheduler驗證均成功，兩份artifact亦由repo
+validator重新驗證通過。Compose/helper digest cutover、private S3 accepted manifest與production promotion仍未完成；
+因此不可勾選本 Phase exit gate。
 
 - [x] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend＋Dashboard，Fetcher記錄
   Twelve Data＋FinLab＋Shioaji；五個image reference均為完整staging ECR `repository@sha256:...`。
@@ -654,8 +661,8 @@ private S3 accepted manifest與production promotion仍未完成；因此不可�
 - [ ] 對Fetcher現有non-root、read-only root filesystem、drop capabilities、no-new-privileges與
   writable paths加入自動化image/runtime驗證；FinDB backend、Dashboard與Compose須補齊相同基線
   或記錄具體、具期限的例外，並驗證entrypoint與health command。
-- [ ] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests；repository／workflow實作已完成，
-  待合併後FinDB與Fetcher各一次live run驗收。
+- [x] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests；FinDB與Fetcher合併後live run
+  已分別驗證兩枚與三枚exact digests。
 
 Exit gate：五個ECR digests可由相同manifest重播且不重新build；tag漂移不影響部署；CI可攔截
 不安全的image、manifest與migration。

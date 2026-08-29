@@ -80,8 +80,13 @@ artifact內容、ECR digest與當次SHA-tag deployment一致。
 這份 manifest **尚未**成為 deploy 或 rollback identity，host Compose／helper 尚未切換 digest，
 因此不得把 artifact 當成 accepted release 或 production promotion evidence。staging build bridge現在會
 把已驗證的unit-specific digest refs傳給deploy job，bounded SSM preflight在任何SSH或writer interruption
-前以instance role、tmpfs Docker config pull並逐一inspect exact RepoDigest；合併後仍須以兩個unit的live run
-驗收這條自動化路徑。Compose/helper digest cutover、private S3 accepted manifest與production promotion仍未完成。
+前以instance role、tmpfs Docker config pull並逐一inspect exact RepoDigest。此路徑已由共同merge SHA
+`228989afe857c82d619cd53d15dbb29873d6710a`完成live驗收：FinDB run
+[33246701516](https://github.com/FPI-TW/findb/actions/runs/33246701516)／SSM command
+`d6437246-f584-4545-9224-88867b8bdef9`輸出`ecr_digest_pull_inspect=ok images=2`，Fetcher run
+[33246700446](https://github.com/FPI-TW/findb/actions/runs/33246700446)／SSM command
+`9e4596ca-1888-44bf-acef-89858f9b35d4`輸出`ecr_digest_pull_inspect=ok images=3`；兩者均為
+`Success`／exit 0且後續部署健康。Compose/helper digest cutover、private S3 accepted manifest與production promotion仍未完成。
 
 ## Staging data policy
 
