@@ -44,46 +44,99 @@ fi
 repository_name="${image#"$expected_registry/"}"
 error_file="$(mktemp)"
 hex_file="$(mktemp)"
-trap 'rm -f -- "$error_file" "$hex_file"' EXIT
+digest_file="$(mktemp)"
+digest_value_file="$(mktemp)"
+trap 'rm -f -- "$error_file" "$hex_file" "$digest_file" "$digest_value_file"' EXIT
 
-if aws ecr describe-images \
-  --region "$AWS_REGION" \
-  --repository-name "$repository_name" \
-  --image-ids "imageTag=$image_tag" \
-  --query 'imageDetails[0].imageDigest' \
-  --output text \
-  --cli-error-format json > /dev/null 2>"$error_file"; then
+write_outputs() {
+  local digest="$1"
+  if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+    echo "staging_ecr_build=failed reason=ecr_digest_invalid repository=$repository_name" >&2
+    exit 1
+  fi
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    printf 'image_digest=%s\nimage_ref=%s@%s\n' "$digest" "$image" "$digest" >> "$GITHUB_OUTPUT"
+  fi
+}
+
+describe_digest() {
+  : > "$digest_file"
+  : > "$error_file"
+  aws ecr describe-images \
+    --region "$AWS_REGION" \
+    --repository-name "$repository_name" \
+    --image-ids "imageTag=$image_tag" \
+    --query 'imageDetails[].imageDigest' \
+    --output text \
+    --cli-error-format json > "$digest_file" 2> "$error_file"
+}
+
+read_exact_digest() {
+  local byte_count final_byte value
+  # Never use command substitution for the raw AWS result: it normalizes final
+  # newlines. ECR may return exactly the 71-byte digest, or that digest plus one
+  # final LF; all other raw byte sequences are invalid.
+  byte_count="$(LC_ALL=C wc -c < "$digest_file" | tr -d '[:space:]')" || return 1
+  : > "$digest_value_file"
+  case "$byte_count" in
+    71)
+      dd if="$digest_file" of="$digest_value_file" bs=71 count=1 status=none || return 1
+      ;;
+    72)
+      final_byte="$(LC_ALL=C tail -c 1 "$digest_file" | od -An -v -tx1 | tr -d '[:space:]')" || return 1
+      [ "$final_byte" = 0a ] || return 1
+      dd if="$digest_file" of="$digest_value_file" bs=71 count=1 status=none || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  if [ "$(LC_ALL=C wc -c < "$digest_value_file" | tr -d '[:space:]')" != 71 ]; then
+    return 1
+  fi
+  if ! LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$' "$digest_value_file"; then
+    return 1
+  fi
+  value="$(<"$digest_value_file")"
+  if ! printf '%s' "$value" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
+
+is_image_not_found() {
+  # Some jq versions accept a raw NUL byte even though it is invalid JSON, so
+  # reject it before parsing. Other raw control bytes cause jq parsing to fail.
+  if ! LC_ALL=C od -An -v -tx1 "$error_file" > "$hex_file"; then
+    return 1
+  fi
+  nul_scan_status=0
+  LC_ALL=C grep -Eq '(^|[[:space:]])00([[:space:]]|$)' "$hex_file" || nul_scan_status=$?
+  if [ "$nul_scan_status" -ne 1 ]; then
+    return 1
+  fi
+  jq -e --slurp '
+    length == 1
+    and (
+      .[0]
+      | type == "object"
+        and (.Code | type == "string" and . == "ImageNotFoundException")
+        and (.Message | type == "string" and length > 0)
+    )
+  ' "$error_file" > /dev/null
+}
+
+if describe_digest; then
+  digest="$(read_exact_digest)" || {
+    echo "staging_ecr_build=failed reason=ecr_digest_invalid repository=$repository_name" >&2
+    exit 1
+  }
+  write_outputs "$digest"
   echo "staging_ecr_build=reused repository=$repository_name tag=$image_tag"
   exit 0
 fi
 
-# Some jq versions accept a raw NUL byte even though it is invalid JSON, so
-# reject it before parsing. Other raw control bytes cause jq parsing to fail.
-if ! LC_ALL=C od -An -v -tx1 "$error_file" > "$hex_file"; then
-  echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
-  exit 1
-fi
-
-nul_scan_status=0
-LC_ALL=C grep -Eq '(^|[[:space:]])00([[:space:]]|$)' "$hex_file" \
-  || nul_scan_status=$?
-if [ "$nul_scan_status" -ne 1 ]; then
-  echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
-  exit 1
-fi
-
-# Only a single structured ImageNotFoundException with a non-empty message
-# proves that this immutable tag is absent. `jq --slurp` rejects streams with
-# additional JSON values; malformed JSON and raw control bytes also fail closed.
-if ! jq -e --slurp '
-  length == 1
-  and (
-    .[0]
-    | type == "object"
-      and (.Code | type == "string" and . == "ImageNotFoundException")
-      and (.Message | type == "string" and length > 0)
-  )
-' "$error_file" > /dev/null; then
+if ! is_image_not_found; then
   echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
   exit 1
 fi
@@ -98,4 +151,23 @@ docker buildx build \
   --tag "$image:$image_tag" \
   --push \
   "$context"
-echo "staging_ecr_build=pushed repository=$repository_name tag=$image_tag"
+for attempt in 1 2 3 4 5; do
+  if describe_digest; then
+    digest="$(read_exact_digest)" || {
+      echo "staging_ecr_build=failed reason=ecr_digest_invalid repository=$repository_name" >&2
+      exit 1
+    }
+    write_outputs "$digest"
+    echo "staging_ecr_build=pushed repository=$repository_name tag=$image_tag"
+    exit 0
+  fi
+  if ! is_image_not_found; then
+    echo "staging_ecr_build=failed reason=ecr_digest_resolution_failed repository=$repository_name" >&2
+    exit 1
+  fi
+  if [ "$attempt" -lt 5 ]; then
+    sleep 2
+  fi
+done
+echo "staging_ecr_build=failed reason=ecr_digest_resolution_failed repository=$repository_name" >&2
+exit 1

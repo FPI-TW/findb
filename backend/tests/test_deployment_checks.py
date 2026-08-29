@@ -42,6 +42,19 @@ ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 
+LEGACY_ROLLBACK_CI_ONLY_PATHS = frozenset(
+    {
+        "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
+        "infra/deploy/release_manifest.py",
+        ".github/workflows/findb-cd.yml",
+        ".github/workflows/fetcher-cd.yml",
+        "docs/operations/deployment.md",
+        "docs/dev/staging-aws-deployment-plan.md",
+        "backend/tests/test_deployment_checks.py",
+        "backend/tests/test_release_manifest.py",
+    }
+)
+
 
 class UniqueKeyLoader(yaml.BaseLoader):
     """Parse workflow YAML without YAML 1.1 booleans and reject duplicate keys."""
@@ -81,6 +94,49 @@ def _load_workflow(path: Path) -> dict[str, object]:
 def _named_step(workflow: dict[str, Any], job_name: str, step_name: str) -> dict[str, Any]:
     steps = workflow["jobs"][job_name]["steps"]
     return next(step for step in steps if step.get("name") == step_name)
+
+
+def _legacy_rollback_runtime_paths(workflow_path: Path) -> set[str]:
+    workflow = _load_workflow(workflow_path)
+    script = _named_step(
+        workflow,
+        "build-push-staging-ecr",
+        "Validate staging ECR release selection",
+    )["run"]
+    marker = 'git diff --quiet "$ECR_IMAGE_TAG" HEAD -- \\\n'
+    assert marker in script
+    diff_paths = script.split(marker, 1)[1].split("; then", 1)[0]
+    return {
+        line.strip().removesuffix("\\").strip() for line in diff_paths.splitlines() if line.strip()
+    }
+
+
+def _host_runtime_contract_paths(workflow_path: Path) -> set[str]:
+    workflow = _load_workflow(workflow_path)
+    unit = "FinDB" if workflow_path == FINDB_CD_WORKFLOW else "Fetcher"
+    synced = _named_step(
+        workflow,
+        "deploy",
+        f"Sync AWS runtime-secret loader and exact {unit} catalog",
+    )["with"]["source"]
+    paths = set(synced.split(","))
+    if workflow_path == FINDB_CD_WORKFLOW:
+        renderer = _named_step(
+            workflow,
+            "deploy",
+            "Render nonsecret nginx configs for AWS runtime secrets",
+        )["run"]
+        rendered_scripts = set(
+            re.findall(r"python backend/scripts/(render_nginx_[a-z_]+\.py)", renderer)
+        )
+        assert rendered_scripts == {
+            "render_nginx_public_host.py",
+            "render_nginx_source_allowlist.py",
+            "render_nginx_cloudflare_real_ip.py",
+        }
+        assert "render_nginx_serve_key.py" not in renderer
+        paths.update(f"backend/scripts/{script}" for script in rendered_scripts)
+    return paths
 
 
 def _aggregate_ci_paths(unit: str) -> set[str]:
@@ -841,12 +897,7 @@ def test_runtime_secret_cutover_is_target_derived_and_staging_ecr_is_gated() -> 
         assert "reachable from protected main" in selection["run"]
         assert 'git diff --quiet "$ECR_IMAGE_TAG" HEAD' in selection["run"]
         assert "Incompatible staging rollback" in selection["run"]
-        for contract_scope in (
-            "docker-compose.prod.yml",
-            "infra/deploy/runtime-secrets",
-            "infra/nginx",
-        ):
-            assert contract_scope in selection["run"]
+        assert _legacy_rollback_runtime_paths(path) == _host_runtime_contract_paths(path)
         assert "rollback_contract_files" not in selection["run"]
         credential_index = next(
             index
@@ -943,6 +994,472 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
             _load_workflow(workflow_path)["jobs"]["build-push-staging-ecr"]["env"]["ECR_REUSE_ONLY"]
             == "${{ inputs.image_tag != '' }}"
         )
+
+
+def test_staging_builds_publish_digest_only_release_manifest_artifacts() -> None:
+    expected = {
+        FINDB_CD_WORKFLOW: (
+            ("backend_image", "dashboard_image"),
+            "staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}",
+            "findb-staging-release-manifest.json",
+        ),
+        FETCHER_CD_WORKFLOW: (
+            ("twelve_image", "finlab_image", "shioaji_image"),
+            "staging-fetcher-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}",
+            "fetcher-staging-release-manifest.json",
+        ),
+    }
+    for workflow_path, (image_steps, artifact_name, manifest_name) in expected.items():
+        workflow = _load_workflow(workflow_path)
+        staged = workflow["jobs"]["build-push-staging-ecr"]
+        assert "infra/deploy/release_manifest.py" in workflow["on"]["push"]["paths"]
+        assert set(staged["outputs"]) == {f"{step}_ref" for step in image_steps}
+        for image_step in image_steps:
+            assert staged["outputs"][f"{image_step}_ref"] == (
+                f"${{{{ steps.{image_step}.outputs.image_ref }}}}"
+            )
+        generate = next(
+            step
+            for step in staged["steps"]
+            if step.get("name") == "Generate and validate staging release manifest"
+        )
+        script = generate["run"]
+        assert 'release_manifest.py" generate' in script
+        assert 'release_manifest.py" validate' in script
+        assert 'python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py"' in script
+        assert "python3 infra/deploy/release_manifest.py" not in script
+        assert '"$ECR_IMAGE_TAG"' in script
+        assert '--created-by-run-id "$GITHUB_RUN_ID"' in script
+        assert ":latest" not in script
+        validate_script = script.split('release_manifest.py" validate', 1)[1]
+        assert '--commit-sha "$ECR_IMAGE_TAG"' in validate_script
+        assert '--created-by-run-id "$GITHUB_RUN_ID"' in validate_script
+        if workflow_path == FINDB_CD_WORKFLOW:
+            alembic_head = next(
+                step
+                for step in staged["steps"]
+                if step.get("name") == "Read exact backend Alembic head"
+            )
+            assert alembic_head["id"] == "backend_alembic_head"
+            assert alembic_head["env"] == {
+                "BACKEND_IMAGE_REF": "${{ steps.backend_image.outputs.image_ref }}"
+            }
+            assert (
+                'docker run --rm --pull always --network none "$BACKEND_IMAGE_REF" alembic heads'
+                in (alembic_head["run"])
+            )
+            assert "^([0-9a-f]{12})\\ \\(head\\)$" in alembic_head["run"]
+            assert "git rev-parse" not in script
+            assert generate["env"]["MIGRATION_REVISION"] == (
+                "${{ steps.backend_alembic_head.outputs.migration_revision }}"
+            )
+            assert "--unit findb" in validate_script
+            assert '--migration-revision "$MIGRATION_REVISION"' in validate_script
+            assert '--image "backend=$BACKEND_IMAGE_REF"' in validate_script
+            assert '--image "dashboard=$DASHBOARD_IMAGE_REF"' in validate_script
+        else:
+            assert "--unit fetcher" in validate_script
+            assert "--migration-revision none" in validate_script
+            assert '--image "twelve_data=$TWELVE_IMAGE_REF"' in validate_script
+            assert '--image "finlab=$FINLAB_IMAGE_REF"' in validate_script
+            assert '--image "shioaji=$SHIOAJI_IMAGE_REF"' in validate_script
+        upload = next(
+            step
+            for step in staged["steps"]
+            if step.get("name") == "Upload staging release manifest"
+        )
+        assert upload["uses"] == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        assert upload["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert upload["with"] == {
+            "name": artifact_name,
+            "path": f"${{{{ runner.temp }}}}/{manifest_name}",
+            "if-no-files-found": "error",
+            "retention-days": "30",
+        }
+
+
+def test_staging_release_manifest_contracts_come_from_the_selected_source_root() -> None:
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        staged = _load_workflow(workflow_path)["jobs"]["build-push-staging-ecr"]
+        generate = next(
+            step
+            for step in staged["steps"]
+            if step.get("name") == "Generate and validate staging release manifest"
+        )
+        assert "CONTRACT_MANIFEST" not in generate["env"]
+        assert (
+            '--contract-manifest "$SOURCE_BUNDLE_ROOT/contracts/manifest.json"' in generate["run"]
+        )
+        assert "--contract-version" not in generate["run"]
+        assert "Materialize selected ingress contract manifest" not in {
+            step.get("name") for step in staged["steps"]
+        }
+        source_bundle = next(
+            step
+            for step in staged["steps"]
+            if step.get("name") == "Materialize selected deployment source inputs"
+        )
+        assert source_bundle["id"] == "selected_source_bundle"
+        assert source_bundle["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert (
+            'git archive --format=tar "$ECR_IMAGE_TAG" | tar -x -C "$source_root"'
+            in (source_bundle["run"])
+        )
+        assert generate["env"]["SOURCE_BUNDLE_ROOT"] == (
+            "${{ steps.selected_source_bundle.outputs.path }}"
+        )
+        assert '--repo-root "$SOURCE_BUNDLE_ROOT"' in generate["run"]
+
+
+def test_selected_manifest_tool_policy_is_immutable_with_bounded_legacy_rollback() -> None:
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        staged = _load_workflow(workflow_path)["jobs"]["build-push-staging-ecr"]
+        support = next(
+            step
+            for step in staged["steps"]
+            if step.get("name") == "Classify selected release manifest support"
+        )
+        assert support["id"] == "manifest_support"
+        script = support["run"]
+        assert 'git cat-file -e "$ECR_IMAGE_TAG^{commit}"' in script
+        assert 'git ls-tree -z "$ECR_IMAGE_TAG" -- "$manifest_tool_path"' in script
+        assert (
+            'manifest_entries_file="$(mktemp "${RUNNER_TEMP:?}/selected-manifest-entry.XXXXXX")"'
+            in (script)
+        )
+        assert '[ ! -s "$manifest_entries_file" ]' in script
+        assert 'python3 - "$manifest_entries_file" "$manifest_tool_path"' in script
+        assert 'git cat-file -e "$manifest_object_id^{blob}"' in script
+        assert 'raw.count(b"\\0") != 1' in script
+        assert 'git cat-file -e "$ECR_IMAGE_TAG:infra/deploy/release_manifest.py"' not in script
+        assert 'elif [ "$ECR_REUSE_ONLY" = true ]; then' in script
+        assert 'echo "supported=false" >> "$GITHUB_OUTPUT"' in script
+        assert "Legacy staging rollback" in script
+        assert "Missing selected release manifest tool" in script
+        assert "exit 1" in script
+        generate = next(
+            step
+            for step in staged["steps"]
+            if step.get("name") == "Generate and validate staging release manifest"
+        )
+        assert generate["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert (
+            'python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" generate'
+            in (generate["run"])
+        )
+
+
+def test_selected_manifest_tool_classification_distinguishes_missing_from_git_failures(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "git").write_text(
+        """#!/bin/sh
+set -eu
+case "$1" in
+  cat-file)
+    case "${GIT_STUB_MODE:?}" in
+      commit-failure) case "$3" in *'^{commit}') exit 43 ;; esac ;;
+      blob-failure) case "$3" in *'^{blob}') exit 44 ;; esac ;;
+    esac
+    exit 0
+    ;;
+  ls-tree)
+    case "${GIT_STUB_MODE:?}" in
+      present) printf '100755 blob %040d\\tinfra/deploy/release_manifest.py\\0' 0 ;;
+      missing) exit 0 ;;
+      newline-only) printf '\\n' ;;
+      space-only) printf ' ' ;;
+      missing-nul) printf '100755 blob %040d\\tinfra/deploy/release_manifest.py' 0 ;;
+      failure) exit 47 ;;
+      wrong-path) printf '100755 blob %040d\\tinfra/deploy/not-release-manifest.py\\0' 0 ;;
+      wrong-type) printf '040000 tree %040d\\tinfra/deploy/release_manifest.py\\0' 0 ;;
+      wrong-mode) printf '100600 blob %040d\\tinfra/deploy/release_manifest.py\\0' 0 ;;
+      multiple)
+        printf '100755 blob %040d\\tinfra/deploy/release_manifest.py\\0' 0
+        printf '100755 blob %040d\\tinfra/deploy/release_manifest.py\\0' 1
+        ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  *) exit 98 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "git").chmod(0o755)
+
+    def run_support(
+        script: str, *, mode: str, reuse_only: bool
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        output = tmp_path / f"{mode}-{reuse_only}.output"
+        output.unlink(missing_ok=True)
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "GIT_STUB_MODE": mode,
+                "ECR_IMAGE_TAG": "a" * 40,
+                "ECR_REUSE_ONLY": str(reuse_only).lower(),
+                "GITHUB_OUTPUT": str(output),
+                "RUNNER_TEMP": str(tmp_path),
+            },
+        )
+        return result, output.read_text(encoding="utf-8") if output.exists() else ""
+
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        script = _named_step(
+            _load_workflow(workflow_path),
+            "build-push-staging-ecr",
+            "Classify selected release manifest support",
+        )["run"]
+        present, present_output = run_support(script, mode="present", reuse_only=True)
+        assert present.returncode == 0
+        assert present_output == "supported=true\n"
+
+        missing, missing_output = run_support(script, mode="missing", reuse_only=True)
+        assert missing.returncode == 0
+        assert missing_output == "supported=false\n"
+        assert "Legacy staging rollback" in missing.stdout
+
+        forward_missing, forward_output = run_support(script, mode="missing", reuse_only=False)
+        assert forward_missing.returncode != 0
+        assert forward_output == ""
+        assert "Missing selected release manifest tool" in forward_missing.stdout
+
+        commit_failure, commit_failure_output = run_support(
+            script,
+            mode="commit-failure",
+            reuse_only=True,
+        )
+        assert commit_failure.returncode != 0
+        assert commit_failure_output == ""
+        assert "Selected commit unavailable" in commit_failure.stdout
+
+        for mode in (
+            "failure",
+            "newline-only",
+            "space-only",
+            "missing-nul",
+            "multiple",
+            "wrong-path",
+            "wrong-type",
+            "wrong-mode",
+            "blob-failure",
+        ):
+            failed, failed_output = run_support(script, mode=mode, reuse_only=True)
+            assert failed.returncode != 0
+            assert failed_output == ""
+            assert "Selected manifest tool inspection failed" in failed.stdout
+
+
+def test_selected_manifest_protocol_is_exact_and_never_a_legacy_fallback(
+    tmp_path: Path,
+) -> None:
+    tool_bodies = {
+        "valid": "import sys\nsys.stdout.buffer.write(b'findb-release-manifest-v1\\n')\n",
+        "no-v1-cli": "raise SystemExit(2)\n",
+        "wrong": "import sys\nsys.stdout.buffer.write(b'findb-release-manifest-v2\\n')\n",
+        "multiple": (
+            "import sys\nsys.stdout.buffer.write("
+            "b'findb-release-manifest-v1\\nfindb-release-manifest-v1\\n')\n"
+        ),
+        "trailing": "import sys\nsys.stdout.buffer.write(b'findb-release-manifest-v1\\n ')\n",
+        "stderr": (
+            "import sys\nsys.stdout.buffer.write(b'findb-release-manifest-v1\\n')\n"
+            "sys.stderr.write('unexpected output\\n')\n"
+        ),
+        "failure": "raise SystemExit(9)\n",
+    }
+
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(workflow_path)
+        staged = workflow["jobs"]["build-push-staging-ecr"]
+        steps = staged["steps"]
+        materialize_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Materialize selected deployment source inputs"
+        )
+        protocol_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Verify selected release manifest protocol"
+        )
+        generate_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Generate and validate staging release manifest"
+        )
+        protocol = steps[protocol_index]
+        assert materialize_index < protocol_index < generate_index
+        assert protocol["if"] == "${{ steps.manifest_support.outputs.supported == 'true' }}"
+        assert protocol["env"] == {
+            "SOURCE_BUNDLE_ROOT": "${{ steps.selected_source_bundle.outputs.path }}"
+        }
+        assert (
+            'python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" protocol'
+            in protocol["run"]
+        )
+        assert (
+            "printf 'findb-release-manifest-v1\\n' | cmp -s - \"$protocol_output\""
+            in protocol["run"]
+        )
+        assert '[ -s "$protocol_error" ]' in protocol["run"]
+
+        for name, body in tool_bodies.items():
+            source_root = tmp_path / workflow_path.stem / name
+            tool = source_root / "infra" / "deploy" / "release_manifest.py"
+            tool.parent.mkdir(parents=True, exist_ok=True)
+            tool.write_text(body, encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "-c", protocol["run"]],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "RUNNER_TEMP": str(tmp_path),
+                    "SOURCE_BUNDLE_ROOT": str(source_root),
+                },
+            )
+            if name == "valid":
+                assert result.returncode == 0, result.stdout + result.stderr
+            else:
+                assert result.returncode != 0
+                assert "Legacy staging rollback" not in result.stdout
+                expected_title = (
+                    "Selected manifest protocol failed"
+                    if name in {"no-v1-cli", "failure"}
+                    else "Selected manifest protocol invalid"
+                )
+                assert expected_title in result.stdout
+
+
+def test_legacy_rollback_checks_only_exact_host_runtime_contract_paths() -> None:
+    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(workflow_path)
+        preflight = _named_step(
+            workflow,
+            "build-push-staging-ecr",
+            "Validate staging ECR release selection",
+        )
+        script = preflight["run"]
+        actual_paths = _legacy_rollback_runtime_paths(workflow_path)
+
+        assert actual_paths == _host_runtime_contract_paths(workflow_path)
+        assert "infra/deploy/runtime-secrets" not in actual_paths
+        assert "infra/nginx" not in actual_paths
+        assert actual_paths.isdisjoint(LEGACY_ROLLBACK_CI_ONLY_PATHS)
+        assert (
+            "build_ecr_image_if_missing.sh"
+            not in script.split('git diff --quiet "$ECR_IMAGE_TAG" HEAD --', 1)[1].split(
+                "; then", 1
+            )[0]
+        )
+        assert (
+            "release_manifest.py"
+            not in script.split('git diff --quiet "$ECR_IMAGE_TAG" HEAD --', 1)[1].split(
+                "; then", 1
+            )[0]
+        )
+
+        if workflow_path == FINDB_CD_WORKFLOW:
+            assert "infra/nginx/serve-key.conf" not in actual_paths
+            assert "backend/scripts/render_nginx_serve_key.py" not in actual_paths
+
+
+def test_legacy_rollback_allows_only_ci_foundation_deltas_before_manifest_support_gate(
+    tmp_path: Path,
+) -> None:
+    def git(repo: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    for index, workflow_path in enumerate((FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW)):
+        runtime_paths = frozenset(_host_runtime_contract_paths(workflow_path))
+        repo = tmp_path / f"legacy-{index}"
+        repo.mkdir()
+        git(repo, "init", "--initial-branch=main")
+        git(repo, "config", "user.email", "release-manifest-test@example.invalid")
+        git(repo, "config", "user.name", "Release Manifest Test")
+        for path in runtime_paths:
+            candidate = repo / path
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text("selected runtime contract\n", encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "pre-foundation runtime contract")
+        selected_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        # This mirrors a merged current tree whose only new files are the CI
+        # foundation helper/tool/workflow/docs/tests; the selected commit has
+        # no manifest tool, so the workflow must reach its legacy warning gate.
+        for path in LEGACY_ROLLBACK_CI_ONLY_PATHS:
+            candidate = repo / path
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text("phase3 foundation only\n", encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "phase3 ci foundation")
+        assert (
+            git(
+                repo,
+                "diff",
+                "--quiet",
+                selected_sha,
+                "HEAD",
+                "--",
+                *sorted(runtime_paths),
+                check=False,
+            ).returncode
+            == 0
+        )
+        assert (
+            git(
+                repo,
+                "cat-file",
+                "-e",
+                f"{selected_sha}:infra/deploy/release_manifest.py",
+                check=False,
+            ).returncode
+            != 0
+        )
+        support_script = _named_step(
+            _load_workflow(workflow_path),
+            "build-push-staging-ecr",
+            "Classify selected release manifest support",
+        )["run"]
+        assert 'elif [ "$ECR_REUSE_ONLY" = true ]; then' in support_script
+        assert "Legacy staging rollback" in support_script
+        assert 'echo "supported=false" >> "$GITHUB_OUTPUT"' in support_script
+
+        for path in runtime_paths:
+            (repo / path).write_text("changed runtime contract\n", encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "runtime contract changed")
+        for runtime_path in runtime_paths:
+            assert (
+                git(
+                    repo,
+                    "diff",
+                    "--quiet",
+                    selected_sha,
+                    "HEAD",
+                    "--",
+                    runtime_path,
+                    check=False,
+                ).returncode
+                == 1
+            )
 
 
 def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentials(
@@ -1148,13 +1665,37 @@ def test_immutable_ecr_build_helper_reuses_or_builds_only_after_exact_tag_inspec
     fake_bin.mkdir()
     docker_log = tmp_path / "docker.log"
     aws_args_log = tmp_path / "aws-args.log"
+    github_output = tmp_path / "github-output"
     (fake_bin / "aws").write_text(
         f"""#!/bin/sh
 test_tag="${{ECR_IMAGE_TAG:-${{GITHUB_SHA:?}}}}"
 printf '%s\\n' "$*" >> {aws_args_log}
 case "${{ECR_TEST_MODE:?}}" in
-  present) printf '%s\\n' 'sha256:already-present' ;;
-  absent) printf '%s\\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"}}' >&2; exit 255 ;;
+  present) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  digest_no_newline) printf '%s' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  digest_empty) : ;;
+  digest_malformed) printf '%s\\n' 'sha256:UPPERCASE' ;;
+  digest_multiple) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
+  digest_two_lf) printf '%s\\n\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  digest_crlf) printf '%s\\r\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  digest_leading_space) printf ' %s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  digest_trailing_space) printf '%s \\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  digest_nul) printf '%s\\0\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  absent)
+    if [ -f "${{ECR_TEST_STATE:?}}" ]; then
+      printf '%s\\n' 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    else
+      printf '%s\\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"}}' >&2; exit 255
+    fi
+    ;;
+  absent_digest_two_lf)
+    if [ -f "${{ECR_TEST_STATE:?}}" ]; then
+      printf '%s\\n\\n' 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    else
+      printf '%s\\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"}}' >&2; exit 255
+    fi
+    ;;
+  never_visible) printf '%s\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"}}' >&2; exit 255 ;;
   malformed) printf '%s\\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"' >&2; exit 255 ;;
   other_code) printf '%s\\n' '{{"Code":"ThrottlingException","Message":"retry later"}}' >&2; exit 255 ;;
   access_denied) printf '%s\\n' '{{"Code":"AccessDeniedException","Message":"denied"}}' >&2; exit 255 ;;
@@ -1169,9 +1710,11 @@ esac
         encoding="utf-8",
     )
     (fake_bin / "docker").write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {docker_log}\n", encoding="utf-8"
+        f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> {docker_log}\n: > "${{ECR_TEST_STATE:?}}"\n',
+        encoding="utf-8",
     )
-    for command in ("aws", "docker"):
+    (fake_bin / "sleep").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    for command in ("aws", "docker", "sleep"):
         (fake_bin / command).chmod(0o755)
     base_environment = {
         **os.environ,
@@ -1179,6 +1722,7 @@ esac
         "AWS_REGION": "ap-southeast-1",
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_SHA": "a" * 40,
+        "ECR_TEST_STATE": str(tmp_path / "ecr-present"),
     }
     image = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend"
 
@@ -1187,12 +1731,35 @@ esac
         capture_output=True,
         text=True,
         check=False,
-        env={**base_environment, "ECR_TEST_MODE": "present"},
+        env={
+            **base_environment,
+            "ECR_TEST_MODE": "present",
+            "GITHUB_OUTPUT": str(github_output),
+        },
     )
     assert present.returncode == 0, present.stderr
     assert "staging_ecr_build=reused" in present.stdout
     assert not docker_log.exists()
+    assert github_output.read_text(encoding="utf-8") == (
+        "image_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "image_ref=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+    )
     assert "--cli-error-format json" in aws_args_log.read_text(encoding="utf-8")
+
+    github_output.unlink()
+    no_newline = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **base_environment,
+            "ECR_TEST_MODE": "digest_no_newline",
+            "GITHUB_OUTPUT": str(github_output),
+        },
+    )
+    assert no_newline.returncode == 0, no_newline.stderr
+    assert "staging_ecr_build=reused" in no_newline.stdout
 
     absent = subprocess.run(
         ["bash", str(helper), image, ".", "./backend/Dockerfile"],
@@ -1206,7 +1773,30 @@ esac
     assert "buildx build" in docker_log.read_text(encoding="utf-8")
 
     docker_log.unlink()
+    (tmp_path / "ecr-present").unlink()
+    describe_before = aws_args_log.read_text(encoding="utf-8").count("describe-images")
+    never_visible = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "never_visible"},
+    )
+    assert never_visible.returncode != 0
+    assert "reason=ecr_digest_resolution_failed" in never_visible.stderr
+    describe_after = aws_args_log.read_text(encoding="utf-8").count("describe-images")
+    assert describe_after - describe_before == 6
+    docker_log.unlink()
+    (tmp_path / "ecr-present").unlink()
     for mode in (
+        "digest_empty",
+        "digest_malformed",
+        "digest_multiple",
+        "digest_two_lf",
+        "digest_crlf",
+        "digest_leading_space",
+        "digest_trailing_space",
+        "digest_nul",
         "malformed",
         "other_code",
         "access_denied",
@@ -1225,8 +1815,24 @@ esac
             env={**base_environment, "ECR_TEST_MODE": mode},
         )
         assert rejected.returncode != 0
-        assert "reason=ecr_tag_inspection_failed" in rejected.stderr
+        assert (
+            "reason=ecr_digest_invalid" in rejected.stderr
+            or "reason=ecr_tag_inspection_failed" in rejected.stderr
+        )
         assert not docker_log.exists()
+
+    post_push_invalid = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_TEST_MODE": "absent_digest_two_lf"},
+    )
+    assert post_push_invalid.returncode != 0
+    assert "reason=ecr_digest_invalid" in post_push_invalid.stderr
+    assert "buildx build" in docker_log.read_text(encoding="utf-8")
+    docker_log.unlink()
+    (tmp_path / "ecr-present").unlink()
 
     rollback_absent = subprocess.run(
         ["bash", str(helper), image, ".", "./backend/Dockerfile"],
@@ -2720,6 +3326,27 @@ def test_fetcher_ci_covers_contract_generator_source_and_dependency_inputs() -> 
     assert required_paths <= _aggregate_ci_paths("fetcher")
 
 
+def test_fetcher_cd_policy_changes_route_the_backend_manifest_contract_tests() -> None:
+    assert ".github/workflows/fetcher-cd.yml" in _aggregate_ci_paths("findb")
+    assert ".github/workflows/fetcher-cd.yml" in _aggregate_ci_paths("fetcher")
+    assert "fetcher/**" not in _aggregate_ci_paths("findb")
+    findb_ci = _load_workflow(FINDB_CI_WORKFLOW)
+    backend_tests = _named_step(findb_ci, "backend", "Run tests")["run"]
+    assert "pytest" in backend_tests
+    assert "test_deployment_checks.py" not in backend_tests
+    assert "test_release_manifest.py" not in backend_tests
+    # No filter means this policy route executes both tests, while ordinary
+    # Fetcher source edits continue to route only the Fetcher reusable CI.
+    required = _load_workflow(REQUIRED_CI_WORKFLOW)["jobs"]["required"]
+    assert required["needs"] == [
+        "changes",
+        "findb",
+        "fetcher",
+        "staging-infra-plan",
+        "staging-infra-retirement-plan",
+    ]
+
+
 def test_fetcher_ci_retries_transient_container_build_failures() -> None:
     fetcher_ci = _load_workflow(FETCHER_CI_WORKFLOW)
     build_step = _named_step(fetcher_ci, "test", "Build container")
@@ -2760,6 +3387,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
     }
     assert required_findb_ci_paths <= _aggregate_ci_paths("findb")
     shared_runtime_paths = {
+        "infra/deploy/release_manifest.py",
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
         "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
@@ -2802,6 +3430,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
         "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
+        "infra/deploy/release_manifest.py",
         ".github/workflows/fetcher-cd.yml",
     }
 
