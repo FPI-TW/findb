@@ -18,8 +18,60 @@ Deployment concurrency一律`cancel-in-progress: false`。CD直接呼叫同revis
 需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
-Fetcher的三個provider images是另一個unit。現行workflow以commit SHA tag部署；完成digest
-與release manifest前，不得宣稱可把staging artifact原樣promotion到production。
+Fetcher的三個provider images是另一個unit。現行workflow仍以commit SHA **tag**部署；
+Phase 3 foundation會在 staging build／reuse 後從 ECR exact SHA tag 取得並嚴格驗證 digest，
+產生 unit-scoped、canonical JSON release manifest artifact（FinDB兩張、Fetcher三張完整
+`repository@sha256:...` references）。manifest 不含 secret，並記錄 allowlisted deployment
+bundle checksum。image 的 `contract_versions` 直接由 selected source root 的
+`contracts/manifest.json` descriptor-safe 嚴格讀取；每個 entry 指向的 selected schema 也以同一個 pinned
+root FD 讀取。每個 selected relative path 第一次讀取後都固定為同一份 in-memory bytes snapshot，後續
+contract parse、schema verify 與 source checksum 都不重新開啟該 pathname；actual SHA-256 必須等於 entry
+宣告值，才計算並寫入該 manifest 的 canonical semantic SHA-256。
+validate 同時重新計算這些來源並精確比對 workflow 傳入的 unit、selected commit、migration revision、run ID
+與完整 unit image-ref map，避免另一份語法正確的 manifest 被替換後通過。
+bundle checksum 現命名為 `deployment_source_bundle_sha256`，只描述 selected commit 的 deterministic
+source/template inputs（包括 selected `contracts/manifest.json` 與 selected manifest tool 的內容 digest）。
+它涵蓋與 staging host contract 相同的 unit-scoped sources，另加這兩個 manifest inputs；不含 current
+CI-only ECR build helper、secret、env、production-only serve-key template／renderer。它不是 render 後 host
+deploy bundle、accepted replay bundle 或 live deploy evidence。因此實際 versioned/rendered deploy bundle
+checklist 仍未完成。
+
+Artifact 名稱為 `findb` →
+`staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`、`fetcher` →
+`staging-fetcher-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`；每個 rerun 都會保留獨立
+artifact，不覆寫之前的 attempt。
+
+Manifest policy/tool 由 selected SHA own：workflow 只執行 selected source root 中的
+`infra/deploy/release_manifest.py`，不使用 current checkout 的工具。materialize 後先以 raw bytes 驗證該
+工具的 `protocol` 命令只輸出 `findb-release-manifest-v1` 加一個 LF（stdout/stderr、exit status 或任何額外
+bytes 不符即 fail closed），再 generate／validate。Phase 3 foundation 之前、明確
+`image_tag` 的 protected-main ancestor rollback 若 selected SHA 不含此工具，會發出 warning 並維持既有
+SHA-tag rollback，但不產生 manifest artifact；這個 legacy 分支只適用 `ECR_REUSE_ONLY=true`。foundation
+之後的 selected SHA 缺少或無法執行其工具時一律 fail closed；存在但沒有 v1 protocol 的檔案不是 legacy，
+不會把其他 manifest error 降級為 legacy。
+legacy rollback 的相容性前置檢查只比較實際同步到 staging host、或在 staging 前由 workflow 執行的
+unit-scoped runtime inputs：FinDB 的 Compose、三個 staging-rendered nginx inputs（主設定、Source
+allowlist、Cloudflare real-IP）、三個非敏感 renderer，以及 loader／command／host render／install／deploy／
+catalog；Fetcher 的 loader／command／provider release／catalog。`serve-key.conf` 與
+`render_nginx_serve_key.py` 不在 staging 前置路徑，故不在此集合。它刻意不比較純 CI 的 ECR build helper
+或 release-manifest tool，因此這些 foundation-only 變更不會阻斷 pre-foundation SHA-tag rollback；任一
+上述 host runtime contract 差異仍 fail closed。
+
+workflow 不再額外 `git show` contract manifest；generate 與 validate 都傳入同一個 selected source root 的
+`contracts/manifest.json`，避免第二份 materialization 漂移。`fetcher-cd.yml` 的 PR-only policy 變更同時
+路由至 FinDB/backend CI，因此完整的 deployment/manifest contract tests 會實際執行；一般 `fetcher/**`
+source 變更仍只路由 Fetcher CI。
+
+artifact output 寫入只接受預先存在的 job-private runner temp parent，從 filesystem root 以 `O_NOFOLLOW`
+逐段 pin 到 parent directory FD，再用 single-link temporary file 與 atomic replace；這可避免祖先／輸出
+parent path 的 symlink swap 影響本次寫入。它不是、也不宣稱是對同 UID
+任意持續寫入者的完整防護；GitHub job-private temp 與 workflow expected-input binding 是此 foundation 的威脅
+邊界。
+
+這份 manifest **尚未**成為 deploy 或 rollback identity，host Compose／helper 尚未切換 digest，
+因此不得把 artifact 當成 accepted release 或 production promotion evidence。SSM pull／inspect、
+Compose/helper digest cutover、private S3 accepted manifest、production promotion 與 live
+acceptance 仍未完成。
 
 ## Staging data policy
 

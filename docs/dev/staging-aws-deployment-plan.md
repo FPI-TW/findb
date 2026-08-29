@@ -50,9 +50,10 @@ GHCR 與既有 GitHub runtime secret 相容路徑，且不會 assume staging pub
 受控 rollback 不會恢復 transitional GHCR access。gate 維持精確 `true`，operator 在 protected `main`
 手動 dispatch 對應 FinDB 或 Fetcher workflow，選擇 `deployment_target=staging` 並填入已接受的
 小寫 40-hex `image_tag`。有指定 `image_tag` 時 workflow 先驗證該 commit 可從當前 protected `main`
-到達，並確認 current checkout 的 `docker-compose.prod.yml`、`infra/deploy/runtime-secrets/` 與
-`infra/nginx/` deployment-contract scope 與舊 image SHA 無差異；只有契約不變時才允許 current scripts
-搭配 old images，否則 fail closed，必須先做 forward compatibility fix。FinDB 只驗證
+到達，並確認 current checkout 的精確 staging runtime inputs 與舊 image SHA 無差異：FinDB 的
+`docker-compose.prod.yml`、三個 staging-rendered nginx inputs、三個 renderer 與其 host loader／command／
+render／install／deploy／catalog；Fetcher 的 host loader／command／provider release／catalog。只有契約不變
+時才允許 current scripts 搭配 old images，否則 fail closed，必須先做 forward compatibility fix。FinDB 只驗證
 其 backend、dashboard 兩個固定 staging ECR repositories；Fetcher 只驗證其 Twelve Data、FinLab、Shioaji
 三個固定 staging ECR repositories。任一所屬 repository 不存在該 immutable SHA tag 即在 host rollout 前
 失敗，絕不重建目前 SHA。此介面不接受 mutable tag、非 main artifact、跨 repository 或 registry image；
@@ -356,15 +357,30 @@ plan；隨後驗證兩筆皆為30天 scheduled deletion、active catalog 為17�
 {
   "schema_version": 1,
   "deployment_target": "staging",
-  "deployment_unit": "findb-or-fetcher",
+  "unit": "findb-or-fetcher",
   "commit_sha": "40-char SHA",
   "images": {"name": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/repository@sha256:..."},
   "migration_revision": "alembic revision or none",
   "contract_versions": ["versioned contracts"],
-  "deployment_bundle_sha256": "...",
+  "contract_manifest_sha256": "selected contract manifest canonical semantic SHA-256",
+  "deployment_source_bundle_sha256": "...",
   "created_by_run_id": "..."
 }
 ```
+
+Phase 3 foundation 的 selected tool 會先執行 `protocol`，且 raw stdout 必須精確為
+`findb-release-manifest-v1\n`（stderr、extra bytes 或失敗皆 fail closed）。只有 selected Git tree 中
+完全沒有該 tool 的 protected-main explicit SHA rollback 才是 pre-foundation legacy；存在但 protocol 不相容
+不能降級為 legacy。
+
+同一份 selected source root 由 descriptor-safe root FD pin 住；每個 allowlisted path 的首次 bytes 讀取會
+固定於單一 snapshot，contract parser、schema checksum 與 source checksum 都重用該 bytes，避免重開
+pathname 導致的 source drift。
+
+validate 還會精確綁定 workflow 的 unit、selected commit、migration revision、run ID 與每個 expected image
+digest ref。manifest output 只寫入預先存在的 job-private runner temp parent；工具從 filesystem root 以
+`O_NOFOLLOW` 逐段走訪並 pin parent directory FD，降低 ancestor/path/symlink swap，但不宣稱能防禦同 UID
+的任意持續寫入者。
 
 - Build job從ECR取得每個image digest；SHA tag只作索引，不作部署或rollback identity；
 - Compose與Fetcher deploy helper只接受完整`image@sha256:...`，缺值或`:latest`一律fail closed；
@@ -579,9 +595,43 @@ cycle gate通過後另行取得移除授權，並完成last-used與health確認�
 
 ### Phase 3：Digest、release manifest與CI gate
 
-- [ ] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend＋Dashboard，Fetcher記錄
-  generic＋FinLab＋Shioaji；五個image reference均為完整staging ECR
-  `repository@sha256:...`。
+Phase 3 foundation 已開始並完成 repository／CI artifact 能力：staging build helper 在 immutable
+SHA tag reuse 或 push 後均由 ECR 讀取並驗證單一完整 digest；兩個 staging build job 生成、驗證並
+上傳 deterministic、unit-scoped manifest。FinDB artifact 記錄 backend＋Dashboard，Fetcher artifact
+記錄 Twelve Data＋FinLab＋Shioaji，所有 image reference 都是完整 staging ECR
+`repository@sha256:...`。bundle checksum 只涵蓋明確 allowlisted 的 repo-relative staging Compose、
+三個 staging nginx inputs、三個 renderer 與 deploy/runtime-secret helper/catalog，另含 selected contracts
+manifest 與 manifest tool 自身；不納入 current CI-only ECR build helper、secret 或 env。這是 deterministic
+source/template checksum contract，不是 render 後的 host deploy bundle、可重播／versioned packaged bundle，
+也尚未有 private S3 persistence。
+image `contract_versions` 則由 selected `ECR_IMAGE_TAG` source root 的 `contracts/manifest.json` 取得；工具以
+同一 pinned root FD descriptor-safe 讀取每個 entry 指向的 schema，並要求實際 schema SHA-256 等於 entry
+宣告值，才把 canonical semantic manifest SHA-256 寫入 artifact。workflow 不另行 materialize 第二份 contract
+manifest。bundle checksum仍是 selected commit 的 deterministic source/template inputs（包含 selected contract
+manifest content digest），不是 render 後 host deploy bundle、accepted replay bundle 或 live deploy evidence。
+
+artifact 名稱固定映射為 `findb` →
+`staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`、`fetcher` →
+`staging-fetcher-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`；run attempt 包含在名稱中，
+rerun 不會覆寫既有 artifact。
+
+Manifest policy/tool 由 selected SHA own：workflow 只執行 selected source root 中的
+`infra/deploy/release_manifest.py`。Phase 3 foundation 之前，明確 `image_tag` 且已通過 protected-main
+ancestor 驗證的 rollback 若 selected SHA 沒有此工具，會 warning 後保留既有 SHA-tag rollback，不產生
+manifest artifact；此 legacy 分支只允許 `ECR_REUSE_ONLY=true`。foundation 之後的 selected SHA 缺少或
+無法執行其自身工具一律 fail closed，不得把其他 manifest error 降級或 skip。
+legacy rollback 的相容性檢查只涵蓋實際 staging host runtime contract：FinDB 的 Compose、三個
+staging-rendered nginx inputs、三個 renderer 及 loader／command／host render／install／deploy／catalog，
+Fetcher 的 loader／command／provider release／catalog。`serve-key.conf` 與
+`render_nginx_serve_key.py` 非 staging 前置 input，故排除。純 CI ECR build helper 與 release-manifest tool
+不在此集合，避免 foundation-only 差異阻斷 pre-foundation rollback；集合內任何檔案差異仍 fail closed。
+
+這只是 foundation：實際 deployment 與 rollback 仍使用 SHA tag，manifest 尚未成為 deploy／rollback
+identity 或 accepted manifest。SSM pull／inspect、Compose/helper digest cutover、private S3 accepted
+manifest、production promotion 與 live acceptance 都仍未完成；因此不可勾選本 Phase exit gate。
+
+- [x] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend＋Dashboard，Fetcher記錄
+  Twelve Data＋FinLab＋Shioaji；五個image reference均為完整staging ECR `repository@sha256:...`。
 - [ ] 建立versioned deploy bundle，納入Compose、nginx templates與deploy helper checksum。
 - [ ] Compose與deploy helper改為必填完整image reference；移除FinDB `latest`發布及所有fallback。
 - [ ] CI驗證manifest schema、SHA／digest格式、bundle checksum、deterministic generation與config

@@ -9,6 +9,7 @@ on:
       - "infra/deploy/runtime-secrets/runtime_secret_command.sh"
       - "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
       - "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh"
+      - "infra/deploy/release_manifest.py"
       - "infra/deploy/runtime-secrets/fetcher.json"
       - ".github/workflows/fetcher-cd.yml"
   workflow_dispatch:
@@ -155,6 +156,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      twelve_image_ref: ${{ steps.twelve_image.outputs.image_ref }}
+      finlab_image_ref: ${{ steps.finlab_image.outputs.image_ref }}
+      shioaji_image_ref: ${{ steps.shioaji_image.outputs.image_ref }}
     env:
       AWS_REGION: ap-southeast-1
       ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
@@ -183,7 +188,11 @@ jobs:
               exit 1
             }
             if [ "$ECR_REUSE_ONLY" = true ]; then
-              if ! git diff --quiet "$ECR_IMAGE_TAG" HEAD -- docker-compose.prod.yml infra/deploy/runtime-secrets infra/nginx; then
+              if ! git diff --quiet "$ECR_IMAGE_TAG" HEAD -- \
+                infra/deploy/runtime-secrets/load_runtime_secrets.py \
+                infra/deploy/runtime-secrets/runtime_secret_command.sh \
+                infra/deploy/runtime-secrets/release_fetcher_provider.sh \
+                infra/deploy/runtime-secrets/fetcher.json; then
                 echo "::error title=Incompatible staging rollback::Deployment contract files differ from the selected image SHA; deploy a forward compatibility fix before retrying rollback"
                 exit 1
               fi
@@ -203,14 +212,140 @@ jobs:
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Build or reuse immutable Twelve Data ECR image
+        id: twelve_image
         shell: bash
         run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$TWELVE_IMAGE" . ./fetcher/Dockerfile
       - name: Build or reuse immutable FinLab ECR image
+        id: finlab_image
         shell: bash
         run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FINLAB_IMAGE" . ./fetcher/Dockerfile.finlab
       - name: Build or reuse immutable Shioaji ECR image
+        id: shioaji_image
         shell: bash
         run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$SHIOAJI_IMAGE" . ./fetcher/Dockerfile.shioaji
+      - name: Classify selected release manifest support
+        id: manifest_support
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_tool_path=infra/deploy/release_manifest.py
+          if ! git cat-file -e "$ECR_IMAGE_TAG^{commit}"; then
+            echo "::error title=Selected commit unavailable::Cannot read the selected release commit"
+            exit 1
+          fi
+          manifest_entries_file="$(mktemp "${RUNNER_TEMP:?}/selected-manifest-entry.XXXXXX")"
+          trap 'rm -f -- "$manifest_entries_file"' EXIT
+          if ! git ls-tree -z "$ECR_IMAGE_TAG" -- "$manifest_tool_path" > "$manifest_entries_file"; then
+            echo "::error title=Selected manifest tool inspection failed::Cannot inspect the selected release tree"
+            exit 1
+          fi
+          if [ ! -s "$manifest_entries_file" ]; then
+            manifest_missing=true
+          else
+          if ! manifest_object_id="$(python3 - "$manifest_entries_file" "$manifest_tool_path" <<'PY'
+          import re
+          import sys
+
+          raw = open(sys.argv[1], "rb").read()
+          path = sys.argv[2].encode("ascii")
+          if not raw.endswith(b"\0") or raw.count(b"\0") != 1:
+              raise SystemExit(1)
+          record = raw[:-1]
+          match = re.fullmatch(
+              rb"100(?:644|755) blob ((?:[0-9a-f]{40}|[0-9a-f]{64}))\t" + re.escape(path),
+              record,
+          )
+          if match is None:
+              raise SystemExit(1)
+          print(match.group(1).decode("ascii"))
+          PY
+          )"; then
+              echo "::error title=Selected manifest tool inspection failed::Selected manifest tool must be exactly one regular blob entry"
+              exit 1
+            fi
+            if ! git cat-file -e "$manifest_object_id^{blob}"; then
+              echo "::error title=Selected manifest tool inspection failed::Selected manifest tool blob is unreadable"
+              exit 1
+            fi
+            manifest_missing=false
+          fi
+          if [ "$manifest_missing" = false ]; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          elif [ "$ECR_REUSE_ONLY" = true ]; then
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Legacy staging rollback::Selected SHA predates the Phase 3 release manifest; continuing the explicit protected-main SHA-tag rollback without a manifest artifact"
+          else
+            echo "::error title=Missing selected release manifest tool::Current releases must select a SHA that contains infra/deploy/release_manifest.py"
+            exit 1
+          fi
+      - name: Materialize selected deployment source inputs
+        id: selected_source_bundle
+        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$RUNNER_TEMP/fetcher-selected-deployment-source"
+          mkdir -p "$source_root"
+          git archive --format=tar "$ECR_IMAGE_TAG" | tar -x -C "$source_root"
+          printf 'path=%s\n' "$source_root" >> "$GITHUB_OUTPUT"
+      - name: Verify selected release manifest protocol
+        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        shell: bash
+        env:
+          SOURCE_BUNDLE_ROOT: ${{ steps.selected_source_bundle.outputs.path }}
+        run: |
+          set -euo pipefail
+          protocol_output="$(mktemp "${RUNNER_TEMP:?}/selected-manifest-protocol.XXXXXX")"
+          protocol_error="$(mktemp "${RUNNER_TEMP:?}/selected-manifest-protocol-error.XXXXXX")"
+          trap 'rm -f -- "$protocol_output" "$protocol_error"' EXIT
+          if ! python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" protocol > "$protocol_output" 2> "$protocol_error"; then
+            echo "::error title=Selected manifest protocol failed::Selected manifest tool did not complete its v1 protocol"
+            exit 1
+          fi
+          if [ -s "$protocol_error" ] || ! printf 'findb-release-manifest-v1\n' | cmp -s - "$protocol_output"; then
+            echo "::error title=Selected manifest protocol invalid::Selected manifest tool must emit only the v1 protocol marker"
+            exit 1
+          fi
+      - name: Generate and validate staging release manifest
+        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        shell: bash
+        env:
+          TWELVE_IMAGE_REF: ${{ steps.twelve_image.outputs.image_ref }}
+          FINLAB_IMAGE_REF: ${{ steps.finlab_image.outputs.image_ref }}
+          SHIOAJI_IMAGE_REF: ${{ steps.shioaji_image.outputs.image_ref }}
+          SOURCE_BUNDLE_ROOT: ${{ steps.selected_source_bundle.outputs.path }}
+        run: |
+          set -euo pipefail
+          python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" generate \
+            --repo-root "$SOURCE_BUNDLE_ROOT" \
+            --unit fetcher \
+            --commit-sha "$ECR_IMAGE_TAG" \
+            --migration-revision none \
+            --contract-manifest "$SOURCE_BUNDLE_ROOT/contracts/manifest.json" \
+            --image "twelve_data=$TWELVE_IMAGE_REF" \
+            --image "finlab=$FINLAB_IMAGE_REF" \
+            --image "shioaji=$SHIOAJI_IMAGE_REF" \
+            --created-by-run-id "$GITHUB_RUN_ID" \
+            --output "$RUNNER_TEMP/fetcher-staging-release-manifest.json"
+          python3 "$SOURCE_BUNDLE_ROOT/infra/deploy/release_manifest.py" validate \
+            --repo-root "$SOURCE_BUNDLE_ROOT" \
+            --unit fetcher \
+            --commit-sha "$ECR_IMAGE_TAG" \
+            --migration-revision none \
+            --contract-manifest "$SOURCE_BUNDLE_ROOT/contracts/manifest.json" \
+            --image "twelve_data=$TWELVE_IMAGE_REF" \
+            --image "finlab=$FINLAB_IMAGE_REF" \
+            --image "shioaji=$SHIOAJI_IMAGE_REF" \
+            --created-by-run-id "$GITHUB_RUN_ID" \
+            --manifest "$RUNNER_TEMP/fetcher-staging-release-manifest.json"
+      - name: Upload staging release manifest
+        if: ${{ steps.manifest_support.outputs.supported == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-fetcher-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fetcher-staging-release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
 
   staging-ecr-cutover-disabled:
     needs: verify
