@@ -428,6 +428,19 @@ data "aws_iam_policy_document" "ecr_publisher_permissions" {
     ]
     resources = [for repository_key in local.ecr_repository_keys_by_unit[each.key] : aws_ecr_repository.staging[repository_key].arn]
   }
+
+  # The FinDB release-manifest gate runs the selected backend digest with
+  # `alembic heads` before deployment. Keep layer download permission limited
+  # to that one repository; Fetcher publishers never pull image layers.
+  dynamic "statement" {
+    for_each = each.key == "findb" ? [true] : []
+    content {
+      sid       = "PullBackendForMigrationInspection"
+      effect    = "Allow"
+      actions   = ["ecr:GetDownloadUrlForLayer"]
+      resources = [aws_ecr_repository.staging["findb_backend"].arn]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "ecr_publisher_permissions" {

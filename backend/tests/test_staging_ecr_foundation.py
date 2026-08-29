@@ -39,6 +39,13 @@ def test_ecr_iam_separates_main_publishers_instance_pulls_and_deploy_roles() -> 
     assert "fetcher-staging-ecr-publisher" in (STAGING / "variables.tf").read_text(encoding="utf-8")
     assert "PushAndInspectOwnEcrImages" in iam
     assert "PullAndInspectOwnEcrImages" in iam
+    publisher = iam.split('data "aws_iam_policy_document" "ecr_publisher_permissions"', 1)[1].split(
+        'resource "aws_iam_role_policy" "ecr_publisher_permissions"', 1
+    )[0]
+    assert 'for_each = each.key == "findb" ? [true] : []' in publisher
+    assert 'sid       = "PullBackendForMigrationInspection"' in publisher
+    assert 'actions   = ["ecr:GetDownloadUrlForLayer"]' in publisher
+    assert 'resources = [aws_ecr_repository.staging["findb_backend"].arn]' in publisher
     deploy = iam.split('data "aws_iam_policy_document" "deploy_permissions"', 1)[1].split(
         'resource "aws_iam_role_policy" "deploy_permissions"', 1
     )[0]
