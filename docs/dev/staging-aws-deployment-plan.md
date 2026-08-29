@@ -13,12 +13,14 @@
 > tags、SSM managed nodes、Session Manager與unit-specific SSM logs均有live evidence。Phase 0與
 > Phase 1已通過exit gate；「服務可用」仍不等同於Phase 2–6的secret遷移、digest／manifest、
 > SSM deployment cutover、監控與災難復原已完成。Staging 已完成 Amazon ECR foundation、publisher
-> roles、workflow cutover與live deployment驗收；Phase 2A的完整provider cycle，以及Phase 2B的GitHub
+> roles、workflow cutover與live deployment驗收；Phase 3 foundation的五枚digest manifest亦完成兩個unit的
+> artifact與host RepoDigest驗收。Phase 2A的完整provider cycle，以及Phase 2B的GitHub
 > runtime copies移除仍未完成。Phase 2B的provider與R2 acceptance-criterion scope項目已依使用者
 > 核准完成，RabbitMQ rotation已有live evidence。GHCR metadata retirement apply已完成，兩筆實體metadata待2026-09-27
 > recovery window
-> 結束後刪除。當前accepted application deployment為protected `main` SHA
-> `570e3c1e935210c7f084c9d8b5a7f711cdf9300b`。
+> 結束後刪除。當前foundation acceptance為Fetcher SHA
+> `141b4f0a2479305d961fb67218f32b00bfe1b8d0`與FinDB SHA
+> `8ef74d99543fcda721bccf5946ee9e4b30e86d05`。
 
 ## ECR foundation 與啟用契約（已完成；持續驗收）
 
@@ -626,9 +628,19 @@ Fetcher 的 loader／command／provider release／catalog。`serve-key.conf` 與
 `render_nginx_serve_key.py` 非 staging 前置 input，故排除。純 CI ECR build helper 與 release-manifest tool
 不在此集合，避免 foundation-only 差異阻斷 pre-foundation rollback；集合內任何檔案差異仍 fail closed。
 
-這只是 foundation：實際 deployment 與 rollback 仍使用 SHA tag，manifest 尚未成為 deploy／rollback
-identity 或 accepted manifest。SSM pull／inspect、Compose/helper digest cutover、private S3 accepted
-manifest、production promotion 與 live acceptance 都仍未完成；因此不可勾選本 Phase exit gate。
+Foundation live acceptance 已完成：Fetcher run
+[33244760600](https://github.com/FPI-TW/findb/actions/runs/33244760600) 的三枚manifest digest經獨立SSM
+command `56127a67-2eed-4535-a670-86faad915e21` 與host RepoDigest逐一比對，三個scheduler均running且
+restart count 0；FinDB run [33245539837](https://github.com/FPI-TW/findb/actions/runs/33245539837)
+的兩枚manifest digest經獨立SSM command `b6cb3d90-61c3-4a9f-bd80-3ad854dadd69`逐一比對，Alembic
+`d6e7f8a9b0c1`、RabbitMQ、Serve、Ingest、Dashboard與Nginx皆健康。這些是artifact-to-live
+RepoDigest一致性證據，不是digest deployment或accepted replay evidence。
+
+實際 deployment 與 rollback 仍使用 SHA tag，manifest 尚未成為 deploy／rollback identity 或 accepted
+manifest。staging build bridge現會把經repository/digest格式驗證的unit image refs傳至deploy job；bounded
+SSM preflight會在任何SSH或writer interruption之前，使用instance role與tmpfs Docker config pull並inspect
+所有exact digests。此自動化路徑仍待合併後兩個unit各一次live run才可勾選。Compose/helper digest cutover、
+private S3 accepted manifest與production promotion仍未完成；因此不可勾選本 Phase exit gate。
 
 - [x] Build jobs輸出每個image digest並建立manifest；FinDB記錄backend＋Dashboard，Fetcher記錄
   Twelve Data＋FinLab＋Shioaji；五個image reference均為完整staging ECR `repository@sha256:...`。
@@ -642,7 +654,8 @@ manifest、production promotion 與 live acceptance 都仍未完成；因此不�
 - [ ] 對Fetcher現有non-root、read-only root filesystem、drop capabilities、no-new-privileges與
   writable paths加入自動化image/runtime驗證；FinDB backend、Dashboard與Compose須補齊相同基線
   或記錄具體、具期限的例外，並驗證entrypoint與health command。
-- [ ] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests。
+- [ ] 在不中止服務的情況下，由SSM target pull並inspect所有exact digests；repository／workflow實作已完成，
+  待合併後FinDB與Fetcher各一次live run驗收。
 
 Exit gate：五個ECR digests可由相同manifest重播且不重新build；tag漂移不影響部署；CI可攔截
 不安全的image、manifest與migration。

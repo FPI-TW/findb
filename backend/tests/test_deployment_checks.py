@@ -996,6 +996,128 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
         )
 
 
+def test_staging_digest_refs_reach_bounded_ssm_pull_and_inspection() -> None:
+    expected = {
+        FINDB_CD_WORKFLOW: {
+            "backend_image_ref": "findb/staging/backend",
+            "dashboard_image_ref": "findb/staging/dashboard",
+        },
+        FETCHER_CD_WORKFLOW: {
+            "twelve_image_ref": "findb/staging/fetcher/twelve-data",
+            "finlab_image_ref": "findb/staging/fetcher/finlab",
+            "shioaji_image_ref": "findb/staging/fetcher/shioaji",
+        },
+    }
+    for workflow_path, image_outputs in expected.items():
+        workflow = _load_workflow(workflow_path)
+        bridge = workflow["jobs"]["build-push"]
+        selection = bridge["steps"][0]
+        assert selection["id"] == "release_selection"
+        assert set(bridge["outputs"]) == set(image_outputs)
+
+        for output_name, repository in image_outputs.items():
+            assert bridge["outputs"][output_name] == (
+                f"${{{{ steps.release_selection.outputs.{output_name} }}}}"
+            )
+            assert selection["env"][output_name.upper()] == (
+                f"${{{{ needs.build-push-staging-ecr.outputs.{output_name} }}}}"
+            )
+            assert repository in selection["run"]
+            assert "@sha256:[0-9a-f]{64}" in selection["run"]
+            assert f"{output_name}=%s\\n" in selection["run"]
+
+        preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")
+        for output_name, repository in image_outputs.items():
+            variable = output_name.upper()
+            assert preflight["env"][variable] == (
+                f"${{{{ needs.build-push.outputs.{output_name} }}}}"
+            )
+            assert repository in preflight["run"]
+            assert "@sha256:[0-9a-f]{64}" in preflight["run"]
+
+        script = preflight["run"]
+        host_start = script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n") + len(
+            "host_script=\"$(cat <<'HOST_SCRIPT'\n"
+        )
+        host_end = script.index("\nHOST_SCRIPT\n", host_start)
+        host_script = script[host_start:host_end]
+        assert 'aws ecr get-login-password --region "$expected_aws_region"' in host_script
+        assert '--username AWS --password-stdin "$expected_ecr_registry"' in host_script
+        assert 'docker --config "$docker_config" pull "$image_ref"' in host_script
+        assert 'docker image inspect "$image_ref"' in host_script
+        assert "--format '{{range .RepoDigests}}{{println .}}{{end}}'" in host_script
+        assert 'grep -Fxq "$image_ref"' in host_script
+        assert "ecr_digest_inspection=failed" in host_script
+        assert f"ecr_digest_pull_inspect=ok images={len(image_outputs)}" in host_script
+        assert "mktemp -d /run/" in host_script
+        assert 'chmod 0700 "$docker_config"' in host_script
+        assert 'rm -rf -- "$docker_config"' in host_script
+        assert host_script.index('docker --config "$docker_config" pull') < host_script.index(
+            "disk_free_percent="
+        )
+
+
+@pytest.mark.parametrize(
+    ("workflow_path", "repositories"),
+    (
+        (
+            FINDB_CD_WORKFLOW,
+            {
+                "BACKEND_IMAGE_REF": "findb/staging/backend",
+                "DASHBOARD_IMAGE_REF": "findb/staging/dashboard",
+            },
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            {
+                "TWELVE_IMAGE_REF": "findb/staging/fetcher/twelve-data",
+                "FINLAB_IMAGE_REF": "findb/staging/fetcher/finlab",
+                "SHIOAJI_IMAGE_REF": "findb/staging/fetcher/shioaji",
+            },
+        ),
+    ),
+)
+def test_staging_release_bridge_rejects_missing_or_cross_unit_digest(
+    tmp_path: Path,
+    workflow_path: Path,
+    repositories: dict[str, str],
+) -> None:
+    registry = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+    selection = _load_workflow(workflow_path)["jobs"]["build-push"]["steps"][0]
+    script = selection["run"]
+    output_path = tmp_path / "github-output"
+    env = {
+        **os.environ,
+        "DEPLOYMENT_TARGET": "staging",
+        "EVENT_NAME": "workflow_dispatch",
+        "IMAGE_TAG_INPUT": "",
+        "PRODUCTION_BUILD": "skipped",
+        "STAGING_ECR_BUILD": "success",
+        "CUTOVER_DISABLED": "skipped",
+        "VERIFY_RESULT": "success",
+        "TARGET_ROUTING_RESULT": "success",
+        "GITHUB_OUTPUT": str(output_path),
+    }
+    for index, (variable, repository) in enumerate(repositories.items(), start=1):
+        env[variable] = f"{registry}/{repository}@sha256:{index:064x}"
+
+    accepted = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert accepted.returncode == 0, accepted.stderr
+    output_lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(output_lines) == len(repositories)
+    for variable, repository in repositories.items():
+        output_name = variable.lower()
+        assert f"{output_name}={env[variable]}" in output_lines
+
+    output_path.unlink()
+    first_variable = next(iter(repositories))
+    env[first_variable] = f"{registry}/findb/staging/cross-unit@sha256:{'f' * 64}"
+    rejected = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert rejected.returncode != 0
+    assert "release bridge" in rejected.stdout
+    assert not output_path.exists()
+
+
 def test_staging_builds_publish_digest_only_release_manifest_artifacts() -> None:
     expected = {
         FINDB_CD_WORKFLOW: (

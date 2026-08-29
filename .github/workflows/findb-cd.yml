@@ -341,8 +341,12 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions: { contents: read }
+    outputs:
+      backend_image_ref: ${{ steps.release_selection.outputs.backend_image_ref }}
+      dashboard_image_ref: ${{ steps.release_selection.outputs.dashboard_image_ref }}
     steps:
       - name: Confirm the exact target-specific image build succeeded
+        id: release_selection
         shell: bash
         env:
           DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
@@ -352,6 +356,8 @@ jobs:
           STAGING_ECR_BUILD: ${{ needs.build-push-staging-ecr.result }}
           CUTOVER_DISABLED: ${{ needs.staging-ecr-cutover-disabled.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
+          BACKEND_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.backend_image_ref }}
+          DASHBOARD_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.dashboard_image_ref }}
         run: |
           set -euo pipefail
           [ "$VERIFY_RESULT" = success ]
@@ -370,6 +376,13 @@ jobs:
                 [ "$STAGING_ECR_BUILD" = success ]
                 [ "$PRODUCTION_BUILD" = skipped ]
                 [ "$CUTOVER_DISABLED" = skipped ]
+                if ! [[ "$BACKEND_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/backend@sha256:[0-9a-f]{64}$ ]] \
+                  || ! [[ "$DASHBOARD_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]; then
+                  echo "::error title=Invalid FinDB release bridge::Build outputs must contain both exact unit-scoped ECR digests"
+                  exit 1
+                fi
+                printf 'backend_image_ref=%s\n' "$BACKEND_IMAGE_REF" >> "$GITHUB_OUTPUT"
+                printf 'dashboard_image_ref=%s\n' "$DASHBOARD_IMAGE_REF" >> "$GITHUB_OUTPUT"
               else
                 [ "$STAGING_ECR_BUILD" = skipped ]
                 [ "$PRODUCTION_BUILD" = skipped ]
@@ -561,10 +574,12 @@ jobs:
           AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
           AWS_DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
           PREFLIGHT_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-findb
+          BACKEND_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
+          DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
         run: |
           set -euo pipefail
 
-          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME; do
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME BACKEND_IMAGE_REF DASHBOARD_IMAGE_REF; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing staging AWS preflight variable::$name must be configured in the staging-findb Environment"
               exit 1
@@ -596,6 +611,12 @@ jobs:
           fi
           if ! [[ "$PREFLIGHT_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
             echo "::error title=Invalid preflight marker::The bounded marker token contains unsupported characters"
+            exit 1
+          fi
+          expected_ecr_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+          if ! [[ "$BACKEND_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/backend@sha256:[0-9a-f]{64}$ ]] \
+            || ! [[ "$DASHBOARD_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Invalid FinDB digest selection::SSM preflight requires both exact unit-scoped ECR digests"
             exit 1
           fi
 
@@ -677,12 +698,20 @@ jobs:
           printf -v expected_dns_name_q '%q' "$AWS_DNS_CHECK_NAME"
           printf -v expected_unit_q '%q' "$DEPLOYMENT_UNIT"
           printf -v expected_marker_token_q '%q' "$PREFLIGHT_MARKER_TOKEN"
+          printf -v expected_aws_region_q '%q' "$AWS_REGION"
+          printf -v expected_ecr_registry_q '%q' "$expected_ecr_registry"
+          printf -v expected_backend_image_ref_q '%q' "$BACKEND_IMAGE_REF"
+          printf -v expected_dashboard_image_ref_q '%q' "$DASHBOARD_IMAGE_REF"
           host_script="$(cat <<'HOST_SCRIPT'
           set -eu
 
           preflight_succeeded=0
+          docker_config=""
           emit_preflight_failure() {
             trap - EXIT
+            case "$docker_config" in
+              /run/findb-ecr-preflight.*) rm -rf -- "$docker_config" ;;
+            esac
             if [ "$preflight_succeeded" -ne 1 ]; then
               printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token"
             fi
@@ -735,6 +764,23 @@ jobs:
           fi
           printf 'docker=%s compose=%s\n' "$docker_version" "$compose_version"
 
+          docker_config="$(mktemp -d /run/findb-ecr-preflight.XXXXXX)"
+          chmod 0700 "$docker_config"
+          aws ecr get-login-password --region "$expected_aws_region" | \
+            docker --config "$docker_config" login \
+              --username AWS --password-stdin "$expected_ecr_registry" >/dev/null
+          for image_ref in "$expected_backend_image_ref" "$expected_dashboard_image_ref"; do
+            docker --config "$docker_config" pull "$image_ref" >/dev/null
+            if ! docker image inspect "$image_ref" \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$image_ref"; then
+              echo "ecr_digest_inspection=failed"
+              exit 1
+            fi
+          done
+          rm -rf -- "$docker_config"
+          docker_config=""
+          echo "ecr_digest_pull_inspect=ok images=2"
+
           disk_free_percent="$(df -P / 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print 100 - $5 }')"
           inode_free_percent="$(df -Pi / 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print 100 - $5 }')"
           case "$disk_free_percent" in
@@ -783,6 +829,10 @@ jobs:
           expected_dns_name=${expected_dns_name_q}
           expected_unit=${expected_unit_q}
           expected_marker_token=${expected_marker_token_q}
+          expected_aws_region=${expected_aws_region_q}
+          expected_ecr_registry=${expected_ecr_registry_q}
+          expected_backend_image_ref=${expected_backend_image_ref_q}
+          expected_dashboard_image_ref=${expected_dashboard_image_ref_q}
           ${host_script}"
           parameters_json="$(jq -nc --arg command "$host_script" '{commands: [$command]}')"
           command_id="$(
