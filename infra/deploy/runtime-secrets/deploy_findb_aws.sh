@@ -9,6 +9,10 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   release_root="$FINDB_RELEASE_ROOT"
   runtime_dir="$release_root/infra/deploy/runtime-secrets"
   compose_file="$release_root/docker-compose.prod.yml"
+  # A release-root Compose file must still manage the stable FinDB project,
+  # whose containers have fixed names and are validated below by project label.
+  COMPOSE_PROJECT_NAME=findb
+  export COMPOSE_PROJECT_NAME
 else
   # Explicit production compatibility: staging always supplies a validated
   # release root, while legacy production retains its established layout.
@@ -49,6 +53,9 @@ fi
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
 preserve_env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  preserve_env="${preserve_env},COMPOSE_PROJECT_NAME"
+fi
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \

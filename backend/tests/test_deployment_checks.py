@@ -2623,18 +2623,35 @@ def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() 
         encoding="utf-8"
     )
     setup = helper.split('catalog="$runtime_dir/findb.json"', 1)[0]
+    preserve_start = helper.index("preserve_env=")
+    preserve_end = helper.index("\n\nrun_runtime()", preserve_start)
+    preserve_setup = helper[preserve_start:preserve_end]
     for environment, expected in (
         (
-            {"FINDB_RELEASE_ROOT": "/opt/findb/releases/demo"},
-            "/opt/findb/releases/demo/infra/deploy/runtime-secrets|/opt/findb/releases/demo/docker-compose.prod.yml",
+            {
+                "FINDB_RELEASE_ROOT": "/opt/findb/releases/demo",
+                "COMPOSE_PROJECT_NAME": "unexpected",
+            },
+            "/opt/findb/releases/demo/infra/deploy/runtime-secrets|/opt/findb/releases/demo/docker-compose.prod.yml|findb",
         ),
-        ({}, "/opt/findb/runtime-secrets|/opt/findb/docker-compose.prod.yml"),
+        (
+            {"COMPOSE_PROJECT_NAME": "unexpected"},
+            "/opt/findb/runtime-secrets|/opt/findb/docker-compose.prod.yml|unexpected",
+        ),
     ):
         result = subprocess.run(
             [
                 "bash",
                 "-c",
-                f'{setup}\nprintf "%s|%s\\n" "$runtime_dir" "$compose_file"',
+                f'''{setup}
+{preserve_setup}
+case ",$preserve_env," in
+  *,COMPOSE_PROJECT_NAME,*)
+    effective_project="$(env -i "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" /bin/bash -c 'printf "%s" "${{COMPOSE_PROJECT_NAME-unset}}"')"
+    ;;
+  *) effective_project="$(env -i /bin/bash -c 'printf "%s" "${{COMPOSE_PROJECT_NAME-unset}}"')" ;;
+esac
+printf "%s|%s|%s|%s\\n" "$runtime_dir" "$compose_file" "${{COMPOSE_PROJECT_NAME-unset}}" "$effective_project"''',
             ],
             check=False,
             capture_output=True,
@@ -2642,7 +2659,14 @@ def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() 
             env={**os.environ, **environment},
         )
         assert result.returncode == 0
-        assert result.stdout == f"{expected}\n"
+        expected_effective = "findb" if "FINDB_RELEASE_ROOT" in environment else "unset"
+        assert result.stdout == f"{expected}|{expected_effective}\n"
+
+    assert "COMPOSE_PROJECT_NAME=findb" in setup
+    assert "export COMPOSE_PROJECT_NAME" in setup
+    assert "COMPOSE_PROJECT_NAME" not in preserve_setup.split("\n", 1)[0].split(",")
+    assert 'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME"' in preserve_setup
+    assert 'sudo --preserve-env="$preserve_env" "$runtime_command"' in helper
 
 
 def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_lookup_key() -> None:
