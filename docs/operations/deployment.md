@@ -68,10 +68,20 @@ parent path 的 symlink swap 影響本次寫入。它不是、也不宣稱是對
 任意持續寫入者的完整防護；GitHub job-private temp 與 workflow expected-input binding 是此 foundation 的威脅
 邊界。
 
+Phase 3 foundation artifact 已有兩個 unit 的 live acceptance。Fetcher manual run
+[33244760600](https://github.com/FPI-TW/findb/actions/runs/33244760600) 產生三枚 digest manifest，
+獨立 SSM command `56127a67-2eed-4535-a670-86faad915e21` 驗證三枚 host-local RepoDigest 完全一致，
+且三個 scheduler 均為 running、restart count 0。FinDB manual run
+[33245539837](https://github.com/FPI-TW/findb/actions/runs/33245539837) 產生兩枚 digest manifest並完成
+部署；獨立 SSM command `b6cb3d90-61c3-4a9f-bd80-3ad854dadd69` 驗證 backend／Dashboard
+RepoDigest、Alembic `d6e7f8a9b0c1`、RabbitMQ與所有public/internal health checks。這些證據只證明
+artifact內容、ECR digest與當次SHA-tag deployment一致。
+
 這份 manifest **尚未**成為 deploy 或 rollback identity，host Compose／helper 尚未切換 digest，
-因此不得把 artifact 當成 accepted release 或 production promotion evidence。SSM pull／inspect、
-Compose/helper digest cutover、private S3 accepted manifest、production promotion 與 live
-acceptance 仍未完成。
+因此不得把 artifact 當成 accepted release 或 production promotion evidence。staging build bridge現在會
+把已驗證的unit-specific digest refs傳給deploy job，bounded SSM preflight在任何SSH或writer interruption
+前以instance role、tmpfs Docker config pull並逐一inspect exact RepoDigest；合併後仍須以兩個unit的live run
+驗收這條自動化路徑。Compose/helper digest cutover、private S3 accepted manifest與production promotion仍未完成。
 
 ## Staging data policy
 

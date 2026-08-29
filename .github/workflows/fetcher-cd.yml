@@ -365,8 +365,13 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions: { contents: read }
+    outputs:
+      twelve_image_ref: ${{ steps.release_selection.outputs.twelve_image_ref }}
+      finlab_image_ref: ${{ steps.release_selection.outputs.finlab_image_ref }}
+      shioaji_image_ref: ${{ steps.release_selection.outputs.shioaji_image_ref }}
     steps:
       - name: Confirm the exact target-specific image build succeeded
+        id: release_selection
         shell: bash
         env:
           DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
@@ -377,6 +382,9 @@ jobs:
           CUTOVER_DISABLED: ${{ needs.staging-ecr-cutover-disabled.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
           TARGET_ROUTING_RESULT: ${{ needs.validate-target-routing.result }}
+          TWELVE_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.twelve_image_ref }}
+          FINLAB_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.finlab_image_ref }}
+          SHIOAJI_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.shioaji_image_ref }}
         run: |
           set -euo pipefail
           [ "$VERIFY_RESULT" = success ]
@@ -392,6 +400,15 @@ jobs:
             staging)
               if [ "$EVENT_NAME" = workflow_dispatch ]; then
                 [ "$STAGING_ECR_BUILD" = success ] && [ "$PRODUCTION_BUILD" = skipped ] && [ "$CUTOVER_DISABLED" = skipped ]
+                if ! [[ "$TWELVE_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]] \
+                  || ! [[ "$FINLAB_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]] \
+                  || ! [[ "$SHIOAJI_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/shioaji@sha256:[0-9a-f]{64}$ ]]; then
+                  echo "::error title=Invalid Fetcher release bridge::Build outputs must contain all three exact unit-scoped ECR digests"
+                  exit 1
+                fi
+                printf 'twelve_image_ref=%s\n' "$TWELVE_IMAGE_REF" >> "$GITHUB_OUTPUT"
+                printf 'finlab_image_ref=%s\n' "$FINLAB_IMAGE_REF" >> "$GITHUB_OUTPUT"
+                printf 'shioaji_image_ref=%s\n' "$SHIOAJI_IMAGE_REF" >> "$GITHUB_OUTPUT"
               else
                 [ "$STAGING_ECR_BUILD" = skipped ] && [ "$PRODUCTION_BUILD" = skipped ] && [ "$CUTOVER_DISABLED" = skipped ]
               fi
@@ -559,10 +576,13 @@ jobs:
           AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
           AWS_DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
           PREFLIGHT_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-fetcher
+          TWELVE_IMAGE_REF: ${{ needs.build-push.outputs.twelve_image_ref }}
+          FINLAB_IMAGE_REF: ${{ needs.build-push.outputs.finlab_image_ref }}
+          SHIOAJI_IMAGE_REF: ${{ needs.build-push.outputs.shioaji_image_ref }}
         run: |
           set -euo pipefail
 
-          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME; do
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing staging AWS preflight variable::$name must be configured in the staging-fetcher Environment"
               exit 1
@@ -594,6 +614,13 @@ jobs:
           fi
           if ! [[ "$PREFLIGHT_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
             echo "::error title=Invalid preflight marker::The bounded marker token contains unsupported characters"
+            exit 1
+          fi
+          expected_ecr_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+          if ! [[ "$TWELVE_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]] \
+            || ! [[ "$FINLAB_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]] \
+            || ! [[ "$SHIOAJI_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/shioaji@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Invalid Fetcher digest selection::SSM preflight requires all three exact unit-scoped ECR digests"
             exit 1
           fi
 
@@ -675,12 +702,21 @@ jobs:
           printf -v expected_dns_name_q '%q' "$AWS_DNS_CHECK_NAME"
           printf -v expected_unit_q '%q' "$DEPLOYMENT_UNIT"
           printf -v expected_marker_token_q '%q' "$PREFLIGHT_MARKER_TOKEN"
+          printf -v expected_aws_region_q '%q' "$AWS_REGION"
+          printf -v expected_ecr_registry_q '%q' "$expected_ecr_registry"
+          printf -v expected_twelve_image_ref_q '%q' "$TWELVE_IMAGE_REF"
+          printf -v expected_finlab_image_ref_q '%q' "$FINLAB_IMAGE_REF"
+          printf -v expected_shioaji_image_ref_q '%q' "$SHIOAJI_IMAGE_REF"
           host_script="$(cat <<'HOST_SCRIPT'
           set -eu
 
           preflight_succeeded=0
+          docker_config=""
           emit_preflight_failure() {
             trap - EXIT
+            case "$docker_config" in
+              /run/fetcher-ecr-preflight.*) rm -rf -- "$docker_config" ;;
+            esac
             if [ "$preflight_succeeded" -ne 1 ]; then
               printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token"
             fi
@@ -733,6 +769,27 @@ jobs:
           fi
           printf 'docker=%s compose=%s\n' "$docker_version" "$compose_version"
 
+          docker_config="$(mktemp -d /run/fetcher-ecr-preflight.XXXXXX)"
+          chmod 0700 "$docker_config"
+          aws ecr get-login-password --region "$expected_aws_region" | \
+            docker --config "$docker_config" login \
+              --username AWS --password-stdin "$expected_ecr_registry" >/dev/null
+          for image_ref in \
+            "$expected_twelve_image_ref" \
+            "$expected_finlab_image_ref" \
+            "$expected_shioaji_image_ref"
+          do
+            docker --config "$docker_config" pull "$image_ref" >/dev/null
+            if ! docker image inspect "$image_ref" \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$image_ref"; then
+              echo "ecr_digest_inspection=failed"
+              exit 1
+            fi
+          done
+          rm -rf -- "$docker_config"
+          docker_config=""
+          echo "ecr_digest_pull_inspect=ok images=3"
+
           disk_free_percent="$(df -P / 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print 100 - $5 }')"
           inode_free_percent="$(df -Pi / 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print 100 - $5 }')"
           case "$disk_free_percent" in
@@ -781,6 +838,11 @@ jobs:
           expected_dns_name=${expected_dns_name_q}
           expected_unit=${expected_unit_q}
           expected_marker_token=${expected_marker_token_q}
+          expected_aws_region=${expected_aws_region_q}
+          expected_ecr_registry=${expected_ecr_registry_q}
+          expected_twelve_image_ref=${expected_twelve_image_ref_q}
+          expected_finlab_image_ref=${expected_finlab_image_ref_q}
+          expected_shioaji_image_ref=${expected_shioaji_image_ref_q}
           ${host_script}"
           parameters_json="$(jq -nc --arg command "$host_script" '{commands: [$command]}')"
           command_id="$(
