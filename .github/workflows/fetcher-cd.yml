@@ -917,7 +917,8 @@ jobs:
           chmod 0700 "$bundle_root"
           bundle_file="$bundle_root/bundle.tar"
           bundle_length="$(aws s3api head-object --region "$expected_aws_region" --bucket "$expected_deploy_bundle_bucket" --key "$expected_deploy_bundle_key" --query ContentLength --output text)"
-          [[ "$bundle_length" =~ ^[0-9]+$ ]] && [ "$bundle_length" -le 16777216 ] || exit 1
+          case "$bundle_length" in ''|*[!0-9]*) exit 1 ;; esac
+          [ "$bundle_length" -le 16777216 ] || exit 1
           aws s3api get-object --region "$expected_aws_region" --bucket "$expected_deploy_bundle_bucket" --key "$expected_deploy_bundle_key" "$bundle_file" >/dev/null
           [ "$(sha256sum "$bundle_file" | cut -d ' ' -f1)" = "$expected_deploy_bundle_sha256" ] || exit 1
           python3 - "$bundle_file" "$bundle_root/release_manifest.py" <<'PY'

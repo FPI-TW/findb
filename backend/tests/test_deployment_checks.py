@@ -3454,6 +3454,14 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "trap - EXIT" in host_script
         assert "phase1_preflight_marker=%s status=failed" in host_script
         assert "phase1_preflight_marker=%s status=success" in host_script
+        # AWS-RunShellScript executes commands with /bin/sh. Keep the host
+        # preflight POSIX-sh compatible even though its GitHub runner wrapper
+        # deliberately uses Bash for safe argument serialization.
+        assert re.search(r"(?<!\[)\[\[(?!:)", host_script) is None
+        for bashism in ("=~", "BASH_", "declare ", "local ", "function ", "<(", "<<<", "$'"):
+            assert bashism not in host_script
+        assert "case \"$bundle_length\" in ''|*[!0-9]*) exit 1 ;; esac" in host_script
+        assert '[ "$bundle_length" -le 16777216 ] || exit 1' in host_script
 
         step_indices = deploy["steps"]
         credential_index = step_indices.index(credential_step)
