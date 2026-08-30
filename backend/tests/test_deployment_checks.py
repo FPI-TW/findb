@@ -3855,14 +3855,14 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "--query StandardOutputContent" not in script
         assert "--query StandardErrorContent" not in script
         assert "send-command" in script
-        assert "get-command-invocation" not in script
-        assert "--query Status" not in script
+        assert "get-command-invocation" in script
+        assert "--query Status" in script
+        assert "--cli-connect-timeout 5" in script
+        assert "--cli-read-timeout 10" in script
         assert "StandardOutputContent" not in script
         assert "StandardErrorContent" not in script
         assert "events[0].eventId" not in script
         assert "--log-stream-names" not in script
-        assert "None" not in script.split("failure_event_count=", 1)[1]
-        assert "None" not in script.split("success_event_count=", 1)[1]
         assert "--no-paginate" not in script
         assert "for attempt in $(seq 1 36); do" in script
         send_command = script.split("aws ssm send-command", 1)[1].split('if [ -z "$command_id"', 1)[
@@ -3879,22 +3879,18 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert '--log-group-name "$log_group"' in marker_helper
         assert '--log-stream-name-prefix "$log_stream_prefix"' in marker_helper
         assert "--query '{count:length(events),next_token:nextToken}'" in marker_helper
-        for marker_count in ("failure_event_count", "success_event_count"):
-            marker_guard = re.search(
-                rf'if ! \[\[ "\${marker_count}" =~ \^\[0-9\]\+\$ \]\]; then(?P<body>.*?)\n\s+fi',
-                script,
-                re.DOTALL,
-            )
-            assert marker_guard is not None
-            assert "exit 1" in marker_guard.group("body")
-        assert 'if [ "$failure_event_count" -gt 0 ]; then' in script
-        assert 'if [ "$success_event_count" -gt 0 ]; then' in script
+        assert "--limit" not in marker_helper
+        assert '[[ "$failure_event_count" =~ ^[0-9]+$ ]]' in script
+        assert '[[ "$success_event_count" =~ ^[0-9]+$ ]]' in script
+        assert '[ "$failure_event_count" -eq 0 ]' in script
+        assert '[ "$success_event_count" -gt 0 ]' in script
         assert "marker_event_count=${success_event_count}" in script
+        status_query = script.index('status="$(aws ssm get-command-invocation')
+        success_case = script.index("Success)", status_query)
         failure_query = script.index('failure_event_count="$(')
         success_query = script.index('success_event_count="$(')
-        failure_decision = script.index('if [ "$failure_event_count" -gt 0 ]; then')
-        success_decision = script.index('if [ "$success_event_count" -gt 0 ]; then')
-        assert failure_query < failure_decision < success_query < success_decision
+        pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
+        assert status_query < success_case < failure_query < success_query < pending_case
         assert "command_id=${command_id}" in script
         host_start = script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n") + len(
             "host_script=\"$(cat <<'HOST_SCRIPT'\n"
@@ -3973,6 +3969,17 @@ def _run_staging_ssm_marker_polling_case(
 set -euo pipefail
 
 aws() {
+  local service="$1"
+  local operation="$2"
+  shift 2
+  if [ "$service:$operation" = "ssm:get-command-invocation" ]; then
+    if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
+      return "$AWS_QUERY_STATUS"
+    fi
+    printf 'Success\n'
+    return 0
+  fi
+  [ "$service:$operation" = "logs:filter-log-events" ] || return 43
   if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
     return "$AWS_QUERY_STATUS"
   fi
@@ -4829,14 +4836,14 @@ exit 1
         "expected_call_counts",
     ),
     (
-        # Transient SSM and CloudWatch CLI failures plus empty/non-numeric
-        # CloudWatch counts before SSM completion must not abandon a command.
+        # Transient SSM CLI failures before completion must not query
+        # CloudWatch or abandon the command.
         (
             ("__ERROR__", "Pending", "InProgress", "Success"),
-            ("__ERROR__", "", "invalid", "0"),
+            ("0",),
             ("1",),
             0,
-            (4, 4, 1),
+            (4, 1, 1),
         ),
         # CloudWatch delivery can lag terminal SSM success; wait until the
         # required numeric success marker is present.
@@ -4861,8 +4868,8 @@ exit 1
         (("Cancelled",), ("0",), ("1",), 1, (1, 0, 0)),
         (("TimedOut",), ("0",), ("1",), 1, (1, 0, 0)),
         (("Unexpected",), ("0",), ("1",), 1, (1, 0, 0)),
-        # A reliably observed failure marker stops an in-progress command.
-        (("InProgress",), ("1",), ("1",), 1, (1, 1, 0)),
+        # CloudWatch is never queried while the command remains in progress.
+        (("InProgress", "Failed"), ("1",), ("1",), 1, (2, 0, 0)),
     ),
 )
 def test_phase4_ssm_polling_handles_terminal_status_and_marker_delivery(
@@ -4947,11 +4954,11 @@ args = sys.argv[1:]
 assert args[:2] == ["logs", "filter-log-events"]
 required = {
     "--no-paginate",
-    "--limit",
     "--cli-connect-timeout",
     "--cli-read-timeout",
 }
 assert required.issubset(args)
+assert "--limit" not in args
 token = ""
 if "--next-token" in args:
     token = args[args.index("--next-token") + 1]
@@ -5017,29 +5024,73 @@ def test_cloudwatch_marker_helper_returns_on_first_matching_page(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("job_name", "step_name"),
+    ("workflow_path", "job_name", "step_name", "status_variable"),
     (
-        ("deploy", "Run bounded Fetcher candidate validation over SSM"),
-        ("deploy", "Activate accepted Fetcher release over SSM"),
-        ("finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"),
+        (FINDB_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight", "status"),
+        (
+            FINDB_CD_WORKFLOW,
+            "deploy",
+            "Run bounded FinDB staging deployment and acceptance over SSM",
+            "invocation_status",
+        ),
+        (
+            FINDB_CD_WORKFLOW,
+            "deploy",
+            "Activate accepted FinDB release over SSM",
+            "invocation_status",
+        ),
+        (FETCHER_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight", "status"),
+        (
+            FETCHER_CD_WORKFLOW,
+            "deploy",
+            "Run bounded Fetcher candidate validation over SSM",
+            "status",
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            "deploy",
+            "Activate accepted Fetcher release over SSM",
+            "status",
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            "finlab-acquisition-smoke",
+            "Run bounded FinLab acquisition smoke over SSM",
+            "status",
+        ),
     ),
 )
-def test_fetcher_marker_queries_wait_for_terminal_ssm_success(
-    job_name: str, step_name: str
+def test_marker_queries_wait_for_terminal_ssm_success(
+    workflow_path: Path, job_name: str, step_name: str, status_variable: str
 ) -> None:
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    workflow = _load_workflow(workflow_path)
     script = _named_step(workflow, job_name, step_name)["run"]
-    status_query = script.index('status="$(aws ssm get-command-invocation')
+    status_query = script.index(f'{status_variable}="$(aws ssm get-command-invocation')
     success_case = script.index("Success)", status_query)
-    failure_query = script.index('failure_count="$(cloudwatch_marker_count', success_case)
-    success_query = script.index('success_count="$(cloudwatch_marker_count', failure_query)
+    failure_query = script.index("cloudwatch_marker_count", success_case)
+    success_query = script.index("cloudwatch_marker_count", failure_query + 1)
     pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
 
     assert status_query < success_case < failure_query < success_query < pending_case
     status_command = script[status_query:success_case]
     assert "--cli-connect-timeout 5" in status_command
     assert "--cli-read-timeout 10" in status_command
-    assert '[[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ]' in script
+    success_block = script[success_case:pending_case]
+    assert '"$failure_marker" || true)' in success_block
+    assert '"$success_marker" || true)' in success_block
+    assert "-eq 0 ]" in success_block
+
+
+def test_cloudwatch_marker_helper_stops_after_distinct_token_page_limit(
+    tmp_path: Path,
+) -> None:
+    pages = {"": (0, "token-1")}
+    pages.update({f"token-{page}": (0, f"token-{page + 1}") for page in range(1, 128)})
+
+    completed = _run_cloudwatch_marker_helper(tmp_path, pages)
+
+    assert completed.returncode != 0
+    assert len((tmp_path / "calls").read_text(encoding="utf-8").splitlines()) == 128
 
 
 def test_findb_deploy_timeout_covers_bounded_ssm_polling_and_operational_margin() -> None:
