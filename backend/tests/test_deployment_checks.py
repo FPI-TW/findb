@@ -4947,6 +4947,7 @@ args = sys.argv[1:]
 assert args[:2] == ["logs", "filter-log-events"]
 required = {
     "--no-paginate",
+    "--limit",
     "--cli-connect-timeout",
     "--cli-read-timeout",
 }
@@ -5013,6 +5014,32 @@ def test_cloudwatch_marker_helper_returns_on_first_matching_page(tmp_path: Path)
         "",
         "token-a",
     ]
+
+
+@pytest.mark.parametrize(
+    ("job_name", "step_name"),
+    (
+        ("deploy", "Run bounded Fetcher candidate validation over SSM"),
+        ("deploy", "Activate accepted Fetcher release over SSM"),
+        ("finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"),
+    ),
+)
+def test_fetcher_marker_queries_wait_for_terminal_ssm_success(
+    job_name: str, step_name: str
+) -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    script = _named_step(workflow, job_name, step_name)["run"]
+    status_query = script.index('status="$(aws ssm get-command-invocation')
+    success_case = script.index("Success)", status_query)
+    failure_query = script.index('failure_count="$(cloudwatch_marker_count', success_case)
+    success_query = script.index('success_count="$(cloudwatch_marker_count', failure_query)
+    pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
+
+    assert status_query < success_case < failure_query < success_query < pending_case
+    status_command = script[status_query:success_case]
+    assert "--cli-connect-timeout 5" in status_command
+    assert "--cli-read-timeout 10" in status_command
+    assert '[[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ]' in script
 
 
 def test_findb_deploy_timeout_covers_bounded_ssm_polling_and_operational_margin() -> None:
