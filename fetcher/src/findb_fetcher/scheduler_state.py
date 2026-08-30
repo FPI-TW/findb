@@ -548,7 +548,8 @@ class SchedulerState:
                 f"unable to secure scheduler state file: {self.path}"
             ) from exc
 
-    def _validate_current_rows(self, connection: sqlite3.Connection) -> None:
+    @staticmethod
+    def _validate_current_rows(connection: sqlite3.Connection) -> None:
         """Reject persisted jobs that do not belong to the current v2 identity."""
         rows = connection.execute(
             "SELECT slot_id, provider, dataset_key, schedule_id, scheduled_date, target_data_date "
@@ -573,7 +574,8 @@ class SchedulerState:
                 except (TypeError, ValueError) as exc:
                     raise SchedulerStateError(f"scheduler state {label} is invalid") from exc
 
-    def _validate_schema(self, connection: sqlite3.Connection) -> None:
+    @staticmethod
+    def _validate_schema(connection: sqlite3.Connection) -> None:
         quick_check = [row[0] for row in connection.execute("PRAGMA quick_check").fetchall()]
         if quick_check != ["ok"]:
             raise SchedulerStateError("scheduler state integrity check failed")
@@ -682,6 +684,35 @@ class SchedulerState:
             connection.rollback()
             raise SchedulerStateError(f"scheduler state operation failed: {self.path}") from exc
         finally:
+            connection.close()
+
+
+def validate_scheduler_state_read_only(path: Path) -> None:
+    """Require an existing current scheduler database without modifying it."""
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise SchedulerStateError(f"scheduler state does not exist: {path}") from exc
+    if not resolved.is_file():
+        raise SchedulerStateError(f"scheduler state is not a file: {path}")
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True, timeout=5.0)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version != _SCHEMA_VERSION:
+            raise SchedulerStateError(
+                f"unsupported scheduler state schema {version}; expected {_SCHEMA_VERSION}"
+            )
+        SchedulerState._validate_schema(connection)
+        SchedulerState._validate_current_rows(connection)
+    except sqlite3.Error as exc:
+        raise SchedulerStateError(f"unable to inspect scheduler state: {path}") from exc
+    finally:
+        if connection is not None:
             connection.close()
 
 

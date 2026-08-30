@@ -164,7 +164,9 @@ def default_state_path() -> Path:
     return Path(configured) if configured else DEFAULT_PRODUCTION_STATE_PATH
 
 
-def validate_production_state_path(path: Path, *, read_only: bool = False) -> None:
+def validate_production_state_path(
+    path: Path, *, read_only: bool = False, require_existing: bool = False
+) -> None:
     """Reject staging SQLite and malformed existing state without migration."""
     if not isinstance(path, Path):
         raise ProductionStateError("production state path is invalid")
@@ -181,6 +183,8 @@ def validate_production_state_path(path: Path, *, read_only: bool = False) -> No
     if not resolved.name or len(str(resolved)) > 4096:
         raise ProductionStateError("production state path is invalid")
     if not resolved.exists():
+        if require_existing:
+            raise ProductionStateError("production state does not exist")
         if read_only:
             parent = resolved.parent
             while not parent.exists() and parent != parent.parent:
@@ -199,6 +203,10 @@ def validate_production_state_path(path: Path, *, read_only: bool = False) -> No
 def _inspect_existing_state(path: Path) -> None:
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+            db.execute("PRAGMA query_only = ON")
+            quick_check = [row[0] for row in db.execute("PRAGMA quick_check").fetchall()]
+            if quick_check != ["ok"]:
+                raise ProductionStateError("production state integrity check failed")
             tables = {
                 str(row[0])
                 for row in db.execute(

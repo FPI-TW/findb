@@ -47,6 +47,38 @@ def test_check_is_offline_and_secret_safe(
     assert "never-output" not in json.dumps(value)
 
 
+def test_require_stopped_rejects_missing_state_without_control_or_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_path = tmp_path / "missing" / "state.sqlite3"
+    monkeypatch.setattr(
+        cli,
+        "require_scheduler_stopped",
+        lambda *_args, **_kwargs: pytest.fail("missing state reached scheduler control"),
+    )
+
+    result = cli.main(
+        [
+            "--require-stopped",
+            "--manifest",
+            str(MANIFEST),
+            "--state-path",
+            str(state_path),
+        ]
+    )
+
+    assert result == cli.EXIT_CONFIG_ERROR
+    assert not state_path.exists()
+    assert not state_path.parent.exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "code": "SAFE_FAILURE",
+        "stage": "setup",
+        "count": 0,
+    }
+
+
 def test_bounded_summary_and_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
     completed = SchedulerRun(
         date(2026, 8, 3),

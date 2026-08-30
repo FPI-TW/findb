@@ -12,6 +12,7 @@ from typing import Any, Never, Sequence
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
+    require_scheduler_stopped,
     scheduler_stop_event,
     validate_scheduler_definition,
 )
@@ -52,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--run-forever", action="store_true")
+    mode.add_argument("--require-stopped", action="store_true")
     return parser
 
 
@@ -59,7 +61,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = build_parser().parse_args(argv)
         manifest = load_manifest(args.manifest)
-        validate_production_state_path(args.state_path, read_only=args.check)
+        validate_production_state_path(
+            args.state_path,
+            read_only=args.check or args.require_stopped,
+            require_existing=args.require_stopped,
+        )
         fetcher, calendar_config, raw_config = validate_production_runtime()
         contracts = validate_contracts(fetcher.contracts_dir)
         if args.check:
@@ -68,6 +74,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _emit(
                 {"code": "CHECK_OK", "stage": "manifest", "count": len(manifest["sequences"])}
             )
+
+        if args.require_stopped:
+            require_scheduler_stopped(
+                fetcher,
+                SCHEDULER_CONTROL_KEY,
+                definition_validator=lambda response: validate_scheduler_definition(
+                    response,
+                    provider="shioaji",
+                    dataset_keys=("tw_equity_minute", "tw_etf_minute"),
+                    slot_id="taiwan_market_window",
+                    scheduled_local_time=PILOT_DUE.isoformat(),
+                    timezone_name="Asia/Taipei",
+                ),
+            )
+            return _emit({"code": "STOPPED_OK", "stage": "control", "count": 0})
 
         state = open_production_state(args.state_path)
         try:

@@ -83,6 +83,15 @@ def test_exact_production_manifest_and_no_staging_identity(tmp_path: Path) -> No
         load_manifest(duplicate)
 
 
+def test_existing_production_state_runs_sqlite_integrity_check() -> None:
+    source = Path(shioaji_scheduler.__file__).read_text(encoding="utf-8")
+    inspection = source.split("def _inspect_existing_state", 1)[1].split(
+        "def open_production_state", 1
+    )[0]
+    assert 'db.execute("PRAGMA quick_check")' in inspection
+    assert 'quick_check != ["ok"]' in inspection
+
+
 class _Calendar:
     def __init__(self, status: str = "open") -> None:
         self.status = status

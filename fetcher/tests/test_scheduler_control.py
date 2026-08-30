@@ -34,6 +34,7 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlResponseError,
     SchedulerControlTransportError,
     _log_control_failure,
+    require_scheduler_stopped,
     scheduler_stop_event,
     validate_scheduler_definition,
 )
@@ -77,6 +78,49 @@ def _definition_response(key: str, desired: str = "running") -> dict[str, object
         "scheduled_local_time": "08:15:00",
         "timezone": "Asia/Taipei",
     }
+
+
+@pytest.mark.parametrize(("desired", "raises"), (("stopped", False), ("running", True)))
+def test_deployment_probe_requires_db_desired_state_stopped_without_mutating_it(
+    monkeypatch: pytest.MonkeyPatch, desired: str, raises: bool
+) -> None:
+    response = SimpleNamespace(desired_state=desired, revision=7)
+    calls: list[dict[str, object]] = []
+
+    class Client:
+        def __init__(self, _config: FetcherConfig, scheduler_key: str) -> None:
+            assert scheduler_key == TWELVE_CONTROL_KEY
+
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def poll(self, **kwargs: object) -> object:
+            calls.append(kwargs)
+            return response
+
+    monkeypatch.setattr("findb_fetcher.scheduler_control.SchedulerControlClient", Client)
+    validator_calls: list[object] = []
+    if raises:
+        with pytest.raises(SchedulerControlProtocolError, match="must be stopped"):
+            require_scheduler_stopped(
+                _config(),
+                TWELVE_CONTROL_KEY,
+                definition_validator=validator_calls.append,
+            )
+    else:
+        assert (
+            require_scheduler_stopped(
+                _config(),
+                TWELVE_CONTROL_KEY,
+                definition_validator=validator_calls.append,
+            )
+            is response
+        )
+    assert calls == [{"observed_state": "stopped"}]
+    assert validator_calls == [response]
 
 
 class _Control:

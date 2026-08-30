@@ -8,6 +8,7 @@ on:
       - "infra/deploy/runtime-secrets/load_runtime_secrets.py"
       - "infra/deploy/runtime-secrets/runtime_secret_command.sh"
       - "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
+      - "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
       - "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh"
       - "infra/deploy/release_manifest.py"
       - "infra/deploy/runtime-secrets/fetcher.json"
@@ -211,6 +212,7 @@ jobs:
               if ! git diff --quiet "$ECR_IMAGE_TAG" HEAD -- \
                 infra/deploy/runtime-secrets/load_runtime_secrets.py \
                 infra/deploy/runtime-secrets/runtime_secret_command.sh \
+                infra/deploy/runtime-secrets/deploy_fetcher_aws.sh \
                 infra/deploy/runtime-secrets/release_fetcher_provider.sh \
                 infra/deploy/runtime-secrets/fetcher.json; then
                 echo "::error title=Incompatible staging rollback::Deployment contract files differ from the selected image SHA; deploy a forward compatibility fix before retrying rollback"
@@ -569,6 +571,8 @@ jobs:
   deploy:
     outputs:
       release_root: ${{ steps.ssm_preflight.outputs.release_root }}
+      target_id: ${{ steps.ssm_preflight.outputs.target_id }}
+      accepted_bundle_key: ${{ steps.ssm_activate.outputs.accepted_bundle_key }}
     needs: [build-push, validate-target-routing, validate-r2-bucket-configuration, validate-fetcher-credential-isolation, validate-fetcher-credential-isolation-aws]
     if: >-
       always() &&
@@ -585,7 +589,7 @@ jobs:
           needs.validate-fetcher-credential-isolation-aws.result == 'success')
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 90
     environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
 
     permissions:
@@ -660,7 +664,8 @@ jobs:
               return out
           record = json.load(open(sys.argv[1], encoding="utf-8"), object_pairs_hook=unique)
           required = {"unit","commit_sha","bundle_sha256","bundle_key","validator_sha256","migration_revision","workflow_run_id","workflow_run_attempt","ssm_command_id","images","state"}
-          if not isinstance(record, dict) or set(record) != required or record["unit"] != "fetcher" or record["commit_sha"] != sys.argv[2] or record["bundle_key"] != sys.argv[3] or record["migration_revision"] != "none" or record["images"] != {"twelve_data":sys.argv[4],"finlab":sys.argv[5],"shioaji":sys.argv[6]} or record["state"] != "accepted" or not all(isinstance(record[k], str) for k in required - {"images"}) or not re.fullmatch(r"[0-9a-f]{64}", record["bundle_sha256"]) or not re.fullmatch(r"[0-9a-f]{64}", record["validator_sha256"]) or not re.fullmatch(r"[0-9]+", record["workflow_run_id"]) or not re.fullmatch(r"[0-9]+", record["workflow_run_attempt"]) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", record["ssm_command_id"]):
+          key_digest = sys.argv[3].rsplit("/", 1)[1].removesuffix(".tar")
+          if not isinstance(record, dict) or set(record) != required or record["unit"] != "fetcher" or record["commit_sha"] != sys.argv[2] or record["bundle_key"] != sys.argv[3] or record["bundle_sha256"] != key_digest or record["migration_revision"] != "none" or record["images"] != {"twelve_data":sys.argv[4],"finlab":sys.argv[5],"shioaji":sys.argv[6]} or record["state"] != "accepted" or not all(isinstance(record[k], str) for k in required - {"images"}) or not re.fullmatch(r"[0-9a-f]{64}", record["bundle_sha256"]) or not re.fullmatch(r"[0-9a-f]{64}", record["validator_sha256"]) or not re.fullmatch(r"[0-9]+", record["workflow_run_id"]) or not re.fullmatch(r"[0-9]+", record["workflow_run_attempt"]) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", record["ssm_command_id"]):
               raise SystemExit(1)
           PY
             bundle_sha256="$(jq -r '.bundle_sha256' "$record_file")"
@@ -791,6 +796,7 @@ jobs:
           fi
           target_id="$(jq -r '.[0]' <<<"$target_ids_json")"
           echo "target_selector=exact-tags target_count=1"
+          printf 'target_id=%s\n' "$target_id" >> "$GITHUB_OUTPUT"
 
           profile_arn="$(
             aws ec2 describe-instances \
@@ -931,6 +937,7 @@ jobs:
               "backend/scripts/render_nginx_public_host.py",
               "backend/scripts/render_nginx_source_allowlist.py",
               "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+              "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
               "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
               "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
               "infra/deploy/runtime-secrets/render_serve_key.py",
@@ -1109,46 +1116,20 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare AWS runtime-secret directories on Fetcher EC2
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets
-      - name: Run Fetcher AWS runtime-secret canary
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+      - name: Run bounded Fetcher candidate validation over SSM
+        id: ssm_candidate
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' && steps.selected_bundle.outputs.replay == 'false' }}
+        shell: bash
         env:
           AWS_REGION: ap-southeast-1
+          AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+          TARGET_ID: ${{ steps.ssm_preflight.outputs.target_id }}
           RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          envs: AWS_REGION,RELEASE_ROOT
-          script: |
-            set -euo pipefail
-            sudo python3 "$RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" \
-              --consumer canary \
-              --region "$AWS_REGION" \
-              --output /run/findb-runtime-secrets/canary/runtime.env \
-              --owner 0:0 \
-              --check-only
-
-      - name: Release Twelve Data scheduler with AWS runtime secrets
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
-          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
+          MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-fetcher-candidate
           ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-          FETCHER_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
+          TWELVE_IMAGE_REF: ${{ needs.build-push.outputs.twelve_image_ref }}
+          FINLAB_IMAGE_REF: ${{ needs.build-push.outputs.finlab_image_ref }}
+          SHIOAJI_IMAGE_REF: ${{ needs.build-push.outputs.shioaji_image_ref }}
           FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
           FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
           FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
@@ -1156,90 +1137,6 @@ jobs:
           TWELVE_DATA_BASE_URL: ${{ vars.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com' }}
           TWELVE_DATA_TIMEOUT_SECONDS: ${{ vars.TWELVE_DATA_TIMEOUT_SECONDS || '30' }}
           TWELVE_DATA_MAX_RESPONSE_BYTES: ${{ vars.TWELVE_DATA_MAX_RESPONSE_BYTES || '8388608' }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
-          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
-          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
-          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
-          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
-          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          command_timeout: 10m
-          envs: AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
-          script: |
-            set -euo pipefail
-            sudo --preserve-env=AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" \
-              --region "$AWS_REGION" \
-              --consumer twelve-data \
-              --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/release_fetcher_provider.sh" \
-              twelve-data "${{ needs.build-push.outputs.twelve_image_ref }}" \
-              /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
-              findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
-              findb-fetcher-scheduler-preflight - \
-              findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.v2.json \
-              --slot-id western_markets_window --dataset-key us_equity_eod
-
-      - name: Release FinLab scheduler with AWS runtime secrets
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
-          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-          ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-          FETCHER_FINLAB_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
-          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
-          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
-          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
-          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
-          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
-          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
-          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
-          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
-          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          command_timeout: 10m
-          envs: AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
-          script: |
-            set -euo pipefail
-            sudo --preserve-env=AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_FINLAB_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" \
-              --region "$AWS_REGION" \
-              --consumer finlab \
-              --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/release_fetcher_provider.sh" \
-              finlab "${{ needs.build-push.outputs.finlab_image_ref }}" \
-              /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
-              findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
-              findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache \
-              findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json \
-              --slot-id taiwan_market_window --dataset-key tw_equity_eod
-
-      - name: Release Shioaji scheduler with AWS runtime secrets
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
-          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-          ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-          FETCHER_SHIOAJI_IMAGE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji
-          FETCHER_IMAGE_TAG: ${{ env.FETCHER_IMAGE_TAG }}
-          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
-          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
-          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
-          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
           SHIOAJI_SIMULATION: ${{ vars.SHIOAJI_SIMULATION || 'true' }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
@@ -1248,41 +1145,45 @@ jobs:
           FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
           FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
           FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          command_timeout: 10m
-          envs: AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS
-          script: |
-            set -euo pipefail
-            sudo --preserve-env=AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_SHIOAJI_IMAGE,FETCHER_IMAGE_TAG,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" \
-              --region "$AWS_REGION" \
-              --consumer shioaji \
-              --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/release_fetcher_provider.sh" \
-              shioaji "${{ needs.build-push.outputs.shioaji_image_ref }}" \
-              /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
-              findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
-              findb-fetcher-shioaji-scheduler-preflight /var/lib/findb-shioaji-fetcher/cache \
-              findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json
-
-      - name: Activate validated Fetcher release after health acceptance
-        if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          envs: RELEASE_ROOT
-          script: |
-            set -euo pipefail
-            [ -d "$RELEASE_ROOT" ] && [ ! -L "$RELEASE_ROOT" ]
-            sudo ln -sfn "$RELEASE_ROOT" /opt/fetcher/current
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_SSM_LOG_GROUP TARGET_ID RELEASE_ROOT MARKER_TOKEN ECR_REGISTRY TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET; do
+            [ -n "${!name:-}" ] || exit 1
+          done
+          [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
+          [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
+          host_script='set -eu
+          candidate_succeeded=0
+          emit_failure() { trap - EXIT; [ "$candidate_succeeded" -eq 1 ] || printf "phase5_candidate_marker=%s status=failed\\n" "$MARKER_TOKEN"; }
+          trap emit_failure EXIT
+          sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS "$FETCHER_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+          printf "phase5_candidate_marker=%s status=success\\n" "$MARKER_TOKEN"
+          candidate_succeeded=1'
+          for name in AWS_REGION ECR_REGISTRY TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS; do
+            printf -v prefix 'export %s=%q\n' "$name" "${!name}"
+            host_script="${prefix}${host_script}"
+          done
+          printf -v prefix 'export FETCHER_RELEASE_ROOT=%q\nexport FETCHER_DEPLOY_MODE=candidate\nexport MARKER_TOKEN=%q\n' "$RELEASE_ROOT" "$MARKER_TOKEN"
+          host_script="${prefix}${host_script}"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 5 bounded Fetcher candidate' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
+          [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
+          success_marker="phase5_candidate_marker=${MARKER_TOKEN} status=success"
+          failure_marker="phase5_candidate_marker=${MARKER_TOKEN} status=failed"
+          for attempt in $(seq 1 360); do
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output json 2>/dev/null || true)"
+            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            case "$status" in
+              Success)
+                success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output json 2>/dev/null || true)"
+                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
+              Pending|InProgress|Delayed|Cancelling|""|None) ;;
+              *) exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "::error title=Fetcher candidate timed out::command_id=${command_id}"
+          exit 1
 
       - name: Persist immutable accepted Fetcher deployment bundle
         if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' && steps.selected_bundle.outputs.replay == 'false' }}
@@ -1293,7 +1194,7 @@ jobs:
           CANDIDATE_KEY: ${{ steps.selected_bundle.outputs.bundle_key }}
           BUNDLE_SHA256: ${{ steps.selected_bundle.outputs.bundle_sha256 }}
           VALIDATOR_SHA256: ${{ steps.selected_bundle.outputs.validator_sha256 }}
-          SSM_COMMAND_ID: ${{ steps.ssm_preflight.outputs.command_id }}
+          SSM_COMMAND_ID: ${{ steps.ssm_candidate.outputs.command_id }}
           TWELVE_IMAGE_REF: ${{ needs.build-push.outputs.twelve_image_ref }}
           FINLAB_IMAGE_REF: ${{ needs.build-push.outputs.finlab_image_ref }}
           SHIOAJI_IMAGE_REF: ${{ needs.build-push.outputs.shioaji_image_ref }}
@@ -1324,6 +1225,98 @@ jobs:
           if not valid: raise SystemExit(1)
           PY
           fi
+
+      - name: Activate accepted Fetcher release over SSM
+        id: ssm_activate
+        if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        shell: bash
+        env:
+          AWS_REGION: ap-southeast-1
+          AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+          TARGET_ID: ${{ steps.ssm_preflight.outputs.target_id }}
+          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
+          MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-fetcher-activate
+          DEPLOY_BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          BUNDLE_KEY: ${{ steps.selected_bundle.outputs.bundle_key }}
+          BUNDLE_SHA256: ${{ steps.selected_bundle.outputs.bundle_sha256 }}
+          BUNDLE_REPLAY: ${{ steps.selected_bundle.outputs.replay }}
+          ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+          TWELVE_IMAGE_REF: ${{ needs.build-push.outputs.twelve_image_ref }}
+          FINLAB_IMAGE_REF: ${{ needs.build-push.outputs.finlab_image_ref }}
+          SHIOAJI_IMAGE_REF: ${{ needs.build-push.outputs.shioaji_image_ref }}
+          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
+          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300' }}
+          TWELVE_DATA_BASE_URL: ${{ vars.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com' }}
+          TWELVE_DATA_TIMEOUT_SECONDS: ${{ vars.TWELVE_DATA_TIMEOUT_SECONDS || '30' }}
+          TWELVE_DATA_MAX_RESPONSE_BYTES: ${{ vars.TWELVE_DATA_MAX_RESPONSE_BYTES || '8388608' }}
+          SHIOAJI_SIMULATION: ${{ vars.SHIOAJI_SIMULATION || 'true' }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30' }}
+          FETCHER_MAX_ATTEMPTS: ${{ vars.FETCHER_MAX_ATTEMPTS || '3' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30' }}
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_SSM_LOG_GROUP TARGET_ID RELEASE_ROOT MARKER_TOKEN DEPLOY_BUNDLE_BUCKET BUNDLE_KEY BUNDLE_SHA256 BUNDLE_REPLAY ECR_REGISTRY TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET; do
+            [ -n "${!name:-}" ] || exit 1
+          done
+          if [ "$BUNDLE_REPLAY" = true ]; then accepted_key="$BUNDLE_KEY"; else accepted_key="fetcher/accepted/${{ github.sha }}/${BUNDLE_SHA256}.tar"; fi
+          printf 'accepted_bundle_key=%s\n' "$accepted_key" >> "$GITHUB_OUTPUT"
+          record_file="$(mktemp "$RUNNER_TEMP/fetcher-activation-record.XXXXXX")"
+          trap 'rm -f -- "$record_file"' EXIT
+          aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "${accepted_key%.tar}.acceptance.json" "$record_file" >/dev/null
+          python3 - "$record_file" "$accepted_key" "$BUNDLE_SHA256" "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$SHIOAJI_IMAGE_REF" <<'PY'
+          import json, re, sys
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result: raise ValueError("duplicate key")
+                  result[key] = value
+              return result
+          record = json.load(open(sys.argv[1], encoding="utf-8"), object_pairs_hook=unique)
+          required = {"unit","commit_sha","bundle_sha256","bundle_key","validator_sha256","migration_revision","workflow_run_id","workflow_run_attempt","ssm_command_id","images","state"}
+          key_digest = sys.argv[2].rsplit("/", 1)[1].removesuffix(".tar")
+          valid = isinstance(record, dict) and set(record) == required and record["unit"] == "fetcher" and record["commit_sha"] == sys.argv[2].split("/")[2] and record["bundle_key"] == sys.argv[2] and record["bundle_sha256"] == sys.argv[3] and record["bundle_sha256"] == key_digest and record["migration_revision"] == "none" and record["images"] == {"twelve_data":sys.argv[4],"finlab":sys.argv[5],"shioaji":sys.argv[6]} and record["state"] == "accepted" and re.fullmatch(r"[0-9a-f]{64}", record["validator_sha256"])
+          raise SystemExit(0 if valid else 1)
+          PY
+          [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
+          [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
+          host_script='set -eu
+          activation_succeeded=0
+          emit_failure() { trap - EXIT; [ "$activation_succeeded" -eq 1 ] || printf "phase5_activate_marker=%s status=failed\\n" "$MARKER_TOKEN"; }
+          trap emit_failure EXIT
+          sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS "$FETCHER_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+          printf "phase5_activate_marker=%s status=success\\n" "$MARKER_TOKEN"
+          activation_succeeded=1'
+          for name in AWS_REGION ECR_REGISTRY TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS; do
+            printf -v prefix 'export %s=%q\n' "$name" "${!name}"
+            host_script="${prefix}${host_script}"
+          done
+          printf -v prefix 'export FETCHER_RELEASE_ROOT=%q\nexport FETCHER_DEPLOY_MODE=activate\nexport MARKER_TOKEN=%q\n' "$RELEASE_ROOT" "$MARKER_TOKEN"
+          host_script="${prefix}${host_script}"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 5 bounded Fetcher activation' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
+          [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
+          success_marker="phase5_activate_marker=${MARKER_TOKEN} status=success"
+          failure_marker="phase5_activate_marker=${MARKER_TOKEN} status=failed"
+          for attempt in $(seq 1 360); do
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output json 2>/dev/null || true)"
+            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            case "$status" in
+              Success)
+                success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output json 2>/dev/null || true)"
+                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
+              Pending|InProgress|Delayed|Cancelling|""|None) ;;
+              *) exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "::error title=Fetcher activation timed out::command_id=${command_id}"
+          exit 1
 
       - name: Release and validate Twelve Data scheduler on Fetcher EC2
         if: ${{ (inputs.deployment_target || 'staging') == 'production' }}
@@ -1935,98 +1928,76 @@ jobs:
     timeout-minutes: 15
     # This job is intentionally staging-only, regardless of the regular deploy input.
     environment: staging-fetcher
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
-      - name: Run Fetcher AWS runtime-secret canary before FinLab smoke
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
-          RELEASE_ROOT: ${{ needs.deploy.outputs.release_root }}
+      - name: Configure staging AWS credentials for FinLab smoke
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          envs: AWS_REGION,RELEASE_ROOT
-          script: |
-            set -euo pipefail
-            [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-fetcher$ ]] || exit 1
-            sudo python3 "$RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" \
-              --consumer canary \
-              --region "$AWS_REGION" \
-              --output /run/findb-runtime-secrets/canary/runtime.env \
-              --owner 0:0 \
-              --check-only
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: fetcher-staging-smoke-${{ github.run_id }}
 
-      - name: Run bounded FinLab acquisition smoke with AWS runtime secrets
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+      - name: Run bounded FinLab acquisition smoke over SSM
+        shell: bash
         env:
           AWS_REGION: ap-southeast-1
+          AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+          DEPLOY_BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          ACCEPTED_BUNDLE_KEY: ${{ needs.deploy.outputs.accepted_bundle_key }}
+          TARGET_ID: ${{ needs.deploy.outputs.target_id }}
           RELEASE_ROOT: ${{ needs.deploy.outputs.release_root }}
           ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
           FETCHER_FINLAB_IMAGE_REF: ${{ needs.build-push.outputs.finlab_image_ref }}
           FINLAB_SMOKE_TARGET_DATE: ${{ inputs.finlab_target_date }}
           FINLAB_SMOKE_SYMBOLS: ${{ inputs.finlab_symbols }}
-        with:
-          host: ${{ secrets.FETCHER_EC2_HOST }}
-          username: ${{ secrets.FETCHER_EC2_USER }}
-          key: ${{ secrets.FETCHER_EC2_SSH_KEY }}
-          command_timeout: 10m
-          envs: AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_FINLAB_IMAGE_REF,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS
-          script: |
-            set -euo pipefail
-            if [ -z "${FINLAB_SMOKE_TARGET_DATE:-}" ]; then
-              echo "::error title=FinLab smoke arguments missing::An explicit ISO target date is required"
-              exit 1
-            fi
-            expected_region=ap-southeast-1
-            expected_registry=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-            [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-fetcher$ ]] || exit 1
-            if [ "$AWS_REGION" != "$expected_region" ]; then
-              echo "::error title=FinLab smoke AWS region rejected::AWS_REGION must be ap-southeast-1"
-              exit 1
-            fi
-            [ "$ECR_REGISTRY" = "$expected_registry" ] || {
-              echo "::error title=FinLab smoke registry rejected::Unexpected ECR registry"
-              exit 1
-            }
-            if [[ ! "$FETCHER_FINLAB_IMAGE_REF" =~ ^439622209937\.dkr\.ecr\.ap-southeast-1\.amazonaws\.com/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error title=FinLab smoke image rejected::Expected the fixed FinLab ECR repository and immutable digest"
-              exit 1
-            fi
-            sudo --preserve-env=AWS_REGION,RELEASE_ROOT,ECR_REGISTRY,FETCHER_FINLAB_IMAGE_REF,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS \
-              "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" \
-              --region "$AWS_REGION" \
-              --consumer finlab-smoke \
-              --ecr-registry "$ECR_REGISTRY" --docker-login -- bash -s <<'SMOKE_SCRIPT'
-            set -euo pipefail
-            expected_region=ap-southeast-1
-            expected_registry=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-            [ "$AWS_REGION" = "$expected_region" ] || exit 1
-            [ "$ECR_REGISTRY" = "$expected_registry" ] || exit 1
-            [[ "$FETCHER_FINLAB_IMAGE_REF" =~ ^439622209937\.dkr\.ecr\.ap-southeast-1\.amazonaws\.com/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]] || exit 1
-            image="$FETCHER_FINLAB_IMAGE_REF"
-            docker image prune -af
-            docker pull "$image"
-            cache_dir=/var/lib/findb-finlab-smoke-cache
-            sudo mkdir -p "$cache_dir"
-            sudo chown 10001:10001 "$cache_dir"
-            sudo chmod 0700 "$cache_dir"
-            if [ "$(stat -c '%u:%g:%a' "$cache_dir")" != "10001:10001:700" ]; then
-              echo "::error title=FinLab smoke cache rejected::Provider cache ownership or mode is unsafe"
-              exit 1
-            fi
-            docker run --rm \
-              --name findb-finlab-acquisition-smoke \
-              --user 10001:10001 \
-              --read-only \
-              --cap-drop ALL \
-              --security-opt no-new-privileges \
-              --mount "type=bind,src=$cache_dir,dst=/home/fetcher" \
-              --env FINLAB_API_TOKEN \
-              "$image" \
-              findb-fetch-finlab-smoke \
-              --target-date "$FINLAB_SMOKE_TARGET_DATE" \
-              --symbols "$FINLAB_SMOKE_SYMBOLS"
-            SMOKE_SCRIPT
+          MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-finlab-smoke
+        run: |
+          set -euo pipefail
+          [ -n "$FINLAB_SMOKE_TARGET_DATE" ] || exit 1
+          [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
+          [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
+          [[ "$ACCEPTED_BUNDLE_KEY" =~ ^fetcher/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]] || exit 1
+          [[ "$FETCHER_FINLAB_IMAGE_REF" =~ ^439622209937\.dkr\.ecr\.ap-southeast-1\.amazonaws\.com/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]] || exit 1
+          record_file="$(mktemp "$RUNNER_TEMP/fetcher-smoke-record.XXXXXX")"
+          trap 'rm -f -- "$record_file"' EXIT
+          aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "${ACCEPTED_BUNDLE_KEY%.tar}.acceptance.json" "$record_file" >/dev/null
+          python3 - "$record_file" "$ACCEPTED_BUNDLE_KEY" "$FETCHER_FINLAB_IMAGE_REF" <<'PY'
+          import json, re, sys
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result: raise ValueError("duplicate key")
+                  result[key] = value
+              return result
+          record = json.load(open(sys.argv[1], encoding="utf-8"), object_pairs_hook=unique)
+          key = sys.argv[2]
+          required = {"unit","commit_sha","bundle_sha256","bundle_key","validator_sha256","migration_revision","workflow_run_id","workflow_run_attempt","ssm_command_id","images","state"}
+          valid = isinstance(record, dict) and set(record) == required and record["unit"] == "fetcher" and record["commit_sha"] == key.split("/")[2] and record["bundle_sha256"] == key.rsplit("/", 1)[1].removesuffix(".tar") and record["bundle_key"] == key and re.fullmatch(r"[0-9a-f]{64}", record["validator_sha256"]) and record["migration_revision"] == "none" and isinstance(record["images"], dict) and set(record["images"]) == {"twelve_data","finlab","shioaji"} and record["images"]["finlab"] == sys.argv[3] and record["state"] == "accepted" and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", record["ssm_command_id"])
+          raise SystemExit(0 if valid else 1)
+          PY
+          host_script='set -eu
+          smoke_succeeded=0
+          emit_failure() { trap - EXIT; [ "$smoke_succeeded" -eq 1 ] || printf "phase5_finlab_smoke_marker=%s status=failed\\n" "$MARKER_TOKEN"; }
+          trap emit_failure EXIT
+          cache_dir=/var/lib/findb-finlab-smoke-cache
+          install -d -o 10001 -g 10001 -m 0700 "$cache_dir"
+          sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_FINLAB_IMAGE_REF,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" --region "$AWS_REGION" --consumer finlab-smoke --ecr-registry "$ECR_REGISTRY" --docker-login -- docker run --rm --name findb-finlab-acquisition-smoke --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --mount "type=bind,src=$cache_dir,dst=/home/fetcher" --env FINLAB_API_TOKEN "$FETCHER_FINLAB_IMAGE_REF" findb-fetch-finlab-smoke --target-date "$FINLAB_SMOKE_TARGET_DATE" --symbols "$FINLAB_SMOKE_SYMBOLS"
+          printf "phase5_finlab_smoke_marker=%s status=success\\n" "$MARKER_TOKEN"
+          smoke_succeeded=1'
+          for name in AWS_REGION ECR_REGISTRY FETCHER_FINLAB_IMAGE_REF FINLAB_SMOKE_TARGET_DATE FINLAB_SMOKE_SYMBOLS RELEASE_ROOT MARKER_TOKEN; do printf -v prefix 'export %s=%q\n' "$name" "${!name}"; host_script="${prefix}${host_script}"; done
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 5 bounded FinLab smoke' --timeout-seconds 600 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
+          [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
+          success_marker="phase5_finlab_smoke_marker=${MARKER_TOKEN} status=success"
+          failure_marker="phase5_finlab_smoke_marker=${MARKER_TOKEN} status=failed"
+          for attempt in $(seq 1 120); do
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output json 2>/dev/null || true)"
+            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            case "$status" in Success) success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output json 2>/dev/null || true)"; if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then exit 0; fi ;; Pending|InProgress|Delayed|Cancelling|""|None) ;; *) exit 1 ;; esac
+            sleep 5
+          done
+          exit 1

@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from findb_fetcher.schedule import load_schedule_manifest
-from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
+from findb_fetcher.scheduler_state import (
+    SchedulerState,
+    SchedulerStateError,
+    validate_scheduler_state_read_only,
+)
 from findb_fetcher.universe import load_symbol_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
@@ -319,6 +323,37 @@ def test_empty_unsupported_scheduler_state_versions_fail_closed(
 
     with pytest.raises(SchedulerStateError, match="unsupported scheduler state schema"):
         SchedulerState(path)
+
+    assert path.read_bytes() == before
+
+
+def test_read_only_validation_requires_existing_current_state_without_mutation(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing" / "state.sqlite3"
+    with pytest.raises(SchedulerStateError, match="does not exist"):
+        validate_scheduler_state_read_only(missing)
+    assert not missing.exists()
+    assert not missing.parent.exists()
+
+    path = tmp_path / "current.sqlite3"
+    SchedulerState(path)
+    before = path.read_bytes()
+    before_mtime = path.stat().st_mtime_ns
+
+    validate_scheduler_state_read_only(path)
+
+    assert path.read_bytes() == before
+    assert path.stat().st_mtime_ns == before_mtime
+
+
+def test_read_only_validation_rejects_corrupt_state_without_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "corrupt.sqlite3"
+    path.write_bytes(b"not a sqlite database")
+    before = path.read_bytes()
+
+    with pytest.raises(SchedulerStateError, match="unable to inspect scheduler state"):
+        validate_scheduler_state_read_only(path)
 
     assert path.read_bytes() == before
 

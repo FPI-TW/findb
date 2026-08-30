@@ -75,7 +75,10 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             for secret in consumer["secrets"]
         }
         assert configured == names
-        assert "canary" in catalog["consumers"]
+        if unit == "findb":
+            assert "canary" in catalog["consumers"]
+        else:
+            assert "canary" not in catalog["consumers"]
 
 
 def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> None:
