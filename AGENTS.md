@@ -161,7 +161,11 @@ findb/
 - `backend/tests/conftest.py` 會在需要時建立 `findb_test` database。
 - 測試資料表由 function-scope fixture 建立與清理。
 - 測試 fixture 會在需要時建立 DB-backed Source/Admin credentials；`DEBUG=true`。
-- Preferred test runner 是 `uv --directory backend run python scripts/dev.py test-db` 或 `make test`，會先確保 DB container 已啟動。
+- Repo-wide preferred test runner 是 `pnpm test` 或 `make test`，會涵蓋 contracts、Backend、
+  Fetcher 與 Dashboard 的 unit／browser／e2e 測試；只跑 Backend 時使用
+  `pnpm test:backend` 或 `make test-backend`，會先確保 DB container 已啟動。
+- `pnpm check`／`make check` 僅執行全 repo 的 lint、type check 與 format check；改動完成後及
+  commit 前必須執行。Git pre-commit 執行 `check`，pre-push 依序執行 `check` 與 `test`。
 
 ## 常用命令
 
@@ -186,9 +190,15 @@ make up-db
 uv --directory backend run python scripts/dev.py seed-upsert
 uv --directory backend run python scripts/dev.py seed-upsert --truncate
 
-# quality
+# verification (check 不包含 tests 或 build)
 make format
 make check
+make test
+
+# Git hooks 安裝與手動執行
+pnpm setup:hooks
+pnpm hook:pre-commit
+pnpm hook:pre-push
 
 # direct quality commands
 uv --directory backend run ruff format app tests scripts migrations
@@ -196,6 +206,10 @@ uv --directory backend run ruff check app tests scripts migrations
 uv --directory backend run mypy app
 
 # tests
+pnpm test
+pnpm test:backend
+pnpm test:fetcher
+pnpm test:dashboard
 uv --directory backend run pytest
 uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
 uv --directory backend run pytest tests/test_canonical_ingest_api.py::test_contract_schema_endpoint_requires_source_auth
@@ -207,6 +221,10 @@ uv --directory backend run python scripts/dev.py test-db
 pnpm dev:dashboard
 pnpm container:dashboard
 pnpm check:dashboard
+pnpm test:dashboard
+pnpm test:dashboard:unit
+pnpm test:dashboard:browser
+pnpm test:dashboard:e2e
 pnpm build:dashboard
 make dashboard-install
 make dashboard-dev

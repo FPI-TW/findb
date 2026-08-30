@@ -1,5 +1,5 @@
 .PHONY: help up start restart down build migrate seed up-server up-db status logs test \
-	format check check-backend dashboard-install dashboard-dev dashboard-format \
+	test-backend format check check-backend dashboard-install dashboard-dev dashboard-format \
 	dashboard-test dashboard-check dashboard-build dashboard-up fetcher-test fetcher-check \
 	fetcher-build contracts-export contracts-check
 
@@ -27,13 +27,14 @@ help:
 	@echo "Observe and verify:"
 	@echo "  make status     Show complete stack status"
 	@echo "  make logs       Follow RabbitMQ, dispatcher, and worker logs"
-	@echo "  make test       Run the DB-backed backend test suite"
+	@echo "  make test       Run every repo test level (unit, browser, and e2e)"
+	@echo "  make test-backend     Run the DB-backed backend test suite"
 	@echo "  make dashboard-test   Run dashboard tests"
 	@echo "  make fetcher-test     Run Fetcher tests"
-	@echo "  make fetcher-check    Run Fetcher quality gates"
+	@echo "  make fetcher-check    Run Fetcher lint, type, and format checks"
 	@echo "  make contracts-check  Fail when published contracts drift"
 	@echo "  make format     Format backend and dashboard code"
-	@echo "  make check      Run all backend and dashboard quality gates"
+	@echo "  make check      Run repo-wide lint, type, and format checks"
 
 up:
 	uv --directory backend run python scripts/dev.py up
@@ -69,18 +70,16 @@ logs:
 	uv --directory backend run python scripts/dev.py queue-logs --follow
 
 test:
-	uv --directory backend run python scripts/dev.py test-db
+	pnpm test
+
+test-backend:
+	pnpm test:backend
 
 format:
 	pnpm format
 
 check-backend:
-	uv --directory backend run ruff check app tests scripts migrations
-	uv --directory backend run ruff format --check app tests scripts migrations
-	uv --directory backend run mypy app
-	uv --directory backend run python scripts/export_ingress_contracts.py --check
-	uv --directory backend run python scripts/export_archive_contracts.py --check
-	uv --directory backend run python scripts/dev.py test-db
+	pnpm check:backend
 
 dashboard-install:
 	pnpm install --frozen-lockfile
@@ -104,13 +103,10 @@ dashboard-build:
 	pnpm build:dashboard
 
 fetcher-test:
-	uv --directory fetcher run pytest
+	pnpm test:fetcher
 
 fetcher-check:
-	uv --directory fetcher run ruff check .
-	uv --directory fetcher run ruff format --check .
-	uv --directory fetcher run mypy src
-	uv --directory fetcher run pytest
+	pnpm check:fetcher
 
 fetcher-build:
 	docker build -f fetcher/Dockerfile -t findb-fetcher:local .
@@ -123,4 +119,5 @@ contracts-check:
 	uv --directory backend run python scripts/export_ingress_contracts.py --check
 	uv --directory backend run python scripts/export_archive_contracts.py --check
 
-check: check-backend dashboard-check fetcher-check dashboard-build
+check:
+	pnpm check

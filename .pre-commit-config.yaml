@@ -1,57 +1,17 @@
 repos:
   - repo: local
     hooks:
-      - id: ruff-fix
-        name: backend ruff fix
-        entry: uv --project backend run ruff check --fix
+      - id: check-pre-commit
+        name: check before commit
+        entry: pnpm hook:pre-commit
         language: system
-        types_or: [python]
-        files: ^backend/
-        stages: [pre-commit]
-
-      - id: ruff-format
-        name: backend ruff format
-        entry: uv --project backend run ruff format
-        language: system
-        types_or: [python]
-        files: ^backend/
-        stages: [pre-commit]
-
-      - id: fetcher-ruff-fix
-        name: fetcher ruff fix
-        entry: uv --project fetcher run ruff check --fix
-        language: system
-        types_or: [python]
-        files: ^fetcher/
-        stages: [pre-commit]
-
-      - id: fetcher-ruff-format
-        name: fetcher ruff format
-        entry: uv --project fetcher run ruff format
-        language: system
-        types_or: [python]
-        files: ^fetcher/
-        stages: [pre-commit]
-
-      - id: dashboard-format-check
-        name: dashboard format check
-        entry: pnpm --filter dashboard format:check
-        language: system
-        files: ^dashboard/
         pass_filenames: false
+        always_run: true
         stages: [pre-commit]
 
-      - id: dashboard-lint-check
-        name: dashboard lint check
-        entry: pnpm --filter dashboard lint:check
-        language: system
-        files: ^dashboard/
-        pass_filenames: false
-        stages: [pre-commit]
-
-      - id: quality-pre-push
-        name: quality pre-push
-        entry: make check
+      - id: check-test-pre-push
+        name: check and test before push
+        entry: pnpm hook:pre-push
         language: system
         pass_filenames: false
         always_run: true

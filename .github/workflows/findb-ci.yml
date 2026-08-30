@@ -164,7 +164,7 @@ jobs:
         run: pnpm type:check
 
       - name: Test
-        run: pnpm test
+        run: pnpm test:unit
 
       - name: Build
         run: pnpm build
