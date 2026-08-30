@@ -4,8 +4,9 @@
 > DB-backed runtime credential rotation已完成，僅剩等待排程時間到後驗收accepted SHA的完整原生
 > provider cycle，尚未宣告完成；Phase 2B的provider與R2 acceptance-criterion scope項目及RabbitMQ
 > rotation已完成，GitHub runtime copies移除仍未完成。Phase 3的兩個unit normal accepted deployment與
-> accepted replay live gate均已通過，文件closeout已由PR #203完成。FinDB Phase 4僅為local code ready，
-> live exit gates尚未執行。本文是staging
+> accepted replay live gate均已通過，文件closeout已由PR #203完成。FinDB Phase 4已完成兩次正常
+> SSM deployment與一次accepted replay；different-digest rollback與schema-incompatibility rejection仍未完成。
+> `staging-findb`的三個FinDB deploy SSH secrets已依授權刪除。本文是staging
 > AWS控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
 > [`../operations/deployment.md`](../operations/deployment.md) 為準。
@@ -17,7 +18,8 @@
 > Phase 1已通過exit gate；「服務可用」仍不等同於Phase 2–6的secret遷移、digest／manifest、
 > SSM deployment cutover、監控與災難復原已完成。Staging 已完成 Amazon ECR foundation、publisher
 > roles、workflow cutover與live deployment驗收；Phase 3的五枚digest、兩個unit-specific accepted
-> bundles、normal deployment及accepted replay均已完成live驗收，目前accepted commit為
+> bundles、normal deployment及accepted replay均已完成live驗收。**目前 FinDB accepted commit為**
+> `0a45328539cc66eff8e1b63afc6ac3b064b406e8`；**本文最後驗證的 Fetcher accepted commit仍為**
 > `b499869c8ff86e09232c1b55516787ae7ed5d2f0`。Phase 2A仍須等待完整原生provider cycle的排程時間到後
 > 驗收，Phase 2B的GitHub runtime copies移除亦仍未完成。Phase 2B的provider與R2
 > acceptance-criterion scope項目已依使用者
@@ -43,7 +45,7 @@ IAM role、GitHub variable、OpenTofu apply或deployment變更仍須各自授權
    trigger staging workflows。
 4. triggered workflows publish immutable commit-SHA images並執行host rollout；其後完成cutover的
    live acceptance與observation。若acceptance失敗，立即將gate設回`false`，這只會freeze並阻擋
-   新的staging rollout，**不是**GHCR fallback。此流程已以目前accepted SHA
+   新的staging rollout，**不是**GHCR fallback。此流程曾以當時accepted SHA
    `570e3c1e935210c7f084c9d8b5a7f711cdf9300b`完成live deployment驗收。
 
 任何其他值一律 fail closed，staging 不可 build/push/deploy 到 ECR。
@@ -84,8 +86,9 @@ promotion、交接、重播與復原驗證的完成條件。
 
 把原先可運作但依賴 SSH、GitHub Environment runtime secrets 與 tag-only image identity 的
 staging 部署，收斂為下列架構。目前runtime-secret transport與exact-digest accepted release已完成；
-FinDB local workflow已完成Phase 4 SSM transport切換，Fetcher日常SSH transport仍待Phase 5退場，且
-FinDB尚未取得任何Phase 4 live exit evidence：
+FinDB local workflow已完成Phase 4 SSM transport切換，並已有兩次正常deployment與accepted replay的live
+evidence；`staging-findb`的三個FinDB deploy SSH secrets已刪除。Fetcher日常SSH transport仍待Phase 5退場；
+FinDB仍缺不同digest rollback與schema拒絕evidence：
 
 ```text
 protected main
@@ -141,7 +144,7 @@ protected main
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
 | Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production仍保留獨立GHCR相容路徑 | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion另案實作 |
-| EC2 transport | FinDB staging local workflow已改為OIDC＋SSM two-phase candidate／accepted-record／activation：normal candidate只在bounded checks期間運行並在成功回傳前fail-stop，accepted record存在後才以另一bounded SSM command activation；accepted replay略過candidate／migration，僅以已驗證record進入exact-revision activation。AWS端service-specific roles、target tags、managed nodes與command logs已套用。Fetcher與production仍使用固定完整Action SHA的SSH／SCP相容路徑 | FinDB尚未取得live exit evidence（兩次deployment、rollback rehearsal、另行授權的SSH secret移除）；Fetcher transport切換留在Phase 5 |
+| EC2 transport | FinDB staging local workflow已改為OIDC＋SSM two-phase candidate／accepted-record／activation：normal candidate只在bounded checks期間運行並在成功回傳前fail-stop，accepted record存在後才以另一bounded SSM command activation；accepted replay略過candidate／migration，僅以已驗證record進入exact-revision activation。兩次normal run與一次accepted replay均已live驗證；`staging-findb`的三個FinDB deploy SSH secrets已刪除。Fetcher與production仍使用固定完整Action SHA的SSH／SCP相容路徑 | FinDB仍缺不同digest previous-release rollback與不同Alembic revision schema拒絕；Fetcher transport切換留在Phase 5 |
 | Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是staging runtime source | 完整原生provider cycle gate通過後，另行取得移除授權、確認last-used與health再移除GitHub runtime copies；SSH recovery secrets依Phase 6退場 |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；Console已確認private、encryption、deletion protection、10-day automated backup與PITR inventory | migration credential分權、成功restore rehearsal與release紀錄；RDS tags count為0 |
 | Queue | RabbitMQ在FinDB EC2，以root EBS path保存；PostgreSQL是durable truth | current root EBS snapshot／backup policy、容量告警、broker全毀重建演練與實測恢復時間 |
@@ -582,9 +585,9 @@ rotation evidence；RabbitMQ驗收已完成；GitHub copies仍是未完成的獨
 | ECR foundation 與 cutover | Staging ECR foundation、publisher roles、workflow cutover及FinDB／Fetcher live deployments已完成驗收 | staging 僅由instance role取得ECR短效token，不保留GHCR credential |
 | Runtime secret retirement | Retirement apply由protected `main` SHA `e995fa251f86627982d8be292905bc933ac776f6`產生fresh saved plan，guard精確證明`0 add / 1 change / 2 destroy`且僅含兩個核准地址 | CloudTrail兩筆`DeleteSecret`均於2026-08-28 08:09:03Z成功、`recoveryWindowInDays=30`、無`forceDeleteWithoutRecovery`；預定2026-09-27刪除 |
 | Runtime secret inventory | `list-secrets --include-planned-deletion`回報17筆無`DeletedDate`的active entries加兩筆planned-deletion GHCR metadata；兩筆GHCR各為0個version | 17筆active secret各有且僅有一個`AWSCURRENT`；application DB及七筆已輪替DB-backed secret保留`AWSPREVIOUS`供版本稽核；provider與Raw／Canonical R2 scope項目依使用者核准變更acceptance criterion而完成。R2既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，非rotation或old-value invalidation evidence，亦非Cloudflare操作證據；RabbitMQ已完成本輪rotation |
-| Legacy GHCR／host material | 兩枚staging GHCR pull PAT已刪除；兩台host均無legacy persistent `.env`；FinDB tmpfs只保留nginx運行所需檔案，其餘暫存bundle已清理 | GitHub Environment目前仍有`staging-findb` 16筆、`staging-fetcher` 13筆secret entries（含runtime copies與SSH recovery）；完整原生provider cycle gate通過後，仍須另行取得移除授權並確認last-used與health，才可撤銷runtime copies |
+| Legacy GHCR／host material | 兩枚staging GHCR pull PAT已刪除；兩台host均無legacy persistent `.env`；FinDB tmpfs只保留nginx運行所需檔案，其餘暫存bundle已清理。Phase 4依授權精確刪除`staging-findb`的`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`，Environment secrets由16筆降為13筆，API回讀三個名稱皆不存在 | `staging-fetcher`仍有13筆secret entries；`staging-findb`剩餘13筆皆為application／runtime copies，已無`FINDB_EC2_*` GitHub deploy SSH secret。完整原生provider cycle gate通過後，仍須另行取得移除授權並確認last-used與health，才可撤銷runtime copies；本次不涵蓋SSH ingress、host recovery keys、Fetcher或production |
 | 合併版本部署與EOD repair | Manual FinDB run [33161513278](https://github.com/FPI-TW/findb/actions/runs/33161513278)成功部署merge SHA `0e2e28089498237b4261169aa0c6885f215a1d9e`；六個FinDB service使用該ECR SHA，queue／DLQ active gauges為0 | 原FinLab run因application role嘗試partition DDL而失敗；修正後精確rerun `01a047d7-d0f4-7477-9d9f-ceb0eb36959a`一次完成、attempt 1、2/2 rows、failure為null，application role仍無`public CREATE` |
-| Scheduler observation | Shioaji兩個feed在2026-08-28 fresh；Twelve Data在2026-08-27 fresh；repair rerun成功但freshness契約明確排除`is_rerun` | 目前accepted commit已更新為`b499869c8ff86e09232c1b55516787ae7ed5d2f0`；完整三provider post-deploy原生排程週期須等待各feed下一個eligible schedule觸發後驗收，rerun、deployment replay與skipped smoke均不得取代此gate |
+| Scheduler observation | Shioaji兩個feed在2026-08-28 fresh；Twelve Data在2026-08-27 fresh；repair rerun成功但freshness契約明確排除`is_rerun` | `b499869c8ff86e09232c1b55516787ae7ed5d2f0`是此Phase 2 scheduler observation當時記錄的accepted commit；本文最後驗證的Fetcher identity仍為該commit，FinDB目前identity見Phase 4 record。完整三provider post-deploy原生排程週期須等待各feed下一個eligible schedule觸發後驗收，rerun、deployment replay與skipped smoke均不得取代此gate |
 | Fetcher DB-backed credential rotation | Manual Fetcher run [33163966538](https://github.com/FPI-TW/findb/actions/runs/33163966538)成功部署accepted SHA；calendar Serve與Twelve Data、FinLab、Shioaji Source consumer fingerprint均精確對應四枚新credential，且有持續last-used／usage evidence | 四枚被取代credential及FinLab自2026-07-30後未使用的更舊前身共五枚均已撤銷；三個scheduler維持ECR accepted SHA運行 |
 | FinDB DB-backed credential rotation | Lookup Serve、static-cache Serve與queue-health Admin三枚credential已輪替至各自Secrets Manager secret；Manual FinDB run [33164657004](https://github.com/FPI-TW/findb/actions/runs/33164657004)通過CI、runtime-secret canary、部署、queue health、public routes與cache生成 | serve／ingest／nginx實際載入fingerprint均精確對應新credential；三枚新key各有200 response與durable usage evidence後，三枚被取代credential均已撤銷 |
 | Provider acceptance scope change | 2026-08-29使用者明確核准變更Twelve Data、FinLab、Shioaji的acceptance criterion | 此provider scope項目視為完成；既有值維持，實際未輪替、未替換、未撤銷，且不構成rotation evidence，也不以此宣告原生provider cycle gate通過 |
@@ -641,22 +644,37 @@ release；replay不覆寫既有accepted bundle／record。
 
 Phase 3文件closeout已由PR #203完成。Production資源及workflow實作不是這個staging階段的完成條件。
 
-### Phase 4：FinDB改走SSM（local code ready；live exit gates未執行）
+### Phase 4：FinDB改走SSM（normal deployment與accepted replay已live驗證）
 
 - [x] FinDB staging deploy job改成OIDC＋SSM；workflow只傳non-secret deployment configuration，runtime
   secrets仍由instance role／tmpfs allowlisted loader取得，staging不再使用SSH／SCP action。
 - [x] Preflight確認PostgreSQL TLS、current／target revision相容性、connection headroom、long transaction、
   RDS automated backup／PITR與host磁碟／inode headroom。
-- [ ] 先停`ingest`、`dispatcher`、`worker`、`raw-cleanup`及所有DB writers，再以migration credential
+- [x] 先停`ingest`、`dispatcher`、`worker`、`raw-cleanup`及所有DB writers，再以migration credential
   執行單一Alembic job；`serve`只在schema相容時保留。
-- [ ] 啟動candidate後驗證container、internal health、public TLS／readiness、queue topology、
+- [x] 啟動candidate後驗證container、internal health、public TLS／readiness、queue topology、
   worker ping、DB queue health與bounded DB transaction；Dashboard public route只驗證
   `/dashboard/`與`/dashboard/lookup`，不得恢復已移除的legacy public routes或skill入口。
-- [ ] 保存accepted manifest與SSM command ID；演練application-only previous digest rollback，並
-  驗證schema不相容時拒絕回切、writers保持停止。
+- [x] 兩次normal run [33303655357](https://github.com/FPI-TW/findb/actions/runs/33303655357)／
+  [33304135877](https://github.com/FPI-TW/findb/actions/runs/33304135877)已保存accepted evidence並完成
+  SSM activation；accepted replay [33304630225](https://github.com/FPI-TW/findb/actions/runs/33304630225)
+  使用既有record，candidate與persist均skipped，activation SSM
+  `3899bcd3-32a9-444c-8402-5ce6ae30ac50`為`Success`／exit 0、success marker存在，health為200，且accepted
+  tar／record VersionId維持`.rTPHJxsyKs0cxDGa.EQtVObbtd8A6M6`／`Loij0QSs05Iz.uCPojZV93w7Cl42JgqP`。
+- [ ] 演練application-only **不同digest** previous-release rollback。上述兩次normal run使用相同image
+  digests，因此replay只驗證immutable accepted path，不得視為此gate；唯一舊不同digest accepted bundle
+  `b499869c8ff86e09232c1b55516787ae7ed5d2f0`與目前deploy contract不相容且workflow會fail closed。
+- [ ] 以不同Alembic revision的accepted release演練schema不相容時拒絕回切、writers保持停止；目前沒有可安全
+  用於此live gate的accepted release。
+- [x] 依使用者授權精確刪除`staging-findb`的`FINDB_EC2_HOST`、`FINDB_EC2_USER`、
+  `FINDB_EC2_SSH_KEY`：刪前16筆、刪後13筆，Environment API回讀`findb_ec2=[]`；repository Actions
+  scope與staging variables均無同名項，workflow內三項僅在production-only SSH／SCP steps引用。刪後public
+  health為HTTP 200（`{"status":"healthy","version":"0.1.0"}`），SSM target
+  `i-0942016913367a8b2`仍為Online、agent `3.3.4793.0`。這不移除TCP/22、SSH recovery ingress／keys、
+  Fetcher／production SSH或GitHub runtime copies。
 
-Exit gate：連續兩次FinDB staging deploy與一次rollback rehearsal不使用SSH；migration失敗不會
-啟動新writers；`FINDB_EC2_*` secrets已移除。
+Remaining exit gate：different-digest rollback rehearsal與schema-incompatibility rejection皆fail closed；
+migration失敗不啟動新writers。
 
 ### Phase 5：Fetcher改走SSM
 
@@ -687,8 +705,9 @@ cross-read；`FETCHER_EC2_*` secrets已移除。
 - [ ] 驗證generated instrument／macro cache可由canonical data重生；cache volume不列入durable
   backup或restore來源。
 - [ ] 兩個 unit 各完成兩次成功的 SSM deployment，且各自完成成功的 Session Manager recovery；
-  在此前提成立後，移除兩台 EC2 的 SSH ingress、GitHub SSH secrets 與未使用 key pairs，保留
-  SSM break-glass 流程與 audit trail。
+  在此前提成立後，移除兩台 EC2 的 SSH ingress、host recovery／unused key pairs與**Fetcher** GitHub
+  SSH secrets，保留SSM break-glass流程與audit trail；FinDB `staging-findb` deploy SSH secrets已在
+  Phase 4移除，不在此待辦範圍。
 - [ ] 為兩個 current root volumes 建立 encrypted replacement／migration 或 encrypted backup
   chain，啟用 automated backup policy，完成 Fetcher SQLite recovery 與 RabbitMQ rebuild rehearsal；
   在上述 evidence 齊備前，不得把現有 historical snapshot 或 policy／condition 描述成 current
@@ -723,7 +742,8 @@ Protected `main` 已具備 selected-SHA deterministic deployment bundle、privat
 candidate/accepted records、SSM host-side bundle/digest preflight，以及 FinDB/Fetcher staging exact
 digest deployment boundary。兩個unit均已完成normal accepted deployment、live SSM/health acceptance
 與accepted replay rehearsal。Production resources 與production workflow implementation仍不是目前
-staging completion condition。Phase 4的local code readiness另見上節，並不表示已完成live deployment或exit gate。
+staging completion condition。Phase 4另見上節：已完成兩次normal SSM deployment、accepted replay與
+staging-findb三個FinDB deploy SSH secret removal；remaining different-digest rollback與schema拒絕仍未完成。
 
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 
