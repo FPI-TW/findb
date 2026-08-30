@@ -463,7 +463,7 @@ jobs:
     needs: build-push
     if: always() && github.event_name == 'workflow_dispatch' && needs.build-push.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     environment: ${{ inputs.deployment_target || 'staging' }}-findb
 
     permissions:
@@ -1208,17 +1208,39 @@ jobs:
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
           success_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=success"
           failure_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=failed"
+          terminal_success=0
           for attempt in $(seq 1 360); do
+            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            case "$invocation_status" in
+              Success)
+                terminal_success=1
+                ;;
+              Pending|InProgress|Delayed|Cancelling|""|None)
+                ;;
+              Cancelled|TimedOut|Failed)
+                echo "::error title=FinDB candidate SSM deployment failed::status=${invocation_status} command_id=${command_id}"
+                exit 1
+                ;;
+              *)
+                echo "::error title=Unexpected FinDB candidate SSM status::status=${invocation_status} command_id=${command_id}"
+                exit 1
+                ;;
+            esac
             failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
-            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
-            success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
-            if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
-              [ "$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)" = Success ] || exit 1
-              printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
-              exit 0
+            if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
+              echo "::error title=FinDB candidate deployment reported failure::Failure marker observed; command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$terminal_success" -eq 1 ]; then
+              success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
+              if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+                printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
             sleep 5
           done
+          echo "::error title=FinDB candidate SSM deployment timed out::No terminal SSM success with valid CloudWatch markers within bounded polling; command_id=${command_id}"
           exit 1
 
       - name: Persist immutable accepted FinDB deployment bundle
@@ -1344,18 +1366,40 @@ jobs:
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
           success_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=success"
           failure_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=failed"
+          terminal_success=0
           for attempt in $(seq 1 360); do
+            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            case "$invocation_status" in
+              Success)
+                terminal_success=1
+                ;;
+              Pending|InProgress|Delayed|Cancelling|""|None)
+                ;;
+              Cancelled|TimedOut|Failed)
+                echo "::error title=FinDB activation SSM deployment failed::status=${invocation_status} command_id=${command_id}"
+                exit 1
+                ;;
+              *)
+                echo "::error title=Unexpected FinDB activation SSM status::status=${invocation_status} command_id=${command_id}"
+                exit 1
+                ;;
+            esac
             failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
-            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
-            success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
-            if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
-              [ "$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)" = Success ] || exit 1
-              printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
-              echo "ssm_activation_command_id=$command_id"
-              exit 0
+            if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
+              echo "::error title=FinDB activation reported failure::Failure marker observed; command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$terminal_success" -eq 1 ]; then
+              success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
+              if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+                printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+                echo "ssm_activation_command_id=$command_id"
+                exit 0
+              fi
             fi
             sleep 5
           done
+          echo "::error title=FinDB activation SSM deployment timed out::No terminal SSM success with valid CloudWatch markers within bounded polling; command_id=${command_id}"
           exit 1
 
       - name: Prepare deploy directories on EC2
