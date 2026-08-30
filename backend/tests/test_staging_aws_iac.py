@@ -371,7 +371,16 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     assert "resources = [each.value.instance_arn]" in target_statement
     for tag in ("Project", "Environment", "DeploymentUnit"):
         assert f'variable = "ssm:resourceTag/{tag}"' in target_statement
-    assert "ssm:GetCommandInvocation" not in deploy_policy
+    fin_db_status_statement = deploy_policy.split("# Phase 4 checks", 1)[1].split(
+        "# AWS-owned documents", 1
+    )[0]
+    assert 'for_each = each.key == "findb" ? [true] : []' in fin_db_status_statement
+    assert '"ssm:GetCommandInvocation"' in fin_db_status_statement
+    assert '"rds:DescribeDBInstances"' in fin_db_status_statement
+    assert 'resources = ["*"]' in fin_db_status_statement
+    assert '"ssm:GetCommandInvocation"' not in target_statement
+    assert '"rds:DescribeDBInstances"' not in target_statement
+    assert "secretsmanager:GetSecretValue" not in deploy_policy
     assert "ssm:ListCommandInvocations" not in deploy_policy
     log_statement = deploy_policy.split('sid    = "ReadOwnPreflightLogEvents"', 1)[1].split(
         'sid    = "OwnDeploymentBundleObjects"', 1
@@ -379,7 +388,7 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     assert 'actions = ["logs:FilterLogEvents"]' in log_statement
     assert 'resources = ["${aws_cloudwatch_log_group.ssm[each.key].arn}:*"]' in log_statement
     assert "secretsmanager:GetSecretValue" not in deploy_policy
-    assert "rds:" not in deploy_policy.lower()
+    assert re.findall(r'"(rds:[^"]+)"', deploy_policy) == ["rds:DescribeDBInstances"]
     assert "r2" not in deploy_policy.lower()
 
     deploy_bundle_kms_statement = _statement_by_sid(deploy_policy, "EncryptOwnDeploymentBundle")

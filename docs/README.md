@@ -14,7 +14,7 @@
 | 驗證ingestion、監控queue、診斷delivery或重建RabbitMQ | [operations/ingestion.md](operations/ingestion.md) |
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
-| 執行尚未完成的staging deployment hardening與closeout | [dev/staging-aws-deployment-plan.md](dev/staging-aws-deployment-plan.md) |
+| 執行尚未完成的staging deployment hardening與live exit gates | [dev/staging-aws-deployment-plan.md](dev/staging-aws-deployment-plan.md) |
 
 ## Source of truth
 

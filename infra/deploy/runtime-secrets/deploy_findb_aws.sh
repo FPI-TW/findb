@@ -50,11 +50,22 @@ if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
   echo "findb_aws_deploy=failed reason=ecr_image_contract" >&2
   exit 1
 fi
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  deploy_mode="${FINDB_DEPLOY_MODE:-}"
+  case "$deploy_mode" in
+    candidate|activate) ;;
+    *) echo "findb_aws_deploy=failed reason=staging_deploy_mode_invalid" >&2; exit 1 ;;
+  esac
+else
+  # Explicit production compatibility: production continues to use its legacy
+  # single-command behaviour and never enters the staging transaction modes.
+  deploy_mode=legacy
+fi
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
 preserve_env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
-  preserve_env="${preserve_env},COMPOSE_PROJECT_NAME"
+  preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"
 fi
 
 run_runtime() {
@@ -68,6 +79,77 @@ if [ ! -f "$compose_file" ]; then
   echo "findb_aws_deploy=failed reason=compose_missing" >&2
   exit 1
 fi
+
+release_services_may_have_started=0
+transaction_finalized=0
+fixed_candidate_containers=(
+  findb-nginx findb-dashboard findb-serve findb-ingest findb-dispatcher
+  findb-worker findb-raw-cleanup
+)
+stop_fixed_candidate_containers() {
+  local names container state cleanup_failed=0
+  if ! names="$(docker ps -a --format '{{.Names}}')"; then
+    echo "findb_aws_deploy=failed reason=candidate_cleanup_docker_list_failed" >&2
+    return 1
+  fi
+  for container in "${fixed_candidate_containers[@]}"; do
+    # A container that has not been created cannot be active; Docker itself
+    # was successfully queried above, so this is distinct from an inspection
+    # failure that must fail the transaction.
+    if ! printf '%s\n' "$names" | grep -Fxq "$container"; then
+      continue
+    fi
+    if ! state="$(docker inspect --format '{{.State.Status}} {{.State.Running}} {{.State.Restarting}}' "$container")"; then
+      echo "findb_aws_deploy=failed reason=candidate_cleanup_docker_inspect_failed container=$container" >&2
+      cleanup_failed=1
+      continue
+    fi
+    case "$state" in
+      created\ false\ false|exited\ false\ false|dead\ false\ false) ;;
+      *)
+        if ! docker stop --time 30 "$container" >/dev/null; then
+          echo "findb_aws_deploy=failed reason=candidate_cleanup_docker_stop_failed container=$container" >&2
+          cleanup_failed=1
+          continue
+        fi
+        if ! state="$(docker inspect --format '{{.State.Status}} {{.State.Running}} {{.State.Restarting}}' "$container")"; then
+          echo "findb_aws_deploy=failed reason=candidate_cleanup_docker_verify_failed container=$container" >&2
+          cleanup_failed=1
+          continue
+        fi
+        case "$state" in
+          created\ false\ false|exited\ false\ false|dead\ false\ false) ;;
+          *)
+            echo "findb_aws_deploy=failed reason=candidate_cleanup_container_still_active container=$container" >&2
+            cleanup_failed=1
+            ;;
+        esac
+        ;;
+    esac
+  done
+  if [ "$cleanup_failed" -ne 0 ]; then
+    echo "findb_aws_deploy=failed reason=candidate_cleanup_failed" >&2
+    return 1
+  fi
+  # RabbitMQ and its durable volume are deliberately not part of this fixed
+  # application/public/writer cleanup set.
+  echo "findb_aws_deploy=candidate_services_fail_stopped"
+}
+cleanup_unaccepted_candidate() {
+  status=$?
+  trap - EXIT
+  if [ -n "${FINDB_RELEASE_ROOT:-}" ] \
+    && [ "$release_services_may_have_started" -eq 1 ] \
+    && [ "$transaction_finalized" -ne 1 ]; then
+    if ! stop_fixed_candidate_containers; then
+      # A cleanup failure is never hidden behind the original command error.
+      exit 1
+    fi
+    echo "findb_aws_deploy=failed reason=unaccepted_candidate_stopped" >&2
+  fi
+  exit "$status"
+}
+trap cleanup_unaccepted_candidate EXIT
 
 require_root_owned_nginx_directory() {
   local directory="$1"
@@ -134,10 +216,28 @@ sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$
 run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'
 set -euo pipefail
 compose_file="$1"
-docker compose -f "$compose_file" run --rm --no-deps ingest \
-  python /app/scripts/predeploy_db_check.py
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
+  expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
+  if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
+    docker compose -f "$compose_file" run --rm --no-deps ingest \
+      python /app/scripts/predeploy_db_check.py \
+        --expected-alembic-revision "$expected_revision" \
+        --expected-rds-endpoint "$expected_rds_endpoint" \
+        --require-exact-alembic-revision
+  else
+    docker compose -f "$compose_file" run --rm --no-deps ingest \
+      python /app/scripts/predeploy_db_check.py \
+        --expected-alembic-revision "$expected_revision" \
+        --expected-rds-endpoint "$expected_rds_endpoint"
+  fi
+else
+  docker compose -f "$compose_file" run --rm --no-deps ingest \
+    python /app/scripts/predeploy_db_check.py
+fi
 MIGRATION_CHECK_SCRIPT
 
+if [ "$deploy_mode" != activate ]; then
 writer_services=(ingest dispatcher worker raw-cleanup)
 run_runtime --consumer compose -- bash -s -- "$compose_file" "${writer_services[*]}" <<'STOP_SCRIPT'
 set -euo pipefail
@@ -176,7 +276,14 @@ docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
   --deployment-target staging
 MIGRATION_SCRIPT
+fi
 
+# The candidate can now replace/start services. Preflight and migration errors
+# intentionally leave the stable public containers alone; writer-stop remains
+# fail-closed before the single normal-deployment migration.
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  release_services_may_have_started=1
+fi
 run_runtime --consumer compose -- bash -s -- "$compose_file" <<'UP_SCRIPT'
 set -euo pipefail
 compose_file="$1"
@@ -184,6 +291,29 @@ docker compose -f "$compose_file" up -d --remove-orphans </dev/null
 
 if ! docker compose -f "$compose_file" exec -T rabbitmq rabbitmq-diagnostics -q ping </dev/null >/dev/null; then
   echo "findb_aws_deploy=failed reason=rabbitmq_unhealthy" >&2
+  exit 1
+fi
+topology_ready=0
+for attempt in $(seq 1 24); do
+  queue_topology="$(docker compose -f "$compose_file" exec -T rabbitmq \
+    rabbitmqctl list_queues -p /findb name durable --formatter json </dev/null 2>/dev/null || true)"
+  if printf '%s' "$queue_topology" | python3 -c '
+import json, sys
+try:
+    queues = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+required = {"findb.normalize.v1", "findb.normalize.dlq.v1"}
+actual = {item.get("name") for item in queues if item.get("durable") is True}
+raise SystemExit(0 if required <= actual else 1)
+'; then
+    topology_ready=1
+    break
+  fi
+  sleep 5
+done
+if [ "$topology_ready" -ne 1 ]; then
+  echo "findb_aws_deploy=failed reason=rabbitmq_topology_invalid vhost=/findb" >&2
   exit 1
 fi
 for service in dispatcher worker; do
@@ -200,6 +330,20 @@ for service in dispatcher worker; do
     exit 1
   fi
 done
+
+worker_ping_ready=0
+for attempt in $(seq 1 24); do
+  if docker compose -f "$compose_file" exec -T worker \
+    celery -A app.task_queue inspect ping --timeout=10 </dev/null >/dev/null 2>&1; then
+    worker_ping_ready=1
+    break
+  fi
+  sleep 5
+done
+if [ "$worker_ping_ready" -ne 1 ]; then
+  echo "findb_aws_deploy=failed reason=celery_worker_ping_failed" >&2
+  exit 1
+fi
 
 for service in serve ingest; do
   ready=0
@@ -313,6 +457,37 @@ docker compose -f "$compose_file" exec -T serve \
 docker compose -f "$compose_file" exec -T serve \
   sh -lc 'python -c "import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"' \
   </dev/null >/dev/null
+if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+  for dashboard_path in /dashboard/ /dashboard/lookup; do
+    curl --fail --silent --show-error --max-time 10 --proto '=https' \
+      "https://${FINDB_PUBLIC_HOST}${dashboard_path}" >/dev/null
+  done
+fi
 docker image prune -af --filter "until=168h" </dev/null >/dev/null
-echo "findb_aws_deploy=ready image_refs=exact-digests"
+echo "findb_aws_deploy=candidate_checks_passed image_refs=exact-digests"
 UP_SCRIPT
+
+if [ "$deploy_mode" = candidate ]; then
+  # The candidate was allowed to run only for bounded acceptance checks.  Its
+  # successful SSM command proves cleanup as well as acceptance; persistence
+  # of immutable evidence happens after this command returns.
+  if ! stop_fixed_candidate_containers; then
+    exit 1
+  fi
+  transaction_finalized=1
+  echo "findb_aws_deploy=candidate_ready_for_acceptance image_refs=exact-digests"
+  exit 0
+fi
+
+if [ "$deploy_mode" = activate ]; then
+  sudo "$release_root/infra/deploy/runtime-secrets/install_findb_bootstrap.sh" \
+    "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$release_root"
+  sudo ln -sfn "$release_root" /opt/findb/current
+  transaction_finalized=1
+  echo "findb_aws_deploy=activated image_refs=exact-digests"
+  exit 0
+fi
+
+# Legacy production compatibility path.
+transaction_finalized=1
+echo "findb_aws_deploy=ready image_refs=exact-digests"

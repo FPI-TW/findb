@@ -170,6 +170,22 @@ data "aws_iam_policy_document" "deploy_permissions" {
     resources = ["*"]
   }
 
+  # Phase 4 checks command terminal status and RDS backup/PITR only for the
+  # FinDB deployer. These Describe APIs require Resource="*" in IAM, so do
+  # not add them to the shared Fetcher/FinDB target discovery statement.
+  dynamic "statement" {
+    for_each = each.key == "findb" ? [true] : []
+    content {
+      sid    = "ReadFinDBDeploymentStatusAndRdsHealth"
+      effect = "Allow"
+      actions = [
+        "rds:DescribeDBInstances",
+        "ssm:GetCommandInvocation",
+      ]
+      resources = ["*"]
+    }
+  }
+
   # AWS-owned documents have no account component in their ARN. Keep this
   # resource grant separate from the target tag conditions: those conditions
   # apply to the EC2 resource, not the SSM document resource.

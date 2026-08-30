@@ -3,8 +3,9 @@
 > 狀態：Phase 0–1完成；Phase 2A的runtime-secret／ECR cutover、GHCR metadata retirement apply與
 > DB-backed runtime credential rotation已完成，僅剩等待排程時間到後驗收accepted SHA的完整原生
 > provider cycle，尚未宣告完成；Phase 2B的provider與R2 acceptance-criterion scope項目及RabbitMQ
-> rotation已完成，GitHub runtime copies移除仍未完成。Phase 3正在進行：兩個unit的normal accepted
-> deployment與accepted replay live gate均已通過，文件整併與本階段closeout尚在進行。本文是staging
+> rotation已完成，GitHub runtime copies移除仍未完成。Phase 3的兩個unit normal accepted deployment與
+> accepted replay live gate均已通過，文件closeout已由PR #203完成。FinDB Phase 4僅為local code ready，
+> live exit gates尚未執行。本文是staging
 > AWS控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
 > [`../operations/deployment.md`](../operations/deployment.md) 為準。
@@ -82,8 +83,9 @@ promotion、交接、重播與復原驗證的完成條件。
 ## 目標與範圍
 
 把原先可運作但依賴 SSH、GitHub Environment runtime secrets 與 tag-only image identity 的
-staging 部署，收斂為下列架構。目前runtime-secret transport與exact-digest accepted release已完成，
-日常SSH deployment transport仍待Phase 4／5退場：
+staging 部署，收斂為下列架構。目前runtime-secret transport與exact-digest accepted release已完成；
+FinDB local workflow已完成Phase 4 SSM transport切換，Fetcher日常SSH transport仍待Phase 5退場，且
+FinDB尚未取得任何Phase 4 live exit evidence：
 
 ```text
 protected main
@@ -93,7 +95,9 @@ protected main
   -> GitHub Environment: staging-findb / staging-fetcher
   -> GitHub OIDC
   -> service-specific AWS deploy role
-  -> SSM Run Command to one tagged EC2 target
+  -> SSM candidate command to one tagged EC2 target (bounded checks, then fail-stop)
+  -> immutable accepted record commit point
+  -> separate bounded SSM activation command
   -> EC2 instance role reads service-specific runtime secrets
   -> FinDB EC2 -> private RDS + Canonical R2 credential boundary
   -> Fetcher EC2 -> FinDB HTTPS + Raw R2
@@ -137,7 +141,7 @@ protected main
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
 | Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production仍保留獨立GHCR相容路徑 | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion另案實作 |
-| EC2 transport | 現行部署仍使用固定完整Action SHA的`appleboy/ssh-action`／`scp-action`；兩份CD已有OIDC＋SSM bounded preflight，AWS端service-specific roles、target tags、managed nodes與command logs已套用。Protected `main` merge SHA `77212ce47b3138c2e21c6984e989b66239fd3cce`的FinDB與Fetcher CD均已通過live OIDC preflight | 日常deployment transport切換留在Phase 4／5；本次成功preflight不等同於SSH／SCP已退場 |
+| EC2 transport | FinDB staging local workflow已改為OIDC＋SSM two-phase candidate／accepted-record／activation：normal candidate只在bounded checks期間運行並在成功回傳前fail-stop，accepted record存在後才以另一bounded SSM command activation；accepted replay略過candidate／migration，僅以已驗證record進入exact-revision activation。AWS端service-specific roles、target tags、managed nodes與command logs已套用。Fetcher與production仍使用固定完整Action SHA的SSH／SCP相容路徑 | FinDB尚未取得live exit evidence（兩次deployment、rollback rehearsal、另行授權的SSH secret移除）；Fetcher transport切換留在Phase 5 |
 | Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是staging runtime source | 完整原生provider cycle gate通過後，另行取得移除授權、確認last-used與health再移除GitHub runtime copies；SSH recovery secrets依Phase 6退場 |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；Console已確認private、encryption、deletion protection、10-day automated backup與PITR inventory | migration credential分權、成功restore rehearsal與release紀錄；RDS tags count為0 |
 | Queue | RabbitMQ在FinDB EC2，以root EBS path保存；PostgreSQL是durable truth | current root EBS snapshot／backup policy、容量告警、broker全毀重建演練與實測恢復時間 |
@@ -635,14 +639,14 @@ release；replay不覆寫既有accepted bundle／record。
 | Fetcher accepted replay | Test-only日期隔離修正合併後，run [33294103564](https://github.com/FPI-TW/findb/actions/runs/33294103564)以相同paired identity執行 | `/opt/fetcher/current`切換至`7513a17912111e0a1f5f34fa344ba5847a26eb64cf66e976d993273c75b1af15-33294103564-1-fetcher`；accepted tar／record VersionId仍為`4N1u770mjP1aVsl7TfcZeVC64JYIpjeE`／`o7f2BAqmJdoBhJZUuaPlaQSDqrdZbbDR`，tar SHA-256仍為`7513a17912111e0a1f5f34fa344ba5847a26eb64cf66e976d993273c75b1af15` |
 | 獨立接受判斷 | 兩個replay均完成Manager read-only spot-check；Fetcher另經獨立Validator PASS與Reviewer CLEAR | Phase 3 normal accepted deployment、immutable replay、current release activation及不覆寫accepted record的技術gate已通過。FinLab acquisition smoke在Fetcher replay中明確skipped，不是Phase 2A原生provider cycle evidence |
 
-Phase 3目前為**文件closeout進行中**：技術live gate已通過，但本計畫、現行deployment runbook、
-backlog與文件索引的整併仍須由同一文件變更完成並合入protected `main`。Production資源及workflow
-實作不是這個staging階段的完成條件。
+Phase 3文件closeout已由PR #203完成。Production資源及workflow實作不是這個staging階段的完成條件。
 
-### Phase 4：FinDB改走SSM
+### Phase 4：FinDB改走SSM（local code ready；live exit gates未執行）
 
-- [ ] 將FinDB deploy job改成OIDC＋SSM；停止workflow傳送runtime secrets並移除SSH／SCP action。
-- [ ] Preflight確認RDS TLS、revision、connection headroom、long transaction、backup／PITR與磁碟。
+- [x] FinDB staging deploy job改成OIDC＋SSM；workflow只傳non-secret deployment configuration，runtime
+  secrets仍由instance role／tmpfs allowlisted loader取得，staging不再使用SSH／SCP action。
+- [x] Preflight確認PostgreSQL TLS、current／target revision相容性、connection headroom、long transaction、
+  RDS automated backup／PITR與host磁碟／inode headroom。
 - [ ] 先停`ingest`、`dispatcher`、`worker`、`raw-cleanup`及所有DB writers，再以migration credential
   執行單一Alembic job；`serve`只在schema相容時保留。
 - [ ] 啟動candidate後驗證container、internal health、public TLS／readiness、queue topology、
@@ -713,13 +717,13 @@ migration chain的forward fix。
 
 ## 完成定義
 
-### Phase 3 wave 1 實作狀態（live gate已通過；文件closeout進行中）
+### Phase 3 wave 1 實作狀態（live gate已通過；PR #203已完成文件closeout）
 
 Protected `main` 已具備 selected-SHA deterministic deployment bundle、private KMS S3
 candidate/accepted records、SSM host-side bundle/digest preflight，以及 FinDB/Fetcher staging exact
 digest deployment boundary。兩個unit均已完成normal accepted deployment、live SSM/health acceptance
-與accepted replay rehearsal；現階段只剩文件整併及合併後closeout。Production resources 與
-production workflow implementation仍不是目前staging completion condition。
+與accepted replay rehearsal。Production resources 與production workflow implementation仍不是目前
+staging completion condition。Phase 4的local code readiness另見上節，並不表示已完成live deployment或exit gate。
 
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 

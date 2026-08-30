@@ -2,7 +2,9 @@
 
 > 目前實際target是staging；production workflow capability存在，但production EC2與外部資源
 > 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
-> accepted bundle固定為exact digest；host release仍使用SSH action，SSM日常transport與SSH ingress退場尚未完成。退場計畫見
+> accepted bundle固定為exact digest；FinDB staging workflow 的程式碼已改為OIDC＋SSM two-phase bounded candidate／activation，
+> 但尚未執行live deployment、兩次部署、rollback rehearsal或SSH secret移除。Fetcher及production仍保留
+> SSH相容路徑。退場計畫見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
 ## Workflow與release units
@@ -135,7 +137,8 @@ operator必須另行移除不用的repository／Environment設定。
 目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager，host loader只在
 `/run` tmpfs建立`0600` bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是
 staging runtime source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
-host日常deployment transport仍使用SSH action，待Phase 4／5切換為SSM。
+FinDB staging日常deployment transport的local workflow已切換為SSM；尚待live exit gate驗證。
+Fetcher與production仍使用SSH相容路徑。
 
 ## Credential與storage邊界
 
@@ -245,8 +248,11 @@ bundle；內容只含該 unit 的 allowlist、契約 manifest/schema 與 release
 bucket（`findb/` 或 `fetcher/` prefix），SSM preflight 先以 instance role 下載、比對 SHA、驗證
 bundle/manifest 與 exact `repository@sha256` image refs，才會 pull image 或中斷 writer。
 
-健康驗收成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA 命名的 `*/accepted/` key；strict
-acceptance record 才是 accepted 的 commit point，只有 bundle 而無等價 record 不可 replay。條件寫入遇到既有
+FinDB staging candidate 僅可在bounded checks期間啟動，成功回傳前必須直接停下固定的public／application／writer
+containers，且不可變更`current` pointer。健康驗收成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA
+命名的 `*/accepted/` key；strict acceptance record 才是 accepted 的 commit point，只有 bundle 而無等價 record
+不可 replay。record存在後才可送出另一個bounded SSM activation command；activation只接受DB已在exact selected
+Alembic revision，絕不再次migration。條件寫入遇到既有
 bundle時會重新驗證 SHA，遇到既有 record 時只接受相同 immutable identity，因此可安全完成 orphan bundle 的
 record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit 的 accepted immutable key，不能使用
 candidate、latest 或跨 unit key，也不可重新產生 manifest。此契約已完成兩個unit的normal accepted
