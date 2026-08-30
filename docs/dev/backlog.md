@@ -19,15 +19,18 @@
 
 ## P0：Staging deployment
 
-- [ ] 驗證staging branch protection、required CI及Environment protected-branch restriction。
-- [ ] 依[staging AWS deployment plan](staging-aws-deployment-plan.md)完成OIDC、SSM、
-  runtime secrets、image digest、release manifest、backup、監控與rollback rehearsal。
+- [ ] 等待accepted SHA後的完整原生provider cycle依排程時間觸發，驗證四個active feeds的freshness、
+  terminal state與lineage；不得以repair rerun、accepted replay或skipped acquisition smoke取代。
 - [ ] 在完整原生provider cycle gate通過後，另行取得移除授權並確認last-used與health，再撤銷GitHub
   Environment runtime copies；此項不與R2實際rotation綁定。Raw與Canonical R2 scope已依使用者核准的
   acceptance criterion變更而完成：既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，故不構成
   rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
   provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation已完成。SSH recovery項目仍依
   staging deployment plan的Phase 6 exit gate保留。
+- [ ] 依[staging AWS deployment plan](staging-aws-deployment-plan.md)完成Phase 4／5的FinDB與Fetcher
+  SSM日常deployment transport、失敗／rollback rehearsal及SSH deployment secret移除。
+- [ ] 完成Phase 6的CloudWatch alarms與synthetic notification、RDS restore、Fetcher SQLite recovery、
+  RabbitMQ rebuild、current EBS encrypted backup chain及SSH ingress退場。
 
 ## P1：資料完整性與效能
 
