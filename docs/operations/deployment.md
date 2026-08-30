@@ -1,20 +1,21 @@
 # Deployment Runbook
 
 > 目前實際target是staging；production workflow capability存在，但production EC2與外部資源
-> 尚未完成。SSH、GitHub runtime secrets與tag-only image部署仍是現況；退場計畫見
+> 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
+> accepted bundle固定為exact digest；host release仍使用SSH action，SSM日常transport與SSH ingress退場尚未完成。退場計畫見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
 ## Workflow與release units
 
 | Workflow | Unit | Trigger | Environment／concurrency |
 | --- | --- | --- | --- |
-| `findb-ci.yml` | Backend、migration、Dashboard、contracts | PR、`workflow_call`、manual | 不讀deployment Environment |
-| `findb-cd.yml` | Backend＋Dashboard | FinDB paths合入`main`或manual | `staging-findb`／`staging-findb` |
-| `fetcher-ci.yml` | Fetcher、contracts、images | PR、`workflow_call`、manual | 不讀deployment Environment |
-| `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`或manual | `staging-fetcher`／`staging-fetcher` |
+| `findb-ci.yml` | Backend、migration、Dashboard、contracts | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
+| `findb-cd.yml` | Backend＋Dashboard | FinDB paths合入`main`時跑同revision CI／no-op bridge；manual才可rollout | `staging-findb`／`staging-findb` |
+| `fetcher-ci.yml` | Fetcher、contracts、images | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
+| `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`時跑同revision CI／no-op bridge；manual才可rollout | `staging-fetcher`／`staging-fetcher` |
 
 Deployment concurrency一律`cancel-in-progress: false`。CD直接呼叫同revision reusable CI；
-不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署Fetcher，
+不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署任一unit，
 需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
@@ -34,7 +35,8 @@ source/template inputs（包括 selected `contracts/manifest.json` 與 selected 
 它涵蓋與 staging host contract 相同的 unit-scoped sources，另加這兩個 manifest inputs；不含 current
 CI-only ECR build helper、secret、env、production-only serve-key template／renderer。它不是 render 後 host
 deploy bundle、accepted replay bundle 或 live deploy evidence。實際 versioned/rendered deploy bundle與
-accepted-replay程式契約已實作，但尚未有合併後的live acceptance evidence，不能標記為完成。
+accepted-replay程式契約已完成合併後的normal deployment及replay live acceptance；目前accepted
+evidence見本節後段。
 
 Artifact 名稱為 `findb` →
 `staging-findb-release-manifest-${{ github.run_id }}-${{ github.run_attempt }}`、`fetcher` →
@@ -77,16 +79,17 @@ Phase 3 foundation artifact 已有兩個 unit 的 live acceptance。Fetcher manu
 RepoDigest、Alembic `d6e7f8a9b0c1`、RabbitMQ與所有public/internal health checks。這些證據只證明
 artifact內容、ECR digest與當次SHA-tag deployment一致。
 
-這份 manifest **尚未**成為 deploy 或 rollback identity，host Compose／helper 尚未切換 digest，
-因此不得把 artifact 當成 accepted release 或 production promotion evidence。staging build bridge現在會
-把已驗證的unit-specific digest refs傳給deploy job，bounded SSM preflight在任何SSH或writer interruption
-前以instance role、tmpfs Docker config pull並逐一inspect exact RepoDigest。此路徑已由共同merge SHA
+後續Phase 3使validated bundle中的完整digest成為staging deploy及rollback identity；SHA tag只作
+build/reuse selected-commit索引。staging build bridge會把已驗證的unit-specific digest refs傳給deploy
+job，bounded SSM preflight在任何SSH或writer interruption前以instance role、tmpfs Docker config pull並
+逐一inspect exact RepoDigest。此路徑最初由共同merge SHA
 `228989afe857c82d619cd53d15dbb29873d6710a`完成live驗收：FinDB run
 [33246701516](https://github.com/FPI-TW/findb/actions/runs/33246701516)／SSM command
 `d6437246-f584-4545-9224-88867b8bdef9`輸出`ecr_digest_pull_inspect=ok images=2`，Fetcher run
 [33246700446](https://github.com/FPI-TW/findb/actions/runs/33246700446)／SSM command
 `9e4596ca-1888-44bf-acef-89858f9b35d4`輸出`ecr_digest_pull_inspect=ok images=3`；兩者均為
-`Success`／exit 0且後續部署健康。Compose/helper digest cutover、private S3 accepted manifest與production promotion仍未完成。
+`Success`／exit 0且後續部署健康。Compose/helper digest cutover與private S3 accepted bundle／record已於
+2026-08-30完成normal deployment及replay live acceptance；production promotion仍未實作。
 
 ## Staging data policy
 
@@ -119,8 +122,8 @@ workflow capability，不代表對應GitHub Environment或AWS資源已建立。�
 | Production FinDB RDS | N/A（尚未建立） |
 | Production promotion snapshot／dump／seed | N/A（尚未建立） |
 
-Push至`main`自動部署staging；production僅在上述Environment與target資源建立後允許
-manual dispatch。兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected
+Push至`main`只執行same-revision CI及no-op bridge；staging rollout只接受protected `main`上的
+manual dispatch。Production僅在上述Environment與target資源建立後允許manual dispatch。兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected
 branch及target隔離控制變更。每個job只能取得自己unit與target的設定；branch與Environment
 protection的實際外部設定需另行驗證。
 
@@ -129,9 +132,10 @@ protection的實際外部設定需另行驗證。
 `app.config.Settings`為準。Sync script只新增或更新GitHub Environment，不會刪除退休值；
 operator必須另行移除不用的repository／Environment設定。
 
-目前runtime secrets由target-scoped GitHub Environment傳到remote process，屬明確過渡。
-目標是GitHub OIDC＋service-specific deploy role＋SSM，並由EC2 instance role讀取
-Secrets Manager／Parameter Store。完成對應plan phase前，不得把目標架構寫成現況。
+目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager，host loader只在
+`/run` tmpfs建立`0600` bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是
+staging runtime source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
+host日常deployment transport仍使用SSH action，待Phase 4／5切換為SSM。
 
 ## Credential與storage邊界
 
@@ -163,7 +167,7 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
 - **Operator pre-deploy**：確認Source經Cloudflare/nginx還原可信client IP後執行allowlist，
   TLS private key只存在FinDB target；外部Cloudflare、DNS與security group設定另行留證。
 - **Operator pre-deploy**：確認repository政策與外部設定要求PR、required CI及protected
-  branch。Staging由protected `main`自動部署，production只接受manual dispatch；兩者均不設
+  branch。Staging rollout與production均只接受manual dispatch；staging必須選取protected `main`，兩者均不設
   GitHub Environment人工核准。
 
 ## Release順序
@@ -233,7 +237,7 @@ Staging rollout：
 
 ## Acceptance與rollback
 
-### Staging deployment bundle（Phase 3 wave 1，尚未完成 live acceptance）
+### Staging deployment bundle（Phase 3 wave 1，已完成 live acceptance）
 
 Staging release 會由 selected commit 的 stdlib `release_manifest.py` 產生 deterministic tar
 bundle；內容只含該 unit 的 allowlist、契約 manifest/schema 與 release manifest。workflow 以
@@ -245,8 +249,8 @@ bundle/manifest 與 exact `repository@sha256` image refs，才會 pull image 或
 acceptance record 才是 accepted 的 commit point，只有 bundle 而無等價 record 不可 replay。條件寫入遇到既有
 bundle時會重新驗證 SHA，遇到既有 record 時只接受相同 immutable identity，因此可安全完成 orphan bundle 的
 record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit 的 accepted immutable key，不能使用
-candidate、latest 或跨 unit key，也不可重新產生 manifest。此程式契約尚未構成已完成或已 live
-accepted 的 Phase 3 證據；日常 transport 目前仍是 SSH/SCP，SSM transport cutover 屬後續 phase。
+candidate、latest 或跨 unit key，也不可重新產生 manifest。此契約已完成兩個unit的normal accepted
+deployment與replay live acceptance；日常host transport目前仍是SSH action，SSM transport cutover屬後續phase。
 
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
@@ -255,6 +259,19 @@ paths。staging canary/deploy/provider helper、catalog、Compose 與 Nginx rend
 執行，僅在 deployment health 成功後更新 current pointer。acceptance record同時綁定 validator SHA，host在執行
 archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
 且 bucket keys 關閉以保留 unit-prefix KMS encryption context。
+
+2026-08-30的current accepted commit為`b499869c8ff86e09232c1b55516787ae7ed5d2f0`：
+
+- FinDB normal run [33260508254](https://github.com/FPI-TW/findb/actions/runs/33260508254)建立
+  `findb/accepted/b499869c8ff86e09232c1b55516787ae7ed5d2f0/0f90cbe570e34bc8bebe5c9a1737edfd881a7bc4e9d83ca4103a79dd884986cf.tar`；
+  replay run [33293482050](https://github.com/FPI-TW/findb/actions/runs/33293482050)重用相同backend／Dashboard
+  digests，accepted tar／record VersionId保持不變，並切換`/opt/findb/current`至本次immutable release。
+- Fetcher normal run [33261139792](https://github.com/FPI-TW/findb/actions/runs/33261139792)建立
+  `fetcher/accepted/b499869c8ff86e09232c1b55516787ae7ed5d2f0/7513a17912111e0a1f5f34fa344ba5847a26eb64cf66e976d993273c75b1af15.tar`；
+  replay run [33294103564](https://github.com/FPI-TW/findb/actions/runs/33294103564)重用相同Twelve Data／FinLab／Shioaji
+  digests，accepted tar／record VersionId保持不變，並切換`/opt/fetcher/current`至本次immutable release。
+- Replay的bundle generation／upload／persist steps均依契約skipped，production jobs亦skipped。Fetcher
+  replay的FinLab acquisition smoke同樣skipped，不得把它當成Phase 2A原生provider cycle或資料取得驗收。
 
 Deploy後至少完成：
 
