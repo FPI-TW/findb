@@ -66,6 +66,7 @@ FINDB_RUNTIME_SECRET_FILES = (
     "infra/deploy/runtime-secrets/render_serve_key.py",
 )
 FETCHER_RUNTIME_SECRET_FILES = (
+    "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
     "infra/deploy/runtime-secrets/fetcher.json",
     "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
 )
@@ -92,6 +93,7 @@ EXECUTABLE_BUNDLE_FILES = frozenset(
         "backend/scripts/render_nginx_public_host.py",
         "backend/scripts/render_nginx_source_allowlist.py",
         "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+        "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
         "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
         "infra/deploy/runtime-secrets/render_serve_key.py",

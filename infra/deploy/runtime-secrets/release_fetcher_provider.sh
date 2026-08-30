@@ -22,6 +22,26 @@ cache_dir="${9:?cache directory or - required}"
 shift 9
 [ "$#" -gt 0 ] || { echo "release_fetcher_provider=failed reason=scheduler_command_missing" >&2; exit 2; }
 
+provider_release_mode="${FETCHER_PROVIDER_RELEASE_MODE:-legacy}"
+case "$provider_release_mode" in
+  legacy|transactional) ;;
+  *)
+    echo "release_fetcher_provider=failed reason=release_mode_invalid" >&2
+    exit 1
+    ;;
+esac
+accepted_release=true
+if [ "$provider_release_mode" = transactional ]; then
+  case "${FETCHER_DEPLOY_MODE:-}" in
+    candidate) accepted_release=false ;;
+    activate) accepted_release=true ;;
+    *)
+      echo "release_fetcher_provider=failed reason=deploy_mode_invalid" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 case "$provider" in
   twelve-data)
     marker_identity="twelve"
@@ -173,10 +193,16 @@ else
 fi
 
 if docker container inspect "$candidate" >/dev/null 2>&1; then
-  if docker container inspect "$stable" >/dev/null 2>&1 || docker container inspect "$previous" >/dev/null 2>&1; then
-    docker rm -f "$candidate"
-  else
-    docker rename "$candidate" "$stable"
+  # A candidate is never accepted state. A prior interrupted command may have
+  # left it running before health validation, so every retry removes it.
+  docker rm -f "$candidate"
+fi
+if docker container inspect "$stable" >/dev/null 2>&1; then
+  stable_accepted="$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")"
+  if [ "$stable_accepted" = false ]; then
+    # A hard interruption may occur after candidate -> stable but before the
+    # coordinator rolls candidate mode back. It is never an accepted release.
+    docker rm -f "$stable"
   fi
 fi
 if docker container inspect "$previous" >/dev/null 2>&1; then
@@ -184,6 +210,7 @@ if docker container inspect "$previous" >/dev/null 2>&1; then
     docker rm -f "$previous"
   else
     docker rename "$previous" "$stable"
+    docker start "$stable" >/dev/null
   fi
 fi
 
@@ -244,9 +271,23 @@ if docker container inspect "$stable" >/dev/null 2>&1; then
   docker rename "$stable" "$previous"
 fi
 
+# The deployment identity only reports the already-stopped observation and
+# reads DB desired state. It never changes desired state; Dashboard Owner must
+# stop all providers before dispatch and re-enable approved providers later.
+docker run --rm \
+  --name "${preflight_name}-control" \
+  --user 10001:10001 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --mount "type=bind,src=$state_dir,dst=$state_dir" \
+  "${cache_mount[@]}" \
+  "${runtime_env_args[@]}" \
+  "$image" "$@" --require-stopped
+
 common_args=(
   --user 10001:10001
-  --restart unless-stopped
   --read-only
   --cap-drop ALL
   --security-opt no-new-privileges
@@ -258,7 +299,29 @@ common_args=(
 if [ "$cache_dir" != "-" ]; then
   common_args+=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
-docker run -d --name "$candidate" "${common_args[@]}" "${runtime_env_args[@]}" "$image" "$@" --run-forever >/dev/null
+if [ "$accepted_release" = false ]; then
+  # Candidate mode has already executed the CLI's offline check and strict
+  # stopped-state probe. Validate the final container configuration without
+  # ever starting an unaccepted scheduler process.
+  docker create --name "$candidate" --label "com.findb.fetcher.accepted=false" \
+    --restart no "${common_args[@]}" "${runtime_env_args[@]}" \
+    "$image" "$@" --run-forever >/dev/null
+  candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
+  candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
+  candidate_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$candidate")"
+  if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] \
+    || [ "$candidate_restart" != no ]; then
+    echo "release_fetcher_provider=failed reason=candidate_config_invalid" >&2
+    false
+  fi
+  docker rm "$candidate" >/dev/null
+  trap - ERR INT TERM HUP
+  echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"
+  exit 0
+fi
+docker run -d --name "$candidate" --label "com.findb.fetcher.accepted=$accepted_release" \
+  --restart unless-stopped "${common_args[@]}" "${runtime_env_args[@]}" \
+  "$image" "$@" --run-forever >/dev/null
 candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
 candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
 healthy=0
@@ -283,6 +346,8 @@ if [ "$(docker inspect --format '{{.State.Running}}' "$stable")" != "true" ]; th
   echo "release_fetcher_provider=failed reason=stable_not_running" >&2
   false
 fi
-[ "$had_previous" -eq 1 ] && docker rm "$previous" >/dev/null 2>&1 || true
+if [ "$provider_release_mode" = legacy ] && [ "$had_previous" -eq 1 ]; then
+  docker rm "$previous" >/dev/null
+fi
 trap - ERR INT TERM HUP
-echo "release_fetcher_provider=ready provider=$provider"
+echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"

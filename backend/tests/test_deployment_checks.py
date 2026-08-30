@@ -140,6 +140,7 @@ def _host_runtime_contract_paths(workflow_path: Path) -> set[str]:
     return {
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
     }
@@ -995,27 +996,17 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
     assert "ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF" in findb_rollout["run"]
 
     fetcher = _load_workflow(FETCHER_CD_WORKFLOW)
-    for name, image in (
-        ("Release Twelve Data scheduler with AWS runtime secrets", "fetcher/twelve-data"),
-        ("Release FinLab scheduler with AWS runtime secrets", "fetcher/finlab"),
-        ("Release Shioaji scheduler with AWS runtime secrets", "fetcher/shioaji"),
-    ):
-        step = _named_step(fetcher, "deploy", name)
-        assert step["env"]["ECR_REGISTRY"] == ecr_registry
-        assert (
-            step["env"].get(
-                "FETCHER_IMAGE",
-                step["env"].get("FETCHER_FINLAB_IMAGE", step["env"].get("FETCHER_SHIOAJI_IMAGE")),
-            )
-            == f"{ecr_registry}/findb/staging/{image}"
-        )
-        assert "ECR_REGISTRY" in step["with"]["envs"]
-        assert '--ecr-registry "$ECR_REGISTRY" --docker-login' in step["with"]["script"]
+    candidate = _named_step(fetcher, "deploy", "Run bounded Fetcher candidate validation over SSM")
+    assert candidate["env"]["ECR_REGISTRY"] == ecr_registry
+    assert "aws ssm send-command" in candidate["run"]
+    assert "deploy_fetcher_aws.sh" in candidate["run"]
+    for output in ("twelve_image_ref", "finlab_image_ref", "shioaji_image_ref"):
+        assert f"${{{{ needs.build-push.outputs.{output} }}}}" in candidate["env"].values()
 
     smoke = _named_step(
         fetcher,
         "finlab-acquisition-smoke",
-        "Run bounded FinLab acquisition smoke with AWS runtime secrets",
+        "Run bounded FinLab acquisition smoke over SSM",
     )
     assert smoke["env"]["ECR_REGISTRY"] == ecr_registry
     assert (
@@ -2322,41 +2313,25 @@ def test_fetcher_deploy_checks_out_pinned_repository_before_local_artifact_steps
     for step_name in (
         "Validate target-derived deployment route",
         "Run staging AWS and SSM preflight",
-        "Prepare AWS runtime-secret directories on Fetcher EC2",
-        "Run Fetcher AWS runtime-secret canary",
+        "Run bounded Fetcher candidate validation over SSM",
+        "Activate accepted Fetcher release over SSM",
     ):
         assert steps.index(checkout) < steps.index(_named_step(workflow, "deploy", step_name))
 
 
-def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
-    expected = {
-        FETCHER_CD_WORKFLOW: (
-            "Run Fetcher AWS runtime-secret canary",
-            (
-                "Release Twelve Data scheduler with AWS runtime secrets",
-                "Release FinLab scheduler with AWS runtime secrets",
-                "Release Shioaji scheduler with AWS runtime secrets",
-            ),
-        ),
-    }
+def test_runtime_secret_consumers_are_scoped_to_each_deployment_unit() -> None:
     findb = _load_workflow(FINDB_CD_WORKFLOW)
     findb_deploy = _named_step(
         findb, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
     )
     assert "--consumer canary" in findb_deploy["run"]
     assert "aws ssm send-command" in findb_deploy["run"]
-    for workflow_path, (canary_name, deployment_names) in expected.items():
-        workflow = _load_workflow(workflow_path)
-        steps = workflow["jobs"]["deploy"]["steps"]
-        canary_index = next(
-            index for index, step in enumerate(steps) if step.get("name") == canary_name
-        )
-        assert "--check-only" in steps[canary_index]["with"]["script"]
-        for deployment_name in deployment_names:
-            deployment_index = next(
-                index for index, step in enumerate(steps) if step.get("name") == deployment_name
-            )
-            assert canary_index < deployment_index
+    fetcher_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--consumer canary" not in fetcher_helper
+    for consumer in ("twelve-data", "finlab", "shioaji"):
+        assert fetcher_helper.count(f"--consumer {consumer}") == 1
 
 
 def test_aws_runtime_uses_validated_bundle_without_staging_scp_replacement() -> None:
@@ -2426,38 +2401,130 @@ def test_staging_activation_requires_accepted_record_after_candidate_checks() ->
     assert ".acceptance.json" in findb_activation["run"]
     assert "FINDB_DEPLOY_MODE=activate" in findb_activation["run"]
 
-    for workflow_path, unit, deploy_name, activation_name in (
-        (
-            FETCHER_CD_WORKFLOW,
-            "fetcher",
-            "Release Shioaji scheduler with AWS runtime secrets",
-            "Activate validated Fetcher release after health acceptance",
-        ),
-    ):
-        workflow = _load_workflow(workflow_path)
-        steps = workflow["jobs"]["deploy"]["steps"]
-        preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")
-        activation = _named_step(workflow, "deploy", activation_name)
-        accepted = _named_step(
-            workflow,
-            "deploy",
-            f"Persist immutable accepted {unit.title() if unit == 'fetcher' else 'FinDB'} deployment bundle",
-        )
-        assert steps.index(preflight) < steps.index(_named_step(workflow, "deploy", deploy_name))
-        assert steps.index(_named_step(workflow, "deploy", deploy_name)) < steps.index(activation)
-        assert steps.index(activation) < steps.index(accepted)
-        activation_script = activation.get("run") or activation["with"]["script"]
-        assert "ln -sfn" in activation_script
-        preflight_script = preflight["run"]
-        host_start = preflight_script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n")
-        host_end = preflight_script.index("\nHOST_SCRIPT\n", host_start)
-        host = preflight_script[host_start:host_end]
-        host_after_bootstrap_scan = host.split("\nPY\n", 1)[1]
-        assert "/current" not in host_after_bootstrap_scan
-        assert "install_findb_bootstrap.sh" not in host_after_bootstrap_scan
-        assert f"/opt/{unit}/runtime-secrets" not in host_after_bootstrap_scan
-        assert f"/opt/{unit} /opt/{unit}/releases" in host_after_bootstrap_scan
-        assert "root:root:755" in host_after_bootstrap_scan
+    fetcher = _load_workflow(FETCHER_CD_WORKFLOW)
+    steps = fetcher["jobs"]["deploy"]["steps"]
+    preflight = _named_step(fetcher, "deploy", "Run staging AWS and SSM preflight")
+    candidate = _named_step(fetcher, "deploy", "Run bounded Fetcher candidate validation over SSM")
+    accepted = _named_step(
+        fetcher, "deploy", "Persist immutable accepted Fetcher deployment bundle"
+    )
+    activation = _named_step(fetcher, "deploy", "Activate accepted Fetcher release over SSM")
+    assert (
+        steps.index(preflight)
+        < steps.index(candidate)
+        < steps.index(accepted)
+        < steps.index(activation)
+    )
+    assert "steps.selected_bundle.outputs.replay == 'false'" in candidate["if"]
+    assert "aws s3api get-object" in activation["run"]
+    assert ".acceptance.json" in activation["run"]
+    assert "FETCHER_DEPLOY_MODE=activate" in activation["run"]
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    candidate_block = helper.split('if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then', 1)[1]
+    assert "rollback_processed" in candidate_block
+    assert "ln -sfn" not in candidate_block.split("exit 0", 1)[0]
+
+
+def test_fetcher_accepted_replay_rejects_bundle_digest_that_differs_from_key(
+    tmp_path: Path,
+) -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    selected_script = _named_step(workflow, "deploy", "Select immutable Fetcher deployment bundle")[
+        "run"
+    ]
+    activation_script = _named_step(
+        workflow, "deploy", "Activate accepted Fetcher release over SSM"
+    )["run"]
+
+    def embedded_python(script: str, invocation: str) -> str:
+        return script.split(invocation, 1)[1].split("\nPY\n", 1)[0]
+
+    selection_validator = embedded_python(
+        selected_script,
+        "<<'PY'\n",
+    )
+    activation_validator = embedded_python(
+        activation_script,
+        "<<'PY'\n",
+    )
+    commit_sha = "c" * 40
+    key_digest = "a" * 64
+    record_digest = "b" * 64
+    accepted_key = f"fetcher/accepted/{commit_sha}/{key_digest}.tar"
+    images = ("twelve-image", "finlab-image", "shioaji-image")
+    record = {
+        "unit": "fetcher",
+        "commit_sha": commit_sha,
+        "bundle_sha256": record_digest,
+        "bundle_key": accepted_key,
+        "validator_sha256": "d" * 64,
+        "migration_revision": "none",
+        "workflow_run_id": "123",
+        "workflow_run_attempt": "1",
+        "ssm_command_id": "12345678-1234-1234-1234-123456789abc",
+        "images": dict(zip(("twelve_data", "finlab", "shioaji"), images, strict=True)),
+        "state": "accepted",
+    }
+    record_file = tmp_path / "acceptance.json"
+    record_file.write_text(json.dumps(record), encoding="utf-8")
+
+    selection = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            selection_validator,
+            str(record_file),
+            commit_sha,
+            accepted_key,
+            *images,
+        ],
+        check=False,
+    )
+    activation = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            activation_validator,
+            str(record_file),
+            accepted_key,
+            record_digest,
+            *images,
+        ],
+        check=False,
+    )
+    assert selection.returncode != 0
+    assert activation.returncode != 0
+
+    record["bundle_sha256"] = key_digest
+    record_file.write_text(json.dumps(record), encoding="utf-8")
+    selection = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            selection_validator,
+            str(record_file),
+            commit_sha,
+            accepted_key,
+            *images,
+        ],
+        check=False,
+    )
+    activation = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            activation_validator,
+            str(record_file),
+            accepted_key,
+            key_digest,
+            *images,
+        ],
+        check=False,
+    )
+    assert selection.returncode == 0
+    assert activation.returncode == 0
 
 
 def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> None:
@@ -2482,61 +2549,33 @@ def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> 
     assert "--consumer nginx" in nginx_helper
 
     fetcher_workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    fetcher_steps = {
-        step["name"]: step["with"]["script"]
-        for step in fetcher_workflow["jobs"]["deploy"]["steps"]
-        if "STAGING_ECR_CUTOVER_ENABLED" in str(step.get("if", ""))
-        and "with" in step
-        and "script" in step["with"]
-    }
-    assert "--consumer canary" in fetcher_steps["Run Fetcher AWS runtime-secret canary"]
-    for name, consumer in (
-        ("Release Twelve Data scheduler with AWS runtime secrets", "twelve-data"),
-        ("Release FinLab scheduler with AWS runtime secrets", "finlab"),
-        ("Release Shioaji scheduler with AWS runtime secrets", "shioaji"),
-    ):
-        script = fetcher_steps[name]
-        assert "--consumer registry" not in script
-        assert script.count(f"--consumer {consumer}") == 1
-        assert '--ecr-registry "$ECR_REGISTRY"' in script
-        assert "--consumer canary" not in script
+    fetcher_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--consumer canary" not in fetcher_helper
+    assert "--consumer registry" not in fetcher_helper
+    for consumer in ("twelve-data", "finlab", "shioaji"):
+        assert fetcher_helper.count(f"--consumer {consumer}") == 1
+    assert fetcher_helper.count('--ecr-registry "$ECR_REGISTRY"') == 3
     smoke_step = _named_step(
         fetcher_workflow,
         "finlab-acquisition-smoke",
-        "Run bounded FinLab acquisition smoke with AWS runtime secrets",
+        "Run bounded FinLab acquisition smoke over SSM",
     )
-    smoke_canary_step = _named_step(
-        fetcher_workflow,
-        "finlab-acquisition-smoke",
-        "Run Fetcher AWS runtime-secret canary before FinLab smoke",
-    )
-    smoke_steps = fetcher_workflow["jobs"]["finlab-acquisition-smoke"]["steps"]
-    assert smoke_steps.index(smoke_canary_step) < smoke_steps.index(smoke_step)
-    assert "--check-only" in smoke_canary_step["with"]["script"]
-    smoke_script = smoke_step["with"]["script"]
+    smoke_script = smoke_step["run"]
     assert "--consumer registry" not in smoke_script
     assert smoke_script.count("--consumer finlab-smoke") == 1
-    assert '--ecr-registry "$ECR_REGISTRY"' in smoke_script
-    assert "expected_region=ap-southeast-1" in smoke_script
+    assert "aws ssm send-command" in smoke_script
+    assert "ACCEPTED_BUNDLE_KEY" in smoke_script
     assert "fetcher/finlab@sha256:[0-9a-f]{64}" in smoke_script
     assert '[[ "$FETCHER_FINLAB_IMAGE_REF" =~' in smoke_script
-    assert 'image="$FETCHER_FINLAB_IMAGE_REF"' in smoke_script
     assert "FETCHER_IMAGE_TAG" not in smoke_script
     assert "/opt/fetcher/current" not in smoke_script
-    assert '"$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh"' in smoke_script
-    assert '"$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json"' in smoke_script
-    assert "RELEASE_ROOT" in smoke_canary_step["with"]["envs"]
-    assert "/opt/fetcher/current" not in smoke_canary_step["with"]["script"]
-    assert (
-        '"$RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py"'
-        in smoke_canary_step["with"]["script"]
-    )
     assert "FETCHER_CALENDAR_SERVE_API_KEY" not in smoke_script
     assert "FETCHER_FINLAB_SOURCE_CLIENT_KEY" not in smoke_script
     assert "CLOUDFLARE_R2_RAW_" not in smoke_script
     assert "${{ secrets." not in json.dumps(smoke_step.get("env", {}), sort_keys=True)
-    assert "${{ secrets." not in smoke_step["with"]["envs"]
-    assert "GITHUB_TOKEN" not in smoke_step["with"]["envs"]
+    assert "GITHUB_TOKEN" not in smoke_script
 
 
 def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -> None:
@@ -3056,13 +3095,10 @@ def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_input
     ):
         assert f"--env {name}" in helper
 
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    shioaji = _named_step(
-        workflow,
-        "deploy",
-        "Release Shioaji scheduler with AWS runtime secrets",
-    )["with"]["script"]
-    assert "/var/lib/findb-shioaji-fetcher/cache" in shioaji
+    deploy_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "/var/lib/findb-shioaji-fetcher/cache" in deploy_helper
 
 
 def test_aws_fetcher_release_preserves_staging_raw_marker_identities() -> None:
@@ -3098,7 +3134,14 @@ def test_aws_fetcher_release_preserves_staging_raw_marker_identities() -> None:
 
 
 def _run_twelve_fetcher_release_with_marker(
-    tmp_path: Path, *, marker_identity: str
+    tmp_path: Path,
+    *,
+    marker_identity: str,
+    residual_candidate: bool = False,
+    residual_previous: bool = False,
+    unaccepted_stable: bool = False,
+    transactional_candidate: bool = False,
+    preflight_fails: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
     state_dir = tmp_path / "state"
@@ -3108,6 +3151,12 @@ def _run_twelve_fetcher_release_with_marker(
     fake_bin.mkdir()
     state_path = state_dir / "state.sqlite3"
     state_path.write_text("durable-state\n", encoding="utf-8")
+    if residual_candidate:
+        (state_dir / "candidate").write_text("running\n", encoding="utf-8")
+    if residual_previous:
+        (state_dir / "previous").write_text("stopped\n", encoding="utf-8")
+    if unaccepted_stable:
+        (state_dir / "stable").write_text("running\n", encoding="utf-8")
     marker = hashlib.sha256(
         f"ef6190725fbf3a4331203b901a2d2961\nfindb-staging-raw\n{marker_identity}".encode()
     ).hexdigest()
@@ -3143,6 +3192,11 @@ def _run_twelve_fetcher_release_with_marker(
         FAKE_DOCKER_STATE=str(state_dir),
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
         FAKE_IMAGE=image,
+        FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
+        FAKE_UNACCEPTED_NAMES="stable" if unaccepted_stable else "",
+        FAKE_SIGNAL_SENT=str(tmp_path / "signal-sent"),
+        FETCHER_PROVIDER_RELEASE_MODE="transactional" if transactional_candidate else "legacy",
+        FETCHER_DEPLOY_MODE="candidate" if transactional_candidate else "activate",
     )
     return subprocess.run(
         [
@@ -3182,6 +3236,223 @@ def test_aws_fetcher_release_accepts_legacy_twelve_raw_marker_and_rejects_select
 
     assert rejected.returncode != 0
     assert "reason=raw_bucket_mismatch" in rejected.stderr
+
+
+def test_aws_fetcher_release_removes_residual_candidate_before_failed_preflight(
+    tmp_path: Path,
+) -> None:
+    completed = _run_twelve_fetcher_release_with_marker(
+        tmp_path,
+        marker_identity="twelve",
+        residual_candidate=True,
+        preflight_fails=True,
+    )
+
+    assert completed.returncode != 0
+    state_dir = tmp_path / "state"
+    assert not (state_dir / "candidate").exists()
+    assert not (state_dir / "stable").exists()
+    operations = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
+    assert operations.index("rm") < operations.index("pull") < operations.index("run")
+
+
+def test_aws_fetcher_release_restores_residual_previous_before_failed_preflight(
+    tmp_path: Path,
+) -> None:
+    completed = _run_twelve_fetcher_release_with_marker(
+        tmp_path,
+        marker_identity="twelve",
+        residual_previous=True,
+        preflight_fails=True,
+    )
+
+    assert completed.returncode != 0
+    state_dir = tmp_path / "state"
+    assert (state_dir / "stable").read_text(encoding="utf-8").strip() == "running"
+    assert not (state_dir / "previous").exists()
+    operations = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
+    assert operations.index("rename") < operations.index("start") < operations.index("pull")
+
+
+def test_aws_fetcher_release_rejects_unaccepted_stable_after_hard_interruption(
+    tmp_path: Path,
+) -> None:
+    completed = _run_twelve_fetcher_release_with_marker(
+        tmp_path,
+        marker_identity="twelve",
+        unaccepted_stable=True,
+        preflight_fails=True,
+    )
+
+    assert completed.returncode != 0
+    state_dir = tmp_path / "state"
+    assert not (state_dir / "stable").exists()
+    operations = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
+    assert operations.index("rm") < operations.index("pull")
+
+
+def test_aws_fetcher_candidate_validates_created_container_without_starting_it(
+    tmp_path: Path,
+) -> None:
+    completed = _run_twelve_fetcher_release_with_marker(
+        tmp_path,
+        marker_identity="twelve",
+        transactional_candidate=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    state_dir = tmp_path / "state"
+    assert not (state_dir / "candidate").exists()
+    assert not (state_dir / "stable").exists()
+    operations = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
+    assert "create" in operations
+    assert operations.index("create") < operations.index("rm")
+
+
+@pytest.mark.parametrize("had_old", (False, True))
+def test_fetcher_transaction_tracks_provider_before_interruption(
+    tmp_path: Path,
+    had_old: bool,
+) -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    transaction = helper.split("processed=()", 1)[1].split(
+        "register_provider findb-fetcher-scheduler ", 1
+    )[0]
+    state_dir = tmp_path / "state"
+    fake_bin = tmp_path / "bin"
+    state_dir.mkdir()
+    fake_bin.mkdir()
+    if had_old:
+        (state_dir / "stable").write_text("running\n", encoding="utf-8")
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
+    fake_docker.chmod(0o755)
+    harness = f"""set -euo pipefail
+FETCHER_DEPLOY_MODE=candidate
+processed=(){transaction}
+register_provider stable previous
+if [ {1 if had_old else 0} -eq 1 ]; then mv {state_dir}/stable {state_dir}/previous; fi
+printf 'running\\n' > {state_dir}/stable
+kill -TERM "$$"
+"""
+    environment = dict(os.environ)
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        FAKE_DOCKER_STATE=str(state_dir),
+        FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
+        FAKE_IMAGE="image:test",
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert completed.returncode == 143
+    if had_old:
+        assert (state_dir / "stable").read_text(encoding="utf-8").strip() == "running"
+    else:
+        assert not (state_dir / "stable").exists()
+    assert not (state_dir / "previous").exists()
+
+
+def test_fetcher_release_root_mode_and_bounded_candidate_contract_are_exact() -> None:
+    coordinator = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    provider = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    manifest = (REPO_ROOT / "infra/deploy/release_manifest.py").read_text(encoding="utf-8")
+
+    assert "os.mkdir(output.name, 0o700" in manifest
+    assert "root:root:700" in coordinator
+    assert "root:root:755" not in coordinator
+    assert "candidate) accepted_release=false" in provider
+    assert 'docker create --name "$candidate"' in provider
+    assert "--restart no" in provider
+    candidate_branch = provider.split('if [ "$accepted_release" = false ]; then', 1)[1].split(
+        "docker run -d", 1
+    )[0]
+    assert "docker start" not in candidate_branch
+    assert "docker run" not in candidate_branch
+    assert "candidate_restart" in candidate_branch
+    assert "com.findb.fetcher.accepted=$accepted_release" in provider
+    assert 'stable_accepted" = false' in provider
+
+
+def test_fetcher_activation_publishes_atomic_durable_pointer_before_provider_switch() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    activation = helper.index('if [ "$FETCHER_DEPLOY_MODE" = activate ]; then')
+    committed = helper.index("pointer_committed=1", activation)
+    atomic_replace = helper.index("mv -Tf --", committed)
+    first_provider = helper.index(
+        "register_provider findb-fetcher-scheduler findb-fetcher-scheduler-previous"
+    )
+
+    assert activation < committed < atomic_replace < first_provider
+    assert "if [ -e /opt/fetcher/current ] && [ ! -L /opt/fetcher/current ]" in helper
+    assert "ln -sfn" not in helper
+    abort = helper.split("abort_transaction()", 1)[1].split("trap 'abort_transaction", 1)[0]
+    assert "previous_pointer" in abort
+    assert "mv -Tf --" in abort
+
+
+@pytest.mark.parametrize("signal_operation", ("rm", "rename", "start"))
+def test_fetcher_candidate_cleanup_remains_recoverable_during_each_rollback_operation(
+    tmp_path: Path,
+    signal_operation: str,
+) -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    transaction = helper.split("processed=()", 1)[1].split(
+        "register_provider findb-fetcher-scheduler ", 1
+    )[0]
+    state_dir = tmp_path / "state"
+    fake_bin = tmp_path / "bin"
+    state_dir.mkdir()
+    fake_bin.mkdir()
+    (state_dir / "stable").write_text("running\n", encoding="utf-8")
+    (state_dir / "previous").write_text("stopped\n", encoding="utf-8")
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
+    fake_docker.chmod(0o755)
+    harness = f"""set -euo pipefail
+FETCHER_DEPLOY_MODE=candidate
+processed=(){transaction}
+processed=(stable:previous:1)
+rollback_processed
+trap - ERR INT TERM HUP
+"""
+    environment = dict(os.environ)
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        FAKE_DOCKER_STATE=str(state_dir),
+        FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
+        FAKE_IMAGE="image:test",
+        FAKE_SIGNAL_ON=signal_operation,
+        FAKE_SIGNAL_SENT=str(tmp_path / "signal-sent"),
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert completed.returncode == 143
+    assert (state_dir / "stable").read_text(encoding="utf-8").strip() == "running"
+    assert not (state_dir / "previous").exists()
 
 
 def test_aws_fetcher_release_recovers_on_errors_and_signals_before_deleting_previous() -> None:
@@ -3482,7 +3753,10 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         deploy = jobs["deploy"]
         assert deploy["permissions"]["id-token"] == "write"
         for job_name, job in jobs.items():
-            if job_name not in {"deploy", "build-push-staging-ecr"}:
+            oidc_jobs = {"deploy", "build-push-staging-ecr"}
+            if workflow_path == FETCHER_CD_WORKFLOW:
+                oidc_jobs.add("finlab-acquisition-smoke")
+            if job_name not in oidc_jobs:
                 assert job.get("permissions", {}).get("id-token") != "write"
 
         credential_step = _named_step(workflow, "deploy", "Configure staging AWS credentials")
@@ -4012,6 +4286,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "infra/deploy/runtime-secrets/findb.json",
     } <= _aggregate_ci_paths("findb")
     assert {
+        "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
     } <= _aggregate_ci_paths("fetcher")
@@ -4037,6 +4312,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "fetcher/**",
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
+        "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
         "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
@@ -4092,7 +4368,6 @@ def test_deployment_secret_references_are_confined_to_environment_jobs() -> None
             assert smoke["environment"] == "staging-fetcher"
             assert "github.event_name == 'workflow_dispatch'" in smoke["if"]
             assert "inputs.run_finlab_smoke == true" in smoke["if"]
-            permitted_secret_jobs["finlab-acquisition-smoke"] = "staging-fetcher"
             isolation = workflow["jobs"]["validate-fetcher-credential-isolation"]
             assert isolation["environment"] == environment
             permitted_secret_jobs["validate-fetcher-credential-isolation"] = environment
@@ -4283,6 +4558,44 @@ def test_findb_staging_deployment_uses_only_ssm_and_records_the_actual_command()
     assert "ssm_activation_command_id=$command_id" in activation["run"]
     assert "ssm_command_id" in accepted["run"]
     assert "steps.ssm_activate.outputs" not in accepted["run"]
+
+
+def test_fetcher_staging_deployment_and_smoke_use_only_bounded_ssm() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    staging_steps = [
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if "(inputs.deployment_target || 'staging') == 'staging'" in str(step.get("if", ""))
+    ]
+    staging_json = json.dumps(staging_steps, sort_keys=True)
+    assert "appleboy/ssh-action" not in staging_json
+    assert "appleboy/scp-action" not in staging_json
+    assert "FETCHER_EC2_" not in staging_json
+
+    steps = workflow["jobs"]["deploy"]["steps"]
+    candidate = _named_step(workflow, "deploy", "Run bounded Fetcher candidate validation over SSM")
+    accepted = _named_step(
+        workflow, "deploy", "Persist immutable accepted Fetcher deployment bundle"
+    )
+    activation = _named_step(workflow, "deploy", "Activate accepted Fetcher release over SSM")
+    assert steps.index(candidate) < steps.index(accepted) < steps.index(activation)
+    assert "aws ssm send-command" in candidate["run"]
+    assert "aws ssm get-command-invocation" in candidate["run"]
+    assert "phase5_candidate_marker=" in candidate["run"]
+    assert "FETCHER_DEPLOY_MODE=candidate" in candidate["run"]
+    assert accepted["env"]["SSM_COMMAND_ID"] == "${{ steps.ssm_candidate.outputs.command_id }}"
+    assert "aws s3api get-object" in activation["run"]
+    assert "FETCHER_DEPLOY_MODE=activate" in activation["run"]
+    assert "steps.selected_bundle.outputs.replay == 'false'" not in activation["if"]
+
+    smoke = workflow["jobs"]["finlab-acquisition-smoke"]
+    assert smoke["permissions"] == {"contents": "read", "id-token": "write"}
+    smoke_step = _named_step(
+        workflow, "finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"
+    )
+    assert "aws ssm send-command" in smoke_step["run"]
+    assert "phase5_finlab_smoke_marker=" in smoke_step["run"]
+    assert "${{ secrets." not in json.dumps(smoke, sort_keys=True)
 
 
 def _run_phase4_ssm_polling_case(
@@ -4784,23 +5097,21 @@ def test_fetcher_provider_deployment_steps_are_secret_confined() -> None:
             assert "SHIOAJI_SIMULATION must be true" in script
 
 
-def test_fetcher_smoke_prunes_only_unused_images_before_pull() -> None:
+def test_fetcher_smoke_uses_exact_accepted_image_without_host_wide_pruning() -> None:
     workflow = _load_workflow(FETCHER_CD_WORKFLOW)
     step = _named_step(
         workflow,
         "finlab-acquisition-smoke",
-        "Run bounded FinLab acquisition smoke with AWS runtime secrets",
+        "Run bounded FinLab acquisition smoke over SSM",
     )
-    script = step["with"]["script"]
+    script = step["run"]
 
-    image_prune = script.index("docker image prune -af")
-    image_pull = script.index('docker pull "$image"')
-    assert image_prune < image_pull
-    assert script.count("docker image prune -af") == 1
+    assert "docker image prune" not in script
     assert "docker system prune" not in script
     assert "docker volume prune" not in script
     assert '[[ "$FETCHER_FINLAB_IMAGE_REF" =~' in script
-    assert script.index('[[ "$FETCHER_FINLAB_IMAGE_REF" =~') < image_pull
+    assert 'record["images"]["finlab"]' in script
+    assert "aws ssm send-command" in script
     assert "FETCHER_IMAGE_TAG" not in script
 
 
@@ -4840,6 +5151,11 @@ state_dir="${FAKE_DOCKER_STATE:?}"
 printf '%s\\n' "$1" >> "${FAKE_DOCKER_LOG:?}"
 operation="$1"
 shift
+if [ -n "${FAKE_SIGNAL_ON:-}" ] && [ "$operation" = "$FAKE_SIGNAL_ON" ] \
+  && [ ! -e "${FAKE_SIGNAL_SENT:?}" ]; then
+  : > "$FAKE_SIGNAL_SENT"
+  kill -TERM "$PPID"
+fi
 case "$operation" in
   container)
     [ "$1" = inspect ]
@@ -4887,14 +5203,31 @@ case "$operation" in
       [ "${FAKE_PREFLIGHT_FAIL:-0}" != 1 ]
     fi
     ;;
+  create)
+    name=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --name ]; then name="$argument"; fi
+      previous="$argument"
+    done
+    [ -n "$name" ]
+    printf 'created\\n' > "$state_dir/$name"
+    ;;
   inspect)
     [ "$1" = --format ]
     format="$2"
     name="$3"
     status="$(cat "$state_dir/$name")"
     case "$format" in
+      *Config.Labels*)
+        case ",${FAKE_UNACCEPTED_NAMES:-}," in
+          *",$name,"*) printf 'false\\n' ;;
+          *) printf '<no value>\\n' ;;
+        esac
+        ;;
       *Config.Image*) printf '%s\\n' "${FAKE_IMAGE:?}" ;;
       *Config.User*) printf '10001:10001\\n' ;;
+      *HostConfig.RestartPolicy.Name*) printf 'no\\n' ;;
       *State.Running*) [ "$status" = running ] && printf 'true\\n' || printf 'false\\n' ;;
       *State.Status*) printf '%s\\n' "$status" ;;
       *State.ExitCode*) printf '%s\\n' "${FAKE_STABLE_EXIT_CODE:-0}" ;;

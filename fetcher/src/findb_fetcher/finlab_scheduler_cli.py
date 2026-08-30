@@ -35,10 +35,15 @@ from findb_fetcher.schedule import (
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
+    require_scheduler_stopped,
     scheduler_stop_event,
     validate_scheduler_definition,
 )
-from findb_fetcher.scheduler_state import SchedulerState, SchedulerStateError
+from findb_fetcher.scheduler_state import (
+    SchedulerState,
+    SchedulerStateError,
+    validate_scheduler_state_read_only,
+)
 from findb_fetcher.twelve_data_scheduler import SchedulerRun
 
 EXIT_OK = 0
@@ -83,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate local FinLab configuration/state without external clients or work.",
     )
+    mode.add_argument(
+        "--require-stopped",
+        action="store_true",
+        help="Require DB desired state stopped after the stable scheduler exits.",
+    )
     return parser
 
 
@@ -104,10 +114,27 @@ def main(argv: list[str] | None = None) -> int:
         fetcher_config = FetcherConfig.from_env()
         calendar_config = MarketCalendarConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
-        state = SchedulerState(args.state_path)
         if not os.getenv("FINLAB_API_TOKEN", "").strip():
             raise ConfigError("FINLAB_API_TOKEN is required for FinLab scheduler execution")
 
+        if args.require_stopped:
+            validate_scheduler_state_read_only(args.state_path)
+            require_scheduler_stopped(
+                fetcher_config,
+                SCHEDULER_CONTROL_KEY,
+                definition_validator=lambda response: validate_scheduler_definition(
+                    response,
+                    provider="finlab",
+                    dataset_keys=(universe.dataset_key,),
+                    slot_id=schedule.slot_id,
+                    scheduled_local_time=schedule.scheduled_local_time.isoformat(),
+                    timezone_name=schedule.timezone_name,
+                ),
+            )
+            _emit_json({"mode": "require_stopped", "status": "ok"}, stream=sys.stdout)
+            return EXIT_OK
+
+        state = SchedulerState(args.state_path)
         if args.check:
             _emit_json(
                 {

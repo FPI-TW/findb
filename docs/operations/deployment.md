@@ -144,7 +144,9 @@ Phase 4 exit gate已完成；different-digest rollback與schema-incompatibility 
 staging-findb已移除
 `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`三個FinDB deploy secrets；此事不涵蓋TCP/22、
 SSH recovery ingress／keys、Fetcher、production或GitHub runtime copies。
-Fetcher與production仍使用SSH相容路徑。
+Fetcher staging的repo-side Phase 5 workflow已改為OIDC＋SSM candidate／accepted-record／activation，
+FinLab smoke亦改為bounded SSM；尚待protected-main live驗收，因此不得宣稱Phase 5 exit gate完成。
+Production仍使用SSH相容路徑。
 
 ## Credential與storage邊界
 
@@ -200,6 +202,15 @@ Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受�
 
 Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三個scheduler分別
 執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
+Staging manual dispatch前，Dashboard Owner必須先將三個scheduler切為`stopped`並記錄control revision；
+workflow在stable container優雅停止後只回報stopped observation、讀回desired state與驗證definition，
+不修改desired state。任一provider仍為`running`、definition drift或control失聯都fail closed並恢復previous
+containers。Accepted activation完成後，由Owner透過Dashboard逐一恢復核准的desired state。
+Fetcher candidate只以`docker create --restart no`驗證最終container config，並以
+`com.findb.fetcher.accepted=false`標示；未accepted scheduler從不啟動，因此untrappable command／host
+interruption不會留下未授權writer。Accepted activation先以atomic symlink replacement將`/opt/fetcher/current`寫成
+exact accepted release，作為durable desired-release journal，再啟動三個標示accepted的provider；
+一般錯誤會同時恢復containers與舊pointer，hard interruption則以同一accepted key重播完成收斂。
 常駐CLI將`SIGTERM`／`SIGINT`轉為shared stop event：idle時立即退出，final running preflight
 後收到stop也不得啟動新provider cycle；已開始的cycle則完成terminal report後退出。Workflow
 以30秒grace period停止stable container並要求exit code為`0`，否則fail closed並恢復原stable，

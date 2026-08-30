@@ -117,6 +117,26 @@ def scheduler_control_keys() -> frozenset[str]:
     return _SCHEDULER_KEYS
 
 
+def require_scheduler_stopped(
+    config: FetcherConfig,
+    scheduler_key: str,
+    *,
+    definition_validator: Callable[[SchedulerControlResponse], None],
+) -> SchedulerControlResponse:
+    """Require the DB-authoritative scheduler to be stopped before deployment.
+
+    This reports the already-stopped host observation and reads desired state;
+    it never mutates desired state. Callers must stop the stable container first.
+    """
+
+    with SchedulerControlClient(config, scheduler_key) as client:
+        response = client.poll(observed_state="stopped")
+    definition_validator(response)
+    if response.desired_state != "stopped":
+        raise SchedulerControlProtocolError("scheduler control must be stopped for deployment")
+    return response
+
+
 class SchedulerControlClient:
     """Small, identity-safe HTTP client for the scheduler control endpoint."""
 

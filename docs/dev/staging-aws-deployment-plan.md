@@ -6,6 +6,8 @@
 > rotation已完成，GitHub runtime copies移除仍未完成。Phase 3的兩個unit normal accepted deployment與
 > accepted replay live gate均已通過，文件closeout已由PR #203完成。FinDB Phase 4已完成兩次正常
 > SSM deployment、一次accepted replay與三個FinDB deploy SSH secrets移除，exit gate已完成。
+> Phase 5的repo-side OIDC／SSM candidate、accepted-record、activation與FinLab smoke cutover實作中；
+> 尚未合併、未執行live deployment，也尚未移除Fetcher SSH secrets或通過exit gate。
 > Owner決定將different-digest rollback與schema-incompatibility rejection移至Phase 6；兩項演練仍未執行。
 > 本文是staging
 > AWS控制面、部署身分與驗收的核心
@@ -676,19 +678,35 @@ scope調整不把同digest replay誤稱為rollback，也不改寫兩項尚未執
 
 ### Phase 5：Fetcher改走SSM
 
-- [ ] 將Fetcher deploy與FinLab smoke改成OIDC＋SSM；停止workflow傳送provider、R2與Source
+- [x] Repo-side將Fetcher staging deploy與FinLab smoke改成OIDC＋SSM；staging workflow停止傳送provider、R2與Source
   credentials並移除SSH action。
-- [ ] 保留provider-specific state owner／mode、SQLite quick-check、Raw bucket marker與
+- [x] Repo-side保留provider-specific state owner／mode、三個provider的SQLite quick-check、Raw bucket marker與
   single-writer reconciliation全部現行gate；SSM deploy helper只接受current SQLite schema、
   canonical slot identity與provider-scoped Raw marker，不新增legacy migration或compatibility path。
-- [ ] 以DB desired state=`stopped`部署三個exact digests；preflight通過後逐一恢復核准的
-  scheduler desired state。
+- [x] Repo-side要求stable container優雅停止後，以provider-scoped Source key只回報stopped observation並
+  驗證DB desired state仍為`stopped`；deployment不修改desired state。三個exact digests完成transactional
+  candidate後會恢復previous containers，accepted record持久化後才由獨立SSM activation切換。
+- [ ] Live deploy前由Dashboard Owner將三個scheduler切成`stopped`並記錄revision；activation完成後再由
+  Dashboard逐一恢復核准的desired state。Workflow不得替Owner執行這些寫入。
 - [ ] 驗證cross-provider secret isolation、calendar fail-closed、heartbeat與bounded terminal
   delivery，並觀察至少一個完整排程週期。
 - [ ] 演練candidate失敗、首次部署失敗與previous container recovery，不把舊SQLite恢復到新bucket。
 
 Exit gate：連續兩次Fetcher staging deploy不使用SSH；三個provider維持單一writer且無credential
 cross-read；`FETCHER_EC2_*` secrets已移除。
+
+#### Phase 5 repo implementation record（尚待live驗收）
+
+目前功能分支新增immutable bundle內的`deploy_fetcher_aws.sh`，candidate與activation均透過bounded
+SSM command執行。每個provider只載入自己的runtime-secret consumer；已移除Fetcher aggregate canary，
+FinLab smoke另以OIDC取得deploy role、重驗accepted record與FinLab exact digest後才dispatch bounded SSM。
+Candidate成功或失敗都不更新`/opt/fetcher/current`，並回復previous stable containers；normal accepted
+record成功寫入後才執行activation；activation先以atomic symlink replacement將`current`持久化為exact
+accepted release，作為hard interruption後可重播的desired-release journal，再逐一切換provider。
+Candidate只以`docker create --restart no`驗證最終container config，絕不啟動未accepted scheduler；
+即使遇到`SIGKILL`或host restart也不會產生未授權writer。Accepted replay則略過candidate與persist。Shioaji existing state另補
+read-only `PRAGMA quick_check`。以上僅是repo-side implementation evidence，不代表protected-main workflow、
+實機previous recovery、完整排程週期或SSH secret retirement已通過。
 
 ### Phase 6：必要監控、復原、rollback與SSH退場
 

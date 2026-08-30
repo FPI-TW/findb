@@ -320,6 +320,7 @@ def test_deployment_bundle_is_deterministic_and_rejects_tampering(tmp_path: Path
     release_manifest.materialize_validated_bundle(
         first, expected_sha256=digest, unit="findb", output=output
     )
+    assert stat.S_IMODE(output.stat().st_mode) == 0o700
     assert (output / "infra/deploy/release_manifest.py").is_file()
     for relative in release_manifest.EXECUTABLE_BUNDLE_FILES:
         if relative in release_manifest.FINDB_BUNDLE_FILES:
@@ -533,6 +534,7 @@ def test_bundle_allowlists_are_unit_scoped() -> None:
         "infra/deploy/runtime-secrets/render_serve_key.py",
     )
     assert release_manifest.FETCHER_RUNTIME_SECRET_FILES == (
+        "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
     )
