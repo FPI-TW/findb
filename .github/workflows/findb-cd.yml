@@ -119,6 +119,7 @@ jobs:
     outputs:
       backend_image_ref: ${{ steps.backend_image.outputs.image_ref }}
       dashboard_image_ref: ${{ steps.dashboard_image.outputs.image_ref }}
+      deployment_bundle_artifact_name: ${{ steps.deployment_bundle.outputs.artifact_name }}
       bundle_sha256: ${{ steps.deployment_bundle.outputs.bundle_sha256 }}
       migration_revision: ${{ steps.backend_alembic_head.outputs.migration_revision }}
       validator_sha256: ${{ steps.deployment_bundle.outputs.validator_sha256 }}
@@ -346,11 +347,12 @@ jobs:
             --created-by-run-id "$GITHUB_RUN_ID"
           printf 'bundle_sha256=%s\n' "$bundle_sha256" >> "$GITHUB_OUTPUT"
           printf 'validator_sha256=%s\n' "$validator_sha256" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=staging-findb-deployment-bundle-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - name: Upload exact staging deployment bundle
         if: ${{ steps.manifest_support.outputs.supported == 'true' && inputs.accepted_bundle_key == '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: staging-findb-deployment-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.deployment_bundle.outputs.artifact_name }}
           path: |
             ${{ runner.temp }}/findb-staging-deployment-bundle.tar
             ${{ runner.temp }}/findb-staging-release-manifest.json
@@ -386,6 +388,7 @@ jobs:
     outputs:
       backend_image_ref: ${{ steps.release_selection.outputs.backend_image_ref }}
       dashboard_image_ref: ${{ steps.release_selection.outputs.dashboard_image_ref }}
+      deployment_bundle_artifact_name: ${{ steps.release_selection.outputs.deployment_bundle_artifact_name }}
       bundle_sha256: ${{ steps.release_selection.outputs.bundle_sha256 }}
       migration_revision: ${{ steps.release_selection.outputs.migration_revision }}
       validator_sha256: ${{ steps.release_selection.outputs.validator_sha256 }}
@@ -403,6 +406,7 @@ jobs:
           VERIFY_RESULT: ${{ needs.verify.result }}
           BACKEND_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.backend_image_ref }}
           DASHBOARD_IMAGE_REF: ${{ needs.build-push-staging-ecr.outputs.dashboard_image_ref }}
+          DEPLOYMENT_BUNDLE_ARTIFACT_NAME: ${{ needs.build-push-staging-ecr.outputs.deployment_bundle_artifact_name }}
           BUNDLE_SHA256: ${{ needs.build-push-staging-ecr.outputs.bundle_sha256 }}
           MIGRATION_REVISION: ${{ needs.build-push-staging-ecr.outputs.migration_revision }}
           ACCEPTED_BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
@@ -437,6 +441,8 @@ jobs:
                   [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]] || exit 1
                   printf 'migration_revision=%s\n' "$MIGRATION_REVISION" >> "$GITHUB_OUTPUT"
                 else
+                  [[ "$DEPLOYMENT_BUNDLE_ARTIFACT_NAME" =~ ^staging-findb-deployment-bundle-${GITHUB_RUN_ID}-[1-9][0-9]*$ ]] || exit 1
+                  printf 'deployment_bundle_artifact_name=%s\n' "$DEPLOYMENT_BUNDLE_ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
                   [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
                   [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]] || exit 1
                   printf 'bundle_sha256=%s\n' "$BUNDLE_SHA256" >> "$GITHUB_OUTPUT"
@@ -615,7 +621,7 @@ jobs:
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' && inputs.accepted_bundle_key == '' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: staging-findb-deployment-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build-push.outputs.deployment_bundle_artifact_name }}
           path: ${{ runner.temp }}/findb-deployment-bundle
 
       - name: Select immutable FinDB deployment bundle

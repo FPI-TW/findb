@@ -1137,22 +1137,30 @@ def test_staging_release_bridge_rejects_missing_or_cross_unit_digest(
     }
     for index, (variable, repository) in enumerate(repositories.items(), start=1):
         env[variable] = f"{registry}/{repository}@sha256:{index:064x}"
+    unit = "findb" if workflow_path == FINDB_CD_WORKFLOW else "fetcher"
+    env["BUNDLE_SHA256"] = "a" * 64
+    env["VALIDATOR_SHA256"] = "c" * 64
+    env["GITHUB_RUN_ID"] = "123"
+    env["DEPLOYMENT_BUNDLE_ARTIFACT_NAME"] = f"staging-{unit}-deployment-bundle-123-1"
     if workflow_path == FINDB_CD_WORKFLOW:
-        env["BUNDLE_SHA256"] = "a" * 64
         env["MIGRATION_REVISION"] = "b" * 12
-        env["VALIDATOR_SHA256"] = "c" * 64
 
     accepted = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
     assert accepted.returncode == 0, accepted.stderr
     output_lines = output_path.read_text(encoding="utf-8").splitlines()
-    assert len(output_lines) == len(repositories) + (3 if workflow_path == FINDB_CD_WORKFLOW else 0)
+    assert len(output_lines) == len(repositories) + 3 + (
+        1 if workflow_path == FINDB_CD_WORKFLOW else 0
+    )
     for variable, repository in repositories.items():
         output_name = variable.lower()
         assert f"{output_name}={env[variable]}" in output_lines
+    assert (
+        f"deployment_bundle_artifact_name={env['DEPLOYMENT_BUNDLE_ARTIFACT_NAME']}" in output_lines
+    )
+    assert f"bundle_sha256={env['BUNDLE_SHA256']}" in output_lines
+    assert f"validator_sha256={env['VALIDATOR_SHA256']}" in output_lines
     if workflow_path == FINDB_CD_WORKFLOW:
-        assert f"bundle_sha256={env['BUNDLE_SHA256']}" in output_lines
         assert f"migration_revision={env['MIGRATION_REVISION']}" in output_lines
-        assert f"validator_sha256={env['VALIDATOR_SHA256']}" in output_lines
 
     output_path.unlink()
     first_variable = next(iter(repositories))
@@ -1245,6 +1253,44 @@ def test_staging_builds_publish_digest_only_release_manifest_artifacts() -> None
             "if-no-files-found": "error",
             "retention-days": "30",
         }
+
+
+def test_staging_deploy_reuses_the_build_attempt_bundle_on_failed_job_rerun() -> None:
+    expected = {
+        FINDB_CD_WORKFLOW: "findb",
+        FETCHER_CD_WORKFLOW: "fetcher",
+    }
+    for workflow_path, unit in expected.items():
+        workflow = _load_workflow(workflow_path)
+        staged = workflow["jobs"]["build-push-staging-ecr"]
+        bridge = workflow["jobs"]["build-push"]
+        generate = _named_step(
+            workflow,
+            "build-push-staging-ecr",
+            "Generate and validate staging release manifest",
+        )
+        upload = _named_step(
+            workflow,
+            "build-push-staging-ecr",
+            "Upload exact staging deployment bundle",
+        )
+        display_unit = "FinDB" if unit == "findb" else "Fetcher"
+        download = _named_step(
+            workflow,
+            "deploy",
+            f"Download current {display_unit} deployment bundle artifact",
+        )
+
+        artifact_output = "${{ steps.deployment_bundle.outputs.artifact_name }}"
+        bridged_output = "${{ steps.release_selection.outputs.deployment_bundle_artifact_name }}"
+        assert staged["outputs"]["deployment_bundle_artifact_name"] == artifact_output
+        assert bridge["outputs"]["deployment_bundle_artifact_name"] == bridged_output
+        assert f"artifact_name=staging-{unit}-deployment-bundle-%s-%s" in generate["run"]
+        assert upload["with"]["name"] == artifact_output
+        assert download["with"]["name"] == (
+            "${{ needs.build-push.outputs.deployment_bundle_artifact_name }}"
+        )
+        assert "github.run_attempt" not in download["with"]["name"]
 
 
 def test_staging_release_manifest_contracts_come_from_the_selected_source_root() -> None:
@@ -1704,7 +1750,13 @@ def test_findb_replay_bridge_allows_historical_bundle_sha_with_current_migration
     assert '[ -z "${BUNDLE_SHA256:-}" ] || exit 1' in replay_branch
     assert '[[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]] || exit 1' in replay_branch
     assert "migration_revision=%s\\n" in replay_branch
-    normal_branch = script.split("else", 1)[1].split("fi", 1)[0]
+    normal_match = re.search(
+        r'if \[ -n "\$\{ACCEPTED_BUNDLE_KEY:-\}" \]; then.*?\n\s+else\n(?P<body>.*?)\n\s+fi',
+        script,
+        re.DOTALL,
+    )
+    assert normal_match is not None
+    normal_branch = normal_match.group("body")
     assert '[[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1' in normal_branch
     assert "bundle_sha256=%s\\n" in normal_branch
 
