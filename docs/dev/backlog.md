@@ -27,12 +27,10 @@
   rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
   provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation已完成。SSH recovery項目仍依
   staging deployment plan的Phase 6 exit gate保留。
-- [ ] FinDB Phase 4已完成兩次正常SSM deployment與同accepted identity replay；仍須依
-  [staging AWS deployment plan](staging-aws-deployment-plan.md)演練不同digest的previous-release rollback、
-  schema不相容拒絕；staging-findb的三個FinDB deploy SSH secrets已刪除。同時完成Fetcher Phase 5 SSM日常deployment
-  transport與相應演練。
+- [ ] 完成Fetcher Phase 5 SSM日常deployment transport與相應演練。
 - [ ] 完成Phase 6的CloudWatch alarms與synthetic notification、RDS restore、Fetcher SQLite recovery、
-  RabbitMQ rebuild、current EBS encrypted backup chain及SSH ingress退場。
+  RabbitMQ rebuild、current EBS encrypted backup chain、SSH ingress退場、不同image digest的
+  previous-release rollback，以及不同Alembic revision的schema-incompatibility rejection。
 
 ## P1：資料完整性與效能
 
