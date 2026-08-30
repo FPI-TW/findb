@@ -46,6 +46,7 @@ INGESTION_RUNBOOK = REPO_ROOT / "docs" / "operations" / "ingestion.md"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
+CLOUDWATCH_MARKER_COUNT = REPO_ROOT / "infra" / "deploy" / "cloudwatch_marker_count.sh"
 
 LEGACY_ROLLBACK_CI_ONLY_PATHS = frozenset(
     {
@@ -3777,11 +3778,8 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         '--instance-ids "$target_id"',
         "CloudWatchOutputEnabled=true",
         "AWS_SSM_LOG_GROUP",
-        "filter-log-events",
-        '--log-group-name "$AWS_SSM_LOG_GROUP"',
-        '--log-stream-name-prefix "${command_id}/${target_id}/aws-runShellScript/stdout"',
-        "--query 'length(events)'",
-        "--output json",
+        "source infra/deploy/cloudwatch_marker_count.sh",
+        "cloudwatch_marker_count",
         "phase1_preflight_marker=",
         "status=success",
         "status=failed",
@@ -3872,16 +3870,15 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         ]
         assert send_command.count('--instance-ids "$target_id"') == 1
         assert "--cloud-watch-output-config" in script
-        assert "--output json 2>/dev/null" in script
-        assert script.count("aws logs filter-log-events") == 2
-        assert script.count('--log-group-name "$AWS_SSM_LOG_GROUP"') == 2
-        assert (
-            script.count(
-                '--log-stream-name-prefix "${command_id}/${target_id}/aws-runShellScript/stdout"'
-            )
-            == 2
-        )
-        assert script.count("--query 'length(events)'") == 2
+        marker_helper = CLOUDWATCH_MARKER_COUNT.read_text(encoding="utf-8")
+        assert "--output json" in marker_helper
+        assert "--no-paginate" in marker_helper
+        assert "--cli-connect-timeout 5" in marker_helper
+        assert "--cli-read-timeout 10" in marker_helper
+        assert script.count('cloudwatch_marker_count "$AWS_REGION"') == 2
+        assert '--log-group-name "$log_group"' in marker_helper
+        assert '--log-stream-name-prefix "$log_stream_prefix"' in marker_helper
+        assert "--query '{count:length(events),next_token:nextToken}'" in marker_helper
         for marker_count in ("failure_event_count", "success_event_count"):
             marker_guard = re.search(
                 rf'if ! \[\[ "\${marker_count}" =~ \^\[0-9\]\+\$ \]\]; then(?P<body>.*?)\n\s+fi',
@@ -4013,14 +4010,11 @@ aws() {
         count_value="${FAILURE_COUNTS[$(( ${#FAILURE_COUNTS[@]} - 1 ))]}"
       fi
       [ "$count_value" = "__EMPTY__" ] && count_value=""
-      if [ "$count_value" = "__PAGINATED_ONE__" ]; then
-        if [ "$output_format" = json ]; then
-          printf '1\n'
-        else
-          printf '0\n1\n0\n'
-        fi
-      else
-        printf '%s\n' "$count_value"
+      [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
+      if [[ "$count_value" =~ ^[0-9]+$ ]]; then
+        printf '{"count":%s,"next_token":null}\n' "$count_value"
+      elif [ -n "$count_value" ]; then
+        printf '{"count":"%s","next_token":null}\n' "$count_value"
       fi
       printf '%s\n' "$((query_index + 1))" > "$FAILURE_QUERY_INDEX_FILE"
       ;;
@@ -4032,14 +4026,11 @@ aws() {
         count_value="${SUCCESS_COUNTS[$(( ${#SUCCESS_COUNTS[@]} - 1 ))]}"
       fi
       [ "$count_value" = "__EMPTY__" ] && count_value=""
-      if [ "$count_value" = "__PAGINATED_ONE__" ]; then
-        if [ "$output_format" = json ]; then
-          printf '1\n'
-        else
-          printf '0\n1\n0\n'
-        fi
-      else
-        printf '%s\n' "$count_value"
+      [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
+      if [[ "$count_value" =~ ^[0-9]+$ ]]; then
+        printf '{"count":%s,"next_token":null}\n' "$count_value"
+      elif [ -n "$count_value" ]; then
+        printf '{"count":"%s","next_token":null}\n' "$count_value"
       fi
       printf '%s\n' "$((query_index + 1))" > "$SUCCESS_QUERY_INDEX_FILE"
       ;;
@@ -4063,6 +4054,7 @@ SUCCESS_QUERY_INDEX_FILE="$STATE_DIR/success_query_index"
 printf '0\n' > "$FAILURE_QUERY_INDEX_FILE"
 printf '0\n' > "$SUCCESS_QUERY_INDEX_FILE"
 """
+        + f"\nsource {CLOUDWATCH_MARKER_COUNT!s}\n"
         + polling_script
         + """
 if [ "$marker_state" != "success" ]; then
@@ -4323,6 +4315,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
     }
     assert required_findb_ci_paths <= _aggregate_ci_paths("findb")
     shared_runtime_paths = {
+        "infra/deploy/cloudwatch_marker_count.sh",
         "infra/deploy/release_manifest.py",
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
@@ -4367,6 +4360,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
         "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
+        "infra/deploy/cloudwatch_marker_count.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         "infra/deploy/release_manifest.py",
         ".github/workflows/fetcher-cd.yml",
@@ -4704,11 +4698,7 @@ next_value() {
     return 7
   fi
   if [ "$value" = "__PAGINATED_ONE__" ]; then
-    if [ "$output_format" = json ]; then
-      printf '1\n'
-    else
-      printf '0\n1\n0\n'
-    fi
+    printf '1\n'
     return 0
   fi
   if [ "$value" != "__EMPTY__" ]; then
@@ -4742,17 +4732,23 @@ aws() {
             ;;
         esac
       done
+      local marker_value
       case "$filter_pattern" in
         *status=failed*)
-          next_value "$FAILURE_INDEX_FILE" FAILURE_VALUES "$output_format"
+          marker_value="$(next_value "$FAILURE_INDEX_FILE" FAILURE_VALUES "$output_format")" || return
           ;;
         *status=success*)
-          next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES "$output_format"
+          marker_value="$(next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES "$output_format")" || return
           ;;
         *)
           return 42
           ;;
       esac
+      if [[ "$marker_value" =~ ^[0-9]+$ ]]; then
+        printf '{"count":%s,"next_token":null}\n' "$marker_value"
+      elif [ -n "$marker_value" ]; then
+        printf '{"count":"%s","next_token":null}\n' "$marker_value"
+      fi
       ;;
     *)
       return 43
@@ -4780,6 +4776,7 @@ printf '0\\n' > "$STATUS_INDEX_FILE"
 printf '0\\n' > "$FAILURE_INDEX_FILE"
 printf '0\\n' > "$SUCCESS_INDEX_FILE"
 """
+        + f"\nsource {CLOUDWATCH_MARKER_COUNT!s}\n"
         + polling_script
         + """
 exit 1
@@ -4804,6 +4801,7 @@ exit 1
         ["bash", "-c", harness],
         capture_output=True,
         check=False,
+        cwd=REPO_ROOT,
         env=environment,
         text=True,
         timeout=10,
@@ -4852,8 +4850,7 @@ exit 1
             0,
             (4, 4, 4),
         ),
-        # With --output text AWS CLI applies length(events) to each page and
-        # emits 0/1/0.  JSON aggregates that same paginated query to one 1.
+        # The bounded marker helper returns as soon as a matching page is found.
         (("Success",), ("0",), ("__PAGINATED_ONE__",), 0, (1, 1, 1)),
         # A terminal success without the marker still fails closed at the
         # bounded polling deadline.
@@ -4892,22 +4889,130 @@ def test_phase4_ssm_polling_handles_terminal_status_and_marker_delivery(
     assert call_counts == expected_call_counts, message
 
 
-def test_findb_cloudwatch_marker_counts_are_paginated_json_scalars() -> None:
-    workflow = _load_workflow(FINDB_CD_WORKFLOW)
-    for step_name in (
-        "Run staging AWS and SSM preflight",
-        "Run bounded FinDB staging deployment and acceptance over SSM",
-        "Activate accepted FinDB release over SSM",
-    ):
-        script = _named_step(workflow, "deploy", step_name)["run"]
-        marker_query_outputs = re.findall(
-            r"aws logs filter-log-events"
-            r"(?:(?!aws logs filter-log-events).)*?"
-            r"--query 'length\(events\)'\s*\\?\s*--output (\w+)",
-            script,
-            re.DOTALL,
-        )
-        assert marker_query_outputs == ["json", "json"]
+@pytest.mark.parametrize(
+    ("workflow_path", "job_name", "step_names"),
+    (
+        (
+            FINDB_CD_WORKFLOW,
+            "deploy",
+            (
+                "Run staging AWS and SSM preflight",
+                "Run bounded FinDB staging deployment and acceptance over SSM",
+                "Activate accepted FinDB release over SSM",
+            ),
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            "deploy",
+            (
+                "Run staging AWS and SSM preflight",
+                "Run bounded Fetcher candidate validation over SSM",
+                "Activate accepted Fetcher release over SSM",
+            ),
+        ),
+        (
+            FETCHER_CD_WORKFLOW,
+            "finlab-acquisition-smoke",
+            ("Run bounded FinLab acquisition smoke over SSM",),
+        ),
+    ),
+)
+def test_cloudwatch_marker_polling_uses_bounded_helper(
+    workflow_path: Path, job_name: str, step_names: tuple[str, ...]
+) -> None:
+    workflow = _load_workflow(workflow_path)
+    for step_name in step_names:
+        script = _named_step(workflow, job_name, step_name)["run"]
+        assert "source infra/deploy/cloudwatch_marker_count.sh" in script
+        assert "cloudwatch_marker_count" in script
+        assert "aws logs filter-log-events" not in script
+
+
+def _run_cloudwatch_marker_helper(
+    tmp_path: Path, pages: dict[str, tuple[int, str]]
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state_file = tmp_path / "calls"
+    page_file = tmp_path / "pages.json"
+    page_file.write_text(json.dumps(pages), encoding="utf-8")
+    aws_script = fake_bin / "aws"
+    aws_script.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+assert args[:2] == ["logs", "filter-log-events"]
+required = {
+    "--no-paginate",
+    "--cli-connect-timeout",
+    "--cli-read-timeout",
+}
+assert required.issubset(args)
+token = ""
+if "--next-token" in args:
+    token = args[args.index("--next-token") + 1]
+with open(os.environ["CALLS_FILE"], "a", encoding="utf-8") as calls:
+    calls.write(token + "\\n")
+with open(os.environ["PAGES_FILE"], encoding="utf-8") as source:
+    count, next_token = json.load(source)[token]
+print(json.dumps({"count": count, "next_token": next_token or None}))
+""",
+        encoding="utf-8",
+    )
+    aws_script.chmod(0o755)
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source {CLOUDWATCH_MARKER_COUNT!s}; cloudwatch_marker_count region group stream "marker status=success"',
+        ],
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CALLS_FILE": str(state_file),
+            "PAGES_FILE": str(page_file),
+        },
+        text=True,
+        timeout=10,
+    )
+
+
+def test_cloudwatch_marker_helper_stops_on_repeated_next_token(tmp_path: Path) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {
+            "": (0, "token-a"),
+            "token-a": (0, "token-b"),
+            "token-b": (0, "token-a"),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "0\n"
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
+        "",
+        "token-a",
+        "token-b",
+    ]
+
+
+def test_cloudwatch_marker_helper_returns_on_first_matching_page(tmp_path: Path) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {"": (0, "token-a"), "token-a": (1, "token-b")},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
+        "",
+        "token-a",
+    ]
 
 
 def test_findb_deploy_timeout_covers_bounded_ssm_polling_and_operational_margin() -> None:
