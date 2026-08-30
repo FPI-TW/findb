@@ -3,8 +3,9 @@
 > 目前實際target是staging；production workflow capability存在，但production EC2與外部資源
 > 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
 > accepted bundle固定為exact digest；FinDB staging workflow 的程式碼已改為OIDC＋SSM two-phase bounded candidate／activation，
-> 並已完成兩次正常live deployment與一次同accepted identity replay。不同digest的previous-release rollback、
-> 不同Alembic revision的schema拒絕演練仍未完成。`staging-findb`的三個FinDB deploy SSH secrets已刪除；Fetcher及production仍保留
+> 並已完成兩次正常live deployment與一次同accepted identity replay，Phase 4 exit gate已完成。不同digest的
+> previous-release rollback與不同Alembic revision的schema拒絕演練移至Phase 6，仍未執行。
+> `staging-findb`的三個FinDB deploy SSH secrets已刪除；Fetcher及production仍保留
 > SSH相容路徑；退場計畫見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
@@ -138,8 +139,9 @@ operator必須另行移除不用的repository／Environment設定。
 目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager，host loader只在
 `/run` tmpfs建立`0600` bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是
 staging runtime source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
-FinDB staging日常deployment transport已以兩次normal run與一次accepted replay完成SSM live驗證；
-different-digest rollback與schema-incompatibility rejection仍為未完成exit gates。staging-findb已移除
+FinDB staging日常deployment transport已以兩次normal run與一次accepted replay完成SSM live驗證，
+Phase 4 exit gate已完成；different-digest rollback與schema-incompatibility rejection移至Phase 6，仍未執行。
+staging-findb已移除
 `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`三個FinDB deploy secrets；此事不涵蓋TCP/22、
 SSH recovery ingress／keys、Fetcher、production或GitHub runtime copies。
 Fetcher與production仍使用SSH相容路徑。
@@ -301,7 +303,9 @@ accepted tar／record的VersionId仍為`.rTPHJxsyKs0cxDGa.EQtVObbtd8A6M6`／
 這些結果驗證immutable accepted replay與two-phase SSM protocol，**不**構成不同digest的previous-release
 rollback rehearsal：兩次normal deployment的digest相同。唯一舊的不同digest accepted bundle（commit
 `b499869c8ff86e09232c1b55516787ae7ed5d2f0`）與目前deploy contract不相容，workflow會fail closed；目前也
-沒有不同Alembic revision的accepted release可安全進行live schema-incompatibility rejection。`staging-findb`的
+沒有不同Alembic revision的accepted release可安全進行live schema-incompatibility rejection。Owner已將這兩項
+rehearsal移至Phase 6，因此不再阻塞Phase 4，但不得把同digest replay誤稱為rollback或宣稱演練已完成。
+`staging-findb`的
 `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`已在Phase 4 live acceptance後移除；其餘SSH
 recovery／network或其他unit scope不在本次變更內。
 
