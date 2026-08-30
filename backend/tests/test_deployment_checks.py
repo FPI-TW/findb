@@ -4257,6 +4257,245 @@ def test_findb_staging_deployment_uses_only_ssm_and_records_the_actual_command()
     assert "steps.ssm_activate.outputs" not in accepted["run"]
 
 
+def _run_phase4_ssm_polling_case(
+    tmp_path: Path,
+    step_name: str,
+    *,
+    statuses: tuple[str, ...],
+    failure_counts: tuple[str, ...],
+    success_counts: tuple[str, ...],
+) -> tuple[subprocess.CompletedProcess[str], tuple[int, int, int]]:
+    """Run a Phase 4 polling block with scripted SSM and CloudWatch replies."""
+
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    script = _named_step(workflow, "deploy", step_name)["run"]
+    polling_start = script.index('success_marker="')
+    polling_end = script.index('\necho "::error title=FinDB', polling_start)
+    polling_script = script[polling_start:polling_end]
+    state_dir = tmp_path / step_name.replace(" ", "-")
+    state_dir.mkdir()
+
+    harness = (
+        """
+set -euo pipefail
+
+next_value() {
+  local index_file="$1"
+  local sequence_name="$2"
+  local index
+  IFS= read -r index < "$index_file"
+  local -a sequence
+  case "$sequence_name" in
+    STATUS_VALUES)
+      sequence=("${STATUS_VALUES[@]}")
+      ;;
+    FAILURE_VALUES)
+      sequence=("${FAILURE_VALUES[@]}")
+      ;;
+    SUCCESS_VALUES)
+      sequence=("${SUCCESS_VALUES[@]}")
+      ;;
+    *)
+      return 44
+      ;;
+  esac
+  local value
+  if [ "$index" -lt "${#sequence[@]}" ]; then
+    value="${sequence[$index]}"
+  else
+    value="${sequence[$(( ${#sequence[@]} - 1 ))]}"
+  fi
+  printf '%s\\n' "$((index + 1))" > "$index_file"
+  if [ "$value" = "__ERROR__" ]; then
+    return 7
+  fi
+  if [ "$value" != "__EMPTY__" ]; then
+    printf '%s\\n' "$value"
+  fi
+}
+
+aws() {
+  local service="$1"
+  local operation="$2"
+  shift 2
+  case "$service:$operation" in
+    ssm:get-command-invocation)
+      next_value "$STATUS_INDEX_FILE" STATUS_VALUES
+      ;;
+    logs:filter-log-events)
+      local filter_pattern=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --filter-pattern)
+            filter_pattern="$2"
+            shift 2
+            ;;
+          *)
+            shift
+            ;;
+        esac
+      done
+      case "$filter_pattern" in
+        *status=failed*)
+          next_value "$FAILURE_INDEX_FILE" FAILURE_VALUES
+          ;;
+        *status=success*)
+          next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES
+          ;;
+        *)
+          return 42
+          ;;
+      esac
+      ;;
+    *)
+      return 43
+      ;;
+  esac
+}
+
+sleep() { :; }
+
+AWS_REGION=test-region
+AWS_SSM_LOG_GROUP=test-log-group
+TARGET_ID=test-target
+DEPLOY_MARKER_TOKEN=test-token
+ACTIVATION_MARKER_TOKEN=test-token
+command_id=test-command
+GITHUB_OUTPUT="$STATE_DIR/github_output"
+: > "$GITHUB_OUTPUT"
+IFS='|' read -r -a STATUS_VALUES <<< "$STATUS_SEQUENCE"
+IFS='|' read -r -a FAILURE_VALUES <<< "$FAILURE_COUNT_SEQUENCE"
+IFS='|' read -r -a SUCCESS_VALUES <<< "$SUCCESS_COUNT_SEQUENCE"
+STATUS_INDEX_FILE="$STATE_DIR/status_index"
+FAILURE_INDEX_FILE="$STATE_DIR/failure_index"
+SUCCESS_INDEX_FILE="$STATE_DIR/success_index"
+printf '0\\n' > "$STATUS_INDEX_FILE"
+printf '0\\n' > "$FAILURE_INDEX_FILE"
+printf '0\\n' > "$SUCCESS_INDEX_FILE"
+"""
+        + polling_script
+        + """
+exit 1
+"""
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "STATUS_SEQUENCE": "|".join(
+                "__EMPTY__" if status == "" else status for status in statuses
+            ),
+            "FAILURE_COUNT_SEQUENCE": "|".join(
+                "__EMPTY__" if count == "" else count for count in failure_counts
+            ),
+            "SUCCESS_COUNT_SEQUENCE": "|".join(
+                "__EMPTY__" if count == "" else count for count in success_counts
+            ),
+            "STATE_DIR": str(state_dir),
+        }
+    )
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=10,
+    )
+    call_counts = tuple(
+        int((state_dir / index_name).read_text(encoding="utf-8"))
+        for index_name in ("status_index", "failure_index", "success_index")
+    )
+    return completed, call_counts
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    (
+        "Run bounded FinDB staging deployment and acceptance over SSM",
+        "Activate accepted FinDB release over SSM",
+    ),
+)
+@pytest.mark.parametrize(
+    (
+        "statuses",
+        "failure_counts",
+        "success_counts",
+        "expected_returncode",
+        "expected_call_counts",
+    ),
+    (
+        # Transient SSM and CloudWatch CLI failures plus empty/non-numeric
+        # CloudWatch counts before SSM completion must not abandon a command.
+        (
+            ("__ERROR__", "Pending", "InProgress", "Success"),
+            ("__ERROR__", "", "invalid", "0"),
+            ("1",),
+            0,
+            (4, 4, 1),
+        ),
+        # CloudWatch delivery can lag terminal SSM success; wait until the
+        # required numeric success marker is present.
+        (("Success",), ("0",), ("", "invalid", "0", "1"), 0, (4, 4, 4)),
+        # The failure marker query can itself lag or fail after SSM Success;
+        # continue until both marker queries can prove success.
+        (
+            ("Success",),
+            ("__ERROR__", "", "invalid", "0"),
+            ("0", "0", "0", "1"),
+            0,
+            (4, 4, 4),
+        ),
+        # A terminal success without the marker still fails closed at the
+        # bounded polling deadline.
+        (("Success",), ("0",), ("0",), 1, (360, 360, 360)),
+        # Terminal and unexpected SSM statuses fail before querying
+        # CloudWatch; the zero marker query counts prove prompt exit.
+        (("Failed",), ("0",), ("1",), 1, (1, 0, 0)),
+        (("Cancelled",), ("0",), ("1",), 1, (1, 0, 0)),
+        (("TimedOut",), ("0",), ("1",), 1, (1, 0, 0)),
+        (("Unexpected",), ("0",), ("1",), 1, (1, 0, 0)),
+        # A reliably observed failure marker stops an in-progress command.
+        (("InProgress",), ("1",), ("1",), 1, (1, 1, 0)),
+    ),
+)
+def test_phase4_ssm_polling_handles_terminal_status_and_marker_delivery(
+    tmp_path: Path,
+    step_name: str,
+    statuses: tuple[str, ...],
+    failure_counts: tuple[str, ...],
+    success_counts: tuple[str, ...],
+    expected_returncode: int,
+    expected_call_counts: tuple[int, int, int],
+) -> None:
+    completed, call_counts = _run_phase4_ssm_polling_case(
+        tmp_path,
+        step_name,
+        statuses=statuses,
+        failure_counts=failure_counts,
+        success_counts=success_counts,
+    )
+    message = f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+    if expected_returncode == 0:
+        assert completed.returncode == 0, message
+    else:
+        assert completed.returncode != 0, message
+    assert call_counts == expected_call_counts, message
+
+
+def test_findb_deploy_timeout_covers_bounded_ssm_polling_and_operational_margin() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    deploy = workflow["jobs"]["deploy"]
+    timeout_minutes = int(deploy["timeout-minutes"])
+
+    preflight_poll_seconds = 36 * 5
+    phase4_poll_seconds = 360 * 5
+    sequential_poll_seconds = preflight_poll_seconds + (2 * phase4_poll_seconds)
+    operational_margin_seconds = 15 * 60
+
+    assert timeout_minutes == 90
+    assert timeout_minutes * 60 >= sequential_poll_seconds + operational_margin_seconds
+
+
 def test_staging_candidate_stays_stopped_when_acceptance_persistence_fails() -> None:
     workflow = _load_workflow(FINDB_CD_WORKFLOW)
     steps = workflow["jobs"]["deploy"]["steps"]
