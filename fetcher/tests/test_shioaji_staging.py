@@ -1269,6 +1269,10 @@ def test_cli_returns_nonzero_for_non_successful_run(
         "findb_fetcher.shioaji_staging_cli.Coordinator",
         FailedCoordinator,
     )
+    monkeypatch.setattr(
+        "findb_fetcher.shioaji_staging_cli._valid_target_date",
+        lambda *_args: True,
+    )
     state_path = tmp_path / "cli.sqlite"
     manifest = Path(__file__).resolve().parents[1] / "configs/shioaji_tw_staging.v1.json"
     assert (
