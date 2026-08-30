@@ -2397,9 +2397,11 @@ def test_aws_runtime_uses_validated_bundle_without_staging_scp_replacement() -> 
     )
     activation = _named_step(findb, "deploy", "Activate accepted FinDB release over SSM")
     assert "aws ssm send-command" in activation["run"]
-    assert findb_helper.index("findb_aws_deploy=candidate_checks_passed") < findb_helper.index(
-        "findb_aws_deploy=candidate_ready_for_acceptance"
-    ) < findb_helper.index("install_findb_bootstrap.sh")
+    assert (
+        findb_helper.index("findb_aws_deploy=candidate_checks_passed")
+        < findb_helper.index("findb_aws_deploy=candidate_ready_for_acceptance")
+        < findb_helper.index("install_findb_bootstrap.sh")
+    )
 
 
 def test_staging_activation_requires_accepted_record_after_candidate_checks() -> None:
@@ -2409,11 +2411,16 @@ def test_staging_activation_requires_accepted_record_after_candidate_checks() ->
     findb_deploy = _named_step(
         findb, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
     )
-    findb_accepted = _named_step(findb, "deploy", "Persist immutable accepted FinDB deployment bundle")
+    findb_accepted = _named_step(
+        findb, "deploy", "Persist immutable accepted FinDB deployment bundle"
+    )
     findb_activation = _named_step(findb, "deploy", "Activate accepted FinDB release over SSM")
-    assert findb_steps.index(findb_preflight) < findb_steps.index(findb_deploy) < findb_steps.index(
-        findb_accepted
-    ) < findb_steps.index(findb_activation)
+    assert (
+        findb_steps.index(findb_preflight)
+        < findb_steps.index(findb_deploy)
+        < findb_steps.index(findb_accepted)
+        < findb_steps.index(findb_activation)
+    )
     assert "success()" in findb_activation["if"]
     assert "aws s3api get-object" in findb_activation["run"]
     assert ".acceptance.json" in findb_activation["run"]
@@ -2686,7 +2693,10 @@ printf "%s|%s|%s|%s\\n" "$runtime_dir" "$compose_file" "${{COMPOSE_PROJECT_NAME-
     assert "COMPOSE_PROJECT_NAME=findb" in setup
     assert "export COMPOSE_PROJECT_NAME" in setup
     assert "COMPOSE_PROJECT_NAME" not in preserve_setup.split("\n", 1)[0].split(",")
-    assert 'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"' in preserve_setup
+    assert (
+        'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"'
+        in preserve_setup
+    )
     assert 'sudo --preserve-env="$preserve_env" "$runtime_command"' in helper
 
 
@@ -2694,7 +2704,6 @@ def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_loo
     deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
-
 
     render_at = deploy.index('"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"')
     main_up_at = deploy.index('docker compose -f "$compose_file" up -d --remove-orphans </dev/null')
@@ -2750,15 +2759,20 @@ def test_findb_staging_candidate_acceptance_checks_durable_topology_and_worker_p
     candidate_success = deploy.index("findb_aws_deploy=candidate_ready_for_acceptance")
 
     assert "rabbitmq_topology_invalid vhost=/findb" in up_script
-    assert "item.get(\"durable\") is True" in up_script
+    assert 'item.get("durable") is True' in up_script
     assert "celery_worker_ping_failed" in up_script
     assert topology < durable_check < worker_ping < queue_health
     assert up_script.index("findb_aws_deploy=candidate_checks_passed") < candidate_success
     assert "cleanup_unaccepted_candidate()" in deploy
     assert "unaccepted_candidate_stopped" in deploy
     for container in (
-        "findb-nginx", "findb-dashboard", "findb-serve", "findb-ingest",
-        "findb-dispatcher", "findb-worker", "findb-raw-cleanup",
+        "findb-nginx",
+        "findb-dashboard",
+        "findb-serve",
+        "findb-ingest",
+        "findb-dispatcher",
+        "findb-worker",
+        "findb-raw-cleanup",
     ):
         assert container in deploy
     assert "RabbitMQ and its durable volume" in deploy
@@ -2782,7 +2796,7 @@ def test_findb_candidate_cleanup_surfaces_a_docker_stop_failure(tmp_path: Path) 
     fake_docker.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "case \"$1\" in\n"
+        'case "$1" in\n'
         "  ps) printf '%s\\n' findb-nginx findb-dashboard findb-serve findb-ingest findb-dispatcher findb-worker findb-raw-cleanup ;;\n"
         "  inspect) printf '%s\\n' 'running true false' ;;\n"
         "  stop) exit 71 ;;\n"
@@ -3369,7 +3383,11 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
                 )
             }
             documented_names = set(
-                (*config.variables_for(target), *config.secrets_for(target), *config.optional_secrets)
+                (
+                    *config.variables_for(target),
+                    *config.secrets_for(target),
+                    *config.optional_secrets,
+                )
             )
             assert configured_names == documented_names
 
@@ -5337,7 +5355,9 @@ def test_predeploy_database_url_matches_expected_rds_endpoint(
     assert database_url_matches_expected_host(database_url, expected_endpoint) is expected
 
 
-def test_predeploy_schema_compatibility_allows_current_or_ancestor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_predeploy_schema_compatibility_allows_current_or_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Revision:
         def __init__(self, revision: str) -> None:
             self.revision = revision
@@ -5348,7 +5368,9 @@ def test_predeploy_schema_compatibility_allows_current_or_ancestor(monkeypatch: 
             return [Revision("target"), Revision("current"), Revision("base")]
 
     monkeypatch.setattr(predeploy_db_check, "Config", lambda _path: object())
-    monkeypatch.setattr(predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts())
+    monkeypatch.setattr(
+        predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts()
+    )
     assert is_schema_compatible_with_target(current_revision="target", target_revision="target")
     assert is_schema_compatible_with_target(current_revision="current", target_revision="target")
 
@@ -5367,17 +5389,19 @@ def test_predeploy_schema_compatibility_rejects_newer_or_unknown_database_revisi
             return [Revision("older-target"), Revision("base")]
 
     monkeypatch.setattr(predeploy_db_check, "Config", lambda _path: object())
-    monkeypatch.setattr(predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts())
+    monkeypatch.setattr(
+        predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts()
+    )
     assert not is_schema_compatible_with_target(
         current_revision="newer-database", target_revision="older-target"
     )
-    assert not is_schema_compatible_with_target(current_revision="current", target_revision="unknown")
+    assert not is_schema_compatible_with_target(
+        current_revision="current", target_revision="unknown"
+    )
 
 
 def test_activation_requires_database_at_the_exact_selected_revision() -> None:
-    assert database_revision_matches_expected(
-        current_revision="target", expected_revision="target"
-    )
+    assert database_revision_matches_expected(current_revision="target", expected_revision="target")
     assert not database_revision_matches_expected(
         current_revision="ancestor", expected_revision="target"
     )
@@ -5406,14 +5430,16 @@ def test_predeploy_database_state_rejects_missing_or_unnegotiated_tls() -> None:
     ]
 
 
-def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(tmp_path: Path) -> None:
+def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
+    tmp_path: Path,
+) -> None:
     """An incompatible target fails before writer-stop, migration, or candidate cleanup."""
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
-    preserve = "preserve_env=" + helper.split("preserve_env=", 1)[1].split(
-        "\n\nrun_runtime()", 1
-    )[0]
+    preserve = (
+        "preserve_env=" + helper.split("preserve_env=", 1)[1].split("\n\nrun_runtime()", 1)[0]
+    )
     runtime_body = helper.split("run_runtime() {\n", 1)[1].split("\n}\n\nif [ ! -f", 1)[0]
     migration_check = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
         "\nMIGRATION_CHECK_SCRIPT", 1
@@ -5422,15 +5448,15 @@ def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(tmp
     fake_bin.mkdir()
     command_log = tmp_path / "commands.log"
     (fake_bin / "sudo").write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\npreserved=\"\"\nif [[ \"$1\" == --preserve-env=* ]]; then preserved=\"${1#--preserve-env=}\"; shift; fi\nargs=(\"PATH=$PATH\")\nIFS=, read -r -a names <<< \"$preserved\"\nfor name in \"${names[@]}\"; do args+=(\"$name=${!name-}\"); done\nexec env -i \"${args[@]}\" \"$@\"\n",
+        '#!/usr/bin/env bash\nset -euo pipefail\npreserved=""\nif [[ "$1" == --preserve-env=* ]]; then preserved="${1#--preserve-env=}"; shift; fi\nargs=("PATH=$PATH")\nIFS=, read -r -a names <<< "$preserved"\nfor name in "${names[@]}"; do args+=("$name=${!name-}"); done\nexec env -i "${args[@]}" "$@"\n',
         encoding="utf-8",
     )
     (fake_bin / "runtime-secret-command").write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\nwhile [[ \"$#\" -gt 0 && \"$1\" != -- ]]; do shift; done\nshift\nexec \"$@\"\n",
+        '#!/usr/bin/env bash\nset -euo pipefail\nwhile [[ "$#" -gt 0 && "$1" != -- ]]; do shift; done\nshift\nexec "$@"\n',
         encoding="utf-8",
     )
     (fake_bin / "docker").write_text(
-        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" >> {command_log!s}\ncase \"$*\" in *predeploy_db_check.py*) exit 42 ;; esac\nexit 0\n",
+        f'#!/usr/bin/env bash\nset -euo pipefail\nprintf \'%s\\n\' "$*" >> {command_log!s}\ncase "$*" in *predeploy_db_check.py*) exit 42 ;; esac\nexit 0\n',
         encoding="utf-8",
     )
     for command in fake_bin.iterdir():

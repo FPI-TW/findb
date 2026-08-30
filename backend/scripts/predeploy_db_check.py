@@ -41,9 +41,7 @@ def database_revision_matches_expected(
     return bool(current_revision) and current_revision == expected_revision
 
 
-def is_schema_compatible_with_target(
-    *, current_revision: str | None, target_revision: str
-) -> bool:
+def is_schema_compatible_with_target(*, current_revision: str | None, target_revision: str) -> bool:
     """Require the running schema to be an ancestor of the selected application.
 
     A rollback image whose migration graph cannot reach the current schema is
