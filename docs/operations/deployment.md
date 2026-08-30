@@ -3,8 +3,9 @@
 > 目前實際target是staging；production workflow capability存在，但production EC2與外部資源
 > 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
 > accepted bundle固定為exact digest；FinDB staging workflow 的程式碼已改為OIDC＋SSM two-phase bounded candidate／activation，
-> 但尚未執行live deployment、兩次部署、rollback rehearsal或SSH secret移除。Fetcher及production仍保留
-> SSH相容路徑。退場計畫見
+> 並已完成兩次正常live deployment與一次同accepted identity replay。不同digest的previous-release rollback、
+> 不同Alembic revision的schema拒絕演練，以及另行授權的SSH secret移除仍未完成。Fetcher及production仍保留
+> SSH相容路徑；退場計畫見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
 ## Workflow與release units
@@ -137,7 +138,8 @@ operator必須另行移除不用的repository／Environment設定。
 目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager，host loader只在
 `/run` tmpfs建立`0600` bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是
 staging runtime source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
-FinDB staging日常deployment transport的local workflow已切換為SSM；尚待live exit gate驗證。
+FinDB staging日常deployment transport已以兩次normal run與一次accepted replay完成SSM live驗證；
+different-digest rollback、schema-incompatibility rejection與SSH secret removal仍為未完成exit gates。
 Fetcher與production仍使用SSH相容路徑。
 
 ## Credential與storage邊界
@@ -249,14 +251,14 @@ bucket（`findb/` 或 `fetcher/` prefix），SSM preflight 先以 instance role 
 bundle/manifest 與 exact `repository@sha256` image refs，才會 pull image 或中斷 writer。
 
 FinDB staging candidate 僅可在bounded checks期間啟動，成功回傳前必須直接停下固定的public／application／writer
-containers，且不可變更`current` pointer。健康驗收成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA
+containers，且不可變更`current` pointer。candidate成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA
 命名的 `*/accepted/` key；strict acceptance record 才是 accepted 的 commit point，只有 bundle 而無等價 record
 不可 replay。record存在後才可送出另一個bounded SSM activation command；activation只接受DB已在exact selected
 Alembic revision，絕不再次migration。條件寫入遇到既有
 bundle時會重新驗證 SHA，遇到既有 record 時只接受相同 immutable identity，因此可安全完成 orphan bundle 的
 record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit 的 accepted immutable key，不能使用
-candidate、latest 或跨 unit key，也不可重新產生 manifest。此契約已完成兩個unit的normal accepted
-deployment與replay live acceptance；日常host transport目前仍是SSH action，SSM transport cutover屬後續phase。
+candidate、latest 或跨 unit key，也不可重新產生 manifest。Phase 3的兩個unit normal accepted deployment與
+replay live acceptance已完成；FinDB日常host transport已在Phase 4切換為SSM，Fetcher仍使用SSH action。
 
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
@@ -266,7 +268,8 @@ paths。staging canary/deploy/provider helper、catalog、Compose 與 Nginx rend
 archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
 且 bucket keys 關閉以保留 unit-prefix KMS encryption context。
 
-2026-08-30的current accepted commit為`b499869c8ff86e09232c1b55516787ae7ed5d2f0`：
+以下是Phase 3當時建立的accepted record；`b499869c8ff86e09232c1b55516787ae7ed5d2f0`不是目前
+FinDB accepted identity。本文最後驗證的Fetcher accepted commit仍為該值：
 
 - FinDB normal run [33260508254](https://github.com/FPI-TW/findb/actions/runs/33260508254)建立
   `findb/accepted/b499869c8ff86e09232c1b55516787ae7ed5d2f0/0f90cbe570e34bc8bebe5c9a1737edfd881a7bc4e9d83ca4103a79dd884986cf.tar`；
@@ -278,6 +281,25 @@ archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 object
   digests，accepted tar／record VersionId保持不變，並切換`/opt/fetcher/current`至本次immutable release。
 - Replay的bundle generation／upload／persist steps均依契約skipped，production jobs亦skipped。Fetcher
   replay的FinLab acquisition smoke同樣skipped，不得把它當成Phase 2A原生provider cycle或資料取得驗收。
+
+### FinDB Phase 4 SSM live record（2026-08-30）
+
+目前FinDB accepted commit為`0a45328539cc66eff8e1b63afc6ac3b064b406e8`。
+
+FinDB normal runs [33303655357](https://github.com/FPI-TW/findb/actions/runs/33303655357) 與
+[33304135877](https://github.com/FPI-TW/findb/actions/runs/33304135877)均以OIDC＋SSM完成；兩次使用
+相同image digests。accepted replay run
+[33304630225](https://github.com/FPI-TW/findb/actions/runs/33304630225)使用
+`findb/accepted/0a45328539cc66eff8e1b63afc6ac3b064b406e8/9c61a81fb351ae7ed17a0cc7bf88e8b5804a3a4aa481b82ec801a7a334117311.tar`，
+只執行preflight與activation，candidate與persist均依契約skipped。activation SSM command
+`3899bcd3-32a9-444c-8402-5ce6ae30ac50`為`Success`／exit 0且有success marker；health回應為200。
+accepted tar／record的VersionId仍為`.rTPHJxsyKs0cxDGa.EQtVObbtd8A6M6`／
+`Loij0QSs05Iz.uCPojZV93w7Cl42JgqP`，沒有新增version或delete marker。
+
+這些結果驗證immutable accepted replay與two-phase SSM protocol，**不**構成不同digest的previous-release
+rollback rehearsal：兩次normal deployment的digest相同。唯一舊的不同digest accepted bundle（commit
+`b499869c8ff86e09232c1b55516787ae7ed5d2f0`）與目前deploy contract不相容，workflow會fail closed；目前也
+沒有不同Alembic revision的accepted release可安全進行live schema-incompatibility rejection。SSH secrets尚未移除。
 
 Deploy後至少完成：
 
