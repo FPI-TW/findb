@@ -29,7 +29,7 @@
   staging deployment plan的Phase 6 exit gate保留。
 - [ ] FinDB Phase 4已完成兩次正常SSM deployment與同accepted identity replay；仍須依
   [staging AWS deployment plan](staging-aws-deployment-plan.md)演練不同digest的previous-release rollback、
-  schema不相容拒絕，並在另行授權後處理SSH secret移除；同時完成Fetcher Phase 5 SSM日常deployment
+  schema不相容拒絕；staging-findb的三個FinDB deploy SSH secrets已刪除。同時完成Fetcher Phase 5 SSM日常deployment
   transport與相應演練。
 - [ ] 完成Phase 6的CloudWatch alarms與synthetic notification、RDS restore、Fetcher SQLite recovery、
   RabbitMQ rebuild、current EBS encrypted backup chain及SSH ingress退場。
