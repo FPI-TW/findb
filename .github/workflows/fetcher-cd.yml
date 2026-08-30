@@ -1163,13 +1163,13 @@ jobs:
           success_marker="phase5_candidate_marker=${MARKER_TOKEN} status=success"
           failure_marker="phase5_candidate_marker=${MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
-            failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$status" in
               Success)
+                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then exit 1; fi
                 success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
               Pending|InProgress|Delayed|Cancelling|""|None) ;;
               *) exit 1 ;;
             esac
@@ -1297,13 +1297,13 @@ jobs:
           success_marker="phase5_activate_marker=${MARKER_TOKEN} status=success"
           failure_marker="phase5_activate_marker=${MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
-            failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$status" in
               Success)
+                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then exit 1; fi
                 success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
               Pending|InProgress|Delayed|Cancelling|""|None) ;;
               *) exit 1 ;;
             esac
@@ -1989,10 +1989,16 @@ jobs:
           success_marker="phase5_finlab_smoke_marker=${MARKER_TOKEN} status=success"
           failure_marker="phase5_finlab_smoke_marker=${MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 120); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
-            failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
-            case "$status" in Success) success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"; if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then exit 0; fi ;; Pending|InProgress|Delayed|Cancelling|""|None) ;; *) exit 1 ;; esac
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
+            case "$status" in
+              Success)
+                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then exit 1; fi
+                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then exit 0; fi ;;
+              Pending|InProgress|Delayed|Cancelling|""|None) ;;
+              *) exit 1 ;;
+            esac
             sleep 5
           done
           exit 1
