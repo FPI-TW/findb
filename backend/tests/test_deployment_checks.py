@@ -3655,6 +3655,7 @@ aws() {
   fi
   local log_stream_prefix=""
   local filter_pattern=""
+  local output_format=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --log-stream-name-prefix)
@@ -3663,6 +3664,10 @@ aws() {
         ;;
       --filter-pattern)
         filter_pattern="$2"
+        shift 2
+        ;;
+      --output)
+        output_format="$2"
         shift 2
         ;;
       *)
@@ -3682,7 +3687,15 @@ aws() {
         count_value="${FAILURE_COUNTS[$(( ${#FAILURE_COUNTS[@]} - 1 ))]}"
       fi
       [ "$count_value" = "__EMPTY__" ] && count_value=""
-      printf '%s\n' "$count_value"
+      if [ "$count_value" = "__PAGINATED_ONE__" ]; then
+        if [ "$output_format" = json ]; then
+          printf '1\n'
+        else
+          printf '0\n1\n0\n'
+        fi
+      else
+        printf '%s\n' "$count_value"
+      fi
       printf '%s\n' "$((query_index + 1))" > "$FAILURE_QUERY_INDEX_FILE"
       ;;
     *"status=success"*)
@@ -3693,7 +3706,15 @@ aws() {
         count_value="${SUCCESS_COUNTS[$(( ${#SUCCESS_COUNTS[@]} - 1 ))]}"
       fi
       [ "$count_value" = "__EMPTY__" ] && count_value=""
-      printf '%s\n' "$count_value"
+      if [ "$count_value" = "__PAGINATED_ONE__" ]; then
+        if [ "$output_format" = json ]; then
+          printf '1\n'
+        else
+          printf '0\n1\n0\n'
+        fi
+      else
+        printf '%s\n' "$count_value"
+      fi
       printf '%s\n' "$((query_index + 1))" > "$SUCCESS_QUERY_INDEX_FILE"
       ;;
     *)
@@ -3757,6 +3778,13 @@ fi
         ("empty success count fails closed", ("0",), ("",), 0, 1),
         ("non-numeric success count fails closed", ("0",), ("invalid",), 0, 1),
         ("AWS query failure fails closed", ("0",), ("1",), 7, 1),
+        (
+            "paginated count aggregates to one JSON scalar",
+            ("0",),
+            ("__PAGINATED_ONE__",),
+            0,
+            0,
+        ),
     ),
 )
 def test_staging_ssm_marker_count_polling_behavior(
@@ -4282,6 +4310,7 @@ set -euo pipefail
 next_value() {
   local index_file="$1"
   local sequence_name="$2"
+  local output_format="${3:-}"
   local index
   IFS= read -r index < "$index_file"
   local -a sequence
@@ -4309,6 +4338,14 @@ next_value() {
   if [ "$value" = "__ERROR__" ]; then
     return 7
   fi
+  if [ "$value" = "__PAGINATED_ONE__" ]; then
+    if [ "$output_format" = json ]; then
+      printf '1\n'
+    else
+      printf '0\n1\n0\n'
+    fi
+    return 0
+  fi
   if [ "$value" != "__EMPTY__" ]; then
     printf '%s\\n' "$value"
   fi
@@ -4324,10 +4361,15 @@ aws() {
       ;;
     logs:filter-log-events)
       local filter_pattern=""
+      local output_format=""
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --filter-pattern)
             filter_pattern="$2"
+            shift 2
+            ;;
+          --output)
+            output_format="$2"
             shift 2
             ;;
           *)
@@ -4337,10 +4379,10 @@ aws() {
       done
       case "$filter_pattern" in
         *status=failed*)
-          next_value "$FAILURE_INDEX_FILE" FAILURE_VALUES
+          next_value "$FAILURE_INDEX_FILE" FAILURE_VALUES "$output_format"
           ;;
         *status=success*)
-          next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES
+          next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES "$output_format"
           ;;
         *)
           return 42
@@ -4445,6 +4487,9 @@ exit 1
             0,
             (4, 4, 4),
         ),
+        # With --output text AWS CLI applies length(events) to each page and
+        # emits 0/1/0.  JSON aggregates that same paginated query to one 1.
+        (("Success",), ("0",), ("__PAGINATED_ONE__",), 0, (1, 1, 1)),
         # A terminal success without the marker still fails closed at the
         # bounded polling deadline.
         (("Success",), ("0",), ("0",), 1, (360, 360, 360)),
@@ -4480,6 +4525,24 @@ def test_phase4_ssm_polling_handles_terminal_status_and_marker_delivery(
     else:
         assert completed.returncode != 0, message
     assert call_counts == expected_call_counts, message
+
+
+def test_findb_cloudwatch_marker_counts_are_paginated_json_scalars() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    for step_name in (
+        "Run staging AWS and SSM preflight",
+        "Run bounded FinDB staging deployment and acceptance over SSM",
+        "Activate accepted FinDB release over SSM",
+    ):
+        script = _named_step(workflow, "deploy", step_name)["run"]
+        marker_query_outputs = re.findall(
+            r"aws logs filter-log-events"
+            r"(?:(?!aws logs filter-log-events).)*?"
+            r"--query 'length\(events\)'\s*\\?\s*--output (\w+)",
+            script,
+            re.DOTALL,
+        )
+        assert marker_query_outputs == ["json", "json"]
 
 
 def test_findb_deploy_timeout_covers_bounded_ssm_polling_and_operational_margin() -> None:
