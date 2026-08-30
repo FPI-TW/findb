@@ -43,11 +43,11 @@ findb/
 
 ## 資料層
 
-| 層級 | 儲存位置 | 保存規則 |
-| --- | --- | --- |
-| Raw | `raw.market_payload`，JSONB 原始 payload | 由 `RAW_RETENTION_ENABLED` 控制；預設啟用，期限設定為 `RAW_RETENTION_DAYS=30` |
-| Canonical | `instruments`、`instrument_identifiers`、`trading_calendar`、`market_data_eod`、`corporate_action`、`macro_series`、`macro_observation`、`roll_rule`、`futures_contract`、`futures_continuous_eod` | 長期保存 |
-| Workflow / Registry | `dataset_registry`、`ingestion_attempt`、`ingestion_run`、`normalization_job`、`normalization_outbox`、`dq_issue` | 長期保存 |
+| 層級                | 儲存位置                                                                                                                                                                                           | 保存規則                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Raw                 | `raw.market_payload`，JSONB 原始 payload                                                                                                                                                           | 由 `RAW_RETENTION_ENABLED` 控制；預設啟用，期限設定為 `RAW_RETENTION_DAYS=30` |
+| Canonical           | `instruments`、`instrument_identifiers`、`trading_calendar`、`market_data_eod`、`corporate_action`、`macro_series`、`macro_observation`、`roll_rule`、`futures_contract`、`futures_continuous_eod` | 長期保存                                                                      |
+| Workflow / Registry | `dataset_registry`、`ingestion_attempt`、`ingestion_run`、`normalization_job`、`normalization_outbox`、`dq_issue`                                                                                  | 長期保存                                                                      |
 
 ## 主要流程
 
@@ -58,34 +58,34 @@ findb/
 
 ## 優先查看位置
 
-| 任務 | 位置 | 備註 |
-| --- | --- | --- |
-| App 啟動與生命週期 | `backend/app/main.py` | FastAPI app、lifespan DB init、router mounts、health endpoints |
-| Source 寫入流程 | `backend/app/api/v1/source.py` | auth、idempotency、versioned contract ingestion 與 contract-only rerun |
-| Serve 查詢流程 | `backend/app/api/v1/serve.py` | read-only query endpoints、filters、pagination |
-| Admin API | `backend/app/api/v1/admin.py` | admin-only registry、run、raw payload 查詢與管理 |
-| API dependencies | `backend/app/api/deps.py` | `verify_source_api_key`、`verify_serve_api_key`、IP allowlist、rate limiting |
-| DB dependency | `backend/app/dependencies.py` | async session injection |
-| 設定 | `backend/app/config.py` | 所有設定由 env 與 `get_settings()` 載入 |
-| Ingestion orchestration | `backend/app/services/ingestion.py` | dataset/provider scope validation、run lifecycle、contract-only rerun、`CONTRACT_NORMALIZER_MAP` |
-| Normalizer 基底 | `backend/app/services/normalize/base.py` | `BaseNormalizer`，所有 normalizer 的基底 |
-| 市場資料標準化 | `backend/app/services/normalize/` | 市場別 mapping、DQ checks、canonical writes |
-| DQ 規則 | `backend/app/services/dq/validators.py` | `severity="error"` 會阻擋寫入，`warning` 不會 |
-| ORM/data model | `backend/app/models/` | raw schema、canonical tables、registry tables |
-| API schemas | `backend/app/schemas/` | request/response contracts |
-| Instrument cache | `backend/app/services/instrument_cache.py` + `backend/scripts/generate_instrument_cache.py` | Admin 維護與 generated JSON cache；公開查詢頁為 Dashboard `/dashboard/lookup` |
-| 營運 Dashboard | `dashboard/` | TanStack Start 前端；子目錄規則見 `dashboard/AGENTS.md` |
-| 測試與 fixtures | `backend/tests/` + `backend/tests/conftest.py` | AsyncClient、ASGITransport、DB dependency overrides |
-| Alembic migrations | `backend/alembic.ini` + `backend/migrations/` | schema-as-code；`init_db()` 只驗證 revision，不自動建表 |
-| 開發工作流 | `backend/scripts/dev.py` + `Makefile` | cross-platform local commands |
-| Partial dump tooling | `backend/scripts/partial_dump.py` + `backend/configs/partial_dump.yaml` | export/import partial production data for local dev |
-| Seed upsert | `backend/scripts/seed_upsert.py` | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate |
-| Instrument name backfill | `backend/scripts/backfill_instrument_names.py`（TW）+ `backend/scripts/backfill_world_names.py`（US/HK/CN/FX/indices） | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；TW backfill 支援 `--overwrite-existing` 清理舊版 Big5 解碼亂碼；皆為可重複執行 |
-| Instrument routing 維護 | `backend/scripts/cleanup_stale_instruments.py` | 清理舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等） |
-| 文件 | `docs/README.md` | 唯一文件入口；只保存現行架構、契約、維運規則與未完成 backlog，歷史決策由 Git history 追溯 |
-| Nginx 設定樣板 | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf` | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入） |
-| Nginx render 腳本 | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback |
-| CI/CD 流程 | `.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml` | FinDB 與 Fetcher 各自獨立驗證、建置與部署；production jobs 分別綁定自己的 GitHub Environment |
+| 任務                     | 位置                                                                                                                                                  | 備註                                                                                                                                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App 啟動與生命週期       | `backend/app/main.py`                                                                                                                                 | FastAPI app、lifespan DB init、router mounts、health endpoints                                                                                                                                           |
+| Source 寫入流程          | `backend/app/api/v1/source.py`                                                                                                                        | auth、idempotency、versioned contract ingestion 與 contract-only rerun                                                                                                                                   |
+| Serve 查詢流程           | `backend/app/api/v1/serve.py`                                                                                                                         | read-only query endpoints、filters、pagination                                                                                                                                                           |
+| Admin API                | `backend/app/api/v1/admin.py`                                                                                                                         | admin-only registry、run、raw payload 查詢與管理                                                                                                                                                         |
+| API dependencies         | `backend/app/api/deps.py`                                                                                                                             | `verify_source_api_key`、`verify_serve_api_key`、IP allowlist、rate limiting                                                                                                                             |
+| DB dependency            | `backend/app/dependencies.py`                                                                                                                         | async session injection                                                                                                                                                                                  |
+| 設定                     | `backend/app/config.py`                                                                                                                               | 所有設定由 env 與 `get_settings()` 載入                                                                                                                                                                  |
+| Ingestion orchestration  | `backend/app/services/ingestion.py`                                                                                                                   | dataset/provider scope validation、run lifecycle、contract-only rerun、`CONTRACT_NORMALIZER_MAP`                                                                                                         |
+| Normalizer 基底          | `backend/app/services/normalize/base.py`                                                                                                              | `BaseNormalizer`，所有 normalizer 的基底                                                                                                                                                                 |
+| 市場資料標準化           | `backend/app/services/normalize/`                                                                                                                     | 市場別 mapping、DQ checks、canonical writes                                                                                                                                                              |
+| DQ 規則                  | `backend/app/services/dq/validators.py`                                                                                                               | `severity="error"` 會阻擋寫入，`warning` 不會                                                                                                                                                            |
+| ORM/data model           | `backend/app/models/`                                                                                                                                 | raw schema、canonical tables、registry tables                                                                                                                                                            |
+| API schemas              | `backend/app/schemas/`                                                                                                                                | request/response contracts                                                                                                                                                                               |
+| Instrument cache         | `backend/app/services/instrument_cache.py` + `backend/scripts/generate_instrument_cache.py`                                                           | Admin 維護與 generated JSON cache；公開查詢頁為 Dashboard `/dashboard/lookup`                                                                                                                            |
+| 營運 Dashboard           | `dashboard/`                                                                                                                                          | TanStack Start 前端；子目錄規則見 `dashboard/AGENTS.md`                                                                                                                                                  |
+| 測試與 fixtures          | `backend/tests/` + `backend/tests/conftest.py`                                                                                                        | AsyncClient、ASGITransport、DB dependency overrides                                                                                                                                                      |
+| Alembic migrations       | `backend/alembic.ini` + `backend/migrations/`                                                                                                         | schema-as-code；`init_db()` 只驗證 revision，不自動建表                                                                                                                                                  |
+| 開發工作流               | `backend/scripts/dev.py` + `Makefile`                                                                                                                 | cross-platform local commands                                                                                                                                                                            |
+| Partial dump tooling     | `backend/scripts/partial_dump.py` + `backend/configs/partial_dump.yaml`                                                                               | export/import partial production data for local dev                                                                                                                                                      |
+| Seed upsert              | `backend/scripts/seed_upsert.py`                                                                                                                      | 將 partial dump CSVs 載入 local DB，支援 upsert/truncate                                                                                                                                                 |
+| Instrument name backfill | `backend/scripts/backfill_instrument_names.py`（TW）+ `backend/scripts/backfill_world_names.py`（US/HK/CN/FX/indices）                                | 從 TWSE/TPEX、NASDAQ Trader、HKEX、Tencent 等公開來源補 `instruments.name` 與 `currency`；預設 dry-run，`--apply` 才寫入；TW backfill 支援 `--overwrite-existing` 清理舊版 Big5 解碼亂碼；皆為可重複執行 |
+| Instrument routing 維護  | `backend/scripts/cleanup_stale_instruments.py`                                                                                                        | 清理舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等）                                                                                                                        |
+| 文件                     | `docs/README.md`                                                                                                                                      | 唯一文件入口；只保存現行架構、契約、維運規則與未完成 backlog，歷史決策由 Git history 追溯                                                                                                                |
+| Nginx 設定樣板           | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf`                    | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入）                                                                                       |
+| Nginx render 腳本        | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback                                                                                                                     |
+| CI/CD 流程               | `.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml`            | FinDB 與 Fetcher 各自獨立驗證、建置與部署；production jobs 分別綁定自己的 GitHub Environment                                                                                                             |
 
 ## 子目錄指南
 
@@ -153,9 +153,10 @@ findb/
 
 ## 測試環境
 
-- 任何程式碼或 workflow 變動後，交付前必須執行與影響範圍相符的測試；修正既有測試失敗時，
-  至少重跑原失敗測試與相關 test suite。靜態檢查不能取代測試執行；若受環境限制無法執行，
-  必須明確記錄未執行項目與原因，不得宣稱測試通過。
+- 任何修改交付前，必須完整執行全專案的 format check、lint check、type check；若包含程式碼或
+  workflow 變動，另須執行與影響範圍相符的測試；修正既有測試失敗時，至少重跑原失敗測試與
+  相關 test suite。靜態檢查不能取代測試執行；若受環境限制無法執行，必須明確記錄未執行項目
+  與原因，不得宣稱測試通過。
 - 預設測試 DB 是 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`，可用 `TEST_DATABASE_URL` 覆蓋。
 - `backend/tests/conftest.py` 會在需要時建立 `findb_test` database。
 - 測試資料表由 function-scope fixture 建立與清理。
@@ -222,14 +223,14 @@ uv --directory backend run alembic downgrade -1
 
 ## 基礎設施
 
-| Container | 說明 | Port |
-| --- | --- | --- |
-| `findb-app` | 本機 `APP_ROLE=all` FastAPI app | `8080` by default |
-| `findb-postgres` | PostgreSQL 16 | host `5435` -> container `5432` |
-| `findb-rabbitmq` | 本機 durable delivery broker | container network only |
-| `findb-dispatcher` / `findb-worker` | 本機 outbox dispatcher 與 normalization worker | n/a |
-| `findb-raw-cleanup` | daily raw TTL cleanup，profile: `tools` | n/a |
-| `findb-pgadmin` | pgAdmin UI，profile: `tools` | `5056` -> `80` |
+| Container                           | 說明                                           | Port                            |
+| ----------------------------------- | ---------------------------------------------- | ------------------------------- |
+| `findb-app`                         | 本機 `APP_ROLE=all` FastAPI app                | `8080` by default               |
+| `findb-postgres`                    | PostgreSQL 16                                  | host `5435` -> container `5432` |
+| `findb-rabbitmq`                    | 本機 durable delivery broker                   | container network only          |
+| `findb-dispatcher` / `findb-worker` | 本機 outbox dispatcher 與 normalization worker | n/a                             |
+| `findb-raw-cleanup`                 | daily raw TTL cleanup，profile: `tools`        | n/a                             |
+| `findb-pgadmin`                     | pgAdmin UI，profile: `tools`                   | `5056` -> `80`                  |
 
 App container 連線 DB 使用 `db:5432`；local host 連線 DB 使用 `localhost:5435`。
 Production 不使用 `findb-app` 單一角色，而是依 `docker-compose.prod.yml` 拆為
