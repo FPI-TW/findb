@@ -29,12 +29,20 @@ class ServiceConfig:
     variables: tuple[str, ...]
     secrets: tuple[str, ...]
     optional_secrets: tuple[str, ...] = ()
+    staging_excluded_secrets: tuple[str, ...] = ()
+    staging_variables: tuple[str, ...] = ()
 
     def variables_for(self, target: str) -> tuple[str, ...]:
         """Return the non-secret variable contract for one deployment target."""
         if target == "staging":
-            return (*self.variables, *STAGING_AWS_VARIABLES)
+            return (*self.variables, *STAGING_AWS_VARIABLES, *self.staging_variables)
         return self.variables
+
+    def secrets_for(self, target: str) -> tuple[str, ...]:
+        if target == "staging":
+            excluded = set(self.staging_excluded_secrets)
+            return tuple(name for name in self.secrets if name not in excluded)
+        return self.secrets
 
 
 SERVICE_CONFIGS: Final = {
@@ -83,6 +91,12 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN",
             "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN",
         ),
+        staging_excluded_secrets=(
+            "FINDB_EC2_HOST",
+            "FINDB_EC2_USER",
+            "FINDB_EC2_SSH_KEY",
+        ),
+        staging_variables=("RDS_DB_INSTANCE_IDENTIFIER",),
     ),
     "fetcher": ServiceConfig(
         variables=(
@@ -307,7 +321,8 @@ def main() -> int:
     if unexpected_r2:
         print(f"{environment} has unsupported R2 names: {', '.join(unexpected_r2)}")
         return 1
-    required_secrets = list(config.secrets)
+    secrets = config.secrets_for(arguments.target)
+    required_secrets = list(secrets)
     if arguments.service == "findb" and values.get("SERVE_REQUIRE_AUTH") == "false":
         required_secrets = [
             name
@@ -356,7 +371,7 @@ def main() -> int:
     print(f"environment: {environment}")
     print(f"source: {source}")
     print(f"variables ({len(variables)}): {', '.join(variables)}")
-    print(f"secrets ({len(config.secrets)}): {', '.join(config.secrets)}")
+    print(f"secrets ({len(secrets)}): {', '.join(secrets)}")
     if missing:
         print(f"missing required values: {', '.join(missing)}")
         return 1
@@ -387,7 +402,7 @@ def main() -> int:
             ]
         )
         print(f"set variable: {name}")
-    for name in config.secrets:
+    for name in secrets:
         if not values.get(name):
             continue
         _run(

@@ -48,10 +48,11 @@ tofu -chdir=infra/tofu/staging output -json instance_profile_names
 tofu -chdir=infra/tofu/staging output -json ssm_log_group_names
 ```
 
-The six names are required only by `staging-findb` and `staging-fetcher`.
-Production resources and workflows are outside Phase 1 and remain on the
-current SSH deployment contract. Keep all existing SSH secrets, including the
-host, user, and key values, until the separately approved Phase 6 migration.
+The six AWS/SSM names are required only by `staging-findb` and `staging-fetcher`.
+`staging-findb` additionally requires the non-secret `RDS_DB_INSTANCE_IDENTIFIER` for its
+automated-backup/PITR health gate. Its sync contract no longer publishes `FINDB_EC2_HOST`,
+`FINDB_EC2_USER`, or `FINDB_EC2_SSH_KEY`; this does not delete any existing remote secret.
+Production resources and workflows remain on the legacy SSH deployment contract.
 
 Each target and service pair publishes to an isolated GitHub Environment:
 

@@ -8,7 +8,10 @@ import json
 import os
 import sys
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -16,6 +19,47 @@ from app.services.slot_identity import CANONICAL_SLOT_IDS
 
 DEFAULT_MINIMUM_CONNECTION_HEADROOM = 10
 _CANONICAL_SLOT_SQL = ", ".join(f"'{slot}'" for slot in CANONICAL_SLOT_IDS)
+
+
+def database_url_requires_tls(database_url: str) -> bool:
+    """Return whether a PostgreSQL URL has an explicit non-disabled TLS mode."""
+    query = parse_qs(urlsplit(database_url).query)
+    sslmode = query.get("sslmode", query.get("ssl", [""]))[0].lower()
+    return sslmode in {"require", "verify-ca", "verify-full"}
+
+
+def database_url_matches_expected_host(database_url: str, expected_host: str) -> bool:
+    """Bind the loaded runtime URL to the reviewed RDS endpoint without logging it."""
+    hostname = urlsplit(database_url).hostname
+    return bool(hostname) and hostname.casefold() == expected_host.strip().casefold()
+
+
+def database_revision_matches_expected(
+    *, current_revision: str | None, expected_revision: str
+) -> bool:
+    """Return whether the database is already at the selected exact revision."""
+    return bool(current_revision) and current_revision == expected_revision
+
+
+def is_schema_compatible_with_target(
+    *, current_revision: str | None, target_revision: str
+) -> bool:
+    """Require the running schema to be an ancestor of the selected application.
+
+    A rollback image whose migration graph cannot reach the current schema is
+    rejected before writers are stopped.  Alembic's script directory is the
+    application-owned compatibility authority; do not infer ordering from IDs.
+    """
+    if not current_revision:
+        return False
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+    try:
+        return any(
+            revision.revision == current_revision
+            for revision in scripts.iterate_revisions(target_revision, "base")
+        )
+    except Exception:
+        return False
 
 
 def calculate_connection_headroom(
@@ -223,6 +267,11 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                 )
                 or 0
             )
+            tls_in_use = bool(
+                await connection.scalar(
+                    text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+                )
+            )
     finally:
         await engine.dispose()
 
@@ -249,6 +298,7 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
             reserved_connection_slots=reserved_connection_slots,
         ),
         "long_transactions_over_5m": long_transactions,
+        "postgresql_tls_in_use": tls_in_use,
     }
 
 
@@ -267,6 +317,8 @@ def validate_predeploy_state(
         errors.append(
             f"database connection headroom is below {minimum_connection_headroom} connections"
         )
+    if state.get("postgresql_tls_in_use") is not True:
+        errors.append("database connection did not negotiate PostgreSQL TLS")
     if state.get("noncanonical_scheduler_control_slots", 0):
         errors.append("scheduler_control contains non-canonical slot_id values")
     if state.get("noncanonical_dataset_delivery_schedule_slots", 0):
@@ -294,22 +346,71 @@ def _build_parser() -> argparse.ArgumentParser:
             f"(default: {DEFAULT_MINIMUM_CONNECTION_HEADROOM})"
         ),
     )
+    parser.add_argument(
+        "--expected-rds-endpoint",
+        help="Expected RDS Endpoint.Address for the host-loaded staging database URL.",
+    )
+    parser.add_argument(
+        "--expected-alembic-revision",
+        help=(
+            "Selected image Alembic head. When supplied, fail closed unless the "
+            "current database revision is an ancestor in that image's migration graph."
+        ),
+    )
+    parser.add_argument(
+        "--require-exact-alembic-revision",
+        action="store_true",
+        help=(
+            "Require the database to already be exactly at "
+            "--expected-alembic-revision; activation never performs a migration."
+        ),
+    )
     return parser
 
 
 async def _main() -> int:
     args = _build_parser().parse_args()
+    if args.require_exact_alembic_revision and not args.expected_alembic_revision:
+        print(
+            "error: --require-exact-alembic-revision needs --expected-alembic-revision",
+            file=sys.stderr,
+        )
+        return 2
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         print("error: DATABASE_URL is required", file=sys.stderr)
         return 2
 
+    if not database_url_requires_tls(database_url):
+        print("error: DATABASE_URL must require PostgreSQL TLS", file=sys.stderr)
+        return 1
+    if args.expected_rds_endpoint and not database_url_matches_expected_host(
+        database_url, args.expected_rds_endpoint
+    ):
+        print("error: DATABASE_URL host does not match the expected RDS endpoint", file=sys.stderr)
+        return 1
+
     state = await collect_predeploy_state(database_url)
+    if args.expected_alembic_revision:
+        state["target_alembic_revision"] = args.expected_alembic_revision
+        state["schema_compatible_with_target"] = is_schema_compatible_with_target(
+            current_revision=state["alembic_revision"],
+            target_revision=args.expected_alembic_revision,
+        )
+        if args.require_exact_alembic_revision:
+            state["schema_exactly_at_target"] = database_revision_matches_expected(
+                current_revision=state["alembic_revision"],
+                expected_revision=args.expected_alembic_revision,
+            )
     print(json.dumps(state, indent=2, sort_keys=True, default=str))
     errors = validate_predeploy_state(
         state,
         minimum_connection_headroom=max(1, args.minimum_connection_headroom),
     )
+    if args.expected_alembic_revision and not state["schema_compatible_with_target"]:
+        errors.append("current database revision is not compatible with the selected target")
+    if args.require_exact_alembic_revision and not state["schema_exactly_at_target"]:
+        errors.append("database revision is not exactly the selected target")
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
     return 1 if errors else 0

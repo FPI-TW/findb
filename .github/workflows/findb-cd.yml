@@ -702,6 +702,7 @@ jobs:
           AWS_INSTANCE_PROFILE_NAME: ${{ vars.AWS_INSTANCE_PROFILE_NAME }}
           AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
           AWS_DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
+          RDS_DB_INSTANCE_IDENTIFIER: ${{ vars.RDS_DB_INSTANCE_IDENTIFIER }}
           PREFLIGHT_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-findb
           BACKEND_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
           DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
@@ -717,7 +718,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME BACKEND_IMAGE_REF DASHBOARD_IMAGE_REF DEPLOY_BUNDLE_BUCKET DEPLOY_BUNDLE_KMS_KEY_ARN DEPLOY_BUNDLE_KEY DEPLOY_BUNDLE_SHA256 DEPLOY_VALIDATOR_SHA256 BUNDLE_REPLAY FINDB_PUBLIC_HOST SOURCE_ALLOWLIST_CIDRS; do
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_INSTANCE_PROFILE_NAME AWS_SSM_LOG_GROUP AWS_DNS_CHECK_NAME RDS_DB_INSTANCE_IDENTIFIER BACKEND_IMAGE_REF DASHBOARD_IMAGE_REF DEPLOY_BUNDLE_BUCKET DEPLOY_BUNDLE_KMS_KEY_ARN DEPLOY_BUNDLE_KEY DEPLOY_BUNDLE_SHA256 DEPLOY_VALIDATOR_SHA256 BUNDLE_REPLAY FINDB_PUBLIC_HOST SOURCE_ALLOWLIST_CIDRS; do
             if [ -z "${!name:-}" ]; then
               echo "::error title=Missing staging AWS preflight variable::$name must be configured in the staging-findb Environment"
               exit 1
@@ -745,6 +746,10 @@ jobs:
           fi
           if [ "${#AWS_DNS_CHECK_NAME}" -gt 253 ]; then
             echo "::error title=Invalid staging DNS check::AWS_DNS_CHECK_NAME exceeds the DNS name length limit"
+            exit 1
+          fi
+          if ! [[ "$RDS_DB_INSTANCE_IDENTIFIER" =~ ^[a-z][a-z0-9-]{0,62}$ ]]; then
+            echo "::error title=Invalid staging RDS instance::RDS_DB_INSTANCE_IDENTIFIER must be an RDS DB instance identifier"
             exit 1
           fi
           if ! [[ "$PREFLIGHT_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -839,6 +844,15 @@ jobs:
             exit 1
           fi
           echo "secret_read_denial=AccessDenied"
+
+          rds_state="$(aws rds describe-db-instances --region "$AWS_REGION" --db-instance-identifier "$RDS_DB_INSTANCE_IDENTIFIER" --query 'DBInstances[0].{status:DBInstanceStatus,backup:BackupRetentionPeriod,latest:LatestRestorableTime,encrypted:StorageEncrypted,endpoint:Endpoint.Address}' --output json)"
+          if ! jq -e '.status == "available" and (.backup | type == "number" and . >= 1) and (.latest | type == "string" and length > 0) and .encrypted == true and (.endpoint | type == "string" and test("^[A-Za-z0-9.-]+$"))' <<<"$rds_state" >/dev/null; then
+            echo "::error title=RDS PITR health gate failed::RDS must be available, encrypted, retain automated backups, and expose a latest restorable time"
+            exit 1
+          fi
+          rds_endpoint="$(jq -r '.endpoint' <<<"$rds_state")"
+          printf 'rds_endpoint=%s\n' "$rds_endpoint" >> "$GITHUB_OUTPUT"
+          echo "rds_automated_backup_pitr=ok"
 
           printf -v expected_instance_id_q '%q' "$target_id"
           printf -v expected_instance_profile_name_q '%q' "$AWS_INSTANCE_PROFILE_NAME"
@@ -1079,6 +1093,7 @@ jobs:
             exit 1
           fi
           printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+          printf 'target_id=%s\n' "$target_id" >> "$GITHUB_OUTPUT"
           printf 'release_root=/opt/findb/releases/%s-%s\n' "$DEPLOY_BUNDLE_SHA256" "$PREFLIGHT_MARKER_TOKEN" >> "$GITHUB_OUTPUT"
           success_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=success"
           failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
@@ -1127,57 +1142,22 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare AWS runtime-secret directories on EC2
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets
-            sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets/nginx
-            for trusted_path in /etc /etc/findb /etc/findb/nginx; do
-              [ ! -L "$trusted_path" ] || exit 1
-            done
-            sudo install -d -o root -g root -m 0755 /etc/findb
-            sudo install -d -o root -g root -m 0755 /etc/findb/nginx
-            for trusted_path in /etc /etc/findb /etc/findb/nginx; do
-              [ ! -L "$trusted_path" ] \
-                && [ "$(sudo stat -c '%u:%g:%a' "$trusted_path")" = "0:0:755" ] || exit 1
-            done
-            sudo mkdir -p /var/lib/findb/rabbitmq
-            sudo chown -R 999:999 /var/lib/findb/rabbitmq
-      - name: Run FinDB AWS runtime-secret canary
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+      - name: Run bounded FinDB staging deployment and acceptance over SSM
+        id: ssm_deploy
+        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' && steps.selected_bundle.outputs.replay == 'false' }}
+        shell: bash
         env:
           AWS_REGION: ap-southeast-1
+          AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+          TARGET_ID: ${{ steps.ssm_preflight.outputs.target_id }}
           RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          envs: AWS_REGION,RELEASE_ROOT
-          script: |
-            set -euo pipefail
-            sudo python3 "$RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py" \
-              --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/findb.json" \
-              --consumer canary \
-              --region "$AWS_REGION" \
-              --output /run/findb-runtime-secrets/canary/runtime.env \
-              --owner 0:0 \
-              --check-only
-
-      - name: Deploy to EC2 with AWS runtime secrets
-        if: ${{ (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
+          DEPLOY_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-findb-deploy
+          FINDB_DEPLOY_MODE: candidate
           ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
           FINDB_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
           DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
+          PREDEPLOY_EXPECTED_ALEMBIC_REVISION: ${{ needs.build-push.outputs.migration_revision }}
+          PREDEPLOY_EXPECTED_RDS_ENDPOINT: ${{ steps.ssm_preflight.outputs.rds_endpoint }}
           APP_NAME: ${{ vars.APP_NAME }}
           APP_VERSION: ${{ vars.APP_VERSION }}
           DEBUG: ${{ vars.DEBUG }}
@@ -1198,37 +1178,48 @@ jobs:
           FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_CANONICAL_BUCKET: ${{ vars.CLOUDFLARE_R2_CANONICAL_BUCKET }}
-          FINDB_RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-          FINDB_NGINX_CONFIG_DIR: /etc/findb/nginx
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          command_timeout: 30m
-          envs: AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR
-          script: |
-            set -euo pipefail
-            sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR \
-              "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_findb_aws.sh"
-
-      - name: Activate validated FinDB release after health acceptance
-        if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
-        env:
-          AWS_REGION: ap-southeast-1
-          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
-          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
-        with:
-          host: ${{ secrets.FINDB_EC2_HOST }}
-          username: ${{ secrets.FINDB_EC2_USER }}
-          key: ${{ secrets.FINDB_EC2_SSH_KEY }}
-          envs: AWS_REGION,FINDB_PUBLIC_HOST,RELEASE_ROOT
-          script: |
-            set -euo pipefail
-            [ -d "$RELEASE_ROOT" ] && [ ! -L "$RELEASE_ROOT" ]
-            sudo "$RELEASE_ROOT/infra/deploy/runtime-secrets/install_findb_bootstrap.sh" \
-              "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$RELEASE_ROOT"
-            sudo ln -sfn "$RELEASE_ROOT" /opt/findb/current
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_SSM_LOG_GROUP TARGET_ID RELEASE_ROOT DEPLOY_MARKER_TOKEN FINDB_DEPLOY_MODE ECR_REGISTRY FINDB_IMAGE_REF DASHBOARD_IMAGE_REF PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT FINDB_PUBLIC_HOST SOURCE_ALLOWLIST_CIDRS; do
+            [ -n "${!name:-}" ] || exit 1
+          done
+          [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
+          [[ "$RELEASE_ROOT" =~ ^/opt/findb/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
+          [[ "$DEPLOY_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 1
+          host_script='set -eu
+          deployment_succeeded=0
+          emit_failure() { trap - EXIT; [ "$deployment_succeeded" -eq 1 ] || printf "phase4_deploy_marker=%s status=failed\\n" "$DEPLOY_MARKER_TOKEN"; }
+          trap emit_failure EXIT
+          sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets /run/findb-runtime-secrets/nginx
+          for trusted_path in /etc /etc/findb /etc/findb/nginx; do [ ! -L "$trusted_path" ] || exit 1; sudo install -d -o root -g root -m 0755 "$trusted_path"; [ "$(sudo stat -c "%u:%g:%a" "$trusted_path")" = "0:0:755" ] || exit 1; done
+          sudo install -d -o 999 -g 999 -m 0755 /var/lib/findb/rabbitmq
+          [ -d "$FINDB_RELEASE_ROOT" ] && [ ! -L "$FINDB_RELEASE_ROOT" ]
+          sudo python3 "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py" --catalog "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/findb.json" --consumer canary --region "$AWS_REGION" --output /run/findb-runtime-secrets/canary/runtime.env --owner 0:0 --check-only
+          sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_findb_aws.sh"
+          printf "phase4_deploy_marker=%s status=success\\n" "$DEPLOY_MARKER_TOKEN"
+          deployment_succeeded=1'
+          for name in AWS_REGION ECR_REGISTRY FINDB_IMAGE_REF DASHBOARD_IMAGE_REF FINDB_DEPLOY_MODE PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET; do
+            printf -v prefix 'export %s=%q\n' "$name" "${!name}"
+            host_script="${prefix}${host_script}"
+          done
+          printf -v prefix 'export FINDB_RELEASE_ROOT=%q\nexport FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx\nexport DEPLOY_MARKER_TOKEN=%q\n' "$RELEASE_ROOT" "$DEPLOY_MARKER_TOKEN"
+          host_script="${prefix}${host_script}"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 4 bounded FinDB deployment' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
+          [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
+          success_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=success"
+          failure_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=failed"
+          for attempt in $(seq 1 360); do
+            failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
+            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
+            if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+              [ "$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)" = Success ] || exit 1
+              printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
 
       - name: Persist immutable accepted FinDB deployment bundle
         if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' && steps.selected_bundle.outputs.replay == 'false' }}
@@ -1240,7 +1231,7 @@ jobs:
           BUNDLE_SHA256: ${{ steps.selected_bundle.outputs.bundle_sha256 }}
           VALIDATOR_SHA256: ${{ steps.selected_bundle.outputs.validator_sha256 }}
           MIGRATION_REVISION: ${{ needs.build-push.outputs.migration_revision }}
-          SSM_COMMAND_ID: ${{ steps.ssm_preflight.outputs.command_id }}
+          SSM_COMMAND_ID: ${{ steps.ssm_deploy.outputs.command_id }}
           BACKEND_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
           DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
         run: |
@@ -1273,6 +1264,99 @@ jobs:
           if not valid: raise SystemExit(1)
           PY
           fi
+
+      - name: Activate accepted FinDB release over SSM
+        id: ssm_activate
+        if: ${{ success() && (inputs.deployment_target || 'staging') == 'staging' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true' }}
+        shell: bash
+        env:
+          AWS_REGION: ap-southeast-1
+          AWS_SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+          TARGET_ID: ${{ steps.ssm_preflight.outputs.target_id }}
+          RELEASE_ROOT: ${{ steps.ssm_preflight.outputs.release_root }}
+          ACTIVATION_MARKER_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-findb-activate
+          DEPLOY_BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          BUNDLE_KEY: ${{ steps.selected_bundle.outputs.bundle_key }}
+          BUNDLE_SHA256: ${{ steps.selected_bundle.outputs.bundle_sha256 }}
+          BUNDLE_REPLAY: ${{ steps.selected_bundle.outputs.replay }}
+          ECR_REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+          FINDB_IMAGE_REF: ${{ needs.build-push.outputs.backend_image_ref }}
+          DASHBOARD_IMAGE_REF: ${{ needs.build-push.outputs.dashboard_image_ref }}
+          PREDEPLOY_EXPECTED_ALEMBIC_REVISION: ${{ needs.build-push.outputs.migration_revision }}
+          PREDEPLOY_EXPECTED_RDS_ENDPOINT: ${{ steps.ssm_preflight.outputs.rds_endpoint }}
+          APP_NAME: ${{ vars.APP_NAME }}
+          APP_VERSION: ${{ vars.APP_VERSION }}
+          DEBUG: ${{ vars.DEBUG }}
+          PORT: ${{ vars.PORT }}
+          DATABASE_POOL_SIZE: ${{ vars.DATABASE_POOL_SIZE }}
+          DATABASE_MAX_OVERFLOW: ${{ vars.DATABASE_MAX_OVERFLOW }}
+          API_V1_PREFIX: ${{ vars.API_V1_PREFIX }}
+          API_KEY_HEADER: ${{ vars.API_KEY_HEADER }}
+          SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
+          SOURCE_TRUST_PROXY_HEADERS: ${{ vars.SOURCE_TRUST_PROXY_HEADERS }}
+          SERVE_REQUIRE_AUTH: ${{ vars.SERVE_REQUIRE_AUTH }}
+          RATE_LIMIT_REQUESTS: ${{ vars.RATE_LIMIT_REQUESTS }}
+          RATE_LIMIT_WINDOW: ${{ vars.RATE_LIMIT_WINDOW }}
+          RAW_RETENTION_ENABLED: ${{ vars.RAW_RETENTION_ENABLED }}
+          RAW_RETENTION_DAYS: ${{ vars.RAW_RETENTION_DAYS }}
+          FINDB_STATIC_CACHE_BASE_URL: ${{ vars.FINDB_STATIC_CACHE_BASE_URL }}
+          FINDB_LATEST_PRICE_WORKERS: ${{ vars.FINDB_LATEST_PRICE_WORKERS }}
+          FINDB_PUBLIC_HOST: ${{ vars.FINDB_PUBLIC_HOST }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_CANONICAL_BUCKET: ${{ vars.CLOUDFLARE_R2_CANONICAL_BUCKET }}
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION AWS_SSM_LOG_GROUP TARGET_ID RELEASE_ROOT ACTIVATION_MARKER_TOKEN DEPLOY_BUNDLE_BUCKET BUNDLE_KEY BUNDLE_SHA256 BUNDLE_REPLAY ECR_REGISTRY FINDB_IMAGE_REF DASHBOARD_IMAGE_REF PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT FINDB_PUBLIC_HOST SOURCE_ALLOWLIST_CIDRS; do
+            [ -n "${!name:-}" ] || exit 1
+          done
+          [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
+          [[ "$RELEASE_ROOT" =~ ^/opt/findb/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
+          [[ "$ACTIVATION_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 1
+          if [ "$BUNDLE_REPLAY" = true ]; then
+            accepted_key="$BUNDLE_KEY"
+          else
+            accepted_key="findb/accepted/${{ github.sha }}/${BUNDLE_SHA256}.tar"
+          fi
+          record_file="$(mktemp "$RUNNER_TEMP/findb-activation-record.XXXXXX")"
+          trap 'rm -f -- "$record_file"' EXIT
+          aws s3api get-object --bucket "$DEPLOY_BUNDLE_BUCKET" --key "${accepted_key%.tar}.acceptance.json" "$record_file" >/dev/null
+          python3 - "$record_file" "$accepted_key" "$BUNDLE_SHA256" "$FINDB_IMAGE_REF" "$DASHBOARD_IMAGE_REF" "$PREDEPLOY_EXPECTED_ALEMBIC_REVISION" <<'PY'
+          import json, re, sys
+          record = json.load(open(sys.argv[1], encoding="utf-8"))
+          valid = isinstance(record, dict) and record.get("state") == "accepted" and record.get("bundle_key") == sys.argv[2] and record.get("bundle_sha256") == sys.argv[3] and record.get("images") == {"backend": sys.argv[4], "dashboard": sys.argv[5]} and record.get("migration_revision") == sys.argv[6] and isinstance(record.get("ssm_command_id"), str) and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", record["ssm_command_id"])
+          raise SystemExit(0 if valid else 1)
+          PY
+          host_script='set -eu
+          activation_succeeded=0
+          emit_failure() { trap - EXIT; [ "$activation_succeeded" -eq 1 ] || printf "phase4_activate_marker=%s status=failed\\n" "$ACTIVATION_MARKER_TOKEN"; }
+          trap emit_failure EXIT
+          [ -d "$FINDB_RELEASE_ROOT" ] && [ ! -L "$FINDB_RELEASE_ROOT" ]
+          sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_findb_aws.sh"
+          printf "phase4_activate_marker=%s status=success\\n" "$ACTIVATION_MARKER_TOKEN"
+          activation_succeeded=1'
+          for name in AWS_REGION ECR_REGISTRY FINDB_IMAGE_REF DASHBOARD_IMAGE_REF PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET; do
+            printf -v prefix 'export %s=%q\n' "$name" "${!name}"
+            host_script="${prefix}${host_script}"
+          done
+          printf -v prefix 'export FINDB_RELEASE_ROOT=%q\nexport FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx\nexport FINDB_DEPLOY_MODE=activate\nexport ACTIVATION_MARKER_TOKEN=%q\n' "$RELEASE_ROOT" "$ACTIVATION_MARKER_TOKEN"
+          host_script="${prefix}${host_script}"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 4 bounded FinDB activation' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
+          [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
+          success_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=success"
+          failure_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=failed"
+          for attempt in $(seq 1 360); do
+            failure_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$failure_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
+            [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] || exit 1
+            success_count="$(aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$AWS_SSM_LOG_GROUP" --log-stream-name-prefix "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" --filter-pattern "\"$success_marker\"" --query 'length(events)' --output text 2>/dev/null || true)"
+            if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+              [ "$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)" = Success ] || exit 1
+              printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+              echo "ssm_activation_command_id=$command_id"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
 
       - name: Prepare deploy directories on EC2
         if: ${{ (inputs.deployment_target || 'staging') == 'production' }}

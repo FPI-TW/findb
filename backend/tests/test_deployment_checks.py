@@ -16,6 +16,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
+import scripts.predeploy_db_check as predeploy_db_check
 from scripts.check_queue_health import (
     fetch_dlq_health,
     fetch_readiness_payload,
@@ -24,6 +25,10 @@ from scripts.check_queue_health import (
 from scripts.predeploy_db_check import (
     DEFAULT_MINIMUM_CONNECTION_HEADROOM,
     calculate_connection_headroom,
+    database_revision_matches_expected,
+    database_url_matches_expected_host,
+    database_url_requires_tls,
+    is_schema_compatible_with_target,
     validate_predeploy_state,
 )
 
@@ -974,7 +979,9 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
         )
 
     findb = _load_workflow(FINDB_CD_WORKFLOW)
-    findb_rollout = _named_step(findb, "deploy", "Deploy to EC2 with AWS runtime secrets")
+    findb_rollout = _named_step(
+        findb, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
     assert findb_rollout["env"]["ECR_REGISTRY"] == ecr_registry
     assert (
         findb_rollout["env"]["FINDB_IMAGE_REF"]
@@ -984,7 +991,8 @@ def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr
         findb_rollout["env"]["DASHBOARD_IMAGE_REF"]
         == "${{ needs.build-push.outputs.dashboard_image_ref }}"
     )
-    assert "ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF" in findb_rollout["with"]["envs"]
+    assert "aws ssm send-command" in findb_rollout["run"]
+    assert "ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF" in findb_rollout["run"]
 
     fetcher = _load_workflow(FETCHER_CD_WORKFLOW)
     for name, image in (
@@ -2322,10 +2330,6 @@ def test_fetcher_deploy_checks_out_pinned_repository_before_local_artifact_steps
 
 def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
     expected = {
-        FINDB_CD_WORKFLOW: (
-            "Run FinDB AWS runtime-secret canary",
-            ("Deploy to EC2 with AWS runtime secrets",),
-        ),
         FETCHER_CD_WORKFLOW: (
             "Run Fetcher AWS runtime-secret canary",
             (
@@ -2335,6 +2339,12 @@ def test_runtime_secret_canary_precedes_every_aws_runtime_deployment() -> None:
             ),
         ),
     }
+    findb = _load_workflow(FINDB_CD_WORKFLOW)
+    findb_deploy = _named_step(
+        findb, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
+    assert "--consumer canary" in findb_deploy["run"]
+    assert "aws ssm send-command" in findb_deploy["run"]
     for workflow_path, (canary_name, deployment_names) in expected.items():
         workflow = _load_workflow(workflow_path)
         steps = workflow["jobs"]["deploy"]["steps"]
@@ -2382,20 +2392,34 @@ def test_aws_runtime_uses_validated_bundle_without_staging_scp_replacement() -> 
     assert "render_nginx_serve_key.py" not in findb_host_after_bootstrap_scan
     aws_validation = _named_step(findb, "deploy", "Validate AWS runtime deployment configuration")
     assert 'if [ "${PORT:-}" != "8080" ]' in aws_validation["run"]
-    activation = _named_step(
-        findb, "deploy", "Activate validated FinDB release after health acceptance"
+    findb_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
     )
-    assert "install_findb_bootstrap.sh" in activation["with"]["script"]
+    activation = _named_step(findb, "deploy", "Activate accepted FinDB release over SSM")
+    assert "aws ssm send-command" in activation["run"]
+    assert findb_helper.index("findb_aws_deploy=candidate_checks_passed") < findb_helper.index(
+        "findb_aws_deploy=candidate_ready_for_acceptance"
+    ) < findb_helper.index("install_findb_bootstrap.sh")
 
 
-def test_staging_activation_follows_health_and_precedes_the_accepted_record_commit_point() -> None:
+def test_staging_activation_requires_accepted_record_after_candidate_checks() -> None:
+    findb = _load_workflow(FINDB_CD_WORKFLOW)
+    findb_steps = findb["jobs"]["deploy"]["steps"]
+    findb_preflight = _named_step(findb, "deploy", "Run staging AWS and SSM preflight")
+    findb_deploy = _named_step(
+        findb, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
+    findb_accepted = _named_step(findb, "deploy", "Persist immutable accepted FinDB deployment bundle")
+    findb_activation = _named_step(findb, "deploy", "Activate accepted FinDB release over SSM")
+    assert findb_steps.index(findb_preflight) < findb_steps.index(findb_deploy) < findb_steps.index(
+        findb_accepted
+    ) < findb_steps.index(findb_activation)
+    assert "success()" in findb_activation["if"]
+    assert "aws s3api get-object" in findb_activation["run"]
+    assert ".acceptance.json" in findb_activation["run"]
+    assert "FINDB_DEPLOY_MODE=activate" in findb_activation["run"]
+
     for workflow_path, unit, deploy_name, activation_name in (
-        (
-            FINDB_CD_WORKFLOW,
-            "findb",
-            "Deploy to EC2 with AWS runtime secrets",
-            "Activate validated FinDB release after health acceptance",
-        ),
         (
             FETCHER_CD_WORKFLOW,
             "fetcher",
@@ -2415,7 +2439,8 @@ def test_staging_activation_follows_health_and_precedes_the_accepted_record_comm
         assert steps.index(preflight) < steps.index(_named_step(workflow, "deploy", deploy_name))
         assert steps.index(_named_step(workflow, "deploy", deploy_name)) < steps.index(activation)
         assert steps.index(activation) < steps.index(accepted)
-        assert "ln -sfn" in activation["with"]["script"]
+        activation_script = activation.get("run") or activation["with"]["script"]
+        assert "ln -sfn" in activation_script
         preflight_script = preflight["run"]
         host_start = preflight_script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n")
         host_end = preflight_script.index("\nHOST_SCRIPT\n", host_start)
@@ -2431,7 +2456,7 @@ def test_staging_activation_follows_health_and_precedes_the_accepted_record_comm
 def test_aws_runtime_steps_use_exact_consumers_and_no_runner_secret_values() -> None:
     findb_workflow = _load_workflow(FINDB_CD_WORKFLOW)
     findb_workflow_scripts = "\n".join(
-        str(step.get("with", {}).get("script", ""))
+        str(step.get("run", ""))
         for step in findb_workflow["jobs"]["deploy"]["steps"]
         if "STAGING_ECR_CUTOVER_ENABLED" in str(step.get("if", ""))
     )
@@ -2603,19 +2628,15 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
 
 def test_staging_findb_nginx_config_uses_root_owned_nonsecret_path() -> None:
     workflow = _load_workflow(FINDB_CD_WORKFLOW)
-    prepare = _named_step(workflow, "deploy", "Prepare AWS runtime-secret directories on EC2")
-    deploy = _named_step(workflow, "deploy", "Deploy to EC2 with AWS runtime secrets")
+    deploy = _named_step(
+        workflow, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
+    script = deploy["run"]
 
-    assert "install -d -o root -g root -m 0755 /etc/findb" in prepare["with"]["script"]
-    assert "install -d -o root -g root -m 0755 /etc/findb/nginx" in prepare["with"]["script"]
-    assert "for trusted_path in /etc /etc/findb /etc/findb/nginx" in prepare["with"]["script"]
-    assert prepare["with"]["script"].index('[ ! -L "$trusted_path" ] || exit 1') < prepare["with"][
-        "script"
-    ].index("install -d -o root -g root -m 0755 /etc/findb")
-    assert deploy["env"]["FINDB_NGINX_CONFIG_DIR"] == "/etc/findb/nginx"
-    assert "FINDB_NGINX_CONFIG_DIR" in deploy["with"]["envs"]
-    assert "/home/ubuntu/etc/nginx/ssl" not in prepare["with"]["script"]
-    assert "/home/ubuntu/etc/nginx" not in deploy["with"]["script"]
+    assert "install -d -o root -g root -m 0755" in script
+    assert "for trusted_path in /etc /etc/findb /etc/findb/nginx" in script
+    assert "FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx" in script
+    assert "/home/ubuntu/etc/nginx" not in script
 
 
 def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() -> None:
@@ -2665,7 +2686,7 @@ printf "%s|%s|%s|%s\\n" "$runtime_dir" "$compose_file" "${{COMPOSE_PROJECT_NAME-
     assert "COMPOSE_PROJECT_NAME=findb" in setup
     assert "export COMPOSE_PROJECT_NAME" in setup
     assert "COMPOSE_PROJECT_NAME" not in preserve_setup.split("\n", 1)[0].split(",")
-    assert 'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME"' in preserve_setup
+    assert 'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"' in preserve_setup
     assert 'sudo --preserve-env="$preserve_env" "$runtime_command"' in helper
 
 
@@ -2673,6 +2694,7 @@ def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_loo
     deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
+
 
     render_at = deploy.index('"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"')
     main_up_at = deploy.index('docker compose -f "$compose_file" up -d --remove-orphans </dev/null')
@@ -2714,6 +2736,71 @@ def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_loo
     assert "{{.Source}} {{.RW}}" in deploy
     assert '--header="Referer: $lookup_referer"' in deploy
     assert '"https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"' in deploy
+
+
+def test_findb_staging_candidate_acceptance_checks_durable_topology_and_worker_ping() -> None:
+    deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    up_script = deploy.split("<<'UP_SCRIPT'\n", 1)[1].split("\nUP_SCRIPT", 1)[0]
+    topology = up_script.index("rabbitmqctl list_queues -p /findb name durable --formatter json")
+    durable_check = up_script.index('"findb.normalize.v1", "findb.normalize.dlq.v1"', topology)
+    worker_ping = up_script.index("celery -A app.task_queue inspect ping --timeout=10")
+    queue_health = up_script.index("python /app/scripts/check_queue_health.py")
+    candidate_success = deploy.index("findb_aws_deploy=candidate_ready_for_acceptance")
+
+    assert "rabbitmq_topology_invalid vhost=/findb" in up_script
+    assert "item.get(\"durable\") is True" in up_script
+    assert "celery_worker_ping_failed" in up_script
+    assert topology < durable_check < worker_ping < queue_health
+    assert up_script.index("findb_aws_deploy=candidate_checks_passed") < candidate_success
+    assert "cleanup_unaccepted_candidate()" in deploy
+    assert "unaccepted_candidate_stopped" in deploy
+    for container in (
+        "findb-nginx", "findb-dashboard", "findb-serve", "findb-ingest",
+        "findb-dispatcher", "findb-worker", "findb-raw-cleanup",
+    ):
+        assert container in deploy
+    assert "RabbitMQ and its durable volume" in deploy
+    assert "docker ps -a --format '{{.Names}}'" in deploy
+    assert 'docker stop --time 30 "$container"' in deploy
+    assert "release_services_may_have_started=1" in deploy
+    assert deploy.index("findb_aws_deploy=candidate_services_fail_stopped") < candidate_success
+    assert candidate_success < deploy.index("install_findb_bootstrap.sh")
+
+
+def test_findb_candidate_cleanup_surfaces_a_docker_stop_failure(tmp_path: Path) -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    cleanup_start = helper.index("fixed_candidate_containers=(")
+    cleanup_end = helper.index("\ncleanup_unaccepted_candidate()", cleanup_start)
+    cleanup = helper[cleanup_start:cleanup_end]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "case \"$1\" in\n"
+        "  ps) printf '%s\\n' findb-nginx findb-dashboard findb-serve findb-ingest findb-dispatcher findb-worker findb-raw-cleanup ;;\n"
+        "  inspect) printf '%s\\n' 'running true false' ;;\n"
+        "  stop) exit 71 ;;\n"
+        "  *) exit 72 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{cleanup}\nstop_fixed_candidate_containers"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+    assert result.returncode != 0
+    assert "candidate_cleanup_docker_stop_failed container=findb-nginx" in result.stderr
+    assert "candidate_cleanup_failed" in result.stderr
 
 
 def test_findb_nginx_replacement_shell_contract_is_verified_and_fail_closed(tmp_path: Path) -> None:
@@ -2877,6 +2964,10 @@ case "$1" in
         printf '%s\\n' "$state"
         ;;
       *" ps --status running --services") printf '%s\\n' dispatcher worker ;;
+      *"rabbitmqctl list_queues -p /findb name durable --formatter json"*)
+        printf '%s' '[{"name":"findb.normalize.v1","durable":true},{"name":"findb.normalize.dlq.v1","durable":true}]'
+        ;;
+      *"celery -A app.task_queue inspect ping --timeout=10"*) : ;;
       *" exec "*) : ;;
       *) exit 90 ;;
     esac
@@ -3278,7 +3369,7 @@ def test_remote_env_examples_cover_the_sync_contract() -> None:
                 )
             }
             documented_names = set(
-                (*config.variables_for(target), *config.secrets, *config.optional_secrets)
+                (*config.variables_for(target), *config.secrets_for(target), *config.optional_secrets)
             )
             assert configured_names == documented_names
 
@@ -3319,6 +3410,12 @@ def test_phase1_aws_variables_are_staging_only_and_match_examples() -> None:
             )
         }
         assert {name: staging_values[name] for name in phase1_names} == expected_values[service]
+        if service == "findb":
+            assert staging_values["RDS_DB_INSTANCE_IDENTIFIER"] == (
+                "replace-with-staging-rds-instance-identifier"
+            )
+        else:
+            assert "RDS_DB_INSTANCE_IDENTIFIER" not in staging_values
 
         production_example = ENV_CONFIG_ROOT / "production" / service / "remote.env.example"
         production_text = production_example.read_text(encoding="utf-8")
@@ -4087,6 +4184,105 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
 
     assert "secrets: inherit" not in findb_cd
     assert "secrets: inherit" not in fetcher_cd
+
+
+def test_findb_staging_deployment_uses_only_ssm_and_records_the_actual_command() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    steps = workflow["jobs"]["deploy"]["steps"]
+    staging_steps = [
+        step
+        for step in steps
+        if "(inputs.deployment_target || 'staging') == 'staging'" in str(step.get("if", ""))
+    ]
+    staging_json = json.dumps(staging_steps, sort_keys=True)
+    assert "appleboy/ssh-action" not in staging_json
+    assert "appleboy/scp-action" not in staging_json
+    assert "FINDB_EC2_" not in staging_json
+
+    deploy = _named_step(
+        workflow, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
+    script = deploy["run"]
+    assert "aws ssm send-command" in script
+    assert "--timeout-seconds 1800" in script
+    assert "CloudWatchOutputEnabled=true" in script
+    assert "phase4_deploy_marker=" in script
+    assert "aws ssm get-command-invocation" in script
+    assert "--consumer canary" in script
+    assert "deploy_findb_aws.sh" in script
+    assert "${{ secrets." not in script
+    assert "PREDEPLOY_EXPECTED_RDS_ENDPOINT" in script
+    host_sudo_line = next(
+        line
+        for line in script.splitlines()
+        if "sudo --preserve-env=" in line and "deploy_findb_aws.sh" in line
+    )
+    for preserved_name in (
+        "FINDB_RELEASE_ROOT",
+        "PREDEPLOY_EXPECTED_ALEMBIC_REVISION",
+        "PREDEPLOY_EXPECTED_RDS_ENDPOINT",
+    ):
+        assert preserved_name in host_sudo_line
+
+    preflight = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")["run"]
+    assert "endpoint:Endpoint.Address" in preflight
+    assert "rds_endpoint=" in preflight
+    assert "rds_endpoint=%s" in preflight
+
+    accepted = _named_step(workflow, "deploy", "Persist immutable accepted FinDB deployment bundle")
+    assert accepted["env"]["SSM_COMMAND_ID"] == "${{ steps.ssm_deploy.outputs.command_id }}"
+    activation = _named_step(workflow, "deploy", "Activate accepted FinDB release over SSM")
+    assert activation["id"] == "ssm_activate"
+    assert "activation_command_id=" in activation["run"]
+    assert "ssm_activation_command_id=$command_id" in activation["run"]
+    assert "ssm_command_id" in accepted["run"]
+    assert "steps.ssm_activate.outputs" not in accepted["run"]
+
+
+def test_staging_candidate_stays_stopped_when_acceptance_persistence_fails() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    steps = workflow["jobs"]["deploy"]["steps"]
+    candidate = _named_step(
+        workflow, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
+    accepted = _named_step(workflow, "deploy", "Persist immutable accepted FinDB deployment bundle")
+    activation = _named_step(workflow, "deploy", "Activate accepted FinDB release over SSM")
+    assert candidate["env"]["FINDB_DEPLOY_MODE"] == "candidate"
+    assert steps.index(candidate) < steps.index(accepted) < steps.index(activation)
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    candidate_block = helper.split('if [ "$deploy_mode" = candidate ]; then', 1)[1].split(
+        'if [ "$deploy_mode" = activate ]; then', 1
+    )[0]
+    assert "stop_fixed_candidate_containers" in candidate_block
+    assert "findb_aws_deploy=candidate_ready_for_acceptance" in candidate_block
+    assert "ln -sfn" not in candidate_block
+    assert "install_findb_bootstrap.sh" not in candidate_block
+    assert "--if-none-match '*'" in accepted["run"]
+    assert "always()" not in activation["if"]
+    assert "aws s3api get-object" in activation["run"]
+
+
+def test_accepted_replay_bypasses_candidate_migration_and_uses_exact_activation() -> None:
+    workflow = _load_workflow(FINDB_CD_WORKFLOW)
+    candidate = _named_step(
+        workflow, "deploy", "Run bounded FinDB staging deployment and acceptance over SSM"
+    )
+    activation = _named_step(workflow, "deploy", "Activate accepted FinDB release over SSM")
+    assert "steps.selected_bundle.outputs.replay == 'false'" in candidate["if"]
+    assert "steps.selected_bundle.outputs.replay" not in activation["if"]
+    assert 'if [ "$BUNDLE_REPLAY" = true ]; then' in activation["run"]
+    assert "FINDB_DEPLOY_MODE=activate" in activation["run"]
+
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    activate_guard = helper.index('if [ "$deploy_mode" != activate ]; then')
+    migration = helper.index("alembic upgrade head")
+    activation_start = helper.index('if [ "$deploy_mode" = activate ]; then')
+    assert activate_guard < migration < activation_start
+    assert helper.count("alembic upgrade head") == 1
 
 
 def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None:
@@ -5063,6 +5259,7 @@ def test_predeploy_database_state_accepts_safe_capacity() -> None:
         "duplicate_raw_run_ids": 0,
         "long_transactions_over_5m": 0,
         "connection_headroom": 120,
+        "postgresql_tls_in_use": True,
     }
 
     assert validate_predeploy_state(state, minimum_connection_headroom=80) == []
@@ -5073,6 +5270,7 @@ def test_predeploy_database_state_reports_every_blocker() -> None:
         "duplicate_raw_run_ids": 2,
         "long_transactions_over_5m": 1,
         "connection_headroom": 30,
+        "postgresql_tls_in_use": True,
     }
 
     errors = validate_predeploy_state(state, minimum_connection_headroom=80)
@@ -5088,6 +5286,7 @@ def test_predeploy_database_state_blocks_wave_four_contract_drift() -> None:
         "duplicate_raw_run_ids": 0,
         "long_transactions_over_5m": 0,
         "connection_headroom": 120,
+        "postgresql_tls_in_use": True,
         "noncanonical_scheduler_control_slots": 1,
         "noncanonical_dataset_delivery_schedule_slots": 2,
         "legacy_finlab_scheduler_keys": 1,
@@ -5101,6 +5300,179 @@ def test_predeploy_database_state_blocks_wave_four_contract_drift() -> None:
     assert any("delivery schedules" in error for error in errors)
     assert any("legacy FinLab" in error for error in errors)
     assert any("projection" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("database_url", "expected"),
+    (
+        ("postgresql+asyncpg://user:password@db.example/findb?ssl=require", True),
+        ("postgresql+asyncpg://user:password@db.example/findb?sslmode=verify-full", True),
+        ("postgresql+asyncpg://user:password@db.example/findb?sslmode=disable", False),
+        ("postgresql+asyncpg://user:password@db.example/findb", False),
+    ),
+)
+def test_predeploy_database_url_requires_explicit_tls(database_url: str, expected: bool) -> None:
+    assert database_url_requires_tls(database_url) is expected
+
+
+@pytest.mark.parametrize(
+    ("database_url", "expected_endpoint", "expected"),
+    (
+        (
+            "postgresql+asyncpg://user:password@db-staging.example.com/findb?ssl=require",
+            "DB-STAGING.EXAMPLE.COM",
+            True,
+        ),
+        (
+            "postgresql+asyncpg://user:password@other.example.com/findb?ssl=require",
+            "db-staging.example.com",
+            False,
+        ),
+        ("postgresql+asyncpg://user:password@/findb?ssl=require", "db.example.com", False),
+    ),
+)
+def test_predeploy_database_url_matches_expected_rds_endpoint(
+    database_url: str, expected_endpoint: str, expected: bool
+) -> None:
+    assert database_url_matches_expected_host(database_url, expected_endpoint) is expected
+
+
+def test_predeploy_schema_compatibility_allows_current_or_ancestor(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Revision:
+        def __init__(self, revision: str) -> None:
+            self.revision = revision
+
+    class Scripts:
+        def iterate_revisions(self, target: str, _base: str) -> list[Revision]:
+            assert target == "target"
+            return [Revision("target"), Revision("current"), Revision("base")]
+
+    monkeypatch.setattr(predeploy_db_check, "Config", lambda _path: object())
+    monkeypatch.setattr(predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts())
+    assert is_schema_compatible_with_target(current_revision="target", target_revision="target")
+    assert is_schema_compatible_with_target(current_revision="current", target_revision="target")
+
+
+def test_predeploy_schema_compatibility_rejects_newer_or_unknown_database_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Revision:
+        def __init__(self, revision: str) -> None:
+            self.revision = revision
+
+    class Scripts:
+        def iterate_revisions(self, target: str, _base: str) -> list[Revision]:
+            if target == "unknown":
+                raise ValueError("unknown revision")
+            return [Revision("older-target"), Revision("base")]
+
+    monkeypatch.setattr(predeploy_db_check, "Config", lambda _path: object())
+    monkeypatch.setattr(predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts())
+    assert not is_schema_compatible_with_target(
+        current_revision="newer-database", target_revision="older-target"
+    )
+    assert not is_schema_compatible_with_target(current_revision="current", target_revision="unknown")
+
+
+def test_activation_requires_database_at_the_exact_selected_revision() -> None:
+    assert database_revision_matches_expected(
+        current_revision="target", expected_revision="target"
+    )
+    assert not database_revision_matches_expected(
+        current_revision="ancestor", expected_revision="target"
+    )
+    assert not database_revision_matches_expected(current_revision=None, expected_revision="target")
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--require-exact-alembic-revision" in helper
+    migration_block = helper.split("<<'MIGRATION_SCRIPT'", 1)[1].split("MIGRATION_SCRIPT", 1)[0]
+    assert "alembic upgrade head" in migration_block
+    assert helper.count("alembic upgrade head") == 1
+
+
+def test_predeploy_database_state_rejects_missing_or_unnegotiated_tls() -> None:
+    state = {
+        "duplicate_raw_run_ids": 0,
+        "long_transactions_over_5m": 0,
+        "connection_headroom": 120,
+        "postgresql_tls_in_use": False,
+    }
+    errors = validate_predeploy_state(state, minimum_connection_headroom=80)
+    assert errors == ["database connection did not negotiate PostgreSQL TLS"]
+    state.pop("postgresql_tls_in_use")
+    assert validate_predeploy_state(state, minimum_connection_headroom=80) == [
+        "database connection did not negotiate PostgreSQL TLS"
+    ]
+
+
+def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(tmp_path: Path) -> None:
+    """An incompatible target fails before writer-stop, migration, or candidate cleanup."""
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    preserve = "preserve_env=" + helper.split("preserve_env=", 1)[1].split(
+        "\n\nrun_runtime()", 1
+    )[0]
+    runtime_body = helper.split("run_runtime() {\n", 1)[1].split("\n}\n\nif [ ! -f", 1)[0]
+    migration_check = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
+        "\nMIGRATION_CHECK_SCRIPT", 1
+    )[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    command_log = tmp_path / "commands.log"
+    (fake_bin / "sudo").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\npreserved=\"\"\nif [[ \"$1\" == --preserve-env=* ]]; then preserved=\"${1#--preserve-env=}\"; shift; fi\nargs=(\"PATH=$PATH\")\nIFS=, read -r -a names <<< \"$preserved\"\nfor name in \"${names[@]}\"; do args+=(\"$name=${!name-}\"); done\nexec env -i \"${args[@]}\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "runtime-secret-command").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\nwhile [[ \"$#\" -gt 0 && \"$1\" != -- ]]; do shift; done\nshift\nexec \"$@\"\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text(
+        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" >> {command_log!s}\ncase \"$*\" in *predeploy_db_check.py*) exit 42 ;; esac\nexit 0\n",
+        encoding="utf-8",
+    )
+    for command in fake_bin.iterdir():
+        command.chmod(0o755)
+
+    script = "\n".join(
+        (
+            "set -euo pipefail",
+            f'runtime_command="{fake_bin / "runtime-secret-command"}"',
+            "catalog=/opt/findb/releases/test/infra/deploy/runtime-secrets/findb.json",
+            "AWS_REGION=ap-southeast-1",
+            "FINDB_RELEASE_ROOT=/opt/findb/releases/test",
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION=incompatible-target",
+            "PREDEPLOY_EXPECTED_RDS_ENDPOINT=db.example.com",
+            "compose_file=/tmp/compose.yml",
+            "export AWS_REGION FINDB_RELEASE_ROOT PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT",
+            preserve,
+            "run_runtime() {",
+            runtime_body,
+            "}",
+            "run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- \"$compose_file\" <<'MIGRATION_CHECK_SCRIPT'",
+            migration_check,
+            "MIGRATION_CHECK_SCRIPT",
+        )
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+    assert completed.returncode == 42
+    commands = command_log.read_text(encoding="utf-8")
+    assert "predeploy_db_check.py --expected-alembic-revision incompatible-target" in commands
+    assert "--expected-rds-endpoint db.example.com" in commands
+    assert " stop --timeout " not in commands
+    assert "alembic upgrade" not in commands
+    cleanup_arm = helper.index("release_services_may_have_started=1")
+    migration_end = helper.index("MIGRATION_SCRIPT\nfi", helper.index("MIGRATION_SCRIPT"))
+    candidate_up = helper.index("<<'UP_SCRIPT'", migration_end)
+    assert migration_end < cleanup_arm < candidate_up
 
 
 def test_queue_health_requires_recent_worker_and_no_expired_leases() -> None:
