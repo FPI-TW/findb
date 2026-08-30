@@ -1108,26 +1108,32 @@ jobs:
           failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
           marker_state="pending"
           for attempt in $(seq 1 36); do
-            # Read only the marker event count from this command's stdout stream; never retrieve log text.
-            failure_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$failure_marker")"
-            if ! [[ "$failure_event_count" =~ ^[0-9]+$ ]]; then
-              echo "::error title=Invalid SSM marker count::CloudWatch returned a non-numeric failure marker event count"
-              exit 1
-            fi
-            if [ "$failure_event_count" -gt 0 ]; then
-              echo "::error title=SSM host preflight failed::Bounded host failure marker observed; command_id=${command_id}"
-              exit 1
-            fi
-            success_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$success_marker")"
-            if ! [[ "$success_event_count" =~ ^[0-9]+$ ]]; then
-              echo "::error title=Invalid SSM marker count::CloudWatch returned a non-numeric success marker event count"
-              exit 1
-            fi
-            if [ "$success_event_count" -gt 0 ]; then
-              marker_state="success"
-              echo "ssm_preflight_status=Success command_id=${command_id} marker_event_count=${success_event_count}"
-              break
-            fi
+            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$target_id" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
+            case "$status" in
+              Success)
+                # Read only marker counts after the SSM output stream is terminal and stable.
+                failure_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$failure_marker" || true)"
+                if [[ "$failure_event_count" =~ ^[0-9]+$ ]] && [ "$failure_event_count" -gt 0 ]; then
+                  echo "::error title=SSM host preflight failed::Bounded host failure marker observed; command_id=${command_id}"
+                  exit 1
+                fi
+                success_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$success_marker" || true)"
+                if [[ "$failure_event_count" =~ ^[0-9]+$ ]] && [ "$failure_event_count" -eq 0 ] && [[ "$success_event_count" =~ ^[0-9]+$ ]] && [ "$success_event_count" -gt 0 ]; then
+                  marker_state="success"
+                  echo "ssm_preflight_status=Success command_id=${command_id} marker_event_count=${success_event_count}"
+                  break
+                fi
+                ;;
+              Pending|InProgress|Delayed|Cancelling|""|None) ;;
+              Cancelled|TimedOut|Failed)
+                echo "::error title=SSM host preflight failed::status=${status} command_id=${command_id}"
+                exit 1
+                ;;
+              *)
+                echo "::error title=Unexpected SSM host preflight status::status=${status} command_id=${command_id}"
+                exit 1
+                ;;
+            esac
             sleep 5
           done
           if [ "$marker_state" != "success" ]; then
@@ -1202,12 +1208,20 @@ jobs:
           source infra/deploy/cloudwatch_marker_count.sh
           success_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=success"
           failure_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=failed"
-          terminal_success=0
           for attempt in $(seq 1 360); do
-            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$invocation_status" in
               Success)
-                terminal_success=1
+                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
+                  echo "::error title=FinDB candidate deployment reported failure::Failure marker observed; command_id=${command_id}"
+                  exit 1
+                fi
+                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+                  printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
                 ;;
               Pending|InProgress|Delayed|Cancelling|""|None)
                 ;;
@@ -1220,18 +1234,6 @@ jobs:
                 exit 1
                 ;;
             esac
-            failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-            if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
-              echo "::error title=FinDB candidate deployment reported failure::Failure marker observed; command_id=${command_id}"
-              exit 1
-            fi
-            if [ "$terminal_success" -eq 1 ]; then
-              success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-              if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
-                printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-            fi
             sleep 5
           done
           echo "::error title=FinDB candidate SSM deployment timed out::No terminal SSM success with valid CloudWatch markers within bounded polling; command_id=${command_id}"
@@ -1361,12 +1363,21 @@ jobs:
           source infra/deploy/cloudwatch_marker_count.sh
           success_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=success"
           failure_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=failed"
-          terminal_success=0
           for attempt in $(seq 1 360); do
-            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --query Status --output text 2>/dev/null || true)"
+            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$invocation_status" in
               Success)
-                terminal_success=1
+                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
+                  echo "::error title=FinDB activation reported failure::Failure marker observed; command_id=${command_id}"
+                  exit 1
+                fi
+                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
+                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+                  printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+                  echo "ssm_activation_command_id=$command_id"
+                  exit 0
+                fi
                 ;;
               Pending|InProgress|Delayed|Cancelling|""|None)
                 ;;
@@ -1379,19 +1390,6 @@ jobs:
                 exit 1
                 ;;
             esac
-            failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-            if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
-              echo "::error title=FinDB activation reported failure::Failure marker observed; command_id=${command_id}"
-              exit 1
-            fi
-            if [ "$terminal_success" -eq 1 ]; then
-              success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-              if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
-                printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
-                echo "ssm_activation_command_id=$command_id"
-                exit 0
-              fi
-            fi
             sleep 5
           done
           echo "::error title=FinDB activation SSM deployment timed out::No terminal SSM success with valid CloudWatch markers within bounded polling; command_id=${command_id}"

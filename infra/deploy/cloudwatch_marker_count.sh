@@ -30,7 +30,6 @@ cloudwatch_marker_count() {
       --log-group-name "$log_group"
       --log-stream-name-prefix "$log_stream_prefix"
       --filter-pattern "\"$marker\""
-      --limit 1
       --no-paginate
       --cli-connect-timeout 5
       --cli-read-timeout 10
