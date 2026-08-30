@@ -10,7 +10,9 @@
     "dashboard"
   ],
   "scripts": {
-    "setup": "pnpm install --frozen-lockfile && uv --directory backend sync --frozen && uv --directory fetcher sync --frozen && uv --directory backend run pre-commit install --hook-type pre-commit --hook-type pre-push",
+    "setup": "pnpm install --frozen-lockfile && uv --directory backend sync --frozen && uv --directory fetcher sync --frozen && pnpm setup:browsers && pnpm setup:hooks",
+    "setup:browsers": "pnpm --filter dashboard exec playwright install chromium",
+    "setup:hooks": "uv --directory backend run pre-commit install --hook-type pre-commit --hook-type pre-push",
     "dev": "pnpm dev:dashboard",
     "dev:dashboard": "pnpm --filter dashboard dev",
     "dev:backend": "uv --directory backend run python scripts/dev.py up-server",
@@ -19,19 +21,23 @@
     "build:dashboard": "pnpm --filter dashboard build",
     "contracts:export": "uv --directory backend run python scripts/export_ingress_contracts.py && uv --directory backend run python scripts/export_archive_contracts.py",
     "contracts:check": "uv --directory backend run python scripts/export_ingress_contracts.py --check && uv --directory backend run python scripts/export_archive_contracts.py --check",
-    "test": "pnpm test:dashboard && pnpm test:backend && pnpm test:fetcher",
+    "test": "pnpm test:contracts && pnpm test:backend && pnpm test:fetcher && pnpm test:dashboard",
+    "test:contracts": "pnpm contracts:check",
     "test:dashboard": "pnpm --filter dashboard test",
+    "test:dashboard:unit": "pnpm --filter dashboard test:unit",
+    "test:dashboard:browser": "pnpm --filter dashboard test:browser",
+    "test:dashboard:e2e": "pnpm --filter dashboard test:e2e",
     "test:backend": "uv --directory backend run python scripts/dev.py test-db",
     "test:fetcher": "uv --directory fetcher run pytest",
     "format": "pnpm format:dashboard && pnpm format:backend && pnpm format:fetcher",
     "format:dashboard": "pnpm --filter dashboard format",
     "format:backend": "uv --directory backend run ruff check --fix app tests scripts migrations && uv --directory backend run ruff format app tests scripts migrations",
     "format:fetcher": "uv --directory fetcher run ruff check --fix . && uv --directory fetcher run ruff format .",
-    "check": "pnpm check:dashboard && pnpm check:backend && pnpm check:fetcher && pnpm build:dashboard",
-    "check:dashboard": "pnpm --filter dashboard format:check && pnpm --filter dashboard lint:check && pnpm --filter dashboard type:check && pnpm --filter dashboard test",
-    "check:backend": "uv --directory backend run ruff check app tests scripts migrations && uv --directory backend run ruff format --check app tests scripts migrations && uv --directory backend run mypy app && uv --directory backend run python scripts/dev.py test-db",
-    "check:fetcher": "uv --directory fetcher run ruff check . && uv --directory fetcher run ruff format --check . && uv --directory fetcher run mypy src && uv --directory fetcher run pytest",
-    "hook:pre-commit": "uv --directory backend run pre-commit run --hook-stage pre-commit",
-    "hook:pre-push": "uv --directory backend run pre-commit run --hook-stage pre-push"
+    "check": "pnpm check:dashboard && pnpm check:backend && pnpm check:fetcher",
+    "check:dashboard": "pnpm --filter dashboard format:check && pnpm --filter dashboard lint:check && pnpm --filter dashboard type:check",
+    "check:backend": "uv --directory backend run ruff check app tests scripts migrations && uv --directory backend run ruff format --check app tests scripts migrations && uv --directory backend run mypy app",
+    "check:fetcher": "uv --directory fetcher run ruff check . && uv --directory fetcher run ruff format --check . && uv --directory fetcher run mypy src",
+    "hook:pre-commit": "pnpm check",
+    "hook:pre-push": "pnpm check && pnpm test"
   }
 }

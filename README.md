@@ -148,6 +148,18 @@ make check
 make test
 ```
 
+驗證分成兩個層級，根目錄 `package.json` 是唯一的聚合入口：
+
+- `pnpm check`（或 `make check`）只做 lint、type check 與 format check，不修改檔案、
+  不執行測試或 build。每次改動完成後及 commit 前都應執行。
+- `pnpm test`（或 `make test`）執行 contracts drift、Backend、Fetcher，以及 Dashboard
+  unit、browser component 與 e2e 的所有測試層級。
+- `pnpm format` 會修改檔案，`pnpm build` 則獨立驗證 build，兩者都不屬於 `check`。
+
+`pnpm setup` 會安裝 dependencies、Dashboard Chromium，以及 pre-commit / pre-push hooks。
+pre-commit 執行 `check`，pre-push 依序執行 `check` 與 `test`；也可用
+`pnpm hook:pre-commit`、`pnpm hook:pre-push` 手動執行相同 gate。
+
 直接執行：
 
 ```bash
