@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Count an exact marker line from one complete SSM CloudWatch output stream.
-# One GetLogEvents event may contain several stdout lines, so compare complete
-# lines within each message instead of requiring the entire message to match.
+# CloudWatch may pack several stdout lines into one event or split one line
+# across adjacent events/pages. Reconstruct the ordered stream before comparing
+# complete lines instead of requiring any individual message to match.
 # GetLogEvents requires manual forward pagination: a page is terminal only
 # when its nextForwardToken equals the token supplied for that request.
 # Any other token cycle, malformed response, or page-bound exhaustion fails
@@ -18,7 +19,11 @@ cloudwatch_marker_count() {
   local marker="$4"
   local next_token=""
   local response=""
+  local page_analysis=""
   local event_count=""
+  local line_fragment=""
+  local normalized_fragment=""
+  local marker_count=0
   local returned_token=""
   local seen_token=""
   local has_next_token=0
@@ -44,26 +49,41 @@ cloudwatch_marker_count() {
     fi
     response="$(aws "${aws_args[@]}" 2>/dev/null)" || return 1
 
-    event_count="$(jq -er --arg marker "$marker" '
+    page_analysis="$(jq -cer --arg marker "$marker" --arg fragment "$line_fragment" '
       if type != "object" or (.events | type) != "array"
         or ([.events[] | type == "object" and (.message | type) == "string"] | all | not)
       then error("malformed GetLogEvents response")
-      else [
-        .events[].message
-        | split("\n")[]
-        | rtrimstr("\r")
-        | select(. == $marker)
-      ] | length
+      else
+        ($fragment + ([.events[].message] | join(""))) as $text
+        | ($text | split("\n")) as $lines
+        | {
+            event_count: (
+              (if ($text | endswith("\n")) then $lines else $lines[0:-1] end)
+              | map(rtrimstr("\r"))
+              | map(select(. == $marker))
+              | length
+            ),
+            line_fragment: (
+              if ($text | endswith("\n")) then "" else ($lines[-1] // "") end
+            )
+          }
       end
     ' <<<"$response")" || return 1
+    event_count="$(jq -er '.event_count | select(type == "number" and . >= 0)' <<<"$page_analysis")" || return 1
+    line_fragment="$(jq -er '.line_fragment | select(type == "string")' <<<"$page_analysis")" || return 1
+    marker_count=$((marker_count + event_count))
     returned_token="$(jq -er '.next_forward_token | select(type == "string" and length > 0)' <<<"$response")" || return 1
-    if [ "$event_count" -gt 0 ]; then
-      printf '%s\n' "$event_count"
+    if [ "$marker_count" -gt 0 ]; then
+      printf '%s\n' "$marker_count"
       return 0
     fi
 
     if [ "$has_next_token" -eq 1 ] && [ "$returned_token" = "$next_token" ]; then
-      printf '0\n'
+      normalized_fragment="${line_fragment%$'\r'}"
+      if [ "$normalized_fragment" = "$marker" ]; then
+        marker_count=$((marker_count + 1))
+      fi
+      printf '%s\n' "$marker_count"
       return 0
     fi
     for seen_token in "${seen_tokens[@]+"${seen_tokens[@]}"}"; do
