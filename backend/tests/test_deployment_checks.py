@@ -3883,7 +3883,9 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "get-log-events" in marker_helper
         assert "filter-log-events" not in marker_helper
         assert "FilterLogEvents" not in marker_helper
-        assert ".message == $marker" in marker_helper
+        assert 'split("\\n")[]' in marker_helper
+        assert 'rtrimstr("\\r")' in marker_helper
+        assert "select(. == $marker)" in marker_helper
         assert "--limit" not in marker_helper
         assert '[[ "$success_event_count" =~ ^[0-9]+$ ]]' in script
         assert '[ "$success_event_count" -gt 0 ]' in script
@@ -5016,6 +5018,33 @@ def test_cloudwatch_marker_helper_rejects_substring_and_returns_on_exact_match(
         "",
         "token-a",
     ]
+
+
+def test_cloudwatch_marker_helper_matches_exact_line_inside_multiline_event(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {
+            "": (
+                ["preflight=ok\nnot marker status=success suffix\nmarker status=success"],
+                "token-a",
+            ),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
+
+
+def test_cloudwatch_marker_helper_accepts_crlf_exact_marker_line(tmp_path: Path) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {"": (["preflight=ok\r\nmarker status=success\r\n"], "token-a")},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
 
 
 def test_cloudwatch_marker_helper_handles_empty_page_before_exact_marker(tmp_path: Path) -> None:
