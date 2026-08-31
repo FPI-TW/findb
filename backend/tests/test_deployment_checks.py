@@ -3877,8 +3877,13 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "--cli-read-timeout 10" in marker_helper
         assert script.count('cloudwatch_marker_count "$AWS_REGION"') == 1
         assert '--log-group-name "$log_group"' in marker_helper
-        assert '--log-stream-name-prefix "$log_stream_prefix"' in marker_helper
-        assert "--query '{count:length(events),next_token:nextToken}'" in marker_helper
+        assert '--log-stream-name "$log_stream_name"' in marker_helper
+        assert "--start-from-head" in marker_helper
+        assert "--query '{events:events,next_forward_token:nextForwardToken}'" in marker_helper
+        assert "get-log-events" in marker_helper
+        assert "filter-log-events" not in marker_helper
+        assert "FilterLogEvents" not in marker_helper
+        assert ".message == $marker" in marker_helper
         assert "--limit" not in marker_helper
         assert '[[ "$success_event_count" =~ ^[0-9]+$ ]]' in script
         assert '[ "$success_event_count" -gt 0 ]' in script
@@ -3978,25 +3983,22 @@ aws() {
     printf 'Success\n'
     return 0
   fi
-  [ "$service:$operation" = "logs:filter-log-events" ] || return 43
+  [ "$service:$operation" = "logs:get-log-events" ] || return 43
   if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
     return "$AWS_QUERY_STATUS"
   fi
-  local log_stream_prefix=""
-  local filter_pattern=""
-  local output_format=""
+  local log_stream_name=""
+  local next_token=""
+  local has_next_token=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --log-stream-name-prefix)
-        log_stream_prefix="$2"
+      --log-stream-name)
+        log_stream_name="$2"
         shift 2
         ;;
-      --filter-pattern)
-        filter_pattern="$2"
-        shift 2
-        ;;
-      --output)
-        output_format="$2"
+      --next-token)
+        next_token="$2"
+        has_next_token=1
         shift 2
         ;;
       *)
@@ -4004,30 +4006,30 @@ aws() {
         ;;
     esac
   done
-  if [ "$log_stream_prefix" != "${command_id}/${target_id}/aws-runShellScript/stdout" ]; then
+  if [ "$log_stream_name" != "${command_id}/${target_id}/aws-runShellScript/stdout" ]; then
     return 41
   fi
-  case "$filter_pattern" in
-    *"status=success"*)
-      query_index="$(<"$SUCCESS_QUERY_INDEX_FILE")"
-      if [ "$query_index" -lt "${#SUCCESS_COUNTS[@]}" ]; then
-        count_value="${SUCCESS_COUNTS[$query_index]}"
-      else
-        count_value="${SUCCESS_COUNTS[$(( ${#SUCCESS_COUNTS[@]} - 1 ))]}"
-      fi
-      [ "$count_value" = "__EMPTY__" ] && count_value=""
-      [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
-      if [[ "$count_value" =~ ^[0-9]+$ ]]; then
-        printf '{"count":%s,"next_token":null}\n' "$count_value"
-      elif [ -n "$count_value" ]; then
-        printf '{"count":"%s","next_token":null}\n' "$count_value"
-      fi
-      printf '%s\n' "$((query_index + 1))" > "$SUCCESS_QUERY_INDEX_FILE"
-      ;;
-    *)
-      return 42
-      ;;
-  esac
+  if [ "$has_next_token" -eq 0 ]; then
+    query_index="$(<"$SUCCESS_QUERY_INDEX_FILE")"
+    if [ "$query_index" -lt "${#SUCCESS_COUNTS[@]}" ]; then
+      count_value="${SUCCESS_COUNTS[$query_index]}"
+    else
+      count_value="${SUCCESS_COUNTS[$(( ${#SUCCESS_COUNTS[@]} - 1 ))]}"
+    fi
+    printf '%s\n' "$((query_index + 1))" > "$SUCCESS_QUERY_INDEX_FILE"
+    printf '%s\n' "$count_value" > "$STATE_DIR/current_success_count"
+  else
+    count_value="$(<"$STATE_DIR/current_success_count")"
+  fi
+  [ "$count_value" = "__EMPTY__" ] && return 0
+  [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
+  if [[ "$count_value" =~ ^[0-9]+$ ]] && [ "$count_value" -gt 0 ]; then
+    printf '{"events":[{"message":"%s"}],"next_forward_token":"terminal"}\n' "$success_marker"
+  elif [ "$count_value" = "0" ]; then
+    printf '{"events":[],"next_forward_token":"terminal"}\n'
+  else
+    printf '{"events":"invalid","next_forward_token":"terminal"}\n'
+  fi
 }
 
 sleep() { :; }
@@ -4688,17 +4690,23 @@ aws() {
     ssm:get-command-invocation)
       next_value "$STATUS_INDEX_FILE" STATUS_VALUES
       ;;
-    logs:filter-log-events)
-      local filter_pattern=""
-      local output_format=""
+    logs:get-log-events)
+      local log_stream_name=""
+      local has_next_token=0
       while [ "$#" -gt 0 ]; do
         case "$1" in
-          --filter-pattern)
-            filter_pattern="$2"
+          --log-stream-name)
+            log_stream_name="$2"
             shift 2
             ;;
-          --output)
-            output_format="$2"
+          --next-token)
+            has_next_token=1
+            shift 2
+            ;;
+          --start-from-head|--no-paginate)
+            shift
+            ;;
+          --region|--log-group-name|--cli-connect-timeout|--cli-read-timeout|--query|--output)
             shift 2
             ;;
           *)
@@ -4706,19 +4714,22 @@ aws() {
             ;;
         esac
       done
+      [ "$log_stream_name" = "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" ] || return 41
       local marker_value
-      case "$filter_pattern" in
-        *status=success*)
-          marker_value="$(next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES "$output_format")" || return
-          ;;
-        *)
-          return 42
-          ;;
-      esac
-      if [[ "$marker_value" =~ ^[0-9]+$ ]]; then
-        printf '{"count":%s,"next_token":null}\n' "$marker_value"
-      elif [ -n "$marker_value" ]; then
-        printf '{"count":"%s","next_token":null}\n' "$marker_value"
+      if [ "$has_next_token" -eq 0 ]; then
+        marker_value="$(next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES)" || return
+        printf '%s\n' "$marker_value" > "$STATE_DIR/current_success_count"
+      else
+        marker_value="$(<"$STATE_DIR/current_success_count")"
+      fi
+      [ "$marker_value" = "__EMPTY__" ] && return 0
+      [ "$marker_value" = "__PAGINATED_ONE__" ] && marker_value=1
+      if [[ "$marker_value" =~ ^[0-9]+$ ]] && [ "$marker_value" -gt 0 ]; then
+        printf '{"events":[{"message":"%s"}],"next_forward_token":"terminal"}\n' "$success_marker"
+      elif [ "$marker_value" = "0" ]; then
+        printf '{"events":[],"next_forward_token":"terminal"}\n'
+      else
+        printf '{"events":"invalid","next_forward_token":"terminal"}\n'
       fi
       ;;
     *)
@@ -4878,10 +4889,20 @@ def test_cloudwatch_marker_polling_uses_bounded_helper(
         assert "source infra/deploy/cloudwatch_marker_count.sh" in script
         assert "cloudwatch_marker_count" in script
         assert "aws logs filter-log-events" not in script
+        assert "aws logs get-log-events" not in script
+        assert re.search(
+            r'cloudwatch_marker_count "\$AWS_REGION" "\$AWS_SSM_LOG_GROUP" '
+            r'"\$\{command_id\}/\$\{(?:target_id|TARGET_ID)\}/aws-runShellScript/stdout" '
+            r'"\$success_marker"',
+            script,
+        )
 
 
 def _run_cloudwatch_marker_helper(
-    tmp_path: Path, pages: dict[str, tuple[int, str]]
+    tmp_path: Path,
+    pages: dict[str, tuple[list[str], str]],
+    *,
+    aws_exit: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -4896,13 +4917,22 @@ import os
 import sys
 
 args = sys.argv[1:]
-assert args[:2] == ["logs", "filter-log-events"]
+assert args[:2] == ["logs", "get-log-events"]
 required = {
+    "--start-from-head",
     "--no-paginate",
     "--cli-connect-timeout",
     "--cli-read-timeout",
 }
 assert required.issubset(args)
+assert args[args.index("--region") + 1] == "region"
+assert args[args.index("--log-group-name") + 1] == "group"
+assert args[args.index("--log-stream-name") + 1] == "stream"
+assert args[args.index("--query") + 1] == "{events:events,next_forward_token:nextForwardToken}"
+assert args[args.index("--cli-connect-timeout") + 1] == "5"
+assert args[args.index("--cli-read-timeout") + 1] == "10"
+assert "--log-stream-name-prefix" not in args
+assert "--filter-pattern" not in args
 assert "--limit" not in args
 token = ""
 if "--next-token" in args:
@@ -4910,8 +4940,23 @@ if "--next-token" in args:
 with open(os.environ["CALLS_FILE"], "a", encoding="utf-8") as calls:
     calls.write(token + "\\n")
 with open(os.environ["PAGES_FILE"], encoding="utf-8") as source:
-    count, next_token = json.load(source)[token]
-print(json.dumps({"count": count, "next_token": next_token or None}))
+    events, next_token = json.load(source)[token]
+if os.environ["AWS_EXIT"] != "0":
+    raise SystemExit(int(os.environ["AWS_EXIT"]))
+if events == ["__MALFORMED__"]:
+    print("not-json")
+elif events == ["__MISSING_TOKEN__"]:
+    print(json.dumps({"events": [{"message": "marker status=success"}]}))
+elif events == ["__NON_STRING_MESSAGE__"]:
+    print(json.dumps({
+        "events": [{"message": 1}],
+        "next_forward_token": next_token,
+    }))
+else:
+    print(json.dumps({
+        "events": [{"message": event} for event in events],
+        "next_forward_token": next_token,
+    }))
 """,
         encoding="utf-8",
     )
@@ -4929,24 +4974,24 @@ print(json.dumps({"count": count, "next_token": next_token or None}))
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "CALLS_FILE": str(state_file),
             "PAGES_FILE": str(page_file),
+            "AWS_EXIT": str(aws_exit),
         },
         text=True,
         timeout=10,
     )
 
 
-def test_cloudwatch_marker_helper_stops_on_repeated_next_token(tmp_path: Path) -> None:
+def test_cloudwatch_marker_helper_fails_closed_on_unexpected_token_cycle(tmp_path: Path) -> None:
     completed = _run_cloudwatch_marker_helper(
         tmp_path,
         {
-            "": (0, "token-a"),
-            "token-a": (0, "token-b"),
-            "token-b": (0, "token-a"),
+            "": ([], "token-a"),
+            "token-a": ([], "token-b"),
+            "token-b": ([], "token-a"),
         },
     )
 
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "0\n"
+    assert completed.returncode != 0, completed.stderr
     assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
         "",
         "token-a",
@@ -4954,10 +4999,15 @@ def test_cloudwatch_marker_helper_stops_on_repeated_next_token(tmp_path: Path) -
     ]
 
 
-def test_cloudwatch_marker_helper_returns_on_first_matching_page(tmp_path: Path) -> None:
+def test_cloudwatch_marker_helper_rejects_substring_and_returns_on_exact_match(
+    tmp_path: Path,
+) -> None:
     completed = _run_cloudwatch_marker_helper(
         tmp_path,
-        {"": (0, "token-a"), "token-a": (1, "token-b")},
+        {
+            "": (["unrelated marker status=success"], "token-a"),
+            "token-a": (["marker status=success"], "token-b"),
+        },
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -4966,6 +5016,48 @@ def test_cloudwatch_marker_helper_returns_on_first_matching_page(tmp_path: Path)
         "",
         "token-a",
     ]
+
+
+def test_cloudwatch_marker_helper_handles_empty_page_before_exact_marker(tmp_path: Path) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {
+            "": ([], "token-a"),
+            "token-a": (["marker status=success"], "token-b"),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
+
+
+def test_cloudwatch_marker_helper_returns_zero_only_at_forward_token_termination(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {"": ([], "terminal"), "terminal": ([], "terminal")},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "0\n"
+
+
+@pytest.mark.parametrize(
+    ("pages", "aws_exit"),
+    (
+        ({"": (["__MALFORMED__"], "terminal")}, 0),
+        ({"": (["__MISSING_TOKEN__"], "terminal")}, 0),
+        ({"": (["__NON_STRING_MESSAGE__"], "terminal")}, 0),
+        ({"": ([], "terminal")}, 7),
+    ),
+)
+def test_cloudwatch_marker_helper_fails_closed_on_invalid_aws_response_or_cli_failure(
+    tmp_path: Path, pages: dict[str, tuple[list[str], str]], aws_exit: int
+) -> None:
+    completed = _run_cloudwatch_marker_helper(tmp_path, pages, aws_exit=aws_exit)
+
+    assert completed.returncode != 0
 
 
 @pytest.mark.parametrize(
@@ -5033,8 +5125,8 @@ def test_marker_queries_wait_for_terminal_ssm_success(
 def test_cloudwatch_marker_helper_stops_after_distinct_token_page_limit(
     tmp_path: Path,
 ) -> None:
-    pages = {"": (0, "token-1")}
-    pages.update({f"token-{page}": (0, f"token-{page + 1}") for page in range(1, 128)})
+    pages = {"": ([], "token-1")}
+    pages.update({f"token-{page}": ([], f"token-{page + 1}") for page in range(1, 128)})
 
     completed = _run_cloudwatch_marker_helper(tmp_path, pages)
 
