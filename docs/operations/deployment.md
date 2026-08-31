@@ -2,11 +2,11 @@
 
 > 目前實際target是staging；production workflow capability存在，但production EC2與外部資源
 > 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
-> accepted bundle固定為exact digest；FinDB staging workflow 的程式碼已改為OIDC＋SSM two-phase bounded candidate／activation，
-> 並已完成兩次正常live deployment與一次同accepted identity replay，Phase 4 exit gate已完成。不同digest的
+> accepted bundle固定為exact digest；FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded
+> candidate／accepted-record／activation，並完成各自的live acceptance，Phase 4與Phase 5 exit gate均已完成。不同digest的
 > previous-release rollback與不同Alembic revision的schema拒絕演練移至Phase 6，仍未執行。
-> `staging-findb`的三個FinDB deploy SSH secrets已刪除；Fetcher及production仍保留
-> SSH相容路徑；退場計畫見
+> `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production仍保留SSH相容路徑，
+> host SSH recovery ingress／keys仍由Phase 6管理；退場計畫見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
 ## Workflow與release units
@@ -139,14 +139,11 @@ operator必須另行移除不用的repository／Environment設定。
 目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager，host loader只在
 `/run` tmpfs建立`0600` bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是
 staging runtime source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
-FinDB staging日常deployment transport已以兩次normal run與一次accepted replay完成SSM live驗證，
-Phase 4 exit gate已完成；different-digest rollback與schema-incompatibility rejection移至Phase 6，仍未執行。
-staging-findb已移除
-`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`三個FinDB deploy secrets；此事不涵蓋TCP/22、
-SSH recovery ingress／keys、Fetcher、production或GitHub runtime copies。
-Fetcher staging的repo-side Phase 5 workflow已改為OIDC＋SSM candidate／accepted-record／activation，
-FinLab smoke亦改為bounded SSM；尚待protected-main live驗收，因此不得宣稱Phase 5 exit gate完成。
-Production仍使用SSH相容路徑。
+FinDB與Fetcher staging日常deployment transport均已完成OIDC＋SSM live驗證；Fetcher的FinLab smoke亦使用
+bounded SSM。`staging-findb`已移除`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`，
+`staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。這些刪除不涵蓋TCP/22、host SSH recovery
+ingress／keys、production或GitHub Environment的application runtime copies；production仍使用SSH相容路徑。
+Different-digest rollback與schema-incompatibility rejection移至Phase 6，仍未執行。
 
 ## Credential與storage邊界
 
@@ -273,7 +270,7 @@ Alembic revision，絕不再次migration。條件寫入遇到既有
 bundle時會重新驗證 SHA，遇到既有 record 時只接受相同 immutable identity，因此可安全完成 orphan bundle 的
 record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit 的 accepted immutable key，不能使用
 candidate、latest 或跨 unit key，也不可重新產生 manifest。Phase 3的兩個unit normal accepted deployment與
-replay live acceptance已完成；FinDB日常host transport已在Phase 4切換為SSM，Fetcher仍使用SSH action。
+replay live acceptance已完成；FinDB與Fetcher日常host transport已分別在Phase 4與Phase 5切換為SSM。
 
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
@@ -283,8 +280,8 @@ paths。staging canary/deploy/provider helper、catalog、Compose 與 Nginx rend
 archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
 且 bucket keys 關閉以保留 unit-prefix KMS encryption context。
 
-以下是Phase 3當時建立的accepted record；`b499869c8ff86e09232c1b55516787ae7ed5d2f0`不是目前
-FinDB accepted identity。本文最後驗證的Fetcher accepted commit仍為該值：
+以下是Phase 3當時建立的accepted record；`b499869c8ff86e09232c1b55516787ae7ed5d2f0`已不是目前
+FinDB或Fetcher accepted identity：
 
 - FinDB normal run [33260508254](https://github.com/FPI-TW/findb/actions/runs/33260508254)建立
   `findb/accepted/b499869c8ff86e09232c1b55516787ae7ed5d2f0/0f90cbe570e34bc8bebe5c9a1737edfd881a7bc4e9d83ca4103a79dd884986cf.tar`；
@@ -319,6 +316,46 @@ rehearsal移至Phase 6，因此不再阻塞Phase 4，但不得把同digest repla
 `staging-findb`的
 `FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`已在Phase 4 live acceptance後移除；其餘SSH
 recovery／network或其他unit scope不在本次變更內。
+
+### Fetcher Phase 5 SSM live record（2026-08-31）
+
+PR [#222](https://github.com/FPI-TW/findb/pull/222)合併為
+`c4c827a96c538d8be65787dcff0cb3492506098f`後，Fetcher normal runs
+[33368243527](https://github.com/FPI-TW/findb/actions/runs/33368243527)與
+[33369135142](https://github.com/FPI-TW/findb/actions/runs/33369135142)均以OIDC＋SSM完成
+preflight、candidate、accepted-record與activation。Accepted replay加FinLab acquisition smoke run
+[33372826303](https://github.com/FPI-TW/findb/actions/runs/33372826303)亦成功；replay只使用既有accepted
+identity，FinLab smoke由獨立bounded SSM command執行。
+
+Deployment correctness不再依賴CloudWatch log stream或hard-coded plugin ID。Workflow在
+`get-command-invocation`回傳`Success`後，直接從`StandardOutputContent`逐行精確比對本次command的
+success marker；`Status`、`StatusDetails`、`ResponseCode`、command ID及instance ID任一不符即fail closed。
+CloudWatch仍作為完整、durable的stderr與command audit，但不是deployment correctness的唯一signal。上述兩次normal
+deployment與replay／smoke皆通過這個inline marker protocol。
+
+FinLab smoke SSM command `f1a93849-490e-431b-b3f5-185504566bbf`的`Status`、`StatusDetails`與
+response code為`Success`／`Success`／`0`；`StandardOutputContent`只有精確的
+`phase5_finlab_smoke_marker=33372826303-1-finlab-smoke status=success`。CloudWatch保持啟用，
+但不參與這個correctness判定。
+
+Live acceptance另確認：
+
+- 三個provider維持單一stable writer、restart count 0，candidate／previous／preflight leftovers為空；
+- provider consumer與calendar credential皆保持隔離，cross-provider read fail closed；staging FinLab
+  container內的現行calendar client對未發布的TW 2099年度回應HTTP 404並fail closed，且未觸發provider；
+- FinLab ingestion run `01a0572e-64d6-73a3-8d1c-0055c0eec96e`為`completed`，attempt 1取得並
+  durable terminal delivery 2/2筆；normalization job為`completed`、outbox為`published`、policy為`pass`，
+  FinLab feed freshness為`fresh`且沒有open missing-delivery alert；
+- candidate失敗與中斷復原均保持`/opt/fetcher/current`不變、恢復原stable containers並清除
+  candidate／previous／preflight leftovers；早期pre-activation失敗未執行persist或activation；
+- Owner將Twelve Data、FinLab、Shioaji scheduler恢復並維持`running`，desired revisions分別為
+  `10`／`10`／`8`；
+- `staging-fetcher`的`FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY`已刪除。
+
+這組證據完成Phase 5 transport與bounded FinLab acceptance，但不代表整體queue從未有歷史
+`failed`、`retry_exhausted`或`missing`項目，也不代表四個active feeds均已完成完整原生排程驗收。
+四個feed的多交易日觀察與GitHub Environment application runtime copies清理仍列於backlog；
+Phase 6的different-digest rollback、schema rejection、backup／restore、DR與SSH recovery退場亦仍未完成。
 
 Deploy後至少完成：
 
