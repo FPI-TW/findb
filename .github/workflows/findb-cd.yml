@@ -1110,7 +1110,7 @@ jobs:
             status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$target_id" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$status" in
               Success)
-                # Read only marker counts after the SSM output stream is terminal and stable.
+                # Read the exact terminal SSM stdout stream only after Success.
                 success_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$success_marker" || true)"
                 if [[ "$success_event_count" =~ ^[0-9]+$ ]] && [ "$success_event_count" -gt 0 ]; then
                   marker_state="success"

@@ -385,8 +385,10 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     log_statement = deploy_policy.split('sid    = "ReadOwnPreflightLogEvents"', 1)[1].split(
         'sid    = "OwnDeploymentBundleObjects"', 1
     )[0]
-    assert 'actions = ["logs:FilterLogEvents"]' in log_statement
+    assert 'actions = ["logs:GetLogEvents"]' in log_statement
     assert 'resources = ["${aws_cloudwatch_log_group.ssm[each.key].arn}:*"]' in log_statement
+    assert "logs:FilterLogEvents" not in log_statement
+    assert "logs:Unmask" not in log_statement
     assert "secretsmanager:GetSecretValue" not in deploy_policy
     assert re.findall(r'"(rds:[^"]+)"', deploy_policy) == ["rds:DescribeDBInstances"]
     assert "r2" not in deploy_policy.lower()

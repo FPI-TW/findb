@@ -228,9 +228,9 @@ data "aws_iam_policy_document" "deploy_permissions" {
     sid    = "ReadOwnPreflightLogEvents"
     effect = "Allow"
 
-    # FilterLogEvents is scoped to the unit's CloudWatch log group. The
-    # workflow queries only event IDs, never command stdout/stderr.
-    actions = ["logs:FilterLogEvents"]
+    # GetLogEvents is scoped to the unit's SSM output log streams. The
+    # workflow reads exact marker messages from a single command stream.
+    actions = ["logs:GetLogEvents"]
 
     resources = ["${aws_cloudwatch_log_group.ssm[each.key].arn}:*"]
   }
