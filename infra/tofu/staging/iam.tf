@@ -232,7 +232,9 @@ data "aws_iam_policy_document" "deploy_permissions" {
     # workflow reads exact marker messages from a single command stream.
     actions = ["logs:GetLogEvents"]
 
-    resources = ["${aws_cloudwatch_log_group.ssm[each.key].arn}:*"]
+    resources = [
+      "${trimsuffix(aws_cloudwatch_log_group.ssm[each.key].arn, ":*")}:log-stream:*",
+    ]
   }
 
   # Phase 1 only needs preflight. These future bundle permissions are limited

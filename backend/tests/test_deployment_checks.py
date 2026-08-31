@@ -4946,6 +4946,7 @@ with open(os.environ["CALLS_FILE"], "a", encoding="utf-8") as calls:
 with open(os.environ["PAGES_FILE"], encoding="utf-8") as source:
     events, next_token = json.load(source)[token]
 if os.environ["AWS_EXIT"] != "0":
+    print("simulated AWS get-log-events failure", file=sys.stderr)
     raise SystemExit(int(os.environ["AWS_EXIT"]))
 if events == ["__MALFORMED__"]:
     print("not-json")
@@ -5129,6 +5130,9 @@ def test_cloudwatch_marker_helper_fails_closed_on_invalid_aws_response_or_cli_fa
     completed = _run_cloudwatch_marker_helper(tmp_path, pages, aws_exit=aws_exit)
 
     assert completed.returncode != 0
+    if aws_exit:
+        assert completed.stdout == ""
+        assert "simulated AWS get-log-events failure" in completed.stderr
 
 
 @pytest.mark.parametrize(
