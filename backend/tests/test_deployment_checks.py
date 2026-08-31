@@ -4663,6 +4663,36 @@ def test_fetcher_staging_deployment_and_smoke_use_only_bounded_ssm() -> None:
     assert "${{ secrets." not in json.dumps(smoke, sort_keys=True)
 
 
+def test_finlab_smoke_checks_out_marker_gate_before_sourcing_helper() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    steps = workflow["jobs"]["finlab-acquisition-smoke"]["steps"]
+    smoke_step = _named_step(
+        workflow, "finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"
+    )
+
+    checkout_indices = [
+        index
+        for index, step in enumerate(steps)
+        if step.get("uses") == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    ]
+    smoke_index = steps.index(smoke_step)
+
+    assert checkout_indices
+    assert min(checkout_indices) < smoke_index
+    assert "source infra/deploy/ssm_command_marker_gate.sh" in smoke_step["run"]
+
+
+def test_finlab_smoke_cache_directory_uses_numeric_chown() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    script = _named_step(
+        workflow, "finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"
+    )["run"]
+
+    assert 'install -d -m 0700 "$cache_dir"' in script
+    assert 'chown 10001:10001 "$cache_dir"' in script
+    assert 'install -d -o 10001 -g 10001 -m 0700 "$cache_dir"' not in script
+
+
 @pytest.mark.parametrize(
     ("workflow_path", "job_name", "step_name"),
     (

@@ -1908,6 +1908,8 @@ jobs:
       id-token: write
 
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - name: Configure staging AWS credentials for FinLab smoke
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
@@ -1960,7 +1962,8 @@ jobs:
           emit_failure() { trap - EXIT; [ "$smoke_succeeded" -eq 1 ] || printf "phase5_finlab_smoke_marker=%s status=failed\\n" "$MARKER_TOKEN" >&3; }
           trap emit_failure EXIT
           cache_dir=/var/lib/findb-finlab-smoke-cache
-          install -d -o 10001 -g 10001 -m 0700 "$cache_dir"
+          install -d -m 0700 "$cache_dir"
+          chown 10001:10001 "$cache_dir"
           sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_FINLAB_IMAGE_REF,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" --region "$AWS_REGION" --consumer finlab-smoke --ecr-registry "$ECR_REGISTRY" --docker-login -- docker run --rm --name findb-finlab-acquisition-smoke --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --mount "type=bind,src=$cache_dir,dst=/home/fetcher" --env FINLAB_API_TOKEN "$FETCHER_FINLAB_IMAGE_REF" findb-fetch-finlab-smoke --target-date "$FINLAB_SMOKE_TARGET_DATE" --symbols "$FINLAB_SMOKE_SYMBOLS"
           printf "phase5_finlab_smoke_marker=%s status=success\\n" "$MARKER_TOKEN" >&3
           smoke_succeeded=1'
