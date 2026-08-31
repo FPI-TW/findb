@@ -265,9 +265,13 @@ repo:FPI-TW/findb:environment:staging-fetcher
 aud = sts.amazonaws.com
 ```
 
-Deploy roles can inspect the target, submit the read-only SSM preflight, read
-only bounded marker event IDs from their own CloudWatch log group, and use their
-own future deployment-bundle prefix. They cannot
+Deploy roles can inspect the target, submit the bounded SSM commands, and read
+their submitted command invocation status/output through `ssm:GetCommandInvocation`.
+That action is not resource-scoped by IAM, so both deploy roles receive it in
+an isolated `Resource="*"` statement. Deployment correctness is determined by
+the exact inline SSM stdout marker only after an invocation reports `Success`;
+CloudWatch remains the durable stderr audit sink and is not read by deploy
+roles. Deploy roles can use their own future deployment-bundle prefix. They cannot
 call `secretsmanager:GetSecretValue`, read RDS, access another unit's target,
 or use another unit's bundle prefix. Instance roles use a scoped SSM agent
 transport policy and have exact access to their own declared Secrets Manager
@@ -314,8 +318,10 @@ runtime secrets until the `aws-check` canary and consumer-specific deployment
 acceptance succeed; rotation and revocation are separate, ordered cutover
 actions.
 
-Run Command and Session Manager output is sent to the unit log group. The
-preflight only emits bounded host facts (account, role/profile identity,
-markers, tool versions, capacity, time synchronization, and DNS status); it
-never prints environment variables, command output containing secrets, or
-runtime credential values.
+Run Command and Session Manager output is sent to the unit log group. Each
+Run Command host script redirects ordinary output to stderr for this durable
+audit stream, while fd 3 retains the original stdout solely for the final
+success or failure marker. The preflight only emits bounded host facts
+(account, role/profile identity, markers, tool versions, capacity, time
+synchronization, and DNS status); it never prints environment variables,
+command output containing secrets, or runtime credential values.

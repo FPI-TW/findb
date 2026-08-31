@@ -46,7 +46,7 @@ INGESTION_RUNBOOK = REPO_ROOT / "docs" / "operations" / "ingestion.md"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
-CLOUDWATCH_MARKER_COUNT = REPO_ROOT / "infra" / "deploy" / "cloudwatch_marker_count.sh"
+SSM_COMMAND_MARKER_GATE = REPO_ROOT / "infra" / "deploy" / "ssm_command_marker_gate.sh"
 
 LEGACY_ROLLBACK_CI_ONLY_PATHS = frozenset(
     {
@@ -89,6 +89,213 @@ UniqueKeyLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_mapping,
 )
+
+
+def _run_ssm_marker_gate(
+    tmp_path: Path, response: dict[str, object] | None, *, aws_error: str = ""
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    fake_aws = fake_bin / "aws"
+    fake_aws.write_text(
+        """#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$AWS_CALLS"
+case "${AWS_ERROR:-}" in
+  InvocationDoesNotExist)
+    echo 'An error occurred (InvocationDoesNotExist)' >&2
+    exit 255
+    ;;
+  AccessDenied)
+    echo 'An error occurred (AccessDeniedException)' >&2
+    exit 254
+    ;;
+esac
+printf '%s' "$SSM_RESPONSE"
+""",
+        encoding="utf-8",
+    )
+    fake_aws.chmod(0o755)
+    calls = tmp_path / "calls"
+    command = (
+        f"source {SSM_COMMAND_MARKER_GATE!s}; "
+        'ssm_command_marker_state region command instance "marker status=success" '
+        '"marker status=failed"'
+    )
+    environment = os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "AWS_CALLS": str(calls),
+        "AWS_ERROR": aws_error,
+        "SSM_RESPONSE": json.dumps(response) if response is not None else "",
+    }
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        capture_output=True,
+        check=False,
+        cwd=REPO_ROOT,
+        env=environment,
+        text=True,
+        timeout=10,
+    )
+    invocation = calls.read_text(encoding="utf-8")
+    assert invocation.count("ssm get-command-invocation") == 1
+    for argument in (
+        "--region region",
+        "--command-id command",
+        "--instance-id instance",
+        "--output json",
+        "command_id:CommandId",
+        "instance_id:InstanceId",
+        "document_name:DocumentName",
+        "plugin_name:PluginName",
+        "status:Status",
+        "status_details:StatusDetails",
+        "response_code:ResponseCode",
+        "stdout:StandardOutputContent",
+    ):
+        assert argument in invocation
+    return completed
+
+
+def test_ssm_marker_gate_validates_single_invocation_response_and_exact_protocol(
+    tmp_path: Path,
+) -> None:
+    base: dict[str, object] = {
+        "command_id": "command",
+        "instance_id": "instance",
+        "document_name": "AWS-RunShellScript",
+        "plugin_name": "aws:runShellScript",
+        "status": "Success",
+        "status_details": "Success",
+        "response_code": 0,
+        "stdout": "marker status=success\r\n",
+    }
+    valid = _run_ssm_marker_gate(tmp_path, base)
+    assert valid.returncode == 0, valid.stderr
+    assert valid.stdout == "success\n"
+
+    for update in (
+        {"stdout": "prefix marker status=success\n"},
+        {"stdout": "marker status=success\nmarker status=success\n"},
+        {"stdout": "marker status=success\nmarker status=failed\n"},
+        {"response_code": 1},
+        {"status": "Failed", "status_details": "Failed"},
+        {"status": "Cancelled", "status_details": "Cancelled"},
+        {"status": "TimedOut", "status_details": "Timed Out"},
+        {"document_name": "WrongDocument"},
+        {"response_code": 0.5},
+    ):
+        case_dir = tmp_path / str(len(list(tmp_path.iterdir())))
+        case_dir.mkdir()
+        rejected = _run_ssm_marker_gate(case_dir, base | update)
+        assert rejected.returncode != 0
+        assert rejected.stdout == ""
+
+    pending_dir = tmp_path / "pending"
+    pending_dir.mkdir()
+    pending = _run_ssm_marker_gate(
+        pending_dir, base | {"status": "InProgress", "status_details": "In Progress"}
+    )
+    assert pending.returncode == 0, pending.stderr
+    assert pending.stdout == "pending\n"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("command_id", "other-command"),
+        ("instance_id", "other-instance"),
+        ("plugin_name", "other-plugin"),
+        ("status_details", "Failed"),
+        ("status", "Unknown"),
+        ("stdout", 123),
+        ("status", 123),
+    ),
+)
+def test_ssm_marker_gate_rejects_identity_status_and_type_mismatches(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    response: dict[str, object] = {
+        "command_id": "command",
+        "instance_id": "instance",
+        "document_name": "AWS-RunShellScript",
+        "plugin_name": "aws:runShellScript",
+        "status": "Success",
+        "status_details": "Success",
+        "response_code": 0,
+        "stdout": "marker status=success\n",
+    }
+    rejected = _run_ssm_marker_gate(tmp_path, response | {field: value})
+
+    assert rejected.returncode != 0
+    assert rejected.stdout == ""
+    if field in {"status_details", "status"} and value != 123:
+        assert "SSM terminal invocation failure" in rejected.stderr
+        assert "status=" in rejected.stderr
+        assert "response_code=" in rejected.stderr
+    else:
+        assert "SSM invocation marker protocol failure" in rejected.stderr
+
+
+@pytest.mark.parametrize("missing_key", ("command_id", "instance_id", "plugin_name"))
+def test_ssm_marker_gate_rejects_missing_required_keys(tmp_path: Path, missing_key: str) -> None:
+    response: dict[str, object] = {
+        "command_id": "command",
+        "instance_id": "instance",
+        "document_name": "AWS-RunShellScript",
+        "plugin_name": "aws:runShellScript",
+        "status": "Success",
+        "status_details": "Success",
+        "response_code": 0,
+        "stdout": "marker status=success\n",
+    }
+    response.pop(missing_key)
+    rejected = _run_ssm_marker_gate(tmp_path, response)
+
+    assert rejected.returncode != 0
+    assert rejected.stdout == ""
+    assert "SSM invocation marker protocol failure" in rejected.stderr
+
+
+def test_ssm_marker_gate_terminal_diagnostics_do_not_leak_stdout_or_markers(
+    tmp_path: Path,
+) -> None:
+    response = {
+        "command_id": "command",
+        "instance_id": "instance",
+        "document_name": "AWS-RunShellScript",
+        "plugin_name": "aws:runShellScript",
+        "status": "Failed",
+        "status_details": "Failed",
+        "response_code": 42,
+        "stdout": "secret marker status=success\n",
+    }
+    rejected = _run_ssm_marker_gate(tmp_path, response)
+
+    assert rejected.returncode != 0
+    assert rejected.stdout == ""
+    assert "SSM terminal invocation failure" in rejected.stderr
+    assert "status=Failed" in rejected.stderr
+    assert "status_details=Failed" in rejected.stderr
+    assert "response_code=42" in rejected.stderr
+    assert "secret" not in rejected.stderr
+    assert "marker status=success" not in rejected.stderr
+
+
+def test_ssm_marker_gate_treats_only_missing_invocation_as_pending(tmp_path: Path) -> None:
+    missing = _run_ssm_marker_gate(tmp_path / "missing", None, aws_error="InvocationDoesNotExist")
+    assert missing.returncode == 0
+    assert missing.stdout == "pending\n"
+    assert "InvocationDoesNotExist" in missing.stderr
+
+    denied = _run_ssm_marker_gate(tmp_path / "denied", None, aws_error="AccessDenied")
+    assert denied.returncode != 0
+    assert denied.stdout == ""
+    assert "AccessDeniedException" in denied.stderr
+
+    malformed = _run_ssm_marker_gate(tmp_path / "malformed", None)
+    assert malformed.returncode != 0
+    assert malformed.stdout == ""
 
 
 def _load_workflow(path: Path) -> dict[str, object]:
@@ -3778,8 +3985,8 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         '--instance-ids "$target_id"',
         "CloudWatchOutputEnabled=true",
         "AWS_SSM_LOG_GROUP",
-        "source infra/deploy/cloudwatch_marker_count.sh",
-        "cloudwatch_marker_count",
+        "source infra/deploy/ssm_command_marker_gate.sh",
+        "ssm_command_marker_state",
         "phase1_preflight_marker=",
         "status=success",
         "status=failed",
@@ -3855,10 +4062,8 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "--query StandardOutputContent" not in script
         assert "--query StandardErrorContent" not in script
         assert "send-command" in script
-        assert "get-command-invocation" in script
-        assert "--query Status" in script
-        assert "--cli-connect-timeout 5" in script
-        assert "--cli-read-timeout 10" in script
+        assert "get-command-invocation" not in script
+        assert "--query Status" not in script
         assert "StandardOutputContent" not in script
         assert "StandardErrorContent" not in script
         assert "events[0].eventId" not in script
@@ -3870,36 +4075,20 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         ]
         assert send_command.count('--instance-ids "$target_id"') == 1
         assert "--cloud-watch-output-config" in script
-        marker_helper = CLOUDWATCH_MARKER_COUNT.read_text(encoding="utf-8")
+        marker_helper = SSM_COMMAND_MARKER_GATE.read_text(encoding="utf-8")
         assert "--output json" in marker_helper
-        assert "--no-paginate" in marker_helper
         assert "--cli-connect-timeout 5" in marker_helper
         assert "--cli-read-timeout 10" in marker_helper
-        assert script.count('cloudwatch_marker_count "$AWS_REGION"') == 1
-        assert '--log-group-name "$log_group"' in marker_helper
-        assert '--log-stream-name "$log_stream_name"' in marker_helper
-        assert "--start-from-head" in marker_helper
-        assert "--query '{events:events,next_forward_token:nextForwardToken}'" in marker_helper
-        assert "get-log-events" in marker_helper
-        assert "filter-log-events" not in marker_helper
-        assert "FilterLogEvents" not in marker_helper
+        assert script.count('ssm_command_marker_state "$AWS_REGION"') == 1
+        assert "get-command-invocation" in marker_helper
+        assert "get-log-events" not in marker_helper
+        assert "2>/dev/null" not in marker_helper
+        assert "|| true" not in marker_helper
+        assert "get-command-invocation --region" not in script
         assert 'split("\\n")' in marker_helper
         assert 'rtrimstr("\\r")' in marker_helper
-        assert "select(. == $marker)" in marker_helper
-        assert 'join("")' in marker_helper
-        assert "line_fragment" in marker_helper
-        assert "--limit" not in marker_helper
-        assert '[[ "$success_event_count" =~ ^[0-9]+$ ]]' in script
-        assert '[ "$success_event_count" -gt 0 ]' in script
-        assert "marker_event_count=${success_event_count}" in script
-        status_query = script.index('status="$(aws ssm get-command-invocation')
-        success_case = script.index("Success)", status_query)
-        success_query = script.index('success_event_count="$(')
-        pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
-        assert status_query < success_case < success_query < pending_case
-        success_block = script[success_case:pending_case]
-        assert "status=failed" not in success_block
-        assert success_block.count("cloudwatch_marker_count") == 1
+        assert "select(. == $success_marker)" in marker_helper
+        assert "exec 3>&1 1>&2" in script
         assert "command_id=${command_id}" in script
         host_start = script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n") + len(
             "host_script=\"$(cat <<'HOST_SCRIPT'\n"
@@ -3918,6 +4107,8 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert 'if [ -z "$ssm_agent_service" ]' in host_script
         assert "ssm_agent=active service=%s" in host_script
         assert "trap emit_preflight_failure EXIT" in host_script
+        assert "exec 3>&1 1>&2" in host_script
+        assert " >&3" in host_script
         assert "trap - EXIT" in host_script
         assert "phase1_preflight_marker=%s status=failed" in host_script
         assert "phase1_preflight_marker=%s status=success" in host_script
@@ -3953,164 +4144,6 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
             "AWS_DNS_CHECK_NAME",
         ):
             assert f"{aws_name}=" not in production
-
-
-def _run_staging_ssm_marker_polling_case(
-    tmp_path: Path,
-    workflow_path: Path,
-    *,
-    success_counts: tuple[str, ...],
-    aws_query_status: int = 0,
-) -> subprocess.CompletedProcess[str]:
-    """Run the workflow's marker polling block with an offline AWS CLI stub."""
-
-    workflow = _load_workflow(workflow_path)
-    script = _named_step(workflow, "deploy", "Run staging AWS and SSM preflight")["run"]
-    polling_start = script.index('success_marker="')
-    polling_end = script.index('if [ "$marker_state" != "success" ]', polling_start)
-    polling_script = script[polling_start:polling_end]
-    state_dir = tmp_path / workflow_path.stem
-    state_dir.mkdir()
-
-    harness = (
-        """
-set -euo pipefail
-
-aws() {
-  local service="$1"
-  local operation="$2"
-  shift 2
-  if [ "$service:$operation" = "ssm:get-command-invocation" ]; then
-    if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
-      return "$AWS_QUERY_STATUS"
-    fi
-    printf 'Success\n'
-    return 0
-  fi
-  [ "$service:$operation" = "logs:get-log-events" ] || return 43
-  if [ "$AWS_QUERY_STATUS" -ne 0 ]; then
-    return "$AWS_QUERY_STATUS"
-  fi
-  local log_stream_name=""
-  local next_token=""
-  local has_next_token=0
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --log-stream-name)
-        log_stream_name="$2"
-        shift 2
-        ;;
-      --next-token)
-        next_token="$2"
-        has_next_token=1
-        shift 2
-        ;;
-      *)
-        shift
-        ;;
-    esac
-  done
-  if [ "$log_stream_name" != "${command_id}/${target_id}/aws-runShellScript/stdout" ]; then
-    return 41
-  fi
-  if [ "$has_next_token" -eq 0 ]; then
-    query_index="$(<"$SUCCESS_QUERY_INDEX_FILE")"
-    if [ "$query_index" -lt "${#SUCCESS_COUNTS[@]}" ]; then
-      count_value="${SUCCESS_COUNTS[$query_index]}"
-    else
-      count_value="${SUCCESS_COUNTS[$(( ${#SUCCESS_COUNTS[@]} - 1 ))]}"
-    fi
-    printf '%s\n' "$((query_index + 1))" > "$SUCCESS_QUERY_INDEX_FILE"
-    printf '%s\n' "$count_value" > "$STATE_DIR/current_success_count"
-  else
-    count_value="$(<"$STATE_DIR/current_success_count")"
-  fi
-  [ "$count_value" = "__EMPTY__" ] && return 0
-  [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
-  if [[ "$count_value" =~ ^[0-9]+$ ]] && [ "$count_value" -gt 0 ]; then
-    printf '{"events":[{"message":"%s\\\\n"}],"next_forward_token":"terminal"}\n' "$success_marker"
-  elif [ "$count_value" = "0" ]; then
-    printf '{"events":[],"next_forward_token":"terminal"}\n'
-  else
-    printf '{"events":"invalid","next_forward_token":"terminal"}\n'
-  fi
-}
-
-sleep() { :; }
-
-AWS_REGION=test-region
-AWS_SSM_LOG_GROUP=test-log-group
-PREFLIGHT_MARKER_TOKEN=test-token
-command_id=test-command
-target_id=test-target
-IFS='|' read -r -a SUCCESS_COUNTS <<< "$SUCCESS_COUNT_SEQUENCE"
-SUCCESS_QUERY_INDEX_FILE="$STATE_DIR/success_query_index"
-printf '0\n' > "$SUCCESS_QUERY_INDEX_FILE"
-"""
-        + f"\nsource {CLOUDWATCH_MARKER_COUNT!s}\n"
-        + polling_script
-        + """
-if [ "$marker_state" != "success" ]; then
-  exit 1
-fi
-"""
-    )
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "SUCCESS_COUNT_SEQUENCE": "|".join(
-                "__EMPTY__" if count == "" else count for count in success_counts
-            ),
-            "AWS_QUERY_STATUS": str(aws_query_status),
-            "STATE_DIR": str(state_dir),
-        }
-    )
-    return subprocess.run(
-        ["bash", "-c", harness],
-        capture_output=True,
-        check=False,
-        env=environment,
-        text=True,
-        timeout=10,
-    )
-
-
-@pytest.mark.parametrize(
-    ("case", "success_counts", "aws_query_status", "expected_returncode"),
-    (
-        ("stream absent/count 0 times out", ("0",), 0, 1),
-        ("stream absent then success passes", ("0", "3"), 0, 0),
-        ("empty success count fails closed", ("",), 0, 1),
-        ("non-numeric success count fails closed", ("invalid",), 0, 1),
-        ("AWS query failure fails closed", ("1",), 7, 1),
-        (
-            "paginated count aggregates to one JSON scalar",
-            ("__PAGINATED_ONE__",),
-            0,
-            0,
-        ),
-    ),
-)
-def test_staging_ssm_marker_count_polling_behavior(
-    tmp_path: Path,
-    case: str,
-    success_counts: tuple[str, ...],
-    aws_query_status: int,
-    expected_returncode: int,
-) -> None:
-    del case
-    for workflow_path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
-        completed = _run_staging_ssm_marker_polling_case(
-            tmp_path,
-            workflow_path,
-            success_counts=success_counts,
-            aws_query_status=aws_query_status,
-        )
-        message = f"{workflow_path.name}: stdout={completed.stdout!r} stderr={completed.stderr!r}"
-        if expected_returncode == 0:
-            assert completed.returncode == 0, message
-        else:
-            assert completed.returncode != 0, message
 
 
 def test_fetcher_r2_sync_contract_is_raw_only() -> None:
@@ -4299,7 +4332,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
     }
     assert required_findb_ci_paths <= _aggregate_ci_paths("findb")
     shared_runtime_paths = {
-        "infra/deploy/cloudwatch_marker_count.sh",
+        "infra/deploy/ssm_command_marker_gate.sh",
         "infra/deploy/release_manifest.py",
         "infra/deploy/runtime-secrets/load_runtime_secrets.py",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",
@@ -4344,7 +4377,7 @@ def test_service_ci_and_cd_triggers_cover_deployment_units_without_cross_deploy(
         "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
         "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
-        "infra/deploy/cloudwatch_marker_count.sh",
+        "infra/deploy/ssm_command_marker_gate.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         "infra/deploy/release_manifest.py",
         ".github/workflows/fetcher-cd.yml",
@@ -4558,7 +4591,8 @@ def test_findb_staging_deployment_uses_only_ssm_and_records_the_actual_command()
     assert "--timeout-seconds 1800" in script
     assert "CloudWatchOutputEnabled=true" in script
     assert "phase4_deploy_marker=" in script
-    assert "aws ssm get-command-invocation" in script
+    assert "ssm_command_marker_state" in script
+    assert "cloudwatch_marker_count" not in script
     assert "--consumer canary" in script
     assert "deploy_findb_aws.sh" in script
     assert "${{ secrets." not in script
@@ -4610,7 +4644,8 @@ def test_fetcher_staging_deployment_and_smoke_use_only_bounded_ssm() -> None:
     activation = _named_step(workflow, "deploy", "Activate accepted Fetcher release over SSM")
     assert steps.index(candidate) < steps.index(accepted) < steps.index(activation)
     assert "aws ssm send-command" in candidate["run"]
-    assert "aws ssm get-command-invocation" in candidate["run"]
+    assert "ssm_command_marker_state" in candidate["run"]
+    assert "cloudwatch_marker_count" not in candidate["run"]
     assert "phase5_candidate_marker=" in candidate["run"]
     assert "FETCHER_DEPLOY_MODE=candidate" in candidate["run"]
     assert accepted["env"]["SSM_COMMAND_ID"] == "${{ steps.ssm_candidate.outputs.command_id }}"
@@ -4628,600 +4663,83 @@ def test_fetcher_staging_deployment_and_smoke_use_only_bounded_ssm() -> None:
     assert "${{ secrets." not in json.dumps(smoke, sort_keys=True)
 
 
-def _run_phase4_ssm_polling_case(
-    tmp_path: Path,
-    step_name: str,
-    *,
-    statuses: tuple[str, ...],
-    success_counts: tuple[str, ...],
-) -> tuple[subprocess.CompletedProcess[str], tuple[int, int]]:
-    """Run a Phase 4 polling block with scripted SSM and CloudWatch replies."""
-
-    workflow = _load_workflow(FINDB_CD_WORKFLOW)
-    script = _named_step(workflow, "deploy", step_name)["run"]
-    polling_start = script.index('success_marker="')
-    polling_end = script.index('\necho "::error title=FinDB', polling_start)
-    polling_script = script[polling_start:polling_end]
-    state_dir = tmp_path / step_name.replace(" ", "-")
-    state_dir.mkdir()
-
-    harness = (
-        """
-set -euo pipefail
-
-next_value() {
-  local index_file="$1"
-  local sequence_name="$2"
-  local output_format="${3:-}"
-  local index
-  IFS= read -r index < "$index_file"
-  local -a sequence
-  case "$sequence_name" in
-    STATUS_VALUES)
-      sequence=("${STATUS_VALUES[@]}")
-      ;;
-    SUCCESS_VALUES)
-      sequence=("${SUCCESS_VALUES[@]}")
-      ;;
-    *)
-      return 44
-      ;;
-  esac
-  local value
-  if [ "$index" -lt "${#sequence[@]}" ]; then
-    value="${sequence[$index]}"
-  else
-    value="${sequence[$(( ${#sequence[@]} - 1 ))]}"
-  fi
-  printf '%s\\n' "$((index + 1))" > "$index_file"
-  if [ "$value" = "__ERROR__" ]; then
-    return 7
-  fi
-  if [ "$value" = "__PAGINATED_ONE__" ]; then
-    printf '1\n'
-    return 0
-  fi
-  if [ "$value" != "__EMPTY__" ]; then
-    printf '%s\\n' "$value"
-  fi
-}
-
-aws() {
-  local service="$1"
-  local operation="$2"
-  shift 2
-  case "$service:$operation" in
-    ssm:get-command-invocation)
-      next_value "$STATUS_INDEX_FILE" STATUS_VALUES
-      ;;
-    logs:get-log-events)
-      local log_stream_name=""
-      local has_next_token=0
-      while [ "$#" -gt 0 ]; do
-        case "$1" in
-          --log-stream-name)
-            log_stream_name="$2"
-            shift 2
-            ;;
-          --next-token)
-            has_next_token=1
-            shift 2
-            ;;
-          --start-from-head|--no-paginate)
-            shift
-            ;;
-          --region|--log-group-name|--cli-connect-timeout|--cli-read-timeout|--query|--output)
-            shift 2
-            ;;
-          *)
-            shift
-            ;;
-        esac
-      done
-      [ "$log_stream_name" = "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" ] || return 41
-      local marker_value
-      if [ "$has_next_token" -eq 0 ]; then
-        marker_value="$(next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES)" || return
-        printf '%s\n' "$marker_value" > "$STATE_DIR/current_success_count"
-      else
-        marker_value="$(<"$STATE_DIR/current_success_count")"
-      fi
-      [ "$marker_value" = "__EMPTY__" ] && return 0
-      [ "$marker_value" = "__PAGINATED_ONE__" ] && marker_value=1
-      if [[ "$marker_value" =~ ^[0-9]+$ ]] && [ "$marker_value" -gt 0 ]; then
-        printf '{"events":[{"message":"%s\\\\n"}],"next_forward_token":"terminal"}\n' "$success_marker"
-      elif [ "$marker_value" = "0" ]; then
-        printf '{"events":[],"next_forward_token":"terminal"}\n'
-      else
-        printf '{"events":"invalid","next_forward_token":"terminal"}\n'
-      fi
-      ;;
-    *)
-      return 43
-      ;;
-  esac
-}
-
-sleep() { :; }
-
-AWS_REGION=test-region
-AWS_SSM_LOG_GROUP=test-log-group
-TARGET_ID=test-target
-DEPLOY_MARKER_TOKEN=test-token
-ACTIVATION_MARKER_TOKEN=test-token
-command_id=test-command
-GITHUB_OUTPUT="$STATE_DIR/github_output"
-: > "$GITHUB_OUTPUT"
-IFS='|' read -r -a STATUS_VALUES <<< "$STATUS_SEQUENCE"
-IFS='|' read -r -a SUCCESS_VALUES <<< "$SUCCESS_COUNT_SEQUENCE"
-STATUS_INDEX_FILE="$STATE_DIR/status_index"
-SUCCESS_INDEX_FILE="$STATE_DIR/success_index"
-printf '0\\n' > "$STATUS_INDEX_FILE"
-printf '0\\n' > "$SUCCESS_INDEX_FILE"
-"""
-        + f"\nsource {CLOUDWATCH_MARKER_COUNT!s}\n"
-        + polling_script
-        + """
-exit 1
-"""
-    )
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "STATUS_SEQUENCE": "|".join(
-                "__EMPTY__" if status == "" else status for status in statuses
-            ),
-            "SUCCESS_COUNT_SEQUENCE": "|".join(
-                "__EMPTY__" if count == "" else count for count in success_counts
-            ),
-            "STATE_DIR": str(state_dir),
-        }
-    )
-    completed = subprocess.run(
-        ["bash", "-c", harness],
-        capture_output=True,
-        check=False,
-        cwd=REPO_ROOT,
-        env=environment,
-        text=True,
-        timeout=20,
-    )
-    call_counts = tuple(
-        int((state_dir / index_name).read_text(encoding="utf-8"))
-        for index_name in ("status_index", "success_index")
-    )
-    return completed, call_counts
-
-
 @pytest.mark.parametrize(
-    "step_name",
+    ("workflow_path", "job_name", "step_name"),
     (
-        "Run bounded FinDB staging deployment and acceptance over SSM",
-        "Activate accepted FinDB release over SSM",
-    ),
-)
-@pytest.mark.parametrize(
-    (
-        "statuses",
-        "success_counts",
-        "expected_returncode",
-        "expected_call_counts",
-    ),
-    (
-        # Transient SSM CLI failures before completion must not query
-        # CloudWatch or abandon the command.
-        (
-            ("__ERROR__", "Pending", "InProgress", "Success"),
-            ("1",),
-            0,
-            (4, 1),
-        ),
-        # CloudWatch delivery can lag terminal SSM success; wait until the
-        # required numeric success marker is present.
-        (("Success",), ("", "invalid", "0", "1"), 0, (4, 4)),
-        # The bounded marker helper returns as soon as a matching page is found.
-        (("Success",), ("__PAGINATED_ONE__",), 0, (1, 1)),
-        # A terminal success without the marker still fails closed at the
-        # bounded polling deadline.
-        (("Success",), ("0",), 1, (360, 360)),
-        # Terminal and unexpected SSM statuses fail before querying
-        # CloudWatch; the zero success-marker query count proves prompt exit.
-        (("Failed",), ("1",), 1, (1, 0)),
-        (("Cancelled",), ("1",), 1, (1, 0)),
-        (("TimedOut",), ("1",), 1, (1, 0)),
-        (("Unexpected",), ("1",), 1, (1, 0)),
-        # CloudWatch is never queried while the command remains in progress.
-        (("InProgress", "Failed"), ("1",), 1, (2, 0)),
-    ),
-)
-def test_phase4_ssm_polling_handles_terminal_status_and_marker_delivery(
-    tmp_path: Path,
-    step_name: str,
-    statuses: tuple[str, ...],
-    success_counts: tuple[str, ...],
-    expected_returncode: int,
-    expected_call_counts: tuple[int, int],
-) -> None:
-    completed, call_counts = _run_phase4_ssm_polling_case(
-        tmp_path,
-        step_name,
-        statuses=statuses,
-        success_counts=success_counts,
-    )
-    message = f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
-    if expected_returncode == 0:
-        assert completed.returncode == 0, message
-    else:
-        assert completed.returncode != 0, message
-    assert call_counts == expected_call_counts, message
-
-
-@pytest.mark.parametrize(
-    ("workflow_path", "job_name", "step_names"),
-    (
-        (
-            FINDB_CD_WORKFLOW,
-            "deploy",
-            (
-                "Run staging AWS and SSM preflight",
-                "Run bounded FinDB staging deployment and acceptance over SSM",
-                "Activate accepted FinDB release over SSM",
-            ),
-        ),
-        (
-            FETCHER_CD_WORKFLOW,
-            "deploy",
-            (
-                "Run staging AWS and SSM preflight",
-                "Run bounded Fetcher candidate validation over SSM",
-                "Activate accepted Fetcher release over SSM",
-            ),
-        ),
-        (
-            FETCHER_CD_WORKFLOW,
-            "finlab-acquisition-smoke",
-            ("Run bounded FinLab acquisition smoke over SSM",),
-        ),
-    ),
-)
-def test_cloudwatch_marker_polling_uses_bounded_helper(
-    workflow_path: Path, job_name: str, step_names: tuple[str, ...]
-) -> None:
-    workflow = _load_workflow(workflow_path)
-    for step_name in step_names:
-        script = _named_step(workflow, job_name, step_name)["run"]
-        assert "source infra/deploy/cloudwatch_marker_count.sh" in script
-        assert "cloudwatch_marker_count" in script
-        assert "aws logs filter-log-events" not in script
-        assert "aws logs get-log-events" not in script
-        assert re.search(
-            r'cloudwatch_marker_count "\$AWS_REGION" "\$AWS_SSM_LOG_GROUP" '
-            r'"\$\{command_id\}/\$\{(?:target_id|TARGET_ID)\}/aws-runShellScript/stdout" '
-            r'"\$success_marker"',
-            script,
-        )
-
-
-def _run_cloudwatch_marker_helper(
-    tmp_path: Path,
-    pages: dict[str, tuple[list[str], str]],
-    *,
-    aws_exit: int = 0,
-) -> subprocess.CompletedProcess[str]:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    state_file = tmp_path / "calls"
-    page_file = tmp_path / "pages.json"
-    page_file.write_text(json.dumps(pages), encoding="utf-8")
-    aws_script = fake_bin / "aws"
-    aws_script.write_text(
-        """#!/usr/bin/env python3
-import json
-import os
-import sys
-
-args = sys.argv[1:]
-assert args[:2] == ["logs", "get-log-events"]
-required = {
-    "--start-from-head",
-    "--no-paginate",
-    "--cli-connect-timeout",
-    "--cli-read-timeout",
-}
-assert required.issubset(args)
-assert args[args.index("--region") + 1] == "region"
-assert args[args.index("--log-group-name") + 1] == "group"
-assert args[args.index("--log-stream-name") + 1] == "stream"
-assert args[args.index("--query") + 1] == "{events:events,next_forward_token:nextForwardToken}"
-assert args[args.index("--cli-connect-timeout") + 1] == "5"
-assert args[args.index("--cli-read-timeout") + 1] == "10"
-assert "--log-stream-name-prefix" not in args
-assert "--filter-pattern" not in args
-assert "--limit" not in args
-token = ""
-if "--next-token" in args:
-    token = args[args.index("--next-token") + 1]
-with open(os.environ["CALLS_FILE"], "a", encoding="utf-8") as calls:
-    calls.write(token + "\\n")
-with open(os.environ["PAGES_FILE"], encoding="utf-8") as source:
-    events, next_token = json.load(source)[token]
-if os.environ["AWS_EXIT"] != "0":
-    print("simulated AWS get-log-events failure", file=sys.stderr)
-    raise SystemExit(int(os.environ["AWS_EXIT"]))
-if events == ["__MALFORMED__"]:
-    print("not-json")
-elif events == ["__MISSING_TOKEN__"]:
-    print(json.dumps({"events": [{"message": "marker status=success"}]}))
-elif events == ["__NON_STRING_MESSAGE__"]:
-    print(json.dumps({
-        "events": [{"message": 1}],
-        "next_forward_token": next_token,
-    }))
-else:
-    print(json.dumps({
-        "events": [{"message": event} for event in events],
-        "next_forward_token": next_token,
-    }))
-""",
-        encoding="utf-8",
-    )
-    aws_script.chmod(0o755)
-    return subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'source {CLOUDWATCH_MARKER_COUNT!s}; cloudwatch_marker_count region group stream "marker status=success"',
-        ],
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "CALLS_FILE": str(state_file),
-            "PAGES_FILE": str(page_file),
-            "AWS_EXIT": str(aws_exit),
-        },
-        text=True,
-        timeout=10,
-    )
-
-
-def test_cloudwatch_marker_helper_fails_closed_on_unexpected_token_cycle(tmp_path: Path) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": ([], "token-a"),
-            "token-a": ([], "token-b"),
-            "token-b": ([], "token-a"),
-        },
-    )
-
-    assert completed.returncode != 0, completed.stderr
-    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
-        "",
-        "token-a",
-        "token-b",
-    ]
-
-
-def test_cloudwatch_marker_helper_rejects_substring_and_returns_on_exact_match(
-    tmp_path: Path,
-) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": (["unrelated marker status=success\n"], "token-a"),
-            "token-a": (["marker status=success"], "token-b"),
-            "token-b": ([], "token-b"),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
-        "",
-        "token-a",
-    ]
-
-
-def test_cloudwatch_marker_helper_matches_exact_line_inside_multiline_event(
-    tmp_path: Path,
-) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": (
-                ["preflight=ok\nnot marker status=success suffix\nmarker status=success"],
-                "token-a",
-            ),
-            "token-a": ([], "token-a"),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-
-
-def test_cloudwatch_marker_helper_accepts_crlf_exact_marker_line(tmp_path: Path) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {"": (["preflight=ok\r\nmarker status=success\r\n"], "token-a")},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-
-
-def test_cloudwatch_marker_helper_reconstructs_marker_split_across_events(
-    tmp_path: Path,
-) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": (["preflight=ok\nmarker status=", "success"], "terminal"),
-            "terminal": ([], "terminal"),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-
-
-def test_cloudwatch_marker_helper_reconstructs_marker_split_across_pages(
-    tmp_path: Path,
-) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": (["preflight=ok\nmarker status="], "token-a"),
-            "token-a": (["success"], "terminal"),
-            "terminal": ([], "terminal"),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
-        "",
-        "token-a",
-    ]
-
-
-def test_cloudwatch_marker_helper_accepts_exact_tail_before_token_termination(
-    tmp_path: Path,
-) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": (["marker status=success"], "token-a"),
-            "token-a": ([], "token-b"),
-            "token-b": ([], "token-c"),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [""]
-
-
-def test_cloudwatch_marker_helper_handles_empty_page_before_exact_marker(tmp_path: Path) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {
-            "": ([], "token-a"),
-            "token-a": (["marker status=success"], "token-b"),
-            "token-b": ([], "token-b"),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "1\n"
-
-
-def test_cloudwatch_marker_helper_returns_zero_only_at_forward_token_termination(
-    tmp_path: Path,
-) -> None:
-    completed = _run_cloudwatch_marker_helper(
-        tmp_path,
-        {"": ([], "terminal"), "terminal": ([], "terminal")},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "0\n"
-
-
-@pytest.mark.parametrize(
-    ("pages", "aws_exit"),
-    (
-        ({"": (["__MALFORMED__"], "terminal")}, 0),
-        ({"": (["__MISSING_TOKEN__"], "terminal")}, 0),
-        ({"": (["__NON_STRING_MESSAGE__"], "terminal")}, 0),
-        ({"": ([], "terminal")}, 7),
-    ),
-)
-def test_cloudwatch_marker_helper_fails_closed_on_invalid_aws_response_or_cli_failure(
-    tmp_path: Path, pages: dict[str, tuple[list[str], str]], aws_exit: int
-) -> None:
-    completed = _run_cloudwatch_marker_helper(tmp_path, pages, aws_exit=aws_exit)
-
-    assert completed.returncode != 0
-    if aws_exit:
-        assert completed.stdout == ""
-        assert "simulated AWS get-log-events failure" in completed.stderr
-
-
-@pytest.mark.parametrize(
-    ("workflow_path", "job_name", "step_name", "status_variable"),
-    (
-        (FINDB_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight", "status"),
+        (FINDB_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight"),
         (
             FINDB_CD_WORKFLOW,
             "deploy",
             "Run bounded FinDB staging deployment and acceptance over SSM",
-            "invocation_status",
         ),
         (
             FINDB_CD_WORKFLOW,
             "deploy",
             "Activate accepted FinDB release over SSM",
-            "invocation_status",
         ),
-        (FETCHER_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight", "status"),
+        (FETCHER_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight"),
         (
             FETCHER_CD_WORKFLOW,
             "deploy",
             "Run bounded Fetcher candidate validation over SSM",
-            "status",
         ),
         (
             FETCHER_CD_WORKFLOW,
             "deploy",
             "Activate accepted Fetcher release over SSM",
-            "status",
         ),
         (
             FETCHER_CD_WORKFLOW,
             "finlab-acquisition-smoke",
             "Run bounded FinLab acquisition smoke over SSM",
-            "status",
         ),
     ),
 )
-def test_marker_queries_wait_for_terminal_ssm_success(
-    workflow_path: Path, job_name: str, step_name: str, status_variable: str
+def test_marker_queries_use_inline_ssm_marker_gate(
+    workflow_path: Path, job_name: str, step_name: str
 ) -> None:
     workflow = _load_workflow(workflow_path)
     script = _named_step(workflow, job_name, step_name)["run"]
-    status_query = script.index(f'{status_variable}="$(aws ssm get-command-invocation')
-    success_case = script.index("Success)", status_query)
-    success_query = script.index("cloudwatch_marker_count", success_case)
-    pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
-
-    assert status_query < success_case < success_query < pending_case
-    status_command = script[status_query:success_case]
-    assert "--cli-connect-timeout 5" in status_command
-    assert "--cli-read-timeout 10" in status_command
-    success_block = script[success_case:pending_case]
-    assert '"$success_marker" || true)' in success_block
-    assert "status=failed" not in success_block
-    assert '"$failure_marker"' not in success_block
-    assert success_block.count("cloudwatch_marker_count") == 1
-    assert "-gt 0 ]" in success_block
-    terminal_case = script.index("Cancelled|TimedOut|Failed)", pending_case)
-    terminal_block = script[terminal_case : script.index("*)", terminal_case)]
-    assert "cloudwatch_marker_count" not in terminal_block
+    assert "source infra/deploy/ssm_command_marker_gate.sh" in script
+    assert "ssm_command_marker_state" in script
+    assert "failure_marker=" in script
+    assert "cloudwatch_marker_count" not in script
+    assert "logs get-log-events" not in script
+    assert "get-command-invocation" not in script
+    assert "get-command-invocation --region" not in script
+    assert "if ! marker_state=" in script
 
 
-def test_cloudwatch_marker_helper_stops_after_distinct_token_page_limit(
-    tmp_path: Path,
-) -> None:
-    pages = {"": ([], "token-1")}
-    pages.update({f"token-{page}": ([], f"token-{page + 1}") for page in range(1, 128)})
-
-    completed = _run_cloudwatch_marker_helper(tmp_path, pages)
-
-    assert completed.returncode != 0
-    assert len((tmp_path / "calls").read_text(encoding="utf-8").splitlines()) == 128
+def test_all_ssm_gates_keep_cloudwatch_audit_and_fd3_marker_contract() -> None:
+    gates = (
+        (FINDB_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight"),
+        (
+            FINDB_CD_WORKFLOW,
+            "deploy",
+            "Run bounded FinDB staging deployment and acceptance over SSM",
+        ),
+        (FINDB_CD_WORKFLOW, "deploy", "Activate accepted FinDB release over SSM"),
+        (FETCHER_CD_WORKFLOW, "deploy", "Run staging AWS and SSM preflight"),
+        (FETCHER_CD_WORKFLOW, "deploy", "Run bounded Fetcher candidate validation over SSM"),
+        (FETCHER_CD_WORKFLOW, "deploy", "Activate accepted Fetcher release over SSM"),
+        (
+            FETCHER_CD_WORKFLOW,
+            "finlab-acquisition-smoke",
+            "Run bounded FinLab acquisition smoke over SSM",
+        ),
+    )
+    for workflow_path, job_name, step_name in gates:
+        script = _named_step(_load_workflow(workflow_path), job_name, step_name)["run"]
+        assert "--cloud-watch-output-config" in script
+        assert "CloudWatchOutputEnabled=true" in script
+        assert "source infra/deploy/ssm_command_marker_gate.sh" in script
+        assert "ssm_command_marker_state" in script
+        assert "cloudwatch_marker_count" not in script
+        assert "logs get-log-events" not in script
+        assert "get-command-invocation" not in script
+        assert "exec 3>&1 1>&2" in script
+        assert " >&3" in script
+        assert "for attempt in $(seq 1 " in script
 
 
 def test_findb_deploy_timeout_covers_bounded_ssm_polling_and_operational_margin() -> None:

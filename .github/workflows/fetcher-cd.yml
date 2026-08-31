@@ -10,7 +10,7 @@ on:
       - "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
       - "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
       - "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh"
-      - "infra/deploy/cloudwatch_marker_count.sh"
+      - "infra/deploy/ssm_command_marker_gate.sh"
       - "infra/deploy/release_manifest.py"
       - "infra/deploy/runtime-secrets/fetcher.json"
       - ".github/workflows/fetcher-cd.yml"
@@ -862,6 +862,7 @@ jobs:
           printf -v expected_bundle_replay_q '%q' "$BUNDLE_REPLAY"
           host_script="$(cat <<'HOST_SCRIPT'
           set -eu
+          exec 3>&1 1>&2
 
           preflight_succeeded=0
           docker_config=""
@@ -875,7 +876,7 @@ jobs:
               /run/fetcher-deploy-bundle.*) rm -rf -- "$bundle_root" ;;
             esac
             if [ "$preflight_succeeded" -ne 1 ]; then
-              printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token"
+              printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token" >&3
             fi
           }
           trap emit_preflight_failure EXIT
@@ -1033,7 +1034,7 @@ jobs:
             exit 1
           fi
           printf 'dns_resolution=ok name=%s\n' "$expected_dns_name"
-          printf 'phase1_preflight_marker=%s status=success\n' "$expected_marker_token"
+          printf 'phase1_preflight_marker=%s status=success\n' "$expected_marker_token" >&3
           preflight_succeeded=1
           HOST_SCRIPT
           )"
@@ -1076,31 +1077,19 @@ jobs:
           fi
           printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
           printf 'release_root=/opt/fetcher/releases/%s-%s\n' "$DEPLOY_BUNDLE_SHA256" "$PREFLIGHT_MARKER_TOKEN" >> "$GITHUB_OUTPUT"
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=success"
+          failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
           marker_state="pending"
           for attempt in $(seq 1 36); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$target_id" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success)
-                # Read the exact terminal SSM stdout stream only after Success.
-                success_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_event_count" =~ ^[0-9]+$ ]] && [ "$success_event_count" -gt 0 ]; then
-                  marker_state="success"
-                  echo "ssm_preflight_status=Success command_id=${command_id} marker_event_count=${success_event_count}"
-                  break
-                fi
-                ;;
-              Pending|InProgress|Delayed|Cancelling|""|None) ;;
-              Cancelled|TimedOut|Failed)
-                echo "::error title=SSM host preflight failed::status=${status} command_id=${command_id}"
-                exit 1
-                ;;
-              *)
-                echo "::error title=Unexpected SSM host preflight status::status=${status} command_id=${command_id}"
-                exit 1
-                ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$target_id" "$success_marker" "$failure_marker")"; then
+              echo "::error title=SSM host preflight invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then
+              echo "ssm_preflight_status=Success command_id=${command_id}"
+              break
+            fi
             sleep 5
           done
           if [ "$marker_state" != "success" ]; then
@@ -1145,11 +1134,12 @@ jobs:
           [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
           [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
           host_script='set -eu
+          exec 3>&1 1>&2
           candidate_succeeded=0
-          emit_failure() { trap - EXIT; [ "$candidate_succeeded" -eq 1 ] || printf "phase5_candidate_marker=%s status=failed\\n" "$MARKER_TOKEN"; }
+          emit_failure() { trap - EXIT; [ "$candidate_succeeded" -eq 1 ] || printf "phase5_candidate_marker=%s status=failed\\n" "$MARKER_TOKEN" >&3; }
           trap emit_failure EXIT
           sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS "$FETCHER_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-          printf "phase5_candidate_marker=%s status=success\\n" "$MARKER_TOKEN"
+          printf "phase5_candidate_marker=%s status=success\\n" "$MARKER_TOKEN" >&3
           candidate_succeeded=1'
           for name in AWS_REGION ECR_REGISTRY TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS; do
             printf -v prefix 'export %s=%q\n' "$name" "${!name}"
@@ -1159,18 +1149,15 @@ jobs:
           host_script="${prefix}${host_script}"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 5 bounded Fetcher candidate' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase5_candidate_marker=${MARKER_TOKEN} status=success"
+          failure_marker="phase5_candidate_marker=${MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success)
-                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
-              Pending|InProgress|Delayed|Cancelling|""|None) ;;
-              Cancelled|TimedOut|Failed) exit 1 ;;
-              *) exit 1 ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "$success_marker" "$failure_marker")"; then
+              echo "::error title=Fetcher candidate SSM invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi
             sleep 5
           done
           echo "::error title=Fetcher candidate timed out::command_id=${command_id}"
@@ -1277,11 +1264,12 @@ jobs:
           [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
           [[ "$RELEASE_ROOT" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
           host_script='set -eu
+          exec 3>&1 1>&2
           activation_succeeded=0
-          emit_failure() { trap - EXIT; [ "$activation_succeeded" -eq 1 ] || printf "phase5_activate_marker=%s status=failed\\n" "$MARKER_TOKEN"; }
+          emit_failure() { trap - EXIT; [ "$activation_succeeded" -eq 1 ] || printf "phase5_activate_marker=%s status=failed\\n" "$MARKER_TOKEN" >&3; }
           trap emit_failure EXIT
           sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS "$FETCHER_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-          printf "phase5_activate_marker=%s status=success\\n" "$MARKER_TOKEN"
+          printf "phase5_activate_marker=%s status=success\\n" "$MARKER_TOKEN" >&3
           activation_succeeded=1'
           for name in AWS_REGION ECR_REGISTRY TWELVE_IMAGE_REF FINLAB_IMAGE_REF SHIOAJI_IMAGE_REF FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS; do
             printf -v prefix 'export %s=%q\n' "$name" "${!name}"
@@ -1291,18 +1279,15 @@ jobs:
           host_script="${prefix}${host_script}"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 5 bounded Fetcher activation' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase5_activate_marker=${MARKER_TOKEN} status=success"
+          failure_marker="phase5_activate_marker=${MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success)
-                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi ;;
-              Pending|InProgress|Delayed|Cancelling|""|None) ;;
-              Cancelled|TimedOut|Failed) exit 1 ;;
-              *) exit 1 ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "$success_marker" "$failure_marker")"; then
+              echo "::error title=Fetcher activation SSM invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi
             sleep 5
           done
           echo "::error title=Fetcher activation timed out::command_id=${command_id}"
@@ -1970,29 +1955,27 @@ jobs:
           raise SystemExit(0 if valid else 1)
           PY
           host_script='set -eu
+          exec 3>&1 1>&2
           smoke_succeeded=0
-          emit_failure() { trap - EXIT; [ "$smoke_succeeded" -eq 1 ] || printf "phase5_finlab_smoke_marker=%s status=failed\\n" "$MARKER_TOKEN"; }
+          emit_failure() { trap - EXIT; [ "$smoke_succeeded" -eq 1 ] || printf "phase5_finlab_smoke_marker=%s status=failed\\n" "$MARKER_TOKEN" >&3; }
           trap emit_failure EXIT
           cache_dir=/var/lib/findb-finlab-smoke-cache
           install -d -o 10001 -g 10001 -m 0700 "$cache_dir"
           sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FETCHER_FINLAB_IMAGE_REF,FINLAB_SMOKE_TARGET_DATE,FINLAB_SMOKE_SYMBOLS "$RELEASE_ROOT/infra/deploy/runtime-secrets/runtime_secret_command.sh" --catalog "$RELEASE_ROOT/infra/deploy/runtime-secrets/fetcher.json" --region "$AWS_REGION" --consumer finlab-smoke --ecr-registry "$ECR_REGISTRY" --docker-login -- docker run --rm --name findb-finlab-acquisition-smoke --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --mount "type=bind,src=$cache_dir,dst=/home/fetcher" --env FINLAB_API_TOKEN "$FETCHER_FINLAB_IMAGE_REF" findb-fetch-finlab-smoke --target-date "$FINLAB_SMOKE_TARGET_DATE" --symbols "$FINLAB_SMOKE_SYMBOLS"
-          printf "phase5_finlab_smoke_marker=%s status=success\\n" "$MARKER_TOKEN"
+          printf "phase5_finlab_smoke_marker=%s status=success\\n" "$MARKER_TOKEN" >&3
           smoke_succeeded=1'
           for name in AWS_REGION ECR_REGISTRY FETCHER_FINLAB_IMAGE_REF FINLAB_SMOKE_TARGET_DATE FINLAB_SMOKE_SYMBOLS RELEASE_ROOT MARKER_TOKEN; do printf -v prefix 'export %s=%q\n' "$name" "${!name}"; host_script="${prefix}${host_script}"; done
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 5 bounded FinLab smoke' --timeout-seconds 600 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase5_finlab_smoke_marker=${MARKER_TOKEN} status=success"
+          failure_marker="phase5_finlab_smoke_marker=${MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 120); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success)
-                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then exit 0; fi ;;
-              Pending|InProgress|Delayed|Cancelling|""|None) ;;
-              Cancelled|TimedOut|Failed) exit 1 ;;
-              *) exit 1 ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "$success_marker" "$failure_marker")"; then
+              echo "::error title=FinLab smoke SSM invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then exit 0; fi
             sleep 5
           done
           exit 1

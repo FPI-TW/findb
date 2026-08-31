@@ -170,20 +170,28 @@ data "aws_iam_policy_document" "deploy_permissions" {
     resources = ["*"]
   }
 
-  # Phase 4 checks command terminal status and RDS backup/PITR only for the
-  # FinDB deployer. These Describe APIs require Resource="*" in IAM, so do
-  # not add them to the shared Fetcher/FinDB target discovery statement.
+  # RDS health is only checked by the FinDB deployer. DescribeDBInstances
+  # requires Resource="*", so it remains isolated from shared permissions.
   dynamic "statement" {
     for_each = each.key == "findb" ? [true] : []
     content {
-      sid    = "ReadFinDBDeploymentStatusAndRdsHealth"
+      sid    = "ReadFinDBRdsHealth"
       effect = "Allow"
       actions = [
         "rds:DescribeDBInstances",
-        "ssm:GetCommandInvocation",
       ]
       resources = ["*"]
     }
+  }
+
+  # GetCommandInvocation is not resource-scoped by IAM. Both deployment
+  # units must read their bounded AWS-RunShellScript invocation response to
+  # validate the inline marker protocol.
+  statement {
+    sid       = "ReadSsmCommandInvocation"
+    effect    = "Allow"
+    actions   = ["ssm:GetCommandInvocation"]
+    resources = ["*"]
   }
 
   # AWS-owned documents have no account component in their ARN. Keep this
@@ -222,19 +230,6 @@ data "aws_iam_policy_document" "deploy_permissions" {
       variable = "ssm:resourceTag/DeploymentUnit"
       values   = [each.key]
     }
-  }
-
-  statement {
-    sid    = "ReadOwnPreflightLogEvents"
-    effect = "Allow"
-
-    # GetLogEvents is scoped to the unit's SSM output log streams. The
-    # workflow reads exact marker messages from a single command stream.
-    actions = ["logs:GetLogEvents"]
-
-    resources = [
-      "${trimsuffix(aws_cloudwatch_log_group.ssm[each.key].arn, ":*")}:log-stream:*",
-    ]
   }
 
   # Phase 1 only needs preflight. These future bundle permissions are limited

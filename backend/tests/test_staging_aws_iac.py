@@ -367,31 +367,28 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     assert "ssm:resourceTag/" not in document_statement
     target_statement = deploy_policy.split('sid       = "SendCommandToOwnTaggedInstance"', 1)[
         1
-    ].split('sid    = "ReadOwnPreflightLogEvents"', 1)[0]
+    ].split('sid       = "ReadOwnSsmCommandInvocation"', 1)[0]
     assert "resources = [each.value.instance_arn]" in target_statement
     for tag in ("Project", "Environment", "DeploymentUnit"):
         assert f'variable = "ssm:resourceTag/{tag}"' in target_statement
-    fin_db_status_statement = deploy_policy.split("# Phase 4 checks", 1)[1].split(
-        "# AWS-owned documents", 1
+    fin_db_status_statement = deploy_policy.split("# RDS health", 1)[1].split(
+        "# GetCommandInvocation", 1
     )[0]
     assert 'for_each = each.key == "findb" ? [true] : []' in fin_db_status_statement
-    assert '"ssm:GetCommandInvocation"' in fin_db_status_statement
+    assert '"ssm:GetCommandInvocation"' not in fin_db_status_statement
     assert '"rds:DescribeDBInstances"' in fin_db_status_statement
     assert 'resources = ["*"]' in fin_db_status_statement
     assert '"ssm:GetCommandInvocation"' not in target_statement
     assert '"rds:DescribeDBInstances"' not in target_statement
     assert "secretsmanager:GetSecretValue" not in deploy_policy
     assert "ssm:ListCommandInvocations" not in deploy_policy
-    log_statement = deploy_policy.split('sid    = "ReadOwnPreflightLogEvents"', 1)[1].split(
-        'sid    = "OwnDeploymentBundleObjects"', 1
-    )[0]
-    assert 'actions = ["logs:GetLogEvents"]' in log_statement
-    assert (
-        '"${trimsuffix(aws_cloudwatch_log_group.ssm[each.key].arn, ":*")}:log-stream:*"'
-        in log_statement
-    )
-    assert "logs:FilterLogEvents" not in log_statement
-    assert "logs:Unmask" not in log_statement
+    invocation_statement = _statement_by_sid(deploy_policy, "ReadSsmCommandInvocation")
+    assert 'actions   = ["ssm:GetCommandInvocation"]' in invocation_statement
+    assert 'resources = ["*"]' in invocation_statement
+    assert "not resource-scoped" in deploy_policy
+    assert "logs:GetLogEvents" not in deploy_policy
+    assert "logs:FilterLogEvents" not in deploy_policy
+    assert "logs:Unmask" not in deploy_policy
     assert "secretsmanager:GetSecretValue" not in deploy_policy
     assert re.findall(r'"(rds:[^"]+)"', deploy_policy) == ["rds:DescribeDBInstances"]
     assert "r2" not in deploy_policy.lower()
