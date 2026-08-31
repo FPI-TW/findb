@@ -14,7 +14,7 @@ on:
       - "infra/deploy/runtime-secrets/install_findb_bootstrap.sh"
       - "infra/deploy/runtime-secrets/deploy_findb_aws.sh"
       - "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh"
-      - "infra/deploy/cloudwatch_marker_count.sh"
+      - "infra/deploy/ssm_command_marker_gate.sh"
       - "infra/deploy/release_manifest.py"
       - "infra/deploy/runtime-secrets/findb.json"
       - "docker-compose.prod.yml"
@@ -880,6 +880,7 @@ jobs:
           printf -v expected_source_allowlist_cidrs_q '%q' "$SOURCE_ALLOWLIST_CIDRS"
           host_script="$(cat <<'HOST_SCRIPT'
           set -eu
+          exec 3>&1 1>&2
 
           preflight_succeeded=0
           docker_config=""
@@ -893,7 +894,7 @@ jobs:
               /run/findb-deploy-bundle.*) rm -rf -- "$bundle_root" ;;
             esac
             if [ "$preflight_succeeded" -ne 1 ]; then
-              printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token"
+              printf 'phase1_preflight_marker=%s status=failed\n' "$expected_marker_token" >&3
             fi
           }
           trap emit_preflight_failure EXIT
@@ -1056,7 +1057,7 @@ jobs:
             exit 1
           fi
           printf 'dns_resolution=ok name=%s\n' "$expected_dns_name"
-          printf 'phase1_preflight_marker=%s status=success\n' "$expected_marker_token"
+          printf 'phase1_preflight_marker=%s status=success\n' "$expected_marker_token" >&3
           preflight_succeeded=1
           HOST_SCRIPT
           )"
@@ -1103,31 +1104,19 @@ jobs:
           printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
           printf 'target_id=%s\n' "$target_id" >> "$GITHUB_OUTPUT"
           printf 'release_root=/opt/findb/releases/%s-%s\n' "$DEPLOY_BUNDLE_SHA256" "$PREFLIGHT_MARKER_TOKEN" >> "$GITHUB_OUTPUT"
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=success"
+          failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
           marker_state="pending"
           for attempt in $(seq 1 36); do
-            status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$target_id" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$status" in
-              Success)
-                # Read the exact terminal SSM stdout stream only after Success.
-                success_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_event_count" =~ ^[0-9]+$ ]] && [ "$success_event_count" -gt 0 ]; then
-                  marker_state="success"
-                  echo "ssm_preflight_status=Success command_id=${command_id} marker_event_count=${success_event_count}"
-                  break
-                fi
-                ;;
-              Pending|InProgress|Delayed|Cancelling|""|None) ;;
-              Cancelled|TimedOut|Failed)
-                echo "::error title=SSM host preflight failed::status=${status} command_id=${command_id}"
-                exit 1
-                ;;
-              *)
-                echo "::error title=Unexpected SSM host preflight status::status=${status} command_id=${command_id}"
-                exit 1
-                ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$target_id" "$success_marker" "$failure_marker")"; then
+              echo "::error title=SSM host preflight invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then
+              echo "ssm_preflight_status=Success command_id=${command_id}"
+              break
+            fi
             sleep 5
           done
           if [ "$marker_state" != "success" ]; then
@@ -1180,8 +1169,9 @@ jobs:
           [[ "$RELEASE_ROOT" =~ ^/opt/findb/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$ ]] || exit 1
           [[ "$DEPLOY_MARKER_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 1
           host_script='set -eu
+          exec 3>&1 1>&2
           deployment_succeeded=0
-          emit_failure() { trap - EXIT; [ "$deployment_succeeded" -eq 1 ] || printf "phase4_deploy_marker=%s status=failed\\n" "$DEPLOY_MARKER_TOKEN"; }
+          emit_failure() { trap - EXIT; [ "$deployment_succeeded" -eq 1 ] || printf "phase4_deploy_marker=%s status=failed\\n" "$DEPLOY_MARKER_TOKEN" >&3; }
           trap emit_failure EXIT
           sudo install -d -o root -g root -m 0700 /run/findb-runtime-secrets /run/findb-runtime-secrets/nginx
           for trusted_path in /etc /etc/findb /etc/findb/nginx; do [ ! -L "$trusted_path" ] || exit 1; sudo install -d -o root -g root -m 0755 "$trusted_path"; [ "$(sudo stat -c "%u:%g:%a" "$trusted_path")" = "0:0:755" ] || exit 1; done
@@ -1189,7 +1179,7 @@ jobs:
           [ -d "$FINDB_RELEASE_ROOT" ] && [ ! -L "$FINDB_RELEASE_ROOT" ]
           sudo python3 "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/load_runtime_secrets.py" --catalog "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/findb.json" --consumer canary --region "$AWS_REGION" --output /run/findb-runtime-secrets/canary/runtime.env --owner 0:0 --check-only
           sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_findb_aws.sh"
-          printf "phase4_deploy_marker=%s status=success\\n" "$DEPLOY_MARKER_TOKEN"
+          printf "phase4_deploy_marker=%s status=success\\n" "$DEPLOY_MARKER_TOKEN" >&3
           deployment_succeeded=1'
           for name in AWS_REGION ECR_REGISTRY FINDB_IMAGE_REF DASHBOARD_IMAGE_REF FINDB_DEPLOY_MODE PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET; do
             printf -v prefix 'export %s=%q\n' "$name" "${!name}"
@@ -1199,32 +1189,21 @@ jobs:
           host_script="${prefix}${host_script}"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 4 bounded FinDB deployment' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=success"
+          failure_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
-            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$invocation_status" in
-              Success)
-                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
-                  printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
-                  exit 0
-                fi
-                ;;
-              Pending|InProgress|Delayed|Cancelling|""|None)
-                ;;
-              Cancelled|TimedOut|Failed)
-                echo "::error title=FinDB candidate SSM deployment failed::status=${invocation_status} command_id=${command_id}"
-                exit 1
-                ;;
-              *)
-                echo "::error title=Unexpected FinDB candidate SSM status::status=${invocation_status} command_id=${command_id}"
-                exit 1
-                ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "$success_marker" "$failure_marker")"; then
+              echo "::error title=FinDB candidate SSM invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then
+              printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             sleep 5
           done
-          echo "::error title=FinDB candidate SSM deployment timed out::No terminal SSM success with valid CloudWatch markers within bounded polling; command_id=${command_id}"
+          echo "::error title=FinDB candidate SSM deployment timed out::No valid inline marker within bounded polling; command_id=${command_id}"
           exit 1
 
       - name: Persist immutable accepted FinDB deployment bundle
@@ -1333,12 +1312,13 @@ jobs:
           raise SystemExit(0 if valid else 1)
           PY
           host_script='set -eu
+          exec 3>&1 1>&2
           activation_succeeded=0
-          emit_failure() { trap - EXIT; [ "$activation_succeeded" -eq 1 ] || printf "phase4_activate_marker=%s status=failed\\n" "$ACTIVATION_MARKER_TOKEN"; }
+          emit_failure() { trap - EXIT; [ "$activation_succeeded" -eq 1 ] || printf "phase4_activate_marker=%s status=failed\\n" "$ACTIVATION_MARKER_TOKEN" >&3; }
           trap emit_failure EXIT
           [ -d "$FINDB_RELEASE_ROOT" ] && [ ! -L "$FINDB_RELEASE_ROOT" ]
           sudo --preserve-env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,FINDB_PUBLIC_HOST,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET,FINDB_RELEASE_ROOT,FINDB_NGINX_CONFIG_DIR "$FINDB_RELEASE_ROOT/infra/deploy/runtime-secrets/deploy_findb_aws.sh"
-          printf "phase4_activate_marker=%s status=success\\n" "$ACTIVATION_MARKER_TOKEN"
+          printf "phase4_activate_marker=%s status=success\\n" "$ACTIVATION_MARKER_TOKEN" >&3
           activation_succeeded=1'
           for name in AWS_REGION ECR_REGISTRY FINDB_IMAGE_REF DASHBOARD_IMAGE_REF PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_ALLOWLIST_CIDRS SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL FINDB_LATEST_PRICE_WORKERS FINDB_PUBLIC_HOST CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET; do
             printf -v prefix 'export %s=%q\n' "$name" "${!name}"
@@ -1348,33 +1328,22 @@ jobs:
           host_script="${prefix}${host_script}"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --parameters "$(jq -nc --arg command "$host_script" '{commands: [$command]}')" --comment 'Phase 4 bounded FinDB activation' --timeout-seconds 1800 --max-concurrency 1 --max-errors 0 --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --query 'Command.CommandId' --output text)"
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
-          source infra/deploy/cloudwatch_marker_count.sh
+          source infra/deploy/ssm_command_marker_gate.sh
           success_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=success"
+          failure_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
-            invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
-            case "$invocation_status" in
-              Success)
-                success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
-                  printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
-                  echo "ssm_activation_command_id=$command_id"
-                  exit 0
-                fi
-                ;;
-              Pending|InProgress|Delayed|Cancelling|""|None)
-                ;;
-              Cancelled|TimedOut|Failed)
-                echo "::error title=FinDB activation SSM deployment failed::status=${invocation_status} command_id=${command_id}"
-                exit 1
-                ;;
-              *)
-                echo "::error title=Unexpected FinDB activation SSM status::status=${invocation_status} command_id=${command_id}"
-                exit 1
-                ;;
-            esac
+            if ! marker_state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "$success_marker" "$failure_marker")"; then
+              echo "::error title=FinDB activation SSM invocation failed::command_id=${command_id}"
+              exit 1
+            fi
+            if [ "$marker_state" = "success" ]; then
+              printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
+              echo "ssm_activation_command_id=$command_id"
+              exit 0
+            fi
             sleep 5
           done
-          echo "::error title=FinDB activation SSM deployment timed out::No terminal SSM success with valid CloudWatch markers within bounded polling; command_id=${command_id}"
+          echo "::error title=FinDB activation SSM deployment timed out::No valid inline marker within bounded polling; command_id=${command_id}"
           exit 1
 
       - name: Prepare deploy directories on EC2
