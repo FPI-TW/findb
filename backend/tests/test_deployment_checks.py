@@ -5021,7 +5021,6 @@ def test_cloudwatch_marker_helper_rejects_substring_and_returns_on_exact_match(
     assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
         "",
         "token-a",
-        "token-b",
     ]
 
 
@@ -5085,8 +5084,24 @@ def test_cloudwatch_marker_helper_reconstructs_marker_split_across_pages(
     assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
         "",
         "token-a",
-        "terminal",
     ]
+
+
+def test_cloudwatch_marker_helper_accepts_exact_tail_before_token_termination(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {
+            "": (["marker status=success"], "token-a"),
+            "token-a": ([], "token-b"),
+            "token-b": ([], "token-c"),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [""]
 
 
 def test_cloudwatch_marker_helper_handles_empty_page_before_exact_marker(tmp_path: Path) -> None:
