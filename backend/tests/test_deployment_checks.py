@@ -3883,9 +3883,11 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "get-log-events" in marker_helper
         assert "filter-log-events" not in marker_helper
         assert "FilterLogEvents" not in marker_helper
-        assert 'split("\\n")[]' in marker_helper
+        assert 'split("\\n")' in marker_helper
         assert 'rtrimstr("\\r")' in marker_helper
         assert "select(. == $marker)" in marker_helper
+        assert 'join("")' in marker_helper
+        assert "line_fragment" in marker_helper
         assert "--limit" not in marker_helper
         assert '[[ "$success_event_count" =~ ^[0-9]+$ ]]' in script
         assert '[ "$success_event_count" -gt 0 ]' in script
@@ -4026,7 +4028,7 @@ aws() {
   [ "$count_value" = "__EMPTY__" ] && return 0
   [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
   if [[ "$count_value" =~ ^[0-9]+$ ]] && [ "$count_value" -gt 0 ]; then
-    printf '{"events":[{"message":"%s"}],"next_forward_token":"terminal"}\n' "$success_marker"
+    printf '{"events":[{"message":"%s\\\\n"}],"next_forward_token":"terminal"}\n' "$success_marker"
   elif [ "$count_value" = "0" ]; then
     printf '{"events":[],"next_forward_token":"terminal"}\n'
   else
@@ -4727,7 +4729,7 @@ aws() {
       [ "$marker_value" = "__EMPTY__" ] && return 0
       [ "$marker_value" = "__PAGINATED_ONE__" ] && marker_value=1
       if [[ "$marker_value" =~ ^[0-9]+$ ]] && [ "$marker_value" -gt 0 ]; then
-        printf '{"events":[{"message":"%s"}],"next_forward_token":"terminal"}\n' "$success_marker"
+        printf '{"events":[{"message":"%s\\\\n"}],"next_forward_token":"terminal"}\n' "$success_marker"
       elif [ "$marker_value" = "0" ]; then
         printf '{"events":[],"next_forward_token":"terminal"}\n'
       else
@@ -5007,8 +5009,9 @@ def test_cloudwatch_marker_helper_rejects_substring_and_returns_on_exact_match(
     completed = _run_cloudwatch_marker_helper(
         tmp_path,
         {
-            "": (["unrelated marker status=success"], "token-a"),
+            "": (["unrelated marker status=success\n"], "token-a"),
             "token-a": (["marker status=success"], "token-b"),
+            "token-b": ([], "token-b"),
         },
     )
 
@@ -5017,6 +5020,7 @@ def test_cloudwatch_marker_helper_rejects_substring_and_returns_on_exact_match(
     assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
         "",
         "token-a",
+        "token-b",
     ]
 
 
@@ -5030,6 +5034,7 @@ def test_cloudwatch_marker_helper_matches_exact_line_inside_multiline_event(
                 ["preflight=ok\nnot marker status=success suffix\nmarker status=success"],
                 "token-a",
             ),
+            "token-a": ([], "token-a"),
         },
     )
 
@@ -5047,12 +5052,49 @@ def test_cloudwatch_marker_helper_accepts_crlf_exact_marker_line(tmp_path: Path)
     assert completed.stdout == "1\n"
 
 
+def test_cloudwatch_marker_helper_reconstructs_marker_split_across_events(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {
+            "": (["preflight=ok\nmarker status=", "success"], "terminal"),
+            "terminal": ([], "terminal"),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
+
+
+def test_cloudwatch_marker_helper_reconstructs_marker_split_across_pages(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cloudwatch_marker_helper(
+        tmp_path,
+        {
+            "": (["preflight=ok\nmarker status="], "token-a"),
+            "token-a": (["success"], "terminal"),
+            "terminal": ([], "terminal"),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "1\n"
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == [
+        "",
+        "token-a",
+        "terminal",
+    ]
+
+
 def test_cloudwatch_marker_helper_handles_empty_page_before_exact_marker(tmp_path: Path) -> None:
     completed = _run_cloudwatch_marker_helper(
         tmp_path,
         {
             "": ([], "token-a"),
             "token-a": (["marker status=success"], "token-b"),
+            "token-b": ([], "token-b"),
         },
     )
 
