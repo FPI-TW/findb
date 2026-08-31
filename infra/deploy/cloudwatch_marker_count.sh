@@ -47,7 +47,10 @@ cloudwatch_marker_count() {
     if [ "$has_next_token" -eq 1 ]; then
       aws_args+=(--next-token "$next_token")
     fi
-    response="$(aws "${aws_args[@]}" 2>/dev/null)" || return 1
+    # Preserve AWS CLI diagnostics on stderr. Callers capture only stdout for
+    # the numeric count, so authorization and service failures remain visible
+    # without contaminating the marker result.
+    response="$(aws "${aws_args[@]}")" || return 1
 
     page_analysis="$(jq -cer --arg marker "$marker" --arg fragment "$line_fragment" '
       if type != "object" or (.events | type) != "array"
