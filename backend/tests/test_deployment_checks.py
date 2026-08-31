@@ -3875,22 +3875,22 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         assert "--no-paginate" in marker_helper
         assert "--cli-connect-timeout 5" in marker_helper
         assert "--cli-read-timeout 10" in marker_helper
-        assert script.count('cloudwatch_marker_count "$AWS_REGION"') == 2
+        assert script.count('cloudwatch_marker_count "$AWS_REGION"') == 1
         assert '--log-group-name "$log_group"' in marker_helper
         assert '--log-stream-name-prefix "$log_stream_prefix"' in marker_helper
         assert "--query '{count:length(events),next_token:nextToken}'" in marker_helper
         assert "--limit" not in marker_helper
-        assert '[[ "$failure_event_count" =~ ^[0-9]+$ ]]' in script
         assert '[[ "$success_event_count" =~ ^[0-9]+$ ]]' in script
-        assert '[ "$failure_event_count" -eq 0 ]' in script
         assert '[ "$success_event_count" -gt 0 ]' in script
         assert "marker_event_count=${success_event_count}" in script
         status_query = script.index('status="$(aws ssm get-command-invocation')
         success_case = script.index("Success)", status_query)
-        failure_query = script.index('failure_event_count="$(')
         success_query = script.index('success_event_count="$(')
         pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
-        assert status_query < success_case < failure_query < success_query < pending_case
+        assert status_query < success_case < success_query < pending_case
+        success_block = script[success_case:pending_case]
+        assert "status=failed" not in success_block
+        assert success_block.count("cloudwatch_marker_count") == 1
         assert "command_id=${command_id}" in script
         host_start = script.index("host_script=\"$(cat <<'HOST_SCRIPT'\n") + len(
             "host_script=\"$(cat <<'HOST_SCRIPT'\n"
@@ -3950,7 +3950,6 @@ def _run_staging_ssm_marker_polling_case(
     tmp_path: Path,
     workflow_path: Path,
     *,
-    failure_counts: tuple[str, ...],
     success_counts: tuple[str, ...],
     aws_query_status: int = 0,
 ) -> subprocess.CompletedProcess[str]:
@@ -4009,22 +4008,6 @@ aws() {
     return 41
   fi
   case "$filter_pattern" in
-    *"status=failed"*)
-      query_index="$(<"$FAILURE_QUERY_INDEX_FILE")"
-      if [ "$query_index" -lt "${#FAILURE_COUNTS[@]}" ]; then
-        count_value="${FAILURE_COUNTS[$query_index]}"
-      else
-        count_value="${FAILURE_COUNTS[$(( ${#FAILURE_COUNTS[@]} - 1 ))]}"
-      fi
-      [ "$count_value" = "__EMPTY__" ] && count_value=""
-      [ "$count_value" = "__PAGINATED_ONE__" ] && count_value=1
-      if [[ "$count_value" =~ ^[0-9]+$ ]]; then
-        printf '{"count":%s,"next_token":null}\n' "$count_value"
-      elif [ -n "$count_value" ]; then
-        printf '{"count":"%s","next_token":null}\n' "$count_value"
-      fi
-      printf '%s\n' "$((query_index + 1))" > "$FAILURE_QUERY_INDEX_FILE"
-      ;;
     *"status=success"*)
       query_index="$(<"$SUCCESS_QUERY_INDEX_FILE")"
       if [ "$query_index" -lt "${#SUCCESS_COUNTS[@]}" ]; then
@@ -4054,11 +4037,8 @@ AWS_SSM_LOG_GROUP=test-log-group
 PREFLIGHT_MARKER_TOKEN=test-token
 command_id=test-command
 target_id=test-target
-IFS='|' read -r -a FAILURE_COUNTS <<< "$FAILURE_COUNT_SEQUENCE"
 IFS='|' read -r -a SUCCESS_COUNTS <<< "$SUCCESS_COUNT_SEQUENCE"
-FAILURE_QUERY_INDEX_FILE="$STATE_DIR/failure_query_index"
 SUCCESS_QUERY_INDEX_FILE="$STATE_DIR/success_query_index"
-printf '0\n' > "$FAILURE_QUERY_INDEX_FILE"
 printf '0\n' > "$SUCCESS_QUERY_INDEX_FILE"
 """
         + f"\nsource {CLOUDWATCH_MARKER_COUNT!s}\n"
@@ -4072,9 +4052,6 @@ fi
     environment = os.environ.copy()
     environment.update(
         {
-            "FAILURE_COUNT_SEQUENCE": "|".join(
-                "__EMPTY__" if count == "" else count for count in failure_counts
-            ),
             "SUCCESS_COUNT_SEQUENCE": "|".join(
                 "__EMPTY__" if count == "" else count for count in success_counts
             ),
@@ -4093,19 +4070,15 @@ fi
 
 
 @pytest.mark.parametrize(
-    ("case", "failure_counts", "success_counts", "aws_query_status", "expected_returncode"),
+    ("case", "success_counts", "aws_query_status", "expected_returncode"),
     (
-        ("stream absent/count 0 times out", ("0",), ("0",), 0, 1),
-        ("stream absent then success passes", ("0", "0"), ("0", "3"), 0, 0),
-        ("failure marker takes priority", ("2",), ("3",), 0, 1),
-        ("empty failure count fails closed", ("",), ("1",), 0, 1),
-        ("non-numeric failure count fails closed", ("None",), ("1",), 0, 1),
-        ("empty success count fails closed", ("0",), ("",), 0, 1),
-        ("non-numeric success count fails closed", ("0",), ("invalid",), 0, 1),
-        ("AWS query failure fails closed", ("0",), ("1",), 7, 1),
+        ("stream absent/count 0 times out", ("0",), 0, 1),
+        ("stream absent then success passes", ("0", "3"), 0, 0),
+        ("empty success count fails closed", ("",), 0, 1),
+        ("non-numeric success count fails closed", ("invalid",), 0, 1),
+        ("AWS query failure fails closed", ("1",), 7, 1),
         (
             "paginated count aggregates to one JSON scalar",
-            ("0",),
             ("__PAGINATED_ONE__",),
             0,
             0,
@@ -4115,7 +4088,6 @@ fi
 def test_staging_ssm_marker_count_polling_behavior(
     tmp_path: Path,
     case: str,
-    failure_counts: tuple[str, ...],
     success_counts: tuple[str, ...],
     aws_query_status: int,
     expected_returncode: int,
@@ -4125,7 +4097,6 @@ def test_staging_ssm_marker_count_polling_behavior(
         completed = _run_staging_ssm_marker_polling_case(
             tmp_path,
             workflow_path,
-            failure_counts=failure_counts,
             success_counts=success_counts,
             aws_query_status=aws_query_status,
         )
@@ -4656,9 +4627,8 @@ def _run_phase4_ssm_polling_case(
     step_name: str,
     *,
     statuses: tuple[str, ...],
-    failure_counts: tuple[str, ...],
     success_counts: tuple[str, ...],
-) -> tuple[subprocess.CompletedProcess[str], tuple[int, int, int]]:
+) -> tuple[subprocess.CompletedProcess[str], tuple[int, int]]:
     """Run a Phase 4 polling block with scripted SSM and CloudWatch replies."""
 
     workflow = _load_workflow(FINDB_CD_WORKFLOW)
@@ -4683,9 +4653,6 @@ next_value() {
   case "$sequence_name" in
     STATUS_VALUES)
       sequence=("${STATUS_VALUES[@]}")
-      ;;
-    FAILURE_VALUES)
-      sequence=("${FAILURE_VALUES[@]}")
       ;;
     SUCCESS_VALUES)
       sequence=("${SUCCESS_VALUES[@]}")
@@ -4741,9 +4708,6 @@ aws() {
       done
       local marker_value
       case "$filter_pattern" in
-        *status=failed*)
-          marker_value="$(next_value "$FAILURE_INDEX_FILE" FAILURE_VALUES "$output_format")" || return
-          ;;
         *status=success*)
           marker_value="$(next_value "$SUCCESS_INDEX_FILE" SUCCESS_VALUES "$output_format")" || return
           ;;
@@ -4774,13 +4738,10 @@ command_id=test-command
 GITHUB_OUTPUT="$STATE_DIR/github_output"
 : > "$GITHUB_OUTPUT"
 IFS='|' read -r -a STATUS_VALUES <<< "$STATUS_SEQUENCE"
-IFS='|' read -r -a FAILURE_VALUES <<< "$FAILURE_COUNT_SEQUENCE"
 IFS='|' read -r -a SUCCESS_VALUES <<< "$SUCCESS_COUNT_SEQUENCE"
 STATUS_INDEX_FILE="$STATE_DIR/status_index"
-FAILURE_INDEX_FILE="$STATE_DIR/failure_index"
 SUCCESS_INDEX_FILE="$STATE_DIR/success_index"
 printf '0\\n' > "$STATUS_INDEX_FILE"
-printf '0\\n' > "$FAILURE_INDEX_FILE"
 printf '0\\n' > "$SUCCESS_INDEX_FILE"
 """
         + f"\nsource {CLOUDWATCH_MARKER_COUNT!s}\n"
@@ -4794,9 +4755,6 @@ exit 1
         {
             "STATUS_SEQUENCE": "|".join(
                 "__EMPTY__" if status == "" else status for status in statuses
-            ),
-            "FAILURE_COUNT_SEQUENCE": "|".join(
-                "__EMPTY__" if count == "" else count for count in failure_counts
             ),
             "SUCCESS_COUNT_SEQUENCE": "|".join(
                 "__EMPTY__" if count == "" else count for count in success_counts
@@ -4815,7 +4773,7 @@ exit 1
     )
     call_counts = tuple(
         int((state_dir / index_name).read_text(encoding="utf-8"))
-        for index_name in ("status_index", "failure_index", "success_index")
+        for index_name in ("status_index", "success_index")
     )
     return completed, call_counts
 
@@ -4830,7 +4788,6 @@ exit 1
 @pytest.mark.parametrize(
     (
         "statuses",
-        "failure_counts",
         "success_counts",
         "expected_returncode",
         "expected_call_counts",
@@ -4840,52 +4797,40 @@ exit 1
         # CloudWatch or abandon the command.
         (
             ("__ERROR__", "Pending", "InProgress", "Success"),
-            ("0",),
             ("1",),
             0,
-            (4, 1, 1),
+            (4, 1),
         ),
         # CloudWatch delivery can lag terminal SSM success; wait until the
         # required numeric success marker is present.
-        (("Success",), ("0",), ("", "invalid", "0", "1"), 0, (4, 4, 4)),
-        # The failure marker query can itself lag or fail after SSM Success;
-        # continue until both marker queries can prove success.
-        (
-            ("Success",),
-            ("__ERROR__", "", "invalid", "0"),
-            ("0", "0", "0", "1"),
-            0,
-            (4, 4, 4),
-        ),
+        (("Success",), ("", "invalid", "0", "1"), 0, (4, 4)),
         # The bounded marker helper returns as soon as a matching page is found.
-        (("Success",), ("0",), ("__PAGINATED_ONE__",), 0, (1, 1, 1)),
+        (("Success",), ("__PAGINATED_ONE__",), 0, (1, 1)),
         # A terminal success without the marker still fails closed at the
         # bounded polling deadline.
-        (("Success",), ("0",), ("0",), 1, (360, 360, 360)),
+        (("Success",), ("0",), 1, (360, 360)),
         # Terminal and unexpected SSM statuses fail before querying
-        # CloudWatch; the zero marker query counts prove prompt exit.
-        (("Failed",), ("0",), ("1",), 1, (1, 0, 0)),
-        (("Cancelled",), ("0",), ("1",), 1, (1, 0, 0)),
-        (("TimedOut",), ("0",), ("1",), 1, (1, 0, 0)),
-        (("Unexpected",), ("0",), ("1",), 1, (1, 0, 0)),
+        # CloudWatch; the zero success-marker query count proves prompt exit.
+        (("Failed",), ("1",), 1, (1, 0)),
+        (("Cancelled",), ("1",), 1, (1, 0)),
+        (("TimedOut",), ("1",), 1, (1, 0)),
+        (("Unexpected",), ("1",), 1, (1, 0)),
         # CloudWatch is never queried while the command remains in progress.
-        (("InProgress", "Failed"), ("1",), ("1",), 1, (2, 0, 0)),
+        (("InProgress", "Failed"), ("1",), 1, (2, 0)),
     ),
 )
 def test_phase4_ssm_polling_handles_terminal_status_and_marker_delivery(
     tmp_path: Path,
     step_name: str,
     statuses: tuple[str, ...],
-    failure_counts: tuple[str, ...],
     success_counts: tuple[str, ...],
     expected_returncode: int,
-    expected_call_counts: tuple[int, int, int],
+    expected_call_counts: tuple[int, int],
 ) -> None:
     completed, call_counts = _run_phase4_ssm_polling_case(
         tmp_path,
         step_name,
         statuses=statuses,
-        failure_counts=failure_counts,
         success_counts=success_counts,
     )
     message = f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
@@ -5067,18 +5012,22 @@ def test_marker_queries_wait_for_terminal_ssm_success(
     script = _named_step(workflow, job_name, step_name)["run"]
     status_query = script.index(f'{status_variable}="$(aws ssm get-command-invocation')
     success_case = script.index("Success)", status_query)
-    failure_query = script.index("cloudwatch_marker_count", success_case)
-    success_query = script.index("cloudwatch_marker_count", failure_query + 1)
+    success_query = script.index("cloudwatch_marker_count", success_case)
     pending_case = script.index("Pending|InProgress|Delayed|Cancelling", success_query)
 
-    assert status_query < success_case < failure_query < success_query < pending_case
+    assert status_query < success_case < success_query < pending_case
     status_command = script[status_query:success_case]
     assert "--cli-connect-timeout 5" in status_command
     assert "--cli-read-timeout 10" in status_command
     success_block = script[success_case:pending_case]
-    assert '"$failure_marker" || true)' in success_block
     assert '"$success_marker" || true)' in success_block
-    assert "-eq 0 ]" in success_block
+    assert "status=failed" not in success_block
+    assert '"$failure_marker"' not in success_block
+    assert success_block.count("cloudwatch_marker_count") == 1
+    assert "-gt 0 ]" in success_block
+    terminal_case = script.index("Cancelled|TimedOut|Failed)", pending_case)
+    terminal_block = script[terminal_case : script.index("*)", terminal_case)]
+    assert "cloudwatch_marker_count" not in terminal_block
 
 
 def test_cloudwatch_marker_helper_stops_after_distinct_token_page_limit(
