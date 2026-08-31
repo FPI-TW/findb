@@ -3,6 +3,8 @@
 # CloudWatch may pack several stdout lines into one event or split one line
 # across adjacent events/pages. Reconstruct the ordered stream before comparing
 # complete lines instead of requiring any individual message to match.
+# Callers invoke this helper only after SSM reports Success, so an exact current
+# tail fragment is complete even while CloudWatch's forward token is unsettled.
 # GetLogEvents requires manual forward pagination: a page is terminal only
 # when its nextForwardToken equals the token supplied for that request.
 # Any other token cycle, malformed response, or page-bound exhaustion fails
@@ -75,6 +77,10 @@ cloudwatch_marker_count() {
     event_count="$(jq -er '.event_count | select(type == "number" and . >= 0)' <<<"$page_analysis")" || return 1
     line_fragment="$(jq -er '.line_fragment | select(type == "string")' <<<"$page_analysis")" || return 1
     marker_count=$((marker_count + event_count))
+    normalized_fragment="${line_fragment%$'\r'}"
+    if [ "$normalized_fragment" = "$marker" ]; then
+      marker_count=$((marker_count + 1))
+    fi
     returned_token="$(jq -er '.next_forward_token | select(type == "string" and length > 0)' <<<"$response")" || return 1
     if [ "$marker_count" -gt 0 ]; then
       printf '%s\n' "$marker_count"
@@ -82,10 +88,6 @@ cloudwatch_marker_count() {
     fi
 
     if [ "$has_next_token" -eq 1 ] && [ "$returned_token" = "$next_token" ]; then
-      normalized_fragment="${line_fragment%$'\r'}"
-      if [ "$normalized_fragment" = "$marker" ]; then
-        marker_count=$((marker_count + 1))
-      fi
       printf '%s\n' "$marker_count"
       return 0
     fi
