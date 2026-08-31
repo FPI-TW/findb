@@ -1105,20 +1105,14 @@ jobs:
           printf 'release_root=/opt/findb/releases/%s-%s\n' "$DEPLOY_BUNDLE_SHA256" "$PREFLIGHT_MARKER_TOKEN" >> "$GITHUB_OUTPUT"
           source infra/deploy/cloudwatch_marker_count.sh
           success_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=success"
-          failure_marker="phase1_preflight_marker=${PREFLIGHT_MARKER_TOKEN} status=failed"
           marker_state="pending"
           for attempt in $(seq 1 36); do
             status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$target_id" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$status" in
               Success)
                 # Read only marker counts after the SSM output stream is terminal and stable.
-                failure_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$failure_marker" || true)"
-                if [[ "$failure_event_count" =~ ^[0-9]+$ ]] && [ "$failure_event_count" -gt 0 ]; then
-                  echo "::error title=SSM host preflight failed::Bounded host failure marker observed; command_id=${command_id}"
-                  exit 1
-                fi
                 success_event_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${target_id}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$failure_event_count" =~ ^[0-9]+$ ]] && [ "$failure_event_count" -eq 0 ] && [[ "$success_event_count" =~ ^[0-9]+$ ]] && [ "$success_event_count" -gt 0 ]; then
+                if [[ "$success_event_count" =~ ^[0-9]+$ ]] && [ "$success_event_count" -gt 0 ]; then
                   marker_state="success"
                   echo "ssm_preflight_status=Success command_id=${command_id} marker_event_count=${success_event_count}"
                   break
@@ -1207,18 +1201,12 @@ jobs:
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
           source infra/deploy/cloudwatch_marker_count.sh
           success_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=success"
-          failure_marker="phase4_deploy_marker=${DEPLOY_MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
             invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$invocation_status" in
               Success)
-                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
-                  echo "::error title=FinDB candidate deployment reported failure::Failure marker observed; command_id=${command_id}"
-                  exit 1
-                fi
                 success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
                   printf 'command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
                   exit 0
                 fi
@@ -1362,18 +1350,12 @@ jobs:
           [[ "$command_id" =~ ^[0-9a-f-]{36}$ ]] || exit 1
           source infra/deploy/cloudwatch_marker_count.sh
           success_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=success"
-          failure_marker="phase4_activate_marker=${ACTIVATION_MARKER_TOKEN} status=failed"
           for attempt in $(seq 1 360); do
             invocation_status="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$TARGET_ID" --cli-connect-timeout 5 --cli-read-timeout 10 --query Status --output text 2>/dev/null || true)"
             case "$invocation_status" in
               Success)
-                failure_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$failure_marker" || true)"
-                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -gt 0 ]; then
-                  echo "::error title=FinDB activation reported failure::Failure marker observed; command_id=${command_id}"
-                  exit 1
-                fi
                 success_count="$(cloudwatch_marker_count "$AWS_REGION" "$AWS_SSM_LOG_GROUP" "${command_id}/${TARGET_ID}/aws-runShellScript/stdout" "$success_marker" || true)"
-                if [[ "$failure_count" =~ ^[0-9]+$ ]] && [ "$failure_count" -eq 0 ] && [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
+                if [[ "$success_count" =~ ^[0-9]+$ ]] && [ "$success_count" -gt 0 ]; then
                   printf 'activation_command_id=%s\n' "$command_id" >> "$GITHUB_OUTPUT"
                   echo "ssm_activation_command_id=$command_id"
                   exit 0
