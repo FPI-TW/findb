@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Count an exact CloudWatch Logs marker from one complete SSM output stream.
+# Count an exact marker line from one complete SSM CloudWatch output stream.
+# One GetLogEvents event may contain several stdout lines, so compare complete
+# lines within each message instead of requiring the entire message to match.
 # GetLogEvents requires manual forward pagination: a page is terminal only
 # when its nextForwardToken equals the token supplied for that request.
 # Any other token cycle, malformed response, or page-bound exhaustion fails
@@ -46,7 +48,12 @@ cloudwatch_marker_count() {
       if type != "object" or (.events | type) != "array"
         or ([.events[] | type == "object" and (.message | type) == "string"] | all | not)
       then error("malformed GetLogEvents response")
-      else [.events[] | select(.message == $marker)] | length
+      else [
+        .events[].message
+        | split("\n")[]
+        | rtrimstr("\r")
+        | select(. == $marker)
+      ] | length
       end
     ' <<<"$response")" || return 1
     returned_token="$(jq -er '.next_forward_token | select(type == "string" and length > 0)' <<<"$response")" || return 1
