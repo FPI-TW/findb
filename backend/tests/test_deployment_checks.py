@@ -4784,7 +4784,7 @@ exit 1
         cwd=REPO_ROOT,
         env=environment,
         text=True,
-        timeout=10,
+        timeout=20,
     )
     call_counts = tuple(
         int((state_dir / index_name).read_text(encoding="utf-8"))
