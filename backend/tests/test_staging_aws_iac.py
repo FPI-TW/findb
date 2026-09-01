@@ -606,6 +606,22 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         1
     ].split('resource "aws_sns_topic_policy" "operational_alerts"', 1)[0]
     assert topic_policy.count('effect = "Allow"') == 2
+    assert 'actions   = ["sns:*"]' not in topic_policy
+    assert "actions   = local.operational_alert_topic_policy_actions" in topic_policy
+    for action in (
+        "sns:AddPermission",
+        "sns:DeleteTopic",
+        "sns:GetDataProtectionPolicy",
+        "sns:GetTopicAttributes",
+        "sns:ListSubscriptionsByTopic",
+        "sns:ListTagsForResource",
+        "sns:Publish",
+        "sns:PutDataProtectionPolicy",
+        "sns:RemovePermission",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+    ):
+        assert f'"{action}"' in monitoring
     owner_statement = topic_policy.split(
         'sid    = "AccountRootTopicAdministrationAndSubscriptionLifecycle"', 1
     )[1].split('sid    = "AllowCloudWatchAlarmPublish"', 1)[0]
