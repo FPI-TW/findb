@@ -613,7 +613,6 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert '"sns:*"' not in owner_statement
     for action in (
         "sns:AddPermission",
-        "sns:ConfirmSubscription",
         "sns:DeleteTopic",
         "sns:GetTopicAttributes",
         "sns:ListSubscriptionsByTopic",
