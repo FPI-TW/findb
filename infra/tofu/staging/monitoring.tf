@@ -177,16 +177,12 @@ data "aws_iam_policy_document" "operational_alerts_topic" {
     # subscription lifecycle actions Terraform and an operator need.
     actions = [
       "sns:AddPermission",
-      "sns:ConfirmSubscription",
       "sns:DeleteTopic",
       "sns:GetTopicAttributes",
       "sns:ListSubscriptionsByTopic",
-      "sns:ListTagsForResource",
       "sns:RemovePermission",
       "sns:SetTopicAttributes",
       "sns:Subscribe",
-      "sns:TagResource",
-      "sns:UntagResource",
     ]
     resources = [aws_sns_topic.operational_alerts.arn]
   }
