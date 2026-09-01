@@ -61,6 +61,15 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     resources = ["*"]
   }
 
+  # Refresh only the six deterministic alarm ARNs declared in monitoring.tf.
+  # CloudWatch supports resource-scoped DescribeAlarms for these alarm ARNs.
+  statement {
+    sid       = "ReadOperationalAlarmMetadata"
+    effect    = "Allow"
+    actions   = ["cloudwatch:DescribeAlarms"]
+    resources = local.operational_alarm_arns
+  }
+
   statement {
     sid    = "ReadExactDeployRoles"
     effect = "Allow"
@@ -167,6 +176,20 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
+    sid    = "ReadExactOperationalAlertKey"
+    effect = "Allow"
+
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetKeyPolicy",
+      "kms:GetKeyRotationStatus",
+      "kms:ListResourceTags",
+    ]
+
+    resources = [aws_kms_key.operational_alerts.arn]
+  }
+
+  statement {
     sid    = "ReadExactSessionDocuments"
     effect = "Allow"
 
@@ -205,6 +228,33 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     effect    = "Allow"
     actions   = ["ecr:DescribeRepositories", "ecr:GetLifecyclePolicy", "ecr:ListTagsForResource"]
     resources = [for repository in aws_ecr_repository.staging : repository.arn]
+  }
+
+  statement {
+    sid    = "ReadExactOperationalAlertTopic"
+    effect = "Allow"
+
+    actions = [
+      "sns:GetTopicAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:ListTagsForResource",
+    ]
+
+    resources = [aws_sns_topic.operational_alerts.arn]
+  }
+
+  statement {
+    sid       = "ReadExactOperationalAlertSubscription"
+    effect    = "Allow"
+    actions   = ["sns:GetSubscriptionAttributes"]
+    resources = [aws_sns_topic_subscription.operational_alert_email.arn]
+  }
+
+  statement {
+    sid       = "ReadExactOperationalAlarmTags"
+    effect    = "Allow"
+    actions   = ["cloudwatch:ListTagsForResource"]
+    resources = concat([for alarm in aws_cloudwatch_metric_alarm.ec2_status_check_failed : alarm.arn], [for alarm in aws_cloudwatch_metric_alarm.rds_native : alarm.arn])
   }
 
   # The aws_s3_bucket resource and its v6 provider refresh path use bucket

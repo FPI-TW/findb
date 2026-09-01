@@ -7,6 +7,15 @@ two existing staging EC2 instances. It does not put secret versions or values
 in OpenTofu state, and it does not import or recreate EC2, RDS, VPC, subnets,
 security groups, Cloudflare R2 buckets, or DNS.
 
+The bounded first Phase 6 slice additionally declares a private KMS-encrypted
+SNS operational-alert topic, one required email subscription, and six native
+CloudWatch alarms (one EC2 status-check alarm per existing instance plus four
+`fin-db` RDS alarms). It manages only those new resources; it does not manage
+or import the referenced EC2/RDS resources and does not claim a live apply,
+subscription confirmation, or synthetic delivery test. The operator procedure,
+explicit thresholds, coverage gaps, and cost/retention caveats are in
+[`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
+
 ## State bootstrap
 
 Run the bootstrap stack once from a trusted operator workstation after a

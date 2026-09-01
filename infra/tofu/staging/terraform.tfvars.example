@@ -7,6 +7,14 @@ project_tag    = "findb"
 # data sources and aws_ec2_tag only; it never creates or replaces either EC2.
 findb_instance_id   = "i-0942016913367a8b2"
 fetcher_instance_id = "i-05f518ef183bc31a9"
+findb_rds_instance_identifier = "fin-db"
+
+# PR refresh plans intentionally retain this placeholder. Before the first live
+# apply, use the on-call recipient's confirmed inbox in an ignored local tfvars;
+# do not commit a real contact value to this example or any tracked tfvars file.
+# The managed subscription ignores later endpoint drift; follow monitoring.md's
+# explicit replacement procedure when the recipient must change.
+operational_alert_email = "on-call@example.invalid"
 
 github_repository       = "FPI-TW/findb"
 # The current remote state owns aws_iam_openid_connect_provider.github[0].
