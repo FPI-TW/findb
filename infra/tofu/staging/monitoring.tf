@@ -2,6 +2,23 @@ locals {
   operational_alert_topic_name = "findb-staging-operational-alerts"
   operational_alert_topic_arn  = "arn:${data.aws_partition.current.partition}:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.operational_alert_topic_name}"
 
+  # Amazon SNS topic resource policies reject service-wide wildcards. Keep the
+  # TLS deny restricted to the complete set of topic-policy actions AWS
+  # documents as supported instead.
+  operational_alert_topic_policy_actions = [
+    "sns:AddPermission",
+    "sns:DeleteTopic",
+    "sns:GetDataProtectionPolicy",
+    "sns:GetTopicAttributes",
+    "sns:ListSubscriptionsByTopic",
+    "sns:ListTagsForResource",
+    "sns:Publish",
+    "sns:PutDataProtectionPolicy",
+    "sns:RemovePermission",
+    "sns:SetTopicAttributes",
+    "sns:Subscribe",
+  ]
+
   # Keep the alarm identity policy inputs local and deterministic. These names
   # deliberately mirror the two resources below without referencing them, so
   # topic/key policies can be created before any alarm without a dependency
@@ -285,7 +302,7 @@ data "aws_iam_policy_document" "operational_alerts_topic" {
       identifiers = ["*"]
     }
 
-    actions   = ["sns:*"]
+    actions   = local.operational_alert_topic_policy_actions
     resources = [aws_sns_topic.operational_alerts.arn]
 
     condition {
