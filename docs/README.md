@@ -11,6 +11,7 @@
 | 實作或升級Fetcher與Source間的versioned contract | [architecture/ingress_contracts.md](architecture/ingress_contracts.md) |
 | 呼叫Source、Serve或Admin API | [api/api_usage_guide.md](api/api_usage_guide.md) |
 | 部署、migration、credential設定、release或rollback | [operations/deployment.md](operations/deployment.md) |
+| 管理staging原生EC2／RDS告警、SNS確認與synthetic通知測試 | [operations/monitoring.md](operations/monitoring.md) |
 | 驗證ingestion、監控queue、診斷delivery或重建RabbitMQ | [operations/ingestion.md](operations/ingestion.md) |
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |

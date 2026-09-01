@@ -55,6 +55,115 @@ variable "fetcher_instance_id" {
   type        = string
 }
 
+variable "findb_rds_instance_identifier" {
+  description = "Existing FinDB staging RDS DB instance identifier monitored by native CloudWatch metrics; it is referenced, not managed."
+  type        = string
+  default     = "fin-db"
+
+  validation {
+    condition     = var.findb_rds_instance_identifier == "fin-db"
+    error_message = "findb_rds_instance_identifier must remain the reviewed fin-db staging RDS instance."
+  }
+}
+
+variable "operational_alert_email" {
+  description = "Required confirmed email recipient for private staging operational-alert notifications. This non-secret contact value is supplied outside version control; subscription endpoint changes require the reviewed replacement procedure because normal drift is ignored."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.operational_alert_email))
+    error_message = "operational_alert_email must be a valid email address."
+  }
+}
+
+variable "monitoring_alarm_period_seconds" {
+  description = "CloudWatch period used by every Phase 6 native alarm."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.monitoring_alarm_period_seconds == 300
+    error_message = "monitoring_alarm_period_seconds must remain the reviewed five-minute period."
+  }
+}
+
+variable "monitoring_alarm_evaluation_periods" {
+  description = "Consecutive five-minute periods evaluated by every Phase 6 native alarm."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.monitoring_alarm_evaluation_periods == 2
+    error_message = "monitoring_alarm_evaluation_periods must remain the reviewed two periods."
+  }
+}
+
+variable "monitoring_alarm_datapoints_to_alarm" {
+  description = "Breaching datapoints required within the evaluation window for every Phase 6 native alarm."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.monitoring_alarm_datapoints_to_alarm == 2
+    error_message = "monitoring_alarm_datapoints_to_alarm must remain the reviewed two datapoints."
+  }
+}
+
+variable "monitoring_alarm_treat_missing_data" {
+  description = "Missing-data policy for every Phase 6 native alarm; missing must remain visible as INSUFFICIENT_DATA."
+  type        = string
+  default     = "missing"
+
+  validation {
+    condition     = var.monitoring_alarm_treat_missing_data == "missing"
+    error_message = "monitoring_alarm_treat_missing_data must remain missing."
+  }
+}
+
+variable "monitoring_ec2_status_check_failed_threshold" {
+  description = "EC2 StatusCheckFailed maximum value that opens an alarm."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.monitoring_ec2_status_check_failed_threshold == 1
+    error_message = "monitoring_ec2_status_check_failed_threshold must remain one failed status check."
+  }
+}
+
+variable "monitoring_rds_free_storage_space_threshold_bytes" {
+  description = "RDS FreeStorageSpace minimum safe capacity in bytes."
+  type        = number
+  default     = 5368709120
+
+  validation {
+    condition     = var.monitoring_rds_free_storage_space_threshold_bytes == 5368709120
+    error_message = "monitoring_rds_free_storage_space_threshold_bytes must remain the reviewed 5 GiB threshold."
+  }
+}
+
+variable "monitoring_rds_database_connections_threshold" {
+  description = "RDS DatabaseConnections average value that opens an alarm."
+  type        = number
+  default     = 80
+
+  validation {
+    condition     = var.monitoring_rds_database_connections_threshold == 80
+    error_message = "monitoring_rds_database_connections_threshold must remain the reviewed 80-connection threshold."
+  }
+}
+
+variable "monitoring_rds_latency_threshold_seconds" {
+  description = "RDS ReadLatency and WriteLatency average value in seconds that opens an alarm."
+  type        = number
+  default     = 0.1
+
+  validation {
+    condition     = var.monitoring_rds_latency_threshold_seconds == 0.1
+    error_message = "monitoring_rds_latency_threshold_seconds must remain the reviewed 100 ms threshold."
+  }
+}
+
 variable "github_repository" {
   description = "GitHub repository in owner/name form used by the OIDC trust policies."
   type        = string

@@ -545,3 +545,212 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
     assert "--target i-05f518ef183bc31a9" in readme
     assert "--document-name SSM-SessionManagerRunShell-fetcher-staging" in readme
     assert "ssm:StartSession" in readme
+
+
+def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
+    monitoring = _read(STAGING_ROOT / "monitoring.tf")
+    variables = _read(STAGING_ROOT / "variables.tf")
+    tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
+    outputs = _read(STAGING_ROOT / "outputs.tf")
+    plan = _read(STAGING_ROOT / "infra_plan.tf")
+    runbook = _read(REPO_ROOT / "docs" / "operations" / "monitoring.md")
+
+    assert 'resource "aws_kms_key" "operational_alerts"' in monitoring
+    assert 'resource "aws_sns_topic" "operational_alerts"' in monitoring
+    assert 'resource "aws_sns_topic_policy" "operational_alerts"' in monitoring
+    assert 'resource "aws_sns_topic_subscription" "operational_alert_email"' in monitoring
+    assert 'protocol  = "email"' in monitoring
+    assert "endpoint  = var.operational_alert_email" in monitoring
+    subscription = monitoring.split(
+        'resource "aws_sns_topic_subscription" "operational_alert_email"', 1
+    )[1].split('resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed"', 1)[0]
+    assert "ignore_changes = [endpoint]" in subscription
+    assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in subscription
+    assert "kms_master_key_id = aws_kms_key.operational_alerts.arn" in monitoring
+    assert 'sid    = "DenyInsecureTransport"' in monitoring
+    assert 'variable = "aws:SecureTransport"' in monitoring
+    assert 'sid    = "AccountRootTopicAdministrationAndSubscriptionLifecycle"' in monitoring
+    assert 'sid    = "AllowCloudWatchAlarmPublish"' in monitoring
+    assert 'sid    = "DenyPublishUnlessCloudWatchService"' in monitoring
+    assert 'sid    = "DenyCloudWatchPublishFromUnexpectedAccount"' in monitoring
+    assert 'sid    = "DenyCloudWatchPublishFromUnexpectedAlarm"' in monitoring
+    assert 'identifiers = ["cloudwatch.amazonaws.com"]' in monitoring
+    assert 'sid    = "CloudWatchPublishEncryptedOperationalAlerts"' in monitoring
+    assert 'sid    = "SnsEncryptOperationalAlerts"' in monitoring
+    assert 'variable = "kms:EncryptionContext:aws:sns:topicArn"' in monitoring
+    assert 'variable = "aws:SourceAccount"' in monitoring
+    assert 'variable = "aws:SourceArn"' in monitoring
+    assert "operational_alarm_names = concat(" in monitoring
+    assert "[for unit in sort(keys(local.unit_config))" in monitoring
+    assert "[for alarm_key in sort(keys(local.rds_monitoring_alarms))" in monitoring
+    assert "operational_alarm_arns = [" in monitoring
+    assert '}:alarm:${alarm_name}"' in monitoring
+    # KMS and the SNS Allow both require the exact list; the SNS deny guard
+    # repeats it to reject a missing or unexpected source alarm ARN.
+    assert monitoring.count("values   = local.operational_alarm_arns") == 3
+    assert ":alarm:*" not in monitoring
+    kms_cloudwatch_publish = monitoring.split(
+        'sid    = "CloudWatchPublishEncryptedOperationalAlerts"', 1
+    )[1].split('resource "aws_kms_key" "operational_alerts"', 1)[0]
+    topic_cloudwatch_publish = monitoring.split('sid    = "AllowCloudWatchAlarmPublish"', 1)[
+        1
+    ].split('sid    = "DenyPublishUnlessCloudWatchService"', 1)[0]
+    for publisher_policy in (kms_cloudwatch_publish, topic_cloudwatch_publish):
+        assert 'test     = "StringEquals"' in publisher_policy
+        assert 'variable = "aws:SourceAccount"' in publisher_policy
+        assert 'test     = "ArnEquals"' in publisher_policy
+        assert 'variable = "aws:SourceArn"' in publisher_policy
+        assert "values   = local.operational_alarm_arns" in publisher_policy
+
+    topic_policy = monitoring.split('data "aws_iam_policy_document" "operational_alerts_topic"', 1)[
+        1
+    ].split('resource "aws_sns_topic_policy" "operational_alerts"', 1)[0]
+    assert topic_policy.count('effect = "Allow"') == 2
+    owner_statement = topic_policy.split(
+        'sid    = "AccountRootTopicAdministrationAndSubscriptionLifecycle"', 1
+    )[1].split('sid    = "AllowCloudWatchAlarmPublish"', 1)[0]
+    assert '"sns:Publish"' not in owner_statement
+    assert '"sns:*"' not in owner_statement
+    for action in (
+        "sns:AddPermission",
+        "sns:ConfirmSubscription",
+        "sns:DeleteTopic",
+        "sns:GetTopicAttributes",
+        "sns:ListSubscriptionsByTopic",
+        "sns:RemovePermission",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+    ):
+        assert f'"{action}"' in owner_statement
+
+    # The only Allow statement capable of publishing must be CloudWatch with
+    # both exact provenance conditions. Explicit Deny statements prevent an
+    # identity-based same-account allow from bypassing that resource policy.
+    allow_publish_statement = topic_policy.split('sid    = "AllowCloudWatchAlarmPublish"', 1)[
+        1
+    ].split('sid    = "DenyPublishUnlessCloudWatchService"', 1)[0]
+    assert 'identifiers = ["cloudwatch.amazonaws.com"]' in allow_publish_statement
+    assert '"sns:Publish"' in allow_publish_statement
+    deny_unless_cloudwatch = topic_policy.split('sid    = "DenyPublishUnlessCloudWatchService"', 1)[
+        1
+    ].split('sid    = "DenyCloudWatchPublishFromUnexpectedAccount"', 1)[0]
+    assert 'test     = "StringNotEquals"' in deny_unless_cloudwatch
+    assert 'variable = "aws:PrincipalServiceName"' in deny_unless_cloudwatch
+    assert 'values   = ["cloudwatch.amazonaws.com"]' in deny_unless_cloudwatch
+    deny_unexpected_account = topic_policy.split(
+        'sid    = "DenyCloudWatchPublishFromUnexpectedAccount"', 1
+    )[1].split('sid    = "DenyCloudWatchPublishFromUnexpectedAlarm"', 1)[0]
+    assert 'test     = "StringNotEquals"' in deny_unexpected_account
+    assert 'variable = "aws:SourceAccount"' in deny_unexpected_account
+    assert "values   = [data.aws_caller_identity.current.account_id]" in deny_unexpected_account
+    deny_unexpected_alarm = topic_policy.split(
+        'sid    = "DenyCloudWatchPublishFromUnexpectedAlarm"', 1
+    )[1].split('sid    = "DenyInsecureTransport"', 1)[0]
+    assert 'test     = "ArnNotEquals"' in deny_unexpected_alarm
+    assert 'variable = "aws:SourceArn"' in deny_unexpected_alarm
+    assert "values   = local.operational_alarm_arns" in deny_unexpected_alarm
+
+    non_cloudwatch_allow = owner_statement
+    assert '"sns:Publish"' not in non_cloudwatch_allow
+    assert '"sns:*"' not in non_cloudwatch_allow
+    assert 'resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed"' in monitoring
+    assert 'resource "aws_cloudwatch_metric_alarm" "rds_native"' in monitoring
+    ec2_alarm = monitoring.split(
+        'resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed"', 1
+    )[1].split('resource "aws_cloudwatch_metric_alarm" "rds_native"', 1)[0]
+    rds_alarm = monitoring.split('resource "aws_cloudwatch_metric_alarm" "rds_native"', 1)[1]
+    assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in ec2_alarm
+    assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in rds_alarm
+    assert 'namespace           = "AWS/EC2"' in monitoring
+    assert 'metric_name         = "StatusCheckFailed"' in monitoring
+    assert "dimensions          = { InstanceId = each.value.instance_id }" in monitoring
+    assert 'namespace           = "AWS/RDS"' in monitoring
+    assert (
+        "dimensions          = { DBInstanceIdentifier = var.findb_rds_instance_identifier }"
+        in monitoring
+    )
+    for metric in ("FreeStorageSpace", "DatabaseConnections", "ReadLatency", "WriteLatency"):
+        assert f'metric_name         = "{metric}"' in monitoring
+    for setting in (
+        r"period\s+=\s+local\.monitoring_alarm_common\.period",
+        r"evaluation_periods\s+=\s+local\.monitoring_alarm_common\.evaluation_periods",
+        r"datapoints_to_alarm\s+=\s+local\.monitoring_alarm_common\.datapoints_to_alarm",
+        r"treat_missing_data\s+=\s+local\.monitoring_alarm_common\.treat_missing_data",
+        r"actions_enabled\s+=\s+true",
+        r"alarm_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]",
+        r"ok_actions\s+=\s+\[\]",
+        r"insufficient_data_actions\s+=\s+\[\]",
+    ):
+        assert len(re.findall(setting, monitoring)) == 2
+
+    for name, default in (
+        ("operational_alert_email", None),
+        ("monitoring_alarm_period_seconds", "300"),
+        ("monitoring_alarm_evaluation_periods", "2"),
+        ("monitoring_alarm_datapoints_to_alarm", "2"),
+        ("monitoring_alarm_treat_missing_data", '"missing"'),
+        ("monitoring_ec2_status_check_failed_threshold", "1"),
+        ("monitoring_rds_free_storage_space_threshold_bytes", "5368709120"),
+        ("monitoring_rds_database_connections_threshold", "80"),
+        ("monitoring_rds_latency_threshold_seconds", "0.1"),
+    ):
+        block = variables.split(f'variable "{name}"', 1)[1].split("variable ", 1)[0]
+        assert "validation {" in block
+        if default is None:
+            assert "default" not in block
+        else:
+            assert f"default     = {default}" in block
+    assert 'operational_alert_email = "on-call@example.invalid"' in tfvars
+    assert "do not commit a real contact value" in tfvars
+    assert 'output "operational_alert_topic_arn"' in outputs
+
+    permissions = plan.split('data "aws_iam_policy_document" "infra_plan_permissions"', 1)[1]
+    for sid in (
+        "ReadOperationalAlarmMetadata",
+        "ReadExactOperationalAlertKey",
+        "ReadExactOperationalAlertTopic",
+        "ReadExactOperationalAlertSubscription",
+        "ReadExactOperationalAlarmTags",
+    ):
+        assert f'"{sid}"' in permissions
+    assert "cloudwatch:DescribeAlarms" in permissions
+    assert "cloudwatch:ListTagsForResource" in permissions
+    assert "sns:GetTopicAttributes" in permissions
+    assert "sns:ListSubscriptionsByTopic" in permissions
+    assert "sns:GetSubscriptionAttributes" in permissions
+    assert "sns:Publish" not in permissions
+    assert "cloudwatch:PutMetricAlarm" not in permissions
+    assert "cloudwatch:SetAlarmState" not in permissions
+    alarm_metadata = permissions.split('sid       = "ReadOperationalAlarmMetadata"', 1)[1].split(
+        'sid    = "ReadExactDeployRoles"', 1
+    )[0]
+    assert "resources = local.operational_alarm_arns" in alarm_metadata
+    assert 'resources = ["*"]' not in alarm_metadata
+    assert "CloudWatch supports resource-scoped DescribeAlarms" in plan
+    operational_key_read = permissions.split('sid    = "ReadExactOperationalAlertKey"', 1)[1].split(
+        'sid    = "ReadExactSessionDocuments"', 1
+    )[0]
+    assert "kms:GenerateDataKey" not in operational_key_read
+    assert "kms:Decrypt" not in operational_key_read
+
+    for phrase in (
+        "IaC declarations, not live-apply or delivery evidence",
+        "Declaration, applied state, and live synthetic confirmation",
+        "placeholder neither exposes nor replaces",
+        "Controlled recipient replacement",
+        "ignore_changes = [endpoint]",
+        "-replace='aws_sns_topic_subscription.operational_alert_email'",
+        "PendingConfirmation",
+        "aws cloudwatch set-alarm-state",
+        "reset the synthetic alarm",
+        "does **not** claim completion",
+        "migration or backup chain",
+        "RDS restore rehearsal",
+        "RabbitMQ rebuild",
+        "SSH ingress/recovery-key retirement",
+        "AWS charges can arise",
+    ):
+        assert phrase in runbook
+    assert "aws sns publish" not in runbook
+    assert "Direct SNS `Publish` is not a" in runbook
+    assert "supported synthetic test" in runbook

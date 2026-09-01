@@ -8,6 +8,11 @@ output "infra_plan_role_arn" {
   value       = aws_iam_role.infra_plan.arn
 }
 
+output "operational_alert_topic_arn" {
+  description = "Private KMS-encrypted SNS topic for Phase 6 native EC2 and RDS operational alarms. Confirm the configured email subscription before relying on delivery."
+  value       = aws_sns_topic.operational_alerts.arn
+}
+
 output "deploy_role_arns" {
   description = "Separate OIDC deploy role ARN for each staging environment."
   value = {
