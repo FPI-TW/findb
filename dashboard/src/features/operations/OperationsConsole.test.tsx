@@ -437,6 +437,148 @@ describe("Operations presentation", () => {
     expect(
       screen.getByText("唯讀：只有 owner 可以變更排程狀態。")
     ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "全部停止" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "全部啟動" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("updates every scheduler sequentially with revision-safe bulk controls", async () => {
+    const schedulers = [
+      makeScheduler({
+        scheduler_key: "scheduler-finlab",
+        provider: "finlab",
+        desired_state: "running",
+        observed_state: "running",
+        revision: 7,
+      }),
+      makeScheduler({
+        scheduler_key: "scheduler-shioaji",
+        provider: "shioaji",
+        desired_state: "running",
+        observed_state: "running",
+        revision: 11,
+      }),
+    ]
+    let resolveFirst!: (response: SchedulerMutationResponse) => void
+    const firstUpdate = new Promise<SchedulerMutationResponse>(resolve => {
+      resolveFirst = resolve
+    })
+    mocks.updateScheduler
+      .mockReturnValueOnce(firstUpdate)
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          ...schedulers[1]!,
+          desired_state: "stopped",
+          revision: 12,
+        },
+      })
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SchedulerPanel
+          result={{ ok: true, data: { success: true, data: schedulers } }}
+          loading={false}
+          pending={false}
+          refreshError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+
+    expect(screen.getByText("部署前人工確認")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
+    expect(
+      screen.getByRole("heading", { name: "確認全部停止 Scheduler？" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("finlab / scheduler-finlab / r7")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("shioaji / scheduler-shioaji / r11")
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "確認全部停止" }))
+
+    await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(1))
+    expect(mocks.updateScheduler).toHaveBeenNthCalledWith(1, {
+      data: {
+        schedulerKey: "scheduler-finlab",
+        desiredState: "stopped",
+        expectedRevision: 7,
+      },
+    })
+
+    await act(async () => {
+      resolveFirst({
+        success: true,
+        data: {
+          ...schedulers[0]!,
+          desired_state: "stopped",
+          revision: 8,
+        },
+      })
+      await firstUpdate
+    })
+
+    await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(2))
+    expect(mocks.updateScheduler).toHaveBeenNthCalledWith(2, {
+      data: {
+        schedulerKey: "scheduler-shioaji",
+        desiredState: "stopped",
+        expectedRevision: 11,
+      },
+    })
+  })
+
+  it("continues a bulk scheduler update after a revision conflict", async () => {
+    const schedulers = [
+      makeScheduler({
+        scheduler_key: "scheduler-conflict",
+        desired_state: "running",
+        observed_state: "running",
+        revision: 2,
+      }),
+      makeScheduler({
+        scheduler_key: "scheduler-next",
+        provider: "shioaji",
+        desired_state: "running",
+        observed_state: "running",
+        revision: 4,
+      }),
+    ]
+    mocks.updateScheduler
+      .mockRejectedValueOnce({ status: 409 })
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          ...schedulers[1]!,
+          desired_state: "stopped",
+          revision: 5,
+        },
+      })
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SchedulerPanel
+          result={{ ok: true, data: { success: true, data: schedulers } }}
+          loading={false}
+          pending={false}
+          refreshError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
+    fireEvent.click(screen.getByRole("button", { name: "確認全部停止" }))
+
+    await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(2))
+    expect(
+      screen.getByText("排程版本已被其他使用者更新，請先重新整理後再試。")
+    ).toBeInTheDocument()
   })
 
   it("shows invalid preview dates and blocks confirmation-based backfill creation", async () => {
