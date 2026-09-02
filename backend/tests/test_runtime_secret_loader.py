@@ -316,6 +316,7 @@ def test_env_file_is_exclusive_0600_owned_and_tmpfs_gated(tmp_path: Path) -> Non
         owner=owner,
         filesystem_type=lambda _: "tmpfs",
         run_root=run_root,
+        runtime_root_owner=owner,
     )
 
     metadata = output.stat()
@@ -332,6 +333,7 @@ def test_env_file_is_exclusive_0600_owned_and_tmpfs_gated(tmp_path: Path) -> Non
             owner=owner,
             filesystem_type=lambda _: "tmpfs",
             run_root=run_root,
+            runtime_root_owner=owner,
         )
     assert "replacement" not in output.read_text(encoding="utf-8")
 
@@ -340,7 +342,8 @@ def test_env_file_rejects_final_symlink_without_changing_target(tmp_path: Path) 
     loader = _loader()
     run_root = tmp_path / "run"
     output_directory = run_root / "findb"
-    output_directory.mkdir(parents=True)
+    output_directory.mkdir(mode=0o700, parents=True)
+    run_root.chmod(0o700)
     target = output_directory / "target.env"
     target.write_text("ORIGINAL=value\n", encoding="utf-8")
     output = output_directory / "runtime.env"
@@ -353,6 +356,7 @@ def test_env_file_rejects_final_symlink_without_changing_target(tmp_path: Path) 
             owner=(os.getuid(), os.getgid()),
             filesystem_type=lambda _: "tmpfs",
             run_root=run_root,
+            runtime_root_owner=(os.getuid(), os.getgid()),
         )
 
     assert output.is_symlink()
@@ -363,7 +367,7 @@ def test_env_file_rejects_parent_symlink_without_writing_outside(tmp_path: Path)
     loader = _loader()
     run_root = tmp_path / "run"
     outside = tmp_path / "outside"
-    run_root.mkdir()
+    run_root.mkdir(mode=0o700)
     outside.mkdir()
     (run_root / "findb").symlink_to(outside, target_is_directory=True)
 
@@ -374,6 +378,7 @@ def test_env_file_rejects_parent_symlink_without_writing_outside(tmp_path: Path)
             owner=(os.getuid(), os.getgid()),
             filesystem_type=lambda _: "tmpfs",
             run_root=run_root,
+            runtime_root_owner=(os.getuid(), os.getgid()),
         )
 
     assert not (outside / "runtime.env").exists()
@@ -383,11 +388,16 @@ def test_env_file_rejects_parent_inserted_during_tmpfs_check(tmp_path: Path) -> 
     loader = _loader()
     run_root = tmp_path / "run"
     outside = tmp_path / "outside"
-    run_root.mkdir()
+    run_root.mkdir(mode=0o700)
     outside.mkdir()
 
+    checks = 0
+
     def insert_symlink(_: Path) -> str:
-        (run_root / "findb").symlink_to(outside, target_is_directory=True)
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            (run_root / "findb").symlink_to(outside, target_is_directory=True)
         return "tmpfs"
 
     with pytest.raises(loader.LoaderError, match="output_write_failed"):
@@ -397,6 +407,7 @@ def test_env_file_rejects_parent_inserted_during_tmpfs_check(tmp_path: Path) -> 
             owner=(os.getuid(), os.getgid()),
             filesystem_type=insert_symlink,
             run_root=run_root,
+            runtime_root_owner=(os.getuid(), os.getgid()),
         )
 
     assert not (outside / "runtime.env").exists()
@@ -412,6 +423,7 @@ def test_check_only_removes_file_through_open_directory(tmp_path: Path) -> None:
         owner=(os.getuid(), os.getgid()),
         filesystem_type=lambda _: "tmpfs",
         run_root=run_root,
+        runtime_root_owner=(os.getuid(), os.getgid()),
         remove_after_validation=True,
     )
     assert not output.exists()
@@ -424,7 +436,7 @@ def test_env_file_rejects_nested_non_tmpfs_mount(tmp_path: Path) -> None:
     def filesystem_type(_: Path) -> str:
         nonlocal calls
         calls += 1
-        return "tmpfs" if calls == 1 else "ext4"
+        return "tmpfs" if calls <= 3 else "ext4"
 
     output = tmp_path / "run" / "findb" / "runtime.env"
     with pytest.raises(loader.LoaderError, match="output_not_tmpfs"):
@@ -434,6 +446,7 @@ def test_env_file_rejects_nested_non_tmpfs_mount(tmp_path: Path) -> None:
             owner=(os.getuid(), os.getgid()),
             filesystem_type=filesystem_type,
             run_root=tmp_path / "run",
+            runtime_root_owner=(os.getuid(), os.getgid()),
         )
     assert not output.exists()
 
@@ -442,13 +455,14 @@ def test_env_file_rejects_persistent_or_out_of_scope_paths(tmp_path: Path) -> No
     loader = _loader()
     owner = (os.getuid(), os.getgid())
     run_root = tmp_path / "run"
-    with pytest.raises(loader.LoaderError, match="output_not_tmpfs"):
+    with pytest.raises(loader.LoaderError, match="runtime_parent_not_tmpfs"):
         loader.write_env_file(
             run_root / "unit" / "runtime.env",
             {"TOKEN": "value"},
             owner=owner,
             filesystem_type=lambda _: "ext4",
             run_root=run_root,
+            runtime_root_owner=owner,
         )
     with pytest.raises(loader.LoaderError, match="output_outside_run"):
         loader.write_env_file(
@@ -458,6 +472,72 @@ def test_env_file_rejects_persistent_or_out_of_scope_paths(tmp_path: Path) -> No
             filesystem_type=lambda _: "tmpfs",
             run_root=run_root,
         )
+
+
+def test_runtime_root_bootstrap_recovers_a_missing_tmpfs_directory(tmp_path: Path) -> None:
+    loader = _loader()
+    run_root = tmp_path / "findb-runtime-secrets"
+    owner = (os.getuid(), os.getgid())
+
+    created = loader.ensure_runtime_root(
+        run_root,
+        filesystem_type=lambda _: "tmpfs",
+        owner=owner,
+    )
+
+    metadata = run_root.stat()
+    assert created is True
+    assert stat.S_IMODE(metadata.st_mode) == 0o700
+    assert (metadata.st_uid, metadata.st_gid) == owner
+    assert (
+        loader.ensure_runtime_root(
+            run_root,
+            filesystem_type=lambda _: "tmpfs",
+            owner=owner,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "non_directory", "unsafe_mode"))
+def test_runtime_root_bootstrap_rejects_unsafe_existing_paths(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    loader = _loader()
+    run_root = tmp_path / "findb-runtime-secrets"
+    owner = (os.getuid(), os.getgid())
+    if unsafe_kind == "symlink":
+        target = tmp_path / "outside"
+        target.mkdir()
+        run_root.symlink_to(target, target_is_directory=True)
+    elif unsafe_kind == "non_directory":
+        run_root.write_text("not a directory", encoding="utf-8")
+    else:
+        run_root.mkdir(mode=0o755)
+
+    expected_reason = (
+        "runtime_root_metadata_invalid"
+        if unsafe_kind == "unsafe_mode"
+        else "runtime_root_path_invalid"
+    )
+    with pytest.raises(loader.LoaderError, match=expected_reason):
+        loader.ensure_runtime_root(
+            run_root,
+            filesystem_type=lambda _: "tmpfs",
+            owner=owner,
+        )
+
+
+def test_runtime_root_bootstrap_rejects_wrong_parent_filesystem_without_creating_path(
+    tmp_path: Path,
+) -> None:
+    loader = _loader()
+    run_root = tmp_path / "findb-runtime-secrets"
+
+    with pytest.raises(loader.LoaderError, match="runtime_parent_not_tmpfs"):
+        loader.ensure_runtime_root(run_root, filesystem_type=lambda _: "ext4")
+
+    assert not run_root.exists()
 
 
 def test_missing_aws_cli_is_a_bounded_failure(monkeypatch: pytest.MonkeyPatch) -> None:

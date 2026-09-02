@@ -2867,7 +2867,8 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
         encoding="utf-8"
     )
     assert "set +x" in command
-    assert 'findmnt -n -o FSTYPE -T "$runtime_root"' in command
+    assert 'python3 "$loader" --ensure-runtime-root' in command
+    assert "runtime_root_bootstrap_failed" in command
     assert 'findmnt -n -o FSTYPE -T "$output"' in command
     assert 'loaded_files+=("$output")' in command
     assert 'rm -f -- "$output"' in command

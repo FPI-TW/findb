@@ -24,6 +24,7 @@ SecretFetcher = Callable[[str], str]
 ENVIRONMENT_KEY = re.compile(r"[A-Z_][A-Z0-9_]*")
 SECRET_RELATIVE_NAME = re.compile(r"[a-z0-9][a-z0-9/-]*")
 STAGING_AWS_REGION = "ap-southeast-1"
+RUNTIME_SECRET_ROOT = Path("/run/findb-runtime-secrets")
 
 
 def _catalog(path: Path) -> dict[str, Any]:
@@ -217,13 +218,77 @@ def _parse_owner(value: str) -> tuple[int, int]:
     return uid, gid
 
 
+def ensure_runtime_root(
+    run_root: Path = RUNTIME_SECRET_ROOT,
+    *,
+    filesystem_type: Callable[[Path], str] = _filesystem_type,
+    owner: tuple[int, int] = (0, 0),
+) -> bool:
+    """Create the empty runtime-secret root only on the existing /run tmpfs.
+
+    Returns whether this invocation created the directory.  An existing root is
+    never repaired: a symlink, non-directory, or unexpected owner/mode is a
+    fail-closed condition so an unsafe path cannot become a secret destination.
+    """
+
+    run_root = Path(os.path.abspath(run_root))
+    if run_root.parent == run_root:
+        raise LoaderError("runtime_root_path_invalid")
+    if (
+        not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+        or os.mkdir not in os.supports_dir_fd
+    ):
+        raise LoaderError("platform_unsupported")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent_fd: int | None = None
+    root_fd: int | None = None
+    created = False
+    try:
+        parent_fd = os.open(run_root.parent, directory_flags)
+        parent_fd_path = Path(f"/proc/{os.getpid()}/fd/{parent_fd}")
+        if filesystem_type(parent_fd_path) != "tmpfs":
+            raise LoaderError("runtime_parent_not_tmpfs")
+
+        try:
+            os.mkdir(run_root.name, 0o700, dir_fd=parent_fd)
+            created = True
+        except FileExistsError:
+            pass
+
+        root_fd = os.open(run_root.name, directory_flags, dir_fd=parent_fd)
+        root_fd_path = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
+        if filesystem_type(root_fd_path) != "tmpfs":
+            raise LoaderError("runtime_root_not_tmpfs")
+
+        if created:
+            os.fchmod(root_fd, 0o700)
+            os.fchown(root_fd, *owner)
+        metadata = os.fstat(root_fd)
+        if stat.S_IMODE(metadata.st_mode) != 0o700 or (metadata.st_uid, metadata.st_gid) != owner:
+            raise LoaderError("runtime_root_metadata_invalid")
+        return created
+    except LoaderError:
+        raise
+    except OSError as exc:
+        raise LoaderError("runtime_root_path_invalid") from exc
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
 def write_env_file(
     output: Path,
     values: Mapping[str, str],
     *,
     owner: tuple[int, int],
     filesystem_type: Callable[[Path], str] = _filesystem_type,
-    run_root: Path = Path("/run/findb-runtime-secrets"),
+    run_root: Path = RUNTIME_SECRET_ROOT,
+    runtime_root_owner: tuple[int, int] = (0, 0),
     remove_after_validation: bool = False,
 ) -> None:
     if not values or any(
@@ -244,10 +309,11 @@ def write_env_file(
     ):
         raise LoaderError("output_outside_run")
 
-    try:
-        run_root.mkdir(mode=0o711, parents=True, exist_ok=True)
-    except OSError as exc:
-        raise LoaderError("output_directory_invalid") from exc
+    ensure_runtime_root(
+        run_root,
+        filesystem_type=filesystem_type,
+        owner=runtime_root_owner,
+    )
 
     if (
         not hasattr(os, "O_DIRECTORY")
@@ -327,10 +393,11 @@ def write_env_file(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--catalog", type=Path, required=True)
-    parser.add_argument("--consumer", required=True)
-    parser.add_argument("--region", required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--ensure-runtime-root", action="store_true")
+    parser.add_argument("--catalog", type=Path)
+    parser.add_argument("--consumer")
+    parser.add_argument("--region")
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--owner", default=f"{os.getuid()}:{os.getgid()}")
     parser.add_argument("--check-only", action="store_true")
     return parser
@@ -338,6 +405,30 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = _parser().parse_args()
+    if arguments.ensure_runtime_root:
+        try:
+            if any(
+                value is not None
+                for value in (arguments.catalog, arguments.consumer, arguments.region, arguments.output)
+            ):
+                raise LoaderError("runtime_root_arguments_invalid")
+            if os.geteuid() != 0:
+                raise LoaderError("root_required")
+            created = ensure_runtime_root()
+            state = "created" if created else "ready"
+            print(f"runtime_secret_root={state}")
+            return 0
+        except LoaderError as exc:
+            print(f"runtime_secret_root=failed reason={exc}", file=sys.stderr)
+            return 1
+
+    if (
+        arguments.catalog is None
+        or arguments.consumer is None
+        or arguments.region is None
+        or arguments.output is None
+    ):
+        _parser().error("--catalog, --consumer, --region, and --output are required")
     output = arguments.output
     unit = "unknown"
     consumer_marker = (

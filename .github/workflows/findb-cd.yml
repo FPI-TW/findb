@@ -1365,7 +1365,7 @@ jobs:
             mkdir -p /opt/findb /home/ubuntu/etc/nginx /home/ubuntu/etc/nginx/ssl
             sudo chown -R 999:999 /var/lib/findb/rabbitmq
             sudo chown root:root /run/findb-runtime-secrets /run/findb-runtime-secrets/nginx
-            sudo chmod 0711 /run/findb-runtime-secrets
+            sudo chmod 0700 /run/findb-runtime-secrets
             sudo chmod 0700 /run/findb-runtime-secrets/nginx
 
       - name: Sync deploy artifacts to EC2

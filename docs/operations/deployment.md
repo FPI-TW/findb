@@ -137,9 +137,13 @@ target隔離控制變更。每個job只能取得自己unit與target的設定；b
 `app.config.Settings`為準。Sync script只新增或更新GitHub Environment，不會刪除退休值；
 operator必須另行移除不用的repository／Environment設定。
 
-目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager，host loader只在
-`/run` tmpfs建立`0600` bundle並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是
-staging runtime source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
+目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager。每次載入任何
+consumer前，host loader會先在既有`/run` tmpfs安全建立或驗證
+`/run/findb-runtime-secrets`：目錄必須是非 symlink 的目錄、`root:root`與`0700`；若`/run`不是 tmpfs、
+路徑型別不正確或既有權限不安全便會 fail closed。這使EC2重開後清除`/run`時，下一次candidate、accepted
+activation或受包裝的runtime載入可自動恢復空目錄，但不會修復或採用不安全的既有路徑。secret bundle仍只在
+該root下以`0600`建立並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是staging runtime
+source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
 FinDB與Fetcher staging日常deployment transport均已完成OIDC＋SSM live驗證；Fetcher的FinLab smoke亦使用
 bounded SSM。`staging-findb`已移除`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`，
 `staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。這些刪除不涵蓋TCP/22、host SSH recovery
