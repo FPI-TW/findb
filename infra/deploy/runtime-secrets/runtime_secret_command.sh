@@ -98,8 +98,8 @@ if [ "$(id -u)" -ne 0 ] \
   exit 1
 fi
 
-if ! command -v findmnt >/dev/null 2>&1 || [ "$(findmnt -n -o FSTYPE -T "$runtime_root" 2>/dev/null || true)" != "tmpfs" ]; then
-  echo "runtime_secret_command=failed reason=runtime_root_not_tmpfs" >&2
+if ! python3 "$loader" --ensure-runtime-root; then
+  echo "runtime_secret_command=failed reason=runtime_root_bootstrap_failed" >&2
   exit 1
 fi
 
