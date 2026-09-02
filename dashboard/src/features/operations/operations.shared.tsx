@@ -38,6 +38,7 @@ import type {
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { canViewUsers } from "../../lib/admin-permissions"
 import { logout } from "../../lib/auth.functions"
+import { cn } from "../../lib/utils"
 import {
   operationsKeys,
   useOperationsDashboardRefresh,
@@ -241,6 +242,7 @@ export function Panel({
   icon,
   result,
   loading = false,
+  className,
   children,
 }: {
   title: string
@@ -248,10 +250,11 @@ export function Panel({
   icon: ReactNode
   result: PanelResult<unknown> | null
   loading?: boolean
+  className?: string
   children: ReactNode
 }) {
   return (
-    <Card className="gap-0 p-5">
+    <Card className={cn("gap-0 p-5", className)}>
       <CardHeader className="mb-4 flex grid-cols-none flex-row items-center gap-3 px-0">
         <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent">
           {icon}
