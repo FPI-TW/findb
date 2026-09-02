@@ -22,6 +22,7 @@ from app.models.canonical import (
     TradingCalendar,
 )
 from app.models.registry import DQIssue, IngestionRun
+from app.services.delivery_monitor import resolve_missing_delivery_for_run
 from app.services.dq.validators import DQIssueRecord, DQValidator
 from app.services.normalize.types import InstrumentResolvableRecord, MappedRecord
 from app.utils import utc_now, uuid7
@@ -616,6 +617,17 @@ class BaseNormalizer(ABC):
                 run.started_at = utc_now()
             if status in ("completed", "completed_with_errors", "failed"):
                 run.completed_at = utc_now()
+            if status == "completed" and run.source and run.schema_id and run.schema_version:
+                await resolve_missing_delivery_for_run(
+                    self.db,
+                    run_id=run.run_id,
+                    dataset_key=run.dataset_key,
+                    source=run.source,
+                    schema_id=run.schema_id,
+                    schema_version=run.schema_version,
+                    data_date=run.batch_data_date or run.created_at.date(),
+                    delivery_mode=run.delivery_mode,
+                )
 
     def _build_processing_error_issue(
         self,

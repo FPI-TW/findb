@@ -117,6 +117,11 @@ const responses = {
     data: [],
     pagination,
   },
+  "/api/v1/admin/historical-backfills": {
+    data: [],
+    pagination,
+  },
+  "/api/v1/admin/historical-backfills/scopes": { data: [] },
   "/api/v1/admin/dq-issues": {
     data: [],
     pagination,
@@ -185,6 +190,26 @@ function recordingFetch(
 }
 
 describe("FinDB Admin server boundary", () => {
+  it("viewer does not request historical backfill scope or status", async () => {
+    const calls: RecordedCall[] = []
+    const result = await fetchDashboardData(
+      request("deliveries"),
+      "viewer-secret",
+      "https://findb.internal:8443",
+      recordingFetch(calls),
+      "viewer"
+    )
+
+    expect(calls.map(call => `${call.url.pathname}${call.url.search}`)).toEqual(
+      ["/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100"]
+    )
+    expect(result.view).toBe("deliveries")
+    if (result.view === "deliveries") {
+      expect(result.backfills.ok).toBe(false)
+      expect(result.backfillScopes.ok).toBe(false)
+    }
+  })
+
   it.each([
     [
       "overview",
@@ -196,7 +221,11 @@ describe("FinDB Admin server boundary", () => {
     ],
     [
       "deliveries",
-      ["/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100"],
+      [
+        "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100",
+        "/api/v1/admin/historical-backfills?page=3&page_size=100",
+        "/api/v1/admin/historical-backfills/scopes",
+      ],
     ],
     ["quality", ["/api/v1/admin/dq-issues"]],
     ["corrections", ["/api/v1/admin/corrections?page=3&page_size=100"]],
@@ -212,7 +241,9 @@ describe("FinDB Admin server boundary", () => {
         recordingFetch(calls)
       )
 
-      expect(calls).toHaveLength(view === "overview" ? 3 : 1)
+      expect(calls).toHaveLength(
+        view === "overview" ? 3 : view === "deliveries" ? 3 : 1
+      )
       expect(
         calls.map(
           call =>

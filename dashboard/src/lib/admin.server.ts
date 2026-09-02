@@ -1,10 +1,11 @@
-import { type z } from "zod"
+import type { z } from "zod"
 
 import {
   buildAuditSearch,
   correctionsSchema,
   dashboardResponseSchema,
   dqIssuesSchema,
+  historicalBackfillsSchema,
   marketFreshnessSchema,
   missingDeliveriesSchema,
   queueHealthSchema,
@@ -14,6 +15,9 @@ import {
   schedulersResponseSchema,
   type DashboardRequest,
   type RawPayloadDetailRequest,
+  historicalBackfillSchema,
+  historicalBackfillScopesSchema,
+  historicalBackfillPreviewResponseSchema,
   type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
@@ -21,6 +25,7 @@ import {
   DashboardAuthenticationError,
   isDashboardAuthenticationError,
 } from "./auth-errors"
+import type { AdminRole } from "./admin-governance-api"
 
 type FetchImplementation = typeof fetch
 const UPSTREAM_TIMEOUT_MS = 10_000
@@ -94,7 +99,8 @@ export async function fetchDashboardData(
   data: DashboardRequest,
   sessionToken: string,
   baseUrlValue: string | undefined,
-  fetchImplementation: FetchImplementation = fetch
+  fetchImplementation: FetchImplementation = fetch,
+  role: AdminRole = "operator"
 ) {
   const baseUrl = safeBaseUrl(baseUrlValue)
   const auditSearch = buildAuditSearch(data.audit)
@@ -138,7 +144,7 @@ export async function fetchDashboardData(
     })
   }
   if (data.view === "deliveries") {
-    const [deliveries] = await Promise.allSettled([
+    const [deliveries, backfills, backfillScopes] = await Promise.allSettled([
       fetchTarget(
         baseUrl,
         sessionToken,
@@ -146,12 +152,38 @@ export async function fetchDashboardData(
         missingDeliveriesSchema,
         fetchImplementation
       ),
+      role === "viewer"
+        ? Promise.resolve(null)
+        : fetchTarget(
+            baseUrl,
+            sessionToken,
+            `/api/v1/admin/historical-backfills?page=${data.audit.page}&page_size=${data.audit.pageSize}`,
+            historicalBackfillsSchema,
+            fetchImplementation
+          ),
+      role === "viewer"
+        ? Promise.resolve(null)
+        : fetchTarget(
+            baseUrl,
+            sessionToken,
+            "/api/v1/admin/historical-backfills/scopes",
+            historicalBackfillScopesSchema,
+            fetchImplementation
+          ),
     ])
     assertNoAuthenticationFailure([deliveries])
     return dashboardResponseSchema.parse({
       view: data.view,
       fetchedAt,
       deliveries: settled(deliveries),
+      backfills:
+        role === "viewer"
+          ? { ok: false, error: "Historical backfills require operator access" }
+          : settled(backfills),
+      backfillScopes:
+        role === "viewer"
+          ? { ok: false, error: "Historical backfills require operator access" }
+          : settled(backfillScopes),
     })
   }
   if (data.view === "quality") {
@@ -283,4 +315,101 @@ export async function patchSchedulerData(
   } catch {
     throw new Error("FinDB API returned an unexpected response")
   }
+}
+
+async function mutateBackfill<T extends z.ZodType>(
+  path: string,
+  body: unknown,
+  schema: T,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+): Promise<z.output<T>> {
+  const response = await fetchImplementation(
+    new URL(path, safeBaseUrl(baseUrlValue)),
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    }
+  )
+  if (!response.ok)
+    throw new Error(`FinDB API request failed (${response.status})`)
+  return schema.parse(await response.json())
+}
+
+export function createHistoricalBackfillData(
+  data: {
+    provider: string
+    datasetKey: string
+    startDate: string
+    endDate: string
+    requestKey: string
+  },
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return mutateBackfill(
+    "/api/v1/admin/historical-backfills",
+    {
+      provider: data.provider,
+      dataset_key: data.datasetKey,
+      start_date: data.startDate,
+      end_date: data.endDate,
+      request_key: data.requestKey,
+    },
+    historicalBackfillSchema,
+    sessionToken,
+    baseUrlValue,
+    fetchImplementation
+  )
+}
+
+export function cancelHistoricalBackfillData(
+  requestId: string,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return mutateBackfill(
+    `/api/v1/admin/historical-backfills/${encodeURIComponent(requestId)}/cancel`,
+    {},
+    historicalBackfillSchema,
+    sessionToken,
+    baseUrlValue,
+    fetchImplementation
+  )
+}
+
+export function previewHistoricalBackfillData(
+  data: {
+    provider: string
+    datasetKey: string
+    startDate: string
+    endDate: string
+  },
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return mutateBackfill(
+    "/api/v1/admin/historical-backfills/preview",
+    {
+      provider: data.provider,
+      dataset_key: data.datasetKey,
+      start_date: data.startDate,
+      end_date: data.endDate,
+    },
+    historicalBackfillPreviewResponseSchema,
+    sessionToken,
+    baseUrlValue,
+    fetchImplementation
+  )
 }

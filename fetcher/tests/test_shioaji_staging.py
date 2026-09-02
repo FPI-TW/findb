@@ -476,6 +476,32 @@ def test_target_window_and_execution_date_fail_before_provider(tmp_path: Path) -
     state.close()
 
 
+def test_historical_bypasses_only_cutoff_and_keeps_target_date_gate(tmp_path: Path) -> None:
+    def after_cutoff() -> datetime:
+        return datetime(2026, 7, 31, 17, 1, tzinfo=timezone(timedelta(hours=8)))
+
+    state = ShioajiStagingState(tmp_path / "historical-cutoff.sqlite")
+    gateway = _Gateway()
+    coordinator = Coordinator(state, _single_manifest(), gateway, now=after_cutoff)
+
+    # A valid historical day still runs after the recurring cutoff.
+    assert (
+        coordinator.run(date(2026, 7, 29), historical=True, preflight=True)[0].code == "VALIDATED"
+    )
+    assert gateway.calls == 1
+    # The same execution date cannot make an expired target date valid.
+    assert coordinator.run(date(2026, 6, 29), historical=True, preflight=True)[0].code == (
+        "TARGET_DATE_INVALID"
+    )
+    assert gateway.calls == 1
+    # Recurring work remains subject to the cutoff even for otherwise-valid targets.
+    recurring_state = ShioajiStagingState(tmp_path / "recurring-cutoff.sqlite")
+    recurring = Coordinator(recurring_state, _single_manifest(), _Gateway(), now=after_cutoff)
+    assert recurring.run(date(2026, 7, 29), preflight=True)[0].code == "CUTOFF_REACHED"
+    state.close()
+    recurring_state.close()
+
+
 def test_naive_clock_fails_closed_before_state_or_provider(tmp_path: Path) -> None:
     state = ShioajiStagingState(tmp_path / "naive.sqlite")
     gateway = _Gateway()

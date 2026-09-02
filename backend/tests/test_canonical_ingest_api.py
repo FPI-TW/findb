@@ -214,7 +214,7 @@ async def test_canonical_ingest_and_retained_rerun_persist_eod_coverage(
 
 
 @pytest.mark.asyncio
-async def test_canonical_full_snapshot_resolves_exact_missing_delivery_alert(
+async def test_canonical_full_snapshot_acceptance_does_not_resolve_missing_delivery_alert(
     client: AsyncClient,
     source_headers: dict,
     test_session,
@@ -241,8 +241,10 @@ async def test_canonical_full_snapshot_resolves_exact_missing_delivery_alert(
 
     assert response.status_code == 202
     await test_session.refresh(alert)
-    assert alert.status == "resolved"
-    assert alert.resolved_at is not None
+    # Source acceptance is raw-first and intentionally precedes normalizer
+    # terminal success; a later failed normalization must not hide an alert.
+    assert alert.status == "open"
+    assert alert.resolved_at is None
 
 
 @pytest.mark.asyncio

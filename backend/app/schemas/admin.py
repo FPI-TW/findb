@@ -13,6 +13,100 @@ from app.schemas.common import PaginatedResponse
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc, utc_now
 
+# ── Provider historical backfill ────────────────────────────────────────────
+
+
+HistoricalBackfillStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+HistoricalBackfillItemStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+
+
+class HistoricalBackfillCreateRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=50, pattern=r"^[a-z0-9_]+$")
+    dataset_key: str = Field(min_length=1, max_length=50)
+    start_date: date
+    end_date: date
+    request_key: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_dates(cls, value: date, info: Any) -> date:
+        start = info.data.get("start_date")
+        if start is not None and value < start:
+            raise ValueError("end_date must not precede start_date")
+        return value
+
+
+class HistoricalBackfillItemResponse(BaseModel):
+    item_id: UUID
+    trade_date: date
+    status: HistoricalBackfillItemStatus
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    run_id: UUID | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HistoricalBackfillRequestResponse(BaseModel):
+    request_id: UUID
+    request_key: str
+    provider: str
+    dataset_key: str
+    market: str
+    start_date: date
+    end_date: date
+    status: HistoricalBackfillStatus
+    created_by: str
+    cancelled_by: str | None = None
+    cancelled_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    items: list[HistoricalBackfillItemResponse] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HistoricalBackfillRequestListResponse(PaginatedResponse[HistoricalBackfillRequestResponse]):
+    pass
+
+
+class HistoricalBackfillScopeResponse(BaseModel):
+    provider: str
+    dataset_key: str
+    market: str
+    executable: bool
+
+
+class HistoricalBackfillScopeListResponse(BaseModel):
+    data: list[HistoricalBackfillScopeResponse]
+
+
+class HistoricalBackfillPreviewRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=50, pattern=r"^[a-z0-9_]+$")
+    dataset_key: str = Field(min_length=1, max_length=50)
+    start_date: date
+    end_date: date
+
+
+class HistoricalBackfillPreviewDay(BaseModel):
+    trade_date: date
+    valid: bool
+    reason: str | None = None
+
+
+class HistoricalBackfillPreviewResponse(BaseModel):
+    provider: str
+    dataset_key: str
+    market: str | None = None
+    scope_valid: bool
+    scope_reason: str | None = None
+    days: list[HistoricalBackfillPreviewDay]
+
+
 # ── Managed trading calendars ───────────────────────────────────────────────
 
 

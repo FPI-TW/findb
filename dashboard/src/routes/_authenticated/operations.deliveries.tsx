@@ -14,9 +14,11 @@ export const Route = createFileRoute("/_authenticated/operations/deliveries")({
 function DeliveriesRoute() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
+  const { role } = Route.useRouteContext()
   return (
     <DeliveriesPage
       search={search}
+      role={role}
       updateSearch={(next: OperationsPageSearch) =>
         void navigate({ search: next, replace: true })
       }

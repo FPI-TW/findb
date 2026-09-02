@@ -193,6 +193,79 @@ export type MissingDelivery = z.infer<
   typeof missingDeliveriesSchema
 >["data"][number]
 
+export const historicalBackfillSchema = z.object({
+  request_id: z.uuid(),
+  request_key: z.string(),
+  provider: z.string(),
+  dataset_key: z.string(),
+  market: z.string(),
+  start_date: z.iso.date(),
+  end_date: z.iso.date(),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  created_by: z.string(),
+  cancelled_by: z.string().nullable(),
+  cancelled_at: nullableDateTime,
+  started_at: nullableDateTime,
+  completed_at: nullableDateTime,
+  failure_code: z.string().nullable(),
+  failure_message: z.string().nullable(),
+  created_at: isoDateTime,
+  updated_at: isoDateTime,
+  items: z.array(
+    z.object({
+      item_id: z.uuid(),
+      trade_date: z.iso.date(),
+      status: z.string(),
+      run_id: z.uuid().nullable(),
+      failure_code: z.string().nullable(),
+      failure_message: z.string().nullable(),
+    })
+  ),
+})
+export const historicalBackfillsSchema = z.object({
+  data: z.array(historicalBackfillSchema),
+  pagination: paginationSchema,
+})
+export const historicalBackfillScopesSchema = z.object({
+  data: z.array(
+    z.object({
+      provider: z.string(),
+      dataset_key: z.string(),
+      market: z.string(),
+      executable: z.boolean(),
+    })
+  ),
+})
+export type HistoricalBackfill = z.infer<typeof historicalBackfillSchema>
+export const historicalBackfillCreateSchema = z.object({
+  provider: z.string().regex(/^[a-z0-9_]+$/),
+  datasetKey: z.string().min(1).max(50),
+  startDate: z.iso.date(),
+  endDate: z.iso.date(),
+  requestKey: z.string().min(8).max(100),
+})
+export const historicalBackfillCancelSchema = z.object({ requestId: z.uuid() })
+export const historicalBackfillPreviewSchema = z.object({
+  provider: z.string().regex(/^[a-z0-9_]+$/),
+  datasetKey: z.string().min(1).max(50),
+  startDate: z.iso.date(),
+  endDate: z.iso.date(),
+})
+export const historicalBackfillPreviewResponseSchema = z.object({
+  provider: z.string(),
+  dataset_key: z.string(),
+  market: z.string().nullable(),
+  scope_valid: z.boolean(),
+  scope_reason: z.string().nullable(),
+  days: z.array(
+    z.object({
+      trade_date: z.iso.date(),
+      valid: z.boolean(),
+      reason: z.string().nullable(),
+    })
+  ),
+})
+
 export const dqIssuesSchema = z.object({
   data: z.array(
     z.object({
@@ -308,6 +381,8 @@ export const dashboardResponseSchema = z.discriminatedUnion("view", [
   responseMetadataSchema.extend({
     view: z.literal("deliveries"),
     deliveries: panelResultSchema(missingDeliveriesSchema),
+    backfills: panelResultSchema(historicalBackfillsSchema),
+    backfillScopes: panelResultSchema(historicalBackfillScopesSchema),
   }),
   responseMetadataSchema.extend({
     view: z.literal("quality"),

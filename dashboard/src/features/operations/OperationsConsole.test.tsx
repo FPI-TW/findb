@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest"
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   renderHook,
   screen,
@@ -26,6 +27,9 @@ const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
   loadRawPayloadDetail: vi.fn(),
   updateScheduler: vi.fn(),
+  createHistoricalBackfill: vi.fn(),
+  cancelHistoricalBackfill: vi.fn(),
+  previewHistoricalBackfill: vi.fn(),
   navigate: vi.fn(),
 }))
 
@@ -50,6 +54,7 @@ vi.mock("../../lib/admin.functions", () => mocks)
 
 import {
   DQPolicyDetails,
+  DeliveriesPage,
   OperationsOverviewPage,
   SCHEDULER_RUNTIME_STATUS_META,
   SchedulerPanel,
@@ -111,6 +116,50 @@ function overviewResponse(schedulers: Scheduler[] = []): DashboardResponse {
   }
 }
 
+function deliveriesResponse(): DashboardResponse {
+  return {
+    view: "deliveries",
+    fetchedAt: timestamp,
+    deliveries: {
+      ok: true,
+      data: {
+        data: [],
+        pagination: {
+          page: 1,
+          page_size: 25,
+          total_records: 0,
+          total_pages: 0,
+        },
+      },
+    },
+    backfills: {
+      ok: true,
+      data: {
+        data: [],
+        pagination: {
+          page: 1,
+          page_size: 25,
+          total_records: 0,
+          total_pages: 0,
+        },
+      },
+    },
+    backfillScopes: {
+      ok: true,
+      data: {
+        data: [
+          {
+            provider: "shioaji",
+            dataset_key: "tw_equity_minute",
+            market: "TW",
+            executable: true,
+          },
+        ],
+      },
+    },
+  }
+}
+
 function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
   return {
     scheduler_key: "scheduler-1",
@@ -154,6 +203,14 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.loadDashboard.mockResolvedValue(qualityResponse())
   mocks.loadRawPayloadDetail.mockResolvedValue(makeRawPayload())
+  mocks.previewHistoricalBackfill.mockResolvedValue({
+    provider: "shioaji",
+    dataset_key: "tw_equity_minute",
+    market: "TW",
+    scope_valid: true,
+    scope_reason: null,
+    days: [],
+  })
 })
 
 afterEach(() => {
@@ -380,5 +437,56 @@ describe("Operations presentation", () => {
     expect(
       screen.getByText("唯讀：只有 owner 可以變更排程狀態。")
     ).toBeInTheDocument()
+  })
+
+  it("shows invalid preview dates and blocks confirmation-based backfill creation", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    mocks.previewHistoricalBackfill.mockResolvedValue({
+      provider: "shioaji",
+      dataset_key: "tw_equity_minute",
+      market: "TW",
+      scope_valid: true,
+      scope_reason: null,
+      days: [
+        { trade_date: "2026-08-30", valid: true, reason: null },
+        {
+          trade_date: "2026-08-31",
+          valid: false,
+          reason: "market_closed",
+        },
+      ],
+    })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("provider")).toBeInTheDocument()
+    )
+    fireEvent.change(screen.getByPlaceholderText("provider"), {
+      target: { value: "shioaji" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_minute" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-08-30" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-08-31" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+    await waitFor(() =>
+      expect(
+        screen.getByText("範圍含無效日期；整個回補請求將被拒絕。")
+      ).toBeInTheDocument()
+    )
+    expect(
+      screen.getByText(/2026-08-31 拒絕：market_closed/)
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("checkbox"))
+    expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
+    expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
   })
 })

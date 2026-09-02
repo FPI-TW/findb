@@ -409,7 +409,10 @@ async def test_scan_creates_once_refreshes_and_late_delivery_resolves(test_sessi
             batch_data_date=date(2026, 7, 22),
             delivery_mode="full_snapshot",
             is_rerun=False,
-            status="failed",
+            status="completed",
+            total_records=1,
+            success_records=1,
+            failed_records=0,
         )
     )
     await test_session.commit()
@@ -506,7 +509,10 @@ async def test_incremental_backfill_resolves_covered_history_and_keeps_out_of_ra
             coverage_start_date=covered_dates[0],
             coverage_end_date=covered_dates[-1],
             is_rerun=False,
-            status="pending",
+            status="completed",
+            total_records=1,
+            success_records=1,
+            failed_records=0,
         )
     )
     await test_session.commit()
@@ -558,7 +564,10 @@ async def test_incremental_backfill_without_range_only_covers_its_batch_date(tes
             batch_data_date=expected,
             delivery_mode="backfill",
             is_rerun=False,
-            status="pending",
+            status="completed",
+            total_records=1,
+            success_records=1,
+            failed_records=0,
         )
     )
     await test_session.commit()
@@ -600,7 +609,10 @@ async def test_full_snapshot_expectation_does_not_accept_backfill_or_rerun(test_
                 batch_data_date=expected,
                 delivery_mode="backfill",
                 is_rerun=is_rerun,
-                status="pending",
+                status="completed",
+                total_records=1,
+                success_records=1,
+                failed_records=0,
             )
             for is_rerun in (False, True)
         ]
@@ -743,21 +755,24 @@ async def _accept_full_snapshot(session_factory) -> None:
             schema_version=1,
             wait=True,
         )
-        session.add(
-            IngestionRun(
-                dataset_key="tw_equity_eod",
-                source="finlab",
-                schema_id="market_eod",
-                schema_version=1,
-                batch_data_date=date(2026, 7, 22),
-                delivery_mode="full_snapshot",
-                is_rerun=False,
-                status="pending",
-            )
+        run = IngestionRun(
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 22),
+            delivery_mode="full_snapshot",
+            is_rerun=False,
+            status="completed",
+            total_records=1,
+            success_records=1,
+            failed_records=0,
         )
+        session.add(run)
         await session.flush()
         await resolve_missing_delivery_for_run(
             session,
+            run_id=run.run_id,
             dataset_key="tw_equity_eod",
             source="finlab",
             schema_id="market_eod",
@@ -830,7 +845,10 @@ async def test_ingest_first_makes_concurrent_scan_skip_then_no_false_open(test_e
                     batch_data_date=date(2026, 7, 22),
                     delivery_mode="full_snapshot",
                     is_rerun=False,
-                    status="pending",
+                    status="completed",
+                    total_records=1,
+                    success_records=1,
+                    failed_records=0,
                 )
             )
             await session.commit()

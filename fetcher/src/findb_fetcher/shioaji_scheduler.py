@@ -315,7 +315,9 @@ class ProductionCoordinator(_StagingCoordinator):
         manifest = kwargs.get("manifest")
         if manifest is None and len(args) > 1:
             manifest = args[1]
-        if not isinstance(manifest, dict) or manifest.get("universe_id") != PILOT_UNIVERSE_ID:
+        if not isinstance(manifest, dict) or not str(manifest.get("universe_id", "")).startswith(
+            PILOT_UNIVERSE_ID
+        ):
             raise ProductionManifestError("production coordinator requires pilot identity")
         kwargs["terminal_on_exhaustion"] = True
         super().__init__(*args, **kwargs)

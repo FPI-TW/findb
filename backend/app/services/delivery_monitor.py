@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -31,6 +32,15 @@ class DeliveryMonitorResult:
     resolved: int = 0
     diagnostics: tuple[dict[str, Any], ...] = ()
     skipped_locked: bool = False
+
+
+def _terminal_success_condition():
+    """SQL predicate for a run that may satisfy a delivery expectation."""
+    return (
+        IngestionRun.status == "completed",
+        IngestionRun.total_records == IngestionRun.success_records,
+        IngestionRun.failed_records == 0,
+    )
 
 
 def _bounded_diagnostic(dataset_key: str, source: str, reason: str) -> dict[str, str]:
@@ -183,6 +193,7 @@ async def scan_missing_deliveries(
                                 IngestionRun.schema_version == declaration.current_schema_version,
                                 delivery_run_coverage_condition(delivery_mode, expected_date),
                                 IngestionRun.is_rerun.is_(False),
+                                *_terminal_success_condition(),
                             )
                         )
                     )
@@ -288,6 +299,7 @@ async def _resolve_open_alerts_for_feed(
                     MissingDeliveryAlert.expected_data_date,
                 ),
                 IngestionRun.is_rerun.is_(False),
+                *_terminal_success_condition(),
             )
         )
     resolution = await db.execute(
@@ -309,6 +321,7 @@ async def _resolve_open_alerts_for_feed(
 async def resolve_missing_delivery_for_run(
     db: AsyncSession,
     *,
+    run_id: UUID | None = None,
     dataset_key: str,
     source: str,
     schema_id: str,
@@ -318,6 +331,20 @@ async def resolve_missing_delivery_for_run(
     delivery_mode: str | None = None,
 ) -> int:
     """Resolve the exact alert inside the accepting ingress transaction."""
+    run = await db.get(IngestionRun, run_id) if run_id is not None else None
+    if (
+        run is None
+        or run.is_rerun
+        or run.status != "completed"
+        or run.dataset_key != dataset_key
+        or run.source != source
+        or run.schema_id != schema_id
+        or run.schema_version != schema_version
+        or run.batch_data_date != data_date
+        or run.total_records != run.success_records
+        or run.failed_records != 0
+    ):
+        return 0
     if delivery_mode is None:
         dataset = await db.get(DatasetRegistry, dataset_key)
         expectation = parse_delivery_expectation(dataset.config if dataset else None)
