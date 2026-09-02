@@ -22,6 +22,8 @@ from app.schemas.source import (
     CanonicalIngestResponse,
     DatasetInfo,
     DatasetListResponse,
+    HistoricalBackfillClaimResponse,
+    HistoricalBackfillItemUpdateRequest,
     IngestionAttemptResponse,
     IngestResponse,
     IngressErrorDetail,
@@ -33,6 +35,13 @@ from app.schemas.source import (
 from app.services.canonical_ingestion import (
     CanonicalIngestRejectionError,
     accept_canonical_ingest,
+)
+from app.services.historical_backfill import (
+    HistoricalBackfillConflictError,
+    HistoricalBackfillError,
+    HistoricalBackfillValidationError,
+    claim_next_item,
+    complete_item,
 )
 from app.services.ingestion import (
     DatasetAccessDeniedError,
@@ -57,6 +66,92 @@ from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/historical-backfills/claim", response_model=HistoricalBackfillClaimResponse)
+async def claim_historical_backfill_item(
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lease one safe date for the authenticated provider without exposing credentials."""
+    provider = db.info.get("source_name")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=403, detail="Source provider identity unavailable")
+    datasets = db.info.get("allowed_datasets")
+    if datasets is not None and not isinstance(datasets, list):
+        raise HTTPException(status_code=403, detail="Source dataset scope unavailable")
+    item = await claim_next_item(db, provider=provider, allowed_datasets=datasets)
+    await db.commit()
+    if item is None:
+        return HistoricalBackfillClaimResponse()
+    return HistoricalBackfillClaimResponse(
+        item_id=item.item_id,
+        request_id=item.request_id,
+        request_key=item.request.request_key,
+        provider=item.request.provider,
+        dataset_key=item.request.dataset_key,
+        market=item.request.market,
+        trade_date=item.trade_date,
+        lease_token=item.lease_token,
+    )
+
+
+@router.post(
+    "/historical-backfills/{item_id}/complete", response_model=HistoricalBackfillClaimResponse
+)
+async def complete_historical_backfill_item(
+    item_id: UUID,
+    body: HistoricalBackfillItemUpdateRequest,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    provider = db.info.get("source_name")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=403, detail="Source provider identity unavailable")
+    if body.status == "completed" and (body.failure_code or body.failure_message):
+        raise HTTPException(status_code=422, detail="completed item cannot include failure details")
+    try:
+        item = await complete_item(
+            db,
+            item_id,
+            provider=provider,
+            outcome=body.status,
+            lease_token=body.lease_token,
+            run_id=body.run_id,
+            failure_code=body.failure_code,
+            failure_message=body.failure_message,
+        )
+    except HistoricalBackfillConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HistoricalBackfillValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HistoricalBackfillError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    # Completion is audited as a provider-system action, never as a credential value.
+    from app.api.deps import AdminPrincipal
+    from app.services.admin_audit import record_admin_audit
+
+    await record_admin_audit(
+        db,
+        AdminPrincipal("system", provider, provider, "operator"),
+        action="complete",
+        resource_type="historical_backfill",
+        resource_id=str(item.request_id),
+        details={
+            "item_id": str(item.item_id),
+            "status": item.status,
+            "trade_date": item.trade_date.isoformat(),
+        },
+    )
+    return HistoricalBackfillClaimResponse(
+        item_id=item.item_id,
+        request_id=item.request_id,
+        request_key=item.request.request_key,
+        provider=item.request.provider,
+        dataset_key=item.request.dataset_key,
+        market=item.request.market,
+        trade_date=item.trade_date,
+    )
 
 
 @router.get("/contracts/{schema_id}/versions/{schema_version}")

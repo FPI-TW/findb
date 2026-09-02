@@ -19,6 +19,7 @@ from sqlalchemy.exc import DBAPIError
 from tests.migration_database import get_active_migration_database_factory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+LATEST_REVISION = "a8b9c0d1e2f3"
 
 
 async def _run_alembic(database_url: str, revision: str, command: str = "upgrade") -> None:
@@ -111,7 +112,7 @@ def test_tw_minute_migration_is_single_linear_head():
     assert twelve_data_schedule_0815.down_revision == "b4c5d6e7f8a9"
     assert scheduler_dataset_projection_removal is not None
     assert scheduler_dataset_projection_removal.down_revision == "c5d6e7f8a9b0"
-    assert scripts.get_heads() == ["d6e7f8a9b0c1"]
+    assert scripts.get_heads() == [LATEST_REVISION]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -685,7 +686,7 @@ async def test_twelve_data_0815_downgrade_leaves_one_sided_drift_untouched(
             assert "without an association" in (result.stdout + result.stderr)
             async with target_engine.connect() as connection:
                 assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "d6e7f8a9b0c1"
+                    LATEST_REVISION
                 )
                 assert (
                     await connection.scalar(
@@ -786,7 +787,7 @@ async def test_twelve_data_0815_policy_step_failure_rolls_back_scheduler(directi
         expected_scheduler_time = time(8, 15) if direction == "downgrade" else time(10, 30)
         expected_deadline = "09:15:00" if direction == "downgrade" else "11:30:00"
         expected_local_time = "08:15:00" if direction == "downgrade" else "10:30:00"
-        expected_revision = "d6e7f8a9b0c1" if direction == "downgrade" else "b4c5d6e7f8a9"
+        expected_revision = LATEST_REVISION if direction == "downgrade" else "b4c5d6e7f8a9"
         async with target_engine.connect() as connection:
             assert (
                 await connection.scalar(
@@ -914,7 +915,7 @@ async def test_twelve_data_schedule_downgrade_leaves_one_sided_drift_untouched(
             assert "without an association" in (result.stdout + result.stderr)
             async with target_engine.connect() as connection:
                 assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "d6e7f8a9b0c1"
+                    LATEST_REVISION
                 )
             return
 

@@ -239,6 +239,7 @@ recover() {
   set +e
   trap - ERR INT TERM HUP
   recovery_failed=0
+  docker rm -f "${stable}-historical" >/dev/null 2>&1 || true
   docker container inspect "$candidate" >/dev/null 2>&1 && docker rm -f "$candidate" >/dev/null 2>&1 || true
   if docker container inspect "$previous" >/dev/null 2>&1; then
     if docker container inspect "$stable" >/dev/null 2>&1; then
@@ -344,6 +345,30 @@ fi
 docker rename "$candidate" "$stable"
 if [ "$(docker inspect --format '{{.State.Running}}' "$stable")" != "true" ]; then
   echo "release_fetcher_provider=failed reason=stable_not_running" >&2
+  false
+fi
+
+# This process runs *inside* runtime_secret_command, after exactly one
+# provider consumer's secret set has been loaded.  Reuse only that already
+# allowlisted ``runtime_env_args`` array; the outer deployment shell never
+# receives SOURCE_CLIENT_KEY/provider/R2 credentials.
+case "$provider" in
+  twelve-data) historical_provider=twelve_data ;;
+  finlab) historical_provider=finlab ;;
+  shioaji) historical_provider=shioaji ;;
+esac
+historical_name="${stable}-historical"
+historical_state_dir="$state_dir/historical"
+sudo mkdir -p "$historical_state_dir"
+sudo chown 10001:10001 "$historical_state_dir"
+sudo chmod 0700 "$historical_state_dir"
+docker rm -f "$historical_name" >/dev/null 2>&1 || true
+docker run -d --name "$historical_name" --label "com.findb.fetcher.accepted=$accepted_release" \
+  --restart unless-stopped "${common_args[@]}" "${runtime_env_args[@]}" \
+  --env "FETCHER_HISTORICAL_STATE_DIR=$historical_state_dir" \
+  "$image" findb-fetch-historical-backfill --provider "$historical_provider" --run-forever >/dev/null
+if [ "$(docker inspect --format '{{.State.Running}}' "$historical_name")" != "true" ]; then
+  echo "release_fetcher_provider=failed reason=historical_not_running" >&2
   false
 fi
 if [ "$provider_release_mode" = legacy ] && [ "$had_previous" -eq 1 ]; then

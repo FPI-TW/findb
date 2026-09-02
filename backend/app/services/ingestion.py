@@ -24,7 +24,6 @@ from app.models.registry import (
     NormalizationOutbox,
 )
 from app.schemas.ingress import IngressRequestV1
-from app.services.delivery_monitor import resolve_missing_delivery_for_run
 from app.services.delivery_policy import (
     DeliveryPolicyRejectedError,
     evaluate_delivery_policy,
@@ -764,22 +763,6 @@ class IngestionService:
                     )
                 )
             await self.create_normalization_job(run)
-            if (
-                getattr(
-                    request.payload.batch.delivery_mode,
-                    "value",
-                    request.payload.batch.delivery_mode,
-                )
-                == "full_snapshot"
-            ):
-                await resolve_missing_delivery_for_run(
-                    self.db,
-                    dataset_key=request.dataset_key,
-                    source=request.source,
-                    schema_id=request.schema_id,
-                    schema_version=request.schema_version,
-                    data_date=request.payload.batch.data_date,
-                )
             await IngestionAttemptService(self.db).mark_accepted(
                 attempt_id,
                 run_id,

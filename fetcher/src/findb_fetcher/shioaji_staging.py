@@ -191,7 +191,14 @@ class Coordinator:
             terminal_on_exhaustion,
         )
 
-    def run(self, target: date, deliver: bool = False, *, preflight: bool = False) -> list[Result]:
+    def run(
+        self,
+        target: date,
+        deliver: bool = False,
+        *,
+        preflight: bool = False,
+        historical: bool = False,
+    ) -> list[Result]:
         gov = self.manifest["governance"]
         execution_now = self.now()
         if execution_now.tzinfo is None:
@@ -209,7 +216,7 @@ class Coordinator:
                     symbol=str(self.manifest["sequences"][0]["symbol"]),
                 )
             ]
-        if _past_cutoff(execution_now, str(gov["cutoff"])):
+        if not historical and _past_cutoff(execution_now, str(gov["cutoff"])):
             return [
                 Result(
                     "CUTOFF_REACHED",
@@ -266,7 +273,7 @@ class Coordinator:
             snap = self.state.get_snapshot(daily_id, symbol)
             if snap is None:
                 now = self.now()
-                if _past_cutoff(now, str(gov["cutoff"])):
+                if not historical and _past_cutoff(now, str(gov["cutoff"])):
                     out.append(Result("CUTOFF_REACHED", "acquisition"))
                     break
                 if self.gateway is None:
@@ -297,7 +304,7 @@ class Coordinator:
                         continue
                     out.append(Result("ATTEMPT_BLOCKED", "acquisition"))
                     continue
-                if _past_cutoff(self.now(), str(gov["cutoff"])):
+                if not historical and _past_cutoff(self.now(), str(gov["cutoff"])):
                     self.state.finish_attempt(
                         daily_id,
                         symbol,

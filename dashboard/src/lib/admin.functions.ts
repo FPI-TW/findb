@@ -5,11 +5,17 @@ import {
   dashboardRequestSchema,
   rawPayloadDetailRequestSchema,
   schedulerMutationRequestSchema,
+  historicalBackfillCancelSchema,
+  historicalBackfillCreateSchema,
+  historicalBackfillPreviewSchema,
 } from "./admin-api"
 import {
   fetchDashboardData,
   fetchRawPayloadDetailData,
   patchSchedulerData,
+  cancelHistoricalBackfillData,
+  createHistoricalBackfillData,
+  previewHistoricalBackfillData,
 } from "./admin.server"
 import {
   assertSameOrigin,
@@ -25,7 +31,13 @@ export const loadDashboard = createServerFn({ method: "POST" })
     const session = await requireDashboardSession()
     setResponseHeader("Cache-Control", "no-store")
     setResponseHeader("Vary", "Cookie")
-    return fetchDashboardData(data, session.token, config.apiBaseUrl)
+    return fetchDashboardData(
+      data,
+      session.token,
+      config.apiBaseUrl,
+      fetch,
+      session.user.role
+    )
   })
 
 export const loadRawPayloadDetail = createServerFn({ method: "POST" })
@@ -49,4 +61,44 @@ export const updateScheduler = createServerFn({ method: "POST" })
     const config = getDashboardConfig()
     markPrivateResponse()
     return patchSchedulerData(data, session.token, config.apiBaseUrl)
+  })
+
+export const createHistoricalBackfill = createServerFn({ method: "POST" })
+  .validator(historicalBackfillCreateSchema)
+  .handler(async ({ data }) => {
+    assertSameOrigin()
+    const session = await requireDashboardSession()
+    if (session.user.role === "viewer")
+      throw new Error("沒有執行此操作的權限。")
+    const config = getDashboardConfig()
+    markPrivateResponse()
+    return createHistoricalBackfillData(data, session.token, config.apiBaseUrl)
+  })
+
+export const cancelHistoricalBackfill = createServerFn({ method: "POST" })
+  .validator(historicalBackfillCancelSchema)
+  .handler(async ({ data }) => {
+    assertSameOrigin()
+    const session = await requireDashboardSession()
+    if (session.user.role === "viewer")
+      throw new Error("沒有執行此操作的權限。")
+    const config = getDashboardConfig()
+    markPrivateResponse()
+    return cancelHistoricalBackfillData(
+      data.requestId,
+      session.token,
+      config.apiBaseUrl
+    )
+  })
+
+export const previewHistoricalBackfill = createServerFn({ method: "POST" })
+  .validator(historicalBackfillPreviewSchema)
+  .handler(async ({ data }) => {
+    assertSameOrigin()
+    const session = await requireDashboardSession()
+    if (session.user.role === "viewer")
+      throw new Error("沒有執行此操作的權限。")
+    const config = getDashboardConfig()
+    markPrivateResponse()
+    return previewHistoricalBackfillData(data, session.token, config.apiBaseUrl)
   })

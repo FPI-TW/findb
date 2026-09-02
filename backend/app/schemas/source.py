@@ -1,6 +1,6 @@
 """Pydantic schemas for the versioned Source API surface."""
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any, Literal
 from uuid import UUID
 
@@ -140,3 +140,25 @@ class DatasetListResponse(BaseModel):
 
     success: bool = True
     data: list[DatasetInfo]
+
+
+class HistoricalBackfillClaimResponse(BaseModel):
+    """Provider-neutral work item. It deliberately contains no credentials."""
+
+    success: Literal[True] = True
+    item_id: UUID | None = None
+    request_id: UUID | None = None
+    request_key: str | None = None
+    provider: str | None = None
+    dataset_key: str | None = None
+    market: str | None = None
+    trade_date: date | None = None
+    lease_token: UUID | None = None
+
+
+class HistoricalBackfillItemUpdateRequest(BaseModel):
+    status: Literal["completed", "failed"]
+    lease_token: UUID
+    run_id: UUID | None = None
+    failure_code: str | None = Field(default=None, max_length=50)
+    failure_message: str | None = Field(default=None, max_length=1000)

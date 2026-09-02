@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.registry import IngestionRun
@@ -66,6 +66,9 @@ async def list_sequenced_snapshot_groups(
             IngestionRun.sequence.label("sequence"),
             IngestionRun.sequence_count.label("sequence_count"),
             IngestionRun.status.label("status"),
+            IngestionRun.total_records.label("total_records"),
+            IngestionRun.success_records.label("success_records"),
+            IngestionRun.failed_records.label("failed_records"),
             IngestionRun.created_at.label("created_at"),
             func.row_number()
             .over(
@@ -95,7 +98,13 @@ async def list_sequenced_snapshot_groups(
             func.count(latest_attempt.c.sequence_count.distinct()).label(
                 "distinct_sequence_counts"
             ),
-            func.bool_and(latest_attempt.c.status == "completed").label("all_completed"),
+            func.bool_and(
+                and_(
+                    latest_attempt.c.status == "completed",
+                    latest_attempt.c.total_records == latest_attempt.c.success_records,
+                    latest_attempt.c.failed_records == 0,
+                )
+            ).label("all_completed"),
             func.bool_or(latest_attempt.c.status == "failed").label("any_failed"),
             func.max(latest_attempt.c.created_at).label("latest_attempt_at"),
         )

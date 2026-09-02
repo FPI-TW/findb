@@ -671,6 +671,91 @@ class SourceClient(Base):
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class HistoricalBackfillRequest(Base):
+    """Immutable operator-approved provider/date scope for a historical run.
+
+    This is deliberately control-plane data only: provider credentials and
+    provider payloads stay in Fetcher and the normal raw-ingest path.
+    """
+
+    __tablename__ = "historical_backfill_request"
+    __table_args__ = (
+        UniqueConstraint("request_key", name="uq_historical_backfill_request_key"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="historical_backfill_request_status_valid",
+        ),
+        CheckConstraint("start_date <= end_date", name="historical_backfill_request_date_order"),
+        Index("idx_historical_backfill_request_provider_status", "provider", "status"),
+    )
+
+    request_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    request_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"), nullable=False
+    )
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    cancelled_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    failure_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    items: Mapped[list["HistoricalBackfillItem"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+        order_by="HistoricalBackfillItem.trade_date",
+    )
+
+
+class HistoricalBackfillItem(Base):
+    """One immutable open-market date in a serial historical request."""
+
+    __tablename__ = "historical_backfill_item"
+    __table_args__ = (
+        UniqueConstraint("request_id", "trade_date", name="uq_historical_backfill_item_date"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled')",
+            name="historical_backfill_item_status_valid",
+        ),
+        Index("idx_historical_backfill_item_claim", "status", "trade_date"),
+        Index("idx_historical_backfill_item_lease_expiry", "status", "lease_expires_at"),
+    )
+
+    item_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    request_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("historical_backfill_request.request_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lease_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    failure_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    request: Mapped["HistoricalBackfillRequest"] = relationship(back_populates="items")
+
+
 class IngestionAttempt(Base):
     """Durable audit record for every authenticated canonical ingest attempt."""
 

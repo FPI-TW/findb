@@ -71,6 +71,14 @@ from app.schemas.admin import (
     CredentialResponse,
     DQIssueListResponse,
     DQIssueResponse,
+    HistoricalBackfillCreateRequest,
+    HistoricalBackfillPreviewDay,
+    HistoricalBackfillPreviewRequest,
+    HistoricalBackfillPreviewResponse,
+    HistoricalBackfillRequestListResponse,
+    HistoricalBackfillRequestResponse,
+    HistoricalBackfillScopeListResponse,
+    HistoricalBackfillScopeResponse,
     InstrumentCacheDocument,
     InstrumentCacheItem,
     InstrumentCacheItemPatchRequest,
@@ -152,6 +160,23 @@ from app.services.credentials import (
     present_source,
 )
 from app.services.delivery_monitor import list_missing_delivery_alerts
+from app.services.historical_backfill import (
+    HistoricalBackfillConflictError,
+    HistoricalBackfillError,
+    list_enabled_scopes,
+)
+from app.services.historical_backfill import (
+    cancel_request as cancel_historical_backfill,
+)
+from app.services.historical_backfill import (
+    create_request as create_historical_backfill,
+)
+from app.services.historical_backfill import (
+    list_requests as list_historical_backfills,
+)
+from app.services.historical_backfill import (
+    preview_request as preview_historical_backfill,
+)
 from app.services.ingestion import IngestionService, RawPayloadNotFoundError
 from app.services.instrument_cache import (
     InstrumentCacheItemNotFoundError,
@@ -184,6 +209,134 @@ from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
 settings = get_settings()
+
+
+@router.post(
+    "/historical-backfills",
+    response_model=HistoricalBackfillRequestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_historical_backfill_endpoint(
+    body: HistoricalBackfillCreateRequest,
+    api_key: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    """Queue immutable, calendar-gated work; Fetcher performs acquisition."""
+    try:
+        row, duplicate = await create_historical_backfill(
+            db,
+            provider=body.provider,
+            dataset_key=body.dataset_key,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            request_key=body.request_key,
+            created_by=api_key.display_name,
+        )
+    except HistoricalBackfillConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HistoricalBackfillError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not duplicate:
+        await record_admin_audit(
+            db,
+            api_key,
+            action="create",
+            resource_type="historical_backfill",
+            resource_id=str(row.request_id),
+            details={
+                "provider": row.provider,
+                "dataset_key": row.dataset_key,
+                "request_key": row.request_key,
+            },
+        )
+    else:
+        await db.commit()
+    return HistoricalBackfillRequestResponse.model_validate(row)
+
+
+@router.get("/historical-backfills/scopes", response_model=HistoricalBackfillScopeListResponse)
+async def historical_backfill_scopes_endpoint(
+    _api_key: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    scopes = await list_enabled_scopes(db)
+    return HistoricalBackfillScopeListResponse(
+        data=[
+            HistoricalBackfillScopeResponse(
+                provider=provider, dataset_key=dataset_key, market=market, executable=executable
+            )
+            for provider, dataset_key, market, executable in scopes
+        ]
+    )
+
+
+@router.post("/historical-backfills/preview", response_model=HistoricalBackfillPreviewResponse)
+async def preview_historical_backfill_endpoint(
+    body: HistoricalBackfillPreviewRequest,
+    _api_key: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    market, scope_reason, days = await preview_historical_backfill(
+        db,
+        provider=body.provider,
+        dataset_key=body.dataset_key,
+        start_date=body.start_date,
+        end_date=body.end_date,
+    )
+    return HistoricalBackfillPreviewResponse(
+        provider=body.provider,
+        dataset_key=body.dataset_key,
+        market=market,
+        scope_valid=scope_reason is None,
+        scope_reason=scope_reason,
+        days=[
+            HistoricalBackfillPreviewDay(trade_date=value, valid=valid, reason=reason)
+            for value, valid, reason in days
+        ],
+    )
+
+
+@router.get("/historical-backfills", response_model=HistoricalBackfillRequestListResponse)
+async def list_historical_backfill_endpoint(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    _api_key: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    rows, total = await list_historical_backfills(db, page=page, page_size=page_size)
+    return HistoricalBackfillRequestListResponse(
+        data=[HistoricalBackfillRequestResponse.model_validate(row) for row in rows],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total,
+            total_pages=(total + page_size - 1) // page_size if total else 0,
+        ),
+    )
+
+
+@router.post(
+    "/historical-backfills/{request_id}/cancel", response_model=HistoricalBackfillRequestResponse
+)
+async def cancel_historical_backfill_endpoint(
+    request_id: UUID,
+    api_key: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        row = await cancel_historical_backfill(db, request_id, actor=api_key.display_name)
+    except HistoricalBackfillConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HistoricalBackfillError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        api_key,
+        action="cancel",
+        resource_type="historical_backfill",
+        resource_id=str(request_id),
+    )
+    return HistoricalBackfillRequestResponse.model_validate(row)
 
 
 def _calendar_revision_response(row: CalendarYearRevision) -> CalendarRevisionResponse:
