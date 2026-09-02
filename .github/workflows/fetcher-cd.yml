@@ -102,7 +102,7 @@ jobs:
 
   build-push-production:
     needs: [verify, validate-target-routing]
-    if: github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'production' && inputs.image_tag == ''
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'production' && inputs.image_tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -160,7 +160,7 @@ jobs:
   build-push-staging-ecr:
     needs: [verify, validate-target-routing]
     if: >-
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       (inputs.deployment_target || 'staging') == 'staging' &&
       vars.STAGING_ECR_CUTOVER_ENABLED == 'true'
@@ -429,6 +429,7 @@ jobs:
         env:
           DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
           EVENT_NAME: ${{ github.event_name }}
+          STAGING_ECR_CUTOVER_ENABLED: ${{ vars.STAGING_ECR_CUTOVER_ENABLED }}
           IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
           PRODUCTION_BUILD: ${{ needs.build-push-production.result }}
           STAGING_ECR_BUILD: ${{ needs.build-push-staging-ecr.result }}
@@ -454,7 +455,7 @@ jobs:
               [ "$PRODUCTION_BUILD" = success ] && [ "$STAGING_ECR_BUILD" = skipped ] && [ "$CUTOVER_DISABLED" = skipped ]
               ;;
             staging)
-              if [ "$EVENT_NAME" = workflow_dispatch ]; then
+              if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$STAGING_ECR_CUTOVER_ENABLED" = true ]; then
                 [ "$STAGING_ECR_BUILD" = success ] && [ "$PRODUCTION_BUILD" = skipped ] && [ "$CUTOVER_DISABLED" = skipped ]
                 if ! [[ "$TWELVE_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]] \
                   || ! [[ "$FINLAB_IMAGE_REF" =~ ^439622209937[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]] \
@@ -484,7 +485,8 @@ jobs:
     needs: build-push
     if: >-
       always() &&
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true')) &&
       needs.build-push.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -561,7 +563,8 @@ jobs:
       always() &&
       (inputs.deployment_target || 'staging') == 'staging' &&
       vars.STAGING_ECR_CUTOVER_ENABLED == 'true' &&
-      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.build-push.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -583,7 +586,9 @@ jobs:
     needs: [build-push, validate-target-routing, validate-r2-bucket-configuration, validate-fetcher-credential-isolation, validate-fetcher-credential-isolation-aws]
     if: >-
       always() &&
-      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true')) &&
       needs.build-push.result == 'success' &&
       needs.validate-target-routing.result == 'success' &&
       needs.validate-r2-bucket-configuration.result == 'success' &&

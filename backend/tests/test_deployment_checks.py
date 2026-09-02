@@ -1088,10 +1088,11 @@ def test_cd_workflows_verify_the_same_commit_before_deployment() -> None:
         else:
             assert jobs["build-push-production"]["needs"] == "verify"
             assert jobs["deploy"]["needs"] == "build-push"
-            assert jobs["deploy"]["if"] == (
-                "always() && github.event_name == 'workflow_dispatch' "
-                "&& needs.build-push.result == 'success'"
-            )
+            assert "github.ref == 'refs/heads/main'" in jobs["deploy"]["if"]
+            assert "github.event_name == 'push'" in jobs["deploy"]["if"]
+            assert "github.event_name == 'workflow_dispatch'" in jobs["deploy"]["if"]
+            assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in jobs["deploy"]["if"]
+            assert "needs.build-push.result == 'success'" in jobs["deploy"]["if"]
         assert jobs["deploy"]["environment"] == environment
         assert workflow["concurrency"]["group"] == environment
         assert workflow["concurrency"]["cancel-in-progress"] == "false"
@@ -1132,6 +1133,7 @@ def test_runtime_secret_cutover_is_target_derived_and_staging_ecr_is_gated() -> 
         workflow = _load_workflow(path)
         assert "secret_source" not in workflow["on"]["workflow_dispatch"]["inputs"]
         staged = workflow["jobs"]["build-push-staging-ecr"]
+        assert "github.event_name == 'push'" in staged["if"]
         assert "github.event_name == 'workflow_dispatch'" in staged["if"]
         selection = _named_step(
             workflow, "build-push-staging-ecr", "Validate staging ECR release selection"
@@ -1160,10 +1162,32 @@ def test_runtime_secret_cutover_is_target_derived_and_staging_ecr_is_gated() -> 
         assert bridge["if"] == "always()"
         assert "STAGING_ECR_BUILD" in bridge["steps"][0]["env"]
         assert "PRODUCTION_BUILD" in bridge["steps"][0]["env"]
+        assert "STAGING_ECR_CUTOVER_ENABLED" in bridge["steps"][0]["env"]
         bridge_script = bridge["steps"][0]["run"]
-        assert 'if [ "$EVENT_NAME" = workflow_dispatch ]; then' in bridge_script
+        assert (
+            'if [ "$EVENT_NAME" = workflow_dispatch ] || '
+            '[ "$STAGING_ECR_CUTOVER_ENABLED" = true ]; then' in bridge_script
+        )
         assert "image_tag is available only for staging ECR rollback" in bridge_script
+        assert "github.event_name == 'push'" in workflow["jobs"]["deploy"]["if"]
         assert "github.event_name == 'workflow_dispatch'" in workflow["jobs"]["deploy"]["if"]
+
+
+def test_main_push_auto_rolls_staging_only_when_cutover_is_enabled() -> None:
+    for path in (FINDB_CD_WORKFLOW, FETCHER_CD_WORKFLOW):
+        workflow = _load_workflow(path)
+        staging_build = workflow["jobs"]["build-push-staging-ecr"]["if"]
+        deploy = workflow["jobs"]["deploy"]["if"]
+        production_build = workflow["jobs"]["build-push-production"]["if"]
+
+        assert "github.ref == 'refs/heads/main'" in staging_build
+        assert "github.event_name == 'push'" in staging_build
+        assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in staging_build
+        assert "github.ref == 'refs/heads/main'" in deploy
+        assert "github.event_name == 'push'" in deploy
+        assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in deploy
+        assert "github.event_name == 'workflow_dispatch'" in production_build
+        assert "(inputs.deployment_target || 'staging') == 'production'" in production_build
 
 
 def test_staging_ecr_build_bridge_reaches_existing_aws_host_rollout_without_ghcr_credentials() -> (
@@ -5418,7 +5442,9 @@ def test_fetcher_postbuild_gates_always_evaluate_their_existing_fail_closed_cond
     jobs = workflow["jobs"]
     expected_gates = {
         "validate-r2-bucket-configuration": (
+            "github.event_name == 'push'",
             "github.event_name == 'workflow_dispatch'",
+            "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'",
             "needs.build-push.result == 'success'",
         ),
         "validate-fetcher-credential-isolation": (
@@ -5429,6 +5455,7 @@ def test_fetcher_postbuild_gates_always_evaluate_their_existing_fail_closed_cond
         "validate-fetcher-credential-isolation-aws": (
             "(inputs.deployment_target || 'staging') == 'staging'",
             "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'",
+            "github.event_name == 'push'",
             "github.event_name == 'workflow_dispatch'",
             "needs.build-push.result == 'success'",
         ),
@@ -5456,7 +5483,9 @@ def test_fetcher_deploy_retains_the_complete_fail_closed_postbuild_result_matrix
 
     assert condition == (
         "always() && "
-        "github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main' && "
+        "(github.event_name == 'workflow_dispatch' || "
+        "(github.event_name == 'push' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true')) && "
         "needs.build-push.result == 'success' && "
         "needs.validate-target-routing.result == 'success' && "
         "needs.validate-r2-bucket-configuration.result == 'success' && "

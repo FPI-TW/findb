@@ -14,13 +14,12 @@
 | Workflow | Unit | Trigger | Environment／concurrency |
 | --- | --- | --- | --- |
 | `findb-ci.yml` | Backend、migration、Dashboard、contracts | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
-| `findb-cd.yml` | Backend＋Dashboard | FinDB paths合入`main`時跑同revision CI／no-op bridge；manual才可rollout | `staging-findb`／`staging-findb` |
+| `findb-cd.yml` | Backend＋Dashboard | FinDB paths合入`main`時，在staging cutover gate啟用後自動rollout；manual dispatch可選staging或production | `staging-findb`／`staging-findb` |
 | `fetcher-ci.yml` | Fetcher、contracts、images | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
-| `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`時跑同revision CI／no-op bridge；manual才可rollout | `staging-fetcher`／`staging-fetcher` |
+| `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`時，在staging cutover gate啟用後自動rollout；manual dispatch可選staging或production | `staging-fetcher`／`staging-fetcher` |
 
 Deployment concurrency一律`cancel-in-progress: false`。CD直接呼叫同revision reusable CI；
-不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署任一unit，
-需要依backend-first順序manual dispatch。
+不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署任一unit；需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
 Fetcher的三個provider images是另一個unit。production與pre-foundation legacy rollback仍以commit SHA
@@ -126,10 +125,12 @@ workflow capability，不代表對應GitHub Environment或AWS資源已建立。�
 | Production FinDB RDS | N/A（尚未建立） |
 | Production promotion snapshot／dump／seed | N/A（尚未建立） |
 
-Push至`main`只執行same-revision CI及no-op bridge；staging rollout只接受protected `main`上的
-manual dispatch。Production僅在上述Environment與target資源建立後允許manual dispatch。兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected
-branch及target隔離控制變更。每個job只能取得自己unit與target的設定；branch與Environment
-protection的實際外部設定需另行驗證。
+Push至`main`會執行same-revision CI；`STAGING_ECR_CUTOVER_ENABLED`精確為`true`時，對應unit會自動
+rollout至staging，未啟用時維持no-op bridge。staging的manual dispatch仍可用於rollback或accepted bundle
+replay。Production僅在上述Environment與target資源建立後允許manual dispatch，push事件無法選取
+`production` target。兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected branch及
+target隔離控制變更。每個job只能取得自己unit與target的設定；branch與Environment protection的實際外部設定
+需另行驗證。
 
 完整變數與secret名稱不在本runbook重複維護，以
 [infra/env契約](../../infra/env/README.md)、各target的`remote.env.example`、workflow及
@@ -175,8 +176,8 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
 - **Operator pre-deploy**：確認Source經Cloudflare/nginx還原可信client IP後執行allowlist，
   TLS private key只存在FinDB target；外部Cloudflare、DNS與security group設定另行留證。
 - **Operator pre-deploy**：確認repository政策與外部設定要求PR、required CI及protected
-  branch。Staging rollout與production均只接受manual dispatch；staging必須選取protected `main`，兩者均不設
-  GitHub Environment人工核准。
+  branch。staging在cutover gate為`true`時由合併至protected `main`自動rollout；production只接受manual
+  dispatch。兩者均不設GitHub Environment人工核准。
 
 ## Release順序
 
@@ -199,7 +200,7 @@ Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受�
 
 Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三個scheduler分別
 執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
-Staging manual dispatch前，Dashboard Owner必須先將三個scheduler切為`stopped`並記錄control revision；
+每次staging rollout前，Dashboard Owner必須先將三個scheduler切為`stopped`並記錄control revision；
 workflow在stable container優雅停止後只回報stopped observation、讀回desired state與驗證definition，
 不修改desired state。任一provider仍為`running`、definition drift或control失聯都fail closed並恢復previous
 containers。Accepted activation完成後，由Owner透過Dashboard逐一恢復核准的desired state。
