@@ -1,6 +1,6 @@
 import type { ColumnDef, PaginationState } from "@tanstack/react-table"
 import { Clock3 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 
@@ -98,6 +98,13 @@ export function DeliveriesPage({
     ReturnType<typeof previewHistoricalBackfill>
   > | null>(null)
   const [previewKey, setPreviewKey] = useState("")
+  const previewRevision = useRef(0)
+  const [backfillDraft, setBackfillDraft] = useState({
+    provider: "",
+    dataset: "",
+    start: "",
+    end: "",
+  })
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ["operations", "dashboard"] })
   const previewCanCreate = Boolean(
@@ -115,7 +122,59 @@ export function DeliveriesPage({
     pageIndex: Math.max(search.p - 1, 0),
     pageSize: search.ps,
   }
-  const tableColumns = useMemo(() => columns, [])
+  const invalidatePreview = useCallback(() => {
+    previewRevision.current += 1
+    setPreviewResult(null)
+    setPreviewKey("")
+    setConfirmed(false)
+  }, [])
+  const prefillBackfill = useCallback(
+    (row: MissingDelivery) => {
+      setBackfillDraft({
+        provider: row.source,
+        dataset: row.dataset_key,
+        start: row.expected_data_date,
+        end: row.expected_data_date,
+      })
+      invalidatePreview()
+      setActionError("")
+    },
+    [invalidatePreview]
+  )
+  const updateBackfillDraft = (
+    field: keyof typeof backfillDraft,
+    value: string
+  ) => {
+    setBackfillDraft(current => ({ ...current, [field]: value }))
+    invalidatePreview()
+  }
+  const tableColumns = useMemo<ColumnDef<MissingDelivery, unknown>[]>(
+    () =>
+      role === "viewer"
+        ? columns
+        : [
+            ...columns,
+            {
+              id: "backfill",
+              header: "回補",
+              meta: { minWidth: 120 },
+              cell: context => {
+                const row = context.row.original
+                return (
+                  <button
+                    type="button"
+                    className="rounded border px-3 py-1 text-sm font-semibold hover:bg-surface-soft"
+                    aria-label={`帶入 ${row.dataset_key} ${row.expected_data_date} 回補參數`}
+                    onClick={() => prefillBackfill(row)}
+                  >
+                    帶入回補
+                  </button>
+                )
+              },
+            },
+          ],
+    [prefillBackfill, role]
+  )
 
   return (
     <>
@@ -173,6 +232,7 @@ export function DeliveriesPage({
       </Panel>
       {role !== "viewer" && (
         <Panel
+          className="mt-5"
           eyebrow="Historical"
           title="供應商歷史回補"
           icon={<Clock3 size={19} />}
@@ -223,22 +283,22 @@ export function DeliveriesPage({
               name="provider"
               placeholder="provider"
               list="historical-provider-scopes"
+              value={backfillDraft.provider}
               className="rounded border bg-background px-2 py-1"
-              onChange={() => {
-                setPreviewResult(null)
-                setConfirmed(false)
-              }}
+              onChange={event =>
+                updateBackfillDraft("provider", event.target.value)
+              }
             />
             <input
               required
               name="dataset"
               placeholder="dataset_key"
               list="historical-dataset-scopes"
+              value={backfillDraft.dataset}
               className="rounded border bg-background px-2 py-1"
-              onChange={() => {
-                setPreviewResult(null)
-                setConfirmed(false)
-              }}
+              onChange={event =>
+                updateBackfillDraft("dataset", event.target.value)
+              }
             />
             <datalist id="historical-provider-scopes">
               {scopes.map(scope => (
@@ -265,22 +325,20 @@ export function DeliveriesPage({
               name="start"
               type="date"
               aria-label="回補起始日期"
+              value={backfillDraft.start}
               className="rounded border bg-background px-2 py-1"
-              onChange={() => {
-                setPreviewResult(null)
-                setConfirmed(false)
-              }}
+              onChange={event =>
+                updateBackfillDraft("start", event.target.value)
+              }
             />
             <input
               required
               name="end"
               type="date"
               aria-label="回補結束日期"
+              value={backfillDraft.end}
               className="rounded border bg-background px-2 py-1"
-              onChange={() => {
-                setPreviewResult(null)
-                setConfirmed(false)
-              }}
+              onChange={event => updateBackfillDraft("end", event.target.value)}
             />
             <button
               type="button"
@@ -301,13 +359,18 @@ export function DeliveriesPage({
                   input.startDate,
                   input.endDate,
                 ].join(":")
+                const revision = ++previewRevision.current
                 setActionError("")
                 void preview({ data: input })
                   .then(value => {
+                    if (previewRevision.current !== revision) return
                     setPreviewResult(value)
                     setPreviewKey(key)
                   })
-                  .catch(() => setActionError("交易日驗證失敗。"))
+                  .catch(() => {
+                    if (previewRevision.current !== revision) return
+                    setActionError("交易日驗證失敗。")
+                  })
               }}
             >
               驗證交易日

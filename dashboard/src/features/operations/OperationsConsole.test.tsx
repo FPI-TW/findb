@@ -17,6 +17,7 @@ import type {
   DashboardRequest,
   DashboardResponse,
   DQIssue,
+  MissingDelivery,
   RawPayload,
   Scheduler,
   SchedulerMutationResponse,
@@ -116,19 +117,21 @@ function overviewResponse(schedulers: Scheduler[] = []): DashboardResponse {
   }
 }
 
-function deliveriesResponse(): DashboardResponse {
+function deliveriesResponse(
+  missingDeliveries: MissingDelivery[] = []
+): DashboardResponse {
   return {
     view: "deliveries",
     fetchedAt: timestamp,
     deliveries: {
       ok: true,
       data: {
-        data: [],
+        data: missingDeliveries,
         pagination: {
           page: 1,
           page_size: 25,
-          total_records: 0,
-          total_pages: 0,
+          total_records: missingDeliveries.length,
+          total_pages: missingDeliveries.length ? 1 : 0,
         },
       },
     },
@@ -178,6 +181,24 @@ function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
     created_at: timestamp,
     updated_at: timestamp,
     heartbeat_age_seconds: 5,
+    ...overrides,
+  }
+}
+
+function makeMissingDelivery(
+  overrides: Partial<MissingDelivery> = {}
+): MissingDelivery {
+  return {
+    alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe90",
+    dataset_key: "tw_equity_minute",
+    source: "shioaji",
+    schema_id: "market_minute",
+    schema_version: 1,
+    expected_data_date: "2026-08-31",
+    status: "open",
+    first_detected_at: timestamp,
+    last_detected_at: timestamp,
+    resolved_at: null,
     ...overrides,
   }
 }
@@ -690,5 +711,132 @@ describe("Operations presentation", () => {
     fireEvent.click(screen.getByRole("checkbox"))
     expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
+  })
+
+  it("spaces delivery sections and prefills backfill inputs from an alert", async () => {
+    mocks.loadDashboard.mockResolvedValue(
+      deliveriesResponse([makeMissingDelivery()])
+    )
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+
+    const openAlertsPanel = (
+      await screen.findByRole("heading", {
+        name: "未解決的交付缺漏",
+      })
+    ).closest('[data-slot="card"]')
+    const backfillPanel = screen
+      .getByRole("heading", { name: "供應商歷史回補" })
+      .closest('[data-slot="card"]')
+    expect(openAlertsPanel).not.toBeNull()
+    expect(backfillPanel).toHaveClass("mt-5")
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+      })
+    )
+
+    expect(screen.getByPlaceholderText("provider")).toHaveValue("shioaji")
+    expect(screen.getByPlaceholderText("dataset_key")).toHaveValue(
+      "tw_equity_minute"
+    )
+    expect(screen.getByLabelText("回補起始日期")).toHaveValue("2026-08-31")
+    expect(screen.getByLabelText("回補結束日期")).toHaveValue("2026-08-31")
+  })
+
+  it("ignores an old preview response after prefilling a different alert", async () => {
+    let resolvePreview!: (value: {
+      provider: string
+      dataset_key: string
+      market: string
+      scope_valid: boolean
+      scope_reason: null
+      days: Array<{
+        trade_date: string
+        valid: boolean
+        reason: null
+      }>
+    }) => void
+    const pendingPreview = new Promise<Parameters<typeof resolvePreview>[0]>(
+      resolve => {
+        resolvePreview = resolve
+      }
+    )
+    mocks.previewHistoricalBackfill.mockReturnValue(pendingPreview)
+    mocks.loadDashboard.mockResolvedValue(
+      deliveriesResponse([makeMissingDelivery()])
+    )
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+
+    const provider = await screen.findByPlaceholderText("provider")
+    fireEvent.change(provider, { target: { value: "finlab" } })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_eod" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-08-29" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-08-29" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+    await waitFor(() =>
+      expect(mocks.previewHistoricalBackfill).toHaveBeenCalledTimes(1)
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+      })
+    )
+    await act(async () => {
+      resolvePreview({
+        provider: "finlab",
+        dataset_key: "tw_equity_eod",
+        market: "TW",
+        scope_valid: true,
+        scope_reason: null,
+        days: [{ trade_date: "2026-08-29", valid: true, reason: null }],
+      })
+      await pendingPreview
+    })
+
+    expect(
+      screen.queryByText("範圍有效；所有日期都會建立工作項目。")
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole("checkbox")).not.toBeChecked()
+    expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
+  })
+
+  it("does not show a backfill action to viewers", async () => {
+    mocks.loadDashboard.mockResolvedValue(
+      deliveriesResponse([makeMissingDelivery()])
+    )
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="viewer" />
+      </QueryClientProvider>
+    )
+
+    expect(await screen.findByText("tw_equity_minute")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", {
+        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+      })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("heading", { name: "供應商歷史回補" })
+    ).not.toBeInTheDocument()
   })
 })
