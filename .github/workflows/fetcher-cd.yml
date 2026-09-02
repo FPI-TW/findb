@@ -605,6 +605,7 @@ jobs:
     environment: ${{ inputs.deployment_target || 'staging' }}-fetcher
 
     permissions:
+      actions: read
       contents: read
       id-token: write
 
@@ -623,6 +624,58 @@ jobs:
             staging) [ "$STAGING_ECR_CUTOVER_ENABLED" = true ] ;;
             *) exit 1 ;;
           esac
+
+      - name: Wait for same-revision FinDB staging rollout
+        if: ${{ github.event_name == 'push' && (inputs.deployment_target || 'staging') == 'staging' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          findb_run_id=""
+          for discovery_attempt in $(seq 1 8); do
+            workflow_runs="$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}&event=push&per_page=10")"
+            findb_run_id="$(jq -r --arg sha "$HEAD_SHA" \
+              '[.workflow_runs[] | select(.head_sha == $sha and .event == "push")] | sort_by(.created_at) | last | .id // empty' \
+              <<<"$workflow_runs")"
+            [ -n "$findb_run_id" ] && break
+            echo "No same-revision FinDB CD run yet; discovery attempt ${discovery_attempt}/8"
+            sleep 15
+          done
+
+          if [ -z "$findb_run_id" ]; then
+            echo "No same-revision FinDB CD run; continuing Fetcher-only rollout"
+            exit 0
+          fi
+
+          echo "Waiting for same-revision FinDB CD run ${findb_run_id}"
+          for attempt in $(seq 1 240); do
+            run="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${findb_run_id}")"
+            status="$(jq -r '.status // empty' <<<"$run")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
+            case "$status" in
+              completed)
+                if [ "$conclusion" = success ]; then
+                  echo "Same-revision FinDB CD completed successfully"
+                  exit 0
+                fi
+                echo "::error title=FinDB rollout did not succeed::Run ${findb_run_id} concluded ${conclusion:-unknown}"
+                exit 1
+                ;;
+              queued|in_progress|pending|waiting|requested)
+                echo "FinDB CD status=${status}; attempt ${attempt}/240"
+                ;;
+              *)
+                echo "::error title=Unexpected FinDB rollout state::Run ${findb_run_id} returned ${status:-empty}"
+                exit 1
+                ;;
+            esac
+            sleep 15
+          done
+          echo "::error title=Timed out waiting for FinDB rollout::Run ${findb_run_id} did not complete within 60 minutes"
+          exit 1
 
       - name: Configure staging AWS credentials
         if: ${{ (inputs.deployment_target || 'staging') == 'staging' }}

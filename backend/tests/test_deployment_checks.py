@@ -2591,16 +2591,57 @@ def test_fetcher_deploy_checks_out_pinned_repository_before_local_artifact_steps
     steps = deploy["steps"]
     checkout = steps[0]
 
-    assert deploy["permissions"] == {"contents": "read", "id-token": "write"}
+    assert deploy["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "id-token": "write",
+    }
     assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 
     for step_name in (
         "Validate target-derived deployment route",
+        "Wait for same-revision FinDB staging rollout",
         "Run staging AWS and SSM preflight",
         "Run bounded Fetcher candidate validation over SSM",
         "Activate accepted Fetcher release over SSM",
     ):
         assert steps.index(checkout) < steps.index(_named_step(workflow, "deploy", step_name))
+
+
+def test_fetcher_auto_deploy_waits_for_same_revision_findb_rollout() -> None:
+    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    wait_step = _named_step(
+        workflow,
+        "deploy",
+        "Wait for same-revision FinDB staging rollout",
+    )
+    script = wait_step["run"]
+
+    assert wait_step["if"] == (
+        "${{ github.event_name == 'push' && (inputs.deployment_target || 'staging') == 'staging' }}"
+    )
+    assert wait_step["env"]["HEAD_SHA"] == "${{ github.sha }}"
+    assert "actions/workflows/findb-cd.yml/runs" in script
+    assert "head_sha=${HEAD_SHA}&event=push" in script
+    assert "for discovery_attempt in $(seq 1 8); do" in script
+    assert "discovery attempt ${discovery_attempt}/8" in script
+    assert "for attempt in $(seq 1 240); do" in script
+    assert 'if [ "$conclusion" = success ]; then' in script
+    assert "concluded ${conclusion:-unknown}" in script
+    assert "sleep 15" in script
+    assert "did not complete within 60 minutes" in script
+    syntax = subprocess.run(
+        ["bash", "-n"],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    deploy_steps = workflow["jobs"]["deploy"]["steps"]
+    credentials = _named_step(workflow, "deploy", "Configure staging AWS credentials")
+    assert deploy_steps.index(wait_step) < deploy_steps.index(credentials)
 
 
 def test_runtime_secret_consumers_are_scoped_to_each_deployment_unit() -> None:

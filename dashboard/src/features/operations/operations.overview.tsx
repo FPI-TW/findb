@@ -226,6 +226,11 @@ type SchedulerMutationTarget = Pick<
   "scheduler_key" | "provider" | "desired_state" | "revision"
 >
 
+type SchedulerBulkConfirmation = {
+  desiredState: SchedulerDesiredState
+  targets: SchedulerMutationTarget[]
+}
+
 function SchedulerConfirmationDialog({
   target,
   onCancel,
@@ -272,6 +277,62 @@ function SchedulerConfirmationDialog({
   )
 }
 
+function SchedulerBulkConfirmationDialog({
+  confirmation,
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: SchedulerBulkConfirmation | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const actionLabel =
+    confirmation?.desiredState === "running" ? "全部啟動" : "全部停止"
+  return (
+    <AlertDialog
+      open={confirmation !== null}
+      onOpenChange={open => {
+        if (!open) onCancel()
+      }}
+    >
+      {confirmation && (
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>確認{actionLabel} Scheduler？</AlertDialogTitle>
+            <AlertDialogDescription>
+              將依序更新 {confirmation.targets.length} 個
+              Scheduler，且每筆都會以目前 revision 防止覆蓋其他人剛完成的操作。
+              {confirmation.desiredState === "stopped"
+                ? "送出後仍須等待每張卡片的期望與實際狀態都顯示為已停止，才能開始部署。"
+                : "送出後請逐一確認實際狀態恢復執行，部分失敗不會自動重試。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="my-0 max-h-48 overflow-auto pl-5 font-mono text-xs text-muted">
+            {confirmation.targets.map(target => (
+              <li key={target.scheduler_key}>
+                {target.provider} / {target.scheduler_key} / r{target.revision}
+              </li>
+            ))}
+          </ul>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant={
+                confirmation.desiredState === "running"
+                  ? "default"
+                  : "destructive"
+              }
+              onClick={onConfirm}
+            >
+              確認{actionLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      )}
+    </AlertDialog>
+  )
+}
+
 function useSchedulerActions(
   audit: DashboardRequest["audit"] = { ...OPERATIONS_OVERVIEW_AUDIT },
   applyScheduler?: (response: SchedulerMutationResponse) => void
@@ -284,6 +345,25 @@ function useSchedulerActions(
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
   const [confirmationTarget, setConfirmationTarget] =
     useState<SchedulerMutationTarget | null>(null)
+  const [bulkConfirmation, setBulkConfirmation] =
+    useState<SchedulerBulkConfirmation | null>(null)
+  const [bulkPending, setBulkPending] = useState(false)
+
+  async function applyDesiredState(
+    control: SchedulerMutationTarget,
+    desiredState: SchedulerDesiredState
+  ) {
+    const response = await update({
+      data: {
+        schedulerKey: control.scheduler_key,
+        desiredState,
+        expectedRevision: control.revision,
+      },
+    })
+    updateOverviewSchedulerCache(queryClient, audit, response, sessionScope)
+    applyScheduler?.(response)
+    return response
+  }
 
   async function toggleScheduler(control: SchedulerMutationTarget) {
     if (pendingKeys.has(control.scheduler_key)) return
@@ -296,15 +376,7 @@ function useSchedulerActions(
       return next
     })
     try {
-      const response = await update({
-        data: {
-          schedulerKey: control.scheduler_key,
-          desiredState,
-          expectedRevision: control.revision,
-        },
-      })
-      updateOverviewSchedulerCache(queryClient, audit, response, sessionScope)
-      applyScheduler?.(response)
+      await applyDesiredState(control, desiredState)
       toast.success(
         `${control.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
       )
@@ -329,13 +401,85 @@ function useSchedulerActions(
     }
   }
 
+  async function updateSchedulersInSequence(
+    targets: SchedulerMutationTarget[],
+    desiredState: SchedulerDesiredState
+  ) {
+    if (bulkPending || pendingKeys.size > 0 || targets.length === 0) return
+    setBulkPending(true)
+    setPendingKeys(current => {
+      const next = new Set(current)
+      for (const target of targets) next.add(target.scheduler_key)
+      return next
+    })
+    setActionErrors(current => {
+      const next = { ...current }
+      for (const target of targets) delete next[target.scheduler_key]
+      return next
+    })
+
+    let succeeded = 0
+    let failed = 0
+    let authenticationFailed = false
+    try {
+      for (const target of targets) {
+        try {
+          await applyDesiredState(target, desiredState)
+          succeeded += 1
+        } catch (reason) {
+          if (isDashboardAuthenticationError(reason)) {
+            authenticationFailed = true
+            await navigate({ to: "/login", replace: true })
+            queryClient.removeQueries({ queryKey: operationsKeys.root })
+            break
+          }
+          failed += 1
+          const message = schedulerErrorMessage(reason)
+          setActionErrors(current => ({
+            ...current,
+            [target.scheduler_key]: message,
+          }))
+        }
+      }
+
+      if (!authenticationFailed && failed === 0) {
+        toast.success(
+          `已${desiredState === "running" ? "啟動" : "停止"}全部 Scheduler`,
+          { description: `成功更新 ${succeeded} 筆；請繼續確認實際狀態。` }
+        )
+      } else if (!authenticationFailed) {
+        toast.error("Scheduler 批次更新未完整完成", {
+          description: `成功 ${succeeded} 筆，失敗 ${failed} 筆；請檢視各卡片錯誤後重試。`,
+        })
+      }
+    } finally {
+      setPendingKeys(current => {
+        const next = new Set(current)
+        for (const target of targets) next.delete(target.scheduler_key)
+        return next
+      })
+      setBulkPending(false)
+    }
+  }
+
   return {
     pendingKeys,
     actionErrors,
+    bulkPending,
     confirmationTarget,
     setConfirmationTarget,
+    requestBulkState: (
+      schedulers: SchedulerMutationTarget[],
+      desiredState: SchedulerDesiredState
+    ) => {
+      if (bulkPending || pendingKeys.size > 0) return
+      const targets = schedulers.filter(
+        scheduler => scheduler.desired_state !== desiredState
+      )
+      if (targets.length > 0) setBulkConfirmation({ desiredState, targets })
+    },
     requestToggleScheduler: (control: SchedulerMutationTarget) => {
-      if (!pendingKeys.has(control.scheduler_key))
+      if (!bulkPending && !pendingKeys.has(control.scheduler_key))
         setConfirmationTarget(control)
     },
     confirm: () => {
@@ -344,15 +488,31 @@ function useSchedulerActions(
       if (target) void toggleScheduler(target)
     },
     dialog: (
-      <SchedulerConfirmationDialog
-        target={confirmationTarget}
-        onCancel={() => setConfirmationTarget(null)}
-        onConfirm={() => {
-          const target = confirmationTarget
-          setConfirmationTarget(null)
-          if (target) void toggleScheduler(target)
-        }}
-      />
+      <>
+        <SchedulerConfirmationDialog
+          target={confirmationTarget}
+          onCancel={() => setConfirmationTarget(null)}
+          onConfirm={() => {
+            const target = confirmationTarget
+            setConfirmationTarget(null)
+            if (target) void toggleScheduler(target)
+          }}
+        />
+        <SchedulerBulkConfirmationDialog
+          confirmation={bulkConfirmation}
+          onCancel={() => setBulkConfirmation(null)}
+          onConfirm={() => {
+            const confirmation = bulkConfirmation
+            setBulkConfirmation(null)
+            if (confirmation) {
+              void updateSchedulersInSequence(
+                confirmation.targets,
+                confirmation.desiredState
+              )
+            }
+          }}
+        />
+      </>
     ),
   }
 }
@@ -669,6 +829,53 @@ export function SchedulerPanel({
           </AlertDescription>
         </Alert>
       )}
+      {result?.ok && schedulers.length > 0 && (
+        <div className="mb-4 grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+          <div>
+            <p className="m-0 text-sm font-semibold">部署前人工確認</p>
+            <p className="mt-1 mb-0 text-xs text-muted">
+              Fetcher
+              部署前請先全部停止，並等待所有卡片的「期望」與「實際」均為已停止；部署仍會
+              fail closed，不會自動變更 Scheduler 狀態。
+            </p>
+          </div>
+          {role === "owner" && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={
+                  actions.bulkPending ||
+                  actions.pendingKeys.size > 0 ||
+                  schedulers.every(
+                    scheduler => scheduler.desired_state === "stopped"
+                  )
+                }
+                aria-busy={actions.bulkPending}
+                onClick={() => actions.requestBulkState(schedulers, "stopped")}
+              >
+                <Power aria-hidden="true" />
+                全部停止
+              </Button>
+              <Button
+                type="button"
+                disabled={
+                  actions.bulkPending ||
+                  actions.pendingKeys.size > 0 ||
+                  schedulers.every(
+                    scheduler => scheduler.desired_state === "running"
+                  )
+                }
+                aria-busy={actions.bulkPending}
+                onClick={() => actions.requestBulkState(schedulers, "running")}
+              >
+                <Power aria-hidden="true" />
+                全部啟動
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       {result?.ok &&
         (schedulers.length === 0 ? (
           <EmptyState>目前沒有已註冊的資料抓取排程。</EmptyState>
@@ -759,7 +966,10 @@ export function SchedulerPanel({
                     <SchedulerActionButton
                       role={role}
                       control={scheduler}
-                      pending={actions.pendingKeys.has(scheduler.scheduler_key)}
+                      pending={
+                        actions.bulkPending ||
+                        actions.pendingKeys.has(scheduler.scheduler_key)
+                      }
                       requestToggle={actions.requestToggleScheduler}
                     />
                     {actionError && (

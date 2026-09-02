@@ -176,7 +176,10 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
 - **Operator pre-deploy**：確認RDS不公開且只接受FinDB EC2 security group，Fetcher沒有RDS
   route；未保存外部設定證據前不得宣稱已驗證。
 - **Workflow**：RabbitMQ ports不對host公開；第三方Actions固定完整commit SHA；不同unit
-  使用獨立deployment concurrency。
+  使用獨立deployment concurrency。同一個`main` SHA同時觸發FinDB與Fetcher staging rollout時，
+  Fetcher deploy會先以GitHub Actions API等待該SHA的FinDB CD成功；FinDB失敗、取消、狀態異常或等待超過
+  60分鐘時，Fetcher在取得AWS credential及變更host前fail closed。Fetcher-only SHA沒有對應FinDB run時
+  會先做最多2分鐘的bounded discovery再繼續；manual dispatch仍由operator避免與FinDB部署重疊。
 - **Operator pre-deploy**：確認Source經Cloudflare/nginx還原可信client IP後執行allowlist，
   TLS private key只存在FinDB target；外部Cloudflare、DNS與security group設定另行留證。
 - **Operator pre-deploy**：確認repository政策與外部設定要求PR、required CI及protected
@@ -204,10 +207,12 @@ Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受�
 
 Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三個scheduler分別
 執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
-每次staging rollout前，Dashboard Owner必須先將三個scheduler切為`stopped`並記錄control revision；
+每次staging rollout前，Dashboard Owner必須在Scheduler頁按「全部停止」，確認逐筆revision-safe更新完成，
+並等待三個scheduler的desired與observed state都顯示`stopped`後再合併或manual dispatch；
 workflow在stable container優雅停止後只回報stopped observation、讀回desired state與驗證definition，
 不修改desired state。任一provider仍為`running`、definition drift或control失聯都fail closed並恢復previous
-containers。Accepted activation完成後，由Owner透過Dashboard逐一恢復核准的desired state。
+containers。Accepted activation完成後，由Owner透過Scheduler頁按「全部啟動」，再逐一確認observed state恢復
+`running`；批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
 Fetcher candidate只以`docker create --restart no`驗證最終container config，並以
 `com.findb.fetcher.accepted=false`標示；未accepted scheduler從不啟動，因此untrappable command／host
 interruption不會留下未授權writer。Accepted activation先以atomic symlink replacement將`/opt/fetcher/current`寫成
