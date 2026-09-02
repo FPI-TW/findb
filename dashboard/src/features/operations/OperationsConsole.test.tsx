@@ -735,11 +735,25 @@ describe("Operations presentation", () => {
     expect(openAlertsPanel).not.toBeNull()
     expect(backfillPanel).toHaveClass("mt-5")
 
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
-      })
-    )
+    const prefillButton = await screen.findByRole("button", {
+      name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+    })
+
+    expect(
+      screen.getByRole("heading", { name: "選擇回補範圍" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("heading", { name: "驗證交易日" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("heading", { name: "確認並建立" })
+    ).toBeInTheDocument()
+    const createButton = screen.getByRole("button", { name: "建立回補" })
+    expect(createButton).toHaveAttribute("data-variant", "default")
+    expect(createButton).toHaveAttribute("data-size", "lg")
+
+    expect(prefillButton).toHaveAttribute("data-variant", "outline")
+    fireEvent.click(prefillButton)
 
     expect(screen.getByPlaceholderText("provider")).toHaveValue("shioaji")
     expect(screen.getByPlaceholderText("dataset_key")).toHaveValue(
