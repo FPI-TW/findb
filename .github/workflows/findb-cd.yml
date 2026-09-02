@@ -59,7 +59,7 @@ jobs:
 
   build-push-production:
     needs: verify
-    if: github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'production' && inputs.image_tag == ''
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'production' && inputs.image_tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -108,7 +108,7 @@ jobs:
   build-push-staging-ecr:
     needs: verify
     if: >-
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       (inputs.deployment_target || 'staging') == 'staging' &&
       vars.STAGING_ECR_CUTOVER_ENABLED == 'true'
@@ -400,6 +400,7 @@ jobs:
         env:
           DEPLOYMENT_TARGET: ${{ inputs.deployment_target || 'staging' }}
           EVENT_NAME: ${{ github.event_name }}
+          STAGING_ECR_CUTOVER_ENABLED: ${{ vars.STAGING_ECR_CUTOVER_ENABLED }}
           IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
           PRODUCTION_BUILD: ${{ needs.build-push-production.result }}
           STAGING_ECR_BUILD: ${{ needs.build-push-staging-ecr.result }}
@@ -426,7 +427,7 @@ jobs:
               [ "$CUTOVER_DISABLED" = skipped ]
               ;;
             staging)
-              if [ "$EVENT_NAME" = workflow_dispatch ]; then
+              if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$STAGING_ECR_CUTOVER_ENABLED" = true ]; then
                 [ "$STAGING_ECR_BUILD" = success ]
                 [ "$PRODUCTION_BUILD" = skipped ]
                 [ "$CUTOVER_DISABLED" = skipped ]
@@ -468,7 +469,12 @@ jobs:
 
   deploy:
     needs: build-push
-    if: always() && github.event_name == 'workflow_dispatch' && needs.build-push.result == 'success'
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && vars.STAGING_ECR_CUTOVER_ENABLED == 'true')) &&
+      needs.build-push.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: ${{ inputs.deployment_target || 'staging' }}-findb
