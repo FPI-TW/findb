@@ -85,6 +85,8 @@ TARGET_TABLES = (
     "public.futures_contract",
     "public.ingestion_attempt",
     "public.ingestion_run",
+    "public.historical_backfill_item",
+    "public.historical_backfill_request",
     "public.instrument_identifiers",
     "public.instrument_stats",
     "public.instruments",

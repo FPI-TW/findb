@@ -14,6 +14,8 @@ def test_source_openapi_contains_only_retained_operational_routes() -> None:
         "/api/v1/source/runs/{run_id}",
         "/api/v1/source/runs/{run_id}/rerun",
         "/api/v1/source/datasets",
+        "/api/v1/source/historical-backfills/claim",
+        "/api/v1/source/historical-backfills/{item_id}/complete",
     }
 
 

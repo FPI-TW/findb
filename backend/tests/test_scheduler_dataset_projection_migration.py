@@ -22,6 +22,7 @@ from tests.migration_database import get_active_migration_database_factory
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 C5_REVISION = "c5d6e7f8a9b0"
 D6_REVISION = "d6e7f8a9b0c1"
+LATEST_REVISION = "a8b9c0d1e2f3"
 HISTORICAL_PROJECTION_CONSTRAINT = "ck_scheduler_control_ck_scheduler_control_dataset_keys_array"
 DIRECT_PROJECTION_CONSTRAINT = "ck_scheduler_control_dataset_keys_array"
 
@@ -63,7 +64,7 @@ def test_wave5_is_single_linear_head_and_does_not_edit_c5() -> None:
     assert wave5 is not None
     assert wave5.down_revision == C5_REVISION
     assert c5 is not None
-    assert scripts.get_heads() == [D6_REVISION]
+    assert scripts.get_heads() == [LATEST_REVISION]
 
 
 @pytest.mark.asyncio
