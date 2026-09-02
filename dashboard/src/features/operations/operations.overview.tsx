@@ -517,6 +517,66 @@ function useSchedulerActions(
   }
 }
 
+function SchedulerBulkControls({
+  role,
+  schedulers,
+  actions,
+}: {
+  role: AdminRole
+  schedulers: SchedulerMutationTarget[]
+  actions: ReturnType<typeof useSchedulerActions>
+}) {
+  if (schedulers.length === 0) return null
+
+  return (
+    <div className="mb-4 grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+      <div>
+        <p className="m-0 text-sm font-semibold">部署前人工確認</p>
+        <p className="mt-1 mb-0 text-xs text-muted">
+          Fetcher
+          部署前請先全部停止，並等待所有卡片的「期望」與「實際」均為已停止；部署仍會
+          fail closed，不會自動變更 Scheduler 狀態。
+        </p>
+      </div>
+      {role === "owner" && (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={
+              actions.bulkPending ||
+              actions.pendingKeys.size > 0 ||
+              schedulers.every(
+                scheduler => scheduler.desired_state === "stopped"
+              )
+            }
+            aria-busy={actions.bulkPending}
+            onClick={() => actions.requestBulkState(schedulers, "stopped")}
+          >
+            <Power aria-hidden="true" />
+            全部停止
+          </Button>
+          <Button
+            type="button"
+            disabled={
+              actions.bulkPending ||
+              actions.pendingKeys.size > 0 ||
+              schedulers.every(
+                scheduler => scheduler.desired_state === "running"
+              )
+            }
+            aria-busy={actions.bulkPending}
+            onClick={() => actions.requestBulkState(schedulers, "running")}
+          >
+            <Power aria-hidden="true" />
+            全部啟動
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SchedulerActionButton({
   role,
   control,
@@ -740,6 +800,7 @@ export function IngestionOverviewPanel({
           }
   const actions = useSchedulerActions(audit, applyScheduler)
   const cards = result?.ok ? result.data.cards : []
+  const schedulers = schedulersResult?.ok ? schedulersResult.data.data : []
   return (
     <Panel
       eyebrow="Ingestion overview"
@@ -764,6 +825,13 @@ export function IngestionOverviewPanel({
           label="正在更新導入狀態…目前資料仍可操作。"
         />
       )}
+      {result?.ok && (
+        <SchedulerBulkControls
+          role={role}
+          schedulers={schedulers}
+          actions={actions}
+        />
+      )}
       {result?.ok &&
         (cards.length === 0 ? (
           <Alert variant="warning" role="status">
@@ -777,7 +845,10 @@ export function IngestionOverviewPanel({
                 card={card}
                 key={card.control.scheduler_key}
                 role={role}
-                pending={actions.pendingKeys.has(card.control.scheduler_key)}
+                pending={
+                  actions.bulkPending ||
+                  actions.pendingKeys.has(card.control.scheduler_key)
+                }
                 actionError={actions.actionErrors[card.control.scheduler_key]}
                 requestToggle={actions.requestToggleScheduler}
               />
@@ -829,52 +900,12 @@ export function SchedulerPanel({
           </AlertDescription>
         </Alert>
       )}
-      {result?.ok && schedulers.length > 0 && (
-        <div className="mb-4 grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[1fr_auto] sm:items-center">
-          <div>
-            <p className="m-0 text-sm font-semibold">部署前人工確認</p>
-            <p className="mt-1 mb-0 text-xs text-muted">
-              Fetcher
-              部署前請先全部停止，並等待所有卡片的「期望」與「實際」均為已停止；部署仍會
-              fail closed，不會自動變更 Scheduler 狀態。
-            </p>
-          </div>
-          {role === "owner" && (
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={
-                  actions.bulkPending ||
-                  actions.pendingKeys.size > 0 ||
-                  schedulers.every(
-                    scheduler => scheduler.desired_state === "stopped"
-                  )
-                }
-                aria-busy={actions.bulkPending}
-                onClick={() => actions.requestBulkState(schedulers, "stopped")}
-              >
-                <Power aria-hidden="true" />
-                全部停止
-              </Button>
-              <Button
-                type="button"
-                disabled={
-                  actions.bulkPending ||
-                  actions.pendingKeys.size > 0 ||
-                  schedulers.every(
-                    scheduler => scheduler.desired_state === "running"
-                  )
-                }
-                aria-busy={actions.bulkPending}
-                onClick={() => actions.requestBulkState(schedulers, "running")}
-              >
-                <Power aria-hidden="true" />
-                全部啟動
-              </Button>
-            </div>
-          )}
-        </div>
+      {result?.ok && (
+        <SchedulerBulkControls
+          role={role}
+          schedulers={schedulers}
+          actions={actions}
+        />
       )}
       {result?.ok &&
         (schedulers.length === 0 ? (

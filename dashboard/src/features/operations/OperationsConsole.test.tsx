@@ -421,6 +421,66 @@ describe("Operations presentation", () => {
     expect(screen.getAllByRole("status").length).toBeGreaterThan(0)
   })
 
+  it("renders revision-safe bulk controls on the owner overview route", async () => {
+    const schedulers = [
+      makeScheduler({
+        scheduler_key: "scheduler-finlab",
+        desired_state: "running",
+        observed_state: "running",
+        revision: 7,
+      }),
+      makeScheduler({
+        scheduler_key: "scheduler-shioaji",
+        provider: "shioaji",
+        desired_state: "running",
+        observed_state: "running",
+        revision: 11,
+      }),
+    ]
+    mocks.loadDashboard.mockResolvedValue(overviewResponse(schedulers))
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <OperationsOverviewPage role="owner" />
+      </QueryClientProvider>
+    )
+
+    const stopAllButton = await screen.findByRole("button", {
+      name: "全部停止",
+    })
+    expect(screen.getByRole("button", { name: "全部啟動" })).toBeDisabled()
+    fireEvent.click(stopAllButton)
+    expect(
+      screen.getByRole("heading", { name: "確認全部停止 Scheduler？" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("finlab / scheduler-finlab / r7")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("shioaji / scheduler-shioaji / r11")
+    ).toBeInTheDocument()
+  })
+
+  it("keeps bulk controls hidden from viewers on the overview route", async () => {
+    mocks.loadDashboard.mockResolvedValue(
+      overviewResponse([makeScheduler({ scheduler_key: "scheduler-finlab" })])
+    )
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <OperationsOverviewPage role="viewer" />
+      </QueryClientProvider>
+    )
+
+    expect(await screen.findByText("scheduler-finlab")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "全部停止" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "全部啟動" })
+    ).not.toBeInTheDocument()
+  })
+
   it("keeps scheduler controls owner-only", () => {
     const scheduler = makeScheduler()
     render(
