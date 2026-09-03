@@ -194,6 +194,19 @@ data "aws_iam_policy_document" "deploy_permissions" {
     resources = ["*"]
   }
 
+  statement {
+    sid       = "PublishOwnDeploymentFailureMetric"
+    effect    = "Allow"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["FinDB/Staging"]
+    }
+  }
+
   # AWS-owned documents have no account component in their ARN. Keep this
   # resource grant separate from the target tag conditions: those conditions
   # apply to the EC2 resource, not the SSM document resource.
@@ -390,6 +403,29 @@ data "aws_iam_policy_document" "instance_permissions" {
       aws_cloudwatch_log_group.ssm[each.key].arn,
       "${aws_cloudwatch_log_group.ssm[each.key].arn}:*",
     ]
+  }
+
+  statement {
+    sid       = "PublishStagingOperationalMetrics"
+    effect    = "Allow"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["FinDB/Staging"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = each.key == "findb" ? [true] : []
+    content {
+      sid       = "ReadFinDBLatestRestorableTime"
+      effect    = "Allow"
+      actions   = ["rds:DescribeDBInstances"]
+      resources = ["*"]
+    }
   }
 
   // DescribeLogGroups does not support resource-level permissions. The agent

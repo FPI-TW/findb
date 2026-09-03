@@ -7,15 +7,20 @@ two existing staging EC2 instances. It does not put secret versions or values
 in OpenTofu state, and it does not import or recreate EC2, RDS, VPC, subnets,
 security groups, Cloudflare R2 buckets, or DNS.
 
-The bounded first Phase 6 slice additionally declares a private KMS-encrypted
-SNS operational-alert topic, one required email subscription, and six native
-CloudWatch alarms (one EC2 status-check alarm per existing instance plus four
-`fin-db` RDS alarms). It manages only those new resources; it does not manage
-or import the referenced EC2/RDS resources. The initial resources were applied
+The Phase 6 monitoring stack declares a private KMS-encrypted SNS
+operational-alert topic, one required email subscription, six native
+CloudWatch alarms, and a pending custom-metric expansion for host capacity,
+container health/restarts, RabbitMQ alarms, scheduler heartbeat, deployment
+failure, and RDS backup lag. Two bounded SSM associations install and run the
+dependency-free collector every five minutes using the existing instance
+roles; no inbound port or persistent credential is added. It manages only
+monitoring resources and associations; it does not manage or import the
+referenced EC2/RDS resources. The initial six resources were applied
 on 2026-09-01; the email subscription was confirmed, and a controlled
 CloudWatch-to-SNS-to-inbox synthetic test was completed and reset on 2026-09-03.
-The operator procedure, live evidence, explicit thresholds, remaining coverage
-gaps, and cost/retention caveats are in
+The custom expansion is not live evidence until a protected-main fresh plan is
+applied and its metric/alarm acceptance is recorded. The operator procedure,
+live evidence, explicit thresholds, remaining coverage gaps, and cost/retention caveats are in
 [`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
 
 ## State bootstrap

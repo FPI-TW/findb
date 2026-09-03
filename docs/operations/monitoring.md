@@ -2,13 +2,14 @@
 
 ## Scope and current evidence boundary
 
-`infra/tofu/staging/monitoring.tf` declares a deliberately narrow Phase 6
-control-plane baseline. It creates only new AWS monitoring resources: one
-private KMS-encrypted SNS topic, one required email subscription, native
-CloudWatch metric alarms for the two existing EC2 instances, and four native
-RDS alarms for the existing `fin-db` DB instance. The existing EC2 and RDS
-resources remain references only: this stack must not import, create, replace,
-or otherwise manage EC2, RDS, VPC, security groups, or volumes.
+`infra/tofu/staging/monitoring.tf` declares the Phase 6 control-plane baseline:
+one private KMS-encrypted SNS topic, one required email subscription, the six
+already accepted native EC2/RDS alarms, and a pending custom-metric expansion.
+The expansion uses two five-minute SSM associations and the dependency-free
+`infra/monitoring/publish_staging_metrics.py` collector; it does not install an
+agent, persist credentials, or add inbound network access. The existing EC2 and
+RDS resources remain references only: this stack must not import, create,
+replace, or otherwise manage EC2, RDS, VPC, security groups, or volumes.
 
 The tracked configuration remains an **IaC declaration, not evidence by
 itself**. A merged configuration, a successful `tofu validate`, or a
@@ -62,7 +63,7 @@ an applied state proves those delivery results.
 
 ## Declared alarm contract
 
-All six alarms use an explicit 300-second period, two evaluation periods, two
+The six native alarms use an explicit 300-second period, two evaluation periods, two
 datapoints to alarm, `treat_missing_data = "missing"`, enabled actions, the
 same SNS alarm action, and empty OK/INSUFFICIENT_DATA action lists. A missing
 native metric therefore remains visible as `INSUFFICIENT_DATA`; it is not
@@ -77,23 +78,51 @@ silently treated as healthy or breaching.
 | Existing `fin-db` RDS | `AWS/RDS` `ReadLatency` / `Average` | `>= 0.1` seconds for 2 × 5 minutes |
 | Existing `fin-db` RDS | `AWS/RDS` `WriteLatency` / `Average` | `>= 0.1` seconds for 2 × 5 minutes |
 
-The thresholds and common evaluation settings are fixed-by-validation
-variables in `infra/tofu/staging/variables.tf`; changing them requires a
-reviewed IaC change. The design is intentionally low-cardinality: one status
-alarm per existing EC2 target and one alarm per selected RDS metric. It does
-not create per-container, per-queue, per-symbol, per-provider, or per-query
-time series.
+The custom expansion declares the following low-cardinality
+`FinDB/Staging` metrics. Every datum has only `DeploymentUnit` and a bounded
+`Resource` dimension. Missing periodic health metrics are breaching; the
+sparse `DeploymentFailure` metric treats missing data as healthy. Alarms wait
+for the first SSM association runs so normal metrics can be seeded before the
+breaching-on-missing alarms are created.
+
+| Coverage | Metric and condition |
+| --- | --- |
+| Both hosts | Root `DiskUsedPercent >= 85%`, `InodeUsedPercent >= 90%`, collector success `< 1` for 2 × 5 minutes |
+| Required containers | Health `< 1` for 2 × 5 minutes; current-container restart count `>= 3` |
+| RabbitMQ | Local disk or memory alarm flag `>= 1`; collected from `rabbitmq-diagnostics`, without credentials |
+| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for FinLab, Shioaji, or Twelve Data |
+| RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
+| Staging CD | A failed or cancelled protected-`main` build/deploy publishes one sparse `DeploymentFailure` datum |
+
+The collector reads scheduler heartbeat ages through the local authenticated
+FinDB Admin endpoint from inside `findb-ingest`; the credential never crosses
+the container boundary or enters metric dimensions/output. It reads only
+Docker state, root filesystem counters, RabbitMQ local alarm flags, scheduler
+keys/ages, and RDS `LatestRestorableTime`. Instance and deployment roles may
+publish only the exact `FinDB/Staging` namespace; only the FinDB instance role
+receives `rds:DescribeDBInstances` for the backup-lag observation.
+
+The thresholds and evaluation settings are fixed-by-validation variables in
+`infra/tofu/staging/variables.tf`; changing them requires a reviewed IaC
+change. Container and scheduler resource sets are explicit in source; there
+are no per-queue, per-symbol, per-request, or other unbounded dimensions.
+
+This expansion remains **declaration and saved-plan evidence only** until it is
+merged through the protected-main IaC workflow, applied from a fresh reviewed
+plan, produces two consecutive collector runs, and completes controlled
+synthetic tests for representative periodic and sparse alarms. Until then the
+initial six-alarm live record above remains the applied coverage boundary.
 
 The SNS topic is KMS encrypted at rest and has no public allow statement. Its
 topic policy gives the account root only a small enumerated set of topic and
 subscription lifecycle actions—never `sns:Publish`—and permits the CloudWatch
-service to publish only from these exact six alarm ARNs in the exact source
+service to publish only from the exact declared alarm ARNs in the exact source
 account. Explicit deny statements reject direct/non-CloudWatch publishing,
 missing or incorrect source accounts, and missing or unexpected source alarm
 ARNs, so an account identity policy cannot bypass that provenance model. A
 separate deny rejects insecure SNS API transport. Its KMS key permits the SNS
 service only for this topic's encryption context and permits CloudWatch alarm
-publishers only from the same exact six ARNs and account. The ARNs are
+publishers only from the same exact ARNs and account. The ARNs are
 deterministically derived in local IaC values, so these restrictive policies
 can exist before the subscription and alarms are created without a dependency
 cycle. Email is the only declared subscription protocol; SNS manages encrypted
@@ -110,18 +139,21 @@ create or alter monitoring resources.
    `terraform.tfvars`, replace `operational_alert_email` with the on-call
    inbox, and do not commit the contact value. The tracked placeholder remains
    for PR refresh plans.
-2. Confirm the account, region, existing EC2 IDs, and `fin-db` identifier from
-   a read-only inventory. Confirm that the proposed KMS alias and SNS topic
-   are not owned by another IaC state.
+2. Confirm the account, region, existing EC2 IDs, `fin-db` identifier, current
+   instance profiles, SSM Online state, and healthy baseline metrics from a
+   read-only inventory.
 3. From a separately authorized apply identity, initialize the reviewed remote
-   backend and create a fresh plan. Confirm that it contains only the new
-   operational-alert KMS key/alias, SNS topic/policy/subscription, and six
-   CloudWatch alarms. A plan that imports, replaces, or changes an EC2, RDS,
-   VPC, security group, volume, deploy role, or runtime-secret resource is a
-   no-go.
-4. Apply only that reviewed fresh plan. Then obtain
-   `operational_alert_topic_arn` from OpenTofu output and retain the apply
-   record. This repository does not authorize the apply itself.
+   backend and create a fresh plan after the exact commit reaches protected
+   `main`. For this expansion, the expected shape is 38 creates (36 alarms and
+   two associations), seven in-place policy updates, zero replacements, and
+   zero destroys. The policy updates are limited to the exact alarm ARN list,
+   namespace-scoped metric publishing, FinDB-only RDS metadata read, and
+   read-only plan refresh for the associations. Any EC2, RDS, VPC, security
+   group, volume, runtime-secret, or unrelated resource mutation is a no-go.
+4. Apply only that reviewed fresh plan. Confirm both associations succeed,
+   wait for two five-minute datapoints, verify every non-sparse alarm settles
+   to `OK`, and retain the apply and association records. A breaching or
+   missing baseline is a no-go for synthetic notification testing.
 
 ## Controlled recipient replacement
 
@@ -145,7 +177,7 @@ brief notification gap:
    ```
 
    Confirm the only intended replacement is the email subscription; the KMS
-   key, topic, topic policy, and all six alarms must remain unchanged.
+   key, topic, topic policy, and all declared alarms must remain unchanged.
 3. Apply that reviewed plan from the same approved environment, accept the new
    SNS confirmation email, and repeat the live synthetic confirmation below.
    Record only non-contact evidence (UTC time, subscription confirmation,
@@ -161,7 +193,7 @@ Use an operator identity with separately approved `cloudwatch:SetAlarmState`
 permission. Substitute one actual declared alarm name; do not place it in
 shell history shared with unrelated operators. Direct SNS `Publish` is not a
 supported synthetic test: the topic policy deliberately allows only
-CloudWatch to publish from the six declared alarm ARNs.
+CloudWatch to publish from the exact declared alarm ARNs.
 
 ```bash
 aws cloudwatch set-alarm-state \
@@ -196,13 +228,15 @@ synthetic reason and reset the selected alarm to `OK` again.
 
 ## Coverage gaps and cost / retention caveats
 
-This first slice does **not** claim completion of host or application custom
-metrics: disk/inode use, Docker restart count, RabbitMQ disk/memory/queue
-health, scheduler freshness, ingestion, delivery, DQ, TLS certificate,
-deployment failure, RDS backup failure, or log-derived monitoring are all out
-of scope. Until these alarms exist, a healthy native alarm set can miss a full
-disk, stalled scheduler, repeated container crash, broker resource alarm,
-failed deployment, or failed backup.
+The custom declaration does **not** claim completion until its protected-main
+apply and live acceptance are recorded. It covers disk/inode use, required
+container health/restart count, RabbitMQ local disk/memory alarms, persisted
+scheduler heartbeat age, deployment failure, and RDS backup lag. Queue-depth
+trends, market-data freshness policy, ingestion/delivery/DQ, TLS certificate,
+and other log-derived monitoring remain out of scope. Until the expansion is
+live, a healthy native alarm set can still miss a full disk, stalled scheduler,
+repeated container crash, broker resource alarm, failed deployment, or failed
+backup.
 
 The two current root volumes have been replaced with encrypted volumes, the
 RDS restore rehearsal and SSH-ingress removal have also been completed, and
@@ -224,5 +258,7 @@ notifications, and customer-managed KMS key/API use. CloudWatch native metric
 retention is controlled by AWS service behavior rather than this stack; this
 slice creates no custom metric retention policy. SNS does not provide a
 durable incident archive in this configuration. Keep the existing SSM
-CloudWatch Logs retention policy separate from these alarms, and retain
+CloudWatch Logs retention policy separate from these alarms. Custom metric
+retention follows the CloudWatch service lifecycle; the stack does not create
+a separate retention resource. Retain
 operator test evidence according to the project's change/audit practice.

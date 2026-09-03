@@ -164,6 +164,61 @@ variable "monitoring_rds_latency_threshold_seconds" {
   }
 }
 
+variable "monitoring_disk_used_percent_threshold" {
+  description = "Root filesystem used-percent threshold for both staging hosts."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.monitoring_disk_used_percent_threshold == 85
+    error_message = "monitoring_disk_used_percent_threshold must remain the reviewed 85 percent threshold."
+  }
+}
+
+variable "monitoring_inode_used_percent_threshold" {
+  description = "Root filesystem inode used-percent threshold for both staging hosts."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.monitoring_inode_used_percent_threshold == 90
+    error_message = "monitoring_inode_used_percent_threshold must remain the reviewed 90 percent threshold."
+  }
+}
+
+variable "monitoring_docker_restart_count_threshold" {
+  description = "Current-container restart count that opens a Docker restart alarm."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.monitoring_docker_restart_count_threshold == 3
+    error_message = "monitoring_docker_restart_count_threshold must remain three restarts."
+  }
+}
+
+variable "monitoring_scheduler_heartbeat_age_threshold_seconds" {
+  description = "Maximum accepted age for each active Fetcher scheduler heartbeat."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.monitoring_scheduler_heartbeat_age_threshold_seconds == 180
+    error_message = "monitoring_scheduler_heartbeat_age_threshold_seconds must remain three minutes."
+  }
+}
+
+variable "monitoring_rds_backup_lag_threshold_seconds" {
+  description = "Maximum accepted lag between now and the RDS latest restorable time."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.monitoring_rds_backup_lag_threshold_seconds == 1800
+    error_message = "monitoring_rds_backup_lag_threshold_seconds must remain 30 minutes."
+  }
+}
+
 variable "github_repository" {
   description = "GitHub repository in owner/name form used by the OIDC trust policies."
   type        = string

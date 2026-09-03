@@ -181,7 +181,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     )[0]
     assert 'sid    = "ReadResourceLessMetadata"' in permissions
     assert (
-        'actions = [\n      "ec2:DescribeInstanceAttribute",\n      "ec2:DescribeInstanceCreditSpecifications",\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "ec2:DescribeVolumes",\n      "ec2:DescribeVpcs",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "sts:GetCallerIdentity",\n    ]'
+        'actions = [\n      "ec2:DescribeInstanceAttribute",\n      "ec2:DescribeInstanceCreditSpecifications",\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "ec2:DescribeVolumes",\n      "ec2:DescribeVpcs",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "ssm:DescribeAssociation",\n      "ssm:ListAssociations",\n      "sts:GetCallerIdentity",\n    ]'
         in permissions
     )
     assert 'resources = ["*"]' in permissions
@@ -423,11 +423,20 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     assert "logs:CreateLogGroup" in instance_policy
     assert "logs:DescribeLogGroups" in instance_policy
     assert "logs:PutLogEvents" in instance_policy
-    log_write_statement = instance_policy.split('sid    = "WriteOwnSsmLogs"', 1)[1].split(
-        'sid       = "DescribeSsmLogGroups"', 1
-    )[0]
+    log_write_statement = _statement_by_sid(instance_policy, "WriteOwnSsmLogs")
     assert "aws_cloudwatch_log_group.ssm[each.key].arn" in log_write_statement
     assert 'resources = ["*"]' not in log_write_statement
+    for policy, sid in (
+        (deploy_policy, "PublishOwnDeploymentFailureMetric"),
+        (instance_policy, "PublishStagingOperationalMetrics"),
+    ):
+        metric_statement = _statement_by_sid(policy, sid)
+        assert 'actions   = ["cloudwatch:PutMetricData"]' in metric_statement
+        assert 'variable = "cloudwatch:namespace"' in metric_statement
+        assert 'values   = ["FinDB/Staging"]' in metric_statement
+    rds_metric_statement = _statement_by_sid(instance_policy, "ReadFinDBLatestRestorableTime")
+    assert 'actions   = ["rds:DescribeDBInstances"]' in rds_metric_statement
+    assert 'for_each = each.key == "findb" ? [true] : []' in instance_policy
 
 
 def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> None:
@@ -673,7 +682,9 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     ec2_alarm = monitoring.split(
         'resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed"', 1
     )[1].split('resource "aws_cloudwatch_metric_alarm" "rds_native"', 1)[0]
-    rds_alarm = monitoring.split('resource "aws_cloudwatch_metric_alarm" "rds_native"', 1)[1]
+    rds_alarm = monitoring.split('resource "aws_cloudwatch_metric_alarm" "rds_native"', 1)[1].split(
+        'resource "aws_cloudwatch_metric_alarm" "custom"', 1
+    )[0]
     assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in ec2_alarm
     assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in rds_alarm
     assert 'namespace           = "AWS/EC2"' in monitoring
@@ -691,12 +702,35 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         r"evaluation_periods\s+=\s+local\.monitoring_alarm_common\.evaluation_periods",
         r"datapoints_to_alarm\s+=\s+local\.monitoring_alarm_common\.datapoints_to_alarm",
         r"treat_missing_data\s+=\s+local\.monitoring_alarm_common\.treat_missing_data",
+    ):
+        assert len(re.findall(setting, monitoring)) == 2
+    for setting in (
         r"actions_enabled\s+=\s+true",
         r"alarm_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]",
         r"ok_actions\s+=\s+\[\]",
         r"insufficient_data_actions\s+=\s+\[\]",
     ):
-        assert len(re.findall(setting, monitoring)) == 2
+        assert len(re.findall(setting, monitoring)) == 3
+
+    assert 'resource "aws_cloudwatch_metric_alarm" "custom"' in monitoring
+    assert 'namespace           = "FinDB/Staging"' in monitoring
+    for metric in (
+        "CollectorSuccess",
+        "DiskUsedPercent",
+        "DockerContainerHealthy",
+        "DockerRestartCount",
+        "InodeUsedPercent",
+        "RabbitMQDiskAlarm",
+        "RabbitMQMemoryAlarm",
+        "RDSBackupLagSeconds",
+        "SchedulerHeartbeatAgeSeconds",
+        "DeploymentFailure",
+    ):
+        assert f'metric_name         = "{metric}"' in monitoring
+    assert 'resource "aws_ssm_association" "staging_metric_publisher"' in monitoring
+    assert 'schedule_expression              = "rate(5 minutes)"' in monitoring
+    assert 'name                             = "AWS-RunShellScript"' in monitoring
+    assert "publish_staging_metrics.py" in monitoring
 
     for name, default in (
         ("operational_alert_email", None),
@@ -708,6 +742,11 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         ("monitoring_rds_free_storage_space_threshold_bytes", "5368709120"),
         ("monitoring_rds_database_connections_threshold", "80"),
         ("monitoring_rds_latency_threshold_seconds", "0.1"),
+        ("monitoring_disk_used_percent_threshold", "85"),
+        ("monitoring_inode_used_percent_threshold", "90"),
+        ("monitoring_docker_restart_count_threshold", "3"),
+        ("monitoring_scheduler_heartbeat_age_threshold_seconds", "180"),
+        ("monitoring_rds_backup_lag_threshold_seconds", "1800"),
     ):
         block = variables.split(f'variable "{name}"', 1)[1].split("variable ", 1)[0]
         assert "validation {" in block
@@ -726,6 +765,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "ReadExactOperationalAlertTopic",
         "ReadExactOperationalAlertSubscription",
         "ReadExactOperationalAlarmTags",
+        "ReadExactMetricPublisherAssociationTags",
     ):
         assert f'"{sid}"' in permissions
     assert "cloudwatch:DescribeAlarms" in permissions
@@ -766,6 +806,25 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "AWS charges can arise",
     ):
         assert phrase in runbook
+
+
+def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> None:
+    runbook = _read(REPO_ROOT / "docs" / "operations" / "monitoring.md")
+    for unit, workflow_name, environment in (
+        ("findb", "findb-cd.yml", "staging-findb"),
+        ("fetcher", "fetcher-cd.yml", "staging-fetcher"),
+    ):
+        workflow = _read(REPO_ROOT / ".github" / "workflows" / workflow_name)
+        report_job = workflow.split("  report-staging-deployment-failure:", 1)[1]
+        assert "always() &&" in report_job
+        assert "github.ref == 'refs/heads/main'" in report_job
+        assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in report_job
+        assert "needs.deploy.result == 'failure'" in report_job
+        assert f"environment: {environment}" in report_job
+        assert "id-token: write" in report_job
+        assert "--namespace FinDB/Staging" in report_job
+        assert "--metric-name DeploymentFailure" in report_job
+        assert f"--dimensions DeploymentUnit={unit},Resource=github-actions" in report_job
     assert "aws sns publish" not in runbook
     assert "Direct SNS `Publish` is not a" in runbook
     assert "supported synthetic test" in runbook

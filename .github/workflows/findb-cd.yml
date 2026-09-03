@@ -1831,3 +1831,41 @@ jobs:
 
             echo "Pruning unused images older than 7 days"
             docker image prune -af --filter "until=168h"
+
+  report-staging-deployment-failure:
+    needs: [verify, build-push, deploy]
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.deployment_target || 'staging') == 'staging' &&
+      vars.STAGING_ECR_CUTOVER_ENABLED == 'true' &&
+      (needs.verify.result == 'failure' ||
+        needs.verify.result == 'cancelled' ||
+        needs.build-push.result == 'failure' ||
+        needs.build-push.result == 'cancelled' ||
+        needs.deploy.result == 'failure' ||
+        needs.deploy.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging-findb
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Configure staging AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: findb-staging-failure-${{ github.run_id }}
+
+      - name: Publish staging deployment failure metric
+        run: |
+          aws cloudwatch put-metric-data \
+            --region ap-southeast-1 \
+            --namespace FinDB/Staging \
+            --metric-name DeploymentFailure \
+            --dimensions DeploymentUnit=findb,Resource=github-actions \
+            --value 1 \
+            --unit Count

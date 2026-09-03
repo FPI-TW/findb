@@ -9,8 +9,13 @@ output "infra_plan_role_arn" {
 }
 
 output "operational_alert_topic_arn" {
-  description = "Private KMS-encrypted SNS topic for Phase 6 native EC2 and RDS operational alarms. Confirm the configured email subscription before relying on delivery."
+  description = "Private KMS-encrypted SNS topic for Phase 6 native and bounded custom operational alarms. Confirm the configured email subscription before relying on delivery."
   value       = aws_sns_topic.operational_alerts.arn
+}
+
+output "metric_publisher_association_ids" {
+  description = "Unit-specific five-minute SSM associations that publish bounded FinDB/Staging operational metrics."
+  value       = { for unit, association in aws_ssm_association.staging_metric_publisher : unit => association.association_id }
 }
 
 output "deploy_role_arns" {
