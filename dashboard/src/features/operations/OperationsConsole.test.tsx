@@ -830,7 +830,52 @@ describe("Operations presentation", () => {
       target: { value: "2026-08-31" },
     })
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
-    await screen.findByText("範圍無效：provider_scope_inactive")
+    await screen.findByText(
+      "範圍無效：供應商與資料集的回補範圍尚未啟用（provider_scope_inactive）"
+    )
+    expect(screen.getByRole("checkbox")).toBeDisabled()
+    expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
+  })
+
+  it("shows localized guidance together with the original out-of-window error code", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    mocks.previewHistoricalBackfill.mockResolvedValue({
+      provider: "shioaji",
+      dataset_key: "tw_equity_minute",
+      market: "TW",
+      scope_valid: false,
+      scope_reason: "outside_latest_31_days",
+      days: [
+        {
+          trade_date: "2026-07-01",
+          valid: false,
+          reason: "outside_latest_31_days",
+        },
+      ],
+    })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+    await screen.findByPlaceholderText("provider")
+    fireEvent.change(screen.getByPlaceholderText("provider"), {
+      target: { value: "shioaji" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_minute" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-07-01" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-07-01" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+
+    await screen.findByText(
+      "範圍無效：日期範圍必須在最近 31 天內，且不可晚於今日（outside_latest_31_days）"
+    )
     expect(screen.getByRole("checkbox")).toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
   })

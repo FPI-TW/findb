@@ -37,6 +37,19 @@ export type DeliveriesSearchUpdate =
   | DeliveriesPageSearch
   | ((previous: DeliveriesPageSearch) => DeliveriesPageSearch)
 
+const backfillScopeReasonLabels: Record<string, string> = {
+  date_order_invalid: "結束日期不可早於起始日期",
+  outside_latest_31_days: "日期範圍必須在最近 31 天內，且不可晚於今日",
+  dataset_inactive: "資料集尚未啟用",
+  provider_dataset_unsupported: "供應商不支援此資料集的歷史回補",
+  provider_scope_inactive: "供應商與資料集的回補範圍尚未啟用",
+}
+
+function formatBackfillScopeReason(reason: string | null) {
+  const code = reason ?? "unknown"
+  return `${backfillScopeReasonLabels[code] ?? "未知錯誤"}（${code}）`
+}
+
 const columns: ColumnDef<MissingDelivery, unknown>[] = [
   {
     accessorKey: "dataset_key",
@@ -527,7 +540,7 @@ export function DeliveriesPage({
                         : unpublishedDays.length > 0
                           ? "範圍含未發布交易日；整個回補請求將被拒絕。"
                           : "範圍無可執行交易日；整個回補請求將被拒絕。"
-                      : `範圍無效：${previewResult.scope_reason ?? "unknown"}`}
+                      : `範圍無效：${formatBackfillScopeReason(previewResult.scope_reason)}`}
                   </AlertTitle>
                   <AlertDescription>
                     可建立 {openDays.length} 個開市日期工作項目；略過{" "}
