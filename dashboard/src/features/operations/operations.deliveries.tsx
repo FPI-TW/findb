@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 
-import { DataTable } from "../../components/data-table"
+import { DataTable, DataTablePagination } from "../../components/data-table"
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
 import { Button } from "../../components/ui/button"
 import { Input } from "../../components/ui/input"
@@ -25,13 +25,17 @@ import {
 } from "./operations.shared"
 import {
   deliveriesSearchSchema,
-  operationsAuditFromSearch,
-  type OperationsPageSearch,
+  deliveriesAuditFromSearch,
+  type DeliveriesPageSearch,
 } from "./operations.search"
 import {
   useOperationsDashboardQuery,
   useOperationsDashboardState,
 } from "./operations.queries"
+
+export type DeliveriesSearchUpdate =
+  | DeliveriesPageSearch
+  | ((previous: DeliveriesPageSearch) => DeliveriesPageSearch)
 
 const columns: ColumnDef<MissingDelivery, unknown>[] = [
   {
@@ -107,11 +111,11 @@ export function DeliveriesPage({
   updateSearch = () => undefined,
   role = "viewer",
 }: {
-  search?: OperationsPageSearch
-  updateSearch?: (next: OperationsPageSearch) => void
+  search?: DeliveriesPageSearch
+  updateSearch?: (next: DeliveriesSearchUpdate) => void
   role?: AdminRole
 } = {}) {
-  const audit = operationsAuditFromSearch(search)
+  const audit = deliveriesAuditFromSearch(search)
   const query = useOperationsDashboardQuery("deliveries", audit)
   const state = useOperationsDashboardState(query)
   const deliveries =
@@ -120,6 +124,7 @@ export function DeliveriesPage({
   const backfills =
     state.response?.view === "deliveries" ? state.response.backfills : null
   const backfillRows = backfills?.ok ? backfills.data.data : null
+  const backfillPagination = backfills?.ok ? backfills.data.pagination : null
   const scopes =
     backfills &&
     state.response?.view === "deliveries" &&
@@ -147,21 +152,44 @@ export function DeliveriesPage({
   })
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ["operations", "dashboard"] })
+  const openDays = previewResult?.days.filter(day => day.valid) ?? []
+  const closedDays =
+    previewResult?.days.filter(day => day.reason === "market_closed") ?? []
+  const unpublishedDays =
+    previewResult?.days.filter(day => day.reason === "calendar_unpublished") ??
+    []
   const previewCanCreate = Boolean(
-    previewResult?.scope_valid && previewResult.days.every(day => day.valid)
+    previewResult?.scope_valid &&
+    openDays.length > 0 &&
+    unpublishedDays.length === 0
   )
   const draftComplete = Object.values(backfillDraft).every(Boolean)
 
   useEffect(() => {
-    if (!rows) return
-    const totalPages = Math.max(rows.pagination.total_pages, 1)
-    const page = Math.min(Math.max(search.p, 1), totalPages)
-    if (page !== search.p) updateSearch({ ...search, p: page })
-  }, [rows, search, updateSearch])
+    const deliveryPage = rows
+      ? Math.min(
+          Math.max(search.p, 1),
+          Math.max(rows.pagination.total_pages, 1)
+        )
+      : search.p
+    const historicalPage = backfillPagination
+      ? Math.min(
+          Math.max(search.bp, 1),
+          Math.max(backfillPagination.total_pages, 1)
+        )
+      : search.bp
+    if (deliveryPage !== search.p || historicalPage !== search.bp) {
+      updateSearch({ ...search, p: deliveryPage, bp: historicalPage })
+    }
+  }, [backfillPagination, rows, search, updateSearch])
 
   const pagination: PaginationState = {
     pageIndex: Math.max(search.p - 1, 0),
     pageSize: search.ps,
+  }
+  const historicalPagination: PaginationState = {
+    pageIndex: Math.max(search.bp - 1, 0),
+    pageSize: search.bps,
   }
   const invalidatePreview = useCallback(() => {
     previewRevision.current += 1
@@ -255,6 +283,7 @@ export function DeliveriesPage({
               pageCount={Math.max(rows.pagination.total_pages, 1)}
               pagination={pagination}
               pageSizeOptions={[25, 50, 100]}
+              paginationAriaLabel="交付缺漏分頁"
               rowCount={rows.pagination.total_records}
               onPaginationChange={next => {
                 const nextState =
@@ -263,7 +292,7 @@ export function DeliveriesPage({
                   updateSearch({
                     ...search,
                     p: 1,
-                    ps: nextState.pageSize as OperationsPageSearch["ps"],
+                    ps: nextState.pageSize as DeliveriesPageSearch["ps"],
                   })
                   return
                 }
@@ -318,7 +347,10 @@ export function DeliveriesPage({
                   requestKey: crypto.randomUUID(),
                 },
               })
-                .then(refresh)
+                .then(() => {
+                  updateSearch(current => ({ ...current, bp: 1 }))
+                  return refresh()
+                })
                 .catch(() => setActionError("建立回補請求失敗。"))
                 .finally(() => setCreating(false))
             }}
@@ -472,7 +504,13 @@ export function DeliveriesPage({
               </div>
               {previewResult ? (
                 <Alert
-                  variant={previewCanCreate ? "success" : "warning"}
+                  variant={
+                    previewCanCreate
+                      ? closedDays.length > 0
+                        ? "warning"
+                        : "success"
+                      : "destructive"
+                  }
                   role="status"
                 >
                   {previewCanCreate ? (
@@ -483,17 +521,30 @@ export function DeliveriesPage({
                   <AlertTitle>
                     {previewResult.scope_valid
                       ? previewCanCreate
-                        ? "範圍有效；所有日期都會建立工作項目。"
-                        : "範圍含無效日期；整個回補請求將被拒絕。"
+                        ? closedDays.length > 0
+                          ? "範圍有效；休市日期會略過，只為開市日期建立工作項目。"
+                          : "範圍有效；所有日期都會建立工作項目。"
+                        : unpublishedDays.length > 0
+                          ? "範圍含未發布交易日；整個回補請求將被拒絕。"
+                          : "範圍無可執行交易日；整個回補請求將被拒絕。"
                       : `範圍無效：${previewResult.scope_reason ?? "unknown"}`}
                   </AlertTitle>
                   <AlertDescription>
-                    {previewResult.days
-                      .map(
-                        day =>
-                          `${day.trade_date} ${day.valid ? "可執行" : `拒絕：${day.reason}`}`
-                      )
-                      .join("；")}
+                    可建立 {openDays.length} 個開市日期工作項目；略過{" "}
+                    {closedDays.length} 個休市日期。
+                    {closedDays.length > 0 && (
+                      <>
+                        略過日期：
+                        {closedDays.map(day => day.trade_date).join("、")}。
+                      </>
+                    )}
+                    {unpublishedDays.length > 0 && (
+                      <>
+                        未發布日期：
+                        {unpublishedDays.map(day => day.trade_date).join("、")}
+                        ；整個請求會被拒絕。
+                      </>
+                    )}
                   </AlertDescription>
                 </Alert>
               ) : (
@@ -546,7 +597,7 @@ export function DeliveriesPage({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="m-0 text-xs leading-relaxed text-muted">
                   {previewCanCreate
-                    ? "驗證已通過；勾選確認後即可建立回補。"
+                    ? `驗證已通過；將建立 ${openDays.length} 個開市日期工作項目，勾選確認後即可送出原始範圍。`
                     : "完成前兩個步驟後才能建立回補。"}
                 </p>
                 <Button
@@ -570,68 +621,96 @@ export function DeliveriesPage({
             </p>
           </div>
           {backfillRows ? (
-            backfillRows.length > 0 ? (
-              <div className="space-y-2">
-                {backfillRows.map((row: HistoricalBackfill) => (
-                  <details
-                    key={row.request_id}
-                    className="rounded border p-2 text-sm"
-                  >
-                    <summary className="flex cursor-pointer flex-wrap items-center gap-2">
-                      <span className="font-mono">
-                        {row.provider}/{row.dataset_key}
-                      </span>
-                      <span>
-                        {row.start_date} – {row.end_date}
-                      </span>
-                      <span className="rounded bg-surface-soft px-2">
-                        {row.status}
-                      </span>
-                      <span className="text-muted">
-                        {
-                          row.items.filter(item => item.status === "completed")
-                            .length
-                        }
-                        /{row.items.length} 完成
-                      </span>
-                      {row.failure_code && (
-                        <span className="text-destructive">
-                          {row.failure_code}
+            <>
+              {backfillRows.length > 0 ? (
+                <div className="space-y-2">
+                  {backfillRows.map((row: HistoricalBackfill) => (
+                    <details
+                      key={row.request_id}
+                      className="rounded border p-2 text-sm"
+                    >
+                      <summary className="flex cursor-pointer flex-wrap items-center gap-2">
+                        <span className="font-mono">
+                          {row.provider}/{row.dataset_key}
                         </span>
+                        <span>
+                          {row.start_date} – {row.end_date}
+                        </span>
+                        <span className="rounded bg-surface-soft px-2">
+                          {row.status}
+                        </span>
+                        <span className="text-muted">
+                          {
+                            row.items.filter(
+                              item => item.status === "completed"
+                            ).length
+                          }
+                          /{row.items.length} 完成
+                        </span>
+                        {row.failure_code && (
+                          <span className="text-destructive">
+                            {row.failure_code}
+                          </span>
+                        )}
+                      </summary>
+                      <ul className="mt-2 space-y-1 border-t pt-2 font-mono text-xs text-muted">
+                        {row.items.map(item => (
+                          <li key={item.item_id}>
+                            {item.trade_date} · {item.status} · run:{" "}
+                            {item.run_id ?? "—"}
+                            {item.failure_code ? ` · ${item.failure_code}` : ""}
+                            {item.failure_message
+                              ? ` · ${item.failure_message}`
+                              : ""}
+                          </li>
+                        ))}
+                      </ul>
+                      {(row.status === "queued" ||
+                        row.status === "running") && (
+                        <button
+                          className="ml-auto text-destructive underline"
+                          onClick={() =>
+                            void cancel({ data: { requestId: row.request_id } })
+                              .then(refresh)
+                              .catch(() => setActionError("取消回補請求失敗。"))
+                          }
+                        >
+                          取消
+                        </button>
                       )}
-                    </summary>
-                    <ul className="mt-2 space-y-1 border-t pt-2 font-mono text-xs text-muted">
-                      {row.items.map(item => (
-                        <li key={item.item_id}>
-                          {item.trade_date} · {item.status} · run:{" "}
-                          {item.run_id ?? "—"}
-                          {item.failure_code ? ` · ${item.failure_code}` : ""}
-                          {item.failure_message
-                            ? ` · ${item.failure_message}`
-                            : ""}
-                        </li>
-                      ))}
-                    </ul>
-                    {(row.status === "queued" || row.status === "running") && (
-                      <button
-                        className="ml-auto text-destructive underline"
-                        onClick={() =>
-                          void cancel({ data: { requestId: row.request_id } })
-                            .then(refresh)
-                            .catch(() => setActionError("取消回補請求失敗。"))
-                        }
-                      >
-                        取消
-                      </button>
-                    )}
-                  </details>
-                ))}
-              </div>
-            ) : (
-              <p className="m-0 rounded-lg border border-dashed border-line p-4 text-sm text-muted">
-                尚無歷史回補請求。
-              </p>
-            )
+                    </details>
+                  ))}
+                </div>
+              ) : (
+                <p className="m-0 rounded-lg border border-dashed border-line p-4 text-sm text-muted">
+                  尚無歷史回補請求。
+                </p>
+              )}
+              {backfillPagination && (
+                <DataTablePagination
+                  pageCount={Math.max(backfillPagination.total_pages, 1)}
+                  pageIndex={historicalPagination.pageIndex}
+                  pageSize={historicalPagination.pageSize}
+                  ariaLabel="歷史回補請求分頁"
+                  pageSizeOptions={[25, 50, 100]}
+                  rowCount={backfillPagination.total_records}
+                  onPageSizeChange={pageSize => {
+                    if (pageSize !== search.bps) {
+                      updateSearch({
+                        ...search,
+                        bp: 1,
+                        bps: pageSize as DeliveriesPageSearch["bps"],
+                      })
+                    }
+                  }}
+                  onPageChange={pageIndex => {
+                    if (pageIndex !== historicalPagination.pageIndex) {
+                      updateSearch({ ...search, bp: pageIndex + 1 })
+                    }
+                  }}
+                />
+              )}
+            </>
           ) : null}
         </Panel>
       )}

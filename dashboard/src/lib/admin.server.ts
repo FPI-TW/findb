@@ -157,7 +157,7 @@ export async function fetchDashboardData(
         : fetchTarget(
             baseUrl,
             sessionToken,
-            `/api/v1/admin/historical-backfills?page=${data.audit.page}&page_size=${data.audit.pageSize}`,
+            `/api/v1/admin/historical-backfills?page=${data.audit.backfillPage ?? 1}&page_size=${data.audit.backfillPageSize ?? 25}`,
             historicalBackfillsSchema,
             fetchImplementation
           ),

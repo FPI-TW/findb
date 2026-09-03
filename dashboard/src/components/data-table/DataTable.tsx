@@ -283,6 +283,7 @@ export function DataTable<TData extends RowData>({
   manualPagination,
   manualSorting = false,
   pageSizeOptions,
+  paginationAriaLabel,
   isLoading = false,
   isRefreshing = false,
   error,
@@ -524,6 +525,9 @@ export function DataTable<TData extends RowData>({
           pageIndex={pagination.pageIndex}
           pageSize={pagination.pageSize}
           pageSizeOptions={pageSizeOptions}
+          {...(paginationAriaLabel === undefined
+            ? {}
+            : { ariaLabel: paginationAriaLabel })}
           rowCount={shownRowCount}
         />
       ) : null}

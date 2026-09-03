@@ -117,9 +117,14 @@ function overviewResponse(schedulers: Scheduler[] = []): DashboardResponse {
   }
 }
 
-function deliveriesResponse(
-  missingDeliveries: MissingDelivery[] = []
-): DashboardResponse {
+function deliveriesResponse(missingDeliveries: MissingDelivery[] = []): Extract<
+  DashboardResponse,
+  { view: "deliveries" }
+> & {
+  deliveries: { ok: true }
+  backfills: { ok: true }
+  backfillScopes: { ok: true }
+} {
   return {
     view: "deliveries",
     fetchedAt: timestamp,
@@ -662,7 +667,7 @@ describe("Operations presentation", () => {
     ).toBeInTheDocument()
   })
 
-  it("shows invalid preview dates and blocks confirmation-based backfill creation", async () => {
+  it("shows closed dates as skipped and allows confirmation-based backfill creation", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
       provider: "shioaji",
@@ -702,15 +707,318 @@ describe("Operations presentation", () => {
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
     await waitFor(() =>
       expect(
-        screen.getByText("範圍含無效日期；整個回補請求將被拒絕。")
+        screen.getByText("範圍有效；休市日期會略過，只為開市日期建立工作項目。")
       ).toBeInTheDocument()
     )
     expect(
-      screen.getByText(/2026-08-31 拒絕：market_closed/)
+      screen.getByText(/可建立 1 個開市日期工作項目；略過 1 個休市日期。/)
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole("checkbox"))
+    expect(screen.getByRole("button", { name: "建立回補" })).not.toBeDisabled()
+  })
+
+  it("blocks an all-closed preview from confirmation and creation", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    mocks.previewHistoricalBackfill.mockResolvedValue({
+      provider: "shioaji",
+      dataset_key: "tw_equity_minute",
+      market: "TW",
+      scope_valid: true,
+      scope_reason: null,
+      days: [
+        { trade_date: "2026-08-31", valid: false, reason: "market_closed" },
+      ],
+    })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+    await screen.findByPlaceholderText("provider")
+    fireEvent.change(screen.getByPlaceholderText("provider"), {
+      target: { value: "shioaji" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_minute" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-08-31" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-08-31" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+    await screen.findByText("範圍無可執行交易日；整個回補請求將被拒絕。")
+    expect(screen.getByRole("checkbox")).toBeDisabled()
     expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
+  })
+
+  it("blocks previews containing an unpublished date even when another date is open", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    mocks.previewHistoricalBackfill.mockResolvedValue({
+      provider: "shioaji",
+      dataset_key: "tw_equity_minute",
+      market: "TW",
+      scope_valid: true,
+      scope_reason: null,
+      days: [
+        { trade_date: "2026-08-30", valid: true, reason: null },
+        {
+          trade_date: "2026-08-31",
+          valid: false,
+          reason: "calendar_unpublished",
+        },
+      ],
+    })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+    await screen.findByPlaceholderText("provider")
+    fireEvent.change(screen.getByPlaceholderText("provider"), {
+      target: { value: "shioaji" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_minute" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-08-30" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-08-31" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+    await screen.findByText("範圍含未發布交易日；整個回補請求將被拒絕。")
+    expect(screen.getByRole("checkbox")).toBeDisabled()
+    expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
+  })
+
+  it("blocks confirmation and creation when the provider scope is invalid", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    mocks.previewHistoricalBackfill.mockResolvedValue({
+      provider: "shioaji",
+      dataset_key: "tw_equity_minute",
+      market: "TW",
+      scope_valid: false,
+      scope_reason: "provider_scope_inactive",
+      days: [
+        {
+          trade_date: "2026-08-31",
+          valid: false,
+          reason: "provider_scope_inactive",
+        },
+      ],
+    })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage role="operator" />
+      </QueryClientProvider>
+    )
+    await screen.findByPlaceholderText("provider")
+    fireEvent.change(screen.getByPlaceholderText("provider"), {
+      target: { value: "shioaji" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_minute" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-08-31" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-08-31" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+    await screen.findByText("範圍無效：provider_scope_inactive")
+    expect(screen.getByRole("checkbox")).toBeDisabled()
+    expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
+  })
+
+  it("keeps delivery and historical backfill pagination independent", async () => {
+    const response = deliveriesResponse()
+    response.deliveries.data.pagination = {
+      page: 2,
+      page_size: 25,
+      total_records: 75,
+      total_pages: 3,
+    }
+    response.backfills.data.pagination = {
+      page: 2,
+      page_size: 25,
+      total_records: 75,
+      total_pages: 3,
+    }
+    mocks.loadDashboard.mockResolvedValue(response)
+    const updateSearch = vi.fn()
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={{ p: 2, ps: 25, bp: 2, bps: 25 }}
+          updateSearch={updateSearch}
+        />
+      </QueryClientProvider>
+    )
+
+    await screen.findByRole("navigation", { name: "交付缺漏分頁" })
+    fireEvent.click(screen.getByRole("button", { name: "交付缺漏分頁下一頁" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: "歷史回補請求分頁下一頁" })
+    )
+
+    expect(updateSearch).toHaveBeenCalledWith({
+      p: 3,
+      ps: 25,
+      bp: 2,
+      bps: 25,
+    })
+    expect(updateSearch).toHaveBeenCalledWith({
+      p: 2,
+      ps: 25,
+      bp: 3,
+      bps: 25,
+    })
+  })
+
+  it("clamps both out-of-range paginators together in one search update", async () => {
+    const response = deliveriesResponse()
+    response.deliveries.data.pagination = {
+      page: 3,
+      page_size: 25,
+      total_records: 75,
+      total_pages: 3,
+    }
+    response.backfills.data.pagination = {
+      page: 2,
+      page_size: 25,
+      total_records: 50,
+      total_pages: 2,
+    }
+    mocks.loadDashboard.mockResolvedValue(response)
+    const updateSearch = vi.fn()
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={{ p: 9, ps: 25, bp: 8, bps: 25 }}
+          updateSearch={updateSearch}
+        />
+      </QueryClientProvider>
+    )
+    await waitFor(() =>
+      expect(updateSearch).toHaveBeenCalledWith({
+        p: 3,
+        ps: 25,
+        bp: 2,
+        bps: 25,
+      })
+    )
+    expect(updateSearch).toHaveBeenCalledTimes(1)
+  })
+
+  it("resets historical pagination against the latest search after a delayed successful create", async () => {
+    const response = deliveriesResponse()
+    response.deliveries.data.pagination = {
+      page: 2,
+      page_size: 50,
+      total_records: 150,
+      total_pages: 3,
+    }
+    response.backfills.data.pagination = {
+      page: 2,
+      page_size: 100,
+      total_records: 300,
+      total_pages: 3,
+    }
+    mocks.loadDashboard.mockResolvedValue(response)
+    mocks.previewHistoricalBackfill.mockResolvedValue({
+      provider: "shioaji",
+      dataset_key: "tw_equity_minute",
+      market: "TW",
+      scope_valid: true,
+      scope_reason: null,
+      days: [{ trade_date: "2026-08-30", valid: true, reason: null }],
+    })
+    let resolveCreate!: (value: object) => void
+    mocks.createHistoricalBackfill.mockReturnValue(
+      new Promise(resolve => {
+        resolveCreate = resolve
+      })
+    )
+    const updateSearch = vi.fn()
+    const { rerender } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={{ p: 2, ps: 50, bp: 2, bps: 100 }}
+          updateSearch={updateSearch}
+        />
+      </QueryClientProvider>
+    )
+    await screen.findByPlaceholderText("provider")
+    fireEvent.change(screen.getByPlaceholderText("provider"), {
+      target: { value: "shioaji" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
+      target: { value: "tw_equity_minute" },
+    })
+    fireEvent.change(screen.getByLabelText("回補起始日期"), {
+      target: { value: "2026-08-30" },
+    })
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-08-30" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
+    await screen.findByText("範圍有效；所有日期都會建立工作項目。")
+    fireEvent.click(screen.getByRole("checkbox"))
+    fireEvent.click(screen.getByRole("button", { name: "建立回補" }))
+
+    await waitFor(() =>
+      expect(mocks.createHistoricalBackfill).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          provider: "shioaji",
+          datasetKey: "tw_equity_minute",
+          startDate: "2026-08-30",
+          endDate: "2026-08-30",
+        }),
+      })
+    )
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={{ p: 3, ps: 100, bp: 2, bps: 50 }}
+          updateSearch={updateSearch}
+        />
+      </QueryClientProvider>
+    )
+    resolveCreate({})
+    await waitFor(() =>
+      expect(updateSearch).toHaveBeenCalledWith(expect.any(Function))
+    )
+    const updater = updateSearch.mock.calls.at(-1)?.[0]
+    expect(typeof updater).toBe("function")
+    expect(
+      (
+        updater as (current: {
+          p: number
+          ps: number
+          bp: number
+          bps: number
+        }) => { p: number; ps: number; bp: number; bps: number }
+      )({
+        p: 3,
+        ps: 100,
+        bp: 2,
+        bps: 50,
+      })
+    ).toEqual({
+      p: 3,
+      ps: 100,
+      bp: 1,
+      bps: 50,
+    })
   })
 
   it("spaces delivery sections and prefills backfill inputs from an alert", async () => {

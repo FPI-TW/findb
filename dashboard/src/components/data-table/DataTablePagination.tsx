@@ -20,6 +20,7 @@ export function DataTablePagination({
   onPageChange,
   onPageSizeChange,
   className,
+  ariaLabel,
 }: DataTablePaginationProps) {
   const normalizedPageCount = Math.max(pageCount, 1)
   const canPreviousPage = pageIndex > 0
@@ -32,10 +33,13 @@ export function DataTablePagination({
     rowCount && rowCount > 0
       ? Math.min((pageIndex + 1) * pageSize, rowCount)
       : 0
+  const navigationLabel = ariaLabel ?? "資料表分頁"
+  const controlLabel = (label: string) =>
+    ariaLabel ? `${ariaLabel}${label}` : label
 
   return (
     <nav
-      aria-label="資料表分頁"
+      aria-label={navigationLabel}
       className={cn(
         "flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3 text-xs text-muted",
         className
@@ -61,7 +65,7 @@ export function DataTablePagination({
         <label className="flex items-center gap-2">
           <span>每頁</span>
           <select
-            aria-label="每頁筆數"
+            aria-label={controlLabel("每頁筆數")}
             className="h-8 rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
             value={pageSize}
             onChange={event => onPageSizeChange(Number(event.target.value))}
@@ -77,10 +81,10 @@ export function DataTablePagination({
         <div
           className="flex items-center gap-1"
           role="group"
-          aria-label="頁面導覽"
+          aria-label={controlLabel("頁面導覽")}
         >
           <Button
-            aria-label="第一頁"
+            aria-label={controlLabel("第一頁")}
             disabled={!canPreviousPage}
             onClick={() => onPageChange(0)}
             size="icon-xs"
@@ -90,7 +94,7 @@ export function DataTablePagination({
             <ChevronsLeft aria-hidden="true" />
           </Button>
           <Button
-            aria-label="上一頁"
+            aria-label={controlLabel("上一頁")}
             disabled={!canPreviousPage}
             onClick={() => onPageChange(Math.max(pageIndex - 1, 0))}
             size="icon-xs"
@@ -100,7 +104,7 @@ export function DataTablePagination({
             <ChevronLeft aria-hidden="true" />
           </Button>
           <Button
-            aria-label="下一頁"
+            aria-label={controlLabel("下一頁")}
             disabled={!canNextPage}
             onClick={() =>
               onPageChange(Math.min(pageIndex + 1, normalizedPageCount - 1))
@@ -112,7 +116,7 @@ export function DataTablePagination({
             <ChevronRight aria-hidden="true" />
           </Button>
           <Button
-            aria-label="最後一頁"
+            aria-label={controlLabel("最後一頁")}
             disabled={!canNextPage}
             onClick={() => onPageChange(normalizedPageCount - 1)}
             size="icon-xs"

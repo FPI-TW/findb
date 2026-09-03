@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   correctionsSearchSchema,
+  deliveriesAuditFromSearch,
   deliveriesSearchSchema,
   operationsAuditFromSearch,
   qualitySearchSchema,
@@ -11,7 +12,12 @@ import {
 
 describe("operations route search", () => {
   it("uses each route's existing page-size default", () => {
-    expect(deliveriesSearchSchema.parse({})).toEqual({ p: 1, ps: 100 })
+    expect(deliveriesSearchSchema.parse({})).toEqual({
+      p: 1,
+      ps: 100,
+      bp: 1,
+      bps: 25,
+    })
     expect(qualitySearchSchema.parse({})).toEqual({ p: 1, ps: 25 })
     expect(correctionsSearchSchema.parse({})).toEqual({ p: 1, ps: 50 })
   })
@@ -51,6 +57,21 @@ describe("operations route search", () => {
       dateTo: "",
       page: 4,
       pageSize: 100,
+    })
+  })
+
+  it("maps deliveries pagination separately from missing-delivery pagination", () => {
+    expect(
+      deliveriesAuditFromSearch({ p: 4, ps: 100, bp: 2, bps: 50 })
+    ).toEqual({
+      datasetKey: "",
+      runId: "",
+      dateFrom: "",
+      dateTo: "",
+      page: 4,
+      pageSize: 100,
+      backfillPage: 2,
+      backfillPageSize: 50,
     })
   })
 })

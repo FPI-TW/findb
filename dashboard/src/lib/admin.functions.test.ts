@@ -223,7 +223,7 @@ describe("FinDB Admin server boundary", () => {
       "deliveries",
       [
         "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100",
-        "/api/v1/admin/historical-backfills?page=3&page_size=100",
+        "/api/v1/admin/historical-backfills?page=1&page_size=25",
         "/api/v1/admin/historical-backfills/scopes",
       ],
     ],
