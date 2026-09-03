@@ -782,6 +782,11 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert "resources = local.operational_alarm_arns" in alarm_metadata
     assert 'resources = ["*"]' not in alarm_metadata
     assert "CloudWatch supports resource-scoped DescribeAlarms" in plan
+    subscription_read = permissions.split('sid     = "ReadExactOperationalAlertSubscription"', 1)[
+        1
+    ].split('sid     = "ReadExactOperationalAlarmTags"', 1)[0]
+    assert "resources = [aws_sns_topic.operational_alerts.arn]" in subscription_read
+    assert "aws_sns_topic_subscription.operational_alert_email.arn" not in subscription_read
     operational_key_read = permissions.split('sid    = "ReadExactOperationalAlertKey"', 1)[1].split(
         'sid    = "ReadExactSessionDocuments"', 1
     )[0]

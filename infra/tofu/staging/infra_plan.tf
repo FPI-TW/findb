@@ -253,10 +253,12 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid       = "ReadExactOperationalAlertSubscription"
-    effect    = "Allow"
-    actions   = ["sns:GetSubscriptionAttributes"]
-    resources = [aws_sns_topic_subscription.operational_alert_email.arn]
+    sid     = "ReadExactOperationalAlertSubscription"
+    effect  = "Allow"
+    actions = ["sns:GetSubscriptionAttributes"]
+    # SNS authorizes GetSubscriptionAttributes against the parent topic even
+    # though the API request itself takes a subscription ARN.
+    resources = [aws_sns_topic.operational_alerts.arn]
   }
 
   statement {
