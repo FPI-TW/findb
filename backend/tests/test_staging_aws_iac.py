@@ -728,9 +728,13 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     ):
         assert f'metric_name         = "{metric}"' in monitoring
     assert 'resource "aws_ssm_association" "staging_metric_publisher"' in monitoring
-    assert 'schedule_expression              = "rate(5 minutes)"' in monitoring
-    assert 'name                             = "AWS-RunShellScript"' in monitoring
+    assert 'schedule_expression              = "rate(30 minutes)"' in monitoring
+    assert re.search(r'name\s+=\s+"AWS-RunShellScript"', monitoring)
     assert "publish_staging_metrics.py" in monitoring
+    assert "findb-staging-metric-publisher.service" in monitoring
+    assert "findb-staging-metric-publisher.timer" in monitoring
+    assert "OnUnitActiveSec=5min" in monitoring
+    assert "systemctl enable --now findb-staging-metric-publisher.timer" in monitoring
 
     for name, default in (
         ("operational_alert_email", None),

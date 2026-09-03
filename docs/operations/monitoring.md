@@ -5,10 +5,13 @@
 `infra/tofu/staging/monitoring.tf` declares the Phase 6 control-plane baseline:
 one private KMS-encrypted SNS topic, one required email subscription, the six
 already accepted native EC2/RDS alarms, and a pending custom-metric expansion.
-The expansion uses two five-minute SSM associations and the dependency-free
-`infra/monitoring/publish_staging_metrics.py` collector; it does not install an
-agent, persist credentials, or add inbound network access. The existing EC2 and
-RDS resources remain references only: this stack must not import, create,
+The expansion uses two 30-minute SSM reconciliation associations to install and
+maintain a five-minute local systemd timer plus the dependency-free
+`infra/monitoring/publish_staging_metrics.py` collector. State Manager does not
+support association intervals shorter than 30 minutes; the host timer preserves
+the five-minute metric and two-period alarm contract. This does not install an
+external agent, persist credentials, or add inbound network access. The existing
+EC2 and RDS resources remain references only: this stack must not import, create,
 replace, or otherwise manage EC2, RDS, VPC, security groups, or volumes.
 
 The tracked configuration remains an **IaC declaration, not evidence by
