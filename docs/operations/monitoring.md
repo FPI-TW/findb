@@ -3,8 +3,8 @@
 ## Scope and current evidence boundary
 
 `infra/tofu/staging/monitoring.tf` declares the Phase 6 control-plane baseline:
-one private KMS-encrypted SNS topic, one required email subscription, the six
-already accepted native EC2/RDS alarms, and a pending custom-metric expansion.
+one private KMS-encrypted SNS topic, one required email subscription, six
+native EC2/RDS alarms, and the applied custom-metric expansion.
 The expansion uses two 30-minute SSM reconciliation associations to install and
 maintain a five-minute local systemd timer plus the dependency-free
 `infra/monitoring/publish_staging_metrics.py` collector. State Manager does not
@@ -110,11 +110,19 @@ The thresholds and evaluation settings are fixed-by-validation variables in
 change. Container and scheduler resource sets are explicit in source; there
 are no per-queue, per-symbol, per-request, or other unbounded dimensions.
 
-This expansion remains **declaration and saved-plan evidence only** until it is
-merged through the protected-main IaC workflow, applied from a fresh reviewed
-plan, produces two consecutive collector runs, and completes controlled
-synthetic tests for representative periodic and sparse alarms. Until then the
-initial six-alarm live record above remains the applied coverage boundary.
+PR [#237](https://github.com/FPI-TW/findb/pull/237) merged the custom metrics and alarms;
+PR [#238](https://github.com/FPI-TW/findb/pull/238) corrected the State Manager cadence so its
+supported 30-minute association installs and maintains the local five-minute timer. Live apply
+created 36 custom alarms in addition to the six native alarms. Associations
+`974a1570-3ace-4cc8-be97-09f4c5ba9eae`（FinDB）與
+`9de9a3a4-ddc2-414c-8410-0dc1af9536e6`（Fetcher）均成功，`FinDB/Staging`
+有34組bounded metric series，兩台collector連續成功，42個alarms後驗皆為`OK`。
+
+Controlled tests使`findb-staging-findb-disk-used`與
+`findb-staging-fetcher-deployment-failed`分別完成`OK -> ALARM -> OK`；SNS delivery metrics
+記錄delivery且failed為0。這證明periodic與sparse custom alarm可抵達既有SNS topic；因本次未取得兩封
+custom synthetic email的獨立收件確認，端到端inbox證據仍沿用前述native alarm測試，不把SNS delivery
+metrics單獨描述為custom email收件證據。
 
 The SNS topic is KMS encrypted at rest and has no public allow statement. Its
 topic policy gives the account root only a small enumerated set of topic and
@@ -235,26 +243,24 @@ synthetic reason and reset the selected alarm to `OK` again.
 
 ## Coverage gaps and cost / retention caveats
 
-The custom declaration does **not** claim completion until its protected-main
-apply and live acceptance are recorded. It covers disk/inode use, required
+The applied custom coverage includes disk/inode use, required
 container health/restart count, RabbitMQ local disk/memory alarms, persisted
 scheduler heartbeat age, deployment failure, and RDS backup lag. Queue-depth
 trends, market-data freshness policy, ingestion/delivery/DQ, TLS certificate,
-and other log-derived monitoring remain out of scope. Until the expansion is
-live, a healthy native alarm set can still miss a full disk, stalled scheduler,
-repeated container crash, broker resource alarm, failed deployment, or failed
-backup.
+and other log-derived monitoring remain out of scope. These remaining domains
+must not be inferred from the healthy 42-alarm set.
 
 The two current root volumes have been replaced with encrypted volumes, the
 RDS restore rehearsal and SSH-ingress removal have also been completed, and
 their live records are maintained in
 [`deployment.md`](deployment.md#phase-6-live-recovery-record-2026-09-01-to-2026-09-03).
 A one-time encrypted migration and a recurring backup chain are separate
-controls; migration or backup chain evidence must remain distinct. The current
-volumes still have no recurring AWS Backup or DLM policy. Fetcher SQLite
-recovery, RabbitMQ rebuild from PostgreSQL, different-digest rollback, and
-schema-rejection rehearsal also remain open. SSH ingress/recovery-key retirement
-was completed on 2026-09-03: the matching host keys and both EC2
+controls; migration or backup chain evidence must remain distinct. Daily DLM policy
+`policy-0d0a29c9e19f6323e` is enabled for the two exact current root volumes and immediate
+encrypted snapshots have completed, but the first and second scheduled DLM recovery points remain
+time-gated evidence. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
+different-digest rollback, and schema-rejection rehearsal completed on 2026-09-03; exact evidence is
+in the linked deployment record. SSH ingress/recovery-key retirement was also completed: the matching host keys and both EC2
 key-pair resources are absent, while unit-specific Session Manager break-glass
 sessions and CloudTrail audit events were verified. The remaining recovery risks
 must not be inferred as covered by native alarms, encryption, or a one-time
