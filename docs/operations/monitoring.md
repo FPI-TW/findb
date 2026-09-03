@@ -258,7 +258,8 @@ A one-time encrypted migration and a recurring backup chain are separate
 controls; migration or backup chain evidence must remain distinct. Daily DLM policy
 `policy-0d0a29c9e19f6323e` is enabled for the two exact current root volumes and immediate
 encrypted snapshots have completed, but the first and second scheduled DLM recovery points remain
-time-gated evidence. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
+time-gated evidence; the current record does **not** claim completion of the recurring backup-chain
+acceptance. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
 different-digest rollback, and schema-rejection rehearsal completed on 2026-09-03; exact evidence is
 in the linked deployment record. SSH ingress/recovery-key retirement was also completed: the matching host keys and both EC2
 key-pair resources are absent, while unit-specific Session Manager break-glass
