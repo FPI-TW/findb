@@ -27,9 +27,22 @@
   rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
   provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation已完成。SSH recovery項目仍依
   staging deployment plan的Phase 6 exit gate保留。
-- [ ] 完成Phase 6的CloudWatch alarms與synthetic notification、RDS restore、Fetcher SQLite recovery、
-  RabbitMQ rebuild、current EBS encrypted backup chain、SSH ingress退場、不同image digest的
-  previous-release rollback，以及不同Alembic revision的schema-incompatibility rejection。
+- [ ] 補齊Phase 6的disk／inode、Docker restart、RabbitMQ disk／memory、scheduler heartbeat、
+  deployment failure與RDS backup failure告警。未完成風險：目前六個native alarms均為健康時，仍可能
+  漏掉磁碟滿載、scheduler停滯、container crash loop、broker資源壓力、部署失敗或備份失敗。
+- [ ] 為兩個current encrypted root volumes建立automated AWS Backup或DLM policy與可驗證的recurring
+  recovery points。未完成風險：現有migration snapshots是一次性且標記短期保留，instance termination、
+  volume損毀或誤刪時沒有符合Phase 6要求的current-volume持續復原鏈。
+- [ ] 完成Fetcher SQLite一致性backup／restore與RabbitMQ由PostgreSQL outbox重建。未完成風險：
+  provider checkpoint可能無法在host loss後可靠復原；broker全毀後的實際queue重建時間與重複delivery
+  行為仍未知。
+- [ ] 使用同Alembic revision、不同image digests的accepted predecessor完成application-only rollback。
+  未完成風險：雖已有合格immutable候選，但尚未實證不重跑migration即可恢復previous release與health。
+- [ ] 使用不同Alembic revision的accepted release完成schema-incompatibility rejection。未完成風險：
+  尚未live證明preflight會fail closed、拒絕rollback且writers保持停止。
+- [ ] 移除兩台EC2仍存在的`fb-db-key`／`findb-fetcher-key` key pairs，並確認host
+  `authorized_keys`無遺留recovery key。未完成風險：雖然security groups已無TCP/22 ingress，長效SSH
+  credential與host key material仍增加日後誤開port或網路設定倒退時的暴露面。
 
 ## P1：資料完整性與效能
 

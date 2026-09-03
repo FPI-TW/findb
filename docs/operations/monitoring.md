@@ -10,12 +10,37 @@ RDS alarms for the existing `fin-db` DB instance. The existing EC2 and RDS
 resources remain references only: this stack must not import, create, replace,
 or otherwise manage EC2, RDS, VPC, security groups, or volumes.
 
-These are **IaC declarations, not live-apply or delivery evidence**. A merged
-configuration, a successful `tofu validate`, or a pull-request refresh plan
-does not establish that AWS resources exist, an email subscription is
-confirmed, or an alert can be delivered. Record the reviewed plan, apply
-identity, subscription confirmation, synthetic alarm result, inbox receipt,
-and reset result in the operator change record before relying on this channel.
+The tracked configuration remains an **IaC declaration, not evidence by
+itself**. A merged configuration, a successful `tofu validate`, or a
+pull-request refresh plan does not establish that AWS resources exist, an email
+subscription is confirmed, or an alert can be delivered. The live record below
+is the separate evidence for the initial apply and notification exercise. Keep
+the original safety distinction explicit: **IaC declarations, not live-apply or delivery evidence**,
+are all that repository source alone can prove.
+
+## Live acceptance record (2026-09-01 to 2026-09-03)
+
+- CloudTrail records Tyler creating the private SNS topic at
+  `2026-09-01 10:58:38 +08:00`, then creating the email subscription and all
+  six declared alarms at `12:40:11`–`12:40:12 +08:00`.
+- The topic uses the customer-managed KMS key behind
+  `alias/findb-staging-operational-alerts`. Inventory on 2026-09-03 showed one
+  confirmed email subscription, zero pending subscriptions, and all six alarms
+  with actions enabled against the same topic.
+- At `2026-09-03 09:53:47 +08:00`, Tyler set
+  `findb-staging-findb-status-check-failed` from `OK` to `ALARM` with the
+  explicit Phase 6 synthetic-test reason. The alarm was reset to `OK` at
+  `09:54:04 +08:00`.
+- The SNS metric for that interval recorded one delivered notification and
+  zero failed notifications. The named inbox owner separately confirmed actual
+  email receipt. This proves the CloudWatch alarm-to-SNS-to-inbox path for the
+  controlled test; it does not prove a real EC2 or RDS failure mode.
+- `/findb/staging/findb/ssm` and `/findb/staging/fetcher/ssm` remain
+  KMS-encrypted with 30-day retention.
+
+This record closes the owner/channel, subscription-confirmation, SSM log
+retention, and synthetic-notification portion of Phase 6. It does not close the
+coverage gaps below.
 
 ### Declaration, applied state, and live synthetic confirmation
 
@@ -173,12 +198,24 @@ synthetic reason and reset the selected alarm to `OK` again.
 
 This first slice does **not** claim completion of host or application custom
 metrics: disk/inode use, Docker restart count, RabbitMQ disk/memory/queue
-health, scheduler freshness, ingestion, delivery, DQ, TLS certificate, or
-log-derived monitoring are all out of scope. It also does not provide an EBS
-migration or backup chain, RDS restore rehearsal, Fetcher SQLite backup or
-recovery, RabbitMQ rebuild from PostgreSQL, different-digest rollback,
-schema-rejection rehearsal, or SSH ingress/recovery-key retirement. Those
-remain Phase 6 exit work and must not be inferred from native alarms.
+health, scheduler freshness, ingestion, delivery, DQ, TLS certificate,
+deployment failure, RDS backup failure, or log-derived monitoring are all out
+of scope. Until these alarms exist, a healthy native alarm set can miss a full
+disk, stalled scheduler, repeated container crash, broker resource alarm,
+failed deployment, or failed backup.
+
+The two current root volumes have been replaced with encrypted volumes, the
+RDS restore rehearsal and SSH-ingress removal have also been completed, and
+their live records are maintained in
+[`deployment.md`](deployment.md#phase-6-live-recovery-record-2026-09-01-to-2026-09-03).
+A one-time encrypted migration and a recurring backup chain are separate
+controls; migration or backup chain evidence must remain distinct. The current
+volumes still have no recurring AWS Backup or DLM policy. Fetcher SQLite
+recovery, RabbitMQ rebuild from PostgreSQL, different-digest rollback, and
+schema-rejection rehearsal also remain open. SSH ingress/recovery-key retirement
+has been split deliberately: ingress is gone, but the EC2 key pairs and possible
+host key material remain. Those risks must not be inferred as covered by native
+alarms, encryption, or a one-time migration snapshot.
 
 AWS charges can arise from CloudWatch alarm evaluation, SNS publishes/email
 notifications, and customer-managed KMS key/API use. CloudWatch native metric

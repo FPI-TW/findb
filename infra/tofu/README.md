@@ -11,9 +11,11 @@ The bounded first Phase 6 slice additionally declares a private KMS-encrypted
 SNS operational-alert topic, one required email subscription, and six native
 CloudWatch alarms (one EC2 status-check alarm per existing instance plus four
 `fin-db` RDS alarms). It manages only those new resources; it does not manage
-or import the referenced EC2/RDS resources and does not claim a live apply,
-subscription confirmation, or synthetic delivery test. The operator procedure,
-explicit thresholds, coverage gaps, and cost/retention caveats are in
+or import the referenced EC2/RDS resources. The initial resources were applied
+on 2026-09-01; the email subscription was confirmed, and a controlled
+CloudWatch-to-SNS-to-inbox synthetic test was completed and reset on 2026-09-03.
+The operator procedure, live evidence, explicit thresholds, remaining coverage
+gaps, and cost/retention caveats are in
 [`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
 
 ## State bootstrap
@@ -238,9 +240,11 @@ the generated one-time commands only after reviewing the plan:
 tofu -chdir=infra/tofu/staging output -json associate_instance_profile_commands
 ```
 
-Then install/enable the distribution's SSM agent using the existing recovery
-path, associate the profile, and wait for the node to report `Online`. This is
-an explicit cutover step so the current SSH recovery path remains available.
+During the initial Phase 1 cutover, install/enable the distribution's SSM agent
+using the then-existing recovery path, associate the profile, and wait for the
+node to report `Online`. That explicit cutover step retained SSH until the
+separate Phase 6 Session Manager acceptance; staging TCP/22 ingress has since
+been removed, while EC2 key-pair and host-key retirement remains open.
 The preflight workflows do not install packages, create filesystem markers,
 mutate containers, or read runtime secrets. Their marker contract is the exact
 AWS tag set plus the instance identity returned by IMDS.
