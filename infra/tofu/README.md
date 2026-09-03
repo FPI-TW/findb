@@ -243,8 +243,10 @@ tofu -chdir=infra/tofu/staging output -json associate_instance_profile_commands
 During the initial Phase 1 cutover, install/enable the distribution's SSM agent
 using the then-existing recovery path, associate the profile, and wait for the
 node to report `Online`. That explicit cutover step retained SSH until the
-separate Phase 6 Session Manager acceptance; staging TCP/22 ingress has since
-been removed, while EC2 key-pair and host-key retirement remains open.
+separate Phase 6 Session Manager acceptance. Staging TCP/22 ingress, both EC2
+key-pair resources, and the matching host `authorized_keys` entries have since
+been removed; post-removal unit-specific Session Manager sessions verified the
+remaining break-glass path and audit trail.
 The preflight workflows do not install packages, create filesystem markers,
 mutate containers, or read runtime secrets. Their marker contract is the exact
 AWS tag set plus the instance identity returned by IMDS.

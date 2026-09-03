@@ -5,10 +5,10 @@
 > accepted bundle固定為exact digest；FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded
 > candidate／accepted-record／activation，並完成各自的live acceptance，Phase 4與Phase 5 exit gate均已完成。
 > Phase 6已完成native alarm通知、RDS PITR restore、encrypted root replacement、Session Manager
-> recovery、SSH ingress退場與generated cache重生；different-digest previous-release rollback、不同
+> recovery、SSH ingress與host recovery key退場及generated cache重生；different-digest previous-release rollback、不同
 > Alembic revision的schema拒絕、current-volume automated backup、SQLite recovery與RabbitMQ rebuild仍未執行。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production仍保留SSH相容路徑，
-> staging security groups已無TCP/22 ingress，但兩個EC2 key pair與host recovery key material仍由Phase 6管理；退場計畫見
+> staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
 
 ## Workflow與release units
@@ -148,10 +148,10 @@ activation或受包裝的runtime載入可自動恢復空目錄，但不會修復
 source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
 FinDB與Fetcher staging日常deployment transport均已完成OIDC＋SSM live驗證；Fetcher的FinLab smoke亦使用
 bounded SSM。`staging-findb`已移除`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`，
-`staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。這些刪除不涵蓋TCP/22、host SSH recovery
-ingress／keys、production或GitHub Environment的application runtime copies；後續Phase 6已另外移除staging
-TCP/22 ingress，production仍使用SSH相容路徑。Different-digest rollback與schema-incompatibility rejection
-仍未執行；EC2 key pair與host recovery key material也尚未退役。
+`staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。後續Phase 6另已移除staging
+TCP/22 ingress、兩個EC2 key-pair resources與host中的對應recovery keys；production仍使用SSH相容路徑，
+GitHub Environment application runtime copies亦仍在另行管理。Different-digest rollback與
+schema-incompatibility rejection仍未執行。
 
 ## Credential與storage邊界
 
@@ -368,9 +368,9 @@ Live acceptance另確認：
 這組證據完成Phase 5 transport與bounded FinLab acceptance，但不代表整體queue從未有歷史
 `failed`、`retry_exhausted`或`missing`項目，也不代表四個active feeds均已完成完整原生排程驗收。
 四個feed的多交易日觀察與GitHub Environment application runtime copies清理仍列於backlog；
-Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery與SSH ingress退場；
+Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery、SSH ingress與host key退場；
 different-digest rollback、schema rejection、current-volume automated backup、SQLite／RabbitMQ DR及
-recovery key退役仍未完成。
+custom alarm coverage仍未完成。
 
 ### Phase 6 live recovery record (2026-09-01 to 2026-09-03)
 
@@ -390,8 +390,20 @@ recovery key退役仍未完成。
   Session Manager session；2026-09-01 command `08d25aff-4ff1-4c38-b2b0-0bc0f7c66f04`再次對兩台完成
   non-mutating recovery check。
 - `sg-0194615fe18784889`、`sg-070694f093a25cb31`與`sg-0c98f59c6961a00d2`目前都沒有TCP/22
-  ingress。EC2 metadata仍關聯`fb-db-key`與`findb-fetcher-key`，AWS key pair resources也仍存在；在
-  host `authorized_keys`確認與key pair刪除前，不宣稱recovery key retirement完成。
+  ingress。2026-09-03 SSM commands `c7a6f1d1-f5ad-4fc1-b48f-a5010aa9c0f3`與
+  `829d14fe-fd55-42d7-ab5b-696dc13ef1e5`從FinDB／Fetcher的`root`、`ubuntu`
+  `authorized_keys`各移除一筆精確指紋匹配；獨立後驗commands
+  `b7225864-e69a-422f-acfc-2fda0dd10858`與`b5a45195-9b99-462d-aa0e-ac919b2a694f`
+  均為Success、target count為0。隨後以兩份custom Session Manager documents建立並正常退出
+  sessions `Tyler-fbsz8svdkq55265uaugiu7jpqa`與`Tyler-gaivcgfjkusxozqi63liad5fni`；CloudTrail
+  `StartSession` events為`e05d7c84-b202-4a58-933c-0b6c2fdbfdd5`與
+  `aafd8f51-1f61-4269-90cf-887bff68e534`，且兩個session及四個移除／後驗commands的streams均已在
+  各自`/findb/staging/{findb,fetcher}/ssm` log group回讀。最後刪除`fb-db-key`與
+  `findb-fetcher-key`，
+  `describe-key-pairs`回讀為空；CloudTrail `DeleteKeyPair` events分別為
+  `a5fcad20-b003-43a0-a7e9-3ac57c1ff531`與`75a221d0-e6c0-4d01-afcb-7365fd0aa42e`。
+  兩台managed nodes後驗仍為SSM Online。EC2 instance metadata可能繼續顯示建立instance時的歷史
+  `KeyName`，不代表key-pair resource或host key仍存在。
 - `2026-09-03 01:44:44Z`公開cache metadata顯示instrument cache由canonical Serve API重生為8筆、
   macro cache重生為0筆；兩者generated timestamp一致且cache仍不是durable source of truth。
 - 已存在可供rehearsal的相容different-digest predecessor：FinDB current
@@ -406,7 +418,7 @@ recovery key退役仍未完成。
 
 未完成風險集中於：現有native alarms無法偵測列出的host／application custom failure modes、root EBS
 缺少recurring recovery points、SQLite checkpoint與RabbitMQ rebuild未經災難演練、rollback／schema
-guards只存在候選而沒有live結果，以及SSH key material在網路規則日後倒退時仍可能重新形成長效入口。
+guards只存在候選而沒有live結果。SSH ingress與長效recovery key均已退役，不再列為未完成風險。
 
 Deploy後至少完成：
 

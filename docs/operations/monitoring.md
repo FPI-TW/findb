@@ -213,9 +213,11 @@ controls; migration or backup chain evidence must remain distinct. The current
 volumes still have no recurring AWS Backup or DLM policy. Fetcher SQLite
 recovery, RabbitMQ rebuild from PostgreSQL, different-digest rollback, and
 schema-rejection rehearsal also remain open. SSH ingress/recovery-key retirement
-has been split deliberately: ingress is gone, but the EC2 key pairs and possible
-host key material remain. Those risks must not be inferred as covered by native
-alarms, encryption, or a one-time migration snapshot.
+was completed on 2026-09-03: the matching host keys and both EC2
+key-pair resources are absent, while unit-specific Session Manager break-glass
+sessions and CloudTrail audit events were verified. The remaining recovery risks
+must not be inferred as covered by native alarms, encryption, or a one-time
+migration snapshot.
 
 AWS charges can arise from CloudWatch alarm evaluation, SNS publishes/email
 notifications, and customer-managed KMS key/API use. CloudWatch native metric

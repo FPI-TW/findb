@@ -9,9 +9,9 @@
 > Fetcher Phase 5已完成兩次正常SSM deployment、一次accepted replay與FinLab smoke、scheduler
 > 恢復及三個Fetcher deploy SSH secrets移除，exit gate已完成。
 > Phase 6已完成native CloudWatch／SNS通知與synthetic收件驗證、RDS PITR restore、兩台encrypted
-> root replacement、兩個unit的Session Manager recovery、SSH ingress退場及generated cache重生。
+> root replacement、兩個unit的Session Manager recovery、SSH ingress與host recovery key退場及generated cache重生。
 > Different-digest rollback、schema-incompatibility rejection、完整custom alarms、current-volume
-> automated backup chain、SQLite recovery、RabbitMQ rebuild及host recovery key退役仍未完成。
+> automated backup chain、SQLite recovery及RabbitMQ rebuild仍未完成。
 > 本文是staging
 > AWS控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
@@ -149,8 +149,8 @@ protected main
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
 | Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production仍保留獨立GHCR相容路徑 | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion另案實作 |
-| EC2 transport | FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded candidate／accepted-record／activation；兩個unit各完成兩次normal deployment、accepted replay與Session Manager recovery。兩個Environment的`*_EC2_*` deploy secrets均已刪除，三個staging SG也已無TCP/22 ingress；production仍使用固定完整Action SHA的SSH／SCP相容路徑 | Different-digest previous-release rollback、不同Alembic revision schema拒絕、EC2 key pair與host `authorized_keys`退役留在Phase 6 |
-| Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；GitHub Environment的舊application runtime copies仍保留但不是staging runtime source。FinDB／Fetcher deploy SSH secrets已刪除，TCP/22 ingress也已退場 | 完整原生四feed cycle gate通過後，另行確認last-used與health再移除GitHub runtime copies；EC2 key pair與host recovery key material依Phase 6退場 |
+| EC2 transport | FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded candidate／accepted-record／activation；兩個unit各完成兩次normal deployment、accepted replay與Session Manager recovery。兩個Environment的`*_EC2_*` deploy secrets均已刪除，三個staging SG也已無TCP/22 ingress，EC2 key-pair resources與host `authorized_keys`中的對應key亦已退役；production仍使用固定完整Action SHA的SSH／SCP相容路徑 | Different-digest previous-release rollback與不同Alembic revision schema拒絕留在Phase 6 |
+| Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；GitHub Environment的舊application runtime copies仍保留但不是staging runtime source。FinDB／Fetcher deploy SSH secrets、TCP/22 ingress及host recovery key material均已退場 | 完整原生四feed cycle gate通過後，另行確認last-used與health再移除GitHub runtime copies |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；已確認private、encryption、deletion protection、10-day automated backup與PITR，並於2026-09-01完成一次PITR restore、revision／row count／connectivity驗證 | migration credential分權與RDS tags仍未納入本Phase；backup failure alarm仍缺少 |
 | Queue | RabbitMQ在FinDB encrypted root EBS path保存；PostgreSQL是durable truth | current root EBS recurring backup policy、容量告警、broker全毀重建演練與實測恢復時間 |
 | Fetcher state | 三個provider runtime隔離；container已採non-root、read-only、drop capabilities與no-new-privileges，SQLite與Raw bucket binding只接受current state並fail closed；Phase 5 SSM rollout與bounded FinLab terminal delivery已完成 | 一致性備份、自動化runtime security驗證與四個active feeds完整原生排程週期觀察 |
@@ -195,7 +195,7 @@ deployment unit，但release manifest必須列出三個digest，不能只用共�
 | AWS account / Region | `439622209937` / `ap-southeast-1`（SSH + IMDSv2、AWS Console 已驗證） | `439622209937` / `ap-southeast-1`（SSH + IMDSv2、AWS Console 已驗證） | Workflow明確檢查STS account與region |
 | VPC / subnet | `vpc-0865afcf10442bf4d` / `subnet-0aba2a175b5912c24` | `vpc-0865afcf10442bf4d` / `subnet-0cde9e8dc33bec41e` | RDS private；public EC2若保留須記錄例外與production前檢查點 |
 | EC2 target / tags | `i-0942016913367a8b2`（`findb-staging`、`m7i.large`、`ap-southeast-1c`；ARN `arn:aws:ec2:ap-southeast-1:439622209937:instance/i-0942016913367a8b2`）；required tags為`Project=findb`、`Environment=staging`、`DeploymentUnit=findb`、`Owner=tylercore`、`BackupOwner=tylercore` | `i-05f518ef183bc31a9`（`findb-fetcher-staging`、`t3.small`、`ap-southeast-1a`；ARN `arn:aws:ec2:ap-southeast-1:439622209937:instance/i-05f518ef183bc31a9`）；required tags與FinDB相同但`DeploymentUnit=fetcher` | IAM simulator已驗證各deploy role只允許本單元target，跨單元為`implicitDeny`；protected `main` live workflows已分別驗證exact-tag selector只命中1台target |
-| EC2 security group / root EBS | `sg-0194615fe18784889`（`ec2-rds-1`）、`sg-070694f093a25cb31`（`launch-wizard-1`）；public inbound HTTP 80、HTTPS 443，另有8080 `/32`，無TCP/22；`vol-071822e2fe38c3991`（50 GiB）in-use、encrypted、delete-on-termination | `sg-0c98f59c6961a00d2`無inbound rules；`vol-07a726b6215c34c20`（30 GiB）in-use、encrypted、delete-on-termination | Encrypted replacement與SSH ingress退場已完成；`fb-db-key`／`findb-fetcher-key`及可能的host `authorized_keys`仍待移除。AWS Backup plan與DLM policy均為0，migration snapshots不得視為current-volume automated backup chain |
+| EC2 security group / root EBS | `sg-0194615fe18784889`（`ec2-rds-1`）、`sg-070694f093a25cb31`（`launch-wizard-1`）；public inbound HTTP 80、HTTPS 443，另有8080 `/32`，無TCP/22；`vol-071822e2fe38c3991`（50 GiB）in-use、encrypted、delete-on-termination | `sg-0c98f59c6961a00d2`無inbound rules；`vol-07a726b6215c34c20`（30 GiB）in-use、encrypted、delete-on-termination | Encrypted replacement與SSH ingress退場已完成；`fb-db-key`／`findb-fetcher-key` resources已刪除，四個host `authorized_keys`的對應key均已移除。AWS Backup plan與DLM policy均為0，migration snapshots不得視為current-volume automated backup chain |
 | Instance role | `findb-staging-instance` profile／role已關聯；只允許FinDB future secret／parameter path、`findb/` deploy bundle、SSM core與FinDB log group | `fetcher-staging-instance` profile／role已關聯；只允許Fetcher future secret／parameter path、`fetcher/` deploy bundle、SSM core與Fetcher log group | Live IMDSv2 preflight已確認兩台profile exact match；不共用runtime path或bundle prefix |
 | GitHub deploy role | `arn:aws:iam::439622209937:role/findb-staging-deploy` | `arn:aws:iam::439622209937:role/fetcher-staging-deploy` | OIDC trust的`aud=sts.amazonaws.com`且`sub`精確綁定對應Environment；IAM simulator已驗證cross-unit target/log拒絕，protected `main` workflows已實證各自OIDC assume成功且deploy-role secret read為`AccessDenied` |
 | SSM managed node | Online；agent `3.3.4793.0`；Session document `SSM-SessionManagerRunShell-findb-staging` | Online；agent `3.3.4793.0`；Session document `SSM-SessionManagerRunShell-fetcher-staging` | 兩台bounded command與unit-specific Session Manager recovery均成功；command output送各自CloudWatch log group |
@@ -703,8 +703,10 @@ scope調整不把同digest replay誤稱為rollback，也不改寫兩項尚未執
   accepted `d6e7f8a9b0c1`候選已存在；未完成表示schema guard仍只有設計與候選，沒有live rejection證據。
 - [x] 兩個unit各自完成成功的Session Manager recovery並移除兩台EC2的SSH ingress；兩個Environment的
   deploy SSH secrets已在Phase 4／5移除。
-- [ ] 移除`fb-db-key`／`findb-fetcher-key`與host `authorized_keys`中的recovery／unused keys，保留SSM
-  break-glass流程與audit trail。未完成時即使TCP/22目前關閉，網路規則日後倒退仍可能重新暴露長效入口。
+- [x] 移除`fb-db-key`／`findb-fetcher-key`與host `authorized_keys`中的recovery／unused keys，保留SSM
+  break-glass流程與audit trail。2026-09-03兩台host的`root`／`ubuntu`各移除一筆精確指紋匹配，後驗
+  target count均為0；兩個custom Session Manager documents均成功開啟並正常退出，之後兩個EC2
+  key-pair resources刪除成功且回讀為空。
 - [x] 為兩個current root volumes完成encrypted replacement；post-replacement services與schedulers健康。
 - [ ] 為兩個current root volumes啟用automated backup policy，並完成Fetcher SQLite recovery與RabbitMQ rebuild rehearsal；
   在上述 evidence 齊備前，不得把現有 historical snapshot 或 policy／condition 描述成 current
@@ -765,7 +767,7 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
   staging不保存或傳送GHCR credential。
 - [x] Staging日常deploy不使用SSH／SCP，cross-unit IAM測試fail closed。
 - [x] EC2不開放SSH ingress；三個staging security groups均無TCP/22 rule。
-- [ ] Host recovery／unused EC2 key pairs與`authorized_keys`依Phase 6退場。
+- [x] Host recovery／unused EC2 key pairs與`authorized_keys`依Phase 6退場；SSM break-glass後驗成功。
 - [x] 所有application image以digest部署，accepted release manifest包含五個完整ECR digests、可重播
   並供production promotion。
 - [x] Accepted release manifest具備未來promotion所需的unit、commit與完整digests；契約已固定為

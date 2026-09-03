@@ -25,8 +25,7 @@
   Environment runtime copies；此項不與R2實際rotation綁定。Raw與Canonical R2 scope已依使用者核准的
   acceptance criterion變更而完成：既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，故不構成
   rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
-  provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation已完成。SSH recovery項目仍依
-  staging deployment plan的Phase 6 exit gate保留。
+  provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation與SSH recovery key退役已完成。
 - [ ] 補齊Phase 6的disk／inode、Docker restart、RabbitMQ disk／memory、scheduler heartbeat、
   deployment failure與RDS backup failure告警。未完成風險：目前六個native alarms均為健康時，仍可能
   漏掉磁碟滿載、scheduler停滯、container crash loop、broker資源壓力、部署失敗或備份失敗。
@@ -40,10 +39,6 @@
   未完成風險：雖已有合格immutable候選，但尚未實證不重跑migration即可恢復previous release與health。
 - [ ] 使用不同Alembic revision的accepted release完成schema-incompatibility rejection。未完成風險：
   尚未live證明preflight會fail closed、拒絕rollback且writers保持停止。
-- [ ] 移除兩台EC2仍存在的`fb-db-key`／`findb-fetcher-key` key pairs，並確認host
-  `authorized_keys`無遺留recovery key。未完成風險：雖然security groups已無TCP/22 ingress，長效SSH
-  credential與host key material仍增加日後誤開port或網路設定倒退時的暴露面。
-
 ## P1：資料完整性與效能
 
 - [ ] 評估canonical／raw `run_id` FK或定期lineage consistency job。
