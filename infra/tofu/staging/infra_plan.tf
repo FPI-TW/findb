@@ -2,6 +2,10 @@ locals {
   infra_plan_state_bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::${var.state_bucket_name}"
   infra_plan_state_object_arn = "${local.infra_plan_state_bucket_arn}/${var.state_key}"
   infra_plan_lock_object_arn  = "${local.infra_plan_state_object_arn}.tflock"
+  # Listing all declared alarm ARNs twice exceeds IAM's aggregate inline role
+  # policy size once custom coverage is enabled. Keep refresh access bounded to
+  # this stack's deterministic staging alarm-name prefix instead.
+  infra_plan_operational_alarm_arn = "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:findb-staging-*"
 }
 
 data "aws_iam_policy_document" "infra_plan_trust" {
@@ -63,13 +67,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     resources = ["*"]
   }
 
-  # Refresh only the deterministic alarm ARNs declared in monitoring.tf.
-  # CloudWatch supports resource-scoped DescribeAlarms for these alarm ARNs.
+  # Refresh only alarms under this stack's deterministic staging name prefix.
+  # CloudWatch supports resource-scoped DescribeAlarms for alarm ARNs.
   statement {
     sid       = "ReadOperationalAlarmMetadata"
     effect    = "Allow"
     actions   = ["cloudwatch:DescribeAlarms"]
-    resources = local.operational_alarm_arns
+    resources = [local.infra_plan_operational_alarm_arn]
   }
 
   statement {
@@ -287,14 +291,10 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid     = "ReadExactOperationalAlarmTags"
-    effect  = "Allow"
-    actions = ["cloudwatch:ListTagsForResource"]
-    resources = concat(
-      [for alarm in aws_cloudwatch_metric_alarm.ec2_status_check_failed : alarm.arn],
-      [for alarm in aws_cloudwatch_metric_alarm.rds_native : alarm.arn],
-      [for alarm in aws_cloudwatch_metric_alarm.custom : alarm.arn],
-    )
+    sid       = "ReadStagingOperationalAlarmTags"
+    effect    = "Allow"
+    actions   = ["cloudwatch:ListTagsForResource"]
+    resources = [local.infra_plan_operational_alarm_arn]
   }
 
   # The aws_s3_bucket resource and its v6 provider refresh path use bucket
