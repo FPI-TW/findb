@@ -256,9 +256,34 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
     sid     = "ReadExactOperationalAlertSubscription"
     effect  = "Allow"
     actions = ["sns:GetSubscriptionAttributes"]
-    # SNS authorizes GetSubscriptionAttributes against the parent topic even
-    # though the API request itself takes a subscription ARN.
-    resources = [aws_sns_topic.operational_alerts.arn]
+    # SNS evaluates this API against Resource="*" even though its service
+    # authorization table associates the action with a topic. Keep the grant
+    # bounded to the tagged staging operational-alert topic and region.
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.common_tags.Project]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [local.common_tags.Environment]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/DeploymentUnit"
+      values   = ["operational-alerts"]
+    }
   }
 
   statement {

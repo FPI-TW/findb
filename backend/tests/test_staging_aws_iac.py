@@ -785,8 +785,16 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     subscription_read = permissions.split('sid     = "ReadExactOperationalAlertSubscription"', 1)[
         1
     ].split('sid     = "ReadExactOperationalAlarmTags"', 1)[0]
-    assert "resources = [aws_sns_topic.operational_alerts.arn]" in subscription_read
+    assert 'resources = ["*"]' in subscription_read
     assert "aws_sns_topic_subscription.operational_alert_email.arn" not in subscription_read
+    for condition_key in (
+        "aws:RequestedRegion",
+        "aws:ResourceTag/Project",
+        "aws:ResourceTag/Environment",
+        "aws:ResourceTag/DeploymentUnit",
+    ):
+        assert f'variable = "{condition_key}"' in subscription_read
+    assert 'values   = ["operational-alerts"]' in subscription_read
     operational_key_read = permissions.split('sid    = "ReadExactOperationalAlertKey"', 1)[1].split(
         'sid    = "ReadExactSessionDocuments"', 1
     )[0]
