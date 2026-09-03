@@ -23,6 +23,16 @@ applied and its metric/alarm acceptance is recorded. The operator procedure,
 live evidence, explicit thresholds, remaining coverage gaps, and cost/retention caveats are in
 [`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
 
+`staging/backup.tf` selects only the root volumes currently attached to the
+two reviewed instances, enables a daily 09:00 UTC EBS Data Lifecycle Manager
+schedule, and retains seven recovery points. The unique selection tag moves to
+a replacement root volume through OpenTofu instead of continuing to back up a
+historical detached volume. DLM snapshots are incremental but snapshot storage
+still incurs AWS charges. A policy declaration or a one-time manual snapshot
+does not prove recurring execution; acceptance requires a DLM-created recovery
+point for each selected current volume and a later second cycle that proves
+retention continues.
+
 ## State bootstrap
 
 Run the bootstrap stack once from a trusted operator workstation after a
