@@ -99,6 +99,34 @@ locals {
     "twelve_data_us_common_stocks_daily_v1",
   ])
 
+  metric_publisher_service_units = {
+    for unit in sort(keys(local.unit_config)) : unit => <<-EOT
+      [Unit]
+      Description=Publish FinDB staging operational metrics for ${unit}
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/python3 /usr/local/lib/findb-monitoring/publish_staging_metrics.py --unit ${unit} --region ${var.aws_region} --rds-instance-identifier ${var.findb_rds_instance_identifier}
+    EOT
+  }
+
+  metric_publisher_timer_unit = <<-EOT
+    [Unit]
+    Description=Publish FinDB staging operational metrics every five minutes
+
+    [Timer]
+    OnBootSec=1min
+    OnUnitActiveSec=5min
+    AccuracySec=30s
+    Persistent=true
+    Unit=findb-staging-metric-publisher.service
+
+    [Install]
+    WantedBy=timers.target
+  EOT
+
   custom_monitoring_alarms = merge(
     {
       for unit in sort(keys(local.unit_config)) : "${unit}_disk" => {
@@ -600,9 +628,12 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
 resource "aws_ssm_association" "staging_metric_publisher" {
   for_each = local.unit_config
 
-  association_name                 = "findb-staging-${each.key}-metric-publisher"
-  name                             = "AWS-RunShellScript"
-  schedule_expression              = "rate(5 minutes)"
+  association_name = "findb-staging-${each.key}-metric-publisher"
+  name             = "AWS-RunShellScript"
+  # State Manager associations have a 30-minute minimum interval. Reconcile
+  # the local systemd timer at that supported interval; the timer publishes
+  # every five minutes so the alarm contract retains its two-period window.
+  schedule_expression              = "rate(30 minutes)"
   apply_only_at_cron_interval      = false
   compliance_severity              = "HIGH"
   max_concurrency                  = "1"
@@ -619,7 +650,18 @@ resource "aws_ssm_association" "staging_metric_publisher" {
       "chown root:root /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp",
       "chmod 0755 /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp",
       "mv -f /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp /usr/local/lib/findb-monitoring/publish_staging_metrics.py",
-      "/usr/bin/python3 /usr/local/lib/findb-monitoring/publish_staging_metrics.py --unit ${each.key} --region ${var.aws_region} --rds-instance-identifier ${var.findb_rds_instance_identifier}",
+      "printf '%s' '${base64encode(local.metric_publisher_service_units[each.key])}' | base64 -d > /etc/systemd/system/findb-staging-metric-publisher.service.tmp",
+      "chown root:root /etc/systemd/system/findb-staging-metric-publisher.service.tmp",
+      "chmod 0644 /etc/systemd/system/findb-staging-metric-publisher.service.tmp",
+      "mv -f /etc/systemd/system/findb-staging-metric-publisher.service.tmp /etc/systemd/system/findb-staging-metric-publisher.service",
+      "printf '%s' '${base64encode(local.metric_publisher_timer_unit)}' | base64 -d > /etc/systemd/system/findb-staging-metric-publisher.timer.tmp",
+      "chown root:root /etc/systemd/system/findb-staging-metric-publisher.timer.tmp",
+      "chmod 0644 /etc/systemd/system/findb-staging-metric-publisher.timer.tmp",
+      "mv -f /etc/systemd/system/findb-staging-metric-publisher.timer.tmp /etc/systemd/system/findb-staging-metric-publisher.timer",
+      "systemctl daemon-reload",
+      "systemctl enable --now findb-staging-metric-publisher.timer",
+      "systemctl start findb-staging-metric-publisher.service",
+      "systemctl is-active --quiet findb-staging-metric-publisher.timer",
     ])
   }
 
