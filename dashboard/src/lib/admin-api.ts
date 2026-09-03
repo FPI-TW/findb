@@ -10,6 +10,8 @@ export const auditFiltersSchema = z.object({
   dateTo: z.union([z.iso.date(), z.literal("")]).default(""),
   page: z.number().int().positive().default(1),
   pageSize: z.number().int().min(1).max(100).default(25),
+  backfillPage: z.number().int().positive().optional(),
+  backfillPageSize: z.number().int().min(1).max(100).optional(),
 })
 
 export const dashboardRequestSchema = z.object({

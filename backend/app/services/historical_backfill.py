@@ -80,9 +80,9 @@ async def _open_dates(db: AsyncSession, market: str, start: date, end: date) -> 
             .order_by(CalendarRevisionDay.trade_date)
         )
     ).all()
-    # A gap makes the calendar unsafe; every requested date must be explicitly
-    # published and open. Never silently turn a requested range into a partial
-    # backfill by omitting a missing/closed day.
+    # A gap makes the calendar unsafe: every requested date must be explicitly
+    # published. Published market closures are intentionally omitted from the
+    # executable item list while preserving the operator's requested range.
     for year in range(start.year, end.year + 1):
         revision = (
             await db.execute(
@@ -99,9 +99,7 @@ async def _open_dates(db: AsyncSession, market: str, start: date, end: date) -> 
     requested_days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
     if any(value not in published_days for value in requested_days):
         raise HistoricalBackfillError("requested dates include unpublished calendar days")
-    if any(published_days[value] is not True for value in requested_days):
-        raise HistoricalBackfillError("requested dates include closed market days")
-    return requested_days
+    return [value for value in requested_days if published_days[value] is True]
 
 
 async def create_request(
@@ -192,7 +190,10 @@ async def list_requests(
             await db.execute(
                 select(HistoricalBackfillRequest)
                 .options(selectinload(HistoricalBackfillRequest.items))
-                .order_by(HistoricalBackfillRequest.created_at.desc())
+                .order_by(
+                    HistoricalBackfillRequest.created_at.desc(),
+                    HistoricalBackfillRequest.request_id.desc(),
+                )
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             )

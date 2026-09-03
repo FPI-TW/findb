@@ -185,4 +185,39 @@ describe("DataTable", () => {
       pageSize: 1,
     })
   })
+
+  it("keeps default pagination labels and supports a distinct custom label", () => {
+    const { rerender } = render(
+      <DataTable
+        caption="資料"
+        columns={columns}
+        data={rows}
+        manualPagination
+        pageCount={2}
+        pagination={{ pageIndex: 0, pageSize: 1 }}
+      />
+    )
+    expect(
+      screen.getByRole("navigation", { name: "資料表分頁" })
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "下一頁" })).toBeInTheDocument()
+
+    rerender(
+      <DataTable
+        caption="資料"
+        columns={columns}
+        data={rows}
+        manualPagination
+        pageCount={2}
+        pagination={{ pageIndex: 0, pageSize: 1 }}
+        paginationAriaLabel="自訂資料分頁"
+      />
+    )
+    expect(
+      screen.getByRole("navigation", { name: "自訂資料分頁" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "自訂資料分頁下一頁" })
+    ).toBeInTheDocument()
+  })
 })

@@ -1,9 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import { DeliveriesPage } from "../../features/operations/operations.deliveries"
+import {
+  DeliveriesPage,
+  type DeliveriesSearchUpdate,
+} from "../../features/operations/operations.deliveries"
 import {
   deliveriesSearchSchema,
-  type OperationsPageSearch,
+  type DeliveriesPageSearch,
 } from "../../features/operations/operations.search"
 
 export const Route = createFileRoute("/_authenticated/operations/deliveries")({
@@ -19,8 +22,14 @@ function DeliveriesRoute() {
     <DeliveriesPage
       search={search}
       role={role}
-      updateSearch={(next: OperationsPageSearch) =>
-        void navigate({ search: next, replace: true })
+      updateSearch={(next: DeliveriesSearchUpdate) =>
+        void navigate({
+          search: current =>
+            typeof next === "function"
+              ? next(current as DeliveriesPageSearch)
+              : next,
+          replace: true,
+        })
       }
     />
   )

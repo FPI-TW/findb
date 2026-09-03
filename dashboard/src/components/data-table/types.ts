@@ -41,6 +41,7 @@ export type DataTablePaginationProps = {
   onPageChange: (pageIndex: number) => void
   onPageSizeChange: (pageSize: number) => void
   className?: string
+  ariaLabel?: string
 }
 
 export type DataTableProps<TData extends RowData> = {
@@ -71,6 +72,8 @@ export type DataTableProps<TData extends RowData> = {
   /** Treat sorting as server-side and only emit sorting callbacks. */
   manualSorting?: boolean
   pageSizeOptions?: number[]
+  /** Accessible label for this table's pagination controls. */
+  paginationAriaLabel?: string
   /** Render a row-level loading state before the first successful response. */
   isLoading?: boolean
   /** Keep existing rows visible while showing a small refresh status. */

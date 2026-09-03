@@ -22,6 +22,7 @@ from app.services.historical_backfill import (
     claim_next_item,
     complete_item,
     create_request,
+    list_requests,
     preview_request,
 )
 from app.services.normalize.base import BaseNormalizer
@@ -168,7 +169,7 @@ async def test_historical_backfill_rejects_out_of_window_and_is_idempotent(test_
 
 
 @pytest.mark.asyncio
-async def test_calendar_gap_or_closed_day_rejects_whole_request_without_persistence(
+async def test_calendar_gap_rejects_whole_request_without_persistence(
     test_session,
 ) -> None:
     today = date(2026, 9, 1)
@@ -206,11 +207,17 @@ async def test_calendar_gap_or_closed_day_rejects_whole_request_without_persiste
     ) == 0
     assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 0
 
+
+@pytest.mark.asyncio
+async def test_closed_days_are_skipped_but_all_closed_range_is_rejected_without_persistence(
+    test_session,
+) -> None:
+    today = date(2026, 9, 1)
+    await _seed_scope(test_session, today)
+    closed = today - timedelta(days=1)
     await test_session.execute(
-        delete(CalendarRevisionDay).where(CalendarRevisionDay.trade_date == today)
+        delete(CalendarRevisionDay).where(CalendarRevisionDay.trade_date == closed)
     )
-    # Restore a published-but-closed record to prove the create gate also
-    # rejects a known non-trading day rather than creating a partial scope.
     revision = await test_session.scalar(
         select(CalendarYearRevision).where(CalendarYearRevision.market == "TW")
     )
@@ -219,27 +226,68 @@ async def test_calendar_gap_or_closed_day_rejects_whole_request_without_persiste
         CalendarRevisionDay(
             id=uuid7(),
             calendar_revision_id=revision.id,
-            trade_date=today,
+            trade_date=closed,
             day_status="closed",
             is_open=False,
             source_kind="test",
         )
     )
     await test_session.flush()
-    with pytest.raises(HistoricalBackfillError, match="closed market days"):
+
+    request, duplicate = await create_request(
+        test_session,
+        provider="shioaji",
+        dataset_key="tw_equity_minute",
+        start_date=closed,
+        end_date=today,
+        request_key="historic-calendar-mixed",
+        created_by="operator",
+        today=today,
+    )
+    assert duplicate is False
+    assert (request.start_date, request.end_date) == (closed, today)
+    assert [item.trade_date for item in request.items] == [today]
+
+    with pytest.raises(HistoricalBackfillError, match="no open market dates"):
+        await create_request(
+            test_session,
+            provider="shioaji",
+            dataset_key="tw_equity_minute",
+            start_date=closed,
+            end_date=closed,
+            request_key="historic-calendar-all-closed",
+            created_by="operator",
+            today=today,
+        )
+    assert (
+        await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_requests_are_newest_first_and_paginated(test_session) -> None:
+    today = date(2026, 9, 1)
+    await _seed_scope(test_session, today)
+    for index in range(3):
         await create_request(
             test_session,
             provider="shioaji",
             dataset_key="tw_equity_minute",
             start_date=today,
             end_date=today,
-            request_key="historic-calendar-closed",
+            request_key=f"historic-pagination-{index}",
             created_by="operator",
             today=today,
         )
-    assert (
-        await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
-    ) == 0
+    first, total = await list_requests(test_session, page=1, page_size=2)
+    second, second_total = await list_requests(test_session, page=2, page_size=2)
+    assert total == second_total == 3
+    assert len(first) == 2 and len(second) == 1
+    assert [row.request_key for row in first + second] == [
+        "historic-pagination-2",
+        "historic-pagination-1",
+        "historic-pagination-0",
+    ]
 
 
 @pytest.mark.asyncio
@@ -891,6 +939,85 @@ async def test_operator_can_preview_create_list_scope_and_cancel_historical_back
             headers=admin_headers,
         )
     ).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_operator_lists_historical_backfills_with_requested_pagination(
+    client, test_session, admin_headers
+) -> None:
+    today = date(2026, 9, 1)
+    await _seed_scope(test_session, today)
+    for index in range(3):
+        await create_request(
+            test_session,
+            provider="shioaji",
+            dataset_key="tw_equity_minute",
+            start_date=today,
+            end_date=today,
+            request_key=f"historic-api-pagination-{index}",
+            created_by="operator",
+            today=today,
+        )
+    response = await client.get(
+        "/api/v1/admin/historical-backfills?page=2&page_size=2",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["pagination"] | {"next_cursor": None} == {
+        "page": 2,
+        "page_size": 2,
+        "total_records": 3,
+        "total_pages": 2,
+        "next_cursor": None,
+    }
+    assert [row["request_key"] for row in response.json()["data"]] == ["historic-api-pagination-0"]
+
+
+@pytest.mark.asyncio
+async def test_create_endpoint_skips_published_closed_dates_but_preserves_requested_range(
+    client, test_session, admin_headers
+) -> None:
+    today = date(2026, 9, 1)
+    closed = today - timedelta(days=1)
+    await _seed_scope(test_session, today)
+    await test_session.execute(
+        delete(CalendarRevisionDay).where(CalendarRevisionDay.trade_date == closed)
+    )
+    revision = await test_session.scalar(
+        select(CalendarYearRevision).where(CalendarYearRevision.market == "TW")
+    )
+    assert revision is not None
+    test_session.add(
+        CalendarRevisionDay(
+            id=uuid7(),
+            calendar_revision_id=revision.id,
+            trade_date=closed,
+            day_status="closed",
+            is_open=False,
+            source_kind="test",
+        )
+    )
+    await test_session.flush()
+
+    response = await client.post(
+        "/api/v1/admin/historical-backfills",
+        headers=admin_headers,
+        json={
+            "provider": "shioaji",
+            "dataset_key": "tw_equity_minute",
+            "start_date": closed.isoformat(),
+            "end_date": today.isoformat(),
+            "request_key": "historic-api-mixed-closed-open",
+        },
+    )
+    assert response.status_code == 202
+    assert response.json()["start_date"] == closed.isoformat()
+    assert response.json()["end_date"] == today.isoformat()
+    assert [item["trade_date"] for item in response.json()["items"]] == [today.isoformat()]
+    assert (
+        await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest)) == 1
+    )
+    assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 1
 
 
 @pytest.mark.asyncio
