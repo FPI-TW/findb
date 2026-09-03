@@ -768,7 +768,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "ReadExactOperationalAlertKey",
         "ReadExactOperationalAlertTopic",
         "ReadExactOperationalAlertSubscription",
-        "ReadExactOperationalAlarmTags",
+        "ReadStagingOperationalAlarmTags",
         "ReadExactMetricPublisherAssociationTags",
     ):
         assert f'"{sid}"' in permissions
@@ -783,9 +783,10 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     alarm_metadata = permissions.split('sid       = "ReadOperationalAlarmMetadata"', 1)[1].split(
         'sid    = "ReadExactDeployRoles"', 1
     )[0]
-    assert "resources = local.operational_alarm_arns" in alarm_metadata
+    assert "resources = [local.infra_plan_operational_alarm_arn]" in alarm_metadata
     assert 'resources = ["*"]' not in alarm_metadata
     assert "CloudWatch supports resource-scoped DescribeAlarms" in plan
+    assert "alarm:findb-staging-*" in plan
     subscription_read = permissions.split('sid     = "ReadExactOperationalAlertSubscription"', 1)[
         1
     ].split('sid     = "ReadExactOperationalAlarmTags"', 1)[0]

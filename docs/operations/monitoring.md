@@ -153,6 +153,10 @@ create or alter monitoring resources.
    namespace-scoped metric publishing, FinDB-only RDS metadata read, and
    read-only plan refresh for the associations. Any EC2, RDS, VPC, security
    group, volume, runtime-secret, or unrelated resource mutation is a no-go.
+   The read-only plan role scopes CloudWatch alarm refresh to the deterministic
+   `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
+   every custom alarm ARN for both metadata and tag refresh exceeds IAM's
+   aggregate inline role-policy size limit.
 4. Apply only that reviewed fresh plan. Confirm both associations succeed,
    wait for two five-minute datapoints, verify every non-sparse alarm settles
    to `OK`, and retain the apply and association records. A breaching or
