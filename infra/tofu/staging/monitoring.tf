@@ -26,6 +26,7 @@ locals {
   operational_alarm_names = concat(
     [for unit in sort(keys(local.unit_config)) : "findb-staging-${unit}-status-check-failed"],
     [for alarm_key in sort(keys(local.rds_monitoring_alarms)) : "findb-staging-rds-${replace(alarm_key, "_", "-")}"],
+    [for alarm_key in sort(keys(local.custom_monitoring_alarms)) : local.custom_monitoring_alarms[alarm_key].alarm_name],
   )
   operational_alarm_arns = [
     for alarm_name in local.operational_alarm_names :
@@ -73,6 +74,183 @@ locals {
       description         = "fin-db average write latency is at least 100 ms for two consecutive five-minute periods."
     }
   }
+
+  monitored_containers = {
+    findb = toset([
+      "findb-dashboard",
+      "findb-dispatcher",
+      "findb-ingest",
+      "findb-nginx",
+      "findb-rabbitmq",
+      "findb-raw-cleanup",
+      "findb-serve",
+      "findb-worker",
+    ])
+    fetcher = toset([
+      "findb-fetcher-finlab-scheduler",
+      "findb-fetcher-scheduler",
+      "findb-fetcher-shioaji-scheduler",
+    ])
+  }
+
+  scheduler_keys = toset([
+    "finlab_tw_equity_eod_v1",
+    "shioaji_tw_pilot_v1",
+    "twelve_data_us_common_stocks_daily_v1",
+  ])
+
+  custom_monitoring_alarms = merge(
+    {
+      for unit in sort(keys(local.unit_config)) : "${unit}_disk" => {
+        alarm_name          = "findb-staging-${unit}-disk-used"
+        metric_name         = "DiskUsedPercent"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = var.monitoring_disk_used_percent_threshold
+        unit                = "Percent"
+        deployment_unit     = unit
+        resource            = "/"
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "${unit} root filesystem usage is at least 85 percent or the host metric is missing."
+      }
+    },
+    {
+      for unit in sort(keys(local.unit_config)) : "${unit}_inode" => {
+        alarm_name          = "findb-staging-${unit}-inode-used"
+        metric_name         = "InodeUsedPercent"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = var.monitoring_inode_used_percent_threshold
+        unit                = "Percent"
+        deployment_unit     = unit
+        resource            = "/"
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "${unit} root filesystem inode usage is at least 90 percent or the host metric is missing."
+      }
+    },
+    {
+      for unit in sort(keys(local.unit_config)) : "${unit}_collector" => {
+        alarm_name          = "findb-staging-${unit}-metric-collector-failed"
+        metric_name         = "CollectorSuccess"
+        comparison_operator = "LessThanThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = unit
+        resource            = "host"
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "${unit} metric collection failed or stopped publishing for two consecutive periods."
+      }
+    },
+    merge([
+      for unit, containers in local.monitored_containers : {
+        for container in containers : "${unit}_container_health_${container}" => {
+          alarm_name          = "findb-staging-${unit}-${replace(container, "findb-", "")}-unhealthy"
+          metric_name         = "DockerContainerHealthy"
+          comparison_operator = "LessThanThreshold"
+          threshold           = 1
+          unit                = "Count"
+          deployment_unit     = unit
+          resource            = container
+          evaluation_periods  = 2
+          datapoints_to_alarm = 2
+          treat_missing_data  = "breaching"
+          description         = "${container} is absent, stopped, unhealthy, or its health metric is missing."
+        }
+      }
+    ]...),
+    merge([
+      for unit, containers in local.monitored_containers : {
+        for container in containers : "${unit}_container_restart_${container}" => {
+          alarm_name          = "findb-staging-${unit}-${replace(container, "findb-", "")}-restarted"
+          metric_name         = "DockerRestartCount"
+          comparison_operator = "GreaterThanOrEqualToThreshold"
+          threshold           = var.monitoring_docker_restart_count_threshold
+          unit                = "Count"
+          deployment_unit     = unit
+          resource            = container
+          evaluation_periods  = 1
+          datapoints_to_alarm = 1
+          treat_missing_data  = "notBreaching"
+          description         = "${container} reports at least three Docker restarts in its current container lifetime."
+        }
+      }
+    ]...),
+    {
+      rabbitmq_disk = {
+        alarm_name          = "findb-staging-rabbitmq-disk-alarm"
+        metric_name         = "RabbitMQDiskAlarm"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "findb-rabbitmq"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "breaching"
+        description         = "RabbitMQ reports a local disk alarm or the metric is missing."
+      }
+      rabbitmq_memory = {
+        alarm_name          = "findb-staging-rabbitmq-memory-alarm"
+        metric_name         = "RabbitMQMemoryAlarm"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "findb-rabbitmq"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "breaching"
+        description         = "RabbitMQ reports a local memory alarm or the metric is missing."
+      }
+      rds_backup_lag = {
+        alarm_name          = "findb-staging-rds-backup-lag"
+        metric_name         = "RDSBackupLagSeconds"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = var.monitoring_rds_backup_lag_threshold_seconds
+        unit                = "Seconds"
+        deployment_unit     = "findb"
+        resource            = var.findb_rds_instance_identifier
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "fin-db latest restorable time lags by at least 30 minutes or the metric is missing."
+      }
+    },
+    {
+      for scheduler_key in local.scheduler_keys : "scheduler_${scheduler_key}" => {
+        alarm_name          = "findb-staging-fetcher-${replace(scheduler_key, "_", "-")}-heartbeat-stale"
+        metric_name         = "SchedulerHeartbeatAgeSeconds"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = var.monitoring_scheduler_heartbeat_age_threshold_seconds
+        unit                = "Seconds"
+        deployment_unit     = "fetcher"
+        resource            = scheduler_key
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "${scheduler_key} heartbeat is at least three minutes old or the metric is missing."
+      }
+    },
+    {
+      for unit in sort(keys(local.unit_config)) : "${unit}_deployment_failure" => {
+        alarm_name          = "findb-staging-${unit}-deployment-failed"
+        metric_name         = "DeploymentFailure"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = unit
+        resource            = "github-actions"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "The ${unit} staging CD workflow published a deployment failure."
+      }
+    },
+  )
 }
 
 data "aws_iam_policy_document" "operational_alerts_kms" {
@@ -385,4 +563,70 @@ resource "aws_cloudwatch_metric_alarm" "rds_native" {
   insufficient_data_actions = []
 
   tags = merge(local.common_tags, { DeploymentUnit = "findb-rds" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "custom" {
+  for_each = local.custom_monitoring_alarms
+
+  # The first association executions seed the non-sparse metrics before alarms
+  # with treat_missing_data=breaching can notify.
+  depends_on = [
+    aws_sns_topic_policy.operational_alerts,
+    aws_ssm_association.staging_metric_publisher,
+  ]
+
+  alarm_name          = each.value.alarm_name
+  alarm_description   = each.value.description
+  namespace           = "FinDB/Staging"
+  metric_name         = each.value.metric_name
+  dimensions          = { DeploymentUnit = each.value.deployment_unit, Resource = each.value.resource }
+  statistic           = "Maximum"
+  unit                = each.value.unit
+  comparison_operator = each.value.comparison_operator
+  threshold           = each.value.threshold
+
+  period                    = var.monitoring_alarm_period_seconds
+  evaluation_periods        = each.value.evaluation_periods
+  datapoints_to_alarm       = each.value.datapoints_to_alarm
+  treat_missing_data        = each.value.treat_missing_data
+  actions_enabled           = true
+  alarm_actions             = [aws_sns_topic.operational_alerts.arn]
+  ok_actions                = []
+  insufficient_data_actions = []
+
+  tags = merge(local.common_tags, { DeploymentUnit = each.value.deployment_unit })
+}
+
+resource "aws_ssm_association" "staging_metric_publisher" {
+  for_each = local.unit_config
+
+  association_name                 = "findb-staging-${each.key}-metric-publisher"
+  name                             = "AWS-RunShellScript"
+  schedule_expression              = "rate(5 minutes)"
+  apply_only_at_cron_interval      = false
+  compliance_severity              = "HIGH"
+  max_concurrency                  = "1"
+  max_errors                       = "0"
+  wait_for_success_timeout_seconds = 300
+
+  depends_on = [aws_iam_role_policy.instance_permissions]
+
+  parameters = {
+    commands = join("\n", [
+      "set -eu",
+      "install -d -o root -g root -m 0755 /usr/local/lib/findb-monitoring",
+      "printf '%s' '${filebase64("${path.module}/../../monitoring/publish_staging_metrics.py")}' | base64 -d > /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp",
+      "chown root:root /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp",
+      "chmod 0755 /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp",
+      "mv -f /usr/local/lib/findb-monitoring/publish_staging_metrics.py.tmp /usr/local/lib/findb-monitoring/publish_staging_metrics.py",
+      "/usr/bin/python3 /usr/local/lib/findb-monitoring/publish_staging_metrics.py --unit ${each.key} --region ${var.aws_region} --rds-instance-identifier ${var.findb_rds_instance_identifier}",
+    ])
+  }
+
+  targets {
+    key    = "InstanceIds"
+    values = [each.value.instance_id]
+  }
+
+  tags = merge(local.common_tags, { DeploymentUnit = each.key })
 }

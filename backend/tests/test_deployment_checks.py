@@ -4076,7 +4076,11 @@ def test_staging_cd_preflight_is_oidc_ssm_bounded_and_deploy_only() -> None:
         deploy = jobs["deploy"]
         assert deploy["permissions"]["id-token"] == "write"
         for job_name, job in jobs.items():
-            oidc_jobs = {"deploy", "build-push-staging-ecr"}
+            oidc_jobs = {
+                "deploy",
+                "build-push-staging-ecr",
+                "report-staging-deployment-failure",
+            }
             if workflow_path == FETCHER_CD_WORKFLOW:
                 oidc_jobs.add("finlab-acquisition-smoke")
             if job_name not in oidc_jobs:

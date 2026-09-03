@@ -55,13 +55,15 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "ec2:DescribeVpcs",
       "kms:ListAliases",
       "logs:DescribeLogGroups",
+      "ssm:DescribeAssociation",
+      "ssm:ListAssociations",
       "sts:GetCallerIdentity",
     ]
 
     resources = ["*"]
   }
 
-  # Refresh only the six deterministic alarm ARNs declared in monitoring.tf.
+  # Refresh only the deterministic alarm ARNs declared in monitoring.tf.
   # CloudWatch supports resource-scoped DescribeAlarms for these alarm ARNs.
   statement {
     sid       = "ReadOperationalAlarmMetadata"
@@ -211,6 +213,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
+    sid       = "ReadExactMetricPublisherAssociationTags"
+    effect    = "Allow"
+    actions   = ["ssm:ListTagsForResource"]
+    resources = [for association in aws_ssm_association.staging_metric_publisher : association.arn]
+  }
+
+  statement {
     sid    = "ReadExactSecretMetadata"
     effect = "Allow"
 
@@ -244,17 +253,48 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid       = "ReadExactOperationalAlertSubscription"
-    effect    = "Allow"
-    actions   = ["sns:GetSubscriptionAttributes"]
-    resources = [aws_sns_topic_subscription.operational_alert_email.arn]
+    sid     = "ReadExactOperationalAlertSubscription"
+    effect  = "Allow"
+    actions = ["sns:GetSubscriptionAttributes"]
+    # SNS evaluates this API against Resource="*" even though its service
+    # authorization table associates the action with a topic. Keep the grant
+    # bounded to the tagged staging operational-alert topic and region.
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.common_tags.Project]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [local.common_tags.Environment]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/DeploymentUnit"
+      values   = ["operational-alerts"]
+    }
   }
 
   statement {
-    sid       = "ReadExactOperationalAlarmTags"
-    effect    = "Allow"
-    actions   = ["cloudwatch:ListTagsForResource"]
-    resources = concat([for alarm in aws_cloudwatch_metric_alarm.ec2_status_check_failed : alarm.arn], [for alarm in aws_cloudwatch_metric_alarm.rds_native : alarm.arn])
+    sid     = "ReadExactOperationalAlarmTags"
+    effect  = "Allow"
+    actions = ["cloudwatch:ListTagsForResource"]
+    resources = concat(
+      [for alarm in aws_cloudwatch_metric_alarm.ec2_status_check_failed : alarm.arn],
+      [for alarm in aws_cloudwatch_metric_alarm.rds_native : alarm.arn],
+      [for alarm in aws_cloudwatch_metric_alarm.custom : alarm.arn],
+    )
   }
 
   # The aws_s3_bucket resource and its v6 provider refresh path use bucket
