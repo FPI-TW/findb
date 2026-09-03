@@ -6,6 +6,8 @@ locals {
   # policy size once custom coverage is enabled. Keep refresh access bounded to
   # this stack's deterministic staging alarm-name prefix instead.
   infra_plan_operational_alarm_arn = "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:findb-staging-*"
+  infra_plan_dlm_policy_arn        = "arn:${data.aws_partition.current.partition}:dlm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:policy/*"
+  infra_plan_dlm_role_arn          = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/findb-staging-dlm-root-volume-backup"
 }
 
 data "aws_iam_policy_document" "infra_plan_trust" {
@@ -77,7 +79,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid    = "ReadExactDeployRoles"
+    sid    = "ReadExactManagedRoles"
     effect = "Allow"
 
     actions = [
@@ -89,44 +91,22 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "iam:ListRoleTags",
     ]
 
-    resources = [for role in aws_iam_role.deploy : role.arn]
+    resources = concat(
+      [for role in aws_iam_role.deploy : role.arn],
+      [for role in aws_iam_role.instance : role.arn],
+      [for role in aws_iam_role.ecr_publisher : role.arn],
+      [aws_iam_role.infra_plan.arn, local.infra_plan_dlm_role_arn],
+    )
   }
 
   statement {
-    sid    = "ReadExactInstanceRoles"
-    effect = "Allow"
-
-    actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-    ]
-
-    resources = [for role in aws_iam_role.instance : role.arn]
-  }
-
-  statement {
-    sid       = "ReadExactEcrPublisherRoles"
-    effect    = "Allow"
-    actions   = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole", "iam:ListRolePolicies", "iam:ListRoleTags"]
-    resources = [for role in aws_iam_role.ecr_publisher : role.arn]
-  }
-
-  statement {
-    sid    = "ReadExactInfraPlanRole"
+    sid    = "ReadExactRootVolumeBackupPolicy"
     effect = "Allow"
     actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
+      "dlm:GetLifecyclePolicy",
+      "dlm:ListTagsForResource",
     ]
-    resources = [aws_iam_role.infra_plan.arn]
+    resources = [local.infra_plan_dlm_policy_arn]
   }
 
   statement {

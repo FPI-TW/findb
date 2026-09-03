@@ -18,6 +18,14 @@ output "metric_publisher_association_ids" {
   value       = { for unit, association in aws_ssm_association.staging_metric_publisher : unit => association.association_id }
 }
 
+output "root_volume_backup" {
+  description = "Enabled DLM policy and the exact current root volumes selected for daily seven-point retention."
+  value = {
+    policy_arn = aws_dlm_lifecycle_policy.root_volume_backup.arn
+    volume_ids = { for unit, config in local.root_volume_config : unit => config.volume_id }
+  }
+}
+
 output "deploy_role_arns" {
   description = "Separate OIDC deploy role ARN for each staging environment."
   value = {

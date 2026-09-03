@@ -185,12 +185,17 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         in permissions
     )
     assert 'resources = ["*"]' in permissions
-    assert 'sid    = "ReadExactDeployRoles"' in permissions
-    assert "resources = [for role in aws_iam_role.deploy : role.arn]" in permissions
-    assert 'sid    = "ReadExactInstanceRoles"' in permissions
-    assert "resources = [for role in aws_iam_role.instance : role.arn]" in permissions
-    assert 'sid    = "ReadExactInfraPlanRole"' in permissions
-    assert "resources = [aws_iam_role.infra_plan.arn]" in permissions
+    assert 'sid    = "ReadExactManagedRoles"' in permissions
+    assert "[for role in aws_iam_role.deploy : role.arn]" in permissions
+    assert "[for role in aws_iam_role.instance : role.arn]" in permissions
+    assert "[for role in aws_iam_role.ecr_publisher : role.arn]" in permissions
+    assert "[aws_iam_role.infra_plan.arn, local.infra_plan_dlm_role_arn]" in permissions
+    assert ":role/findb-staging-dlm-root-volume-backup" in plan
+    assert 'sid    = "ReadExactRootVolumeBackupPolicy"' in permissions
+    assert "resources = [local.infra_plan_dlm_policy_arn]" in permissions
+    assert ":dlm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:policy/*" in plan
+    assert '"dlm:GetLifecyclePolicy"' in permissions
+    assert '"dlm:ListTagsForResource"' in permissions
     assert 'sid    = "ReadExactInstanceProfiles"' in permissions
     assert (
         "resources = [for profile in aws_iam_instance_profile.instance : profile.arn]"
@@ -781,7 +786,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert "cloudwatch:PutMetricAlarm" not in permissions
     assert "cloudwatch:SetAlarmState" not in permissions
     alarm_metadata = permissions.split('sid       = "ReadOperationalAlarmMetadata"', 1)[1].split(
-        'sid    = "ReadExactDeployRoles"', 1
+        'sid    = "ReadExactManagedRoles"', 1
     )[0]
     assert "resources = [local.infra_plan_operational_alarm_arn]" in alarm_metadata
     assert 'resources = ["*"]' not in alarm_metadata
@@ -824,6 +829,40 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "AWS charges can arise",
     ):
         assert phrase in runbook
+
+
+def test_phase6_root_volume_backup_is_current_volume_bounded_and_retained() -> None:
+    backup = _read(STAGING_ROOT / "backup.tf")
+    outputs = _read(STAGING_ROOT / "outputs.tf")
+    readme = _read(TOFU_ROOT / "README.md")
+
+    assert 'resource "aws_ec2_tag" "root_volume_backup_selection"' in backup
+    assert "one(data.aws_instance.findb.root_block_device).volume_id" in backup
+    assert "one(data.aws_instance.fetcher.root_block_device).volume_id" in backup
+    assert 'key         = "FinDBBackupPolicy"' in backup
+    assert 'root_volume_backup_selection = "findb-staging-current-root-daily"' in backup
+    assert 'resource "aws_iam_role" "dlm_root_volume_backup"' in backup
+    assert 'identifiers = ["dlm.amazonaws.com"]' in backup
+    assert "AWSDataLifecycleManagerServiceRole" in backup
+    assert 'resource "aws_dlm_lifecycle_policy" "root_volume_backup"' in backup
+    assert 'state              = "ENABLED"' in backup
+    assert 'policy_type    = "EBS_SNAPSHOT_MANAGEMENT"' in backup
+    assert 'resource_types = ["VOLUME"]' in backup
+    assert "interval      = 24" in backup
+    assert 'interval_unit = "HOURS"' in backup
+    assert 'times         = ["09:00"]' in backup
+    assert "count = 7" in backup
+    assert "copy_tags = true" in backup
+    assert 'Purpose     = "automated-current-root-backup"' in backup
+    assert 'output "root_volume_backup"' in outputs
+    for phrase in (
+        "root volumes currently attached",
+        "daily 09:00 UTC",
+        "retains seven recovery points",
+        "snapshot storage",
+        "does not prove recurring execution",
+    ):
+        assert phrase in readme
 
 
 def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> None:
