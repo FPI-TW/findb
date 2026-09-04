@@ -406,6 +406,23 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
         assert f"{unit}/accepted/" in text
 
 
+def test_reusable_deploy_concurrency_does_not_compete_with_its_caller() -> None:
+    for unit in ("findb", "fetcher"):
+        reusable = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
+        )
+        reusable_group = reusable["jobs"]["deploy"]["concurrency"]["group"]
+        assert reusable_group == f"${{{{ inputs.deployment_target }}}}-{unit}-deploy"
+        for target, caller_name in (
+            ("staging", f"{unit}-cd.yml"),
+            ("production", f"{unit}-production-cd.yml"),
+        ):
+            caller = yaml.safe_load((ROOT / ".github" / "workflows" / caller_name).read_text())
+            caller_group = caller["concurrency"]["group"]
+            assert caller_group == f"{target}-{unit}"
+            assert reusable_group.replace("${{ inputs.deployment_target }}", target) != caller_group
+
+
 def test_reusable_workflows_accept_staging_candidates_before_activation() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()

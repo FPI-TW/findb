@@ -52,7 +52,9 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 | `fetcher-ci.yml` | Fetcher、contracts、images | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
 | `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`時，在staging cutover gate啟用後自動rollout；manual dispatch只接受staging | `staging-fetcher`／`staging-fetcher` |
 
-Deployment concurrency一律`cancel-in-progress: false`。CD直接呼叫同revision reusable CI；
+Deployment concurrency一律`cancel-in-progress: false`。Caller以`<target>-<unit>`序列化整條CD，
+reusable deploy job另用`<target>-<unit>-deploy`序列化host mutation；兩層不得使用同名group，避免
+called job與仍持有caller lease的workflow自我競爭。CD直接呼叫同revision reusable CI；
 不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署任一unit；需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。

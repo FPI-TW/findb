@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: ${{ inputs.deployment_target }}-findb
-    concurrency: {group: '${{ inputs.deployment_target }}-findb', cancel-in-progress: false}
+    concurrency: {group: '${{ inputs.deployment_target }}-findb-deploy', cancel-in-progress: false}
     outputs:
       accepted_bundle_key: ${{ steps.outputs.outputs.accepted_bundle_key }}
       target_id: ${{ steps.outputs.outputs.target_id }}
