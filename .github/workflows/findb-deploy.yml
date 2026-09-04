@@ -1,0 +1,290 @@
+name: Reusable FinDB deployment
+
+on:
+  workflow_call:
+    inputs:
+      deployment_target: {required: true, type: string}
+      revision: {required: true, type: string}
+      mode: {required: true, type: string}
+      bundle_key: {required: true, type: string}
+      release_tag: {required: false, type: string, default: ''}
+    outputs:
+      accepted_bundle_key:
+        value: ${{ jobs.deploy.outputs.accepted_bundle_key }}
+      target_id:
+        value: ${{ jobs.deploy.outputs.target_id }}
+      release_root:
+        value: ${{ jobs.deploy.outputs.release_root }}
+
+permissions: {contents: read, id-token: write}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ${{ inputs.deployment_target }}-findb
+    concurrency: {group: '${{ inputs.deployment_target }}-findb', cancel-in-progress: false}
+    outputs:
+      accepted_bundle_key: ${{ steps.outputs.outputs.accepted_bundle_key }}
+      target_id: ${{ steps.outputs.outputs.target_id }}
+      release_root: ${{ steps.outputs.outputs.release_root }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ inputs.revision }}', persist-credentials: false}
+      - name: Verify immutable target contract
+        env:
+          EXPECTED_SHA: ${{ inputs.revision }}
+          TARGET: ${{ inputs.deployment_target }}
+          MODE: ${{ inputs.mode }}
+          BUNDLE_KEY: ${{ inputs.bundle_key }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PRODUCTION_ENABLED: ${{ vars.PRODUCTION_DEPLOY_ENABLED }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_SHA" ]
+          [[ "$TARGET" =~ ^(staging|production)$ ]]
+          [[ "$MODE" =~ ^(candidate|replay)$ ]]
+          if [ "$TARGET" = production ]; then
+            [ "$PRODUCTION_ENABLED" = true ]
+            [[ "$RELEASE_TAG" =~ ^findb-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+            if [ "$MODE" = candidate ]; then
+              [[ "$BUNDLE_KEY" =~ ^findb/production/candidates/${EXPECTED_SHA}/[0-9]+-[0-9]+-[0-9a-f]{64}[.]tar$ ]]
+            else
+              [[ "$BUNDLE_KEY" =~ ^findb/production/accepted/${EXPECTED_SHA}/[0-9a-f]{64}[.]tar$ ]]
+            fi
+          else
+            [ -z "$RELEASE_TAG" ]
+            if [ "$MODE" = candidate ]; then
+              [[ "$BUNDLE_KEY" =~ ^findb/candidates/${EXPECTED_SHA}/[0-9]+-[0-9]+-[0-9a-f]{64}[.]tar$ ]]
+            else
+              [[ "$BUNDLE_KEY" =~ ^findb/accepted/${EXPECTED_SHA}/[0-9a-f]{64}[.]tar$ ]]
+            fi
+          fi
+      - name: Configure target AWS deploy credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: ${{ inputs.deployment_target }}-findb-${{ github.run_id }}
+      - name: Validate account and materialize release selection
+        id: release
+        env:
+          TARGET: ${{ inputs.deployment_target }}
+          REVISION: ${{ inputs.revision }}
+          MODE: ${{ inputs.mode }}
+          BUNDLE_KEY: ${{ inputs.bundle_key }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          INSTANCE_PROFILE: ${{ vars.AWS_INSTANCE_PROFILE_NAME }}
+          STAGING_ECR_REGISTRY: ${{ vars.STAGING_ECR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          [ "$AWS_REGION" = ap-southeast-1 ]
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [ "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID" ]
+          [ "$ECR_REGISTRY" = "$AWS_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com" ]
+          target_ids="$(aws ec2 describe-instances --filters Name=instance-state-name,Values=running Name=tag:Project,Values=findb Name=tag:Environment,Values="$TARGET" Name=tag:DeploymentUnit,Values=findb --query 'Reservations[].Instances[].InstanceId' --output json)"
+          [ "$(jq -r length <<<"$target_ids")" -eq 1 ]
+          target_id="$(jq -r '.[0]' <<<"$target_ids")"
+          profile_arn="$(aws ec2 describe-instances --instance-ids "$target_id" --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)"
+          [ "${profile_arn##*/}" = "$INSTANCE_PROFILE" ]
+          [ "$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$target_id" --query 'InstanceInformationList[0].PingStatus' --output text)" = Online ]
+          bundle_filename="${BUNDLE_KEY##*/}"
+          bundle_filename="${bundle_filename%.tar}"
+          if [ "$MODE" = candidate ]; then
+            bundle_sha256="${bundle_filename##*-}"
+          else
+            bundle_sha256="$bundle_filename"
+          fi
+          [[ "$bundle_sha256" =~ ^[0-9a-f]{64}$ ]]
+          aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$BUNDLE_KEY" "$RUNNER_TEMP/release-bundle.tar" >/dev/null
+          [ "$(sha256sum "$RUNNER_TEMP/release-bundle.tar" | cut -d ' ' -f1)" = "$bundle_sha256" ]
+          validator="infra/deploy/release_manifest.py"
+          if [ "$TARGET" = staging ] && [ "$MODE" = replay ]; then
+            record_key="${BUNDLE_KEY%.tar}.acceptance.json"
+            aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/acceptance.json" >/dev/null
+            if [ "$(jq -r '.schema_version // 1' "$RUNNER_TEMP/acceptance.json")" = 1 ]; then
+              validator="$RUNNER_TEMP/staging-v1-bundle-validator.py"
+              tar -xOf "$RUNNER_TEMP/release-bundle.tar" infra/deploy/release_manifest.py > "$validator"
+              [ "$(sha256sum "$validator" | cut -d ' ' -f1)" = "$(jq -r .validator_sha256 "$RUNNER_TEMP/acceptance.json")" ]
+              chmod 0700 "$validator"
+            fi
+          fi
+          python3 "$validator" validate-bundle --bundle "$RUNNER_TEMP/release-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit findb --commit-sha "$REVISION"
+          tar -xOf "$RUNNER_TEMP/release-bundle.tar" release-manifest.json > "$RUNNER_TEMP/release-manifest.json"
+          [ "$(jq -r .deployment_target "$RUNNER_TEMP/release-manifest.json")" = "$TARGET" ]
+          [ "$(jq -r .release_tag "$RUNNER_TEMP/release-manifest.json")" = "$RELEASE_TAG" ]
+          if [ "$TARGET" = production ]; then
+            [ "$(jq -r .promotion_source.staging_registry "$RUNNER_TEMP/release-manifest.json")" = "$STAGING_ECR_REGISTRY" ]
+          fi
+          backend="$(jq -r .images.backend "$RUNNER_TEMP/release-manifest.json")"
+          dashboard="$(jq -r .images.dashboard "$RUNNER_TEMP/release-manifest.json")"
+          migration="$(jq -r .migration_revision "$RUNNER_TEMP/release-manifest.json")"
+          [[ "$backend" =~ ^${ECR_REGISTRY}/findb/${TARGET}/backend@sha256:[0-9a-f]{64}$ ]]
+          [[ "$dashboard" =~ ^${ECR_REGISTRY}/findb/${TARGET}/dashboard@sha256:[0-9a-f]{64}$ ]]
+          if [ "$MODE" = replay ]; then
+            record_key="${BUNDLE_KEY%.tar}.acceptance.json"
+            [ -f "$RUNNER_TEMP/acceptance.json" ] || aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/acceptance.json" >/dev/null
+            if [ "$TARGET" = production ]; then
+              jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" --arg release_tag "$RELEASE_TAG" '.schema_version == 2 and .deployment_target == "production" and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "findb" and .commit_sha == $revision and .release_tag == $release_tag and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$RUNNER_TEMP/acceptance.json" >/dev/null
+            else
+              # v1 records are read-only staging recycle compatibility; new records are v2.
+              jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '(.schema_version == 2 and .deployment_target == "staging" and .release_tag == "" and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "findb" and .commit_sha == $revision and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))) or ((.schema_version | not) and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "findb" and .commit_sha == $revision and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")))' "$RUNNER_TEMP/acceptance.json" >/dev/null
+            fi
+          fi
+          rds_endpoint="$(aws rds describe-db-instances --db-instance-identifier '${{ vars.RDS_DB_INSTANCE_IDENTIFIER }}' --query 'DBInstances[0].Endpoint.Address' --output text)"
+          validator_sha256="$(sha256sum infra/deploy/release_manifest.py | cut -d ' ' -f1)"
+          printf 'bundle_sha256=%s\nbackend=%s\ndashboard=%s\nmigration=%s\nrds_endpoint=%s\ntarget_id=%s\nvalidator_sha256=%s\n' "$bundle_sha256" "$backend" "$dashboard" "$migration" "$rds_endpoint" "$target_id" "$validator_sha256" >> "$GITHUB_OUTPUT"
+      - name: Run target-aware read-only SSM preflight
+        id: preflight
+        env:
+          TARGET: ${{ inputs.deployment_target }}
+          REVISION: ${{ inputs.revision }}
+          BUNDLE_KEY: ${{ inputs.bundle_key }}
+          BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
+          VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
+          BACKEND_IMAGE: ${{ steps.release.outputs.backend }}
+          DASHBOARD_IMAGE: ${{ steps.release.outputs.dashboard }}
+          TARGET_ID: ${{ steps.release.outputs.target_id }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
+          SSM_LOG_GROUP: ${{ vars.AWS_SSM_LOG_GROUP }}
+        run: |
+          set -euo pipefail
+          marker="findb-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for name in TARGET REVISION BUNDLE_KEY BUNDLE_SHA256 VALIDATOR_SHA256 BACKEND_IMAGE DASHBOARD_IMAGE TARGET_ID AWS_REGION AWS_ACCOUNT_ID ECR_REGISTRY BUNDLE_BUCKET DNS_CHECK_NAME SSM_LOG_GROUP; do [ -n "${!name:-}" ] || exit 1; done
+          printf -v q_target '%q' "$TARGET"; printf -v q_revision '%q' "$REVISION"; printf -v q_key '%q' "$BUNDLE_KEY"; printf -v q_sha '%q' "$BUNDLE_SHA256"; printf -v q_validator '%q' "$VALIDATOR_SHA256"; printf -v q_backend '%q' "$BACKEND_IMAGE"; printf -v q_dashboard '%q' "$DASHBOARD_IMAGE"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_region '%q' "$AWS_REGION"; printf -v q_registry '%q' "$ECR_REGISTRY"; printf -v q_bucket '%q' "$BUNDLE_BUCKET"; printf -v q_dns '%q' "$DNS_CHECK_NAME"; printf -v q_marker '%q' "$marker"
+          host_command="set -euo pipefail; trap 'printf \"findb_preflight_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; work=\$(mktemp -d /tmp/findb-preflight.XXXXXX); trap 'rm -rf \"\$work\"' EXIT; bundle=\"\$work/bundle.tar\"; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$work/validator.py\"; [ \"\$(sha256sum \"\$work/validator.py\" | cut -d ' ' -f1)\" = $q_validator ]; python3 \"\$work/validator.py\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit findb --output \"\$work/release\" --commit-sha $q_revision; aws ecr get-login-password --region $q_region | docker --config \"\$work/docker\" login --username AWS --password-stdin $q_registry >/dev/null; for image in $q_backend $q_dashboard; do docker --config \"\$work/docker\" pull \"\$image\" >/dev/null; docker image inspect \"\$image\" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq \"\$image\"; done; denied=\"\$work/denied\"; if aws secretsmanager get-secret-value --region $q_region --secret-id arn:aws:secretsmanager:$q_region:$q_account:secret:findb/$q_target/findb/phase1-preflight-denial-probe >/dev/null 2>\"\$denied\"; then exit 1; fi; grep -Fq AccessDenied \"\$denied\"; python3 \"\$work/release/infra/deploy/runtime-secrets/load_runtime_secrets.py\" --catalog \"\$work/release/infra/deploy/runtime-secrets/findb.json\" --consumer compose --region $q_region --deployment-target $q_target --output \"\$work/runtime.env\" --check-only; docker compose -f \"\$work/release/docker-compose.prod.yml\" config -q; docker ps --format '{{.Names}}' | grep -Eq 'findb|rabbitmq'; printf \"findb_preflight_marker=%s status=success\\n\" $q_marker"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${SSM_LOG_GROUP}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
+          source infra/deploy/ssm_command_marker_gate.sh
+          for _ in $(seq 1 60); do state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "findb_preflight_marker=$marker status=success" "findb_preflight_marker=$marker status=failed")"; [ "$state" = success ] && { echo "command_id=$command_id" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 5; done
+          exit 1
+      - name: Run candidate acceptance or accepted replay through bounded SSM
+        id: ssm
+        env:
+          TARGET: ${{ inputs.deployment_target }}
+          MODE: ${{ inputs.mode }}
+          REVISION: ${{ inputs.revision }}
+          BUNDLE_KEY: ${{ inputs.bundle_key }}
+          BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
+          BACKEND_IMAGE: ${{ steps.release.outputs.backend }}
+          DASHBOARD_IMAGE: ${{ steps.release.outputs.dashboard }}
+          MIGRATION: ${{ steps.release.outputs.migration }}
+          RDS_ENDPOINT: ${{ steps.release.outputs.rds_endpoint }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          TARGET_ID: ${{ steps.release.outputs.target_id }}
+          VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
+          FINDB_PUBLIC_HOST: ${{ inputs.deployment_target == 'production' && vars.AWS_DNS_CHECK_NAME || vars.FINDB_PUBLIC_HOST }}
+          SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
+          DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
+          marker="findb-${MODE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf -v q_bucket '%q' "$BUNDLE_BUCKET"; printf -v q_key '%q' "$BUNDLE_KEY"; printf -v q_sha '%q' "$BUNDLE_SHA256"
+          printf -v q_target '%q' "$TARGET"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"
+          printf -v q_backend '%q' "$BACKEND_IMAGE"; printf -v q_dashboard '%q' "$DASHBOARD_IMAGE"; printf -v q_migration '%q' "$MIGRATION"; printf -v q_rds '%q' "$RDS_ENDPOINT"
+          printf -v q_host '%q' "$FINDB_PUBLIC_HOST"; printf -v q_allowlist '%q' "$SOURCE_ALLOWLIST_CIDRS"; printf -v q_marker '%q' "$marker"
+          printf -v q_dns '%q' "$DNS_CHECK_NAME"
+          printf -v q_validator_sha '%q' "$VALIDATOR_SHA256"
+          host_mode=candidate; [ "$MODE" = replay ] && host_mode=activate
+          printf -v q_host_mode '%q' "$host_mode"
+          host_command="set -euo pipefail; trap 'printf \"findb_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/findb-$BUNDLE_SHA256.tar; validator=/tmp/findb-release-manifest-$BUNDLE_SHA256.py; root=/opt/findb/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit findb --output \"\$root\" --commit-sha $REVISION; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry FINDB_IMAGE_REF=$q_backend DASHBOARD_IMAGE_REF=$q_dashboard PREDEPLOY_EXPECTED_ALEMBIC_REVISION=$q_migration PREDEPLOY_EXPECTED_RDS_ENDPOINT=$q_rds FINDB_PUBLIC_HOST=$q_host SOURCE_ALLOWLIST_CIDRS=$q_allowlist FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx FINDB_RELEASE_ROOT=\"\$root\" FINDB_DEPLOY_MODE=$q_host_mode; \"\$root/infra/deploy/runtime-secrets/deploy_findb_aws.sh\"; printf \"findb_deploy_marker=%s status=success\\n\" $q_marker"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ vars.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
+          source infra/deploy/ssm_command_marker_gate.sh
+          for _ in $(seq 1 360); do
+            state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "findb_deploy_marker=$marker status=success" "findb_deploy_marker=$marker status=failed")"
+            if [ "$state" = success ]; then echo "command_id=$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - name: Persist immutable target-aware acceptance record
+        id: acceptance
+        if: ${{ success() && inputs.mode == 'candidate' }}
+        env:
+          REVISION: ${{ inputs.revision }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_KEY: ${{ inputs.bundle_key }}
+          BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
+          COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
+          VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
+          MIGRATION_REVISION: ${{ steps.release.outputs.migration }}
+          BACKEND_IMAGE: ${{ steps.release.outputs.backend }}
+          DASHBOARD_IMAGE: ${{ steps.release.outputs.dashboard }}
+          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          KMS_KEY: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.deployment_target }}" = production ]; then
+            accepted_key="findb/production/accepted/${REVISION}/${BUNDLE_SHA256}.tar"
+          else
+            accepted_key="findb/accepted/${REVISION}/${BUNDLE_SHA256}.tar"
+          fi
+          if aws s3api head-object --bucket "$BUNDLE_BUCKET" --key "$accepted_key" >/dev/null 2>&1; then
+            aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$accepted_key" "$RUNNER_TEMP/existing.tar" >/dev/null
+            [ "$(sha256sum "$RUNNER_TEMP/existing.tar" | cut -d ' ' -f1)" = "$BUNDLE_SHA256" ]
+          else
+            aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$accepted_key" --body "$RUNNER_TEMP/release-bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
+          fi
+          record_key="${accepted_key%.tar}.acceptance.json"
+          jq -cn --arg target "${{ inputs.deployment_target }}" --arg unit findb --arg commit_sha "$REVISION" --arg bundle_sha256 "$BUNDLE_SHA256" --arg bundle_key "$accepted_key" --arg release_tag "$RELEASE_TAG" --arg candidate_key "$CANDIDATE_KEY" --arg ssm_command_id "$COMMAND_ID" --arg validator_sha256 "$VALIDATOR_SHA256" --arg migration_revision "$MIGRATION_REVISION" --arg backend "$BACKEND_IMAGE" --arg dashboard "$DASHBOARD_IMAGE" --arg workflow_run_id "$GITHUB_RUN_ID" --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" '{schema_version:2,deployment_target:$target,unit:$unit,commit_sha:$commit_sha,bundle_sha256:$bundle_sha256,bundle_key:$bundle_key,release_tag:$release_tag,candidate_key:$candidate_key,ssm_command_id:$ssm_command_id,validator_sha256:$validator_sha256,migration_revision:$migration_revision,images:{backend:$backend,dashboard:$dashboard},workflow_run_id:$workflow_run_id,workflow_run_attempt:$workflow_run_attempt,state:"accepted"}' > "$RUNNER_TEMP/acceptance.json"
+          if aws s3api head-object --bucket "$BUNDLE_BUCKET" --key "$record_key" >/dev/null 2>&1; then
+            aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/existing-acceptance.json" >/dev/null
+            jq -e --arg target "${{ inputs.deployment_target }}" --arg key "$accepted_key" --arg sha "$BUNDLE_SHA256" --arg revision "$REVISION" --arg release_tag "$RELEASE_TAG" '.schema_version == 2 and .deployment_target == $target and .state == "accepted" and .unit == "findb" and .bundle_key == $key and .bundle_sha256 == $sha and .commit_sha == $revision and .release_tag == $release_tag' "$RUNNER_TEMP/existing-acceptance.json" >/dev/null
+          else
+            aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$record_key" --body "$RUNNER_TEMP/acceptance.json" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
+          fi
+          echo "accepted_bundle_key=$accepted_key" >> "$GITHUB_OUTPUT"
+      - name: Activate only after immutable acceptance is durable
+        if: ${{ success() && inputs.mode == 'candidate' }}
+        env:
+          BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
+          TARGET_ID: ${{ steps.release.outputs.target_id }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          BACKEND_IMAGE: ${{ steps.release.outputs.backend }}
+          DASHBOARD_IMAGE: ${{ steps.release.outputs.dashboard }}
+          MIGRATION: ${{ steps.release.outputs.migration }}
+          RDS_ENDPOINT: ${{ steps.release.outputs.rds_endpoint }}
+          FINDB_PUBLIC_HOST: ${{ vars.AWS_DNS_CHECK_NAME }}
+          SOURCE_ALLOWLIST_CIDRS: ${{ vars.SOURCE_ALLOWLIST_CIDRS }}
+          TARGET: ${{ inputs.deployment_target }}
+        run: |
+          set -euo pipefail
+          marker="findb-activate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          root="/opt/findb/releases/${BUNDLE_SHA256}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf -v q_root '%q' "$root"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"
+          printf -v q_backend '%q' "$BACKEND_IMAGE"; printf -v q_dashboard '%q' "$DASHBOARD_IMAGE"; printf -v q_migration '%q' "$MIGRATION"; printf -v q_rds '%q' "$RDS_ENDPOINT"; printf -v q_host '%q' "$FINDB_PUBLIC_HOST"; printf -v q_allowlist '%q' "$SOURCE_ALLOWLIST_CIDRS"; printf -v q_target '%q' "$TARGET"; printf -v q_marker '%q' "$marker"
+          host_command="set -euo pipefail; trap 'printf \"findb_activate_marker=%s status=failed\\n\" $q_marker' ERR; root=$q_root; [ -d \"\$root\" ] && [ ! -L \"\$root\" ]; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry FINDB_IMAGE_REF=$q_backend DASHBOARD_IMAGE_REF=$q_dashboard PREDEPLOY_EXPECTED_ALEMBIC_REVISION=$q_migration PREDEPLOY_EXPECTED_RDS_ENDPOINT=$q_rds FINDB_PUBLIC_HOST=$q_host SOURCE_ALLOWLIST_CIDRS=$q_allowlist FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx FINDB_RELEASE_ROOT=\"\$root\" FINDB_DEPLOY_MODE=activate; \"\$root/infra/deploy/runtime-secrets/deploy_findb_aws.sh\"; printf \"findb_activate_marker=%s status=success\\n\" $q_marker"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ vars.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
+          source infra/deploy/ssm_command_marker_gate.sh
+          for _ in $(seq 1 360); do
+            state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "findb_activate_marker=$marker status=success" "findb_activate_marker=$marker status=failed")"
+            [ "$state" = success ] && exit 0
+            sleep 5
+          done
+          exit 1
+      - name: Publish reusable deployment outputs
+        id: outputs
+        if: ${{ success() }}
+        env:
+          TARGET_ID: ${{ steps.release.outputs.target_id }}
+          BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
+          ACCEPTED_BUNDLE_KEY: ${{ steps.acceptance.outputs.accepted_bundle_key || inputs.bundle_key }}
+        run: |
+          set -euo pipefail
+          printf 'accepted_bundle_key=%s\n' "$ACCEPTED_BUNDLE_KEY" >> "$GITHUB_OUTPUT"
+          printf 'target_id=%s\n' "$TARGET_ID" >> "$GITHUB_OUTPUT"
+          printf 'release_root=/opt/findb/releases/%s-%s-%s\n' "$BUNDLE_SHA256" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"

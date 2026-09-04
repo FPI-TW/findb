@@ -1,0 +1,236 @@
+name: FinDB Production CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode: {description: Promote staging or replay production, required: true, type: choice, options: [promote, rollback]}
+      release_tag: {description: Exact immutable findb-vMAJOR.MINOR.PATCH tag, required: true, type: string}
+      accepted_bundle_key: {description: Exact staging or production accepted bundle key, required: true, type: string}
+      confirmation: {description: Type PROMOTE_FINDB_PRODUCTION, required: true, type: string}
+
+permissions: {contents: read, id-token: write}
+concurrency: {group: production-findb, cancel-in-progress: false}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    environment: production-findb
+    outputs: {revision: '${{ steps.resolve.outputs.sha }}', tag_ref_oid: '${{ steps.resolve.outputs.tag_ref_oid }}'}
+    steps:
+      - name: Fail closed before release resolution
+        env:
+          ENABLED: ${{ vars.PRODUCTION_DEPLOY_ENABLED }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          MODE: ${{ inputs.mode }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+        run: |
+          set -euo pipefail
+          [ "$ENABLED" = true ]
+          [ "$CONFIRMATION" = PROMOTE_FINDB_PRODUCTION ]
+          [[ "$MODE" =~ ^(promote|rollback)$ ]]
+          [[ "$RELEASE_TAG" =~ ^findb-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+          if [ "$MODE" = promote ]; then
+            [[ "$BUNDLE_KEY" =~ ^findb/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
+          else
+            [[ "$BUNDLE_KEY" =~ ^findb/production/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: 'refs/tags/${{ inputs.release_tag }}', fetch-depth: 0, persist-credentials: false}
+      - id: resolve
+        env: {RELEASE_TAG: '${{ inputs.release_tag }}'}
+        run: |
+          set -euo pipefail
+          tag_ref_oid="$(git rev-parse "refs/tags/$RELEASE_TAG")"
+          peeled_commit_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          sha="$(git rev-parse HEAD)"
+          [ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag ]
+          [[ "$tag_ref_oid" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$peeled_commit_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [ "$sha" = "$peeled_commit_sha" ]
+          [ "$(git tag --points-at HEAD --format='%(refname:short)' | grep -Fx "$RELEASE_TAG")" = "$RELEASE_TAG" ]
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag_ref_oid=$tag_ref_oid" >> "$GITHUB_OUTPUT"
+
+  bind-release-tag:
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: production-findb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ needs.resolve.outputs.revision }}', persist-credentials: false}
+      - name: Verify exact release revision for binding
+        env: {EXPECTED_SHA: '${{ needs.resolve.outputs.revision }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Configure staging binding-source reader credentials
+        if: ${{ inputs.mode == 'promote' }}
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.STAGING_PROMOTION_READ_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.STAGING_AWS_ACCOUNT_ID }}
+          role-session-name: findb-production-binding-source-${{ github.run_id }}
+      - name: Verify exact accepted staging binding source
+        if: ${{ inputs.mode == 'promote' }}
+        env:
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+          SOURCE_BUCKET: ${{ vars.STAGING_DEPLOY_BUNDLE_BUCKET }}
+          SOURCE_ACCOUNT: ${{ vars.STAGING_AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [ "$(aws sts get-caller-identity --query Account --output text)" = "$SOURCE_ACCOUNT" ]
+          [[ "$BUNDLE_KEY" =~ ^findb/accepted/${REVISION}/([0-9a-f]{64})[.]tar$ ]]
+          bundle_sha256="${BASH_REMATCH[1]}"
+          aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
+          jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '
+            type == "object" and .schema_version == 2 and .deployment_target == "staging"
+            and .release_tag == "" and .state == "accepted" and .unit == "findb"
+            and .commit_sha == $revision and .bundle_key == $key and .bundle_sha256 == $sha
+          ' "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
+      - name: Configure production release-binding credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_PROMOTION_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: findb-production-release-binding-${{ github.run_id }}
+      - name: Bind or validate immutable release tag
+        env:
+          UNIT: findb
+          MODE: ${{ inputs.mode }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TAG_REF_OID: ${{ needs.resolve.outputs.tag_ref_oid }}
+          COMMIT_SHA: ${{ needs.resolve.outputs.revision }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          BUNDLE_KMS_KEY: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+          BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = promote ]; then
+            SOURCE_BUNDLE_KEY="$BUNDLE_KEY" infra/deploy/bind_release_tag.sh
+          else
+            infra/deploy/bind_release_tag.sh
+          fi
+
+  verify:
+    needs: [resolve, bind-release-tag]
+    uses: ./.github/workflows/findb-ci.yml
+    with: {revision: '${{ needs.resolve.outputs.revision }}'}
+
+  promote:
+    needs: [resolve, bind-release-tag, verify]
+    if: ${{ inputs.mode == 'promote' && needs.verify.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production-findb
+    outputs: {candidate_bundle_key: '${{ steps.bundle.outputs.candidate_bundle_key }}'}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ needs.resolve.outputs.revision }}', persist-credentials: false}
+      - name: Verify exact release revision
+        env: {EXPECTED_SHA: '${{ needs.resolve.outputs.revision }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Configure staging promotion-reader credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.STAGING_PROMOTION_READ_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: ${{ vars.STAGING_AWS_ACCOUNT_ID }}
+          role-session-name: findb-production-source-${{ github.run_id }}
+      - name: Download and validate exact accepted staging bundle
+        env:
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+          SOURCE_BUCKET: ${{ vars.STAGING_DEPLOY_BUNDLE_BUCKET }}
+          SOURCE_REGISTRY: ${{ vars.STAGING_ECR_REGISTRY }}
+          SOURCE_ACCOUNT: ${{ vars.STAGING_AWS_ACCOUNT_ID }}
+          DESTINATION_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [ "$(aws sts get-caller-identity --query Account --output text)" = "$SOURCE_ACCOUNT" ]
+          [ "$SOURCE_ACCOUNT" != "$DESTINATION_ACCOUNT" ]
+          [ "$SOURCE_REGISTRY" = "$SOURCE_ACCOUNT.dkr.ecr.ap-southeast-1.amazonaws.com" ]
+          [[ "$BUNDLE_KEY" =~ ^findb/accepted/${REVISION}/([0-9a-f]{64})[.]tar$ ]]
+          bundle_sha256="${BASH_REMATCH[1]}"
+          aws s3api get-object --bucket "$SOURCE_BUCKET" --key "$BUNDLE_KEY" "$RUNNER_TEMP/staging-bundle.tar" >/dev/null
+          [ "$(sha256sum "$RUNNER_TEMP/staging-bundle.tar" | cut -d ' ' -f1)" = "$bundle_sha256" ]
+          python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit findb --commit-sha "$REVISION"
+          tar -xOf "$RUNNER_TEMP/staging-bundle.tar" release-manifest.json > "$RUNNER_TEMP/staging-manifest.json"
+          [ "$(jq -r .schema_version "$RUNNER_TEMP/staging-manifest.json")" = 2 ]
+          [ "$(jq -r .deployment_target "$RUNNER_TEMP/staging-manifest.json")" = staging ]
+          [ "$(jq -r .release_tag "$RUNNER_TEMP/staging-manifest.json")" = "" ]
+          [ "$(jq -r .registry "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_REGISTRY" ]
+          [ "$(jq -r .account_id "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_ACCOUNT" ]
+          aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
+          jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" --slurpfile manifest "$RUNNER_TEMP/staging-manifest.json" '
+            type == "object" and .state == "accepted" and .unit == "findb" and .commit_sha == $revision
+            and .bundle_key == $key and .bundle_sha256 == $sha and .images == $manifest[0].images
+          ' "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
+          for name in backend dashboard; do
+            image_ref="$(jq -r --arg name "$name" '.images[$name]' "$RUNNER_TEMP/staging-manifest.json")"
+            [ "${image_ref%@*}" = "$SOURCE_REGISTRY/findb/staging/$name" ]
+            [[ "${image_ref##*@}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
+      - name: Log in to staging ECR
+        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4
+        with: {registry: '${{ vars.STAGING_ECR_REGISTRY }}'}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Configure production promotion credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_PROMOTION_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: findb-production-promote-${{ github.run_id }}
+      - name: Log in to production ECR
+        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4
+        with: {registry: '${{ vars.ECR_REGISTRY }}'}
+      - name: Copy exact digests and create production candidate bundle
+        id: bundle
+        env:
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+          SOURCE_REGISTRY: ${{ vars.STAGING_ECR_REGISTRY }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
+          BUNDLE_KMS_KEY: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+        run: |
+          set -euo pipefail
+          [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT_ID" ]
+          [ "$REGISTRY" = "$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com" ]
+          short_tag="${RELEASE_TAG#findb-}"
+          manifest="$RUNNER_TEMP/staging-manifest.json"
+          args=()
+          for name in backend dashboard; do
+            source_ref="$(jq -r --arg name "$name" '.images[$name]' "$manifest")"
+            destination_repository="$REGISTRY/findb/production/$name"
+            SOURCE_IMAGE_REF="$source_ref" DESTINATION_REPOSITORY="$destination_repository" RELEASE_TAG="$short_tag" infra/deploy/promote_image.sh
+            args+=(--image "$name=$destination_repository@${source_ref##*@}")
+          done
+          migration="$(jq -r .migration_revision "$manifest")"
+          python3 infra/deploy/release_manifest.py generate --repo-root . --unit findb --commit-sha "$REVISION" --migration-revision "$migration" --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target production --registry "$REGISTRY" --account-id "$ACCOUNT_ID" --release-tag "$RELEASE_TAG" --promotion-source-bundle-key "$SOURCE_BUNDLE_KEY" --promotion-source-registry "$SOURCE_REGISTRY" "${args[@]}" --output "$RUNNER_TEMP/production-manifest.json"
+          python3 infra/deploy/release_manifest.py bundle --repo-root . --unit findb --manifest "$RUNNER_TEMP/production-manifest.json" --output "$RUNNER_TEMP/production-bundle.tar"
+          bundle_sha256="$(sha256sum "$RUNNER_TEMP/production-bundle.tar" | cut -d ' ' -f1)"
+          candidate_key="findb/production/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${bundle_sha256}.tar"
+          aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$candidate_key" --body "$RUNNER_TEMP/production-bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$BUNDLE_KMS_KEY" >/dev/null
+          echo "candidate_bundle_key=$candidate_key" >> "$GITHUB_OUTPUT"
+
+  deploy-promotion:
+    needs: [resolve, bind-release-tag, verify, promote]
+    if: ${{ inputs.mode == 'promote' && needs.promote.result == 'success' }}
+    uses: ./.github/workflows/findb-deploy.yml
+    with: {deployment_target: production, revision: '${{ needs.resolve.outputs.revision }}', mode: candidate, bundle_key: '${{ needs.promote.outputs.candidate_bundle_key }}', release_tag: '${{ inputs.release_tag }}'}
+
+  deploy-rollback:
+    needs: [resolve, bind-release-tag, verify]
+    if: ${{ inputs.mode == 'rollback' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/findb-deploy.yml
+    with: {deployment_target: production, revision: '${{ needs.resolve.outputs.revision }}', mode: replay, bundle_key: '${{ inputs.accepted_bundle_key }}', release_tag: '${{ inputs.release_tag }}'}

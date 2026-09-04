@@ -52,7 +52,23 @@ The six AWS/SSM names are required only by `staging-findb` and `staging-fetcher`
 `staging-findb` additionally requires the non-secret `RDS_DB_INSTANCE_IDENTIFIER` for its
 automated-backup/PITR health gate. Its sync contract no longer publishes `FINDB_EC2_HOST`,
 `FINDB_EC2_USER`, or `FINDB_EC2_SSH_KEY`; this does not delete any existing remote secret.
-Production resources and workflows remain on the legacy SSH deployment contract.
+Production Environment contracts are control-plane-only: `AWS_REGION`, account,
+OIDC deploy role, instance profile, SSM log group/DNS check, ECR registry,
+deployment-bundle bucket. They contain no
+application secrets or host transport keys. Production instances load runtime
+values from `findb/production/<unit>/` using their instance roles; deploy roles
+must not read secret values. `PRODUCTION_DEPLOY_ENABLED` is deliberately not
+part of the sync contract and remains absent until the foundation and live
+acceptance gates authorize an operator to create it with the exact value `true`.
+The production catalogs load the non-sensitive application configuration from
+the target-scoped `runtime/configuration` payload so GitHub remains a
+control-plane-only contract.
+
+`AWS_PROMOTION_ROLE_ARN` 也必須能在自身 unit 的
+`<unit>/production/release-tags/*` metadata prefix 執行 `s3:GetObject` 與條件式
+`s3:PutObject`，並使用 `DEPLOY_BUNDLE_KMS_KEY_ARN` 加密／解密。此 permission 不新增 GitHub
+variable：workflow 已使用既有 production bucket、KMS key 與 account contract；binding 物件只能
+以 `If-None-Match: *` 首次寫入，後續只讀取並嚴格比對。
 
 Each target and service pair publishes to an isolated GitHub Environment:
 
@@ -64,8 +80,9 @@ Each target and service pair publishes to an isolated GitHub Environment:
 | Production | Fetcher | `infra/env/production/fetcher/.env.remote` | `production-fetcher` |
 
 Never copy a staging `.env.remote` into production. Start from the matching
-production `remote.env.example` and provision independent hosts, databases,
-broker credentials, API credentials, R2 buckets, and break-glass keys.
+production `remote.env.example`; provision independent hosts, databases,
+broker credentials, API credentials, R2 buckets, and instance-role secret
+paths out of band.
 
 Validate a source without changing GitHub:
 

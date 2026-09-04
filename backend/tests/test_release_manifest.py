@@ -62,14 +62,14 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         schema.write_bytes((REPO_ROOT / "contracts" / contract["path"]).read_bytes())
 
 
-def test_protocol_cli_emits_only_the_v1_marker() -> None:
+def test_protocol_cli_emits_only_the_v2_marker() -> None:
     result = subprocess.run(
         [sys.executable, str(TOOL_PATH), "protocol"],
         capture_output=True,
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout == b"findb-release-manifest-v1\n"
+    assert result.stdout == b"findb-release-manifest-v2\n"
     assert result.stderr == b""
 
 
@@ -398,7 +398,7 @@ def test_bundle_rejects_tampered_member_mode_and_materializes_runnable_tools(
     validator = output / "infra/deploy/release_manifest.py"
     protocol = subprocess.run([str(validator), "protocol"], capture_output=True, check=False)
     assert protocol.returncode == 0
-    assert protocol.stdout == b"findb-release-manifest-v1\n"
+    assert protocol.stdout == b"findb-release-manifest-v2\n"
     for relative in (
         "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",

@@ -460,6 +460,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             f"{unit}/{secret['name']}"
             for consumer in catalog["consumers"].values()
             for secret in consumer["secrets"]
+            if "staging" in secret.get("targets", ["staging", "production"])
         )
     assert len(catalog_secret_ids) == 17
     assert tofu_secret_ids == catalog_secret_ids

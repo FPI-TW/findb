@@ -22,6 +22,22 @@ STAGING_AWS_VARIABLES: Final = (
     "AWS_SSM_LOG_GROUP",
     "AWS_DNS_CHECK_NAME",
 )
+PRODUCTION_AWS_VARIABLES: Final = (
+    "AWS_REGION",
+    "AWS_ACCOUNT_ID",
+    "AWS_DEPLOY_ROLE_ARN",
+    "AWS_PROMOTION_ROLE_ARN",
+    "AWS_INSTANCE_PROFILE_NAME",
+    "AWS_SSM_LOG_GROUP",
+    "AWS_DNS_CHECK_NAME",
+    "ECR_REGISTRY",
+    "DEPLOY_BUNDLE_BUCKET",
+    "DEPLOY_BUNDLE_KMS_KEY_ARN",
+    "STAGING_AWS_ACCOUNT_ID",
+    "STAGING_PROMOTION_READ_ROLE_ARN",
+    "STAGING_ECR_REGISTRY",
+    "STAGING_DEPLOY_BUNDLE_BUCKET",
+)
 
 
 @dataclass(frozen=True)
@@ -31,18 +47,21 @@ class ServiceConfig:
     optional_secrets: tuple[str, ...] = ()
     staging_excluded_secrets: tuple[str, ...] = ()
     staging_variables: tuple[str, ...] = ()
+    production_variables: tuple[str, ...] = ()
 
     def variables_for(self, target: str) -> tuple[str, ...]:
         """Return the non-secret variable contract for one deployment target."""
         if target == "staging":
             return (*self.variables, *STAGING_AWS_VARIABLES, *self.staging_variables)
-        return self.variables
+        return (*PRODUCTION_AWS_VARIABLES, *self.production_variables)
 
     def secrets_for(self, target: str) -> tuple[str, ...]:
         if target == "staging":
             excluded = set(self.staging_excluded_secrets)
             return tuple(name for name in self.secrets if name not in excluded)
-        return self.secrets
+        # Production application values are host-loaded from Secrets Manager;
+        # GitHub has only non-secret AWS/SSM control-plane configuration.
+        return ()
 
 
 SERVICE_CONFIGS: Final = {
@@ -70,9 +89,6 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
         ),
         secrets=(
-            "FINDB_EC2_HOST",
-            "FINDB_EC2_USER",
-            "FINDB_EC2_SSH_KEY",
             "DATABASE_URL",
             "ADMIN_BREAK_GLASS_API_KEY",
             "FINDB_QUEUE_HEALTH_ADMIN_API_KEY",
@@ -91,12 +107,10 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN",
             "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN",
         ),
-        staging_excluded_secrets=(
-            "FINDB_EC2_HOST",
-            "FINDB_EC2_USER",
-            "FINDB_EC2_SSH_KEY",
-        ),
         staging_variables=("RDS_DB_INSTANCE_IDENTIFIER",),
+        production_variables=(
+            "RDS_DB_INSTANCE_IDENTIFIER",
+        ),
     ),
     "fetcher": ServiceConfig(
         variables=(
@@ -117,9 +131,6 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_MAX_OBJECT_BYTES",
         ),
         secrets=(
-            "FETCHER_EC2_HOST",
-            "FETCHER_EC2_USER",
-            "FETCHER_EC2_SSH_KEY",
             "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY",
             "FETCHER_FINLAB_SOURCE_CLIENT_KEY",
             "FETCHER_SHIOAJI_SOURCE_CLIENT_KEY",

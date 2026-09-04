@@ -1,5 +1,25 @@
 # Staging AWS Deployment Completion Plan
 
+## CI/CD convergence follow-up（未完成）
+
+Staging 現在以 protected `main` 上 shared change policy 所選的 unit **自動** rollout；manual
+dispatch 僅用於精確 accepted bundle replay，不能選擇 production。contract-only change 會執行兩個
+unit CI、但不自動部署。新的 accepted manifest 為 v2，必須帶 target/account/registry、release tag
+與 deterministic bundle identity；candidate 成功後才持久化 accepted record，再 activate/health gate。
+
+既有 staging v1 accepted bundle 保留為 read-only replay 相容路徑，直到所有仍可能需要的 recycle
+record 超過保留期；它不得 promotion 至 production。完成 v2 轉換前仍須：
+
+- [x] 兩個 staging caller 已只負責 policy、exact bundle preparation 與 target-scoped credential
+  isolation；candidate／accepted replay、immutable acceptance 與 activation SSM transaction 已收斂到
+  reusable target-aware workflows，並保留 bounded marker protocol。
+- [ ] 以 staging accepted v2 record 驗證 production digest copy、production v2 accepted record與
+  production-only rollback replay；production 資源尚未建立時不得執行。
+- [ ] 在 v1 replay/recycle horizon 結束後，另行授權移除 v1 accepted compatibility reader。
+
+以上不改變本文仍 pending 的 active-feed 原生 cycle、GitHub runtime-copy removal、daily DLM
+recovery-point observation 或 GHCR metadata recycle/retirement 工作；它們仍維持原列出的範圍與狀態。
+
 > 狀態：Phase 0–1完成；Phase 2A的runtime-secret／ECR cutover、GHCR metadata retirement apply與
 > DB-backed runtime credential rotation已完成，僅剩等待排程時間到後驗收accepted SHA的完整原生
 > provider cycle，尚未宣告完成；Phase 2B的provider與R2 acceptance-criterion scope項目及RabbitMQ
@@ -57,8 +77,9 @@ IAM role、GitHub variable、OpenTofu apply或deployment變更仍須各自授權
 任何其他值一律 fail closed，staging 不可 build/push/deploy 到 ECR。
 
 啟用後 staging 僅使用 `439622209937.dkr.ecr.ap-southeast-1.amazonaws.com` 和 AWS Secrets Manager
-runtime mode；EC2 不接收 `GITHUB_TOKEN`、PAT、`GHCR_USERNAME` 或 `GHCR_TOKEN`。Production 維持
-GHCR 與既有 GitHub runtime secret 相容路徑，且不會 assume staging publisher role 或拉取 staging ECR。
+runtime mode；EC2 不接收 `GITHUB_TOKEN`、PAT、`GHCR_USERNAME` 或 `GHCR_TOKEN`。Production 採
+獨立 account／ECR 與 instance-role runtime secret path；promotion 僅讀取 accepted staging digest，
+不會 assume staging publisher role 或拉取 mutable image tag。
 Phase 3 wave 1的staging exact-digest bundle與accepted replay已通過merged protected-main live
 acceptance：SHA tag僅是ECR build/reuse的selected commit索引，staging deploy identity是validated
 bundle中的`repository@sha256`。兩個unit的normal accepted deployment及replay均已成功；Phase 3目前
@@ -148,8 +169,8 @@ protected main
 | --- | --- | --- |
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
-| Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production仍保留獨立GHCR相容路徑 | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion另案實作 |
-| EC2 transport | FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded candidate／accepted-record／activation；兩個unit各完成兩次normal deployment、accepted replay與Session Manager recovery。兩個Environment的`*_EC2_*` deploy secrets均已刪除，三個staging SG也已無TCP/22 ingress，EC2 key-pair resources與host `authorized_keys`中的對應key亦已退役；production仍使用固定完整Action SHA的SSH／SCP相容路徑 | FinDB different-digest previous-release rollback與不同Alembic revision schema拒絕已於Phase 6完成；production transport另案 |
+| Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production 使用 target-specific ECR promotion | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion另案實作 |
+| EC2 transport | FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded candidate／accepted-record／activation；兩個unit各完成兩次normal deployment、accepted replay與Session Manager recovery。兩個Environment的`*_EC2_*` deploy secrets均已刪除，三個staging SG也已無TCP/22 ingress，EC2 key-pair resources與host `authorized_keys`中的對應key亦已退役；production 使用同樣的 OIDC＋SSM bounded transport | FinDB different-digest previous-release rollback與不同Alembic revision schema拒絕已於Phase 6完成；production transport另案 |
 | Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；GitHub Environment的舊application runtime copies仍保留但不是staging runtime source。FinDB／Fetcher deploy SSH secrets、TCP/22 ingress及host recovery key material均已退場 | 完整原生四feed cycle gate通過後，另行確認last-used與health再移除GitHub runtime copies |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；已確認private、encryption、deletion protection、10-day automated backup與PITR，並於2026-09-01完成一次PITR restore、revision／row count／connectivity驗證 | migration credential分權與RDS tags仍未納入本Phase；RDS backup-lag custom alarm已上線 |
 | Queue | RabbitMQ在FinDB encrypted root EBS path保存；PostgreSQL是durable truth；2026-09-03已從空broker目錄重建policy、queue、DLQ並驗證DB計數不變 | 舊broker目錄暫留供稽核；active-feed負載下的重複delivery/worker-kill演練仍屬資料面backlog |
@@ -335,7 +356,7 @@ instance role取得`ecr:GetAuthorizationToken`所需的12小時authorization tok
 repository ARNs；token只寫入`/run` tmpfs Docker config，命令結束即logout及清理，不寫入Secrets
 Manager、GitHub或persistent host設定。Deploy role不得取得ECR publish或runtime pull權限。
 
-Staging完成cutover後不再dual-publish GHCR；既有production GHCR流程暫作相容路徑，直到正式
+Staging完成cutover後不再dual-publish GHCR；既有 GHCR metadata recycle 保留至既定 recovery window，直到正式
 production ECR repositories與promotion workflow另案完成。本計畫不將該相容路徑誤列為最終
 production artifact契約。
 
@@ -625,7 +646,8 @@ Compose、nginx render與provider/smoke均由該release root執行；preflight�
 FinDB staging的三份非secret nginx rendered config只寫入root-owned、非group/world-writable的
 `/etc/findb/nginx`，並由Compose的`FINDB_NGINX_CONFIG_DIR` mount；TLS檔及tmpfs serve key維持各自
 既有路徑，其中TLS路徑僅作read-only prerequisite，staging workflow不得在其下mkdir或chown。
-Production相容路徑仍可使用`/home/ubuntu/etc/nginx`，不構成staging bundle path。
+Production不沿用任何 staging host path、GHCR 或 SSH/SCP 相容路徑；其獨立帳戶的 target-aware
+runtime path 屬於 production foundation/cutover work，且目前尚未建立 production resources。
 
 正常staging部署只接受空白`image_tag`與空白`accepted_bundle_key`，為當前commit建立candidate bundle。
 health成功並完成release activation後，workflow才以conditional writes持久化同一bundle及嚴格acceptance
@@ -669,10 +691,11 @@ Phase 3文件closeout已由PR #203完成。Production資源及workflow實作不�
   tar／record VersionId維持`.rTPHJxsyKs0cxDGa.EQtVObbtd8A6M6`／`Loij0QSs05Iz.uCPojZV93w7Cl42JgqP`。
 - [x] 依使用者授權精確刪除`staging-findb`的`FINDB_EC2_HOST`、`FINDB_EC2_USER`、
   `FINDB_EC2_SSH_KEY`：刪前16筆、刪後13筆，Environment API回讀`findb_ec2=[]`；repository Actions
-  scope與staging variables均無同名項，workflow內三項僅在production-only SSH／SCP steps引用。刪後public
+  scope與staging variables均無同名項。刪後public
   health為HTTP 200（`{"status":"healthy","version":"0.1.0"}`），SSM target
-  `i-0942016913367a8b2`仍為Online、agent `3.3.4793.0`。這不移除TCP/22、SSH recovery ingress／keys、
-  Fetcher／production SSH或GitHub runtime copies。
+  `i-0942016913367a8b2`仍為Online、agent `3.3.4793.0`。這不移除 staging TCP/22、SSH recovery
+  ingress／keys、Fetcher 或 GitHub runtime copies；production infrastructure 尚不存在，不能把它的
+  SSH、GHCR 或 runtime-secret retirement 宣告為既有完成事項。
 
 Phase 4 exit gate已完成：FinDB連續兩次正常SSM deployment、一次accepted replay與deploy SSH secret
 retirement均有live evidence，migration／candidate／activation維持fail closed且不使用SSH。Owner決定將
@@ -803,7 +826,7 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 | Private subnet＋ALB | 若public EC2移除SSH且只保留必要HTTPS，可暫緩 | Production network設計完成前，或public EC2風險不可接受 |
 | 全面AWS IaC import | 延後；本次只納管新控制面 | 既有resource inventory／drift responsibility 已由 Tyler 持有，待 production 環境複製或 drift治理需求確立 |
 | Canonical R2資料面驗收 | 延後；只完成bucket與credential邊界 | Canonical publish/read/sign runtime完成 |
-| Production資源與promotion workflow | 延後；既有GHCR流程只作暫時相容。本次定義unit-specific Git tag、target-specific production ECR、Docker tag與accepted manifest promotion契約 | 開始建立production Environment、ECR、EC2、RDS、R2及正式promotion workflow |
+| Production資源與promotion workflow | 延後；本次定義unit-specific Git tag、target-specific production ECR、Docker tag與accepted manifest promotion契約 | 開始建立production Environment、ECR、EC2、RDS、R2及正式promotion workflow |
 | 正式24/7 on-call與企業稽核 | 延後；使用具名owner與通知channel | Production SLA、法遵或客戶稽核需求確立 |
 
 這份檔案是暫時性執行計畫，不是永久runbook。不得在尚有未完成Phase、未搬移的操作知識或

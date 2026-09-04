@@ -1,10 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "unit": "fetcher",
-  "secret_prefix": "findb/staging/fetcher/",
   "consumers": {
     "twelve-data": {
       "secrets": [
+        {"name": "runtime/configuration", "targets": ["production"], "required_keys": ["FETCHER_SOURCE_API_URL", "FINDB_SERVE_BASE_URL", "FETCHER_CALENDAR_TIMEOUT_SECONDS", "FETCHER_CALENDAR_CACHE_TTL_SECONDS", "FETCHER_REQUEST_TIMEOUT_SECONDS", "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS", "FETCHER_MAX_ATTEMPTS", "FETCHER_MAX_RETRY_AFTER_SECONDS", "TWELVE_DATA_BASE_URL", "TWELVE_DATA_TIMEOUT_SECONDS", "TWELVE_DATA_MAX_RESPONSE_BYTES", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_RAW_BUCKET", "CLOUDFLARE_R2_MAX_OBJECT_BYTES"]},
         {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
         {"name": "api/source/twelve-data", "required_keys": ["FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY"]},
         {"name": "provider/twelve-data", "required_keys": ["TWELVE_DATA_API_KEY"]},
@@ -14,6 +14,7 @@
     },
     "finlab": {
       "secrets": [
+        {"name": "runtime/configuration", "targets": ["production"], "required_keys": ["FETCHER_SOURCE_API_URL", "FINDB_SERVE_BASE_URL", "FETCHER_CALENDAR_TIMEOUT_SECONDS", "FETCHER_CALENDAR_CACHE_TTL_SECONDS", "FETCHER_REQUEST_TIMEOUT_SECONDS", "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS", "FETCHER_MAX_ATTEMPTS", "FETCHER_MAX_RETRY_AFTER_SECONDS", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_RAW_BUCKET", "CLOUDFLARE_R2_MAX_OBJECT_BYTES"]},
         {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
         {"name": "api/source/finlab", "required_keys": ["FETCHER_FINLAB_SOURCE_CLIENT_KEY"]},
         {"name": "provider/finlab", "required_keys": ["FINLAB_API_TOKEN"]},
@@ -23,6 +24,7 @@
     },
     "shioaji": {
       "secrets": [
+        {"name": "runtime/configuration", "targets": ["production"], "required_keys": ["FETCHER_SOURCE_API_URL", "FINDB_SERVE_BASE_URL", "FETCHER_CALENDAR_TIMEOUT_SECONDS", "FETCHER_CALENDAR_CACHE_TTL_SECONDS", "FETCHER_REQUEST_TIMEOUT_SECONDS", "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS", "FETCHER_MAX_ATTEMPTS", "FETCHER_MAX_RETRY_AFTER_SECONDS", "SHIOAJI_SIMULATION", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_RAW_BUCKET", "CLOUDFLARE_R2_MAX_OBJECT_BYTES"]},
         {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
         {"name": "api/source/shioaji", "required_keys": ["FETCHER_SHIOAJI_SOURCE_CLIENT_KEY"]},
         {"name": "provider/shioaji", "required_keys": ["SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"]},

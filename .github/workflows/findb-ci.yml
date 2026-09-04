@@ -4,6 +4,10 @@ name: FinDB CI
 # this workflow once through workflow_call before it can build or deploy.
 on:
   workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -43,6 +47,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
+      - name: Verify exact requested revision
+        env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -104,6 +112,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
+      - name: Verify exact requested revision
+        env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -138,6 +150,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
+      - name: Verify exact requested revision
+        env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -182,6 +198,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
+      - name: Verify exact requested revision
+        env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}'}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
