@@ -476,6 +476,34 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
     findb_text = (ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text()
     assert "FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx" in findb_text
     assert "/home/ubuntu/etc/nginx" not in findb_text
+    preflight_block = re.search(
+        r"- name: Run target-aware read-only SSM preflight(?P<body>.*?)(?=\n      - name:)",
+        findb_text,
+        re.S,
+    ).group("body")
+    assert "MIGRATION: ${{ steps.release.outputs.migration }}" in preflight_block
+    assert "printf -v q_migration '%q' \"$MIGRATION\"" in preflight_block
+    assert "--migration-revision $q_migration" in preflight_block
+
+
+def test_bundle_validation_never_passes_an_incomplete_exact_input_contract() -> None:
+    for workflow_name in (
+        "findb-deploy.yml",
+        "fetcher-deploy.yml",
+        "findb-production-cd.yml",
+        "fetcher-production-cd.yml",
+    ):
+        text = (ROOT / ".github" / "workflows" / workflow_name).read_text()
+        exact_calls = [
+            line
+            for line in text.splitlines()
+            if ("validate-bundle" in line or "materialize-bundle" in line)
+            and "--commit-sha" in line
+        ]
+        assert exact_calls
+        for call in exact_calls:
+            assert "--migration-revision" in call
+            assert "--image" in call
 
 
 def test_v1_staging_replay_uses_the_bundle_local_validator_without_a_bare_sha_fallback() -> None:

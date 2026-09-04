@@ -2436,6 +2436,7 @@ def test_aws_control_plane_variables_are_isolated_and_match_examples() -> None:
             "AWS_INSTANCE_PROFILE_NAME": "findb-staging-instance",
             "AWS_SSM_LOG_GROUP": "/findb/staging/findb/ssm",
             "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
+            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
         },
         "fetcher": {
             "AWS_REGION": "ap-southeast-1",
@@ -2444,6 +2445,7 @@ def test_aws_control_plane_variables_are_isolated_and_match_examples() -> None:
             "AWS_INSTANCE_PROFILE_NAME": "fetcher-staging-instance",
             "AWS_SSM_LOG_GROUP": "/findb/staging/fetcher/ssm",
             "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
+            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
         },
     }
 
