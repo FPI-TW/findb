@@ -472,6 +472,11 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
         assert "AccessDenied" in text
         assert "load_runtime_secrets.py" in text
         assert "docker compose" in text
+        assert (
+            f"--output /run/findb-runtime-secrets/preflight-{unit}/runtime.env --check-only" in text
+        )
+        assert '--output \\"\\$work/runtime.env\\" --check-only' not in text
+        assert "config --no-interpolate -q" in text
 
     findb_text = (ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text()
     assert "FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx" in findb_text

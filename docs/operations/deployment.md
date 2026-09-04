@@ -318,6 +318,12 @@ replay live acceptance已完成；FinDB與Fetcher日常host transport已分別�
 `set -euo pipefail`、`ERR` trap與Bash quoting在staging／production一致生效，不能直接把Bash script交給
 `AWS-RunShellScript`。
 
+Host preflight的runtime-secret validation必須把一次性env寫入
+`/run/findb-runtime-secrets/preflight-<unit>/runtime.env`並使用`--check-only`，由loader確認tmpfs、owner、mode與
+secret schema後立刻透過已開啟的directory descriptor刪除；不得改用`/tmp`或release work directory。Compose在
+preflight只以`config --no-interpolate -q`驗證結構，runtime interpolation與secret injection只在後續受包裝的
+candidate／activation helper內執行。
+
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
 root-owned immutable release directory；SSM preflight 不會改寫 active Compose、runtime helper 或 Nginx
