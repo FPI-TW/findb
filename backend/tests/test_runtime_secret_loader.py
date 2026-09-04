@@ -411,6 +411,8 @@ def test_env_file_rejects_final_symlink_without_changing_target(tmp_path: Path) 
     output_directory = run_root / "findb"
     output_directory.mkdir(mode=0o700, parents=True)
     run_root.chmod(0o700)
+    runtime_root_metadata = run_root.stat()
+    runtime_root_owner = (runtime_root_metadata.st_uid, runtime_root_metadata.st_gid)
     target = output_directory / "target.env"
     target.write_text("ORIGINAL=value\n", encoding="utf-8")
     output = output_directory / "runtime.env"
@@ -423,7 +425,7 @@ def test_env_file_rejects_final_symlink_without_changing_target(tmp_path: Path) 
             owner=(os.getuid(), os.getgid()),
             filesystem_type=lambda _: "tmpfs",
             run_root=run_root,
-            runtime_root_owner=(os.getuid(), os.getgid()),
+            runtime_root_owner=runtime_root_owner,
         )
 
     assert output.is_symlink()
@@ -435,6 +437,9 @@ def test_env_file_rejects_parent_symlink_without_writing_outside(tmp_path: Path)
     run_root = tmp_path / "run"
     outside = tmp_path / "outside"
     run_root.mkdir(mode=0o700)
+    run_root.chmod(0o700)
+    runtime_root_metadata = run_root.stat()
+    runtime_root_owner = (runtime_root_metadata.st_uid, runtime_root_metadata.st_gid)
     outside.mkdir()
     (run_root / "findb").symlink_to(outside, target_is_directory=True)
 
@@ -445,7 +450,7 @@ def test_env_file_rejects_parent_symlink_without_writing_outside(tmp_path: Path)
             owner=(os.getuid(), os.getgid()),
             filesystem_type=lambda _: "tmpfs",
             run_root=run_root,
-            runtime_root_owner=(os.getuid(), os.getgid()),
+            runtime_root_owner=runtime_root_owner,
         )
 
     assert not (outside / "runtime.env").exists()
@@ -456,6 +461,9 @@ def test_env_file_rejects_parent_inserted_during_tmpfs_check(tmp_path: Path) -> 
     run_root = tmp_path / "run"
     outside = tmp_path / "outside"
     run_root.mkdir(mode=0o700)
+    run_root.chmod(0o700)
+    runtime_root_metadata = run_root.stat()
+    runtime_root_owner = (runtime_root_metadata.st_uid, runtime_root_metadata.st_gid)
     outside.mkdir()
 
     checks = 0
@@ -474,7 +482,7 @@ def test_env_file_rejects_parent_inserted_during_tmpfs_check(tmp_path: Path) -> 
             owner=(os.getuid(), os.getgid()),
             filesystem_type=insert_symlink,
             run_root=run_root,
-            runtime_root_owner=(os.getuid(), os.getgid()),
+            runtime_root_owner=runtime_root_owner,
         )
 
     assert not (outside / "runtime.env").exists()
