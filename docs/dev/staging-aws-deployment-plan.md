@@ -338,6 +338,9 @@ selection；無Environment的`publish`才可取得main-ref publisher OIDC並只�
 `prepare`改用unit deploy role建立及上傳candidate。不得把publisher assume與bundle upload重新合併到
 同一Environment job，否則OIDC subject會從`ref:refs/heads/main`變成`environment:staging-*`且應
 fail closed。Accepted replay會skip `publish`，直接由已選定的accepted bundle進入共用deploy流程。
+Caller的`staging-<unit>`／`production-<unit>` concurrency與reusable job的
+`<target>-<unit>-deploy`必須保持不同名稱；後者仍提供跨caller的target/unit host-mutation serialization，
+但不可與持有caller workflow的lease同名，避免reusable job在runner啟動前自我競爭而失敗。
 
 EC2 instance role負責讀取自身runtime secrets與deploy bundle。FinDB與Fetcher的deploy role、
 instance role、secret path及KMS policy scope不得重用。

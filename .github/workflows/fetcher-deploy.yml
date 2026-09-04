@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: ${{ inputs.deployment_target }}-fetcher
-    concurrency: {group: '${{ inputs.deployment_target }}-fetcher', cancel-in-progress: false}
+    concurrency: {group: '${{ inputs.deployment_target }}-fetcher-deploy', cancel-in-progress: false}
     outputs:
       accepted_bundle_key: ${{ steps.outputs.outputs.accepted_bundle_key }}
       target_id: ${{ steps.outputs.outputs.target_id }}
