@@ -312,6 +312,12 @@ record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit
 candidate、latest 或跨 unit key，也不可重新產生 manifest。Phase 3的兩個unit normal accepted deployment與
 replay live acceptance已完成；FinDB與Fetcher日常host transport已分別在Phase 4與Phase 5切換為SSM。
 
+`AWS-RunShellScript`原生以`/bin/sh`解讀command；workflow因此先以
+`infra/deploy/ssm_bash_command.py`把完整host script轉為POSIX-safe wrapper，再由wrapper
+`exec bash -c`。preflight、candidate／replay、activation與FinLab smoke都必須走這個入口，確保
+`set -euo pipefail`、`ERR` trap與Bash quoting在staging／production一致生效，不能直接把Bash script交給
+`AWS-RunShellScript`。
+
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
 root-owned immutable release directory；SSM preflight 不會改寫 active Compose、runtime helper 或 Nginx

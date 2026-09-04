@@ -486,6 +486,18 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
     assert "--migration-revision $q_migration" in preflight_block
 
 
+def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
+    wrapper = "python3 infra/deploy/ssm_bash_command.py"
+    for unit in ("findb", "fetcher"):
+        text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
+        assert text.count("--document-name AWS-RunShellScript") == 3
+        assert text.count(wrapper) == 3
+
+    fetcher_cd = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
+    assert fetcher_cd.count("--document-name AWS-RunShellScript") == 1
+    assert fetcher_cd.count(wrapper) == 1
+
+
 def test_bundle_validation_never_passes_an_incomplete_exact_input_contract() -> None:
     for workflow_name in (
         "findb-deploy.yml",
