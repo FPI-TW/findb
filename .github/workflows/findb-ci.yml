@@ -201,7 +201,9 @@ jobs:
         with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
       - name: Verify exact requested revision
         env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}'}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4

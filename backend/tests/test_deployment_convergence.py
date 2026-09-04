@@ -274,6 +274,17 @@ def test_staging_cd_has_exact_revision_policy_and_no_legacy_transport() -> None:
         assert not {"ghcr.io", "appleboy", "FINDB_EC2_", "FETCHER_EC2_"} & set(text.split())
 
 
+def test_containerized_dashboard_ci_marks_only_the_fixed_workspace_safe() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "findb-ci.yml").read_text()
+    browser_job = workflow.split("  dashboard-browser:", 1)[1]
+    verify = browser_job.split("- name: Verify exact requested revision", 1)[1].split(
+        "- name: Set up pnpm", 1
+    )[0]
+    assert 'git config --global --add safe.directory "$GITHUB_WORKSPACE"' in verify
+    assert 'git -C "$GITHUB_WORKSPACE" rev-parse HEAD' in verify
+    assert "safe.directory '*'" not in verify
+
+
 def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
     """The staging callers may prepare bytes, but may not own the SSM deployment path."""
     for unit in ("findb", "fetcher"):
