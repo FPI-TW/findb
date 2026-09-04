@@ -4,9 +4,11 @@
 > 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
 > accepted bundle固定為exact digest；FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded
 > candidate／accepted-record／activation，並完成各自的live acceptance，Phase 4與Phase 5 exit gate均已完成。
-> Phase 6已完成native alarm通知、RDS PITR restore、encrypted root replacement、Session Manager
-> recovery、SSH ingress與host recovery key退場及generated cache重生；different-digest previous-release rollback、不同
-> Alembic revision的schema拒絕、current-volume automated backup、SQLite recovery與RabbitMQ rebuild仍未執行。
+> Phase 6已完成完整native/custom alarm coverage、RDS PITR restore、encrypted root replacement、
+> Session Manager recovery、SSH ingress與host recovery key退場、generated cache重生、Fetcher SQLite
+> backup/restore、RabbitMQ volume rebuild、different-digest rollback及不同Alembic revision的schema拒絕。
+> 兩個current root volumes的daily DLM policy已啟用，並已建立即時encrypted recovery snapshots；首個及
+> 第二個排程recovery point仍須依時間窗口觀察，因此recurring chain的執行證據尚未關閉。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production仍保留SSH相容路徑，
 > staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
@@ -151,7 +153,7 @@ bounded SSM。`staging-findb`已移除`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FIN
 `staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。後續Phase 6另已移除staging
 TCP/22 ingress、兩個EC2 key-pair resources與host中的對應recovery keys；production仍使用SSH相容路徑，
 GitHub Environment application runtime copies亦仍在另行管理。Different-digest rollback與
-schema-incompatibility rejection仍未執行。
+schema-incompatibility rejection已在2026-09-03完成live演練。
 
 ## Credential與storage邊界
 
@@ -309,7 +311,7 @@ FinDB或Fetcher accepted identity：
 
 ### FinDB Phase 4 SSM live record（2026-08-30）
 
-目前FinDB accepted commit為`0a45328539cc66eff8e1b63afc6ac3b064b406e8`。
+Phase 4驗收當時的FinDB accepted commit為`0a45328539cc66eff8e1b63afc6ac3b064b406e8`。
 
 FinDB normal runs [33303655357](https://github.com/FPI-TW/findb/actions/runs/33303655357) 與
 [33304135877](https://github.com/FPI-TW/findb/actions/runs/33304135877)均以OIDC＋SSM完成；兩次使用
@@ -368,9 +370,9 @@ Live acceptance另確認：
 這組證據完成Phase 5 transport與bounded FinLab acceptance，但不代表整體queue從未有歷史
 `failed`、`retry_exhausted`或`missing`項目，也不代表四個active feeds均已完成完整原生排程驗收。
 四個feed的多交易日觀察與GitHub Environment application runtime copies清理仍列於backlog；
-Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery、SSH ingress與host key退場；
-different-digest rollback、schema rejection、current-volume automated backup、SQLite／RabbitMQ DR及
-custom alarm coverage仍未完成。
+Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery、SSH ingress與host key退場、
+custom alarm coverage、different-digest rollback、schema rejection、SQLite recovery及RabbitMQ DR。
+Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring排程仍須取得兩個週期的執行證據。
 
 ### Phase 6 live recovery record (2026-09-01 to 2026-09-03)
 
@@ -383,8 +385,13 @@ custom alarm coverage仍未完成。
 - FinDB與Fetcher current root volumes已分別替換為encrypted gp3
   `vol-071822e2fe38c3991`（50 GiB）及`vol-07a726b6215c34c20`（30 GiB），共用Phase 6
   EBS CMK。兩次post-replacement SSM validation均為Success／exit 0，FinDB application／RabbitMQ與
-  Fetcher三個scheduler恢復運行。來源encrypted migration snapshots標記只保留至2026-09-08；目前沒有
-  AWS Backup plan、DLM policy或current-volume snapshots，所以automated backup chain仍未成立。
+  Fetcher三個scheduler恢復運行。來源encrypted migration snapshots標記只保留至2026-09-08。
+  PR [#240](https://github.com/FPI-TW/findb/pull/240)合併後，以DLM policy
+  `policy-0d0a29c9e19f6323e`精確選取兩個current-volume tag，每日`09:00 UTC`建立snapshot並保留7份；
+  policy為`ENABLED`。立即復原點`snap-0fd82febf04befa97`（FinDB）與
+  `snap-03efabf42ff2b398c`（Fetcher）皆為`completed`、encrypted，保留至2026-10-03。
+  這證明policy與current-volume recovery point可建立；在首個及第二個DLM排程snapshot實際出現前，
+  不宣稱recurring execution已驗收。
 - 兩台managed node均為SSM Online。CloudTrail於2026-08-26記錄Tyler分別透過
   `SSM-SessionManagerRunShell-findb-staging`與`SSM-SessionManagerRunShell-fetcher-staging`成功建立
   Session Manager session；2026-09-01 command `08d25aff-4ff1-4c38-b2b0-0bc0f7c66f04`再次對兩台完成
@@ -406,19 +413,37 @@ custom alarm coverage仍未完成。
   `KeyName`，不代表key-pair resource或host key仍存在。
 - `2026-09-03 01:44:44Z`公開cache metadata顯示instrument cache由canonical Serve API重生為8筆、
   macro cache重生為0筆；兩者generated timestamp一致且cache仍不是durable source of truth。
-- 已存在可供rehearsal的相容different-digest predecessor：FinDB current
-  `bd5cb5dceab10982a1578bc8e07df017a24b0359`與predecessor
-  `4b6de09948999a02564734df49d3d1ef64360111`同為revision `a8b9c0d1e2f3`但兩張image digest皆不同；
-  Fetcher current `f8b1da3d5619935b49f7add567ac0bbf6bca14ff`與predecessor
-  `df8fcf31970601e4111d75dc7da70e74417354a0`的三張image digest也全部不同。候選存在不等於rollback
-  已驗收，仍須維護窗口保存activation、health與immutable object versions。
-- Schema rejection候選亦已存在：目前FinDB revision為`a8b9c0d1e2f3`，舊accepted commit
-  `0a45328539cc66eff8e1b63afc6ac3b064b406e8`記錄revision `d6e7f8a9b0c1`。在尚未實際證明preflight
-  fail closed、未執行activation且writers保持停止前，不宣稱schema rejection完成。
+- FinDB application-only rollback run
+  [33734709446](https://github.com/FPI-TW/findb/actions/runs/33734709446)重播accepted commit
+  `bd5cb5dceab10982a1578bc8e07df017a24b0359`，以不同backend/dashboard digests取代當時current
+  `6a6b64cd12b631d421b365b01f50e9a422a5ea79`，未執行migration；SSM command
+  `20a3a0a3-c06e-4fa3-807d-3f27b78b9835`確認兩張digest、全部container health/restart count及
+  Alembic `a8b9c0d1e2f3`。其後run
+  [33736955949](https://github.com/FPI-TW/findb/actions/runs/33736955949)成功恢復protected-main accepted
+  bundle，current release為`aa3d86258f7e7c5ad2961e9b699412f13cc0dc54fd96081ab4d4239dbf1d640e-33736955949-1-findb`。
+- 不同revision的accepted commit`0a45328539cc66eff8e1b63afc6ac3b064b406e8`先由run
+  [33736392355](https://github.com/FPI-TW/findb/actions/runs/33736392355)在更前面的deployment-contract
+  compatibility gate拒絕。再以正式`predeploy_db_check.py`的exact activation gate執行SSM command
+  `4dd6baba-7427-4b59-a597-613409c35737`：current `a8b9c0d1e2f3`對target
+  `d6e7f8a9b0c1`同時回報`schema_compatible_with_target=false`及`schema_exactly_at_target=false`，
+  四個writers維持`exited`且current pointer未變，完成schema-incompatibility fail-closed演練。
+- Fetcher SSM command `c76b98a7-61f6-4912-90a3-a235ebc47432`對三個live SQLite採online backup，
+  再複製至隔離restore檔執行`integrity_check`及SHA-256比對；Twelve Data、FinLab、Shioaji的backup／restore
+  size與table counts皆一致。檔案位於root-only的
+  `/var/backups/findb-fetcher/phase6-20260903`；它仍與來源同在current root EBS，獨立off-host保護依賴後續
+  DLM snapshot，不把本機副本單獨稱為host-loss backup。
+- RabbitMQ SSM command `055aee8e-f2a6-4fdb-b43e-6232dfb11d48`在三個scheduler desired state停止、
+  FinDB writers停止後，把舊broker目錄保留為
+  `/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`，以不同inode的空目錄重建live broker。
+  Version-controlled policy為`exited 0`，queue與DLQ重新宣告且深度皆0；worker heartbeat為3.7秒。
+  PostgreSQL前後均為jobs `completed=171`、`failed=1`、unpublished outbox 0、expired leases 0、
+  retry exhausted 1及missing deliveries 0，證明broker可由DB-authoritative state與版本控制topology重建。
+  舊目錄暫留供復原稽核，確認不再需要後才能另行核准清理。
 
-未完成風險集中於：現有native alarms無法偵測列出的host／application custom failure modes、root EBS
-缺少recurring recovery points、SQLite checkpoint與RabbitMQ rebuild未經災難演練、rollback／schema
-guards只存在候選而沒有live結果。SSH ingress與長效recovery key均已退役，不再列為未完成風險。
+未完成風險集中於：DLM首個與第二個排程recovery point尚未形成recurring執行證據；四個active feeds的
+多交易日原生排程觀察、GitHub Environment runtime copies退役、TLS certificate與更廣泛資料面告警仍依
+各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
+均已有live evidence，不再列為未完成風險。
 
 Deploy後至少完成：
 

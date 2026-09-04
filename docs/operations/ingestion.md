@@ -174,6 +174,14 @@ Raw存在但canonical未完成時沿run／job／outbox／queue診斷，不要誤
 不要對運行中的RabbitMQ message directory做filesystem snapshot restore。Broker短暫中斷時，
 late ack、topology probe、lease與idempotency應讓delivery安全重試。
 
+2026-09-03 live rehearsal使用SSM command `055aee8e-f2a6-4fdb-b43e-6232dfb11d48`：三個scheduler
+先切為desired stopped，FinDB writers與broker全部停止，再把live bind path換成不同inode的空目錄；舊資料
+保留於`/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`，沒有直接刪除。Compose依版本控制
+重新建立broker與policy（exit 0），兩個durable queues回復且depth均為0，worker heartbeat為3.7秒。
+PostgreSQL前後的normalization job counts、unpublished outbox、expired leases、retry exhausted與missing
+deliveries完全一致。這是無active backlog的control-plane rebuild基線；active delivery、worker kill與DB短暫
+中斷下的duplicate-delivery驗證仍須依bounded feed acceptance另行執行。
+
 ## Pause與failure recovery
 
 1. 將scheduler desired state切為`stopped`，停止`ingest`、`dispatcher`、`worker`、

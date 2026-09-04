@@ -14,7 +14,8 @@
   及late delivery。
 - [ ] 以真實feeds校準minimum record count、freshness、coverage、missing deadline及
   provider欄位消失／異常空snapshot告警，再決定policy是否從`warn`升級。
-- [ ] 演練broker全毀、worker kill、DB短暫中斷與重複delivery，保存實測恢復結果。
+- [ ] 在active delivery backlog存在時演練worker kill、DB短暫中斷與重複delivery，保存資料面恢復結果。
+  空broker volume由PostgreSQL durable state與版本控制topology重建的基線演練已完成，不需重複。
 - [ ] 為每個active provider/client簽發並輪替獨立DB-backed Source key，觀察完整排程週期。
 
 ## P0：Staging deployment
@@ -26,19 +27,13 @@
   acceptance criterion變更而完成：既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，故不構成
   rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
   provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation與SSH recovery key退役已完成。
-- [ ] 補齊Phase 6的disk／inode、Docker restart、RabbitMQ disk／memory、scheduler heartbeat、
-  deployment failure與RDS backup failure告警。未完成風險：目前六個native alarms均為健康時，仍可能
-  漏掉磁碟滿載、scheduler停滯、container crash loop、broker資源壓力、部署失敗或備份失敗。
-- [ ] 為兩個current encrypted root volumes建立automated AWS Backup或DLM policy與可驗證的recurring
-  recovery points。未完成風險：現有migration snapshots是一次性且標記短期保留，instance termination、
-  volume損毀或誤刪時沒有符合Phase 6要求的current-volume持續復原鏈。
-- [ ] 完成Fetcher SQLite一致性backup／restore與RabbitMQ由PostgreSQL outbox重建。未完成風險：
-  provider checkpoint可能無法在host loss後可靠復原；broker全毀後的實際queue重建時間與重複delivery
-  行為仍未知。
-- [ ] 使用同Alembic revision、不同image digests的accepted predecessor完成application-only rollback。
-  未完成風險：雖已有合格immutable候選，但尚未實證不重跑migration即可恢復previous release與health。
-- [ ] 使用不同Alembic revision的accepted release完成schema-incompatibility rejection。未完成風險：
-  尚未live證明preflight會fail closed、拒絕rollback且writers保持停止。
+- [ ] 等待daily DLM policy `policy-0d0a29c9e19f6323e`為兩個current encrypted root volumes產生首個及
+  第二個排程recovery point，驗證volume ID、encryption、policy tag、retention與兩個週期。未完成風險：
+  policy與即時manual recovery snapshots已存在，但尚未證明排程會持續執行；instance termination、volume
+  損毀或誤刪時的recurring chain仍缺執行證據。
+- [ ] DLM排程recovery point與新RabbitMQ持續健康確認後，另行核准清理
+  `/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`；清理前保留為可復原的演練稽核副本，
+  避免無期限占用FinDB root volume。
 ## P1：資料完整性與效能
 
 - [ ] 評估canonical／raw `run_id` FK或定期lineage consistency job。
