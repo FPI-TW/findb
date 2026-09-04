@@ -25,7 +25,7 @@ infra/env/
 `.env.remote` contains real values, must remain ignored with mode `0600`, and
 must never be copied to EC2 or committed.
 
-Phase 1 adds six non-sensitive AWS/SSM variables to the two staging contracts
+The staging control-plane contract publishes seven non-sensitive AWS/SSM/ECR variables
 only. Populate the role, profile, and log-group values from the accepted
 OpenTofu staging outputs after review; the region, account, and DNS name must
 match the accepted staging OpenTofu variables and target contract:
@@ -38,6 +38,7 @@ match the accepted staging OpenTofu variables and target contract:
 | `AWS_INSTANCE_PROFILE_NAME` | Exact profile/role name expected on the existing EC2 target. |
 | `AWS_SSM_LOG_GROUP` | Unit-specific CloudWatch log group for bounded SSM preflight output. |
 | `AWS_DNS_CHECK_NAME` | DNS name resolved by the bounded host preflight. |
+| `ECR_REGISTRY` | Exact account/region-scoped ECR registry accepted by release manifests and host preflight. |
 
 For example, review `deploy_role_arns`, `instance_profile_names`, and
 `ssm_log_group_names` from:
@@ -48,7 +49,7 @@ tofu -chdir=infra/tofu/staging output -json instance_profile_names
 tofu -chdir=infra/tofu/staging output -json ssm_log_group_names
 ```
 
-The six AWS/SSM names are required only by `staging-findb` and `staging-fetcher`.
+The seven control-plane names are required by `staging-findb` and `staging-fetcher`.
 `staging-findb` additionally requires the non-secret `RDS_DB_INSTANCE_IDENTIFIER` for its
 automated-backup/PITR health gate. Its sync contract no longer publishes `FINDB_EC2_HOST`,
 `FINDB_EC2_USER`, or `FINDB_EC2_SSH_KEY`; this does not delete any existing remote secret.

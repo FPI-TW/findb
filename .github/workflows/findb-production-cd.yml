@@ -159,13 +159,17 @@ jobs:
           bundle_sha256="${BASH_REMATCH[1]}"
           aws s3api get-object --bucket "$SOURCE_BUCKET" --key "$BUNDLE_KEY" "$RUNNER_TEMP/staging-bundle.tar" >/dev/null
           [ "$(sha256sum "$RUNNER_TEMP/staging-bundle.tar" | cut -d ' ' -f1)" = "$bundle_sha256" ]
-          python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit findb --commit-sha "$REVISION"
+          python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit findb
           tar -xOf "$RUNNER_TEMP/staging-bundle.tar" release-manifest.json > "$RUNNER_TEMP/staging-manifest.json"
           [ "$(jq -r .schema_version "$RUNNER_TEMP/staging-manifest.json")" = 2 ]
           [ "$(jq -r .deployment_target "$RUNNER_TEMP/staging-manifest.json")" = staging ]
           [ "$(jq -r .release_tag "$RUNNER_TEMP/staging-manifest.json")" = "" ]
           [ "$(jq -r .registry "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_REGISTRY" ]
           [ "$(jq -r .account_id "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_ACCOUNT" ]
+          backend="$(jq -r .images.backend "$RUNNER_TEMP/staging-manifest.json")"
+          dashboard="$(jq -r .images.dashboard "$RUNNER_TEMP/staging-manifest.json")"
+          migration="$(jq -r .migration_revision "$RUNNER_TEMP/staging-manifest.json")"
+          python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit findb --commit-sha "$REVISION" --migration-revision "$migration" --image "backend=$backend" --image "dashboard=$dashboard"
           aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
           jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" --slurpfile manifest "$RUNNER_TEMP/staging-manifest.json" '
             type == "object" and .state == "accepted" and .unit == "findb" and .commit_sha == $revision
