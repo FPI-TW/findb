@@ -333,6 +333,12 @@ repositories。Publisher、deploy與instance roles不得共用：deploy role只�
 artifact及對對應tag的唯一EC2執行SSM command，不得讀Secrets Manager value、RDS data、R2
 credential、另一unit的target或publish image。
 
+Staging caller必須維持三段身分邊界：Environment-bound `select`只做gate、exact revision與replay
+selection；無Environment的`publish`才可取得main-ref publisher OIDC並只操作ECR；Environment-bound
+`prepare`改用unit deploy role建立及上傳candidate。不得把publisher assume與bundle upload重新合併到
+同一Environment job，否則OIDC subject會從`ref:refs/heads/main`變成`environment:staging-*`且應
+fail closed。Accepted replay會skip `publish`，直接由已選定的accepted bundle進入共用deploy流程。
+
 EC2 instance role負責讀取自身runtime secrets與deploy bundle。FinDB與Fetcher的deploy role、
 instance role、secret path及KMS policy scope不得重用。
 

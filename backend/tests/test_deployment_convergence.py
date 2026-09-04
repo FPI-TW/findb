@@ -366,10 +366,34 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         workflow = yaml.safe_load(text)
+        jobs = workflow["jobs"]
+        assert jobs["select"]["environment"] == f"staging-{unit}"
+        assert jobs["select"]["permissions"].get("id-token") is None
+        assert "environment" not in jobs["publish"]
+        assert jobs["publish"]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
+        assert jobs["prepare"]["environment"] == f"staging-{unit}"
+        assert jobs["prepare"]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
         assert workflow["jobs"]["deploy"]["permissions"] == {
             "contents": "read",
             "id-token": "write",
         }
+        publish_block = re.search(
+            r"^  publish:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
+        ).group("body")
+        prepare_block = re.search(
+            r"^  prepare:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
+        ).group("body")
+        assert f"role/{unit}-staging-ecr-publisher" in publish_block
+        assert f"role/{unit}-staging-ecr-publisher" not in prepare_block
+        assert "role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}" in prepare_block
+        assert "aws s3api put-object" not in publish_block
+        assert "aws s3api put-object" in prepare_block
         deploy_block = re.search(
             r"^  deploy:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
         ).group("body")
@@ -412,9 +436,11 @@ def test_fetcher_waits_for_same_sha_findb_before_aws_credentials() -> None:
     assert "Wait for same-revision FinDB staging rollout" in text
     assert "actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}" in text
     assert "timed out waiting for same-revision FinDB rollout" in text
-    assert text.index("Wait for same-revision FinDB staging rollout") < text.index(
-        "Configure staging publisher credentials"
-    )
+    select_block = re.search(
+        r"^  select:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
+    ).group("body")
+    assert "Wait for same-revision FinDB staging rollout" in select_block
+    assert "Configure staging publisher credentials" not in select_block
 
 
 def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> None:
