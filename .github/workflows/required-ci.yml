@@ -78,8 +78,16 @@ jobs:
         run: |
           set -euo pipefail
           [ "$POLICY" = success ]
-          test "$WANT_FINDB" = true && test "$FINDB" = success || test "$WANT_FINDB" = false && test "$FINDB" = skipped
-          test "$WANT_FETCHER" = true && test "$FETCHER" = success || test "$WANT_FETCHER" = false && test "$FETCHER" = skipped
+          if [ "$WANT_FINDB" = true ]; then
+            [ "$FINDB" = success ]
+          else
+            [ "$WANT_FINDB" = false ] && [ "$FINDB" = skipped ]
+          fi
+          if [ "$WANT_FETCHER" = true ]; then
+            [ "$FETCHER" = success ]
+          else
+            [ "$WANT_FETCHER" = false ] && [ "$FETCHER" = skipped ]
+          fi
           if [ "$WANT_INFRA" = false ]; then
             [ "$INFRA" = skipped ] && [ "$RETIREMENT_INFRA" = skipped ]
           elif [ "$PR_HEAD_REF" = chore/staging-phase2-retirement ]; then

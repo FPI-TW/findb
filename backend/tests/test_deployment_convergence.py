@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -283,6 +284,80 @@ def test_containerized_dashboard_ci_marks_only_the_fixed_workspace_safe() -> Non
     assert 'git config --global --add safe.directory "$GITHUB_WORKSPACE"' in verify
     assert 'git -C "$GITHUB_WORKSPACE" rev-parse HEAD' in verify
     assert "safe.directory '*'" not in verify
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected_code"),
+    [
+        (
+            {
+                "POLICY": "success",
+                "FINDB": "success",
+                "FETCHER": "success",
+                "WANT_FINDB": "true",
+                "WANT_FETCHER": "true",
+                "INFRA": "success",
+                "RETIREMENT_INFRA": "skipped",
+                "WANT_INFRA": "true",
+                "PR_HEAD_REF": "refactor/deployment-flow-convergence",
+            },
+            0,
+        ),
+        (
+            {
+                "POLICY": "success",
+                "FINDB": "skipped",
+                "FETCHER": "skipped",
+                "WANT_FINDB": "false",
+                "WANT_FETCHER": "false",
+                "INFRA": "skipped",
+                "RETIREMENT_INFRA": "skipped",
+                "WANT_INFRA": "false",
+                "PR_HEAD_REF": "docs/deployment-notes",
+            },
+            0,
+        ),
+        (
+            {
+                "POLICY": "success",
+                "FINDB": "skipped",
+                "FETCHER": "skipped",
+                "WANT_FINDB": "false",
+                "WANT_FETCHER": "false",
+                "INFRA": "skipped",
+                "RETIREMENT_INFRA": "success",
+                "WANT_INFRA": "true",
+                "PR_HEAD_REF": "chore/staging-phase2-retirement",
+            },
+            0,
+        ),
+        (
+            {
+                "POLICY": "success",
+                "FINDB": "success",
+                "FETCHER": "skipped",
+                "WANT_FINDB": "true",
+                "WANT_FETCHER": "true",
+                "INFRA": "success",
+                "RETIREMENT_INFRA": "skipped",
+                "WANT_INFRA": "true",
+                "PR_HEAD_REF": "fix/failed-fetcher-ci",
+            },
+            1,
+        ),
+    ],
+)
+def test_required_ci_aggregator_truth_table(
+    environment: dict[str, str], expected_code: int
+) -> None:
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "required-ci.yml").read_text())
+    script = workflow["jobs"]["required"]["steps"][0]["run"]
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, **environment},
+        check=False,
+    )
+    assert completed.returncode == expected_code
 
 
 def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
