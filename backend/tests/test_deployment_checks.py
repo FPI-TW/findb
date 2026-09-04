@@ -47,6 +47,7 @@ ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 SSM_COMMAND_MARKER_GATE = REPO_ROOT / "infra" / "deploy" / "ssm_command_marker_gate.sh"
+SSM_BASH_COMMAND = REPO_ROOT / "infra" / "deploy" / "ssm_bash_command.py"
 
 LEGACY_ROLLBACK_CI_ONLY_PATHS = frozenset(
     {
@@ -296,6 +297,44 @@ def test_ssm_marker_gate_treats_only_missing_invocation_as_pending(tmp_path: Pat
     malformed = _run_ssm_marker_gate(tmp_path / "malformed", None)
     assert malformed.returncode != 0
     assert malformed.stdout == ""
+
+
+def test_ssm_bash_command_runs_pipefail_scripts_through_bash_from_posix_sh() -> None:
+    script = (
+        "set -euo pipefail\n[[ -n \"${BASH_VERSION:-}\" ]]\nprintf 'ssm_bash_wrapper=success\\n'\n"
+    )
+    encoded = subprocess.run(
+        [sys.executable, str(SSM_BASH_COMMAND)],
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert encoded.stdout.startswith("exec bash -c ")
+    completed = subprocess.run(
+        ["/bin/sh", "-c", encoded.stdout],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == "ssm_bash_wrapper=success\n"
+
+    failing = subprocess.run(
+        [sys.executable, str(SSM_BASH_COMMAND)],
+        input="set -euo pipefail\nfalse | true\nprintf 'unreachable\\n'\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rejected = subprocess.run(
+        ["/bin/sh", "-c", failing.stdout],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert "unreachable" not in rejected.stdout
 
 
 def _load_workflow(path: Path) -> dict[str, object]:
