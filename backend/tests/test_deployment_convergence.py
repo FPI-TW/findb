@@ -365,6 +365,11 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
     """The staging callers may prepare bytes, but may not own the SSM deployment path."""
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
+        workflow = yaml.safe_load(text)
+        assert workflow["jobs"]["deploy"]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
         deploy_block = re.search(
             r"^  deploy:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
         ).group("body")
