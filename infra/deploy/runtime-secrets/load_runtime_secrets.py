@@ -23,7 +23,8 @@ class LoaderError(RuntimeError):
 SecretFetcher = Callable[[str], str]
 ENVIRONMENT_KEY = re.compile(r"[A-Z_][A-Z0-9_]*")
 SECRET_RELATIVE_NAME = re.compile(r"[a-z0-9][a-z0-9/-]*")
-STAGING_AWS_REGION = "ap-southeast-1"
+AWS_REGION = "ap-southeast-1"
+DEPLOYMENT_TARGETS = frozenset(("staging", "production"))
 RUNTIME_SECRET_ROOT = Path("/run/findb-runtime-secrets")
 
 
@@ -32,15 +33,10 @@ def _catalog(path: Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise LoaderError("catalog_invalid") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
+    if not isinstance(value, dict) or value.get("schema_version") != 2:
         raise LoaderError("catalog_invalid")
     unit = value.get("unit")
-    secret_prefix = value.get("secret_prefix")
-    if (
-        not isinstance(unit, str)
-        or re.fullmatch(r"[a-z0-9-]+", unit) is None
-        or secret_prefix != f"findb/staging/{unit}/"
-    ):
+    if not isinstance(unit, str) or re.fullmatch(r"[a-z0-9-]+", unit) is None:
         raise LoaderError("catalog_invalid")
     if not isinstance(value.get("consumers"), dict):
         raise LoaderError("catalog_invalid")
@@ -48,7 +44,7 @@ def _catalog(path: Path) -> dict[str, Any]:
 
 
 def _aws_fetcher(region: str) -> SecretFetcher:
-    if region != STAGING_AWS_REGION:
+    if region != AWS_REGION:
         raise LoaderError("region_invalid")
 
     def fetch(secret_id: str) -> str:
@@ -105,6 +101,8 @@ def load_consumer(
     catalog: Mapping[str, Any],
     consumer_name: str,
     fetch_secret: SecretFetcher,
+    *,
+    deployment_target: str = "staging",
 ) -> dict[str, str]:
     if re.fullmatch(r"[a-z0-9-]+", consumer_name) is None:
         raise LoaderError("consumer_not_allowed")
@@ -115,11 +113,10 @@ def load_consumer(
     if not isinstance(consumer, Mapping) or not isinstance(consumer.get("secrets"), list):
         raise LoaderError("catalog_invalid")
     unit = catalog.get("unit")
-    prefix = catalog.get("secret_prefix")
     if (
         not isinstance(unit, str)
         or re.fullmatch(r"[a-z0-9-]+", unit) is None
-        or prefix != f"findb/staging/{unit}/"
+        or deployment_target not in DEPLOYMENT_TARGETS
     ):
         raise LoaderError("catalog_invalid")
 
@@ -130,6 +127,7 @@ def load_consumer(
         relative_name = secret.get("name")
         required_keys = secret.get("required_keys", [])
         optional_keys = secret.get("optional_keys", [])
+        targets = secret.get("targets", list(DEPLOYMENT_TARGETS))
         if (
             not isinstance(relative_name, str)
             or SECRET_RELATIVE_NAME.fullmatch(relative_name) is None
@@ -137,17 +135,23 @@ def load_consumer(
             or relative_name.endswith("/")
             or not isinstance(required_keys, list)
             or not isinstance(optional_keys, list)
+            or not isinstance(targets, list)
+            or not targets
+            or len(targets) != len(set(targets))
+            or not all(target in DEPLOYMENT_TARGETS for target in targets)
             or not all(
                 isinstance(key, str) and ENVIRONMENT_KEY.fullmatch(key) is not None
                 for key in (*required_keys, *optional_keys)
             )
         ):
             raise LoaderError("catalog_invalid")
+        if deployment_target not in targets:
+            continue
         allowed_keys = set((*required_keys, *optional_keys))
         if len(allowed_keys) != len(required_keys) + len(optional_keys):
             raise LoaderError("catalog_invalid")
         try:
-            payload = json.loads(fetch_secret(f"{prefix}{relative_name}"))
+            payload = json.loads(fetch_secret(f"findb/{deployment_target}/{unit}/{relative_name}"))
         except (TypeError, json.JSONDecodeError) as exc:
             raise LoaderError("secret_json_invalid") from exc
         if not isinstance(payload, dict) or set(payload) - allowed_keys:
@@ -397,6 +401,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--consumer")
     parser.add_argument("--region")
+    parser.add_argument("--deployment-target", choices=tuple(sorted(DEPLOYMENT_TARGETS)))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--owner", default=f"{os.getuid()}:{os.getgid()}")
     parser.add_argument("--check-only", action="store_true")
@@ -409,7 +414,12 @@ def main() -> int:
         try:
             if any(
                 value is not None
-                for value in (arguments.catalog, arguments.consumer, arguments.region, arguments.output)
+                for value in (
+                    arguments.catalog,
+                    arguments.consumer,
+                    arguments.region,
+                    arguments.output,
+                )
             ):
                 raise LoaderError("runtime_root_arguments_invalid")
             if os.geteuid() != 0:
@@ -426,6 +436,7 @@ def main() -> int:
         arguments.catalog is None
         or arguments.consumer is None
         or arguments.region is None
+        or arguments.deployment_target is None
         or arguments.output is None
     ):
         _parser().error("--catalog, --consumer, --region, and --output are required")
@@ -439,7 +450,12 @@ def main() -> int:
     try:
         catalog = _catalog(arguments.catalog)
         unit = catalog["unit"]
-        values = load_consumer(catalog, arguments.consumer, _aws_fetcher(arguments.region))
+        values = load_consumer(
+            catalog,
+            arguments.consumer,
+            _aws_fetcher(arguments.region),
+            deployment_target=arguments.deployment_target,
+        )
         write_env_file(
             output,
             values,

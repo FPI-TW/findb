@@ -8,6 +8,8 @@ set +x
 region="${1:?AWS region required}"
 public_host="${2:?FinDB public host required}"
 release_root="${3:-/opt/findb}"
+deployment_target="${4:?deployment target required}"
+aws_account_id="${5:?AWS account id required}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "install_findb_bootstrap=failed reason=root_required" >&2
@@ -15,6 +17,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 if [ "$region" != "ap-southeast-1" ]; then
   echo "install_findb_bootstrap=failed reason=region_invalid" >&2
+  exit 1
+fi
+case "$deployment_target" in staging|production) ;; *) echo "install_findb_bootstrap=failed reason=deployment_target_invalid" >&2; exit 1 ;; esac
+if ! [[ "$aws_account_id" =~ ^[0-9]{12}$ ]]; then
+  echo "install_findb_bootstrap=failed reason=aws_account_invalid" >&2
   exit 1
 fi
 if ! [[ "$public_host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
@@ -50,7 +57,7 @@ Before=docker.service
 Type=oneshot
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /run/findb-runtime-secrets
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /run/findb-runtime-secrets/nginx
-ExecStart=$release_root/infra/deploy/runtime-secrets/render_nginx_runtime.sh $release_root/infra/deploy/runtime-secrets/findb.json $region $public_host
+ExecStart=$release_root/infra/deploy/runtime-secrets/render_nginx_runtime.sh $release_root/infra/deploy/runtime-secrets/findb.json $region $public_host $deployment_target $aws_account_id
 
 [Install]
 WantedBy=multi-user.target

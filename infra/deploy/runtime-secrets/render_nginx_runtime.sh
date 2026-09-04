@@ -7,6 +7,8 @@ set +x
 catalog="${1:?catalog path required}"
 region="${2:?AWS region required}"
 public_host="${3:?public host required}"
+deployment_target="${4:?deployment target required}"
+aws_account_id="${5:?AWS account id required}"
 output=/run/findb-runtime-secrets/nginx/serve-key.conf
 
 if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb\.json$ ]] \
@@ -28,6 +30,8 @@ fi
 "$runtime_command" \
   --catalog "$catalog" \
   --region "$region" \
+  --deployment-target "$deployment_target" \
+  --aws-account-id "$aws_account_id" \
   --consumer nginx \
   -- bash -s -- "$public_host" "$output" "$renderer" <<'RENDER_SCRIPT'
 set -euo pipefail

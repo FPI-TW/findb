@@ -4,178 +4,86 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-
+permissions: {contents: read}
 concurrency:
-  group: required-ci-pr-${{ github.event.pull_request.number }}
+  group: required-ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  changes:
+  policy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
     outputs:
-      findb: ${{ steps.classify.outputs.findb }}
-      fetcher: ${{ steps.classify.outputs.fetcher }}
-      infra: ${{ steps.classify.outputs.infra }}
-
+      revision: ${{ steps.revision.outputs.sha }}
+      findb_ci: ${{ steps.policy.outputs.findb_ci }}
+      fetcher_ci: ${{ steps.policy.outputs.fetcher_ci }}
+      findb_staging: ${{ steps.policy.outputs.findb_staging }}
+      fetcher_staging: ${{ steps.policy.outputs.fetcher_staging }}
+      infra_plan: ${{ steps.policy.outputs.infra_plan }}
     steps:
-      - name: Checkout pull request history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Classify changed paths
-        id: classify
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - id: revision
+        env: {EXPECTED_SHA: '${{ github.event.pull_request.head.sha }}'}
         run: |
           set -euo pipefail
-
-          if [[ ! "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ || ! "$HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "Invalid pull request commit SHA" >&2
-            exit 1
-          fi
-
-          changed_paths="$(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")"
-          findb=false
-          fetcher=false
-          infra=false
-
-          while IFS= read -r path; do
-            [[ -z "$path" ]] && continue
-            case "$path" in
-              backend/**|dashboard/**|contracts/**|docker-compose.yml|docker-compose.prod.yml|infra/nginx/**|infra/deploy/ssm_command_marker_gate.sh|infra/deploy/release_manifest.py|infra/deploy/runtime-secrets/load_runtime_secrets.py|infra/deploy/runtime-secrets/runtime_secret_command.sh|infra/deploy/runtime-secrets/render_nginx_runtime.sh|infra/deploy/runtime-secrets/render_serve_key.py|infra/deploy/runtime-secrets/install_findb_bootstrap.sh|infra/deploy/runtime-secrets/deploy_findb_aws.sh|infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh|infra/deploy/runtime-secrets/findb.json|package.json|pnpm-workspace.yaml|pnpm-lock.yaml|.github/workflows/findb-ci.yml|.github/workflows/findb-cd.yml|.github/workflows/fetcher-cd.yml|.github/workflows/required-ci.yml)
-                findb=true
-                ;;
-            esac
-            case "$path" in
-              fetcher/**|contracts/**|backend/app/**|backend/pyproject.toml|backend/uv.lock|backend/scripts/export_ingress_contracts.py|backend/scripts/export_archive_contracts.py|backend/tests/test_contract_artifacts.py|infra/deploy/ssm_command_marker_gate.sh|infra/deploy/release_manifest.py|infra/deploy/runtime-secrets/load_runtime_secrets.py|infra/deploy/runtime-secrets/runtime_secret_command.sh|infra/deploy/runtime-secrets/deploy_fetcher_aws.sh|infra/deploy/runtime-secrets/release_fetcher_provider.sh|infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh|infra/deploy/runtime-secrets/fetcher.json|.github/workflows/fetcher-ci.yml|.github/workflows/fetcher-cd.yml|.github/workflows/required-ci.yml)
-                fetcher=true
-                ;;
-            esac
-            case "$path" in
-              infra/tofu/**|.github/workflows/required-ci.yml|.github/workflows/staging-infra-plan.yml)
-                infra=true
-                ;;
-            esac
-          done <<< "$changed_paths"
-
-          echo "findb=$findb" >> "$GITHUB_OUTPUT"
-          echo "fetcher=$fetcher" >> "$GITHUB_OUTPUT"
-          echo "infra=$infra" >> "$GITHUB_OUTPUT"
-
+          actual="$(git rev-parse HEAD)"; [ "$actual" = "$EXPECTED_SHA" ]
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+      - id: policy
+        env: {BASE: '${{ github.event.pull_request.base.sha }}', HEAD: '${{ github.event.pull_request.head.sha }}'}
+        run: python3 infra/deploy/change_policy.py --base "$BASE" --head "$HEAD" --github-output "$GITHUB_OUTPUT"
   findb:
-    name: FinDB CI
-    needs: changes
-    if: ${{ needs.changes.outputs.findb == 'true' }}
+    needs: policy
+    if: ${{ needs.policy.outputs.findb_ci == 'true' }}
     uses: ./.github/workflows/findb-ci.yml
-
+    with: {revision: '${{ needs.policy.outputs.revision }}'}
   fetcher:
-    name: Fetcher CI
-    needs: changes
-    if: ${{ needs.changes.outputs.fetcher == 'true' }}
+    needs: policy
+    if: ${{ needs.policy.outputs.fetcher_ci == 'true' }}
     uses: ./.github/workflows/fetcher-ci.yml
-
+    with: {revision: '${{ needs.policy.outputs.revision }}'}
   staging-infra-plan:
-    name: Staging Infra Plan
-    needs: changes
-    # Ordinary infrastructure pull requests keep the PR-local, zero-delete
-    # reusable workflow and its default retirement input of false.
-    if: ${{ needs.changes.outputs.infra == 'true' && github.event.pull_request.head.ref != 'chore/staging-phase2-retirement' }}
+    needs: policy
+    if: ${{ needs.policy.outputs.infra_plan == 'true' && github.event.pull_request.head.ref != 'chore/staging-phase2-retirement' }}
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/staging-infra-plan.yml
-
+    with: {allow_ghcr_metadata_retirement: false}
   staging-infra-retirement-plan:
-    name: Staging Infra Retirement Plan
-    needs: changes
-    # The sole retirement branch calls an immutable, already-reviewed workflow
-    # revision. This prevents PR-local workflow changes from authorizing deletes.
-    if: ${{ needs.changes.outputs.infra == 'true' && github.event.pull_request.head.ref == 'chore/staging-phase2-retirement' }}
+    needs: policy
+    if: ${{ needs.policy.outputs.infra_plan == 'true' && github.event.pull_request.head.ref == 'chore/staging-phase2-retirement' }}
     permissions:
       contents: read
       id-token: write
     uses: FPI-TW/findb/.github/workflows/staging-infra-plan.yml@efe573be9267a52a0b7e3090d00445f38df9945a
-    with:
-      allow_ghcr_metadata_retirement: true
-
+    with: {allow_ghcr_metadata_retirement: true}
   required:
-    name: Required CI
     if: ${{ always() }}
-    needs: [changes, findb, fetcher, staging-infra-plan, staging-infra-retirement-plan]
+    needs: [policy, findb, fetcher, staging-infra-plan, staging-infra-retirement-plan]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
     steps:
-      - name: Verify routed CI results
-        shell: bash
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          FINDB_RESULT: ${{ needs.findb.result }}
-          FETCHER_RESULT: ${{ needs.fetcher.result }}
-          INFRA_NORMAL_RESULT: ${{ needs.staging-infra-plan.result }}
-          INFRA_RETIREMENT_RESULT: ${{ needs.staging-infra-retirement-plan.result }}
-          FINDB_EXPECTED: ${{ needs.changes.outputs.findb }}
-          FETCHER_EXPECTED: ${{ needs.changes.outputs.fetcher }}
-          INFRA_EXPECTED: ${{ needs.changes.outputs.infra }}
+      - env:
+          POLICY: ${{ needs.policy.result }}
+          FINDB: ${{ needs.findb.result }}
+          FETCHER: ${{ needs.fetcher.result }}
+          WANT_FINDB: ${{ needs.policy.outputs.findb_ci }}
+          WANT_FETCHER: ${{ needs.policy.outputs.fetcher_ci }}
+          INFRA: ${{ needs.staging-infra-plan.result }}
+          RETIREMENT_INFRA: ${{ needs.staging-infra-retirement-plan.result }}
+          WANT_INFRA: ${{ needs.policy.outputs.infra_plan }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-
-          echo "changes=$CHANGES_RESULT findb=$FINDB_RESULT fetcher=$FETCHER_RESULT infra=$INFRA_EXPECTED normal-infra=$INFRA_NORMAL_RESULT retirement-infra=$INFRA_RETIREMENT_RESULT"
-
-          if [[ "$CHANGES_RESULT" != "success" ]]; then
-            echo "Required CI failed: changes classification did not succeed" >&2
-            exit 1
-          fi
-
-          verify_child() {
-            local name="$1"
-            local expected="$2"
-            local result="$3"
-            if [[ "$expected" == "true" ]]; then
-              if [[ "$result" != "success" ]]; then
-                echo "Required CI failed: $name was routed but result was $result" >&2
-                return 1
-              fi
-            elif [[ "$expected" == "false" ]]; then
-              if [[ "$result" != "skipped" ]]; then
-                echo "Required CI failed: $name was not routed but result was $result" >&2
-                return 1
-              fi
-            else
-              echo "Required CI failed: invalid $name routing output" >&2
-              return 1
-            fi
-          }
-
-          verify_child "findb" "$FINDB_EXPECTED" "$FINDB_RESULT"
-          verify_child "fetcher" "$FETCHER_EXPECTED" "$FETCHER_RESULT"
-
-          if [[ "$INFRA_EXPECTED" == "false" ]]; then
-            if [[ "$INFRA_NORMAL_RESULT" != "skipped" || "$INFRA_RETIREMENT_RESULT" != "skipped" ]]; then
-              echo "Required CI failed: non-infrastructure PR ran an infrastructure plan" >&2
-              exit 1
-            fi
-          elif [[ "$INFRA_EXPECTED" == "true" && "$PR_HEAD_REF" == "chore/staging-phase2-retirement" ]]; then
-            if [[ "$INFRA_NORMAL_RESULT" != "skipped" || "$INFRA_RETIREMENT_RESULT" != "success" ]]; then
-              echo "Required CI failed: retirement infrastructure route did not match its bounded plan" >&2
-              exit 1
-            fi
-          elif [[ "$INFRA_EXPECTED" == "true" ]]; then
-            if [[ "$INFRA_NORMAL_RESULT" != "success" || "$INFRA_RETIREMENT_RESULT" != "skipped" ]]; then
-              echo "Required CI failed: ordinary infrastructure route did not use the zero-delete plan" >&2
-              exit 1
-            fi
+          [ "$POLICY" = success ]
+          test "$WANT_FINDB" = true && test "$FINDB" = success || test "$WANT_FINDB" = false && test "$FINDB" = skipped
+          test "$WANT_FETCHER" = true && test "$FETCHER" = success || test "$WANT_FETCHER" = false && test "$FETCHER" = skipped
+          if [ "$WANT_INFRA" = false ]; then
+            [ "$INFRA" = skipped ] && [ "$RETIREMENT_INFRA" = skipped ]
+          elif [ "$PR_HEAD_REF" = chore/staging-phase2-retirement ]; then
+            [ "$INFRA" = skipped ] && [ "$RETIREMENT_INFRA" = success ]
           else
-            echo "Required CI failed: invalid infrastructure routing output" >&2
-            exit 1
+            [ "$INFRA" = success ] && [ "$RETIREMENT_INFRA" = skipped ]
           fi

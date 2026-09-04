@@ -29,8 +29,10 @@ nginx_runtime="$runtime_dir/render_nginx_runtime.sh"
 nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"
 
 : "${AWS_REGION:?AWS_REGION is required}"
+: "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is required}"
+: "${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET is required}"
 
-if [ "$AWS_REGION" != "ap-southeast-1" ]; then
+if [ "$AWS_REGION" != "ap-southeast-1" ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || [[ ! "$DEPLOYMENT_TARGET" =~ ^(staging|production)$ ]]; then
   echo "findb_aws_deploy=failed reason=region_invalid" >&2
   exit 1
 fi
@@ -40,9 +42,9 @@ fi
 : "${ECR_REGISTRY:?ECR_REGISTRY is required}"
 : "${FINDB_IMAGE_REF:?FINDB_IMAGE_REF is required}"
 
-expected_ecr_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
-expected_findb_image="$expected_ecr_registry/findb/staging/backend@sha256:"
-expected_dashboard_image="$expected_ecr_registry/findb/staging/dashboard@sha256:"
+expected_ecr_registry="$AWS_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
+expected_findb_image="$expected_ecr_registry/findb/$DEPLOYMENT_TARGET/backend@sha256:"
+expected_dashboard_image="$expected_ecr_registry/findb/$DEPLOYMENT_TARGET/dashboard@sha256:"
 
 if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
   || ! printf '%s' "$FINDB_IMAGE_REF" | grep -Eq "^${expected_findb_image}[0-9a-f]{64}$" \
@@ -63,7 +65,7 @@ else
 fi
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=AWS_REGION,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"
 fi
@@ -72,6 +74,8 @@ run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
     --catalog "$catalog" \
     --region "$AWS_REGION" \
+    --deployment-target "$DEPLOYMENT_TARGET" \
+    --aws-account-id "$AWS_ACCOUNT_ID" \
     "$@"
 }
 
@@ -161,12 +165,18 @@ require_root_owned_nginx_directory() {
 }
 
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
-  if [ "$nginx_config_dir" != /etc/findb/nginx ]; then
+  if [ "$deploy_mode" = candidate ]; then
+    nginx_config_dir="$release_root/rendered-nginx"
+    install -d -o root -g root -m 0755 "$nginx_config_dir"
+    export FINDB_NGINX_CONFIG_DIR="$nginx_config_dir"
+  elif [ "$nginx_config_dir" != /etc/findb/nginx ]; then
     echo "findb_aws_deploy=failed reason=staging_nginx_config_path_invalid" >&2
     exit 1
   fi
-  require_root_owned_nginx_directory /etc
-  require_root_owned_nginx_directory /etc/findb
+  if [ "$deploy_mode" != candidate ]; then
+    require_root_owned_nginx_directory /etc
+    require_root_owned_nginx_directory /etc/findb
+  fi
   require_root_owned_nginx_directory "$nginx_config_dir"
   for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
     if [ -e "$nginx_config_dir/$conf" ] \
@@ -175,13 +185,33 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
       exit 1
     fi
   done
-  python3 "$release_root/backend/scripts/render_nginx_public_host.py" \
-    --host "$FINDB_PUBLIC_HOST" --template "$release_root/infra/nginx/nginx.conf" \
-    --output "$nginx_config_dir/nginx.conf"
-  python3 "$release_root/backend/scripts/render_nginx_source_allowlist.py" \
-    --cidrs "$SOURCE_ALLOWLIST_CIDRS" --output "$nginx_config_dir/source-allowlist.conf"
-  python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
-    --output "$nginx_config_dir/cloudflare-real-ip.conf"
+  render_nginx_files() {
+    python3 "$release_root/backend/scripts/render_nginx_public_host.py" \
+      --host "$FINDB_PUBLIC_HOST" --template "$release_root/infra/nginx/nginx.conf" \
+      --output "$nginx_config_dir/nginx.conf"
+    python3 "$release_root/backend/scripts/render_nginx_source_allowlist.py" \
+      --cidrs "$SOURCE_ALLOWLIST_CIDRS" --output "$nginx_config_dir/source-allowlist.conf"
+    python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
+      --output "$nginx_config_dir/cloudflare-real-ip.conf"
+  }
+  if [ "$DEPLOYMENT_TARGET" = production ]; then
+    run_runtime --consumer deployment -- bash -s -- \
+      "$release_root" "$nginx_config_dir" "$FINDB_PUBLIC_HOST" <<'RENDER_NGINX_SCRIPT'
+set -euo pipefail
+release_root="$1"
+nginx_config_dir="$2"
+public_host="$3"
+python3 "$release_root/backend/scripts/render_nginx_public_host.py" \
+  --host "$public_host" --template "$release_root/infra/nginx/nginx.conf" \
+  --output "$nginx_config_dir/nginx.conf"
+python3 "$release_root/backend/scripts/render_nginx_source_allowlist.py" \
+  --cidrs "$SOURCE_ALLOWLIST_CIDRS" --output "$nginx_config_dir/source-allowlist.conf"
+python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
+  --output "$nginx_config_dir/cloudflare-real-ip.conf"
+RENDER_NGINX_SCRIPT
+  else
+    render_nginx_files
+  fi
 fi
 for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
   if [ ! -f "$nginx_config_dir/$conf" ] || [ -L "$nginx_config_dir/$conf" ]; then
@@ -209,9 +239,20 @@ compose_file="$1"
 docker compose -f "$compose_file" pull
 PULL_SCRIPT
 
-# The lookup key is rendered on the host into /run (tmpfs), never in the
-# runner checkout or a persistent host env/config directory.
-sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"
+# A candidate must validate that its target-scoped nginx secret can load, but
+# it must never replace the live nginx bind mount under /run.  Its rendered
+# non-secret nginx configuration is already confined to $release_root above;
+# the runtime wrapper loads the nginx catalog into a short-lived tmpfs env and
+# removes it before returning.  Only activation/legacy may render the live
+# lookup-key file consumed by the fixed nginx container.
+if [ "$deploy_mode" = candidate ]; then
+  # A successful wrapper invocation proves the target-scoped nginx catalog can
+  # be loaded.  Do not name or inspect its secret value in this helper.
+  run_runtime --consumer nginx -- true
+  echo "findb_aws_deploy=candidate_nginx_secret_catalog_validated"
+else
+  sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID"
+fi
 
 run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'
 set -euo pipefail
@@ -237,7 +278,19 @@ else
 fi
 MIGRATION_CHECK_SCRIPT
 
-if [ "$deploy_mode" != activate ]; then
+# Candidate validation is deliberately non-disruptive: it has authenticated,
+# pulled every exact digest, rendered/validated configuration, loaded the
+# target-scoped secret catalog, and completed the read-only DB predeploy gate.
+# It must return before stopping writers or creating any fixed-name Compose
+# container. Durable acceptance is persisted by the orchestrator afterward;
+# only the activation invocation may mutate the live Compose project.
+if [ "$deploy_mode" = candidate ]; then
+  transaction_finalized=1
+  echo "findb_aws_deploy=candidate_ready_for_acceptance image_refs=exact-digests live_containers=untouched"
+  exit 0
+fi
+
+if [ "$deploy_mode" = activate ] || [ "$deploy_mode" = legacy ]; then
 writer_services=(ingest dispatcher worker raw-cleanup)
 run_runtime --consumer compose -- bash -s -- "$compose_file" "${writer_services[*]}" <<'STOP_SCRIPT'
 set -euo pipefail
@@ -274,7 +327,7 @@ docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
 '
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
-  --deployment-target staging
+  --deployment-target "$DEPLOYMENT_TARGET"
 MIGRATION_SCRIPT
 fi
 
@@ -467,21 +520,9 @@ docker image prune -af --filter "until=168h" </dev/null >/dev/null
 echo "findb_aws_deploy=candidate_checks_passed image_refs=exact-digests"
 UP_SCRIPT
 
-if [ "$deploy_mode" = candidate ]; then
-  # The candidate was allowed to run only for bounded acceptance checks.  Its
-  # successful SSM command proves cleanup as well as acceptance; persistence
-  # of immutable evidence happens after this command returns.
-  if ! stop_fixed_candidate_containers; then
-    exit 1
-  fi
-  transaction_finalized=1
-  echo "findb_aws_deploy=candidate_ready_for_acceptance image_refs=exact-digests"
-  exit 0
-fi
-
 if [ "$deploy_mode" = activate ]; then
   sudo "$release_root/infra/deploy/runtime-secrets/install_findb_bootstrap.sh" \
-    "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$release_root"
+    "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$release_root" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID"
   sudo ln -sfn "$release_root" /opt/findb/current
   transaction_finalized=1
   echo "findb_aws_deploy=activated image_refs=exact-digests"

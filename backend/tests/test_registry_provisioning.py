@@ -11,7 +11,9 @@ BACKEND_ROOT = Path(__file__).parents[1]
 MIGRATION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "b2c3d4e5f6a7_neutralize_finlab_pilot_policy.py"
 )
-WORKFLOW_PATH = BACKEND_ROOT.parent / ".github" / "workflows" / "findb-cd.yml"
+DEPLOY_HELPER_PATH = (
+    BACKEND_ROOT.parent / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh"
+)
 
 
 def _load_migration():
@@ -224,10 +226,12 @@ def test_neutralizing_migration_is_linear_and_exactly_scoped(
 
 
 def test_cd_passes_target_explicitly_after_migration() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    workflow = DEPLOY_HELPER_PATH.read_text(encoding="utf-8")
     migration_marker = "uv run alembic upgrade head"
-    provisioning_marker = "--deployment-target \"${{ inputs.deployment_target || 'staging' }}\""
+    provisioning_marker = '--deployment-target "$DEPLOYMENT_TARGET"'
     assert migration_marker in workflow
     assert provisioning_marker in workflow
-    assert workflow.index(migration_marker) < workflow.index(provisioning_marker)
     assert "python /app/scripts/provision_registry.py" in workflow
+    provisioning_index = workflow.index("python /app/scripts/provision_registry.py")
+    assert workflow.index(migration_marker) < provisioning_index
+    assert workflow.index(provisioning_marker, provisioning_index) > provisioning_index

@@ -40,9 +40,10 @@ def _catalog(unit: str) -> dict[str, object]:
     return loaded
 
 
-def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
+def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
     expected = {
         "findb": {
+            "runtime/configuration",
             "database/application",
             "database/migration",
             "api/admin-break-glass",
@@ -54,6 +55,7 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             "r2/canonical-reader",
         },
         "fetcher": {
+            "runtime/configuration",
             "api/calendar-serve",
             "api/source/twelve-data",
             "api/source/finlab",
@@ -66,9 +68,9 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
     }
     for unit, names in expected.items():
         catalog = _catalog(unit)
-        assert catalog["schema_version"] == 1
+        assert catalog["schema_version"] == 2
         assert catalog["unit"] == unit
-        assert catalog["secret_prefix"] == f"findb/staging/{unit}/"
+        assert "secret_prefix" not in catalog
         configured = {
             secret["name"]
             for consumer in catalog["consumers"].values()
@@ -81,12 +83,13 @@ def test_catalogs_are_versioned_and_use_exact_staging_prefixes() -> None:
             assert "canary" not in catalog["consumers"]
 
 
-def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> None:
+def test_active_staging_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> None:
     configured = {
         secret["name"]
         for unit in ("findb", "fetcher")
         for consumer in _catalog(unit)["consumers"].values()
         for secret in consumer["secrets"]
+        if "staging" in secret.get("targets", ["staging", "production"])
     }
     assert len(configured) == 17
     assert "registry/ghcr-pull" not in configured
@@ -103,7 +106,7 @@ def test_active_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> No
 def test_runtime_command_uses_only_bounded_instance_role_ecr_login() -> None:
     command = (CATALOG_ROOT / "runtime_secret_command.sh").read_text(encoding="utf-8")
     assert "--ecr-registry" in command
-    assert "439622209937\\.dkr\\.ecr\\.ap-southeast-1\\.amazonaws\\.com" in command
+    assert '"$aws_account_id.dkr.ecr.ap-southeast-1.amazonaws.com"' in command
     assert 'aws ecr get-login-password --region "$region"' in command
     assert 'docker login --username AWS --password-stdin "$ecr_registry"' in command
     assert 'docker logout "$ecr_registry"' in command
@@ -147,6 +150,69 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
     }
     assert "FINLAB_API_TOKEN" not in loaded
     assert "SHIOAJI_API_KEY" not in loaded
+
+
+def test_production_consumer_loads_target_scoped_runtime_configuration() -> None:
+    loader = _loader()
+    catalog = {
+        "schema_version": 2,
+        "unit": "fetcher",
+        "consumers": {
+            "provider": {
+                "secrets": [
+                    {
+                        "name": "runtime/configuration",
+                        "targets": ["production"],
+                        "required_keys": ["SHIOAJI_SIMULATION"],
+                    },
+                    {"name": "provider/key", "required_keys": ["TOKEN"]},
+                ]
+            }
+        },
+    }
+    payloads = {
+        "findb/production/fetcher/runtime/configuration": {"SHIOAJI_SIMULATION": "true"},
+        "findb/production/fetcher/provider/key": {"TOKEN": "production-token"},
+    }
+
+    loaded = loader.load_consumer(
+        catalog,
+        "provider",
+        lambda name: json.dumps(payloads[name]),
+        deployment_target="production",
+    )
+
+    assert loaded == {"SHIOAJI_SIMULATION": "true", "TOKEN": "production-token"}
+
+
+def test_staging_consumer_skips_production_only_runtime_configuration() -> None:
+    loader = _loader()
+    catalog = {
+        "schema_version": 2,
+        "unit": "fetcher",
+        "consumers": {
+            "provider": {
+                "secrets": [
+                    {
+                        "name": "runtime/configuration",
+                        "targets": ["production"],
+                        "required_keys": ["SHIOAJI_SIMULATION"],
+                    },
+                    {"name": "provider/key", "required_keys": ["TOKEN"]},
+                ]
+            }
+        },
+    }
+    fetched: list[str] = []
+
+    def fetch(name: str) -> str:
+        fetched.append(name)
+        return json.dumps({"TOKEN": "staging-token"})
+
+    loaded = loader.load_consumer(catalog, "provider", fetch)
+
+    assert loaded == {"TOKEN": "staging-token"}
+    assert fetched == ["findb/staging/fetcher/provider/key"]
 
 
 def test_fetcher_finlab_smoke_consumer_is_provider_only() -> None:
@@ -254,12 +320,11 @@ def test_catalog_rejects_unit_prefix_mismatch(tmp_path: Path) -> None:
         loader._catalog(catalog_path)
 
 
-def test_load_consumer_rejects_unit_prefix_mismatch_without_catalog_reader() -> None:
+def test_load_consumer_rejects_invalid_target_without_secret_fetch() -> None:
     loader = _loader()
     catalog = {
-        "schema_version": 1,
+        "schema_version": 2,
         "unit": "findb",
-        "secret_prefix": "findb/staging/fetcher/",
         "consumers": {
             "consumer": {
                 "secrets": [{"name": "api/key", "required_keys": ["TOKEN"]}],
@@ -274,7 +339,7 @@ def test_load_consumer_rejects_unit_prefix_mismatch_without_catalog_reader() -> 
         return '{"TOKEN":"value"}'
 
     with pytest.raises(loader.LoaderError, match="catalog_invalid"):
-        loader.load_consumer(catalog, "consumer", fetch)
+        loader.load_consumer(catalog, "consumer", fetch, deployment_target="other")
     assert not fetched
 
 
@@ -284,6 +349,8 @@ def test_load_consumer_rejects_unit_prefix_mismatch_without_catalog_reader() -> 
         {"name": "../api/key", "required_keys": ["TOKEN"]},
         {"name": "api//key", "required_keys": ["TOKEN"]},
         {"name": "api/key", "required_keys": ["TOKEN-NAME"]},
+        {"name": "api/key", "required_keys": ["TOKEN"], "targets": []},
+        {"name": "api/key", "required_keys": ["TOKEN"], "targets": ["other"]},
     ],
 )
 def test_loader_rejects_unsafe_catalog_identifiers(secret: dict[str, object]) -> None:
@@ -577,6 +644,8 @@ def test_cli_does_not_echo_invalid_consumer_input(tmp_path: Path) -> None:
             consumer_input,
             "--region",
             "ap-southeast-1",
+            "--deployment-target",
+            "staging",
             "--output",
             str(tmp_path / "runtime.env"),
         ],

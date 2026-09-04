@@ -45,7 +45,7 @@ fi
 case "$provider" in
   twelve-data)
     marker_identity="twelve"
-    expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data"
+    image_repository_suffix="twelve-data"
     source_key="${FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY:-}"
     provider_key="${TWELVE_DATA_API_KEY:-}"
     provider_env=(
@@ -57,14 +57,14 @@ case "$provider" in
     ;;
   finlab)
     marker_identity="finlab"
-    expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab"
+    image_repository_suffix="finlab"
     source_key="${FETCHER_FINLAB_SOURCE_CLIENT_KEY:-}"
     provider_key="${FINLAB_API_TOKEN:-}"
     provider_env=(--env FINLAB_API_TOKEN)
     ;;
   shioaji)
     marker_identity="shioaji"
-    expected_image_repository="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji"
+    image_repository_suffix="shioaji"
     if [ "${SHIOAJI_SIMULATION:-}" != "true" ]; then
       echo "release_fetcher_provider=failed reason=shioaji_simulation_required" >&2
       exit 1
@@ -79,6 +79,13 @@ case "$provider" in
     exit 1
     ;;
 esac
+
+if [ "${ECR_REGISTRY:-}" != "${AWS_ACCOUNT_ID:-}.dkr.ecr.ap-southeast-1.amazonaws.com" ] \
+  || [[ ! "${DEPLOYMENT_TARGET:-}" =~ ^(staging|production)$ ]]; then
+  echo "release_fetcher_provider=failed reason=aws_route_invalid" >&2
+  exit 1
+fi
+expected_image_repository="$ECR_REGISTRY/findb/$DEPLOYMENT_TARGET/fetcher/$image_repository_suffix"
 
 if ! printf '%s' "$image" | grep -Eq "^${expected_image_repository}@sha256:[0-9a-f]{64}$"; then
   echo "release_fetcher_provider=failed reason=ecr_image_contract" >&2

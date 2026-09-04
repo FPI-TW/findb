@@ -7,12 +7,14 @@ set +x
 umask 077
 
 usage() {
-  echo "usage: runtime_secret_command.sh --catalog PATH --region REGION --consumer NAME [--consumer NAME ...] [--map SOURCE=DEST] [--ecr-registry REGISTRY] --docker-login -- COMMAND [ARG ...]" >&2
+  echo "usage: runtime_secret_command.sh --catalog PATH --region REGION --deployment-target staging|production --aws-account-id ID --consumer NAME [--consumer NAME ...] [--map SOURCE=DEST] [--ecr-registry REGISTRY] --docker-login -- COMMAND [ARG ...]" >&2
   exit 2
 }
 
 catalog=""
 region=""
+deployment_target=""
+aws_account_id=""
 declare -a consumers=()
 declare -a mappings=()
 docker_login_requested=0
@@ -28,6 +30,16 @@ while [ "$#" -gt 0 ]; do
     --region)
       [ "$#" -ge 2 ] || usage
       region="$2"
+      shift 2
+      ;;
+    --deployment-target)
+      [ "$#" -ge 2 ] || usage
+      deployment_target="$2"
+      shift 2
+      ;;
+    --aws-account-id)
+      [ "$#" -ge 2 ] || usage
+      aws_account_id="$2"
       shift 2
       ;;
     --consumer)
@@ -61,6 +73,8 @@ done
 
 [ -n "$catalog" ] || usage
 [ -n "$region" ] || usage
+[ -n "$deployment_target" ] || usage
+[ -n "$aws_account_id" ] || usage
 [ "${#consumers[@]}" -gt 0 ] || usage
 [ "$#" -gt 0 ] || usage
 
@@ -68,6 +82,8 @@ if [ "$region" != "ap-southeast-1" ]; then
   echo "runtime_secret_command=failed reason=region_invalid" >&2
   exit 1
 fi
+case "$deployment_target" in staging|production) ;; *) echo "runtime_secret_command=failed reason=deployment_target_invalid" >&2; exit 1 ;; esac
+[[ "$aws_account_id" =~ ^[0-9]{12}$ ]] || { echo "runtime_secret_command=failed reason=aws_account_invalid" >&2; exit 1; }
 
 case "$catalog" in
   /opt/*/runtime-secrets/*.json) ;;
@@ -149,6 +165,7 @@ load_consumer() {
     --catalog "$catalog" \
     --consumer "$consumer" \
     --region "$region" \
+    --deployment-target "$deployment_target" \
     --output "$output" \
     --owner "$owner"
   if [ ! -f "$output" ] || [ -L "$output" ] || [ "$(stat -c '%u:%g:%a' "$output" 2>/dev/null || true)" != "0:0:600" ]; then
@@ -199,7 +216,7 @@ for mapping in "${mappings[@]}"; do
 done
 
 if [ "$docker_login_requested" -eq 1 ]; then
-  if ! [[ "$ecr_registry" =~ ^439622209937\.dkr\.ecr\.ap-southeast-1\.amazonaws\.com$ ]]; then
+  if [ "$ecr_registry" != "$aws_account_id.dkr.ecr.ap-southeast-1.amazonaws.com" ]; then
     echo "runtime_secret_command=failed reason=ecr_registry_invalid" >&2
     exit 1
   fi

@@ -6,6 +6,8 @@ set -euo pipefail
 set +x
 
 : "${AWS_REGION:?AWS_REGION is required}"
+: "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is required}"
+: "${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET is required}"
 : "${ECR_REGISTRY:?ECR_REGISTRY is required}"
 : "${FETCHER_RELEASE_ROOT:?FETCHER_RELEASE_ROOT is required}"
 : "${FETCHER_DEPLOY_MODE:?FETCHER_DEPLOY_MODE is required}"
@@ -13,8 +15,8 @@ set +x
 : "${FINLAB_IMAGE_REF:?FINLAB_IMAGE_REF is required}"
 : "${SHIOAJI_IMAGE_REF:?SHIOAJI_IMAGE_REF is required}"
 
-expected_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
-if [ "$AWS_REGION" != ap-southeast-1 ] || [ "$ECR_REGISTRY" != "$expected_registry" ]; then
+expected_registry="$AWS_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
+if [ "$AWS_REGION" != ap-southeast-1 ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || [[ ! "$DEPLOYMENT_TARGET" =~ ^(staging|production)$ ]] || [ "$ECR_REGISTRY" != "$expected_registry" ]; then
   echo "fetcher_aws_deploy=failed reason=aws_route_invalid" >&2
   exit 1
 fi
@@ -47,18 +49,18 @@ validate_image() {
     exit 1
   }
 }
-validate_image "$TWELVE_IMAGE_REF" findb/staging/fetcher/twelve-data
-validate_image "$FINLAB_IMAGE_REF" findb/staging/fetcher/finlab
-validate_image "$SHIOAJI_IMAGE_REF" findb/staging/fetcher/shioaji
+validate_image "$TWELVE_IMAGE_REF" "findb/$DEPLOYMENT_TARGET/fetcher/twelve-data"
+validate_image "$FINLAB_IMAGE_REF" "findb/$DEPLOYMENT_TARGET/fetcher/finlab"
+validate_image "$SHIOAJI_IMAGE_REF" "findb/$DEPLOYMENT_TARGET/fetcher/shioaji"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=AWS_REGION,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
+preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
-    --catalog "$catalog" --region "$AWS_REGION" "$@"
+    --catalog "$catalog" --region "$AWS_REGION" --deployment-target "$DEPLOYMENT_TARGET" --aws-account-id "$AWS_ACCOUNT_ID" "$@"
 }
 
 processed=()
