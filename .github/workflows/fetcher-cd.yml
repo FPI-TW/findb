@@ -45,7 +45,7 @@ jobs:
     uses: ./.github/workflows/fetcher-ci.yml
     with: {revision: '${{ needs.policy.outputs.revision }}'}
 
-  prepare:
+  select:
     needs: [policy, verify]
     if: >-
       github.ref == 'refs/heads/main' && needs.verify.result == 'success' &&
@@ -53,18 +53,11 @@ jobs:
       (github.event_name == 'workflow_dispatch' || vars.STAGING_ECR_CUTOVER_ENABLED == 'true')
     runs-on: ubuntu-latest
     environment: staging-fetcher
-    permissions: {actions: read, contents: read, id-token: write}
+    permissions: {actions: read, contents: read}
     outputs:
       revision: ${{ steps.selection.outputs.revision }}
       mode: ${{ steps.selection.outputs.mode }}
-      bundle_key: ${{ steps.contract.outputs.bundle_key }}
-    env:
-      AWS_REGION: ap-southeast-1
-      ACCOUNT: '439622209937'
-      REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-      TWELVE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data
-      FINLAB: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab
-      SHIOAJI: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji
+      bundle_key: ${{ steps.selection.outputs.bundle_key }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {ref: '${{ needs.policy.outputs.revision }}', fetch-depth: 0, persist-credentials: false}
@@ -110,8 +103,30 @@ jobs:
             esac
           done
           echo 'timed out waiting for same-revision FinDB rollout'; exit 1
+
+  publish:
+    needs: select
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
+    runs-on: ubuntu-latest
+    permissions: {contents: read, id-token: write}
+    outputs:
+      twelve_image: ${{ steps.twelve_image.outputs.image_ref }}
+      finlab_image: ${{ steps.finlab_image.outputs.image_ref }}
+      shioaji_image: ${{ steps.shioaji_image.outputs.image_ref }}
+    env:
+      AWS_REGION: ap-southeast-1
+      ACCOUNT: '439622209937'
+      REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+      TWELVE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data
+      FINLAB: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab
+      SHIOAJI: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ needs.select.outputs.revision }}', persist-credentials: false}
+      - name: Verify exact requested revision for publication
+        env: {EXPECTED_SHA: '${{ needs.select.outputs.revision }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Configure staging publisher credentials
-        if: ${{ steps.selection.outputs.mode == 'candidate' }}
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: arn:aws:iam::439622209937:role/fetcher-staging-ecr-publisher
@@ -119,38 +134,67 @@ jobs:
           allowed-account-ids: '439622209937'
           role-session-name: fetcher-staging-publish-${{ github.run_id }}
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-        if: ${{ steps.selection.outputs.mode == 'candidate' }}
       - name: Build or reuse immutable Twelve Data image
-        if: ${{ steps.selection.outputs.mode == 'candidate' }}
         id: twelve_image
-        env: {ECR_IMAGE_TAG: '${{ needs.policy.outputs.revision }}'}
+        env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
         run: |
           set -euo pipefail
           [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
           infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$TWELVE" ./fetcher ./fetcher/Dockerfile
       - name: Build or reuse immutable FinLab image
-        if: ${{ steps.selection.outputs.mode == 'candidate' }}
         id: finlab_image
-        env: {ECR_IMAGE_TAG: '${{ needs.policy.outputs.revision }}'}
+        env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
         run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FINLAB" ./fetcher ./fetcher/Dockerfile.finlab
       - name: Build or reuse immutable Shioaji image
-        if: ${{ steps.selection.outputs.mode == 'candidate' }}
         id: shioaji_image
-        env: {ECR_IMAGE_TAG: '${{ needs.policy.outputs.revision }}'}
+        env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
         run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$SHIOAJI" ./fetcher ./fetcher/Dockerfile.shioaji
+
+  prepare:
+    needs: [select, publish]
+    if: >-
+      always() && needs.select.result == 'success' &&
+      ((needs.select.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
+       (needs.select.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
+    runs-on: ubuntu-latest
+    environment: staging-fetcher
+    permissions: {contents: read, id-token: write}
+    outputs:
+      revision: ${{ needs.select.outputs.revision }}
+      mode: ${{ needs.select.outputs.mode }}
+      bundle_key: ${{ steps.contract.outputs.bundle_key }}
+    env:
+      AWS_REGION: ap-southeast-1
+      ACCOUNT: '439622209937'
+      REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ needs.select.outputs.revision }}', persist-credentials: false}
+      - name: Verify exact requested revision for bundle preparation
+        env: {EXPECTED_SHA: '${{ needs.select.outputs.revision }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Configure staging deploy credentials
+        if: ${{ needs.select.outputs.mode == 'candidate' }}
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: fetcher-staging-bundle-${{ github.run_id }}
       - name: Build and upload exact v2 staging candidate
-        if: ${{ steps.selection.outputs.mode == 'candidate' }}
+        if: ${{ needs.select.outputs.mode == 'candidate' }}
         id: candidate
         env:
-          REVISION: ${{ needs.policy.outputs.revision }}
+          REVISION: ${{ needs.select.outputs.revision }}
           BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
           KMS_KEY: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
-          TWELVE_IMAGE: ${{ steps.twelve_image.outputs.image_ref }}
-          FINLAB_IMAGE: ${{ steps.finlab_image.outputs.image_ref }}
-          SHIOAJI_IMAGE: ${{ steps.shioaji_image.outputs.image_ref }}
+          TWELVE_IMAGE: ${{ needs.publish.outputs.twelve_image }}
+          FINLAB_IMAGE: ${{ needs.publish.outputs.finlab_image }}
+          SHIOAJI_IMAGE: ${{ needs.publish.outputs.shioaji_image }}
         run: |
           set -euo pipefail
+          [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
           [[ "$TWELVE_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]]; [[ "$FINLAB_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; [[ "$SHIOAJI_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/shioaji@sha256:[0-9a-f]{64}$ ]]
           python3 infra/deploy/release_manifest.py generate --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "shioaji=$SHIOAJI_IMAGE" --output "$RUNNER_TEMP/manifest.json"
           python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
@@ -159,7 +203,7 @@ jobs:
           echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
       - name: Publish exact reusable deployment contract
         id: contract
-        env: {MODE: '${{ steps.selection.outputs.mode }}', REPLAY_KEY: '${{ steps.selection.outputs.bundle_key }}', CANDIDATE_KEY: '${{ steps.candidate.outputs.bundle_key }}'}
+        env: {MODE: '${{ needs.select.outputs.mode }}', REPLAY_KEY: '${{ needs.select.outputs.bundle_key }}', CANDIDATE_KEY: '${{ steps.candidate.outputs.bundle_key }}'}
         run: |
           set -euo pipefail
           key="$REPLAY_KEY"; [ "$MODE" = candidate ] && key="$CANDIDATE_KEY"; [ -n "$key" ]; echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
@@ -216,7 +260,7 @@ jobs:
           exit 1
 
   report-staging-deployment-failure:
-    needs: [verify, prepare, deploy]
+    needs: [verify, select, publish, prepare, deploy]
     if: >-
       always() &&
       github.ref == 'refs/heads/main' &&
@@ -224,6 +268,10 @@ jobs:
       vars.STAGING_ECR_CUTOVER_ENABLED == 'true' &&
       (needs.verify.result == 'failure' ||
         needs.verify.result == 'cancelled' ||
+        needs.select.result == 'failure' ||
+        needs.select.result == 'cancelled' ||
+        needs.publish.result == 'failure' ||
+        needs.publish.result == 'cancelled' ||
         needs.prepare.result == 'failure' ||
         needs.prepare.result == 'cancelled' ||
         needs.deploy.result == 'failure' ||
