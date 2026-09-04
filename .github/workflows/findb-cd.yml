@@ -142,6 +142,7 @@ jobs:
   deploy:
     needs: prepare
     if: ${{ needs.prepare.result == 'success' }}
+    permissions: {contents: read, id-token: write}
     uses: ./.github/workflows/findb-deploy.yml
     with:
       deployment_target: staging
