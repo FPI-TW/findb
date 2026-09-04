@@ -351,6 +351,7 @@ def test_required_ci_aggregator_truth_table(
     environment: dict[str, str], expected_code: int
 ) -> None:
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "required-ci.yml").read_text())
+    assert workflow["jobs"]["required"]["name"] == "Required CI"
     script = workflow["jobs"]["required"]["steps"][0]["run"]
     completed = subprocess.run(
         ["bash", "-c", script],

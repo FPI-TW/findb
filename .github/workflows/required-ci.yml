@@ -61,6 +61,7 @@ jobs:
     uses: FPI-TW/findb/.github/workflows/staging-infra-plan.yml@efe573be9267a52a0b7e3090d00445f38df9945a
     with: {allow_ghcr_metadata_retirement: true}
   required:
+    name: Required CI
     if: ${{ always() }}
     needs: [policy, findb, fetcher, staging-infra-plan, staging-infra-retirement-plan]
     runs-on: ubuntu-latest
