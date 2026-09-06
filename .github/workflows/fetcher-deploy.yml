@@ -187,24 +187,42 @@ jobs:
           BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
           TARGET_ID: ${{ steps.release.outputs.target_id }}
           VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
-          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
-          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          FETCHER_SOURCE_API_URL: ${{ inputs.deployment_target == 'staging' && vars.FETCHER_SOURCE_API_URL || '' }}
+          FINDB_SERVE_BASE_URL: ${{ inputs.deployment_target == 'staging' && vars.FINDB_SERVE_BASE_URL || '' }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10') || '' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300') || '' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30') || '' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30') || '' }}
+          FETCHER_MAX_ATTEMPTS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_MAX_ATTEMPTS || '3') || '' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30') || '' }}
+          TWELVE_DATA_BASE_URL: ${{ inputs.deployment_target == 'staging' && (vars.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com') || '' }}
+          TWELVE_DATA_TIMEOUT_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.TWELVE_DATA_TIMEOUT_SECONDS || '30') || '' }}
+          TWELVE_DATA_MAX_RESPONSE_BYTES: ${{ inputs.deployment_target == 'staging' && (vars.TWELVE_DATA_MAX_RESPONSE_BYTES || '8388608') || '' }}
+          SHIOAJI_SIMULATION: ${{ inputs.deployment_target == 'staging' && (vars.SHIOAJI_SIMULATION || 'true') || '' }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_ACCOUNT_ID || '' }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_RAW_BUCKET || '' }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ inputs.deployment_target == 'staging' && (vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608') || '' }}
           DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
         run: |
           set -euo pipefail
           [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
+          runtime_variable_names="FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          runtime_exports=""
+          for name in $runtime_variable_names; do
+            if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi
+            printf -v q_runtime_value '%q' "${!name:-}"
+            runtime_exports+=" $name=$q_runtime_value"
+          done
           marker="fetcher-${MODE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           printf -v q_bucket '%q' "$BUNDLE_BUCKET"; printf -v q_key '%q' "$BUNDLE_KEY"; printf -v q_sha '%q' "$BUNDLE_SHA256"
           printf -v q_target '%q' "$TARGET"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"
           printf -v q_twelve '%q' "$TWELVE_IMAGE"; printf -v q_finlab '%q' "$FINLAB_IMAGE"; printf -v q_shioaji '%q' "$SHIOAJI_IMAGE"
-          printf -v q_source_url '%q' "$FETCHER_SOURCE_API_URL"; printf -v q_serve_url '%q' "$FINDB_SERVE_BASE_URL"; printf -v q_r2_account '%q' "$CLOUDFLARE_R2_ACCOUNT_ID"; printf -v q_r2_bucket '%q' "$CLOUDFLARE_R2_RAW_BUCKET"; printf -v q_marker '%q' "$marker"
+          printf -v q_marker '%q' "$marker"
           printf -v q_dns '%q' "$DNS_CHECK_NAME"
           printf -v q_validator_sha '%q' "$VALIDATOR_SHA256"
           host_mode=candidate; [ "$MODE" = replay ] && host_mode=activate
           printf -v q_host_mode '%q' "$host_mode"
-          host_command="set -euo pipefail; trap 'printf \"fetcher_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/fetcher-$BUNDLE_SHA256.tar; validator=/tmp/fetcher-release-manifest-$BUNDLE_SHA256.py; root=/opt/fetcher/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$root\" --commit-sha $REVISION --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image shioaji=$q_shioaji; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji FETCHER_SOURCE_API_URL=$q_source_url FINDB_SERVE_BASE_URL=$q_serve_url CLOUDFLARE_R2_ACCOUNT_ID=$q_r2_account CLOUDFLARE_R2_RAW_BUCKET=$q_r2_bucket FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=$q_host_mode; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_deploy_marker=%s status=success\\n\" $q_marker"
+          host_command="set -euo pipefail; trap 'printf \"fetcher_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/fetcher-$BUNDLE_SHA256.tar; validator=/tmp/fetcher-release-manifest-$BUNDLE_SHA256.py; root=/opt/fetcher/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$root\" --commit-sha $REVISION --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image shioaji=$q_shioaji; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=$q_host_mode; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_deploy_marker=%s status=success\\n\" $q_marker"
           host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ vars.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
           source infra/deploy/ssm_command_marker_gate.sh
@@ -262,17 +280,35 @@ jobs:
           TWELVE_IMAGE: ${{ steps.release.outputs.twelve_data }}
           FINLAB_IMAGE: ${{ steps.release.outputs.finlab }}
           SHIOAJI_IMAGE: ${{ steps.release.outputs.shioaji }}
-          FETCHER_SOURCE_API_URL: ${{ vars.FETCHER_SOURCE_API_URL }}
-          FINDB_SERVE_BASE_URL: ${{ vars.FINDB_SERVE_BASE_URL }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ vars.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_RAW_BUCKET: ${{ vars.CLOUDFLARE_R2_RAW_BUCKET }}
+          FETCHER_SOURCE_API_URL: ${{ inputs.deployment_target == 'staging' && vars.FETCHER_SOURCE_API_URL || '' }}
+          FINDB_SERVE_BASE_URL: ${{ inputs.deployment_target == 'staging' && vars.FINDB_SERVE_BASE_URL || '' }}
+          FETCHER_CALENDAR_TIMEOUT_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_CALENDAR_TIMEOUT_SECONDS || '10') || '' }}
+          FETCHER_CALENDAR_CACHE_TTL_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_CALENDAR_CACHE_TTL_SECONDS || '300') || '' }}
+          FETCHER_REQUEST_TIMEOUT_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_REQUEST_TIMEOUT_SECONDS || '30') || '' }}
+          FETCHER_SCHEDULER_CONTROL_POLL_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_SCHEDULER_CONTROL_POLL_SECONDS || '30') || '' }}
+          FETCHER_MAX_ATTEMPTS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_MAX_ATTEMPTS || '3') || '' }}
+          FETCHER_MAX_RETRY_AFTER_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.FETCHER_MAX_RETRY_AFTER_SECONDS || '30') || '' }}
+          TWELVE_DATA_BASE_URL: ${{ inputs.deployment_target == 'staging' && (vars.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com') || '' }}
+          TWELVE_DATA_TIMEOUT_SECONDS: ${{ inputs.deployment_target == 'staging' && (vars.TWELVE_DATA_TIMEOUT_SECONDS || '30') || '' }}
+          TWELVE_DATA_MAX_RESPONSE_BYTES: ${{ inputs.deployment_target == 'staging' && (vars.TWELVE_DATA_MAX_RESPONSE_BYTES || '8388608') || '' }}
+          SHIOAJI_SIMULATION: ${{ inputs.deployment_target == 'staging' && (vars.SHIOAJI_SIMULATION || 'true') || '' }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_ACCOUNT_ID || '' }}
+          CLOUDFLARE_R2_RAW_BUCKET: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_RAW_BUCKET || '' }}
+          CLOUDFLARE_R2_MAX_OBJECT_BYTES: ${{ inputs.deployment_target == 'staging' && (vars.CLOUDFLARE_R2_MAX_OBJECT_BYTES || '8388608') || '' }}
           TARGET: ${{ inputs.deployment_target }}
         run: |
           set -euo pipefail
+          runtime_variable_names="FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          runtime_exports=""
+          for name in $runtime_variable_names; do
+            if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi
+            printf -v q_runtime_value '%q' "${!name:-}"
+            runtime_exports+=" $name=$q_runtime_value"
+          done
           marker="fetcher-activate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           root="/opt/fetcher/releases/${BUNDLE_SHA256}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf -v q_root '%q' "$root"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"; printf -v q_twelve '%q' "$TWELVE_IMAGE"; printf -v q_finlab '%q' "$FINLAB_IMAGE"; printf -v q_shioaji '%q' "$SHIOAJI_IMAGE"; printf -v q_source '%q' "$FETCHER_SOURCE_API_URL"; printf -v q_serve '%q' "$FINDB_SERVE_BASE_URL"; printf -v q_r2_account '%q' "$CLOUDFLARE_R2_ACCOUNT_ID"; printf -v q_r2_bucket '%q' "$CLOUDFLARE_R2_RAW_BUCKET"; printf -v q_target '%q' "$TARGET"; printf -v q_marker '%q' "$marker"
-          host_command="set -euo pipefail; trap 'printf \"fetcher_activate_marker=%s status=failed\\n\" $q_marker' ERR; root=$q_root; [ -d \"\$root\" ] && [ ! -L \"\$root\" ]; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji FETCHER_SOURCE_API_URL=$q_source FINDB_SERVE_BASE_URL=$q_serve CLOUDFLARE_R2_ACCOUNT_ID=$q_r2_account CLOUDFLARE_R2_RAW_BUCKET=$q_r2_bucket FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=activate; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_activate_marker=%s status=success\\n\" $q_marker"
+          printf -v q_root '%q' "$root"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"; printf -v q_twelve '%q' "$TWELVE_IMAGE"; printf -v q_finlab '%q' "$FINLAB_IMAGE"; printf -v q_shioaji '%q' "$SHIOAJI_IMAGE"; printf -v q_target '%q' "$TARGET"; printf -v q_marker '%q' "$marker"
+          host_command="set -euo pipefail; trap 'printf \"fetcher_activate_marker=%s status=failed\\n\" $q_marker' ERR; root=$q_root; [ -d \"\$root\" ] && [ ! -L \"\$root\" ]; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=activate; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_activate_marker=%s status=success\\n\" $q_marker"
           host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ vars.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
           source infra/deploy/ssm_command_marker_gate.sh

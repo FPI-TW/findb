@@ -491,6 +491,83 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
     assert "--migration-revision $q_migration" in preflight_block
 
 
+def test_reusable_deployments_forward_complete_staging_runtime_variable_contract() -> None:
+    contracts = {
+        "findb": (
+            "APP_NAME",
+            "APP_VERSION",
+            "DEBUG",
+            "PORT",
+            "DATABASE_POOL_SIZE",
+            "DATABASE_MAX_OVERFLOW",
+            "API_V1_PREFIX",
+            "API_KEY_HEADER",
+            "SOURCE_TRUST_PROXY_HEADERS",
+            "SERVE_REQUIRE_AUTH",
+            "RATE_LIMIT_REQUESTS",
+            "RATE_LIMIT_WINDOW",
+            "RAW_RETENTION_ENABLED",
+            "RAW_RETENTION_DAYS",
+            "FINDB_STATIC_CACHE_BASE_URL",
+            "FINDB_LATEST_PRICE_WORKERS",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_CANONICAL_BUCKET",
+        ),
+        "fetcher": (
+            "FETCHER_SOURCE_API_URL",
+            "FINDB_SERVE_BASE_URL",
+            "FETCHER_CALENDAR_TIMEOUT_SECONDS",
+            "FETCHER_CALENDAR_CACHE_TTL_SECONDS",
+            "FETCHER_REQUEST_TIMEOUT_SECONDS",
+            "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS",
+            "FETCHER_MAX_ATTEMPTS",
+            "FETCHER_MAX_RETRY_AFTER_SECONDS",
+            "TWELVE_DATA_BASE_URL",
+            "TWELVE_DATA_TIMEOUT_SECONDS",
+            "TWELVE_DATA_MAX_RESPONSE_BYTES",
+            "SHIOAJI_SIMULATION",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_RAW_BUCKET",
+            "CLOUDFLARE_R2_MAX_OBJECT_BYTES",
+        ),
+    }
+    for unit, expected_names in contracts.items():
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
+        )
+        for step_name in (
+            "Run candidate acceptance or accepted replay through bounded SSM",
+            "Activate only after immutable acceptance is durable",
+        ):
+            step = next(
+                item
+                for item in workflow["jobs"]["deploy"]["steps"]
+                if item.get("name") == step_name
+            )
+            assert set(expected_names) <= set(step["env"])
+            for name in expected_names:
+                assert "inputs.deployment_target == 'staging'" in step["env"][name]
+                assert f"vars.{name}" in step["env"][name]
+            match = re.search(r'^runtime_variable_names="([A-Z0-9_ ]+)"$', step["run"], re.M)
+            assert match
+            assert tuple(match.group(1).split()) == expected_names
+            assert (
+                'if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi' in step["run"]
+            )
+            assert 'runtime_exports+=" $name=$q_runtime_value"' in step["run"]
+            assert "$runtime_exports" in step["run"]
+
+    findb = yaml.safe_load((ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text())
+    for step_name in (
+        "Run candidate acceptance or accepted replay through bounded SSM",
+        "Activate only after immutable acceptance is durable",
+    ):
+        step = next(
+            item for item in findb["jobs"]["deploy"]["steps"] if item.get("name") == step_name
+        )
+        assert 'if [ "$TARGET" = staging ]; then [ "$PORT" = 8080 ]; fi' in step["run"]
+
+
 def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
     wrapper = "python3 infra/deploy/ssm_bash_command.py"
     for unit in ("findb", "fetcher"):

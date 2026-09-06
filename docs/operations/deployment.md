@@ -324,6 +324,13 @@ secret schema後立刻透過已開啟的directory descriptor刪除；不得改�
 preflight只以`config --no-interpolate -q`驗證結構，runtime interpolation與secret injection只在後續受包裝的
 candidate／activation helper內執行。
 
+Staging的non-secret application設定仍以unit GitHub Environment variables為source of truth；reusable
+deployment workflow必須用固定allowlist逐項shell-quote，並在candidate與activation兩個SSM command傳入完整契約。
+FinDB另在runner端要求`PORT=8080`，避免與Nginx upstream契約分歧。Fetcher保留既有bounded numeric／provider
+defaults，但environment-specific URL、R2 account與bucket仍不得缺少。Production不沿用這些GitHub application
+values：workflow傳入空外層值，instance-side runtime-secret wrapper再從
+`findb/production/<unit>/runtime/configuration`載入並覆蓋，維持production Environment只有AWS／SSM控制面設定。
+
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
 root-owned immutable release directory；SSM preflight 不會改寫 active Compose、runtime helper 或 Nginx
