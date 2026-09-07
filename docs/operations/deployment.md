@@ -152,7 +152,9 @@ control plane，不代表 production Environment 或 AWS資源已建立。現況
 | Production promotion snapshot／dump／seed | N/A（尚未建立） |
 
 Push至`main`依 shared change policy 執行 same-revision CI；相關 unit 自動 rollout 至 staging，
-contract-only 只跑兩個 CI。staging manual dispatch 僅用於 exact accepted bundle replay。Production
+contract-only 只跑兩個 CI。unit-specific staging caller或reusable deploy workflow本身變更時，亦必須
+rollout對應unit，以實際驗證變更後的deployment path；CI workflow、production control plane與其它
+workflow-only變更仍不自動部署。staging manual dispatch 僅用於 exact accepted bundle replay。Production
 只能從 immutable unit semver tag 手動 dispatch `promote` 或 `rollback`，不能由 push 選取 target。
 兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected branch、immutable tag、
 固定 confirmation與target隔離控制變更。每個job只能取得自己unit與target的設定；branch與Environment
