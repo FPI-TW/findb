@@ -446,6 +446,23 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
             assert text.count("build_ecr_image_if_missing.sh") == 3
             for repository in ("twelve-data", "finlab", "shioaji"):
                 assert f"/findb/staging/fetcher/{repository}" in text
+            for repository_var, dockerfile in (
+                ("TWELVE", "Dockerfile"),
+                ("FINLAB", "Dockerfile.finlab"),
+                ("SHIOAJI", "Dockerfile.shioaji"),
+            ):
+                assert (
+                    f'build_ecr_image_if_missing.sh "${repository_var}" . ./fetcher/{dockerfile}'
+                ) in text
+                assert (
+                    "build_ecr_image_if_missing.sh "
+                    f'"${repository_var}" ./fetcher ./fetcher/{dockerfile}'
+                ) not in text
+
+            ci = (ROOT / ".github" / "workflows" / "fetcher-ci.yml").read_text()
+            for dockerfile in ("Dockerfile", "Dockerfile.finlab", "Dockerfile.shioaji"):
+                assert f"docker build -f fetcher/{dockerfile}" in ci
+            assert ci.count("docker build -f fetcher/") == 3
 
 
 def test_fetcher_waits_for_same_sha_findb_before_aws_credentials() -> None:

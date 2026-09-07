@@ -221,6 +221,9 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
    取得AWS身分，無Environment的`publish`再以main-ref publisher role build／reuse並push明確image
    identity，最後Environment-bound `prepare`以deploy role產生及上傳candidate bundle。Publisher role
    不得寫bundle，deploy role不得publish image；之後才由reusable deploy workflow pull candidate。
+   Fetcher的generic、FinLab與Shioaji Dockerfile都從monorepo root複製`fetcher/`及`contracts/`，因此CI與
+   staging publisher必須一致使用repository root作build context，並以`fetcher/Dockerfile*`選擇Dockerfile；
+   `./fetcher`不是合法context，否則無法包含共享contracts。
 2. **Operator pre-deploy**：確認target、backup／PITR、disk／inode、container state、觀察窗口及
    必要external dependencies；現行workflow未自動涵蓋的項目必須人工留證。
 3. **Workflow**：執行remote與DB preflight；FinDB migration前停止本unit所有DB writers，

@@ -141,15 +141,15 @@ jobs:
           set -euo pipefail
           [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-          infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$TWELVE" ./fetcher ./fetcher/Dockerfile
+          infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$TWELVE" . ./fetcher/Dockerfile
       - name: Build or reuse immutable FinLab image
         id: finlab_image
         env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
-        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FINLAB" ./fetcher ./fetcher/Dockerfile.finlab
+        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FINLAB" . ./fetcher/Dockerfile.finlab
       - name: Build or reuse immutable Shioaji image
         id: shioaji_image
         env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
-        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$SHIOAJI" ./fetcher ./fetcher/Dockerfile.shioaji
+        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$SHIOAJI" . ./fetcher/Dockerfile.shioaji
 
   prepare:
     needs: [select, publish]
