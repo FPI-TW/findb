@@ -233,7 +233,9 @@ class Loop:
 
     def run(self, _cycle, *, stop_event=None):
         print("ready", flush=True)
-        return 0 if stop_event.wait(5) else 2
+        # Keep the natural loop timeout beyond the parent assertion budget so
+        # a missed signal cannot race process.communicate() at the same instant.
+        return 0 if stop_event.wait(30) else 2
 
 module.SchedulerControlClient = Client
 module.SchedulerControlLoop = Loop
@@ -249,7 +251,7 @@ sys.exit(module._run_forever(object(), lambda: None))
         assert process.stdout is not None
         assert process.stdout.readline().strip() == "ready"
         process.send_signal(signal.SIGTERM)
-        _stdout, stderr = process.communicate(timeout=5)
+        _stdout, stderr = process.communicate(timeout=10)
         assert process.returncode == 0, stderr
     finally:
         if process.poll() is None:
