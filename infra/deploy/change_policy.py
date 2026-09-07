@@ -26,6 +26,14 @@ SHARED_PREFIXES = (
     "infra/deploy/",
 )
 INFRA_PREFIXES = ("infra/tofu/", "infra/env/")
+FINDB_STAGING_WORKFLOWS = {
+    ".github/workflows/findb-cd.yml",
+    ".github/workflows/findb-deploy.yml",
+}
+FETCHER_STAGING_WORKFLOWS = {
+    ".github/workflows/fetcher-cd.yml",
+    ".github/workflows/fetcher-deploy.yml",
+}
 
 
 class PolicyError(ValueError):
@@ -38,9 +46,15 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if not path:
             continue
         if path.startswith(".github/workflows/"):
-            # Workflow changes are shared delivery policy; they require CI but
-            # never turn a configuration-only commit into an automatic rollout.
+            # Workflow changes are shared delivery policy and require both CI
+            # suites. A unit's staging caller or reusable deployment workflow
+            # must also exercise that exact changed path on staging; CI and
+            # production-control-plane changes remain non-deploying.
             result["findb_ci"] = result["fetcher_ci"] = True
+            if path in FINDB_STAGING_WORKFLOWS:
+                result["findb_staging"] = True
+            if path in FETCHER_STAGING_WORKFLOWS:
+                result["fetcher_staging"] = True
             continue
         if path.startswith("contracts/"):
             result["findb_ci"] = result["fetcher_ci"] = True
