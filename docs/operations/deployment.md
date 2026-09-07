@@ -339,6 +339,13 @@ paths。staging canary/deploy/provider helper、catalog、Compose 與 Nginx rend
 archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
 且 bucket keys 關閉以保留 unit-prefix KMS encryption context。
 
+FinDB v2的Nginx runtime catalog只接受
+`/opt/findb/releases/<bundle-sha256>-<run-id>-<attempt>/infra/deploy/runtime-secrets/findb.json`；
+production同樣只走此v2 release identity。staging在recycle horizon內另保留尾碼`-findb`的v1 accepted
+release identity唯讀replay相容性，production不得使用。既有bootstrap的
+`/opt/findb/runtime-secrets/findb.json`固定路徑仍受catalog metadata、target、account與consumer驗證，不能用來
+放行其他release路徑。
+
 以下是Phase 3當時建立的accepted record；`b499869c8ff86e09232c1b55516787ae7ed5d2f0`已不是目前
 FinDB或Fetcher accepted identity：
 
