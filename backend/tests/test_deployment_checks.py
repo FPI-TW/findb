@@ -1621,15 +1621,79 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     )
     assert "/run/findb-runtime-secrets/nginx/serve-key.conf" in nginx_helper
     assert (
+        "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb"
+        in nginx_helper
+    )
+    assert (
         "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb"
         in nginx_helper
     )
+    assert '[ "$deployment_target" = staging ]' in nginx_helper
     assert '[ "$catalog" = /opt/findb/runtime-secrets/findb.json ]' in nginx_helper
     assert 'runtime_dir="${catalog%/findb.json}"' in nginx_helper
     assert 'renderer="$runtime_dir/render_serve_key.py"' in nginx_helper
     assert "renderer_metadata_invalid" in nginx_helper
     assert 'python3 "$renderer"' in nginx_helper
     assert "/opt/findb/runtime-secrets/render_serve_key.py" not in nginx_helper
+
+
+def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> None:
+    helper = REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh"
+    identity = f"{'a' * 64}-34025994515-1"
+    current_catalog = f"/opt/findb/releases/{identity}/infra/deploy/runtime-secrets/findb.json"
+    legacy_catalog = f"/opt/findb/releases/{identity}-findb/infra/deploy/runtime-secrets/findb.json"
+
+    for target, catalog in (
+        ("staging", current_catalog),
+        ("production", current_catalog),
+        ("staging", legacy_catalog),
+        ("production", "/opt/findb/runtime-secrets/findb.json"),
+    ):
+        result = subprocess.run(
+            [
+                "bash",
+                str(helper),
+                catalog,
+                "ap-southeast-1",
+                "findb.example.com",
+                target,
+                "439622209937",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "renderer_metadata_invalid" in result.stderr
+        assert "catalog_path_invalid" not in result.stderr
+
+    for target, catalog in (
+        ("production", legacy_catalog),
+        (
+            "staging",
+            f"/opt/findb/releases/{identity}-fetcher/infra/deploy/runtime-secrets/findb.json",
+        ),
+        (
+            "staging",
+            f"/opt/findb/releases/{'A' * 64}-34025994515-1/infra/deploy/runtime-secrets/findb.json",
+        ),
+    ):
+        result = subprocess.run(
+            [
+                "bash",
+                str(helper),
+                catalog,
+                "ap-southeast-1",
+                "findb.example.com",
+                target,
+                "439622209937",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "catalog_path_invalid" in result.stderr
 
 
 def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() -> None:

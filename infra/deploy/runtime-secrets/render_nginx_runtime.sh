@@ -11,8 +11,12 @@ deployment_target="${4:?deployment target required}"
 aws_account_id="${5:?AWS account id required}"
 output=/run/findb-runtime-secrets/nginx/serve-key.conf
 
-if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb\.json$ ]] \
+if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb\.json$ ]] \
   || [ "$catalog" = /opt/findb/runtime-secrets/findb.json ]; then
+  runtime_dir="${catalog%/findb.json}"
+elif [ "$deployment_target" = staging ] \
+  && [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb\.json$ ]]; then
+  # Keep accepted staging v1 bundles replayable through their original release identity.
   runtime_dir="${catalog%/findb.json}"
 else
   echo "render_nginx_runtime=failed reason=catalog_path_invalid" >&2
