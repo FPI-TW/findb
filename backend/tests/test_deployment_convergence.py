@@ -488,14 +488,14 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
         assert 'docker --config \\"\\$work/docker\\" pull' in text
         assert "AccessDenied" in text
         assert "load_runtime_secrets.py" in text
-        assert "docker compose" in text
         assert (
             f"--output /run/findb-runtime-secrets/preflight-{unit}/runtime.env --check-only" in text
         )
         assert '--output \\"\\$work/runtime.env\\" --check-only' not in text
-        assert "config --no-interpolate -q" in text
 
     findb_text = (ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text()
+    assert "docker compose" in findb_text
+    assert "config --no-interpolate -q" in findb_text
     assert "FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx" in findb_text
     assert "/home/ubuntu/etc/nginx" not in findb_text
     preflight_block = re.search(
@@ -506,6 +506,16 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
     assert "MIGRATION: ${{ steps.release.outputs.migration }}" in preflight_block
     assert "printf -v q_migration '%q' \"$MIGRATION\"" in preflight_block
     assert "--migration-revision $q_migration" in preflight_block
+
+    fetcher_text = (ROOT / ".github" / "workflows" / "fetcher-deploy.yml").read_text()
+    assert "docker compose" not in fetcher_text
+    for helper in (
+        "runtime_secret_command.sh",
+        "deploy_fetcher_aws.sh",
+        "release_fetcher_provider.sh",
+    ):
+        assert f'\\"\\$work/release/infra/deploy/runtime-secrets/{helper}\\"' in fetcher_text
+    assert "bash -n" in fetcher_text
 
 
 def test_reusable_deployments_forward_complete_staging_runtime_variable_contract() -> None:
