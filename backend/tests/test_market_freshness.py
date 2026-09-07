@@ -141,7 +141,14 @@ async def _seed_published_calendar_year(
     )
 
 
-def _run(source: str, data_date: date, status: str = "completed") -> IngestionRun:
+def _run(
+    source: str,
+    data_date: date,
+    status: str = "completed",
+    *,
+    created_at: datetime = NOW,
+    failure_code: str = "NORMALIZATION_FAILED",
+) -> IngestionRun:
     return IngestionRun(
         run_id=uuid7(),
         dataset_key="tw_equity_eod",
@@ -152,8 +159,9 @@ def _run(source: str, data_date: date, status: str = "completed") -> IngestionRu
         delivery_mode="full_snapshot",
         is_rerun=False,
         status=status,
-        completed_at=NOW if status == "completed" else None,
-        failure_code="NORMALIZATION_FAILED" if status == "failed" else None,
+        completed_at=created_at if status == "completed" else None,
+        created_at=created_at,
+        failure_code=failure_code if status == "failed" else None,
         total_records=2,
         success_records=2 if status == "completed" else 0,
     )
@@ -331,6 +339,155 @@ async def test_freshness_uses_scheduler_control_provider_and_feed(test_session):
     assert row.status == "fresh"
     assert row.coverage_data_date == date(2026, 7, 22)
     assert row.feeds[0].source == "finlab"
+
+
+@pytest.mark.asyncio
+async def test_freshness_clears_a_failure_recovered_by_a_newer_success(test_session):
+    await _setup(test_session)
+    test_session.add_all(
+        [
+            _run(
+                "finlab",
+                date(2026, 7, 21),
+                "failed",
+                created_at=datetime(2026, 7, 21, 7, tzinfo=timezone.utc),
+                failure_code="RETRY_EXHAUSTED",
+            ),
+            _run(
+                "finlab",
+                date(2026, 7, 22),
+                created_at=datetime(2026, 7, 22, 7, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, now=NOW))[0].feeds[0]
+
+    assert feed.status == "fresh"
+    assert feed.last_failure_code is None
+
+
+@pytest.mark.asyncio
+async def test_freshness_keeps_a_failure_newer_than_the_latest_success(test_session):
+    await _setup(test_session)
+    test_session.add_all(
+        [
+            _run(
+                "finlab",
+                date(2026, 7, 21),
+                created_at=datetime(2026, 7, 21, 7, tzinfo=timezone.utc),
+            ),
+            _run(
+                "finlab",
+                date(2026, 7, 22),
+                "failed",
+                created_at=datetime(2026, 7, 22, 7, tzinfo=timezone.utc),
+                failure_code="RETRY_EXHAUSTED",
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, now=NOW))[0].feeds[0]
+
+    assert feed.status == "failed"
+    assert feed.last_failure_code == "RETRY_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_full_snapshot_freshness_keeps_expected_date_failure_despite_older_success(
+    test_session,
+):
+    await _setup(test_session)
+    test_session.add_all(
+        [
+            _run(
+                "finlab",
+                date(2026, 7, 22),
+                "failed",
+                created_at=datetime(2026, 7, 22, 7, tzinfo=timezone.utc),
+                failure_code="RETRY_EXHAUSTED",
+            ),
+            _run(
+                "finlab",
+                date(2026, 7, 21),
+                created_at=datetime(2026, 7, 22, 8, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, now=NOW))[0].feeds[0]
+
+    assert feed.last_failure_code == "RETRY_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_incremental_freshness_requires_success_to_cover_the_expected_date(test_session):
+    await _setup(test_session)
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    dataset.config["delivery_expectation"]["delivery_mode"] = "incremental"
+    test_session.add_all(
+        [
+            IngestionRun(
+                run_id=uuid7(),
+                dataset_key="tw_equity_eod",
+                source="finlab",
+                schema_id="market_eod",
+                schema_version=1,
+                batch_data_date=date(2026, 7, 22),
+                delivery_mode="incremental",
+                is_rerun=False,
+                status="failed",
+                failure_code="RETRY_EXHAUSTED",
+                created_at=datetime(2026, 7, 22, 7, tzinfo=timezone.utc),
+            ),
+            IngestionRun(
+                run_id=uuid7(),
+                dataset_key="tw_equity_eod",
+                source="finlab",
+                schema_id="market_eod",
+                schema_version=1,
+                batch_data_date=date(2026, 7, 21),
+                delivery_mode="backfill",
+                coverage_start_date=date(2026, 7, 21),
+                coverage_end_date=date(2026, 7, 21),
+                is_rerun=False,
+                status="completed",
+                completed_at=datetime(2026, 7, 22, 8, tzinfo=timezone.utc),
+                created_at=datetime(2026, 7, 22, 8, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, now=NOW))[0].feeds[0]
+
+    assert feed.last_failure_code == "RETRY_EXHAUSTED"
+
+    test_session.add(
+        IngestionRun(
+            run_id=uuid7(),
+            dataset_key="tw_equity_eod",
+            source="finlab",
+            schema_id="market_eod",
+            schema_version=1,
+            batch_data_date=date(2026, 7, 22),
+            delivery_mode="backfill",
+            coverage_start_date=date(2026, 7, 21),
+            coverage_end_date=date(2026, 7, 22),
+            is_rerun=False,
+            status="completed",
+            completed_at=datetime(2026, 7, 22, 9, tzinfo=timezone.utc),
+            created_at=datetime(2026, 7, 22, 9, tzinfo=timezone.utc),
+        )
+    )
+    await test_session.commit()
+
+    recovered_feed = (await list_market_freshness(test_session, now=NOW))[0].feeds[0]
+
+    assert recovered_feed.last_failure_code is None
 
 
 @pytest.mark.asyncio
