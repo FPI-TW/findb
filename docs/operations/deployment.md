@@ -324,8 +324,9 @@ replay live acceptance已完成；FinDB與Fetcher日常host transport已分別�
 Host preflight的runtime-secret validation必須把一次性env寫入
 `/run/findb-runtime-secrets/preflight-<unit>/runtime.env`並使用`--check-only`，由loader確認tmpfs、owner、mode與
 secret schema後立刻透過已開啟的directory descriptor刪除；不得改用`/tmp`或release work directory。Compose在
-preflight只以`config --no-interpolate -q`驗證結構，runtime interpolation與secret injection只在後續受包裝的
-candidate／activation helper內執行。
+FinDB preflight只以`config --no-interpolate -q`驗證結構，runtime interpolation與secret injection只在後續受
+包裝的candidate／activation helper內執行。Fetcher bundle刻意不包含FinDB Compose；其preflight改以`bash -n`
+驗證bundle內三個runtime shell helpers，再由candidate／activation執行provider transaction。
 
 Staging的non-secret application設定仍以unit GitHub Environment variables為source of truth；reusable
 deployment workflow必須用固定allowlist逐項shell-quote，並在candidate與activation兩個SSM command傳入完整契約。
