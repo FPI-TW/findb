@@ -13,7 +13,7 @@ from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.raw import RawMarketPayload
@@ -143,6 +143,13 @@ def _heartbeat_age(now: datetime, heartbeat: datetime | None) -> float | None:
     return max(0.0, (now - ensure_utc(heartbeat)).total_seconds())
 
 
+def _run_is_newer(candidate: IngestionRun, reference: IngestionRun) -> bool:
+    """Compare run recency using the same ordering as freshness queries."""
+    if candidate.created_at != reference.created_at:
+        return candidate.created_at > reference.created_at
+    return candidate.run_id.int > reference.run_id.int
+
+
 async def _runs_for_feed(
     db: AsyncSession,
     feed: _ConfiguredFeed,
@@ -250,6 +257,8 @@ async def _runs_for_feed(
     failure_criteria = list(criteria)
     if delivery_mode == "sequenced_snapshot" and expected is not None:
         failure_criteria.append(IngestionRun.batch_data_date <= expected)
+    elif expected is not None and delivery_mode is not None:
+        failure_criteria.append(delivery_run_coverage_condition(delivery_mode, expected))
     if latest_group is not None and latest_group.failed:
         failure_criteria.extend(
             [
@@ -258,17 +267,58 @@ async def _runs_for_feed(
                 IngestionRun.daily_update_id == latest_group.daily_update_id,
             ]
         )
-    latest_failure = await db.scalar(
-        select(IngestionRun)
-        .where(*failure_criteria, IngestionRun.status == "failed")
-        .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
-        .limit(1)
-    )
+    failed_group = bool(latest_group is not None and latest_group.failed)
+    latest_failure = None
+    if delivery_mode != "sequenced_snapshot" or failed_group:
+        if delivery_mode == "sequenced_snapshot":
+            latest_sequence_attempt = (
+                select(
+                    IngestionRun.run_id.label("run_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=IngestionRun.sequence,
+                        order_by=(IngestionRun.created_at.desc(), IngestionRun.run_id.desc()),
+                    )
+                    .label("attempt_rank"),
+                )
+                .where(*failure_criteria)
+                .subquery("latest_sequence_attempt")
+            )
+            latest_failure = await db.scalar(
+                select(IngestionRun)
+                .join(
+                    latest_sequence_attempt,
+                    latest_sequence_attempt.c.run_id == IngestionRun.run_id,
+                )
+                .where(
+                    latest_sequence_attempt.c.attempt_rank == 1,
+                    IngestionRun.status == "failed",
+                )
+                .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
+                .limit(1)
+            )
+        else:
+            latest_failure = await db.scalar(
+                select(IngestionRun)
+                .where(*failure_criteria, IngestionRun.status == "failed")
+                .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
+                .limit(1)
+            )
+    if latest_failure is not None and delivery_mode != "sequenced_snapshot":
+        latest_recovery_success = await db.scalar(
+            select(IngestionRun)
+            .where(*failure_criteria, IngestionRun.status == "completed")
+            .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
+            .limit(1)
+        )
+        if latest_recovery_success is not None and _run_is_newer(
+            latest_recovery_success, latest_failure
+        ):
+            latest_failure = None
     last_run, last_fetched_at = last_row if last_row else (None, None)
     partial_group = bool(
         latest_group is not None and not latest_group.complete and not latest_group.failed
     )
-    failed_group = bool(latest_group is not None and latest_group.failed)
     return (
         last_run,
         last_fetched_at,

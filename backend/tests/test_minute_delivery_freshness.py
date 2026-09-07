@@ -165,10 +165,12 @@ def _run(
     status: str = "completed",
     data_date: date = DATA_DATE,
     attempt: int = 0,
+    created_at: datetime | None = None,
+    failure_code: str = "NORMALIZATION_FAILED",
 ) -> IngestionRun:
-    created_at = datetime.combine(data_date, datetime.min.time(), tzinfo=timezone.utc).replace(
-        hour=9, minute=sequence + attempt * 10
-    )
+    created_at = created_at or datetime.combine(
+        data_date, datetime.min.time(), tzinfo=timezone.utc
+    ).replace(hour=9, minute=sequence + attempt * 10)
     return IngestionRun(
         run_id=uuid7(),
         dataset_key=dataset_key,
@@ -185,7 +187,7 @@ def _run(
         status=status,
         completed_at=created_at if status == "completed" else None,
         created_at=created_at,
-        failure_code="NORMALIZATION_FAILED" if status == "failed" else None,
+        failure_code=failure_code if status == "failed" else None,
         raw_records=1,
         total_records=1,
         success_records=1 if status == "completed" else 0,
@@ -274,6 +276,111 @@ async def test_minute_freshness_uses_latest_attempt_per_sequence(test_session) -
     await test_session.commit()
     recovered = (await list_market_freshness(test_session, market="TW", now=AT_DUE))[0]
     assert recovered.feeds[0].status == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_minute_freshness_keeps_failure_code_until_the_failed_group_recovers(
+    test_session,
+) -> None:
+    await _seed_minute_datasets(test_session, ("tw_equity_minute",))
+    test_session.add_all(
+        [
+            _run("tw_equity_minute", 1, 2, status="failed"),
+            _run("tw_equity_minute", 2, 2),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, market="TW", now=AT_DUE))[0].feeds[0]
+
+    assert feed.status == "failed"
+    assert feed.last_failure_code == "NORMALIZATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_minute_freshness_uses_the_active_failed_sequence_code(test_session) -> None:
+    await _seed_minute_datasets(test_session, ("tw_equity_minute",))
+    test_session.add_all(
+        [
+            _run(
+                "tw_equity_minute",
+                1,
+                2,
+                status="failed",
+                attempt=2,
+                failure_code="CODE_A",
+            ),
+            _run("tw_equity_minute", 1, 2, attempt=3),
+            _run(
+                "tw_equity_minute",
+                2,
+                2,
+                status="failed",
+                attempt=1,
+                failure_code="CODE_B",
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, market="TW", now=AT_DUE))[0].feeds[0]
+
+    assert feed.status == "failed"
+    assert feed.last_failure_code == "CODE_B"
+
+
+@pytest.mark.asyncio
+async def test_minute_freshness_uses_the_latest_group_not_cross_group_attempt_time(
+    test_session,
+) -> None:
+    await _seed_minute_datasets(test_session, ("tw_equity_minute",))
+    test_session.add_all(
+        [
+            _run(
+                "tw_equity_minute",
+                1,
+                1,
+                snapshot_id="newer-failed",
+                daily_update_id="newer-failed",
+                status="failed",
+                created_at=datetime(2026, 7, 22, 9, tzinfo=timezone.utc),
+            ),
+            _run(
+                "tw_equity_minute",
+                1,
+                1,
+                snapshot_id="older-complete",
+                daily_update_id="older-complete",
+                data_date=PRIOR_DATA_DATE,
+                created_at=datetime(2026, 7, 22, 10, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, market="TW", now=AT_DUE))[0].feeds[0]
+
+    assert feed.status == "failed"
+    assert feed.last_failure_code == "NORMALIZATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_minute_freshness_hides_historical_failure_for_a_newer_partial_group(
+    test_session,
+) -> None:
+    await _seed_minute_datasets(test_session, ("tw_equity_minute",))
+    test_session.add_all(
+        [
+            _run("tw_equity_minute", 1, 1, data_date=PRIOR_DATA_DATE, status="failed"),
+            _run("tw_equity_minute", 1, 2),
+        ]
+    )
+    await test_session.commit()
+
+    feed = (await list_market_freshness(test_session, market="TW", now=AT_DUE))[0].feeds[0]
+
+    assert feed.status == "partial"
+    assert feed.last_failure_code is None
 
 
 @pytest.mark.asyncio
