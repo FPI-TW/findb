@@ -16,11 +16,11 @@
   provider欄位消失／異常空snapshot告警，再決定policy是否從`warn`升級。
 - [ ] 在active delivery backlog存在時演練worker kill、DB短暫中斷與重複delivery，保存資料面恢復結果。
   空broker volume由PostgreSQL durable state與版本控制topology重建的基線演練已完成，不需重複。
-- [ ] 為每個active provider/client簽發並輪替獨立DB-backed Source key，觀察完整排程週期。
 
 ## P0：Staging deployment
 
-- [ ] 等待accepted SHA後的完整原生provider cycle依排程時間觸發，驗證四個active feeds的freshness、
+- [ ] 等待accepted SHA後的完整原生provider cycle依排程時間觸發，使用已完成輪替的獨立
+  DB-backed Source／Serve credentials，驗證四個active feeds的freshness、
   terminal state與lineage；不得以repair rerun、accepted replay或skipped acquisition smoke取代。
 - [ ] 在完整原生provider cycle gate通過後，另行取得移除授權並確認last-used與health，再撤銷GitHub
   Environment runtime copies；此項不與R2實際rotation綁定。Raw與Canonical R2 scope已依使用者核准的
