@@ -101,9 +101,9 @@ accepted bundle或record。candidate、cross-unit、mutable／unsafe key、缺im
 
 - staging 是 production 的前置驗證站，預期三個月內開始建立 production；
 - staging 由小團隊共同維運，不要求正式 24/7 on-call；
-- 本計畫 pre-cutover 原先曾規劃 protected `main` 合併後自動部署 staging；目前實際行為為
-  FinDB／Fetcher 均僅接受 protected `main` 上的 manual dispatch，production採unit-specific
-  Git tag加手動 artifact promotion，不另設Environment人工核准；
+- protected `main` 合併後，shared change policy命中的unit會在cutover gate啟用時自動
+  rollout至staging；manual dispatch只用於exact accepted bundle replay。Production採
+  unit-specific Git tag加手動artifact promotion，不另設Environment人工核准；
 - 本輪採核心安全與可復原基線，不一次導入 HA、全面 IaC import 或完整企業稽核；
 - IaC 只先管理新控制面資源，既有 EC2、RDS 與網路先盤點及引用，不因全面 import 阻塞 cutover。
 
@@ -143,8 +143,8 @@ protected main
 
 本計畫不包含：
 
-- 建立 production 資源或 production Environment；
-- 實作production promotion workflow；本計畫只定義未來promotion必須遵守的tag與artifact契約；
+- 建立production雲端資源、Environment或執行live promotion；production promotion workflow已由
+  後續工作實作並完成dry-run契約驗證，但不代表production foundation已存在；
 - staging HA、Auto Scaling、多 EC2、blue/green 或 Multi-AZ 強制要求；
 - 全面 import 既有 AWS 資源到 IaC；
 - 擴大 active feed universe、production-scale backfill 或新增資料來源；
@@ -170,7 +170,7 @@ protected main
 | --- | --- | --- |
 | Release units | FinDB 與 Fetcher 已有獨立 CI/CD、Environment 與 concurrency group | 將 AWS target、role、secret path 與 acceptance 寫入可稽核清冊 |
 | CI gate | CD以`workflow_call`執行同一revision的CI；FinDB migration tests已拆為獨立job，並以session-scoped PostgreSQL templates重用historical revisions | 定義支援revision、以實際staging predecessor／restore clone驗證upgrade、image runtime security與deploy bundle deterministic check |
-| Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production 使用 target-specific ECR promotion | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion另案實作 |
+| Image identity | Staging五個target-specific ECR images均已由unit-specific accepted bundle固定為完整`repository@sha256`，normal deployment與accepted replay均以digest部署；SHA tag只作build/reuse索引，production 使用 target-specific ECR promotion | Phase 3文件closeout後持續保護accepted bundle／record與manifest-aware retention；production promotion workflow已實作並完成dry-run契約驗證，AWS foundation與live acceptance仍待完成 |
 | EC2 transport | FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded candidate／accepted-record／activation；兩個unit各完成兩次normal deployment、accepted replay與Session Manager recovery。兩個Environment的`*_EC2_*` deploy secrets均已刪除，三個staging SG也已無TCP/22 ingress，EC2 key-pair resources與host `authorized_keys`中的對應key亦已退役；production 使用同樣的 OIDC＋SSM bounded transport | FinDB different-digest previous-release rollback與不同Alembic revision schema拒絕已於Phase 6完成；production transport另案 |
 | Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；GitHub Environment的舊application runtime copies仍保留但不是staging runtime source。FinDB／Fetcher deploy SSH secrets、TCP/22 ingress及host recovery key material均已退場 | 完整原生四feed cycle gate通過後，另行確認last-used與health再移除GitHub runtime copies |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；已確認private、encryption、deletion protection、10-day automated backup與PITR，並於2026-09-01完成一次PITR restore、revision／row count／connectivity驗證 | migration credential分權與RDS tags仍未納入本Phase；RDS backup-lag custom alarm已上線 |
@@ -198,8 +198,10 @@ protected main
 unrouted job非skipped時fail closed。兩個unit CI不再直接接收`pull_request`，但保留
 `workflow_call`與`workflow_dispatch`。
 
-兩個 CD 的 protected `main` path-filtered push 只執行同 revision CI 與完成 no-op bridge；staging
-ECR build、publish、host rollout 一律由 manual dispatch 啟動。CD 必須直接呼叫同 revision CI。
+兩個 CD 的 protected `main` push由shared change policy判定unit邊界；命中的unit在
+`STAGING_ECR_CUTOVER_ENABLED=true`時，會執行同revision CI、ECR build／publish與host rollout。
+Contract-only變更只執行兩個CI，不自動部署；manual dispatch只接受exact accepted bundle
+replay。CD必須直接呼叫同revision CI。
 Staging Environment只允許protected branch且不設人工核准；
 production建立後使用`findb-vMAJOR.MINOR.PATCH`或`fetcher-vMAJOR.MINOR.PATCH`宣告對應unit的
 release，再由operator手動dispatch artifact promotion；同樣不配置Environment人工核准。
@@ -505,8 +507,8 @@ IaC原始碼同步與plan採以下過渡及長期契約：
 - [x] 填完staging資源清冊，記錄owner、AWS account/region、resource ARN/ID、資料分類、backup
   policy、告警接收者與公開網路例外。
 - [x] 驗證`main`的required CI與PR protection；`staging-findb`、`staging-fetcher`只允許protected
-  branch且不設Environment人工核准；目前 staging 部署由 protected `main` 上的 manual dispatch
-  啟動。
+  branch且不設Environment人工核准；目前 staging 由protected `main` push依shared change policy
+  自動rollout命中的unit，manual dispatch只用於accepted replay。
 - [x] 依IaC邊界確認團隊既有工具與state owner；沒有既有標準時採OpenTofu，只納管新控制面；Tyler
   (`tylercore`) 擔任 OpenTofu/IaC remote-state owner，encrypted backend／locking 留待 Phase 1。
 - [x] 記錄目前accepted SHA、實際image identity、Alembic revision、running containers、RDS
@@ -525,7 +527,7 @@ Phase 0 執行註記：四項 checklist 均完成。文件只保存長期有效�
 
 Phase 0 exit gate **已達成**：target、database、secret／backup owner與residual exceptions都有具名
 紀錄；repo required CI enforcement與既有PR protection已由GitHub設定頁外部驗證；SSH recovery
-仍可用，且staging manual dispatch 不會被Environment人工核准阻塞。後續變更必須維持always-created
+仍可用，且staging自動rollout與accepted replay均不會被Environment人工核准阻塞。後續變更必須維持always-created
 aggregate workflow、`Required CI` context與ruleset一致，不得倒退為path-filtered required contexts。
 
 ### Phase 1：OIDC、SSM與instance role基礎
@@ -786,17 +788,18 @@ migration chain的forward fix。
 Protected `main` 已具備 selected-SHA deterministic deployment bundle、private KMS S3
 candidate/accepted records、SSM host-side bundle/digest preflight，以及 FinDB/Fetcher staging exact
 digest deployment boundary。兩個unit均已完成normal accepted deployment、live SSM/health acceptance
-與accepted replay rehearsal。Production resources 與production workflow implementation仍不是目前
-staging completion condition。Phase 4與Phase 5均已完成兩次normal SSM deployment、accepted replay及
+與accepted replay rehearsal。Production promotion workflow已實作並完成dry-run契約驗證；
+production resources與live acceptance仍不是目前staging completion condition。Phase 4與Phase 5均已完成兩次normal SSM deployment、accepted replay及
 各自三個deploy SSH secret移除；Fetcher另完成bounded FinLab smoke。兩個exit gate均已關閉；
 different-digest rollback與schema拒絕演練已於Phase 6完成。
 
 Staging AWS deployment只有在以下全部有可查證evidence時才算完成：
 
 - [x] aggregate加四個unit GitHub workflows的path、CI、Environment、concurrency與release unit matrix一致。
-- [x] Protected `main` 的 CD push path 僅完成同 revision CI 與 no-op bridge；staging 部署改由
-  protected `main` 上的 manual dispatch 啟動，且不受Environment人工核准阻塞；required CI與PR
-  protection 已完成外部驗證。
+- [x] Protected `main` 的CD push path會先執行同revision CI，並在shared change policy命中unit且
+  cutover gate啟用時自動rollout至staging；contract-only變更只跑兩個CI，manual dispatch只用於
+  exact accepted bundle replay。兩種路徑均不受Environment人工核准阻塞，required CI與PR
+  protection已完成外部驗證。
 - [x] `infra/tofu/**`變更由IaC專用GitHub Actions在exact PR commit執行`fmt/init/validate/plan`；
   `staging-infra-plan` OIDC role不能修改受管資源或讀取runtime secret value，delete／replace
   fail closed，apply只可由protected `main`的fresh plan與獨立身分人工執行。
@@ -812,8 +815,8 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 - [x] Accepted release manifest具備未來promotion所需的unit、commit與完整digests；契約已固定為
   `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH`加manual dispatch，Docker
   `vMAJOR.MINOR.PATCH` tag只能在target-specific production ECR repository附加到相同OCI digest，
-  碰撞時fail closed。Production不得重新build或依tag部署；實作production promotion workflow本身
-  不是本計畫完成條件。
+  碰撞時fail closed。Production不得重新build或依tag部署；production promotion workflow已實作，
+  其AWS foundation與live acceptance不是本staging計畫的完成條件。
 - [ ] Runtime secrets不在persistent host env file，active catalog恰為17筆，兩筆空GHCR
   metadata已排程退役、兩個未使用PAT已撤銷；DB-backed rotation與RabbitMQ rotation均有evidence；provider
   與Raw／Canonical R2 scope項目依使用者核准變更acceptance criterion而完成，非rotation evidence。完整原生
@@ -840,7 +843,7 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 | Private subnet＋ALB | 若public EC2移除SSH且只保留必要HTTPS，可暫緩 | Production network設計完成前，或public EC2風險不可接受 |
 | 全面AWS IaC import | 延後；本次只納管新控制面 | 既有resource inventory／drift responsibility 已由 Tyler 持有，待 production 環境複製或 drift治理需求確立 |
 | Canonical R2資料面驗收 | 延後；只完成bucket與credential邊界 | Canonical publish/read/sign runtime完成 |
-| Production資源與promotion workflow | 延後；本次定義unit-specific Git tag、target-specific production ECR、Docker tag與accepted manifest promotion契約 | 開始建立production Environment、ECR、EC2、RDS、R2及正式promotion workflow |
+| Production資源與live promotion | Promotion workflow已實作並完成dry-run契約驗證；production Environment、ECR、EC2、RDS、R2與live acceptance仍延後 | 開始建立production foundation或執行正式promotion／rollback live acceptance |
 | 正式24/7 on-call與企業稽核 | 延後；使用具名owner與通知channel | Production SLA、法遵或客戶稽核需求確立 |
 
 這份檔案是暫時性執行計畫，不是永久runbook。不得在尚有未完成Phase、未搬移的操作知識或

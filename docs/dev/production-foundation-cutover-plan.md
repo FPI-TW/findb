@@ -2,6 +2,19 @@
 
 > 未完成開發計畫；完成後應將仍有效的操作契約整併至 `docs/operations/` 並移除此檔。
 
+## 現況
+
+- [x] `findb-production-cd.yml`、`fetcher-production-cd.yml`與target-aware reusable deploy workflows已實作；
+  annotated tag、immutable binding、staging v2 accepted bundle、digest copy、production accepted record與
+  rollback fail-closed契約已完成dry-run驗證。
+- [ ] Production AWS account、IAM／OIDC、ECR、EC2、RDS、SSM／CloudWatch、deploy-bundle
+  S3／KMS、runtime secrets與GitHub Environments尚未建立或完成live驗證。
+- [ ] FinDB與Fetcher的production promote、bounded SSM activation及production accepted-record-only
+  rollback尚未執行live acceptance。
+
+Workflow存在不代表production target已存在或可部署；目前仍由缺少
+`PRODUCTION_DEPLOY_ENABLED=true`與production foundation而fail closed。
+
 ## 前提
 
 - 建立獨立 production AWS account（`ap-southeast-1`）、每 unit 一台 EC2、獨立 ECR repositories、SSM target tags、CloudWatch log group 與 deploy bundle bucket prefix。
