@@ -37,8 +37,8 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > Phase 6已完成完整native/custom alarm coverage、RDS PITR restore、encrypted root replacement、
 > Session Manager recovery、SSH ingress與host recovery key退場、generated cache重生、Fetcher SQLite
 > backup/restore、RabbitMQ volume rebuild、different-digest rollback及不同Alembic revision的schema拒絕。
-> 兩個current root volumes的daily DLM policy已啟用，並已建立即時encrypted recovery snapshots；首個及
-> 第二個排程recovery point仍須依時間窗口觀察，因此recurring chain的執行證據尚未關閉。
+> 兩個current root volumes已建立即時encrypted recovery snapshots；2026-09-08後驗daily DLM policy
+> 為`ERROR`（重複`Purpose` tag）且尚無排程snapshot，須修復後重新觀察兩個週期。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production 使用 OIDC＋SSM，
 > staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
@@ -445,10 +445,10 @@ Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring�
   Fetcher三個scheduler恢復運行。來源encrypted migration snapshots標記只保留至2026-09-08。
   PR [#240](https://github.com/FPI-TW/findb/pull/240)合併後，以DLM policy
   `policy-0d0a29c9e19f6323e`精確選取兩個current-volume tag，每日`09:00 UTC`建立snapshot並保留7份；
-  policy為`ENABLED`。立即復原點`snap-0fd82febf04befa97`（FinDB）與
+  policy建立當時為`ENABLED`。立即復原點`snap-0fd82febf04befa97`（FinDB）與
   `snap-03efabf42ff2b398c`（Fetcher）皆為`completed`、encrypted，保留至2026-10-03。
-  這證明policy與current-volume recovery point可建立；在首個及第二個DLM排程snapshot實際出現前，
-  不宣稱recurring execution已驗收。
+  這證明current-volume recovery point可建立，但不單獨證明DLM執行；後續狀態見下方
+  2026-09-08 follow-up。
 - 兩台managed node均為SSM Online。CloudTrail於2026-08-26記錄Tyler分別透過
   `SSM-SessionManagerRunShell-findb-staging`與`SSM-SessionManagerRunShell-fetcher-staging`成功建立
   Session Manager session；2026-09-01 command `08d25aff-4ff1-4c38-b2b0-0bc0f7c66f04`再次對兩台完成
@@ -497,7 +497,13 @@ Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring�
   retry exhausted 1及missing deliveries 0，證明broker可由DB-authoritative state與版本控制topology重建。
   舊目錄暫留供復原稽核，確認不再需要後才能另行核准清理。
 
-未完成風險集中於：DLM首個與第二個排程recovery point尚未形成recurring執行證據；四個active feeds的
+2026-09-08 follow-up：DLM policy `policy-0d0a29c9e19f6323e`回讀為`ERROR`，status message是
+`Duplicate tag key 'Purpose' specified.`。兩個current volumes已有`Purpose` tag，policy又同時啟用
+`CopyTags`及新增`Purpose=automated-current-root-backup`；依policy tag查詢scheduled snapshots為0。
+兩個manual snapshots仍為completed、encrypted且保留至2026-10-03。修復宣告、fresh plan/apply與
+後續兩次排程觀察均須獨立核准，在此之前不能把recurring chain或DLM monitoring宣告完成。
+
+未完成風險集中於：DLM policy目前執行失敗、尚未形成recurring執行證據；四個active feeds的
 多交易日原生排程觀察、GitHub Environment runtime copies退役、TLS certificate與更廣泛資料面告警仍依
 各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
 均已有live evidence，不再列為未完成風險。
