@@ -213,8 +213,39 @@ def _rds_backup_lag_metric(
     return [_metric("RDSBackupLagSeconds", lag, "Seconds", "findb", db_identifier)], []
 
 
+def _dlm_policy_health_metric(
+    region: str, policy_id: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    result = _run(
+        [
+            "aws",
+            "dlm",
+            "get-lifecycle-policy",
+            "--region",
+            region,
+            "--policy-id",
+            policy_id,
+            "--output",
+            "json",
+        ]
+    )
+    if result.returncode != 0:
+        return [], ["DLM lifecycle-policy query failed"]
+    try:
+        policy = json.loads(result.stdout)["Policy"]
+        healthy = (
+            policy["State"] == "ENABLED"
+            and policy["StatusMessage"] == "ENABLED"
+        )
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return [], ["DLM lifecycle-policy response was invalid"]
+    return [
+        _metric("DLMPolicyHealthy", int(healthy), "Count", "findb", policy_id)
+    ], []
+
+
 def collect_metrics(
-    unit: str, region: str, db_identifier: str
+    unit: str, region: str, db_identifier: str, dlm_policy_id: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
     metrics = _filesystem_metrics(unit, Path("/"))
     container_metrics, errors = _container_metrics(unit)
@@ -227,6 +258,9 @@ def collect_metrics(
         rds_metrics, rds_errors = _rds_backup_lag_metric(region, db_identifier)
         metrics.extend(rds_metrics)
         errors.extend(rds_errors)
+        dlm_metrics, dlm_errors = _dlm_policy_health_metric(region, dlm_policy_id)
+        metrics.extend(dlm_metrics)
+        errors.extend(dlm_errors)
     metrics.append(_metric("CollectorSuccess", int(not errors), "Count", unit, "host"))
     return metrics, errors
 
@@ -254,10 +288,11 @@ def main() -> int:
     parser.add_argument("--unit", choices=sorted(EXPECTED_CONTAINERS), required=True)
     parser.add_argument("--region", required=True)
     parser.add_argument("--rds-instance-identifier", default="fin-db")
+    parser.add_argument("--dlm-policy-id", required=True)
     args = parser.parse_args()
 
     metrics, errors = collect_metrics(
-        args.unit, args.region, args.rds_instance_identifier
+        args.unit, args.region, args.rds_instance_identifier, args.dlm_policy_id
     )
     publish_metrics(metrics, args.region)
     for error in errors:

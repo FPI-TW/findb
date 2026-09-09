@@ -24,23 +24,14 @@
 
 ## P0：Staging deployment
 
-- [ ] 等待accepted SHA後的完整原生provider cycle依排程時間觸發，使用已完成輪替的獨立
-  DB-backed Source／Serve credentials，驗證四個active feeds的freshness、
-  terminal state與lineage；不得以repair rerun、accepted replay或skipped acquisition smoke取代。
-  2026-09-08後驗顯示FinLab與兩個Shioaji feeds已有目前Fetcher accepted record後的原生成功週期；
-  Twelve Data最近成功日仍為2026-09-04、早於目前accepted record，須等待下一個eligible schedule。
-- [ ] 在完整原生provider cycle gate通過後，另行取得移除授權並確認last-used與health，再撤銷GitHub
-  Environment runtime copies；此項不與R2實際rotation綁定。Raw與Canonical R2 scope已依使用者核准的
-  acceptance criterion變更而完成：既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，故不構成
-  rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
-  provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation與SSH recovery key退役已完成。
 - [ ] 驗證daily DLM policy `policy-0d0a29c9e19f6323e`為兩個current encrypted root volumes
   連續產生首個及第二個排程recovery point，包括volume ID、encryption、policy tag與7份retention。
   2026-09-08已將schedule-only tag改為`BackupPurpose`並以fresh zero-delete OpenTofu plan原地apply；AWS
   回讀policy為`ENABLED`、`CopyTags=true`、每日`09:00 UTC`、保留7份。DLM-tagged snapshots目前仍為0，
   因此尚須等待首兩個實際排程週期。
-  兩個即時manual encrypted snapshots仍為`completed`並保留至2026-10-03，但不能替代recurring chain；
-  42個既有alarms仍沒有DLM execution-state監控，該監控缺口另須處理。
+  兩個即時manual encrypted snapshots仍為`completed`並保留至2026-10-03，但不能替代recurring chain。
+  `DLMPolicyHealthy` custom metric與`findb-staging-dlm-policy-unhealthy` alarm已於2026-09-09上線並為`OK`；
+  它監控policy state／status與collector missing data，但不能替代實際snapshot recovery-point驗收。
 - [ ] DLM排程recovery point與新RabbitMQ持續健康確認後，另行核准清理
   `/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`；清理前保留為可復原的演練稽核副本，
   避免無期限占用FinDB root volume。

@@ -92,8 +92,34 @@ def test_collector_failure_is_published_as_zero(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(module, "_rabbitmq_metrics", Mock(return_value=([], ["rabbit failed"])))
     monkeypatch.setattr(module, "_scheduler_metrics", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_rds_backup_lag_metric", Mock(return_value=([], [])))
+    monkeypatch.setattr(module, "_dlm_policy_health_metric", Mock(return_value=([], [])))
 
-    metrics, errors = module.collect_metrics("findb", "ap-southeast-1", "fin-db")
+    metrics, errors = module.collect_metrics(
+        "findb", "ap-southeast-1", "fin-db", "policy-0123456789abcdef0"
+    )
 
     assert errors == ["rabbit failed"]
     assert metrics[-1] == module._metric("CollectorSuccess", 0, "Count", "findb", "host")
+
+
+def test_dlm_policy_health_requires_enabled_state_and_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        Mock(
+            return_value=Mock(
+                returncode=0,
+                stdout=json.dumps({"Policy": {"State": "ENABLED", "StatusMessage": "ENABLED"}}),
+            )
+        ),
+    )
+
+    metrics, errors = module._dlm_policy_health_metric("ap-southeast-1", "policy-0123456789abcdef0")
+
+    assert errors == []
+    assert metrics == [
+        module._metric("DLMPolicyHealthy", 1, "Count", "findb", "policy-0123456789abcdef0")
+    ]

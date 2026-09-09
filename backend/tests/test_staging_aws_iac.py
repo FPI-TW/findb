@@ -564,6 +564,7 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
 
 def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     monitoring = _read(STAGING_ROOT / "monitoring.tf")
+    iam = _read(STAGING_ROOT / "iam.tf")
     variables = _read(STAGING_ROOT / "variables.tf")
     tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
     outputs = _read(STAGING_ROOT / "outputs.tf")
@@ -725,6 +726,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "DiskUsedPercent",
         "DockerContainerHealthy",
         "DockerRestartCount",
+        "DLMPolicyHealthy",
         "InodeUsedPercent",
         "RabbitMQDiskAlarm",
         "RabbitMQMemoryAlarm",
@@ -740,7 +742,11 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert "findb-staging-metric-publisher.service" in monitoring
     assert "findb-staging-metric-publisher.timer" in monitoring
     assert "OnUnitActiveSec=5min" in monitoring
+    assert "--dlm-policy-id ${aws_dlm_lifecycle_policy.root_volume_backup.id}" in monitoring
     assert "systemctl enable --now findb-staging-metric-publisher.timer" in monitoring
+    assert 'sid       = "ReadFinDBDlmPolicyHealth"' in iam
+    assert 'actions   = ["dlm:GetLifecyclePolicy"]' in iam
+    assert "resources = [aws_dlm_lifecycle_policy.root_volume_backup.arn]" in iam
 
     for name, default in (
         ("operational_alert_email", None),

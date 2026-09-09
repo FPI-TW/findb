@@ -22,7 +22,7 @@ is the separate evidence for the initial apply and notification exercise. Keep
 the original safety distinction explicit: **IaC declarations, not live-apply or delivery evidence**,
 are all that repository source alone can prove.
 
-## Live acceptance record (2026-09-01 to 2026-09-03)
+## Live acceptance record (2026-09-01 to 2026-09-09)
 
 - CloudTrail records Tyler creating the private SNS topic at
   `2026-09-01 10:58:38 +08:00`, then creating the email subscription and all
@@ -41,6 +41,13 @@ are all that repository source alone can prove.
   controlled test; it does not prove a real EC2 or RDS failure mode.
 - `/findb/staging/findb/ssm` and `/findb/staging/fetcher/ssm` remain
   KMS-encrypted with 30-day retention.
+- On 2026-09-09, a zero-destroy OpenTofu apply added
+  `findb-staging-dlm-policy-unhealthy`. The FinDB collector has an exact
+  `dlm:GetLifecyclePolicy` grant for `policy-0d0a29c9e19f6323e`; it published
+  `DLMPolicyHealthy=1` after verifying both `State` and `StatusMessage` are
+  `ENABLED`. The new alarm and all other 42 staging alarms were then `OK`.
+  This detects a disabled/error policy or missing collector data; it does not
+  prove that DLM created a usable snapshot.
 
 This record closes the owner/channel, subscription-confirmation, SSM log
 retention, and synthetic-notification portion of Phase 6. It does not close the
@@ -95,6 +102,7 @@ breaching-on-missing alarms are created.
 | RabbitMQ | Local disk or memory alarm flag `>= 1`; collected from `rabbitmq-diagnostics`, without credentials |
 | Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for FinLab, Shioaji, or Twelve Data |
 | RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
+| DLM control plane | Exact root-volume policy health `< 1` for 2 × 5 minutes; query failure or missing data also breaches |
 | Staging CD | A failed or cancelled protected-`main` build/deploy publishes one sparse `DeploymentFailure` datum |
 
 The collector reads scheduler heartbeat ages through the local authenticated
@@ -117,6 +125,7 @@ created 36 custom alarms in addition to the six native alarms. Associations
 `974a1570-3ace-4cc8-be97-09f4c5ba9eae`（FinDB）與
 `9de9a3a4-ddc2-414c-8410-0dc1af9536e6`（Fetcher）均成功，`FinDB/Staging`
 有34組bounded metric series，兩台collector連續成功，42個alarms後驗皆為`OK`。
+2026-09-09追加DLM policy health後，現況為35組bounded metric series與43個alarms，後驗全為`OK`。
 
 Controlled tests使`findb-staging-findb-disk-used`與
 `findb-staging-fetcher-deployment-failed`分別完成`OK -> ALARM -> OK`；SNS delivery metrics
