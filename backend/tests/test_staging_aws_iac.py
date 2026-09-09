@@ -854,7 +854,8 @@ def test_phase6_root_volume_backup_is_current_volume_bounded_and_retained() -> N
     assert 'times         = ["09:00"]' in backup
     assert "count = 7" in backup
     assert "copy_tags = true" in backup
-    assert 'Purpose     = "automated-current-root-backup"' in backup
+    assert 'BackupPurpose = "automated-current-root-backup"' in backup
+    assert 'Purpose     = "automated-current-root-backup"' not in backup
     assert 'output "root_volume_backup"' in outputs
     for phrase in (
         "root volumes currently attached",

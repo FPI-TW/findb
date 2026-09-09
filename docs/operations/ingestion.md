@@ -179,8 +179,15 @@ late ack、topology probe、lease與idempotency應讓delivery安全重試。
 保留於`/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`，沒有直接刪除。Compose依版本控制
 重新建立broker與policy（exit 0），兩個durable queues回復且depth均為0，worker heartbeat為3.7秒。
 PostgreSQL前後的normalization job counts、unpublished outbox、expired leases、retry exhausted與missing
-deliveries完全一致。這是無active backlog的control-plane rebuild基線；active delivery、worker kill與DB短暫
-中斷下的duplicate-delivery驗證仍須依bounded feed acceptance另行執行。
+deliveries完全一致。這是無active backlog的control-plane rebuild基線。
+
+2026-09-08另完成active-backlog資料面演練：暫停三個producers與worker後，以retained FinLab raw建立
+contract-only rerun，確認主queue為`ready=1`。短暫撤銷RDS SG中FinDB EC2 SG到TCP/5432的單一規則，
+新啟動worker取得delivery至`unacked=1`後以SIGKILL終止；late ack與
+`task_reject_on_worker_lost=true`使同一message回到`ready=1/unacked=0`。恢復精確SG規則、worker原
+restart policy及producers後，queue與DLQ歸零，run/job為2/2 completed、outbox published、兩筆
+canonical均指向同一rerun，沒有duplicate rows。這是新worker連線的bounded DB reachability outage，
+不宣稱既有連線全部被RDS主動中斷，也不取代完整RDS failover演練。
 
 ## Pause與failure recovery
 

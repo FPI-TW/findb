@@ -257,11 +257,13 @@ their live records are maintained in
 A one-time encrypted migration and a recurring backup chain are separate
 controls; migration or backup chain evidence must remain distinct. Daily DLM policy
 `policy-0d0a29c9e19f6323e` was created for the two exact current root volumes and immediate encrypted
-snapshots completed. The 2026-09-08 live check found the policy in `ERROR` with
-`Duplicate tag key 'Purpose' specified.` and zero policy-tagged scheduled snapshots: copied source-volume
-tags already contain `Purpose`, while the schedule adds the same key. The healthy 42-alarm inventory did
-not surface this control-plane failure. Repair, apply, and two successful scheduled cycles remain required;
-the current record does **not** claim completion of the recurring backup-chain acceptance. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
+snapshots completed. The 2026-09-08 live check found the policy in `ERROR` because copied source-volume
+tags and schedule `TagsToAdd` both contained `Purpose`. The schedule-only key was changed to
+`BackupPurpose`; a guarded zero-delete OpenTofu plan applied one in-place update, and AWS now reports the
+policy as `ENABLED`. Policy-tagged scheduled snapshots remain at zero, so two successful scheduled cycles
+are still required. The healthy 42-alarm inventory did not surface the original error and still does not
+monitor DLM execution state; the current record does **not** claim completion of either DLM monitoring or
+the recurring backup-chain acceptance. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
 different-digest rollback, and schema-rejection rehearsal completed on 2026-09-03; exact evidence is
 in the linked deployment record. SSH ingress/recovery-key retirement was also completed: the matching host keys and both EC2
 key-pair resources are absent, while unit-specific Session Manager break-glass

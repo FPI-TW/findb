@@ -37,8 +37,9 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > Phase 6已完成完整native/custom alarm coverage、RDS PITR restore、encrypted root replacement、
 > Session Manager recovery、SSH ingress與host recovery key退場、generated cache重生、Fetcher SQLite
 > backup/restore、RabbitMQ volume rebuild、different-digest rollback及不同Alembic revision的schema拒絕。
-> 兩個current root volumes已建立即時encrypted recovery snapshots；2026-09-08後驗daily DLM policy
-> 為`ERROR`（重複`Purpose` tag）且尚無排程snapshot，須修復後重新觀察兩個週期。
+> 兩個current root volumes已建立即時encrypted recovery snapshots；2026-09-08已將daily DLM
+> schedule-only tag由重複的`Purpose`修正為`BackupPurpose`並完成zero-delete apply，policy回到
+> `ENABLED`。尚無排程snapshot，仍須觀察首兩個週期。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production 使用 OIDC＋SSM，
 > staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
@@ -497,14 +498,23 @@ Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring�
   retry exhausted 1及missing deliveries 0，證明broker可由DB-authoritative state與版本控制topology重建。
   舊目錄暫留供復原稽核，確認不再需要後才能另行核准清理。
 
-2026-09-08 follow-up：DLM policy `policy-0d0a29c9e19f6323e`回讀為`ERROR`，status message是
-`Duplicate tag key 'Purpose' specified.`。兩個current volumes已有`Purpose` tag，policy又同時啟用
-`CopyTags`及新增`Purpose=automated-current-root-backup`；依policy tag查詢scheduled snapshots為0。
-兩個manual snapshots仍為completed、encrypted且保留至2026-10-03。修復宣告、fresh plan/apply與
-後續兩次排程觀察均須獨立核准，在此之前不能把recurring chain或DLM monitoring宣告完成。
+2026-09-08 follow-up：DLM policy `policy-0d0a29c9e19f6323e`的schedule-only tag已由重複的
+`Purpose`改為`BackupPurpose`。Fresh saved plan SHA-256為
+`49fb3fe75512a8d97388daf312b8d0f541bc9935aef48f7d150a36f0eb0dba46`，guard通過且只有一筆
+in-place update；apply為`0 added, 1 changed, 0 destroyed`。AWS回讀policy為`ENABLED`、
+`CopyTags=true`、每日`09:00 UTC`且保留7份。Scheduled snapshots仍為0，兩個manual snapshots仍為
+completed、encrypted且保留至2026-10-03；在首兩次排程觀察完成前不能宣告recurring chain完成。
 
-未完成風險集中於：DLM policy目前執行失敗、尚未形成recurring執行證據；四個active feeds的
-多交易日原生排程觀察、GitHub Environment runtime copies退役、TLS certificate與更廣泛資料面告警仍依
+同日完成active-backlog fault acceptance：三個provider producers暫停後，以retained FinLab raw建立
+一筆含兩列資料的rerun backlog，短暫撤銷RDS SG中FinDB EC2 SG到TCP/5432的單一規則；新啟動worker取得delivery
+並呈現`unacked=1`後被SIGKILL，message回到`ready=1`。DB規則立即以相同source／port／description
+恢復，worker恢復原`unless-stopped`後完成2/2 canonical upsert，queue／DLQ、unpublished outbox及
+expired leases皆為0，兩筆canonical lineage均指向單一completed rerun。固定idempotency另驗證相同
+內容`202`重用原run、同key不同內容回`409/IDEMPOTENCY_PAYLOAD_MISMATCH`，raw count不變。
+
+未完成風險集中於：DLM尚未形成首兩個recurring執行證據且既有42個alarms沒有監控policy execution
+state；四個active feeds的多交易日原生排程觀察、GitHub Environment runtime copies退役、TLS
+certificate與更廣泛資料面告警仍依
 各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
 均已有live evidence，不再列為未完成風險。
 

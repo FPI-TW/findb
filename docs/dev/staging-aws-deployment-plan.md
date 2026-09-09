@@ -32,8 +32,8 @@ recovery-point observation 或 GHCR metadata recycle/retirement 工作；它們�
 > Phase 6已完成native/custom CloudWatch alarms、SNS通知與synthetic驗證、RDS PITR restore、兩台encrypted
 > root replacement、兩個unit的Session Manager recovery、SSH ingress與host recovery key退場、generated cache重生、
 > different-digest rollback、schema-incompatibility rejection、SQLite recovery及RabbitMQ rebuild。Current-volume
-> daily DLM policy與即時encrypted snapshots已建立；2026-09-08後驗發現policy因重複`Purpose` tag為
-> `ERROR`且尚未產生任何排程snapshot，必須修復後重新觀察兩個週期。
+> daily DLM policy與即時encrypted snapshots已建立；2026-09-08已修正重複`Purpose` tag並以fresh
+> zero-delete plan原地apply，AWS回讀policy為`ENABLED`。尚未產生排程snapshot，仍須觀察首兩個週期。
 > 本文是staging
 > AWS控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
@@ -94,12 +94,27 @@ recovery-point observation 或 GHCR metadata recycle/retirement 工作；它們�
   `2317`／`2330`兩筆及2026-09-04的Twelve Data `AAPL`／`MSFT`／`NVDA`三筆。FinLab／Twelve Data
   所選歷史run的原始`202` access log未跨部署保留，minute亦無Serve read model；完整lineage backlog
   因此只記為部分通過。
-- DLM policy `policy-0d0a29c9e19f6323e`實際為`ERROR`，status message為
-  `Duplicate tag key 'Purpose' specified.`，且依policy tag查無scheduled snapshots。兩個current
-  volumes已有`Purpose` tag，而schedule同時`CopyTags=true`及`TagsToAdd Purpose`，與
-  `infra/tofu/staging/backup.tf`宣告一致。即時snapshots `snap-0fd82febf04befa97`及
-  `snap-03efabf42ff2b398c`仍為completed、encrypted且保留至2026-10-03；修復policy、apply及兩次排程
-  observation尚未授權或完成。
+- DLM policy `policy-0d0a29c9e19f6323e`的重複tag根因已修復：保留`CopyTags=true`，schedule-only
+  tag由`Purpose`改為不與volume tags重疊的`BackupPurpose`。OpenTofu saved plan SHA-256
+  `49fb3fe75512a8d97388daf312b8d0f541bc9935aef48f7d150a36f0eb0dba46`通過plan guard，只有
+  policy原地update，apply結果為`0 added, 1 changed, 0 destroyed`。AWS回讀為`ENABLED`、每日
+  `09:00 UTC`、保留7份並精確選取兩個current volumes；scheduled snapshots仍為0，首兩個排程
+  observation尚未完成。即時snapshots `snap-0fd82febf04befa97`及`snap-03efabf42ff2b398c`
+  仍為completed、encrypted且保留至2026-10-03。
+- 固定idempotency以FinLab raw `01a08027-37fb-737d-affd-0072b52eb2a8`驗收：相同內容重送
+  回`202`、重用run `01a08027-37fb-7f52-a9ed-0921ace147a9`，attempt
+  `01a08058-3777-74cb-8c14-f3e6b3a48260`為`duplicate`；同key修改內容回
+  `409/IDEMPOTENCY_PAYLOAD_MISMATCH`，attempt `01a08058-3bfa-765a-aeef-caf294a77701`
+  為`rejected`。FinLab raw count前後均為22。
+- Active-backlog故障演練使用同一retained raw建立contract-only rerun
+  `01a08060-1268-7919-8ba6-81310564a372`。三個producer先暫停，worker停止且暫時設為
+  `restart=no`；主queue確認`ready=1`後，短暫撤銷RDS SG對FinDB EC2 SG的TCP/5432規則，使新啟動
+  worker無法建立DB連線。SSM command `39431d4d-df7a-4fe1-900e-7eb1078f28b1`在delivery為
+  `unacked=1`時SIGKILL worker，message隨即回到`ready=1/unacked=0`。規則以相同source、port及
+  description恢復為`sgr-0da1da94a95406703`；worker恢復`unless-stopped`後queue歸零、ping healthy。
+  Rerun最終2/2 completed、job completed、outbox published、publish attempts 1、job attempt 1；SSM
+  command `95f01d30-7e5f-446d-986d-f66434f22a97`確認2317與2330兩筆canonical均唯一指向該rerun。
+  Producers恢復running且restart count 0；42個alarms皆為`OK`，public health及Dashboard為HTTP 200。
 
 ## ECR foundation 與啟用契約（已完成；持續驗收）
 
@@ -797,9 +812,9 @@ scope調整不把同digest replay誤稱為rollback，也不改寫兩項尚未執
 - [x] 為兩個current root volumes完成encrypted replacement；post-replacement services與schedulers健康。
 - [ ] 為兩個current root volumes完成recurring backup chain執行驗證。Daily DLM policy
   `policy-0d0a29c9e19f6323e`原設計為保留7份，兩個current-volume即時encrypted snapshots已completed；
-  2026-09-08後驗policy為`ERROR`且DLM snapshots為0，原因是copied volume tags與schedule新增的
-  `Purpose`重複。須先經核准修復IaC及apply，再等待首個及第二個排程recovery point。Policy存在與
-  手動snapshot不能替代recurring執行證據。
+  2026-09-08已將schedule-only tag由重複的`Purpose`改為`BackupPurpose`，fresh zero-delete plan
+  apply後policy回到`ENABLED`。DLM snapshots仍為0，須等待首個及第二個排程recovery point；policy
+  enabled與手動snapshot不能替代recurring執行證據。
 
 2026-09-01至2026-09-03的永久證據已整併至
 [`operations/monitoring.md`](../operations/monitoring.md#live-acceptance-record-2026-09-01-to-2026-09-03)
@@ -811,8 +826,8 @@ scope調整不把同digest replay誤稱為rollback，也不改寫兩項尚未執
 Exit gate：SSM是唯一日常部署與管理路徑；關鍵alarm、RDS restore、SQLite recovery與broker
 rebuild都有最近一次成功紀錄；different-digest application rollback成功，schema-incompatibility rejection
 fail closed且writers保持停止；兩個 unit 各有兩次成功 SSM deploy 與 Session Manager recovery；current
-EBS 已有encrypted replacement及即時recovery snapshots；automated DLM policy目前為`ERROR`，不構成
-backup chain。SSH deployment identity已撤銷。
+EBS 已有encrypted replacement及即時recovery snapshots；automated DLM policy已修復為`ENABLED`，但在
+首兩個排程snapshot完成前仍不構成backup chain。SSH deployment identity已撤銷。
 
 ## 每次 cutover 的 go/no-go
 

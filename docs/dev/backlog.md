@@ -15,13 +15,12 @@
   Admin raw查詢均通過，Dashboard lookup與Referer注入的Serve freshness為HTTP 200，EOD查詢精確回傳
   FinLab 2筆及Twelve Data 3筆；當日Shioaji四個ingest有Nginx `202`。FinLab／Twelve Data所選歷史
   run的原始`202` access log未跨部署保留，且minute資料沒有Serve read model，仍須以可持久證據補齊。
-- [ ] 在相同Source client identity、dataset及raw retention窗口內，驗證相同idempotency key
-  重送、相同key不同內容`409`，並覆蓋retry、lease recovery、graceful stop、holiday、DST
-  及late delivery。
+- [ ] 補齊retry、lease recovery、graceful stop、holiday、DST及late delivery驗收。相同Source client
+  identity、dataset及raw retention窗口內的固定idempotency驗收已於2026-09-08完成：相同內容重送
+  回`202`並重用原run、attempt為`duplicate`；相同key不同內容回
+  `409/IDEMPOTENCY_PAYLOAD_MISMATCH`、attempt為`rejected`，raw rows維持22不變。
 - [ ] 以真實feeds校準minimum record count、freshness、coverage、missing deadline及
   provider欄位消失／異常空snapshot告警，再決定policy是否從`warn`升級。
-- [ ] 在active delivery backlog存在時演練worker kill、DB短暫中斷與重複delivery，保存資料面恢復結果。
-  空broker volume由PostgreSQL durable state與版本控制topology重建的基線演練已完成，不需重複。
 
 ## P0：Staging deployment
 
@@ -35,12 +34,13 @@
   acceptance criterion變更而完成：既有值維持，未建立新key、未輪替、未替換、未撤銷舊key，故不構成
   rotation或old-value invalidation evidence，也不代表曾執行Cloudflare操作。Twelve Data／FinLab／Shioaji
   provider scope同樣維持既有值並依既有scope決策完成；RabbitMQ rotation與SSH recovery key退役已完成。
-- [ ] 修復daily DLM policy `policy-0d0a29c9e19f6323e`後，驗證它為兩個current encrypted root volumes
+- [ ] 驗證daily DLM policy `policy-0d0a29c9e19f6323e`為兩個current encrypted root volumes
   連續產生首個及第二個排程recovery point，包括volume ID、encryption、policy tag與7份retention。
-  2026-09-08 live後驗為`ERROR`：`Duplicate tag key 'Purpose' specified.`；原因是`CopyTags=true`會複製
-  current volume既有`Purpose`，schedule又以`TagsToAdd`新增同名key。DLM-tagged snapshots目前為0。
+  2026-09-08已將schedule-only tag改為`BackupPurpose`並以fresh zero-delete OpenTofu plan原地apply；AWS
+  回讀policy為`ENABLED`、`CopyTags=true`、每日`09:00 UTC`、保留7份。DLM-tagged snapshots目前仍為0，
+  因此尚須等待首兩個實際排程週期。
   兩個即時manual encrypted snapshots仍為`completed`並保留至2026-10-03，但不能替代recurring chain；
-  修正IaC及apply須另行核准。
+  42個既有alarms仍沒有DLM execution-state監控，該監控缺口另須處理。
 - [ ] DLM排程recovery point與新RabbitMQ持續健康確認後，另行核准清理
   `/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`；清理前保留為可復原的演練稽核副本，
   避免無期限占用FinDB root volume。
