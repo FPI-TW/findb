@@ -75,9 +75,7 @@ def _container_metrics(deployment_unit: str) -> tuple[list[dict[str, Any]], list
         result = _run(["docker", "inspect", container])
         if result.returncode != 0:
             metrics.append(
-                _metric(
-                    "DockerContainerHealthy", 0, "Count", deployment_unit, container
-                )
+                _metric("DockerContainerHealthy", 0, "Count", deployment_unit, container)
             )
             continue
         try:
@@ -185,6 +183,105 @@ def _scheduler_metrics() -> tuple[list[dict[str, Any]], list[str]]:
     return metrics, []
 
 
+def _active_feed_ingestion_metrics() -> tuple[list[dict[str, Any]], list[str]]:
+    """Publish recent, bounded failure signals for the four staging feeds.
+
+    The ten-minute lookback overlaps the five-minute publisher interval so a
+    single event cannot fall between samples. Values are deliberately
+    aggregated across the fixed active-feed scope; request IDs, symbols, and
+    provider error text must never become CloudWatch dimensions.
+    """
+    script = """
+import asyncio
+import json
+
+from sqlalchemy import text
+
+from app.models.base import async_session_maker, engine
+
+QUERY = text(\"\"\"
+WITH active_feed(dataset_key, source) AS (
+    VALUES
+        ('us_equity_eod', 'twelve_data'),
+        ('tw_equity_eod', 'finlab'),
+        ('tw_equity_minute', 'shioaji'),
+        ('tw_etf_minute', 'shioaji')
+)
+SELECT
+    (
+        SELECT count(*)
+        FROM ingestion_attempt a
+        JOIN active_feed f USING (dataset_key, source)
+        WHERE a.status = 'rejected'
+          AND a.completed_at >= now() - interval '10 minutes'
+          AND (
+              a.failure_code LIKE 'INGRESS_%'
+              OR a.failure_code IN (
+                  'CURRENCY_REQUIRED',
+                  'BATCH_RECORD_COUNT_BELOW_MINIMUM',
+                  'BATCH_RECORD_COUNT_DROP'
+              )
+          )
+    ) AS rejected_attempts,
+    (
+        SELECT count(*)
+        FROM ingestion_run r
+        JOIN active_feed f USING (dataset_key, source)
+        WHERE r.is_rerun IS false
+          AND r.total_records = 0
+          AND COALESCE(r.completed_at, r.started_at) >= now() - interval '10 minutes'
+    ) AS empty_snapshots,
+    (
+        SELECT count(*)
+        FROM dq_issue d
+        JOIN ingestion_run r ON r.run_id = d.run_id
+        JOIN active_feed f USING (dataset_key, source)
+        WHERE d.severity = 'error'
+          AND d.created_at >= now() - interval '10 minutes'
+    ) AS dq_errors
+\"\"\")
+
+async def main():
+    async with async_session_maker() as session:
+        row = (await session.execute(QUERY)).mappings().one()
+        print(json.dumps(dict(row)))
+    await engine.dispose()
+
+asyncio.run(main())
+"""
+    result = _run(["docker", "exec", "findb-ingest", "python", "-c", script])
+    if result.returncode != 0:
+        return [], ["active-feed ingestion-quality query failed"]
+    try:
+        values = json.loads(result.stdout)
+        metrics = [
+            _metric(
+                "ActiveFeedRejectedAttempts",
+                float(values["rejected_attempts"]),
+                "Count",
+                "findb",
+                "active-feeds",
+            ),
+            _metric(
+                "ActiveFeedEmptySnapshots",
+                float(values["empty_snapshots"]),
+                "Count",
+                "findb",
+                "active-feeds",
+            ),
+            _metric(
+                "ActiveFeedDQErrors",
+                float(values["dq_errors"]),
+                "Count",
+                "findb",
+                "active-feeds",
+            ),
+        ]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return [], ["active-feed ingestion-quality response was invalid"]
+    return metrics, []
+
+
 def _rds_backup_lag_metric(
     region: str, db_identifier: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -233,15 +330,10 @@ def _dlm_policy_health_metric(
         return [], ["DLM lifecycle-policy query failed"]
     try:
         policy = json.loads(result.stdout)["Policy"]
-        healthy = (
-            policy["State"] == "ENABLED"
-            and policy["StatusMessage"] == "ENABLED"
-        )
+        healthy = policy["State"] == "ENABLED" and policy["StatusMessage"] == "ENABLED"
     except (KeyError, TypeError, json.JSONDecodeError):
         return [], ["DLM lifecycle-policy response was invalid"]
-    return [
-        _metric("DLMPolicyHealthy", int(healthy), "Count", "findb", policy_id)
-    ], []
+    return [_metric("DLMPolicyHealthy", int(healthy), "Count", "findb", policy_id)], []
 
 
 def collect_metrics(
@@ -251,7 +343,11 @@ def collect_metrics(
     container_metrics, errors = _container_metrics(unit)
     metrics.extend(container_metrics)
     if unit == "findb":
-        for collector in (_rabbitmq_metrics, _scheduler_metrics):
+        for collector in (
+            _rabbitmq_metrics,
+            _scheduler_metrics,
+            _active_feed_ingestion_metrics,
+        ):
             collected, collector_errors = collector()
             metrics.extend(collected)
             errors.extend(collector_errors)

@@ -5,22 +5,21 @@
 
 ## P0：Active feed acceptance
 
-- [ ] 讓四個active feeds各完成至少兩個有效交易日的bounded live observation，保存
-  image／config SHA、universe、日期／row上限、credits及pre／post counts。2026-09-08已確認四個
-  feed各至少兩個有效交易日的DB terminal／canonical counts及Raw R2 checksum；尚缺完整的
-  config／universe／credits／pre-post evidence package，故本項不關閉。
-- [ ] 驗證Raw R2、Source `202`、outbox／RabbitMQ、normalization terminal state、DQ、
-  canonical及Serve／Admin／Dashboard lineage一致。2026-09-08已驗證16個Raw R2 objects實際內容、
-  metadata與DB contract checksum一致，四個feed的run／job／outbox／DQ／canonical lineage及代表性
-  Admin raw查詢均通過，Dashboard lookup與Referer注入的Serve freshness為HTTP 200，EOD查詢精確回傳
-  FinLab 2筆及Twelve Data 3筆；當日Shioaji四個ingest有Nginx `202`。FinLab／Twelve Data所選歷史
-  run的原始`202` access log未跨部署保留，且minute資料沒有Serve read model，仍須以可持久證據補齊。
-- [ ] 補齊retry、lease recovery、graceful stop、holiday、DST及late delivery驗收。相同Source client
-  identity、dataset及raw retention窗口內的固定idempotency驗收已於2026-09-08完成：相同內容重送
-  回`202`並重用原run、attempt為`duplicate`；相同key不同內容回
-  `409/IDEMPOTENCY_PAYLOAD_MISMATCH`、attempt為`rejected`，raw rows維持22不變。
-- [ ] 以真實feeds校準minimum record count、freshness、coverage、missing deadline及
-  provider欄位消失／異常空snapshot告警，再決定policy是否從`warn`升級。
+- [ ] 在下一個新有效交易日後，以2026-09-09 `pre` manifest為基準產生SHA-linked `post`
+  manifest。`pre`已由單一operator coordinator及兩個unit-local read-only probes完成：四個feed均有
+  兩個交易日、config／universe SHA、bounded symbols、credits/cap、scheduler checkpoint state、
+  Source／Raw／job／outbox／DQ／canonical counts；去敏manifest SHA-256為
+  `7c234156bdf18964c7f1dc5d164a208a00c42db7458ee35fb30fffc0ec0e8e68`，保存於versioned、KMS-encrypted
+  S3 object `evidence/staging/active-feeds/2026-09-09/pre-7c234156bdf18964.json`（version
+  `Pw6cXtCwp7juQkCuI4AGvFxhulk4R03D`）。FinLab／Twelve Data的持久化`ingestion_attempt.http_status=202`
+  證據已成立；minute lineage明確將Serve標為`not_applicable`，原因為
+  `market_minute_read_model_not_exposed`，並要求Admin raw／freshness／Dashboard營運讀路徑。
+
+  同日已用最新retained real Twelve Data delivery進行缺少必要`close`與異常空snapshot校準：前者
+  持久化`422/INGRESS_SCHEMA_INVALID` attempt，後者依現行warn policy持久化`202`零筆run；
+  `ActiveFeedRejectedAttempts`與`ActiveFeedEmptySnapshots`均呈現`0 -> 1`並使各自alarm由`OK -> ALARM`，
+  `ActiveFeedDQErrors`維持`0/OK`。minimum count、freshness、coverage及missing deadline維持既有
+  bounded設定與`warn`決策；此校準已完成，不再另列backlog。不得用同一交易日重跑冒充自然`post`。
 
 ## P0：Staging deployment
 
@@ -32,6 +31,8 @@
   兩個即時manual encrypted snapshots仍為`completed`並保留至2026-10-03，但不能替代recurring chain。
   `DLMPolicyHealthy` custom metric與`findb-staging-dlm-policy-unhealthy` alarm已於2026-09-09上線並為`OK`；
   它監控policy state／status與collector missing data，但不能替代實際snapshot recovery-point驗收。
+  2026-09-09 07:25 UTC的pre-window回讀再次確認policy為`ENABLED`、兩個current volumes均為in-use且
+  encrypted並帶exact selector tag；當時尚未到每日09:00 UTC執行窗，DLM-tagged snapshots仍為0。
 - [ ] DLM排程recovery point與新RabbitMQ持續健康確認後，另行核准清理
   `/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`；清理前保留為可復原的演練稽核副本，
   避免無期限占用FinDB root volume。

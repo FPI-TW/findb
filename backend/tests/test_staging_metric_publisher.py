@@ -85,12 +85,39 @@ def test_scheduler_metrics_use_only_safe_low_cardinality_fields(
     assert "last_error" not in json.dumps(metrics)
 
 
+def test_active_feed_ingestion_metrics_are_bounded_and_low_cardinality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        Mock(
+            return_value=Mock(
+                returncode=0,
+                stdout=json.dumps({"rejected_attempts": 2, "empty_snapshots": 1, "dq_errors": 3}),
+            )
+        ),
+    )
+
+    metrics, errors = module._active_feed_ingestion_metrics()
+
+    assert errors == []
+    assert metrics == [
+        module._metric("ActiveFeedRejectedAttempts", 2, "Count", "findb", "active-feeds"),
+        module._metric("ActiveFeedEmptySnapshots", 1, "Count", "findb", "active-feeds"),
+        module._metric("ActiveFeedDQErrors", 3, "Count", "findb", "active-feeds"),
+    ]
+    assert "request" not in json.dumps(metrics)
+
+
 def test_collector_failure_is_published_as_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     monkeypatch.setattr(module, "_filesystem_metrics", Mock(return_value=[]))
     monkeypatch.setattr(module, "_container_metrics", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_rabbitmq_metrics", Mock(return_value=([], ["rabbit failed"])))
     monkeypatch.setattr(module, "_scheduler_metrics", Mock(return_value=([], [])))
+    monkeypatch.setattr(module, "_active_feed_ingestion_metrics", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_rds_backup_lag_metric", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_dlm_policy_health_metric", Mock(return_value=([], [])))
 

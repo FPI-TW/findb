@@ -515,6 +515,21 @@ completed、encrypted且保留至2026-10-03；在首兩次排程觀察完成前�
 expired leases皆為0，兩筆canonical lineage均指向單一completed rerun。固定idempotency另驗證相同
 內容`202`重用原run、同key不同內容回`409/IDEMPOTENCY_PAYLOAD_MISMATCH`，raw count不變。
 
+2026-09-09另以目前repo revision集中重跑P0故障與時間邊界驗收：Fetcher的client retry、scheduler
+state／control、schedule／calendar preflight及Shioaji scheduler共164項全數通過；Backend的delivery
+monitor、delivery policy及normalization queue共65項全數通過。這229項測試分別覆蓋bounded retry、
+expired lease reclaim、graceful stop、holiday、台北固定操作時段跨美國DST，以及late delivery解除
+missing alert。它們與上述live worker-kill／RabbitMQ redelivery證據共同關閉該P0項目，但不取代四個
+active feeds的多交易日config／universe／credits／pre-post live evidence package。
+
+同日以SSM command `d6225912-98bd-4d98-87e6-5eecdc71bcde`讀取live Admin freshness：FinLab、
+兩個Shioaji minute feeds及Twelve Data均為`ready`／`fresh`，expected與coverage data date皆為
+2026-09-08，且沒有open missing alert。Command `cf7b2818-4ebd-4022-a3aa-6e7f550e1219`另行回讀
+DB-authoritative delivery policies：Twelve Data每symbol最低1筆、FinLab source override最低2筆；
+兩個minute feeds採sequenced snapshot，record-count policy維持disabled。兩份command output均寫入
+KMS-encrypted `/findb/staging/findb/ssm`。目前資料支持既有bounded門檻，但尚無真實provider欄位消失
+或異常空snapshot樣本可校準升級，因此policy維持`warn`，不得宣稱該P0項目已關閉。
+
 2026-09-09的Twelve Data原生schedule補齊accepted-SHA四feed gate：AAPL、MSFT、NVDA均在attempt 1
 完成，checkpoint由2026-09-04推進到2026-09-08，使用3／3 credits；三個Raw R2 checksum、三個Source
 `202`、completed run/job、published outbox、DQ error 0、canonical lineage及公開Serve／Dashboard查詢均通過。
@@ -529,7 +544,7 @@ missing deliveries皆為0，三個scheduler fresh／ready，public health與Dash
 43個alarms為43 OK。刪除僅影響GitHub staging Environment copies，不影響AWS Secrets Manager或production。
 
 未完成風險集中於：DLM尚未形成首兩個recurring執行證據；四個active feeds的多交易日原生排程觀察、
-TLS certificate與更廣泛資料面告警仍依
+TLS certificate expiry monitoring、Fetcher運行中container的完整自動化security反查與更廣泛資料面告警仍依
 各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
 均已有live evidence，不再列為未完成風險。
 

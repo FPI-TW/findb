@@ -260,6 +260,45 @@ locals {
         treat_missing_data  = "breaching"
         description         = "The staging root-volume DLM policy is disabled, reports an error, or its health metric is missing."
       }
+      active_feed_rejected_attempt = {
+        alarm_name          = "findb-staging-active-feed-ingress-rejected"
+        metric_name         = "ActiveFeedRejectedAttempts"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "active-feeds"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "An active staging feed was rejected for an ingress schema, required-field, or completeness-policy violation in the overlapping ten-minute observation window."
+      }
+      active_feed_empty_snapshot = {
+        alarm_name          = "findb-staging-active-feed-empty-snapshot"
+        metric_name         = "ActiveFeedEmptySnapshots"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "active-feeds"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "An active staging feed persisted a non-rerun ingestion run with zero records in the overlapping ten-minute observation window."
+      }
+      active_feed_dq_error = {
+        alarm_name          = "findb-staging-active-feed-dq-error"
+        metric_name         = "ActiveFeedDQErrors"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "active-feeds"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "An active staging feed produced a blocking DQ error in the overlapping ten-minute observation window."
+      }
     },
     {
       for scheduler_key in local.scheduler_keys : "scheduler_${scheduler_key}" => {
