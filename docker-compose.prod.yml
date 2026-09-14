@@ -86,6 +86,7 @@ services:
     environment:
       PORT: "3333"
       FINDB_API_BASE_URL: "http://ingest:${PORT:?PORT must be set in deployment variables}"
+      FINDB_DASHBOARD_ENVIRONMENT: "${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET must be set in deployment variables}"
     depends_on:
       ingest:
         condition: service_healthy
