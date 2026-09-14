@@ -23,17 +23,7 @@
 
 ## P0：Staging deployment
 
-- [ ] 驗證daily DLM policy `policy-0d0a29c9e19f6323e`為兩個current encrypted root volumes
-  連續產生首個及第二個排程recovery point，包括volume ID、encryption、policy tag與7份retention。
-  2026-09-08已將schedule-only tag改為`BackupPurpose`並以fresh zero-delete OpenTofu plan原地apply；AWS
-  回讀policy為`ENABLED`、`CopyTags=true`、每日`09:00 UTC`、保留7份。DLM-tagged snapshots目前仍為0，
-  因此尚須等待首兩個實際排程週期。
-  兩個即時manual encrypted snapshots仍為`completed`並保留至2026-10-03，但不能替代recurring chain。
-  `DLMPolicyHealthy` custom metric與`findb-staging-dlm-policy-unhealthy` alarm已於2026-09-09上線並為`OK`；
-  它監控policy state／status與collector missing data，但不能替代實際snapshot recovery-point驗收。
-  2026-09-09 07:25 UTC的pre-window回讀再次確認policy為`ENABLED`、兩個current volumes均為in-use且
-  encrypted並帶exact selector tag；當時尚未到每日09:00 UTC執行窗，DLM-tagged snapshots仍為0。
-- [ ] DLM排程recovery point與新RabbitMQ持續健康確認後，另行核准清理
+- [ ] DLM recurring chain已通過；新RabbitMQ持續健康確認後，另行核准清理
   `/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`；清理前保留為可復原的演練稽核副本，
   避免無期限占用FinDB root volume。
 ## P1：資料完整性與效能

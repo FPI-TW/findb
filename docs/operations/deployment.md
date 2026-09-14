@@ -39,7 +39,7 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > backup/restore、RabbitMQ volume rebuild、different-digest rollback及不同Alembic revision的schema拒絕。
 > 兩個current root volumes已建立即時encrypted recovery snapshots；2026-09-08已將daily DLM
 > schedule-only tag由重複的`Purpose`修正為`BackupPurpose`並完成zero-delete apply，policy回到
-> `ENABLED`。尚無排程snapshot，仍須觀察首兩個週期。
+> `ENABLED`。2026-09-14回讀已確認至少五個雙volume排程週期，首兩個不同週期驗收完成。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production 使用 OIDC＋SSM，
 > staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
@@ -430,7 +430,8 @@ Live acceptance另確認：
 四個feed的多交易日觀察仍列於backlog；GitHub Environment application runtime copies已於2026-09-09清理；
 Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery、SSH ingress與host key退場、
 custom alarm coverage、different-digest rollback、schema rejection、SQLite recovery及RabbitMQ DR。
-Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring排程仍須取得兩個週期的執行證據。
+Current-volume DLM policy與即時recovery snapshots亦已建立；首兩個不同雙volume排程週期均已通過，
+且至2026-09-13已連續完成五個週期。
 
 ### Phase 6 live recovery record (2026-09-01 to 2026-09-03)
 
@@ -502,8 +503,18 @@ Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring�
 `Purpose`改為`BackupPurpose`。Fresh saved plan SHA-256為
 `49fb3fe75512a8d97388daf312b8d0f541bc9935aef48f7d150a36f0eb0dba46`，guard通過且只有一筆
 in-place update；apply為`0 added, 1 changed, 0 destroyed`。AWS回讀policy為`ENABLED`、
-`CopyTags=true`、每日`09:00 UTC`且保留7份。Scheduled snapshots仍為0，兩個manual snapshots仍為
-completed、encrypted且保留至2026-10-03；在首兩次排程觀察完成前不能宣告recurring chain完成。
+`CopyTags=true`、每日`09:00 UTC`且保留7份。2026-09-10補查確認2026-09-09 09:41 UTC首個
+scheduled cycle：`vol-07a726b6215c34c20`建立`snap-01ebe8336b7ced28c`，
+`vol-071822e2fe38c3991`建立`snap-0396321f0243a9ed1`；兩者均`completed`、encrypted，並帶
+`aws:dlm:lifecycle-policy-id=policy-0d0a29c9e19f6323e`、
+`aws:dlm:lifecycle-schedule-name=DailyCurrentRootRecoveryPoints`、`dlm:managed=true`及正確
+`BackupPurpose`。每個volume當時各1份，未超過policy count 7；manual snapshots未計入。
+因`CopyTags=true`而複製的舊`Retention=retain-until-2026-09-08`只屬非權威來源標籤，DLM實際保存由
+`RetainRule.Count=7`控制。2026-09-14回讀確認第二個不同週期已於2026-09-10完成：Fetcher
+`snap-0576caba14540b2ac`與FinDB `snap-0df1a639ad70bd5fc`均為`completed`、encrypted，且帶相同
+exact policy／schedule／managed／BackupPurpose tags。至2026-09-13已連續完成五個雙volume週期，
+每個volume各5/7份，未超過retention count；manual snapshots持續排除於計數，因此recurring chain
+執行驗收完成。
 2026-09-09另以零刪除OpenTofu apply上線`DLMPolicyHealthy`與
 `findb-staging-dlm-policy-unhealthy`，指定policy為healthy且43個staging alarms全為`OK`；此控制面
 告警不能替代實際recovery-point驗收。
@@ -543,8 +554,7 @@ instance role從Secrets Manager載入，且check-only輸出均已移除。Queue 
 missing deliveries皆為0，三個scheduler fresh／ready，public health與Dashboard為HTTP 200，兩台SSM Online，
 43個alarms為43 OK。刪除僅影響GitHub staging Environment copies，不影響AWS Secrets Manager或production。
 
-未完成風險集中於：DLM尚未形成首兩個recurring執行證據；四個active feeds的多交易日原生排程觀察、
-TLS certificate expiry monitoring、Fetcher運行中container的完整自動化security反查與更廣泛資料面告警仍依
+未完成風險集中於：TLS certificate expiry monitoring、Fetcher運行中container的完整自動化security反查與更廣泛資料面告警仍依
 各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
 均已有live evidence，不再列為未完成風險。
 
