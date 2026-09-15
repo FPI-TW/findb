@@ -189,6 +189,86 @@ def test_active_feed_ingestion_metrics_are_bounded_and_low_cardinality(
     assert "request" not in json.dumps(metrics)
 
 
+def test_database_governance_metrics_are_aggregate_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        Mock(
+            return_value=Mock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "lineage_orphans": 2,
+                        "eod_default_rows": 3,
+                        "credential_usage_mismatches": 4,
+                    }
+                ),
+            )
+        ),
+    )
+
+    metrics, errors = module._database_governance_metrics()
+
+    assert errors == []
+    assert metrics == [
+        module._metric("LineageOrphanRows", 2, "Count", "findb", "canonical-and-raw"),
+        module._metric(
+            "EODDefaultPartitionRows",
+            3,
+            "Count",
+            "findb",
+            "market_data_eod_default",
+        ),
+        module._metric(
+            "CredentialUsageAggregateMismatches",
+            4,
+            "Count",
+            "findb",
+            "api-credentials",
+        ),
+    ]
+    command = module._run.call_args.args[0]
+    assert command[:4] == ["docker", "exec", "findb-ingest", "python"]
+    assert "raw.market_payload" in command[-1]
+    assert "market_data_eod_default" in command[-1]
+    assert "credential_usage_rollup" in command[-1]
+    assert "COALESCE(sum(orphan_rows), 0)::bigint" in command[-1]
+
+
+def test_invalid_credential_events_are_counted_without_log_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    monkeypatch.setattr(
+        module,
+        "_run",
+        Mock(
+            side_effect=[
+                Mock(returncode=0, stdout="API credential rejected\n", stderr=""),
+                Mock(
+                    returncode=0,
+                    stdout="",
+                    stderr="API credential rejected\nAPI credential rejected\n",
+                ),
+            ]
+        ),
+    )
+
+    metrics, errors = module._invalid_credential_event_metrics()
+
+    assert errors == []
+    assert metrics == [
+        module._metric("InvalidCredentialEvents", 3, "Count", "findb", "api-credentials")
+    ]
+    assert module._run.call_args_list == [
+        ((["docker", "logs", "--since", "10m", "findb-ingest"],),),
+        ((["docker", "logs", "--since", "10m", "findb-serve"],),),
+    ]
+
+
 def test_collector_failure_is_published_as_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     monkeypatch.setattr(module, "_filesystem_metrics", Mock(return_value=[]))
@@ -196,6 +276,8 @@ def test_collector_failure_is_published_as_zero(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(module, "_rabbitmq_metrics", Mock(return_value=([], ["rabbit failed"])))
     monkeypatch.setattr(module, "_scheduler_metrics", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_active_feed_ingestion_metrics", Mock(return_value=([], [])))
+    monkeypatch.setattr(module, "_database_governance_metrics", Mock(return_value=([], [])))
+    monkeypatch.setattr(module, "_invalid_credential_event_metrics", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_rds_backup_lag_metric", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_dlm_policy_health_metric", Mock(return_value=([], [])))
     monkeypatch.setattr(module, "_tls_certificate_metrics", Mock(return_value=([], [])))

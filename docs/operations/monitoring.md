@@ -117,16 +117,36 @@ breaching-on-missing alarms are created.
 | Active-feed contract | Rejected ingress-schema/required-field/completeness attempt count `>= 1` in the overlapping ten-minute window |
 | Active-feed completeness | Non-rerun ingestion run with zero records `>= 1` in the overlapping ten-minute window |
 | Active-feed DQ | Blocking DQ error count `>= 1` in the overlapping ten-minute window |
+| Lineage integrity | Aggregate orphan count across PostgreSQL raw and every canonical table with `run_id`; any row or missing metric breaches |
+| EOD partition routing | `market_data_eod_default` row count; any row or missing metric breaches |
+| Credential aggregate integrity | Durable rollup/request aggregate mismatch count; any row or missing metric breaches |
+| Invalid credentials | Rejected Source, Serve, or Admin credential log events `>= 1` in the overlapping ten-minute window |
 | Staging CD | A failed or cancelled protected-`main` build/deploy publishes one sparse `DeploymentFailure` datum |
 
 The collector reads scheduler heartbeat ages through the local authenticated
 FinDB Admin endpoint from inside `findb-ingest`; the credential never crosses
 the container boundary or enters metric dimensions/output. It reads only
 Docker state, root filesystem counters, RabbitMQ local alarm flags, scheduler
-keys/ages, bounded active-feed aggregate counts, and RDS `LatestRestorableTime`. Request IDs,
-symbols and provider error text never become dimensions. Instance and deployment roles may
+keys/ages, bounded active-feed aggregate counts, aggregate DB integrity counts,
+the stable invalid-credential log message, and RDS `LatestRestorableTime`. It
+does not publish supplied keys, client IPs, endpoints, row IDs, request IDs,
+symbols, or provider error text. Instance and deployment roles may
 publish only the exact `FinDB/Staging` namespace; only the FinDB instance role
 receives `rds:DescribeDBInstances` for the backup-lag observation.
+
+The lineage check deliberately uses a periodic aggregate rather than new
+canonical/raw foreign keys. Raw retention, staging reset, and long-lived
+canonical rows have different deletion semantics, while adding constraints to
+partitioned or growing tables would introduce migration locks and cascade risk.
+The aggregate fails visibly without changing deletion behavior. The credential
+check compares only durable counters; invalid-key events are counted from the
+two API containers over an overlapping ten-minute window without parsing or
+retaining the rejected key.
+
+The four governance/security metrics and alarms added after the 2026-09-15
+acceptance record are declarations until their protected-`main` plan, apply,
+two healthy periods, and controlled invalid-key notification test are recorded.
+Do not add them to the 42-series/50-alarm live baseline before that acceptance.
 
 The thresholds and evaluation settings are fixed-by-validation variables in
 `infra/tofu/staging/variables.tf`; changing them requires a reviewed IaC

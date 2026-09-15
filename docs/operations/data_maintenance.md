@@ -81,6 +81,21 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - Retention必須長於正常延遲、事故調查及contract migration窗口。
 - Raw刪除不影響canonical，但會失去rerun與provider payload audit能力。
 
+## EOD default partition recovery
+
+`market_data_eod_default`正常必須為空；application在寫入前會確認目標年度的
+migration-owned partition。Staging monitoring以一筆為告警門檻，因此不要等待累積到較大
+數量才處理。告警後：
+
+1. 保存alarm時間、row count、distinct年份、目前Alembic revision與image digest；不要輸出價格資料。
+2. 停止`ingest`、`dispatcher`與`worker`，建立RDS snapshot，確認沒有進行中的normalization job。
+3. 由Alembic建立缺少的年度partition；不得從application runtime執行DDL。
+4. 在transaction內將該年份資料由default partition搬至年度partition。先在clone驗證row count、
+   primary key、`run_id` lineage與query plan，正式執行時設定bounded lock/statement timeout。
+5. 驗證default partition歸零、年度partition count與搬移前相同、lineage orphan為零，再恢復writers。
+
+不要直接detach或drop非空default partition，也不要用手寫大範圍DELETE清除告警。
+
 ## 執行紀錄與回復
 
 每次維護保存image SHA、target、參數、開始／結束時間、pre／post counts、驗證與operator。
