@@ -425,9 +425,10 @@ Live acceptance另確認：
   `10`／`10`／`8`；
 - `staging-fetcher`的`FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY`已刪除。
 
-這組證據完成Phase 5 transport與bounded FinLab acceptance，但不代表整體queue從未有歷史
-`failed`、`retry_exhausted`或`missing`項目，也不代表四個active feeds均已完成完整原生排程驗收。
-四個feed的多交易日觀察仍列於backlog；GitHub Environment application runtime copies已於2026-09-09清理；
+這組證據當時只完成Phase 5 transport與bounded FinLab acceptance，不能證明整體queue從未有歷史
+`failed`、`retry_exhausted`或`missing`項目，也不能單獨證明四個active feeds的完整原生排程驗收。
+四個feed的後續原生週期與多交易日pre/post package已分別於2026-09-09及2026-09-15完成；GitHub
+Environment application runtime copies已於2026-09-09清理；
 Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery、SSH ingress與host key退場、
 custom alarm coverage、different-digest rollback、schema rejection、SQLite recovery及RabbitMQ DR。
 Current-volume DLM policy與即時recovery snapshots亦已建立；首兩個不同雙volume排程週期均已通過，
@@ -538,14 +539,35 @@ active feeds的多交易日config／universe／credits／pre-post live evidence 
 2026-09-08，且沒有open missing alert。Command `cf7b2818-4ebd-4022-a3aa-6e7f550e1219`另行回讀
 DB-authoritative delivery policies：Twelve Data每symbol最低1筆、FinLab source override最低2筆；
 兩個minute feeds採sequenced snapshot，record-count policy維持disabled。兩份command output均寫入
-KMS-encrypted `/findb/staging/findb/ssm`。目前資料支持既有bounded門檻，但尚無真實provider欄位消失
-或異常空snapshot樣本可校準升級，因此policy維持`warn`，不得宣稱該P0項目已關閉。
+KMS-encrypted `/findb/staging/findb/ssm`。該次資料支持既有bounded門檻，但當時尚無真實provider欄位
+消失或異常空snapshot樣本可校準升級，因此policy維持`warn`，當時不得宣稱該P0項目已關閉；同日
+後續受控異常校準與alarm自然恢復已補齊並關閉此項，詳見監控runbook。
 
 2026-09-09的Twelve Data原生schedule補齊accepted-SHA四feed gate：AAPL、MSFT、NVDA均在attempt 1
 完成，checkpoint由2026-09-04推進到2026-09-08，使用3／3 credits；三個Raw R2 checksum、三個Source
 `202`、completed run/job、published outbox、DQ error 0、canonical lineage及公開Serve／Dashboard查詢均通過。
 FinLab及兩個Shioaji feeds已有同一accepted record後的原生成功證據，因此此單次完整原生週期門檻關閉；
-多交易日完整evidence package仍依資料面backlog追蹤。
+多交易日完整evidence package當時仍依資料面backlog追蹤。
+
+2026-09-15以2026-09-09 immutable `pre` manifest SHA-256
+`7c234156bdf18964c7f1dc5d164a208a00c42db7458ee35fb30fffc0ec0e8e68`執行自然`post`驗收。FinLab、
+兩個Shioaji feeds與Twelve Data均前進至2026-09-11及2026-09-14交易日，reviewed config／universe
+identity未變；四feed的Source／Raw／job／outbox／DQ／canonical、多交易日與持久化Source `202`均通過，
+minute Serve邊界維持`not_applicable/market_minute_read_model_not_exposed`。Post manifest SHA-256為
+`36489b45ad94e5c10f4037f931898ca1b0ae8474f657395722124adaa5e50a24`，以KMS保存於versioned S3 key
+`evidence/staging/active-feeds/2026-09-15/post-36489b45ad94e5c1.json`，version
+`.quZPhy3PoNJRFp3l5qzp14y7OCpeV7Z`；因此四feed多交易日pre/post P0 gate已關閉。
+
+同日RabbitMQ唯讀健康commands `36989907-c2d4-4e99-a351-f43c6bd91788`與
+`3dc62594-d707-46b9-a746-d89ea6ed475b`確認broker自2026-09-03起連續運行且healthy，restart／OOM／
+local alarms為0，兩個durable queues與DLQ均為0，worker ping成功；runtime-secret wrapper內的
+DB-authoritative health為`unpublished_outbox=0`、`expired_leases=0`、`missing_deliveries=0`、heartbeat
+age 7.8秒。Live與舊稽核目錄inode不同，舊副本為40 MiB；FinDB root DLM仍`ENABLED`且已有6/7份
+completed、encrypted recovery points。取得明確授權後，SSM command
+`57e6a9e8-87ff-41c9-83f6-cc4a8a0cd99c`先確認舊目錄不是symlink且與live inode不同，再只刪除
+`/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`。刪除後舊路徑不存在、live path保留，
+RabbitMQ ping成功；DB-authoritative queue health刪除前後皆為queue／DLQ、unpublished outbox、expired
+leases及missing deliveries 0，command為`Success`／exit 0且stderr空白。
 
 同日依使用者明確授權移除`staging-findb`13枚與`staging-fetcher`10枚舊application runtime secrets；兩個
 Environment secret清單刪後均為空。SSM commands `fb74877d-3829-4260-9d4b-4465cb2f6f4d`及

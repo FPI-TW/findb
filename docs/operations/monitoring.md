@@ -163,6 +163,19 @@ feeds have no public Serve read model and therefore declare Serve
 required operational read boundary is Admin raw, Admin market freshness, and
 Dashboard representation.
 
+2026-09-15 completed the natural `post` acceptance. The immutable manifest
+SHA-256 is `36489b45ad94e5c10f4037f931898ca1b0ae8474f657395722124adaa5e50a24`;
+it links the exact 2026-09-09 `pre` SHA-256
+`7c234156bdf18964c7f1dc5d164a208a00c42db7458ee35fb30fffc0ec0e8e68` and is stored at
+`evidence/staging/active-feeds/2026-09-15/post-36489b45ad94e5c1.json`, version
+`.quZPhy3PoNJRFp3l5qzp14y7OCpeV7Z`, with the deployment-bundle KMS key. FinLab,
+both Shioaji feeds, and Twelve Data advanced naturally to trade dates
+2026-09-11 and 2026-09-14 while their reviewed config/universe identities
+remained stable. All four feeds passed Source, Raw, Normalize, outbox, DQ, and
+canonical checks; EOD Source attempts persisted HTTP `202`, and both minute
+feeds retained the explicit non-Serve operational boundary. This closes the
+multi-trade-date pre/post P0 gate without a same-observation replay.
+
 `infra/acceptance/calibrate_staging_provider_alerts.py` is staging-only. It
 uses a retained real Twelve Data request, generates fresh bounded request and
 idempotency keys, and exercises missing-required-field and empty-snapshot
