@@ -564,6 +564,7 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
 
 def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     monitoring = _read(STAGING_ROOT / "monitoring.tf")
+    iam = _read(STAGING_ROOT / "iam.tf")
     variables = _read(STAGING_ROOT / "variables.tf")
     tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
     outputs = _read(STAGING_ROOT / "outputs.tf")
@@ -725,11 +726,14 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "DiskUsedPercent",
         "DockerContainerHealthy",
         "DockerRestartCount",
+        "DockerRuntimeSecurityHealthy",
+        "DLMPolicyHealthy",
         "InodeUsedPercent",
         "RabbitMQDiskAlarm",
         "RabbitMQMemoryAlarm",
         "RDSBackupLagSeconds",
         "SchedulerHeartbeatAgeSeconds",
+        "TLSCertificateDaysRemaining",
         "DeploymentFailure",
     ):
         assert f'metric_name         = "{metric}"' in monitoring
@@ -740,7 +744,12 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert "findb-staging-metric-publisher.service" in monitoring
     assert "findb-staging-metric-publisher.timer" in monitoring
     assert "OnUnitActiveSec=5min" in monitoring
+    assert "--dlm-policy-id ${aws_dlm_lifecycle_policy.root_volume_backup.id}" in monitoring
+    assert "--tls-host ${var.findb_dns_check_name}" in monitoring
     assert "systemctl enable --now findb-staging-metric-publisher.timer" in monitoring
+    assert 'sid       = "ReadFinDBDlmPolicyHealth"' in iam
+    assert 'actions   = ["dlm:GetLifecyclePolicy"]' in iam
+    assert "resources = [aws_dlm_lifecycle_policy.root_volume_backup.arn]" in iam
 
     for name, default in (
         ("operational_alert_email", None),
@@ -757,6 +766,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         ("monitoring_docker_restart_count_threshold", "3"),
         ("monitoring_scheduler_heartbeat_age_threshold_seconds", "180"),
         ("monitoring_rds_backup_lag_threshold_seconds", "1800"),
+        ("monitoring_tls_certificate_days_remaining_threshold", "30"),
     ):
         block = variables.split(f'variable "{name}"', 1)[1].split("variable ", 1)[0]
         assert "validation {" in block
@@ -854,7 +864,8 @@ def test_phase6_root_volume_backup_is_current_volume_bounded_and_retained() -> N
     assert 'times         = ["09:00"]' in backup
     assert "count = 7" in backup
     assert "copy_tags = true" in backup
-    assert 'Purpose     = "automated-current-root-backup"' in backup
+    assert 'BackupPurpose = "automated-current-root-backup"' in backup
+    assert 'Purpose     = "automated-current-root-backup"' not in backup
     assert 'output "root_volume_backup"' in outputs
     for phrase in (
         "root volumes currently attached",

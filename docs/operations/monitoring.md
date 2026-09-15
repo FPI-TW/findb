@@ -22,7 +22,7 @@ is the separate evidence for the initial apply and notification exercise. Keep
 the original safety distinction explicit: **IaC declarations, not live-apply or delivery evidence**,
 are all that repository source alone can prove.
 
-## Live acceptance record (2026-09-01 to 2026-09-03)
+## Live acceptance record (2026-09-01 to 2026-09-09)
 
 - CloudTrail records Tyler creating the private SNS topic at
   `2026-09-01 10:58:38 +08:00`, then creating the email subscription and all
@@ -41,6 +41,22 @@ are all that repository source alone can prove.
   controlled test; it does not prove a real EC2 or RDS failure mode.
 - `/findb/staging/findb/ssm` and `/findb/staging/fetcher/ssm` remain
   KMS-encrypted with 30-day retention.
+- On 2026-09-09, a zero-destroy OpenTofu apply added
+  `findb-staging-dlm-policy-unhealthy`. The FinDB collector has an exact
+  `dlm:GetLifecyclePolicy` grant for `policy-0d0a29c9e19f6323e`; it published
+  `DLMPolicyHealthy=1` after verifying both `State` and `StatusMessage` are
+  `ENABLED`. The new alarm and all other 42 staging alarms were then `OK`.
+  This detects a disabled/error policy or missing collector data; it does not
+  prove that DLM created a usable snapshot.
+- Later on 2026-09-09, a second zero-destroy apply added three active-feed
+  anomaly alarms and updated the existing FinDB publisher in place (`3 added,
+  4 changed, 0 destroyed`). A controlled calibration cloned the latest
+  retained real Twelve Data delivery: removing required `close` persisted a
+  `422/INGRESS_SCHEMA_INVALID` attempt, while an empty snapshot was accepted as
+  a governed `202` warning run. The collector observed rejected and empty
+  metrics changing from `0` to `1`; both alarms changed from `OK` to `ALARM`.
+  `ActiveFeedDQErrors` stayed `0/OK`, proving that the signals remained
+  separated. These are staging calibration records, not production incidents.
 
 This record closes the owner/channel, subscription-confirmation, SSM log
 retention, and synthetic-notification portion of Phase 6. It does not close the
@@ -95,13 +111,18 @@ breaching-on-missing alarms are created.
 | RabbitMQ | Local disk or memory alarm flag `>= 1`; collected from `rabbitmq-diagnostics`, without credentials |
 | Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for FinLab, Shioaji, or Twelve Data |
 | RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
+| DLM control plane | Exact root-volume policy health `< 1` for 2 × 5 minutes; query failure or missing data also breaches |
+| Active-feed contract | Rejected ingress-schema/required-field/completeness attempt count `>= 1` in the overlapping ten-minute window |
+| Active-feed completeness | Non-rerun ingestion run with zero records `>= 1` in the overlapping ten-minute window |
+| Active-feed DQ | Blocking DQ error count `>= 1` in the overlapping ten-minute window |
 | Staging CD | A failed or cancelled protected-`main` build/deploy publishes one sparse `DeploymentFailure` datum |
 
 The collector reads scheduler heartbeat ages through the local authenticated
 FinDB Admin endpoint from inside `findb-ingest`; the credential never crosses
 the container boundary or enters metric dimensions/output. It reads only
 Docker state, root filesystem counters, RabbitMQ local alarm flags, scheduler
-keys/ages, and RDS `LatestRestorableTime`. Instance and deployment roles may
+keys/ages, bounded active-feed aggregate counts, and RDS `LatestRestorableTime`. Request IDs,
+symbols and provider error text never become dimensions. Instance and deployment roles may
 publish only the exact `FinDB/Staging` namespace; only the FinDB instance role
 receives `rds:DescribeDBInstances` for the backup-lag observation.
 
@@ -117,6 +138,51 @@ created 36 custom alarms in addition to the six native alarms. Associations
 `974a1570-3ace-4cc8-be97-09f4c5ba9eae`（FinDB）與
 `9de9a3a4-ddc2-414c-8410-0dc1af9536e6`（Fetcher）均成功，`FinDB/Staging`
 有34組bounded metric series，兩台collector連續成功，42個alarms後驗皆為`OK`。
+2026-09-09追加DLM policy health後為35組bounded metric series與43個alarms；active-feed
+anomaly expansion再增加3組series與3個alarms，因此穩態為38組series與46個alarms。受控校準期間
+ingress-rejected與empty-snapshot為`ALARM`；17:20再次發布0後，兩者分別於17:24:42與17:24:56
+自然回到`OK`，DQ全程為`OK`。不得在事件仍位於觀察窗時手動把alarm設回`OK`來掩蓋訊號。
+
+## Active-feed evidence and anomaly calibration
+
+`infra/acceptance/collect_staging_feed_evidence.py` is a local operator
+coordinator. It sends the repository's two read-only probes to the existing
+Fetcher and FinDB execution units through SSM, merges only bounded non-secret
+JSON, and can upload the result with explicit SSE-KMS headers and
+`If-None-Match: *` to the existing versioned bundle bucket. It adds no host and
+creates no runtime dependency between the two units. Use `--phase pre` first;
+after a genuinely new eligible trade date, use `--phase post --pre-manifest
+<local-pre-file>`. The post manifest stores the exact pre-file SHA-256. Never
+create pre and post at the same observation point merely to close the gate.
+
+The Backend probe treats `ingestion_attempt.http_status` as the durable Source
+HTTP audit truth, so FinLab and Twelve Data acceptance no longer depends on
+ephemeral nginx access logs. EOD feeds require the Serve read path. The minute
+feeds have no public Serve read model and therefore declare Serve
+`not_applicable` with reason `market_minute_read_model_not_exposed`; their
+required operational read boundary is Admin raw, Admin market freshness, and
+Dashboard representation.
+
+2026-09-15 completed the natural `post` acceptance. The immutable manifest
+SHA-256 is `36489b45ad94e5c10f4037f931898ca1b0ae8474f657395722124adaa5e50a24`;
+it links the exact 2026-09-09 `pre` SHA-256
+`7c234156bdf18964c7f1dc5d164a208a00c42db7458ee35fb30fffc0ec0e8e68` and is stored at
+`evidence/staging/active-feeds/2026-09-15/post-36489b45ad94e5c1.json`, version
+`.quZPhy3PoNJRFp3l5qzp14y7OCpeV7Z`, with the deployment-bundle KMS key. FinLab,
+both Shioaji feeds, and Twelve Data advanced naturally to trade dates
+2026-09-11 and 2026-09-14 while their reviewed config/universe identities
+remained stable. All four feeds passed Source, Raw, Normalize, outbox, DQ, and
+canonical checks; EOD Source attempts persisted HTTP `202`, and both minute
+feeds retained the explicit non-Serve operational boundary. This closes the
+multi-trade-date pre/post P0 gate without a same-observation replay.
+
+`infra/acceptance/calibrate_staging_provider_alerts.py` is staging-only. It
+uses a retained real Twelve Data request, generates fresh bounded request and
+idempotency keys, and exercises missing-required-field and empty-snapshot
+outcomes without calling the provider or changing scheduler state. The empty
+warning run is excluded from pass-only delivery-policy baselines. Preserve its
+attempt/run IDs in the live acceptance record; do not reuse this tool in
+production.
 
 Controlled tests使`findb-staging-findb-disk-used`與
 `findb-staging-fetcher-deployment-failed`分別完成`OK -> ALARM -> OK`；SNS delivery metrics
@@ -247,8 +313,15 @@ The applied custom coverage includes disk/inode use, required
 container health/restart count, RabbitMQ local disk/memory alarms, persisted
 scheduler heartbeat age, deployment failure, and RDS backup lag. Queue-depth
 trends, market-data freshness policy, ingestion/delivery/DQ, TLS certificate,
-and other log-derived monitoring remain out of scope. These remaining domains
-must not be inferred from the healthy 42-alarm set.
+and other log-derived monitoring remain out of scope. In particular, nginx
+uses the certificate and key mounted from the FinDB host, while the current
+container health check uses `--no-check-certificate`; an HTTPS 200 therefore
+proves endpoint readiness but does not prove that certificate expiry is being
+monitored. Closing this gap requires a periodic public-endpoint certificate
+probe that publishes days remaining from `notAfter`, plus an alarm for both a
+low-days threshold and missing probe data. These remaining domains must not be
+inferred from the healthy alarm set and are recorded hardening gaps rather than
+staging closeout blockers.
 
 The two current root volumes have been replaced with encrypted volumes, the
 RDS restore rehearsal and SSH-ingress removal have also been completed, and
@@ -256,10 +329,14 @@ their live records are maintained in
 [`deployment.md`](deployment.md#phase-6-live-recovery-record-2026-09-01-to-2026-09-03).
 A one-time encrypted migration and a recurring backup chain are separate
 controls; migration or backup chain evidence must remain distinct. Daily DLM policy
-`policy-0d0a29c9e19f6323e` is enabled for the two exact current root volumes and immediate
-encrypted snapshots have completed, but the first and second scheduled DLM recovery points remain
-time-gated evidence; the current record does **not** claim completion of the recurring backup-chain
-acceptance. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
+`policy-0d0a29c9e19f6323e` was created for the two exact current root volumes and immediate encrypted
+snapshots completed. The 2026-09-08 live check found the policy in `ERROR` because copied source-volume
+tags and schedule `TagsToAdd` both contained `Purpose`. The schedule-only key was changed to
+`BackupPurpose`; a guarded zero-delete OpenTofu plan applied one in-place update, and AWS now reports the
+policy as `ENABLED`. Policy-tagged scheduled snapshots remain at zero, so two successful scheduled cycles
+are still required. The healthy 42-alarm inventory did not surface the original error and still does not
+monitor DLM execution state; the current record does **not** claim completion of either DLM monitoring or
+the recurring backup-chain acceptance. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
 different-digest rollback, and schema-rejection rehearsal completed on 2026-09-03; exact evidence is
 in the linked deployment record. SSH ingress/recovery-key retirement was also completed: the matching host keys and both EC2
 key-pair resources are absent, while unit-specific Session Manager break-glass

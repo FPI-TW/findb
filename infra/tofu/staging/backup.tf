@@ -64,8 +64,10 @@ resource "aws_dlm_lifecycle_policy" "root_volume_backup" {
       name      = "DailyCurrentRootRecoveryPoints"
       copy_tags = true
       tags_to_add = {
-        Purpose     = "automated-current-root-backup"
-        BackupOwner = var.backup_owner_tag
+        # Source volumes already carry Purpose. DLM rejects duplicate keys
+        # when CopyTags is enabled, so use a schedule-only, non-overlapping key.
+        BackupPurpose = "automated-current-root-backup"
+        BackupOwner   = var.backup_owner_tag
       }
 
       create_rule {

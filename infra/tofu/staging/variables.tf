@@ -219,6 +219,17 @@ variable "monitoring_rds_backup_lag_threshold_seconds" {
   }
 }
 
+variable "monitoring_tls_certificate_days_remaining_threshold" {
+  description = "Minimum safe remaining lifetime for the verified public staging TLS certificate."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.monitoring_tls_certificate_days_remaining_threshold == 30
+    error_message = "monitoring_tls_certificate_days_remaining_threshold must remain 30 days."
+  }
+}
+
 variable "github_repository" {
   description = "GitHub repository in owner/name form used by the OIDC trust policies."
   type        = string

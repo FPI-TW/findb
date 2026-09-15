@@ -428,6 +428,16 @@ data "aws_iam_policy_document" "instance_permissions" {
     }
   }
 
+  dynamic "statement" {
+    for_each = each.key == "findb" ? [true] : []
+    content {
+      sid       = "ReadFinDBDlmPolicyHealth"
+      effect    = "Allow"
+      actions   = ["dlm:GetLifecyclePolicy"]
+      resources = [aws_dlm_lifecycle_policy.root_volume_backup.arn]
+    }
+  }
+
   // DescribeLogGroups does not support resource-level permissions. The agent
   // calls it before publishing to the unit-scoped log group above.
   statement {

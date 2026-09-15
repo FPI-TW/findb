@@ -37,8 +37,9 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > Phase 6已完成完整native/custom alarm coverage、RDS PITR restore、encrypted root replacement、
 > Session Manager recovery、SSH ingress與host recovery key退場、generated cache重生、Fetcher SQLite
 > backup/restore、RabbitMQ volume rebuild、different-digest rollback及不同Alembic revision的schema拒絕。
-> 兩個current root volumes的daily DLM policy已啟用，並已建立即時encrypted recovery snapshots；首個及
-> 第二個排程recovery point仍須依時間窗口觀察，因此recurring chain的執行證據尚未關閉。
+> 兩個current root volumes已建立即時encrypted recovery snapshots；2026-09-08已將daily DLM
+> schedule-only tag由重複的`Purpose`修正為`BackupPurpose`並完成zero-delete apply，policy回到
+> `ENABLED`。2026-09-14回讀已確認至少五個雙volume排程週期，首兩個不同週期驗收完成。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production 使用 OIDC＋SSM，
 > staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
 > [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
@@ -170,8 +171,8 @@ consumer前，host loader會先在既有`/run` tmpfs安全建立或驗證
 `/run/findb-runtime-secrets`：目錄必須是非 symlink 的目錄、`root:root`與`0700`；若`/run`不是 tmpfs、
 路徑型別不正確或既有權限不安全便會 fail closed。這使EC2重開後清除`/run`時，下一次candidate、accepted
 activation或受包裝的runtime載入可自動恢復空目錄，但不會修復或採用不安全的既有路徑。secret bundle仍只在
-該root下以`0600`建立並於使用後清理；GitHub Environment的舊runtime copies仍保留但不是staging runtime
-source。GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
+該root下以`0600`建立並於使用後清理。GitHub Environment的23枚舊runtime copies已於2026-09-09依明確授權
+刪除，兩個Environment secret清單回讀皆為空；GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
 FinDB與Fetcher staging日常deployment transport均已完成OIDC＋SSM live驗證；Fetcher的FinLab smoke亦使用
 bounded SSM。`staging-findb`已移除`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`，
 `staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。後續Phase 6另已移除staging
@@ -424,12 +425,14 @@ Live acceptance另確認：
   `10`／`10`／`8`；
 - `staging-fetcher`的`FETCHER_EC2_HOST`、`FETCHER_EC2_USER`、`FETCHER_EC2_SSH_KEY`已刪除。
 
-這組證據完成Phase 5 transport與bounded FinLab acceptance，但不代表整體queue從未有歷史
-`failed`、`retry_exhausted`或`missing`項目，也不代表四個active feeds均已完成完整原生排程驗收。
-四個feed的多交易日觀察與GitHub Environment application runtime copies清理仍列於backlog；
+這組證據當時只完成Phase 5 transport與bounded FinLab acceptance，不能證明整體queue從未有歷史
+`failed`、`retry_exhausted`或`missing`項目，也不能單獨證明四個active feeds的完整原生排程驗收。
+四個feed的後續原生週期與多交易日pre/post package已分別於2026-09-09及2026-09-15完成；GitHub
+Environment application runtime copies已於2026-09-09清理；
 Phase 6後續已完成RDS restore、encrypted root replacement、Session Manager recovery、SSH ingress與host key退場、
 custom alarm coverage、different-digest rollback、schema rejection、SQLite recovery及RabbitMQ DR。
-Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring排程仍須取得兩個週期的執行證據。
+Current-volume DLM policy與即時recovery snapshots亦已建立；首兩個不同雙volume排程週期均已通過，
+且至2026-09-13已連續完成五個週期。
 
 ### Phase 6 live recovery record (2026-09-01 to 2026-09-03)
 
@@ -445,10 +448,10 @@ Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring�
   Fetcher三個scheduler恢復運行。來源encrypted migration snapshots標記只保留至2026-09-08。
   PR [#240](https://github.com/FPI-TW/findb/pull/240)合併後，以DLM policy
   `policy-0d0a29c9e19f6323e`精確選取兩個current-volume tag，每日`09:00 UTC`建立snapshot並保留7份；
-  policy為`ENABLED`。立即復原點`snap-0fd82febf04befa97`（FinDB）與
+  policy建立當時為`ENABLED`。立即復原點`snap-0fd82febf04befa97`（FinDB）與
   `snap-03efabf42ff2b398c`（Fetcher）皆為`completed`、encrypted，保留至2026-10-03。
-  這證明policy與current-volume recovery point可建立；在首個及第二個DLM排程snapshot實際出現前，
-  不宣稱recurring execution已驗收。
+  這證明current-volume recovery point可建立，但不單獨證明DLM執行；後續狀態見下方
+  2026-09-08 follow-up。
 - 兩台managed node均為SSM Online。CloudTrail於2026-08-26記錄Tyler分別透過
   `SSM-SessionManagerRunShell-findb-staging`與`SSM-SessionManagerRunShell-fetcher-staging`成功建立
   Session Manager session；2026-09-01 command `08d25aff-4ff1-4c38-b2b0-0bc0f7c66f04`再次對兩台完成
@@ -497,8 +500,83 @@ Current-volume DLM policy與即時recovery snapshots亦已建立，但recurring�
   retry exhausted 1及missing deliveries 0，證明broker可由DB-authoritative state與版本控制topology重建。
   舊目錄暫留供復原稽核，確認不再需要後才能另行核准清理。
 
-未完成風險集中於：DLM首個與第二個排程recovery point尚未形成recurring執行證據；四個active feeds的
-多交易日原生排程觀察、GitHub Environment runtime copies退役、TLS certificate與更廣泛資料面告警仍依
+2026-09-08 follow-up：DLM policy `policy-0d0a29c9e19f6323e`的schedule-only tag已由重複的
+`Purpose`改為`BackupPurpose`。Fresh saved plan SHA-256為
+`49fb3fe75512a8d97388daf312b8d0f541bc9935aef48f7d150a36f0eb0dba46`，guard通過且只有一筆
+in-place update；apply為`0 added, 1 changed, 0 destroyed`。AWS回讀policy為`ENABLED`、
+`CopyTags=true`、每日`09:00 UTC`且保留7份。2026-09-10補查確認2026-09-09 09:41 UTC首個
+scheduled cycle：`vol-07a726b6215c34c20`建立`snap-01ebe8336b7ced28c`，
+`vol-071822e2fe38c3991`建立`snap-0396321f0243a9ed1`；兩者均`completed`、encrypted，並帶
+`aws:dlm:lifecycle-policy-id=policy-0d0a29c9e19f6323e`、
+`aws:dlm:lifecycle-schedule-name=DailyCurrentRootRecoveryPoints`、`dlm:managed=true`及正確
+`BackupPurpose`。每個volume當時各1份，未超過policy count 7；manual snapshots未計入。
+因`CopyTags=true`而複製的舊`Retention=retain-until-2026-09-08`只屬非權威來源標籤，DLM實際保存由
+`RetainRule.Count=7`控制。2026-09-14回讀確認第二個不同週期已於2026-09-10完成：Fetcher
+`snap-0576caba14540b2ac`與FinDB `snap-0df1a639ad70bd5fc`均為`completed`、encrypted，且帶相同
+exact policy／schedule／managed／BackupPurpose tags。至2026-09-13已連續完成五個雙volume週期，
+每個volume各5/7份，未超過retention count；manual snapshots持續排除於計數，因此recurring chain
+執行驗收完成。
+2026-09-09另以零刪除OpenTofu apply上線`DLMPolicyHealthy`與
+`findb-staging-dlm-policy-unhealthy`，指定policy為healthy且43個staging alarms全為`OK`；此控制面
+告警不能替代實際recovery-point驗收。
+
+同日完成active-backlog fault acceptance：三個provider producers暫停後，以retained FinLab raw建立
+一筆含兩列資料的rerun backlog，短暫撤銷RDS SG中FinDB EC2 SG到TCP/5432的單一規則；新啟動worker取得delivery
+並呈現`unacked=1`後被SIGKILL，message回到`ready=1`。DB規則立即以相同source／port／description
+恢復，worker恢復原`unless-stopped`後完成2/2 canonical upsert，queue／DLQ、unpublished outbox及
+expired leases皆為0，兩筆canonical lineage均指向單一completed rerun。固定idempotency另驗證相同
+內容`202`重用原run、同key不同內容回`409/IDEMPOTENCY_PAYLOAD_MISMATCH`，raw count不變。
+
+2026-09-09另以目前repo revision集中重跑P0故障與時間邊界驗收：Fetcher的client retry、scheduler
+state／control、schedule／calendar preflight及Shioaji scheduler共164項全數通過；Backend的delivery
+monitor、delivery policy及normalization queue共65項全數通過。這229項測試分別覆蓋bounded retry、
+expired lease reclaim、graceful stop、holiday、台北固定操作時段跨美國DST，以及late delivery解除
+missing alert。它們與上述live worker-kill／RabbitMQ redelivery證據共同關閉該P0項目，但不取代四個
+active feeds的多交易日config／universe／credits／pre-post live evidence package。
+
+同日以SSM command `d6225912-98bd-4d98-87e6-5eecdc71bcde`讀取live Admin freshness：FinLab、
+兩個Shioaji minute feeds及Twelve Data均為`ready`／`fresh`，expected與coverage data date皆為
+2026-09-08，且沒有open missing alert。Command `cf7b2818-4ebd-4022-a3aa-6e7f550e1219`另行回讀
+DB-authoritative delivery policies：Twelve Data每symbol最低1筆、FinLab source override最低2筆；
+兩個minute feeds採sequenced snapshot，record-count policy維持disabled。兩份command output均寫入
+KMS-encrypted `/findb/staging/findb/ssm`。該次資料支持既有bounded門檻，但當時尚無真實provider欄位
+消失或異常空snapshot樣本可校準升級，因此policy維持`warn`，當時不得宣稱該P0項目已關閉；同日
+後續受控異常校準與alarm自然恢復已補齊並關閉此項，詳見監控runbook。
+
+2026-09-09的Twelve Data原生schedule補齊accepted-SHA四feed gate：AAPL、MSFT、NVDA均在attempt 1
+完成，checkpoint由2026-09-04推進到2026-09-08，使用3／3 credits；三個Raw R2 checksum、三個Source
+`202`、completed run/job、published outbox、DQ error 0、canonical lineage及公開Serve／Dashboard查詢均通過。
+FinLab及兩個Shioaji feeds已有同一accepted record後的原生成功證據，因此此單次完整原生週期門檻關閉；
+多交易日完整evidence package當時仍依資料面backlog追蹤。
+
+2026-09-15以2026-09-09 immutable `pre` manifest SHA-256
+`7c234156bdf18964c7f1dc5d164a208a00c42db7458ee35fb30fffc0ec0e8e68`執行自然`post`驗收。FinLab、
+兩個Shioaji feeds與Twelve Data均前進至2026-09-11及2026-09-14交易日，reviewed config／universe
+identity未變；四feed的Source／Raw／job／outbox／DQ／canonical、多交易日與持久化Source `202`均通過，
+minute Serve邊界維持`not_applicable/market_minute_read_model_not_exposed`。Post manifest SHA-256為
+`36489b45ad94e5c10f4037f931898ca1b0ae8474f657395722124adaa5e50a24`，以KMS保存於versioned S3 key
+`evidence/staging/active-feeds/2026-09-15/post-36489b45ad94e5c1.json`，version
+`.quZPhy3PoNJRFp3l5qzp14y7OCpeV7Z`；因此四feed多交易日pre/post P0 gate已關閉。
+
+同日RabbitMQ唯讀健康commands `36989907-c2d4-4e99-a351-f43c6bd91788`與
+`3dc62594-d707-46b9-a746-d89ea6ed475b`確認broker自2026-09-03起連續運行且healthy，restart／OOM／
+local alarms為0，兩個durable queues與DLQ均為0，worker ping成功；runtime-secret wrapper內的
+DB-authoritative health為`unpublished_outbox=0`、`expired_leases=0`、`missing_deliveries=0`、heartbeat
+age 7.8秒。Live與舊稽核目錄inode不同，舊副本為40 MiB；FinDB root DLM仍`ENABLED`且已有6/7份
+completed、encrypted recovery points。取得明確授權後，SSM command
+`57e6a9e8-87ff-41c9-83f6-cc4a8a0cd99c`先確認舊目錄不是symlink且與live inode不同，再只刪除
+`/var/lib/findb/rabbitmq.phase6-pre-rebuild-20260903T091531Z`。刪除後舊路徑不存在、live path保留，
+RabbitMQ ping成功；DB-authoritative queue health刪除前後皆為queue／DLQ、unpublished outbox、expired
+leases及missing deliveries 0，command為`Success`／exit 0且stderr空白。
+
+同日依使用者明確授權移除`staging-findb`13枚與`staging-fetcher`10枚舊application runtime secrets；兩個
+Environment secret清單刪後均為空。SSM commands `fb74877d-3829-4260-9d4b-4465cb2f6f4d`及
+`84bb294b-91d8-46b3-ac70-71e091e0629e`確認FinDB完整canary與Fetcher三個provider catalogs仍可由各自
+instance role從Secrets Manager載入，且check-only輸出均已移除。Queue unpublished outbox、expired leases及
+missing deliveries皆為0，三個scheduler fresh／ready，public health與Dashboard為HTTP 200，兩台SSM Online，
+43個alarms為43 OK。刪除僅影響GitHub staging Environment copies，不影響AWS Secrets Manager或production。
+
+未完成風險集中於：TLS certificate expiry monitoring、Fetcher運行中container的完整自動化security反查與更廣泛資料面告警仍依
 各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
 均已有live evidence，不再列為未完成風險。
 
