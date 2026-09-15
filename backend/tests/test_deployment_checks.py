@@ -49,19 +49,6 @@ PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 SSM_COMMAND_MARKER_GATE = REPO_ROOT / "infra" / "deploy" / "ssm_command_marker_gate.sh"
 SSM_BASH_COMMAND = REPO_ROOT / "infra" / "deploy" / "ssm_bash_command.py"
 
-LEGACY_ROLLBACK_CI_ONLY_PATHS = frozenset(
-    {
-        "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
-        "infra/deploy/release_manifest.py",
-        ".github/workflows/findb-cd.yml",
-        ".github/workflows/fetcher-cd.yml",
-        "docs/operations/deployment.md",
-        "docs/dev/staging-aws-deployment-plan.md",
-        "backend/tests/test_deployment_checks.py",
-        "backend/tests/test_release_manifest.py",
-    }
-)
-
 
 class UniqueKeyLoader(yaml.BaseLoader):
     """Parse workflow YAML without YAML 1.1 booleans and reject duplicate keys."""

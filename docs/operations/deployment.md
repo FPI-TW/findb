@@ -41,8 +41,9 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > schedule-only tag由重複的`Purpose`修正為`BackupPurpose`並完成zero-delete apply，policy回到
 > `ENABLED`。2026-09-14回讀已確認至少五個雙volume排程週期，首兩個不同週期驗收完成。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production 使用 OIDC＋SSM，
-> staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
-> [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
+> staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；
+> staging告警與復原證據見[monitoring runbook](monitoring.md)，尚未完成的production與平台強化只列於
+> [current backlog](../dev/backlog.md)。
 
 ## Workflow與release units
 

@@ -22,7 +22,7 @@ is the separate evidence for the initial apply and notification exercise. Keep
 the original safety distinction explicit: **IaC declarations, not live-apply or delivery evidence**,
 are all that repository source alone can prove.
 
-## Live acceptance record (2026-09-01 to 2026-09-09)
+## Live acceptance record (2026-09-01 to 2026-09-15)
 
 - CloudTrail records Tyler creating the private SNS topic at
   `2026-09-01 10:58:38 +08:00`, then creating the email subscription and all
