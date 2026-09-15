@@ -35,8 +35,9 @@ recycle/retirement工作的既有範圍與狀態。
 > different-digest rollback、schema-incompatibility rejection、SQLite recovery及RabbitMQ rebuild。Current-volume
 > daily DLM policy與即時encrypted snapshots已建立；2026-09-08已修正重複`Purpose` tag並以fresh
 > zero-delete plan原地apply，AWS回讀policy為`ENABLED`。2026-09-09已上線DLM policy health custom
-> metric與alarm且43個alarms全為`OK`；2026-09-14回讀確認至少五個雙volume排程週期，首兩個不同
-> 週期驗收完成。
+> metric與alarm；2026-09-14回讀確認至少五個雙volume排程週期，首兩個不同週期驗收完成。
+> 2026-09-15再完成TLS expiry及三個Fetcher runtime-security自動反查alarms的live apply；目前42組
+> bounded series、50個alarms全為`OK`。
 > 本文是staging
 > AWS控制面、部署身分與驗收的核心
 > 成熟化計畫；現行可操作 runbook 仍以
@@ -290,11 +291,11 @@ protected main
 | Runtime secrets | Staging已由instance role讀取Secrets Manager，host loader只在`/run` tmpfs建立allowlisted bundle並於使用後清理；四feed accepted-SHA原生週期已通過。GitHub Environment的23枚舊application runtime copies已依授權移除。FinDB／Fetcher deploy SSH secrets、TCP/22 ingress及host recovery key material均已退場 | 持續保護Secrets Manager consumer boundary與不落地契約；無本階段blocker |
 | RDS rollout | 有predeploy DB check、writer pause、單一Alembic upgrade與revision check；已確認private、encryption、deletion protection、10-day automated backup與PITR，並於2026-09-01完成一次PITR restore、revision／row count／connectivity驗證 | migration credential分權與RDS tags仍未納入本Phase；RDS backup-lag custom alarm已上線 |
 | Queue | RabbitMQ在FinDB encrypted root EBS path保存；PostgreSQL是durable truth；2026-09-03已從空broker目錄重建policy、queue、DLQ並驗證DB計數不變；2026-09-08完成active-feed負載下的worker-kill/redelivery演練；2026-09-15再次確認broker連續健康、queue／DLQ／alarms與DB-authoritative active work均為0，並在明確授權後以SSM command `57e6a9e8-87ff-41c9-83f6-cc4a8a0cd99c`安全清理40 MiB舊broker稽核目錄；刪除前後健康檢查均通過 | 無本階段blocker；持續依DLM與queue health監控保護 |
-| Fetcher state | 三個provider runtime隔離；container已採non-root、read-only、drop capabilities與no-new-privileges，SQLite與Raw bucket binding只接受current state並fail closed；部署helper固定安全旗標並自動檢查image、user與restart policy，Phase 5 SSM rollout、bounded FinLab terminal delivery、三個SQLite online backup/restore、accepted-SHA後四feed原生週期及DLM off-host排程證據均已完成 | 實際runtime已有人工驗證，但尚未自動反查運行中container的read-only root、capabilities、no-new-privileges、privileged與mount邊界，因此完整runtime security防退化驗證仍待完成；此項留作已知強化缺口，不阻塞本次staging closeout |
+| Fetcher state | 三個provider runtime隔離；container已採non-root、read-only、drop capabilities與no-new-privileges，SQLite與Raw bucket binding只接受current state並fail closed；部署helper固定安全旗標並自動檢查image、user與restart policy，Phase 5 SSM rollout、bounded FinLab terminal delivery、三個SQLite online backup/restore、accepted-SHA後四feed原生週期及DLM off-host排程證據均已完成；2026-09-15上線的periodic metric會自動反查運行中三個container的user、read-only root、privileged、capabilities、security opt、`/tmp` tmpfs及exact writable mounts，違規或missing皆fail closed | 無本階段blocker；持續保護bounded container清單與exact writable-mount allowlist |
 | Legacy removal | 舊public routes、舊skill、Fetcher scheduler／SQLite compatibility及DB dataset projection已移除；predeploy仍拒絕非canonical state | 保存staging實際revision及legacy predeploy gates為零的外部證據；不得在新deploy helper恢復compatibility |
 | R2 | Raw與Canonical bucket／credential契約已拆分；2026-08-21已人工確認Raw lifecycle 30天與bucket lock 7天 | Canonical runtime不得宣稱已通過資料面驗收 |
 | Protection | workflow固定第三方Action SHA；GitHub組織ruleset `Main protection` 要求PR、禁止force-push與限制deletion；repo ruleset `FinDB required CI` 對default branch／`main`強制 `Required CI`；兩個Environment各只允許`main`且無reviewer／wait-timer；兩台EC2已有unit-specific required tags；protected `main`已實證兩個CD不受人工核准阻塞且target count各為1 | 持續維持always-created `Required CI`、Environment branch policy與unit-specific target tags一致；無Phase 1 blocker |
-| Observability | 兩個KMS-encrypted、30-day SSM log groups、六個native與37個custom alarms已live apply；35組bounded metrics、兩個association、periodic/sparse synthetic transitions及SNS delivery均有證據，43 alarms後驗OK；DLM policy disabled／error／missing已有fail-closed監控 | Queue-depth trend、market freshness、ingestion/DQ、TLS certificate與custom synthetic inbox獨立收件確認不在本輪完成證據 |
+| Observability | 兩個KMS-encrypted、30-day SSM log groups、六個native與44個custom alarms已live apply；42組bounded metrics、兩個association、periodic/sparse synthetic transitions及SNS delivery均有證據，50 alarms後驗OK；DLM policy、active-feed ingestion/DQ、TLS certificate expiry與Fetcher runtime security皆有fail-closed監控 | Queue-depth trend、更廣泛market freshness policy與custom synthetic inbox獨立收件確認不在本輪完成證據 |
 | IaC | Repo已有OpenTofu bootstrap與staging control-plane stacks；encrypted、versioned S3 remote state使用native lockfile與指定KMS key，Tyler (`tylercore`)為state owner；IaC plan gate、獨立OIDC plan role、完整Phase 6 alarms、daily current-root DLM policy、policy health alarm與首兩個不同排程週期均已live驗收 | 既有EC2／RDS／VPC等data-plane資源只引用與加required tags，不在本計畫全面import |
 
 `.github/workflows/required-ci.yml`、兩份unit CI、兩份unit CD與
@@ -343,9 +344,9 @@ deployment unit，但release manifest必須列出三個digest，不能只用共�
 | Secret prefix | `findb/staging/findb/`；staging runtime由FinDB instance role依consumer allowlist讀取，GitHub舊copies已移除 | `findb/staging/fetcher/`；staging runtime由Fetcher instance role依consumer allowlist讀取，GitHub舊copies已移除 | Tyler 是 resource owner；兩個unit不共用DB、R2、provider、Source/Admin或deploy credential。Phase 2A時間gate與Phase 2B runtime-copy retirement均已通過 |
 | Owner | Tyler（GitHub `tylercore`；Phase 1 apply evidence `AdministratorAccess/Tyler`）同時擔任 resource、backup、SSH recovery、alert 與 OpenTofu/IaC remote-state owner | Tyler（GitHub `tylercore`；Phase 1 apply evidence `AdministratorAccess/Tyler`）同時擔任 resource、backup、SSH recovery、alert 與 OpenTofu/IaC remote-state owner | 具名email channel與synthetic收件驗證已完成；正式24/7 on-call仍不屬staging exit gate |
 | Deploy artifact | Private、versioned、KMS-encrypted bucket `findb-staging-deploy-bundle-439622209937`的`findb/` prefix | 同bucket的`fetcher/` prefix | exact SHA key、checksum、versioning與exact CMK header policy；不使用application R2 bucket |
-| CloudWatch | `/findb/staging/findb/ssm`，KMS encryption、retention 30 days；FinDB EC2/RDS native alarms及FinDB custom alarms使用encrypted SNS topic | `/findb/staging/fetcher/ssm`，KMS encryption、retention 30 days；Fetcher EC2 native alarm及Fetcher custom alarms使用相同topic | 43個alarms後驗皆為OK；35組bounded custom metrics；兩個association成功；DLM policy health、native inbox synthetic與custom periodic/sparse transitions均有證據 |
+| CloudWatch | `/findb/staging/findb/ssm`，KMS encryption、retention 30 days；FinDB EC2/RDS native alarms及FinDB custom alarms使用encrypted SNS topic | `/findb/staging/fetcher/ssm`，KMS encryption、retention 30 days；Fetcher EC2 native alarm及Fetcher custom alarms使用相同topic | 50個alarms後驗皆為OK；42組bounded custom metrics；兩個association version 5成功；DLM policy health、TLS expiry、Fetcher runtime security、native inbox synthetic與custom periodic/sparse transitions均有證據 |
 | Backup | RDS automated backups enabled 10 days、PITR、encryption與deletion protection；2026-09-01 restore到`05:40:43Z`資料點，約9分18秒available，revision與instrument `8/8`比對成功。FinDB root由daily DLM policy精確選取，立即encrypted snapshot已完成 | Fetcher root由相同policy精確選取，立即encrypted snapshot及SQLite online backup/restore已完成 | RDS restore、SQLite recovery及RabbitMQ rebuild gate已完成。DLM policy為enabled且保留7份；至2026-09-13已有五個不同雙volume排程週期，每volume各5/7份，recurring execution evidence已關閉 |
-| Public endpoint | `/dashboard/`、`/dashboard/lookup` public HTTPS read-only acceptance passed；nginx直接使用host提供的certificate/key，現有container health check以`--no-check-certificate`驗證服務可達，不會偵測憑證即將到期 | 無public inbound endpoint | Certificate expiry monitoring未完成：需定期讀取公開端點憑證的`notAfter`、發布剩餘天數並對低門檻與missing data告警；此項留作已知監控缺口，不阻塞本次staging closeout |
+| Public endpoint | `/dashboard/`、`/dashboard/lookup` public HTTPS read-only acceptance passed；nginx直接使用host提供的certificate/key；2026-09-15上線的periodic public probe使用預設trust store與SNI／hostname verification讀取`notAfter`，相鄰兩個五分鐘bucket實測剩餘`71.33820040579862`與`71.33503951233797`天 | 無public inbound endpoint | `findb-staging-tls-certificate-expiring`以30天門檻、2/2個五分鐘週期及breaching missing data fail closed；後驗為`OK`，無本階段blocker |
 
 ## Phase 0 evidence（2026-08-25）
 
@@ -841,8 +842,9 @@ scope調整不把同digest replay誤稱為rollback，也不改寫兩項尚未執
 
 - [x] CloudWatch涵蓋EC2 status、disk／inode、Docker restart、RabbitMQ disk／memory、scheduler
   heartbeat、DLM policy health與deployment failure；RDS涵蓋free storage、connections、latency與backup lag。
-  六個native加37個custom alarms均已live apply，35組bounded metrics及兩個collector associations成功，
-  periodic／sparse synthetic alarm完成`OK -> ALARM -> OK`且43 alarms後驗為OK。
+  六個native加44個custom alarms均已live apply，42組bounded metrics及兩個collector associations成功，
+  periodic／sparse synthetic alarm完成`OK -> ALARM -> OK`；TLS expiry與三個Fetcher runtime-security
+  alarms另完成正常路徑live驗收，50 alarms後驗為OK。
 - [x] 告警接入具名小團隊owner與通知channel，設定log retention並演練一個synthetic alarm；不以
   建立正式24/7 on-call作為完成條件。
 - [x] 驗證RDS encryption、automated backup、PITR與deletion protection，完成一次staging restore
@@ -953,7 +955,8 @@ Staging AWS deployment只有在以下全部有可查證evidence時才算完成�
 - [x] 四個active feeds完成SHA-linked多交易日`pre`／自然`post` evidence package；持久化Source `202`
   與minute非Serve lineage邊界均已驗收。
 - [x] 關鍵EC2／RDS／EBS／application告警、log retention、owner與synthetic alarm有紀錄；六個native、
-  37個custom alarms、35組metrics、兩個associations與periodic／sparse synthetic transitions均有live evidence。
+  44個custom alarms、42組metrics、兩個associations與periodic／sparse synthetic transitions均有live evidence；
+  TLS expiry及三個Fetcher runtime-security alarms另有正常路徑live evidence。
 - [x] Fetcher SQLite recovery與RabbitMQ由PostgreSQL outbox重建均已演練。
 - [x] Staging例外、相關風險、補償控制與重新評估條件均留有紀錄；staging例外不要求逐項登記具名owner。
 - [ ] 現行操作移入`docs/operations/deployment.md`，migration／recovery規則移入對應operations
