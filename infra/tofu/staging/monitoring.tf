@@ -108,7 +108,7 @@ locals {
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/bin/python3 /usr/local/lib/findb-monitoring/publish_staging_metrics.py --unit ${unit} --region ${var.aws_region} --rds-instance-identifier ${var.findb_rds_instance_identifier} --dlm-policy-id ${aws_dlm_lifecycle_policy.root_volume_backup.id}
+      ExecStart=/usr/bin/python3 /usr/local/lib/findb-monitoring/publish_staging_metrics.py --unit ${unit} --region ${var.aws_region} --rds-instance-identifier ${var.findb_rds_instance_identifier} --dlm-policy-id ${aws_dlm_lifecycle_policy.root_volume_backup.id} --tls-host ${var.findb_dns_check_name}
     EOT
   }
 
@@ -208,6 +208,21 @@ locals {
       }
     ]...),
     {
+      for container in local.monitored_containers.fetcher : "fetcher_runtime_security_${container}" => {
+        alarm_name          = "findb-staging-fetcher-${replace(container, "findb-fetcher-", "")}-runtime-security"
+        metric_name         = "DockerRuntimeSecurityHealthy"
+        comparison_operator = "LessThanThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "fetcher"
+        resource            = container
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "${container} violates its non-root, read-only, capability, privilege, tmpfs, or exact writable-mount contract, or its metric is missing."
+      }
+    },
+    {
       rabbitmq_disk = {
         alarm_name          = "findb-staging-rabbitmq-disk-alarm"
         metric_name         = "RabbitMQDiskAlarm"
@@ -259,6 +274,19 @@ locals {
         datapoints_to_alarm = 2
         treat_missing_data  = "breaching"
         description         = "The staging root-volume DLM policy is disabled, reports an error, or its health metric is missing."
+      }
+      tls_certificate_expiry = {
+        alarm_name          = "findb-staging-tls-certificate-expiring"
+        metric_name         = "TLSCertificateDaysRemaining"
+        comparison_operator = "LessThanOrEqualToThreshold"
+        threshold           = var.monitoring_tls_certificate_days_remaining_threshold
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = var.findb_dns_check_name
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "The verified public staging TLS certificate expires within 30 days, cannot be verified, or its metric is missing."
       }
       active_feed_rejected_attempt = {
         alarm_name          = "findb-staging-active-feed-ingress-rejected"

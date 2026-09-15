@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
+import ssl
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -29,6 +31,19 @@ EXPECTED_CONTAINERS = {
         "findb-fetcher-scheduler",
         "findb-fetcher-shioaji-scheduler",
     ),
+}
+EXPECTED_FETCHER_MOUNTS = {
+    "findb-fetcher-scheduler": {
+        ("bind", "/var/lib/findb-fetcher", "/var/lib/findb-fetcher", True),
+    },
+    "findb-fetcher-finlab-scheduler": {
+        ("bind", "/var/lib/findb-finlab-fetcher", "/var/lib/findb-finlab-fetcher", True),
+        ("bind", "/var/lib/findb-finlab-fetcher/cache", "/home/fetcher", True),
+    },
+    "findb-fetcher-shioaji-scheduler": {
+        ("bind", "/var/lib/findb-shioaji-fetcher", "/var/lib/findb-shioaji-fetcher", True),
+        ("bind", "/var/lib/findb-shioaji-fetcher/cache", "/home/fetcher", True),
+    },
 }
 
 
@@ -113,6 +128,86 @@ def _container_metrics(deployment_unit: str) -> tuple[list[dict[str, Any]], list
             ]
         )
     return metrics, errors
+
+
+def _fetcher_runtime_security_metrics() -> tuple[list[dict[str, Any]], list[str]]:
+    metrics: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for container, expected_mounts in EXPECTED_FETCHER_MOUNTS.items():
+        result = _run(["docker", "inspect", container])
+        if result.returncode != 0:
+            metrics.append(
+                _metric("DockerRuntimeSecurityHealthy", 0, "Count", "fetcher", container)
+            )
+            continue
+        try:
+            state = json.loads(result.stdout)[0]
+            config = state["Config"]
+            host_config = state["HostConfig"]
+            actual_mounts = {
+                (
+                    str(mount["Type"]),
+                    str(mount["Source"]),
+                    str(mount["Destination"]),
+                    bool(mount["RW"]),
+                )
+                for mount in state["Mounts"]
+            }
+            tmpfs = host_config.get("Tmpfs") or {}
+            tmp_options = set(str(tmpfs.get("/tmp", "")).split(","))
+            security_options = set(host_config.get("SecurityOpt") or [])
+            secure = (
+                config["User"] == "10001:10001"
+                and host_config["ReadonlyRootfs"] is True
+                and host_config["Privileged"] is False
+                and set(host_config.get("CapDrop") or []) == {"ALL"}
+                and not (host_config.get("CapAdd") or [])
+                and security_options in ({"no-new-privileges"}, {"no-new-privileges:true"})
+                and set(tmpfs) == {"/tmp"}
+                and {"rw", "noexec", "nosuid"}.issubset(tmp_options)
+                and actual_mounts == expected_mounts
+            )
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            errors.append(f"docker security inspect parse failed for {container}: {exc}")
+            continue
+        metrics.append(
+            _metric(
+                "DockerRuntimeSecurityHealthy",
+                int(secure),
+                "Count",
+                "fetcher",
+                container,
+            )
+        )
+    return metrics, errors
+
+
+def _tls_certificate_metrics(hostname: str) -> tuple[list[dict[str, Any]], list[str]]:
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, 443), timeout=10) as connection:
+            with context.wrap_socket(connection, server_hostname=hostname) as tls:
+                certificate = tls.getpeercert()
+        not_after = str(certificate["notAfter"])
+        expires_at = datetime.fromtimestamp(ssl.cert_time_to_seconds(not_after), timezone.utc)
+        days_remaining = (expires_at - datetime.now(timezone.utc)).total_seconds() / 86400
+    except (KeyError, OSError, TypeError, ValueError, ssl.SSLError):
+        return [], ["TLS certificate query or verification failed"]
+    return [
+        _metric(
+            "TLSCertificateDaysRemaining",
+            days_remaining,
+            "Count",
+            "findb",
+            hostname,
+        )
+    ], []
 
 
 def _rabbitmq_metrics() -> tuple[list[dict[str, Any]], list[str]]:
@@ -337,7 +432,11 @@ def _dlm_policy_health_metric(
 
 
 def collect_metrics(
-    unit: str, region: str, db_identifier: str, dlm_policy_id: str
+    unit: str,
+    region: str,
+    db_identifier: str,
+    dlm_policy_id: str,
+    tls_host: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     metrics = _filesystem_metrics(unit, Path("/"))
     container_metrics, errors = _container_metrics(unit)
@@ -357,6 +456,13 @@ def collect_metrics(
         dlm_metrics, dlm_errors = _dlm_policy_health_metric(region, dlm_policy_id)
         metrics.extend(dlm_metrics)
         errors.extend(dlm_errors)
+        tls_metrics, tls_errors = _tls_certificate_metrics(tls_host)
+        metrics.extend(tls_metrics)
+        errors.extend(tls_errors)
+    else:
+        security_metrics, security_errors = _fetcher_runtime_security_metrics()
+        metrics.extend(security_metrics)
+        errors.extend(security_errors)
     metrics.append(_metric("CollectorSuccess", int(not errors), "Count", unit, "host"))
     return metrics, errors
 
@@ -385,10 +491,15 @@ def main() -> int:
     parser.add_argument("--region", required=True)
     parser.add_argument("--rds-instance-identifier", default="fin-db")
     parser.add_argument("--dlm-policy-id", required=True)
+    parser.add_argument("--tls-host", required=True)
     args = parser.parse_args()
 
     metrics, errors = collect_metrics(
-        args.unit, args.region, args.rds_instance_identifier, args.dlm_policy_id
+        args.unit,
+        args.region,
+        args.rds_instance_identifier,
+        args.dlm_policy_id,
+        args.tls_host,
     )
     publish_metrics(metrics, args.region)
     for error in errors:
