@@ -8,19 +8,16 @@ in OpenTofu state, and it does not import or recreate EC2, RDS, VPC, subnets,
 security groups, Cloudflare R2 buckets, or DNS.
 
 The Phase 6 monitoring stack declares a private KMS-encrypted SNS
-operational-alert topic, one required email subscription, six native
-CloudWatch alarms, and a pending custom-metric expansion for host capacity,
-container health/restarts, RabbitMQ alarms, scheduler heartbeat, deployment
-failure, and RDS backup lag. Two bounded SSM associations install and run the
-dependency-free collector every five minutes using the existing instance
-roles; no inbound port or persistent credential is added. It manages only
-monitoring resources and associations; it does not manage or import the
-referenced EC2/RDS resources. The initial six resources were applied
-on 2026-09-01; the email subscription was confirmed, and a controlled
-CloudWatch-to-SNS-to-inbox synthetic test was completed and reset on 2026-09-03.
-The custom expansion is not live evidence until a protected-main fresh plan is
-applied and its metric/alarm acceptance is recorded. The operator procedure,
-live evidence, explicit thresholds, remaining coverage gaps, and cost/retention caveats are in
+operational-alert topic, one required email subscription, native CloudWatch
+alarms, and bounded custom metrics for host capacity, container health/restarts
+and runtime security, RabbitMQ alarms, scheduler heartbeat, active-feed
+anomalies, TLS expiry, deployment failure, DLM health, and RDS backup lag. Two
+bounded SSM associations install and run the dependency-free collector every
+five minutes using the existing instance roles; no inbound port or persistent
+credential is added. It manages only monitoring resources and associations; it
+does not manage or import the referenced EC2/RDS resources. The stack and its
+notification path have completed live staging acceptance. The operator
+procedure, current evidence, explicit thresholds, remaining coverage gaps, and cost/retention caveats are in
 [`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
 
 `staging/backup.tf` selects only the root volumes currently attached to the
@@ -101,8 +98,9 @@ acceptance and observation. If cutover acceptance fails, set the gate back to
 Every other value fails closed before image publication or host deployment.
 Staging uses AWS Secrets Manager plus instance-role ECR login; it must not
 receive GitHub or GHCR credentials.
-Production remains on its separate GHCR/GitHub-secret compatibility path until
-a separately authorized production migration.
+Production has separate target-aware ECR promotion workflows, but its AWS
+foundation and live acceptance remain separately authorized work. Staging
+credentials and GHCR fallback are not production deployment paths.
 
 The FinDB publisher has one additional repository-scoped read capability:
 `ecr:GetDownloadUrlForLayer` for `findb/staging/backend` only. FinDB CD uses

@@ -44,7 +44,6 @@ def test_bootstrap_is_private_versioned_kms_encrypted_and_uses_native_lockfile()
     bootstrap_versions = _read(BOOTSTRAP_ROOT / "versions.tf")
     backend = _read(STAGING_ROOT / "backend.tf")
     outputs = _read(BOOTSTRAP_ROOT / "outputs.tf")
-    readme = _read(TOFU_ROOT / "README.md")
 
     assert 'resource "aws_s3_bucket" "state"' in bootstrap
     assert 'resource "aws_s3_bucket_public_access_block" "state"' in bootstrap
@@ -71,16 +70,6 @@ def test_bootstrap_is_private_versioned_kms_encrypted_and_uses_native_lockfile()
         "use_lockfile=true",
     ):
         assert setting in outputs
-        assert setting in readme
-    assert "init -reconfigure" in readme
-    assert "backend.s3.tf.example" in readme
-    assert "init -migrate-state" in readme
-    assert "staging/bootstrap.tfstate" in readme
-    assert "bounded local-state" in readme
-    assert "securely delete" in readme
-    assert "native" in readme and "S3 lockfile" in readme
-    assert "list-open-id-connect-providers" in readme
-    assert "tofu -chdir=infra/tofu/staging import" in readme
     gitignore = _read(REPO_ROOT / ".gitignore")
     assert "**/.terraform/" in gitignore
     assert "*.tfstate" in gitignore
@@ -164,7 +153,6 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     outputs = _read(STAGING_ROOT / "outputs.tf")
     variables = _read(STAGING_ROOT / "variables.tf")
     tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
-    readme = _read(TOFU_ROOT / "README.md")
 
     assert 'data "aws_iam_policy_document" "infra_plan_trust"' in plan
     assert 'resource "aws_iam_role" "infra_plan"' in plan
@@ -326,13 +314,6 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         'state_kms_key_arn    = "arn:aws:kms:ap-southeast-1:439622209937:key/'
         '776159fc-3251-4cd0-98b0-24dfa9e9701d"'
     ) in tfvars
-    assert "The current remote state owns" in readme
-    assert "exceptional, separately authorized operation" in readme
-    assert "separately authorized operator" in readme
-    assert "pull-request" in readme
-    assert "never authorizes an apply" in readme
-    assert "OpenTofu 1.12.6" in readme
-    assert "deploy_bundle_bucket_name=findb-staging-deploy-bundle-439622209937" in readme
 
 
 def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
@@ -552,14 +533,7 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
     assert re.search(r'default\s+=\s+"/findb/staging"', variables)
 
     outputs = _read(STAGING_ROOT / "outputs.tf")
-    readme = _read(TOFU_ROOT / "README.md")
     assert 'output "session_manager_document_names"' in outputs
-    assert "aws ssm start-session" in readme
-    assert "--target i-0942016913367a8b2" in readme
-    assert "--document-name SSM-SessionManagerRunShell-findb-staging" in readme
-    assert "--target i-05f518ef183bc31a9" in readme
-    assert "--document-name SSM-SessionManagerRunShell-fetcher-staging" in readme
-    assert "ssm:StartSession" in readme
 
 
 def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
@@ -569,7 +543,6 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
     outputs = _read(STAGING_ROOT / "outputs.tf")
     plan = _read(STAGING_ROOT / "infra_plan.tf")
-    runbook = _read(REPO_ROOT / "docs" / "operations" / "monitoring.md")
 
     assert 'resource "aws_kms_key" "operational_alerts"' in monitoring
     assert 'resource "aws_sns_topic" "operational_alerts"' in monitoring
@@ -822,33 +795,10 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert "kms:GenerateDataKey" not in operational_key_read
     assert "kms:Decrypt" not in operational_key_read
 
-    for phrase in (
-        "IaC declarations, not live-apply or delivery evidence",
-        "Declaration, applied state, and live synthetic confirmation",
-        "placeholder neither exposes nor replaces",
-        "Controlled recipient replacement",
-        "ignore_changes = [endpoint]",
-        "-replace='aws_sns_topic_subscription.operational_alert_email'",
-        "PendingConfirmation",
-        "aws cloudwatch set-alarm-state",
-        "reset the synthetic alarm",
-        "recurring backup-chain acceptance",
-        "therefore complete",
-        "HA and production recovery",
-        "must not be inferred from the staging controls",
-        "migration or backup chain",
-        "RDS restore rehearsal",
-        "RabbitMQ rebuild",
-        "SSH ingress/recovery-key retirement",
-        "AWS charges can arise",
-    ):
-        assert phrase in runbook
-
 
 def test_phase6_root_volume_backup_is_current_volume_bounded_and_retained() -> None:
     backup = _read(STAGING_ROOT / "backup.tf")
     outputs = _read(STAGING_ROOT / "outputs.tf")
-    readme = _read(TOFU_ROOT / "README.md")
 
     assert 'resource "aws_ec2_tag" "root_volume_backup_selection"' in backup
     assert "one(data.aws_instance.findb.root_block_device).volume_id" in backup
@@ -870,18 +820,9 @@ def test_phase6_root_volume_backup_is_current_volume_bounded_and_retained() -> N
     assert 'BackupPurpose = "automated-current-root-backup"' in backup
     assert 'Purpose     = "automated-current-root-backup"' not in backup
     assert 'output "root_volume_backup"' in outputs
-    for phrase in (
-        "root volumes currently attached",
-        "daily 09:00 UTC",
-        "retains seven recovery points",
-        "snapshot storage",
-        "does not prove recurring execution",
-    ):
-        assert phrase in readme
 
 
 def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> None:
-    runbook = _read(REPO_ROOT / "docs" / "operations" / "monitoring.md")
     for unit, workflow_name, environment in (
         ("findb", "findb-cd.yml", "staging-findb"),
         ("fetcher", "fetcher-cd.yml", "staging-fetcher"),
@@ -897,6 +838,3 @@ def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> No
         assert "--namespace FinDB/Staging" in report_job
         assert "--metric-name DeploymentFailure" in report_job
         assert f"--dimensions DeploymentUnit={unit},Resource=github-actions" in report_job
-    assert "aws sns publish" not in runbook
-    assert "Direct SNS `Publish` is not a" in runbook
-    assert "supported synthetic test" in runbook

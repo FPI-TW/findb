@@ -222,7 +222,7 @@ can exist before the subscription and alarms are created without a dependency
 cycle. Email is the only declared subscription protocol; SNS manages encrypted
 HTTPS transport to its email delivery infrastructure.
 
-## Planned live apply
+## Applying monitoring changes
 
 Do not run this from a pull-request plan identity. That role is intentionally
 read-only except for the native remote-state lockfile; it has no permission to
@@ -237,13 +237,10 @@ create or alter monitoring resources.
    instance profiles, SSM Online state, and healthy baseline metrics from a
    read-only inventory.
 3. From a separately authorized apply identity, initialize the reviewed remote
-   backend and create a fresh plan after the exact commit reaches protected
-   `main`. For this expansion, the expected shape is 38 creates (36 alarms and
-   two associations), seven in-place policy updates, zero replacements, and
-   zero destroys. The policy updates are limited to the exact alarm ARN list,
-   namespace-scoped metric publishing, FinDB-only RDS metadata read, and
-   read-only plan refresh for the associations. Any EC2, RDS, VPC, security
-   group, volume, runtime-secret, or unrelated resource mutation is a no-go.
+   backend and create a fresh saved plan after the exact commit reaches
+   protected `main`. Review every action against the approved change. Any
+   unexpected replacement or destroy, or any EC2, RDS, VPC, security group,
+   volume, runtime-secret, or unrelated resource mutation is a no-go.
    The read-only plan role scopes CloudWatch alarm refresh to the deterministic
    `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
    every custom alarm ARN for both metadata and tag refresh exceeds IAM's
