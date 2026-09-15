@@ -22,7 +22,7 @@ is the separate evidence for the initial apply and notification exercise. Keep
 the original safety distinction explicit: **IaC declarations, not live-apply or delivery evidence**,
 are all that repository source alone can prove.
 
-## Live acceptance record (2026-09-01 to 2026-09-09)
+## Live acceptance record (2026-09-01 to 2026-09-15)
 
 - CloudTrail records Tyler creating the private SNS topic at
   `2026-09-01 10:58:38 +08:00`, then creating the email subscription and all
@@ -112,6 +112,8 @@ breaching-on-missing alarms are created.
 | Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for FinLab, Shioaji, or Twelve Data |
 | RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
 | DLM control plane | Exact root-volume policy health `< 1` for 2 × 5 minutes; query failure or missing data also breaches |
+| Public TLS certificate | Verified `notAfter` days remaining `<= 30` for 2 × 5 minutes; TLS query/verification failure suppresses the healthy datum and missing data breaches |
+| Fetcher runtime security | Each of the three active schedulers must preserve non-root `10001:10001`, read-only root, `Privileged=false`, `CapDrop=ALL`, no added capabilities, `no-new-privileges`, exact `/tmp` tmpfs protections, and the exact writable bind-mount allowlist; violation or missing data breaches |
 | Active-feed contract | Rejected ingress-schema/required-field/completeness attempt count `>= 1` in the overlapping ten-minute window |
 | Active-feed completeness | Non-rerun ingestion run with zero records `>= 1` in the overlapping ten-minute window |
 | Active-feed DQ | Blocking DQ error count `>= 1` in the overlapping ten-minute window |
@@ -139,9 +141,24 @@ created 36 custom alarms in addition to the six native alarms. Associations
 `9de9a3a4-ddc2-414c-8410-0dc1af9536e6`（Fetcher）均成功，`FinDB/Staging`
 有34組bounded metric series，兩台collector連續成功，42個alarms後驗皆為`OK`。
 2026-09-09追加DLM policy health後為35組bounded metric series與43個alarms；active-feed
-anomaly expansion再增加3組series與3個alarms，因此穩態為38組series與46個alarms。受控校準期間
+anomaly expansion再增加3組series與3個alarms。2026-09-15的TLS與Fetcher runtime-security
+expansion再增加4組series與4個alarms，因此穩態為42組series與50個alarms。受控校準期間
 ingress-rejected與empty-snapshot為`ALARM`；17:20再次發布0後，兩者分別於17:24:42與17:24:56
 自然回到`OK`，DQ全程為`OK`。不得在事件仍位於觀察窗時手動把alarm設回`OK`來掩蓋訊號。
+
+PR [#257](https://github.com/FPI-TW/findb/pull/257) 合併後，2026-09-15由乾淨且與
+`origin/main`一致的merge SHA `5a7f6c74ab8e972b9a798026a9f37a3c7523b18b`執行fresh saved plan。
+Plan為4 create、5 in-place update、0 destroy且無replacement；apply結果為4 added、4 changed、
+0 destroyed，另一個plan-time IAM policy update在apply重算後無需寫入。FinDB與Fetcher association
+均更新至version 5並成功；後續SSM commands
+`23d84369-59d4-44fe-8070-3ac0c12f8584`（FinDB）與
+`c8d5562d-ba11-4d83-bb87-35002ed287f0`（Fetcher）再次執行publisher，均為`Success`／exit 0／
+stderr空白，輸出分別保存於既有KMS-encrypted log groups。相鄰兩個五分鐘bucket的
+`TLSCertificateDaysRemaining`為`71.33820040579862`與`71.33503951233797`天，三個
+`DockerRuntimeSecurityHealthy` series兩輪均為`1`。四個新alarm使用2/2個五分鐘週期並以missing data
+為breaching，健康評估均為`OK`；全體inventory後驗為50/50 `OK`、0 `ALARM`、0
+`INSUFFICIENT_DATA`。這是正常路徑與fail-closed設定的live驗收，不宣稱曾將真實憑證推近到期或
+弱化運行中container來做故障注入；既有SNS synthetic notification evidence仍獨立有效。
 
 ## Active-feed evidence and anomaly calibration
 
@@ -205,7 +222,7 @@ can exist before the subscription and alarms are created without a dependency
 cycle. Email is the only declared subscription protocol; SNS manages encrypted
 HTTPS transport to its email delivery infrastructure.
 
-## Planned live apply
+## Applying monitoring changes
 
 Do not run this from a pull-request plan identity. That role is intentionally
 read-only except for the native remote-state lockfile; it has no permission to
@@ -220,13 +237,10 @@ create or alter monitoring resources.
    instance profiles, SSM Online state, and healthy baseline metrics from a
    read-only inventory.
 3. From a separately authorized apply identity, initialize the reviewed remote
-   backend and create a fresh plan after the exact commit reaches protected
-   `main`. For this expansion, the expected shape is 38 creates (36 alarms and
-   two associations), seven in-place policy updates, zero replacements, and
-   zero destroys. The policy updates are limited to the exact alarm ARN list,
-   namespace-scoped metric publishing, FinDB-only RDS metadata read, and
-   read-only plan refresh for the associations. Any EC2, RDS, VPC, security
-   group, volume, runtime-secret, or unrelated resource mutation is a no-go.
+   backend and create a fresh saved plan after the exact commit reaches
+   protected `main`. Review every action against the approved change. Any
+   unexpected replacement or destroy, or any EC2, RDS, VPC, security group,
+   volume, runtime-secret, or unrelated resource mutation is a no-go.
    The read-only plan role scopes CloudWatch alarm refresh to the deterministic
    `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
    every custom alarm ARN for both metadata and tag refresh exceeds IAM's
@@ -309,19 +323,16 @@ synthetic reason and reset the selected alarm to `OK` again.
 
 ## Coverage gaps and cost / retention caveats
 
-The applied custom coverage includes disk/inode use, required
-container health/restart count, RabbitMQ local disk/memory alarms, persisted
-scheduler heartbeat age, deployment failure, and RDS backup lag. Queue-depth
-trends, market-data freshness policy, ingestion/delivery/DQ, TLS certificate,
-and other log-derived monitoring remain out of scope. In particular, nginx
-uses the certificate and key mounted from the FinDB host, while the current
-container health check uses `--no-check-certificate`; an HTTPS 200 therefore
-proves endpoint readiness but does not prove that certificate expiry is being
-monitored. Closing this gap requires a periodic public-endpoint certificate
-probe that publishes days remaining from `notAfter`, plus an alarm for both a
-low-days threshold and missing probe data. These remaining domains must not be
-inferred from the healthy alarm set and are recorded hardening gaps rather than
-staging closeout blockers.
+The applied custom coverage includes disk/inode use, required container
+health/restart count, Fetcher runtime-security contracts, RabbitMQ local
+disk/memory alarms, persisted scheduler heartbeat age, deployment failure,
+RDS backup lag, active-feed ingestion/DQ anomalies, and public TLS certificate
+expiry. The certificate probe uses the default trust store and SNI/hostname
+verification, reads `notAfter`, and emits days remaining; query or verification
+failure emits no healthy datum, so the alarm's breaching missing-data policy
+fails closed. Queue-depth trends, broader market-data freshness policy, and
+other log-derived monitoring remain out of scope. These remaining domains must
+not be inferred from the healthy alarm set.
 
 The two current root volumes have been replaced with encrypted volumes, the
 RDS restore rehearsal and SSH-ingress removal have also been completed, and
@@ -333,16 +344,16 @@ controls; migration or backup chain evidence must remain distinct. Daily DLM pol
 snapshots completed. The 2026-09-08 live check found the policy in `ERROR` because copied source-volume
 tags and schedule `TagsToAdd` both contained `Purpose`. The schedule-only key was changed to
 `BackupPurpose`; a guarded zero-delete OpenTofu plan applied one in-place update, and AWS now reports the
-policy as `ENABLED`. Policy-tagged scheduled snapshots remain at zero, so two successful scheduled cycles
-are still required. The healthy 42-alarm inventory did not surface the original error and still does not
-monitor DLM execution state; the current record does **not** claim completion of either DLM monitoring or
-the recurring backup-chain acceptance. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
+policy as `ENABLED`. The DLM policy-health metric/alarm was then added with disabled, error, query-failure,
+and missing-data behavior failing closed. The 2026-09-14 readback confirmed at least five distinct
+dual-volume scheduled cycles through 2026-09-13, with five completed, encrypted, correctly tagged
+recovery points per volume; the first two distinct cycles and recurring backup-chain acceptance are
+therefore complete. Fetcher SQLite recovery, RabbitMQ rebuild from PostgreSQL,
 different-digest rollback, and schema-rejection rehearsal completed on 2026-09-03; exact evidence is
 in the linked deployment record. SSH ingress/recovery-key retirement was also completed: the matching host keys and both EC2
 key-pair resources are absent, while unit-specific Session Manager break-glass
-sessions and CloudTrail audit events were verified. The remaining recovery risks
-must not be inferred as covered by native alarms, encryption, or a one-time
-migration snapshot.
+sessions and CloudTrail audit events were verified. HA and production recovery
+remain separate scopes and must not be inferred from the staging controls.
 
 AWS charges can arise from CloudWatch alarm evaluation, SNS publishes/email
 notifications, and customer-managed KMS key/API use. CloudWatch native metric

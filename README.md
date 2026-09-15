@@ -232,21 +232,19 @@ Staging只用於有明確symbol、日期與筆數上限的端到端功能驗證�
 universe或production-scale歷史資料。完整限制與例外核准方式見
 [Deployment staging data policy](docs/operations/deployment.md#staging-data-policy)。
 
-部署設定由 `infra/env/` 的service-specific安全來源管理；實際值不進Git。仍需完成：
-
-- 建立production Environments、protection rules與獨立資源；staging已完成repo層的
-  Environment分流，但AWS身分、secret與resource isolation仍待逐項驗收。
-- GitHub Actions改用AWS OIDC短效權限。
-- Runtime secrets搬到AWS Secrets Manager/Parameter Store。
-- FinDB與Fetcher使用不同deploy roles、instance roles與secret paths。
-- 以image digest與release manifest取代tag-only部署，完成RDS/EBS restore、監控與rollback演練。
+部署設定由 `infra/env/` 的service-specific安全來源管理；實際值不進Git。Staging已完成AWS
+OIDC／SSM、unit-specific deploy與instance roles、Secrets Manager runtime boundary、ECR digest與
+accepted manifest、RDS／EBS recovery、監控及rollback live acceptance。Production使用相同的
+target-aware契約，但其獨立Environment與AWS foundation尚未建立，不得以staging驗收推定production已就緒。
 
 Contract變更會執行兩個CI，但contract-only變更不會自動部署Fetcher；發布採
 backend-first，必要時以 `workflow_dispatch`明確啟動各CD。
 
-現況、目標權限矩陣、migration與rollback規則見
-[Deployment](docs/operations/deployment.md)；分階段AWS完成計畫與驗收條件見
-[Staging AWS deployment completion plan](docs/dev/staging-aws-deployment-plan.md)。
+現行部署、權限、migration與rollback規則見
+[Deployment](docs/operations/deployment.md)，監控與live evidence見
+[Monitoring](docs/operations/monitoring.md)；production工作見
+[Production foundation與cutover計畫](docs/dev/production-foundation-cutover-plan.md)，其餘未完成項目見
+[Backlog](docs/dev/backlog.md)。
 
 ## 文件
 

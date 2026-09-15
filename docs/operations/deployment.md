@@ -41,8 +41,9 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > schedule-only tag由重複的`Purpose`修正為`BackupPurpose`並完成zero-delete apply，policy回到
 > `ENABLED`。2026-09-14回讀已確認至少五個雙volume排程週期，首兩個不同週期驗收完成。
 > `staging-findb`與`staging-fetcher`的deploy SSH secrets均已刪除；production 使用 OIDC＋SSM，
-> staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；完整紀錄見
-> [Staging AWS Deployment Completion Plan](../dev/staging-aws-deployment-plan.md)。
+> staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；
+> staging告警與復原證據見[monitoring runbook](monitoring.md)，尚未完成的production與平台強化只列於
+> [current backlog](../dev/backlog.md)。
 
 ## Workflow與release units
 
@@ -576,9 +577,15 @@ instance role從Secrets Manager載入，且check-only輸出均已移除。Queue 
 missing deliveries皆為0，三個scheduler fresh／ready，public health與Dashboard為HTTP 200，兩台SSM Online，
 43個alarms為43 OK。刪除僅影響GitHub staging Environment copies，不影響AWS Secrets Manager或production。
 
-未完成風險集中於：TLS certificate expiry monitoring、Fetcher運行中container的完整自動化security反查與更廣泛資料面告警仍依
-各自backlog處理。SSH入口、長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練
-均已有live evidence，不再列為未完成風險。
+2026-09-15由乾淨protected `main` merge SHA
+`5a7f6c74ab8e972b9a798026a9f37a3c7523b18b`完成TLS certificate expiry monitoring與Fetcher
+運行中container security自動反查的live apply。Fresh saved plan為4 add、5 in-place change、0 destroy
+且無replacement；apply為4 added、4 changed、0 destroyed。兩個metric publisher associations version 5
+成功；兩個後續SSM commands亦為`Success`／exit 0／stderr空白。相鄰兩個五分鐘bucket的TLS剩餘
+天數為`71.33820040579862`與`71.33503951233797`，三個runtime-security metrics兩輪均為`1`，
+新增四個alarms及全體50個alarms後驗皆為`OK`。更廣泛的queue-depth trend與market freshness policy仍另案；SSH入口、
+長效recovery key、custom alarm、SQLite/RabbitMQ DR及rollback/schema演練均已有live evidence，不再列為
+未完成風險。
 
 Deploy後至少完成：
 

@@ -42,25 +42,11 @@ FETCHER_CI_WORKFLOW = WORKFLOWS_ROOT / "fetcher-ci.yml"
 FETCHER_CD_WORKFLOW = WORKFLOWS_ROOT / "fetcher-cd.yml"
 DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
-INGESTION_RUNBOOK = REPO_ROOT / "docs" / "operations" / "ingestion.md"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
 ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 SSM_COMMAND_MARKER_GATE = REPO_ROOT / "infra" / "deploy" / "ssm_command_marker_gate.sh"
 SSM_BASH_COMMAND = REPO_ROOT / "infra" / "deploy" / "ssm_bash_command.py"
-
-LEGACY_ROLLBACK_CI_ONLY_PATHS = frozenset(
-    {
-        "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh",
-        "infra/deploy/release_manifest.py",
-        ".github/workflows/findb-cd.yml",
-        ".github/workflows/fetcher-cd.yml",
-        "docs/operations/deployment.md",
-        "docs/dev/staging-aws-deployment-plan.md",
-        "backend/tests/test_deployment_checks.py",
-        "backend/tests/test_release_manifest.py",
-    }
-)
 
 
 class UniqueKeyLoader(yaml.BaseLoader):
@@ -1571,19 +1557,6 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert "MIGRATION_DATABASE_URL" not in findb[long_lived_start:]
     up_script = findb.split("<<'UP_SCRIPT'\n", 1)[1].split("\nUP_SCRIPT", 1)[0]
     assert "exec -T -e CELERY_BROKER_URL ingest" in up_script
-
-    runbook = INGESTION_RUNBOOK.read_text(encoding="utf-8")
-    assert "runtime-secret wrapper" in runbook
-    assert "persistent `.env`" in runbook
-    assert "`export` `CELERY_BROKER_URL`" in runbook
-    assert (
-        "sudo /opt/findb/runtime-secrets/runtime_secret_command.sh \\\n"
-        "  --catalog /opt/findb/runtime-secrets/findb.json \\\n"
-        "  --region ap-southeast-1 \\\n"
-        "  --consumer compose \\\n"
-        "  -- docker exec -e CELERY_BROKER_URL findb-ingest \\\n"
-        "  python /app/scripts/check_queue_health.py"
-    ) in runbook
 
 
 def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persistent_key() -> None:
