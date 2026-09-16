@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-NAMESPACE = "FinDB/Staging"
+DEFAULT_NAMESPACE = "FinDB/Staging"
+ALLOWED_NAMESPACES = (DEFAULT_NAMESPACE, "FinDB/Production")
 EXPECTED_CONTAINERS = {
     "findb": (
         "findb-dashboard",
@@ -264,21 +265,36 @@ def _scheduler_metrics() -> tuple[list[dict[str, Any]], list[str]]:
         return [], ["scheduler heartbeat query failed"]
     try:
         schedulers = json.loads(result.stdout)
-        metrics = [
-            _metric(
-                "SchedulerHeartbeatAgeSeconds",
-                float(scheduler["heartbeat_age_seconds"]),
-                "Seconds",
-                "fetcher",
-                str(scheduler["scheduler_key"]),
-            )
-            for scheduler in schedulers
-            if scheduler.get("heartbeat_age_seconds") is not None
-        ]
+        metrics = []
+        for scheduler in schedulers:
+            if scheduler.get("desired_state") == "stopped":
+                continue
+            scheduler_key = str(scheduler["scheduler_key"])
+            heartbeat_age = scheduler.get("heartbeat_age_seconds")
+            if heartbeat_age is not None:
+                metrics.append(
+                    _metric(
+                        "SchedulerHeartbeatAgeSeconds",
+                        float(heartbeat_age),
+                        "Seconds",
+                        "fetcher",
+                        scheduler_key,
+                    )
+                )
+            if "status" in scheduler:
+                metrics.append(
+                    _metric(
+                        "FeedFreshnessHealthy",
+                        int(scheduler.get("status") in {"not_due", "fresh"}),
+                        "Count",
+                        "fetcher",
+                        scheduler_key,
+                    )
+                )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return [], ["scheduler heartbeat response was invalid"]
-    if not metrics:
-        return [], ["scheduler heartbeat response had no measurements"]
+    if not metrics and any(row.get("desired_state") != "stopped" for row in schedulers):
+        return [], ["active scheduler response had no measurements"]
     return metrics, []
 
 
@@ -596,7 +612,11 @@ def collect_metrics(
     return metrics, errors
 
 
-def publish_metrics(metrics: list[dict[str, Any]], region: str) -> None:
+def publish_metrics(
+    metrics: list[dict[str, Any]], region: str, namespace: str = DEFAULT_NAMESPACE
+) -> None:
+    if namespace not in ALLOWED_NAMESPACES:
+        raise ValueError("unsupported CloudWatch namespace")
     result = _run(
         [
             "aws",
@@ -605,7 +625,7 @@ def publish_metrics(metrics: list[dict[str, Any]], region: str) -> None:
             "--region",
             region,
             "--namespace",
-            NAMESPACE,
+            namespace,
             "--metric-data",
             json.dumps(metrics, separators=(",", ":")),
         ]
@@ -621,6 +641,7 @@ def main() -> int:
     parser.add_argument("--rds-instance-identifier", default="fin-db")
     parser.add_argument("--dlm-policy-id", required=True)
     parser.add_argument("--tls-host", required=True)
+    parser.add_argument("--namespace", choices=ALLOWED_NAMESPACES, default=DEFAULT_NAMESPACE)
     args = parser.parse_args()
 
     metrics, errors = collect_metrics(
@@ -630,7 +651,7 @@ def main() -> int:
         args.dlm_policy_id,
         args.tls_host,
     )
-    publish_metrics(metrics, args.region)
+    publish_metrics(metrics, args.region, args.namespace)
     for error in errors:
         print(error, file=sys.stderr)
     print(f"published_metrics={len(metrics)} unit={args.unit}")

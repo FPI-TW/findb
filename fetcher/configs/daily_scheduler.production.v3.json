@@ -12,7 +12,7 @@
       "scheduled_time": "08:15",
       "target_date_lag_days": 1,
       "target_date_policy": "latest_trade_date",
-      "calendar_file": "calendars/us_equity_2026_2028.v1.json",
+      "calendar_file": "calendars/us_equity_2025_2028.v1.json",
       "grace_seconds": 7200,
       "outputsize": 20,
       "max_attempts": 5,
