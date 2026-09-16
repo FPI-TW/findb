@@ -18,6 +18,7 @@ findb-fetch-shioaji-smoke = "findb_fetcher.shioaji_smoke_cli:main"
 findb-fetch-shioaji-staging = "findb_fetcher.shioaji_staging_cli:main"
 findb-fetch-shioaji-scheduler = "findb_fetcher.shioaji_scheduler_cli:main"
 findb-fetch-historical-backfill = "findb_fetcher.historical_backfill_cli:main"
+findb-fetch-backfill-plan = "findb_fetcher.production_backfill_cli:main"
 
 [project.optional-dependencies]
 finlab = [

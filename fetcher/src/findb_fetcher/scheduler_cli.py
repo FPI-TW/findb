@@ -363,10 +363,15 @@ def _default_schedule_file() -> Path:
     configured = os.getenv("FETCHER_SCHEDULE_FILE")
     if configured:
         return Path(configured)
-    container_path = Path("/app/configs/daily_scheduler.v2.json")
+    filename = (
+        "daily_scheduler.production.v3.json"
+        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        else "daily_scheduler.v2.json"
+    )
+    container_path = Path("/app/configs") / filename
     if container_path.is_file():
         return container_path
-    return Path(__file__).resolve().parents[2] / "configs" / "daily_scheduler.v2.json"
+    return Path(__file__).resolve().parents[2] / "configs" / filename
 
 
 def _default_state_path() -> Path:
@@ -381,8 +386,8 @@ def _load_selected_schedule(
     reject_disabled: bool = True,
 ):
     manifest = load_schedule_manifest(path)
-    if manifest.schedule_version != 2:
-        raise ScheduleError("only v2 schedule manifests are supported")
+    if manifest.schedule_version not in {2, 3}:
+        raise ScheduleError("only v2 and v3 schedule manifests are supported")
     if slot_id is None:
         raise ScheduleError("v2 manifests require --slot-id")
     matches = [
@@ -415,7 +420,8 @@ def _validate_schedule_universe(
         raise ScheduleError("schedule and universe identities do not match")
     if universe.estimated_credits > schedule.max_credits_per_run:
         raise ScheduleError("universe exceeds schedule credit limit")
-    if len(universe.symbols) * schedule.outputsize > schedule.max_records_per_run:
+    run_symbols = min(len(universe.symbols), universe.limits.max_symbols_per_run)
+    if run_symbols * schedule.outputsize > schedule.max_records_per_run:
         raise ScheduleError("universe exceeds schedule record limit")
 
 

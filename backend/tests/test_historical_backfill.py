@@ -13,6 +13,7 @@ from app.models.registry import (
     SchedulerControl,
     SchedulerDataset,
 )
+from app.services import historical_backfill
 from app.services.historical_backfill import (
     MAX_BACKFILL_DAYS,
     HistoricalBackfillConflictError,
@@ -33,6 +34,17 @@ from app.utils import utc_now, uuid7
 class _StatusOnlyNormalizer(BaseNormalizer):
     def map_fields(self, raw_data: dict) -> list:
         return []
+
+
+def test_production_allows_one_year_eod_and_disables_shioaji_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+
+    assert historical_backfill._max_backfill_days() == 366
+    assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True
+    assert historical_backfill._supports_backfill("finlab", "tw_equity_eod") is True
+    assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is False
 
 
 async def _seed_scope(session, today: date) -> None:

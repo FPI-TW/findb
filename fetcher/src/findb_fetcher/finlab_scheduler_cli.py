@@ -211,8 +211,8 @@ def _load_selected_schedule(
     reject_disabled: bool = True,
 ) -> ScheduleConfig:
     manifest = load_schedule_manifest(path)
-    if manifest.schedule_version != 2:
-        raise ScheduleError("FinLab scheduler requires a v2 schedule manifest")
+    if manifest.schedule_version not in {2, 3}:
+        raise ScheduleError("FinLab scheduler requires a v2 or v3 schedule manifest")
     if slot_id is None or dataset_key is None:
         raise ScheduleError("FinLab scheduler requires --slot-id and --dataset-key")
     matches = [
@@ -250,8 +250,9 @@ def _validate_schedule_universe(
     state_universe = universe.as_scheduler_universe()
     if state_universe.estimated_credits > schedule.max_credits_per_run:
         raise ScheduleError("FinLab work item exceeds schedule credit limit")
-    if universe.expected_record_count != 2:
-        raise ScheduleError("FinLab pilot must contain exactly two reviewed rows")
+    expected_count = 2 if universe.manifest_version == 1 else 50
+    if universe.expected_record_count != expected_count:
+        raise ScheduleError("FinLab universe has an invalid reviewed row count")
     if state_universe.limits.max_total_records_per_run > schedule.max_records_per_run:
         # The feed's configured bound is per scheduler cycle; it may be lower
         # than the generic state hard cap, but must still fit the two rows.
@@ -398,10 +399,15 @@ def _default_schedule_file() -> Path:
     configured = os.getenv("FETCHER_FINLAB_SCHEDULE_FILE")
     if configured:
         return Path(configured)
-    container_path = Path("/app/configs/daily_scheduler.v2.json")
+    filename = (
+        "daily_scheduler.production.v3.json"
+        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        else "daily_scheduler.v2.json"
+    )
+    container_path = Path("/app/configs") / filename
     if container_path.is_file():
         return container_path
-    return Path(__file__).resolve().parents[2] / "configs" / "daily_scheduler.v2.json"
+    return Path(__file__).resolve().parents[2] / "configs" / filename
 
 
 def _default_state_path() -> Path:

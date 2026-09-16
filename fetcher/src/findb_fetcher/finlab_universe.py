@@ -9,9 +9,11 @@ cache is involved while loading this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,12 @@ _ROOT_KEYS = {
     "currency",
     "field_datasets",
     "symbols",
+}
+_V2_GOVERNANCE_KEYS = {
+    "source_url",
+    "effective_date",
+    "source_sha256",
+    "symbols_sha256",
 }
 _SYMBOL_KEYS = {"source_symbol", "canonical_symbol"}
 _FIELD_DATASETS = {
@@ -67,6 +75,10 @@ class FinLabPilotUniverse:
     currency: str
     field_datasets: dict[str, str]
     symbols: tuple[FinLabSymbol, ...]
+    source_url: str | None = None
+    effective_date: date | None = None
+    source_sha256: str | None = None
+    symbols_sha256: str | None = None
 
     @property
     def dataset_key(self) -> str:
@@ -139,8 +151,8 @@ class FinLabPilotUniverse:
             credit_cost_per_symbol=5,
             limits=UniverseLimits(
                 max_symbols_per_run=1,
-                max_records_per_symbol=2,
-                max_total_records_per_run=2,
+                max_records_per_symbol=len(self.symbols),
+                max_total_records_per_run=len(self.symbols),
                 max_date_span_days=1,
                 max_credits_per_run=5,
             ),
@@ -167,10 +179,17 @@ def load_finlab_universe(path: Path) -> FinLabPilotUniverse:
         raise FinLabUniverseError(
             "FinLab universe config must be UTF-8 JSON with unique keys"
         ) from exc
-    if not isinstance(value, dict) or set(value) != _ROOT_KEYS:
-        raise FinLabUniverseError(f"FinLab universe keys must be exactly {sorted(_ROOT_KEYS)}")
+    if not isinstance(value, dict):
+        raise FinLabUniverseError("FinLab universe must be an object")
 
-    manifest_version = _exact_int(value, "manifest_version", 1)
+    manifest_version = value.get("manifest_version")
+    if type(manifest_version) is not int or manifest_version not in {1, 2}:
+        raise FinLabUniverseError("manifest_version must be 1 or 2")
+    expected_keys = _ROOT_KEYS if manifest_version == 1 else _ROOT_KEYS | _V2_GOVERNANCE_KEYS
+    if set(value) != expected_keys:
+        raise FinLabUniverseError(
+            f"FinLab v{manifest_version} keys must be exactly {sorted(expected_keys)}"
+        )
     manifest_id = _identifier(value, "manifest_id")
     provider = _required_string(value, "provider")
     dataset = _required_string(value, "dataset")
@@ -189,7 +208,7 @@ def load_finlab_universe(path: Path) -> FinLabPilotUniverse:
         raise FinLabUniverseError("currency must be TWD")
 
     field_datasets = _field_datasets(value["field_datasets"])
-    symbols = _symbols(value["symbols"])
+    symbols = _symbols(value["symbols"], manifest_version=manifest_version)
     config = FinLabDatasetConfig(
         dataset_key=dataset,
         market=market,
@@ -200,6 +219,25 @@ def load_finlab_universe(path: Path) -> FinLabPilotUniverse:
     )
     # Constructing the config above applies the provider boundary a second
     # time, while this loader owns the stricter fixed pilot membership check.
+    governance: dict[str, Any] = {}
+    if manifest_version == 2:
+        source_url = _required_string(value, "source_url")
+        if not source_url.startswith("https://"):
+            raise FinLabUniverseError("source_url must use HTTPS")
+        effective_date = _iso_date(value, "effective_date")
+        source_sha256 = _sha256(value, "source_sha256")
+        symbols_sha256 = _sha256(value, "symbols_sha256")
+        expected_symbols_sha256 = hashlib.sha256(
+            ("\n".join(symbol.canonical_symbol for symbol in symbols) + "\n").encode()
+        ).hexdigest()
+        if symbols_sha256 != expected_symbols_sha256:
+            raise FinLabUniverseError("symbols_sha256 does not match normalized symbols")
+        governance = {
+            "source_url": source_url,
+            "effective_date": effective_date,
+            "source_sha256": source_sha256,
+            "symbols_sha256": symbols_sha256,
+        }
     return FinLabPilotUniverse(
         manifest_version=manifest_version,
         manifest_id=manifest_id,
@@ -210,6 +248,7 @@ def load_finlab_universe(path: Path) -> FinLabPilotUniverse:
         currency=currency,
         field_datasets=dict(config.field_datasets),
         symbols=config.symbols,
+        **governance,
     )
 
 
@@ -228,9 +267,10 @@ def _field_datasets(value: Any) -> dict[str, str]:
     return {key: value[key] for key in _FIELD_DATASETS}
 
 
-def _symbols(value: Any) -> tuple[FinLabSymbol, ...]:
-    if not isinstance(value, list) or len(value) != len(_PILOT_SYMBOLS):
-        raise FinLabUniverseError("symbols must contain exactly the two reviewed pilot rows")
+def _symbols(value: Any, *, manifest_version: int) -> tuple[FinLabSymbol, ...]:
+    expected_count = len(_PILOT_SYMBOLS) if manifest_version == 1 else 50
+    if not isinstance(value, list) or len(value) != expected_count:
+        raise FinLabUniverseError(f"symbols must contain exactly {expected_count} reviewed rows")
     symbols: list[FinLabSymbol] = []
     seen_source: set[str] = set()
     seen_canonical: set[str] = set()
@@ -243,16 +283,35 @@ def _symbols(value: Any) -> tuple[FinLabSymbol, ...]:
         canonical = _required_symbol(item, "canonical_symbol", index)
         if source in seen_source or canonical in seen_canonical:
             raise FinLabUniverseError("reviewed FinLab symbols must be unique")
-        if source not in _PILOT_SYMBOLS or canonical not in _PILOT_SYMBOLS:
+        if manifest_version == 1 and (
+            source not in _PILOT_SYMBOLS or canonical not in _PILOT_SYMBOLS
+        ):
             raise FinLabUniverseError("symbols must be exactly 2330 and 2317")
         if source != canonical:
-            raise FinLabUniverseError("pilot canonical mapping must be explicit identity mapping")
+            raise FinLabUniverseError("canonical mapping must be explicit identity mapping")
         seen_source.add(source)
         seen_canonical.add(canonical)
         symbols.append(FinLabSymbol(source_symbol=source, canonical_symbol=canonical))
-    if seen_source != _PILOT_SYMBOLS or seen_canonical != _PILOT_SYMBOLS:
+    if manifest_version == 1 and (
+        seen_source != _PILOT_SYMBOLS or seen_canonical != _PILOT_SYMBOLS
+    ):
         raise FinLabUniverseError("symbols must include exactly 2330 and 2317")
     return tuple(symbols)
+
+
+def _iso_date(parent: dict[str, Any], key: str) -> date:
+    value = _required_string(parent, key)
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise FinLabUniverseError(f"{key} must be an ISO date") from exc
+
+
+def _sha256(parent: dict[str, Any], key: str) -> str:
+    value = _required_string(parent, key)
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise FinLabUniverseError(f"{key} must be a lowercase SHA-256 digest")
+    return value
 
 
 def _required_symbol(parent: dict[str, Any], key: str, index: int) -> str:

@@ -1,0 +1,222 @@
+{
+  "manifest_version": 2,
+  "manifest_id": "finlab_tw50_2026_09_21",
+  "provider": "finlab",
+  "dataset": "tw_equity_eod",
+  "market": "TW",
+  "asset_class": "equity",
+  "currency": "TWD",
+  "source_url": "https://taiwanindex.com.tw/news/450",
+  "effective_date": "2026-09-21",
+  "source_sha256": "8c4105fe6c40cb8542c26f5f727f63522e37721d294f8639598c189446f2cabe",
+  "symbols_sha256": "d5d277667f707cb7e49a9de03bace957021cb69c75b4e758718cbe62b04ba45d",
+  "field_datasets": {
+    "open": "price:開盤價",
+    "high": "price:最高價",
+    "low": "price:最低價",
+    "close": "price:收盤價",
+    "volume": "price:成交股數"
+  },
+  "symbols": [
+    {
+      "source_symbol": "2330",
+      "canonical_symbol": "2330"
+    },
+    {
+      "source_symbol": "2454",
+      "canonical_symbol": "2454"
+    },
+    {
+      "source_symbol": "2308",
+      "canonical_symbol": "2308"
+    },
+    {
+      "source_symbol": "2317",
+      "canonical_symbol": "2317"
+    },
+    {
+      "source_symbol": "3711",
+      "canonical_symbol": "3711"
+    },
+    {
+      "source_symbol": "2303",
+      "canonical_symbol": "2303"
+    },
+    {
+      "source_symbol": "2383",
+      "canonical_symbol": "2383"
+    },
+    {
+      "source_symbol": "2881",
+      "canonical_symbol": "2881"
+    },
+    {
+      "source_symbol": "3037",
+      "canonical_symbol": "3037"
+    },
+    {
+      "source_symbol": "2891",
+      "canonical_symbol": "2891"
+    },
+    {
+      "source_symbol": "1303",
+      "canonical_symbol": "1303"
+    },
+    {
+      "source_symbol": "2882",
+      "canonical_symbol": "2882"
+    },
+    {
+      "source_symbol": "2887",
+      "canonical_symbol": "2887"
+    },
+    {
+      "source_symbol": "3017",
+      "canonical_symbol": "3017"
+    },
+    {
+      "source_symbol": "2345",
+      "canonical_symbol": "2345"
+    },
+    {
+      "source_symbol": "2382",
+      "canonical_symbol": "2382"
+    },
+    {
+      "source_symbol": "2327",
+      "canonical_symbol": "2327"
+    },
+    {
+      "source_symbol": "2885",
+      "canonical_symbol": "2885"
+    },
+    {
+      "source_symbol": "2360",
+      "canonical_symbol": "2360"
+    },
+    {
+      "source_symbol": "2884",
+      "canonical_symbol": "2884"
+    },
+    {
+      "source_symbol": "6669",
+      "canonical_symbol": "6669"
+    },
+    {
+      "source_symbol": "2059",
+      "canonical_symbol": "2059"
+    },
+    {
+      "source_symbol": "2357",
+      "canonical_symbol": "2357"
+    },
+    {
+      "source_symbol": "2886",
+      "canonical_symbol": "2886"
+    },
+    {
+      "source_symbol": "2883",
+      "canonical_symbol": "2883"
+    },
+    {
+      "source_symbol": "2890",
+      "canonical_symbol": "2890"
+    },
+    {
+      "source_symbol": "3008",
+      "canonical_symbol": "3008"
+    },
+    {
+      "source_symbol": "2412",
+      "canonical_symbol": "2412"
+    },
+    {
+      "source_symbol": "3231",
+      "canonical_symbol": "3231"
+    },
+    {
+      "source_symbol": "2301",
+      "canonical_symbol": "2301"
+    },
+    {
+      "source_symbol": "2408",
+      "canonical_symbol": "2408"
+    },
+    {
+      "source_symbol": "2344",
+      "canonical_symbol": "2344"
+    },
+    {
+      "source_symbol": "3443",
+      "canonical_symbol": "3443"
+    },
+    {
+      "source_symbol": "3653",
+      "canonical_symbol": "3653"
+    },
+    {
+      "source_symbol": "2892",
+      "canonical_symbol": "2892"
+    },
+    {
+      "source_symbol": "2880",
+      "canonical_symbol": "2880"
+    },
+    {
+      "source_symbol": "1216",
+      "canonical_symbol": "1216"
+    },
+    {
+      "source_symbol": "4958",
+      "canonical_symbol": "4958"
+    },
+    {
+      "source_symbol": "3665",
+      "canonical_symbol": "3665"
+    },
+    {
+      "source_symbol": "7769",
+      "canonical_symbol": "7769"
+    },
+    {
+      "source_symbol": "2368",
+      "canonical_symbol": "2368"
+    },
+    {
+      "source_symbol": "2395",
+      "canonical_symbol": "2395"
+    },
+    {
+      "source_symbol": "2449",
+      "canonical_symbol": "2449"
+    },
+    {
+      "source_symbol": "5880",
+      "canonical_symbol": "5880"
+    },
+    {
+      "source_symbol": "6446",
+      "canonical_symbol": "6446"
+    },
+    {
+      "source_symbol": "2603",
+      "canonical_symbol": "2603"
+    },
+    {
+      "source_symbol": "8046",
+      "canonical_symbol": "8046"
+    },
+    {
+      "source_symbol": "4904",
+      "canonical_symbol": "4904"
+    },
+    {
+      "source_symbol": "3045",
+      "canonical_symbol": "3045"
+    },
+    {
+      "source_symbol": "6505",
+      "canonical_symbol": "6505"
+    }
+  ]
+}

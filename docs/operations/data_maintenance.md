@@ -81,6 +81,35 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - Retention必須長於正常延遲、事故調查及contract migration窗口。
 - Raw刪除不影響canonical，但會失去rerun與provider payload audit能力。
 
+## Production universe與EOD backfill
+
+Production universe是reviewed、versioned artifact，不在runtime自動換股：
+
+- Twelve Data使用`daily_scheduler.production.v3.json`與
+  `twelve_data_nasdaq_100_2026_09_14.v2.json`。快照保留公開QQQ持股中的全部101個
+  securities（包括多股類），每次最多claim 5個symbol；scheduler poll及批次間隔不得短於60秒。
+- FinLab使用`finlab_tw50_2026_09_21.v2.json`，固定50檔、每個交易日只讀五個SDK datasets，
+  完整50-symbol grid成立後才可送出full snapshot。
+- Shioaji使用`shioaji_tw50_2026_09_21.v2.json`，50檔股票與`0050`、`0056`、`006201`
+  分成兩個sequence；每個provider request仍只處理一檔且`SHIOAJI_SIMULATION=true`。
+
+三份v2 manifest均綁定來源URL、effective date、來源摘要與依序正規化symbol的SHA-256。
+來源更新必須以PR替換整份快照並重跑loader tests；checksum不符、重複symbol、錯誤筆數、未知欄位或
+production/staging target混用都會fail closed。`source_sha256`是該次review紀錄的
+`source_url`、effective date、篩選規則／定審異動所形成之canonical evidence摘要；
+`symbols_sha256`是依manifest順序、每行一個canonical symbol（Shioaji為
+`dataset_key:symbol`）且結尾換行的摘要。
+
+Production EOD control plane允許最近366個calendar days，仍依published market calendar只建立
+open-day work items；Twelve Data逐symbol、FinLab逐trade date保存lease/checkpoint並沿用raw-first、
+immutable idempotency與Source terminal驗證。Production不接受Shioaji historical scope。建立正式
+request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... --start-date ...
+--end-date ...`（預設dry-run）保存日期、預估calls／rows及無效日期；只有核對計畫後才加
+`--deliver`，需要等待terminal state時再加`--wait`。CLI使用production Admin machine key呼叫既有
+preview／create／list API，不持有provider secret；Fetcher worker只消費
+已核准request。任何scheduler在backfill期間仍保持`stopped`，未驗證Raw R2、Source、outbox、DQ、
+canonical與Serve前不可擴大下一批。
+
 ## EOD default partition recovery
 
 `market_data_eod_default`正常必須為空；application在寫入前會確認目標年度的
