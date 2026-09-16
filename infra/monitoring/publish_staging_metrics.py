@@ -45,6 +45,10 @@ EXPECTED_FETCHER_MOUNTS = {
         ("bind", "/var/lib/findb-shioaji-fetcher/cache", "/home/fetcher", True),
     },
 }
+INVALID_CREDENTIAL_LOG_CONTAINERS = (
+    "findb-ingest",
+    "findb-serve",
+)
 
 
 def _run(command: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -377,6 +381,129 @@ asyncio.run(main())
     return metrics, []
 
 
+def _database_governance_metrics() -> tuple[list[dict[str, Any]], list[str]]:
+    """Publish bounded integrity checks without exposing row identifiers."""
+    script = """
+import asyncio
+import json
+
+from sqlalchemy import text
+
+from app.models.base import async_session_maker, engine
+
+QUERY = text(\"\"\"
+WITH lineage_orphans AS (
+    SELECT count(*) AS orphan_rows
+    FROM raw.market_payload c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM market_data_eod c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM market_data_minute c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM corporate_action c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM bond_eod c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM macro_observation c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM futures_contract c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+    UNION ALL
+    SELECT count(*) FROM futures_continuous_eod c
+    LEFT JOIN ingestion_run r ON r.run_id = c.run_id
+    WHERE c.run_id IS NOT NULL AND r.run_id IS NULL
+), credential_inventory AS (
+    SELECT 'source'::text AS credential_kind, client_id AS credential_id, usage_count
+    FROM source_client
+    UNION ALL
+    SELECT kind, key_id, usage_count
+    FROM api_key
+), credential_mismatches AS (
+    SELECT count(*) AS mismatch_rows
+    FROM credential_inventory credential
+    FULL OUTER JOIN credential_usage_rollup rollup
+      USING (credential_kind, credential_id)
+    WHERE COALESCE(credential.usage_count, 0) <> COALESCE(rollup.request_count, 0)
+)
+SELECT
+    (SELECT COALESCE(sum(orphan_rows), 0)::bigint FROM lineage_orphans) AS lineage_orphans,
+    (SELECT count(*) FROM market_data_eod_default) AS eod_default_rows,
+    (SELECT mismatch_rows FROM credential_mismatches) AS credential_usage_mismatches
+\"\"\")
+
+async def main():
+    async with async_session_maker() as session:
+        row = (await session.execute(QUERY)).mappings().one()
+        print(json.dumps(dict(row)))
+    await engine.dispose()
+
+asyncio.run(main())
+"""
+    result = _run(["docker", "exec", "findb-ingest", "python", "-c", script])
+    if result.returncode != 0:
+        return [], ["database governance query failed"]
+    try:
+        values = json.loads(result.stdout)
+        metrics = [
+            _metric(
+                "LineageOrphanRows",
+                float(values["lineage_orphans"]),
+                "Count",
+                "findb",
+                "canonical-and-raw",
+            ),
+            _metric(
+                "EODDefaultPartitionRows",
+                float(values["eod_default_rows"]),
+                "Count",
+                "findb",
+                "market_data_eod_default",
+            ),
+            _metric(
+                "CredentialUsageAggregateMismatches",
+                float(values["credential_usage_mismatches"]),
+                "Count",
+                "findb",
+                "api-credentials",
+            ),
+        ]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return [], ["database governance response was invalid"]
+    return metrics, []
+
+
+def _invalid_credential_event_metrics() -> tuple[list[dict[str, Any]], list[str]]:
+    """Count only the stable rejection message in an overlapping time window."""
+    events = 0
+    for container in INVALID_CREDENTIAL_LOG_CONTAINERS:
+        result = _run(["docker", "logs", "--since", "10m", container])
+        if result.returncode != 0:
+            return [], [f"invalid-credential log query failed for {container}"]
+        events += (result.stdout + result.stderr).count("API credential rejected")
+    return [
+        _metric(
+            "InvalidCredentialEvents",
+            events,
+            "Count",
+            "findb",
+            "api-credentials",
+        )
+    ], []
+
+
 def _rds_backup_lag_metric(
     region: str, db_identifier: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -446,6 +573,8 @@ def collect_metrics(
             _rabbitmq_metrics,
             _scheduler_metrics,
             _active_feed_ingestion_metrics,
+            _database_governance_metrics,
+            _invalid_credential_event_metrics,
         ):
             collected, collector_errors = collector()
             metrics.extend(collected)

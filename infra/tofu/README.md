@@ -11,13 +11,18 @@ The Phase 6 monitoring stack declares a private KMS-encrypted SNS
 operational-alert topic, one required email subscription, native CloudWatch
 alarms, and bounded custom metrics for host capacity, container health/restarts
 and runtime security, RabbitMQ alarms, scheduler heartbeat, active-feed
-anomalies, TLS expiry, deployment failure, DLM health, and RDS backup lag. Two
-bounded SSM associations install and run the dependency-free collector every
-five minutes using the existing instance roles; no inbound port or persistent
-credential is added. It manages only monitoring resources and associations; it
-does not manage or import the referenced EC2/RDS resources. The stack and its
-notification path have completed live staging acceptance. The operator
-procedure, current evidence, explicit thresholds, remaining coverage gaps, and cost/retention caveats are in
+anomalies, TLS expiry, deployment failure, DLM health, and RDS backup lag.
+Four bounded governance/security signals additionally cover canonical/raw
+lineage, the EOD default partition, credential usage aggregate integrity, and
+rejected credential events. Two bounded SSM associations install and run the
+dependency-free collector every five minutes using the existing instance
+roles; no inbound port or persistent credential is added. It manages only
+monitoring resources and associations; it does not manage or import the
+referenced EC2/RDS resources. The previously applied baseline and its
+notification path have completed live staging acceptance; newly declared
+signals remain declarations until separately applied and accepted. The
+operator procedure, current evidence, explicit thresholds, remaining coverage
+gaps, and cost/retention caveats are in
 [`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
 
 `staging/backup.tf` selects only the root volumes currently attached to the

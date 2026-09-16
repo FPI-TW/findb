@@ -14,6 +14,7 @@
 | 管理staging原生／custom告警、SNS確認、collector與synthetic通知測試 | [operations/monitoring.md](operations/monitoring.md) |
 | 驗證ingestion、監控queue、診斷delivery或重建RabbitMQ | [operations/ingestion.md](operations/ingestion.md) |
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
+| 重跑staging query／ingest baseline或判斷何時進行效能優化 | [operations/performance.md](operations/performance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
 | 建立production foundation並執行首次promotion／rollback live acceptance | [dev/production-foundation-cutover-plan.md](dev/production-foundation-cutover-plan.md) |
 

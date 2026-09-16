@@ -327,6 +327,58 @@ locals {
         treat_missing_data  = "notBreaching"
         description         = "An active staging feed produced a blocking DQ error in the overlapping ten-minute observation window."
       }
+      lineage_orphans = {
+        alarm_name          = "findb-staging-lineage-orphan-rows"
+        metric_name         = "LineageOrphanRows"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "canonical-and-raw"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "breaching"
+        description         = "At least one canonical or PostgreSQL raw row references a missing ingestion run, or the integrity metric is missing."
+      }
+      eod_default_partition = {
+        alarm_name          = "findb-staging-eod-default-partition-nonempty"
+        metric_name         = "EODDefaultPartitionRows"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "market_data_eod_default"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "breaching"
+        description         = "The migration-owned EOD default partition contains at least one row, or its metric is missing."
+      }
+      credential_usage_aggregate_mismatch = {
+        alarm_name          = "findb-staging-credential-usage-aggregate-mismatch"
+        metric_name         = "CredentialUsageAggregateMismatches"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "api-credentials"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "breaching"
+        description         = "At least one durable credential usage rollup differs from its credential aggregate, or the metric is missing."
+      }
+      invalid_credential_events = {
+        alarm_name          = "findb-staging-invalid-credential-events"
+        metric_name         = "InvalidCredentialEvents"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "findb"
+        resource            = "api-credentials"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "At least one API credential was rejected in the overlapping ten-minute Docker log window."
+      }
     },
     {
       for scheduler_key in local.scheduler_keys : "scheduler_${scheduler_key}" => {
