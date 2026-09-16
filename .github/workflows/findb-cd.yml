@@ -7,6 +7,8 @@ on:
     inputs:
       deployment_target: {description: Staging target only, required: true, default: staging, type: choice, options: [staging]}
       revision: {description: Exact protected-main commit SHA, required: true, type: string}
+      deployment_mode: {description: Create a new candidate or replay an accepted bundle, required: true, default: replay, type: choice, options: [replay, candidate]}
+      candidate_confirmation: {description: Type deploy-new-candidate for candidate mode, required: false, default: '', type: string}
       image_tag: {description: Existing staging SHA for an accepted replay, required: false, default: '', type: string}
       accepted_bundle_key: {description: Exact staging accepted bundle key for replay, required: false, default: '', type: string}
 
@@ -66,21 +68,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {ref: '${{ needs.policy.outputs.revision }}', fetch-depth: 0, persist-credentials: false}
-      - name: Verify exact requested revision, staging-only route, and replay selection
+      - name: Verify exact requested revision, staging-only route, and deployment selection
         id: selection
-        env: {REVISION: '${{ needs.policy.outputs.revision }}', IMAGE_TAG: '${{ inputs.image_tag }}', ACCEPTED: '${{ inputs.accepted_bundle_key }}', CUTOVER: '${{ vars.STAGING_ECR_CUTOVER_ENABLED }}'}
+        env: {REVISION: '${{ needs.policy.outputs.revision }}', DEPLOYMENT_MODE: '${{ inputs.deployment_mode }}', CANDIDATE_CONFIRMATION: '${{ inputs.candidate_confirmation }}', IMAGE_TAG: '${{ inputs.image_tag }}', ACCEPTED: '${{ inputs.accepted_bundle_key }}', CUTOVER: '${{ vars.STAGING_ECR_CUTOVER_ENABLED }}'}
         run: |
           set -euo pipefail
           [ "${{ inputs.deployment_target || 'staging' }}" = staging ]; [ "$CUTOVER" = true ]
           [ "$(git rev-parse HEAD)" = "$REVISION" ]
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            [ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ] || exit 1
-            [ "$IMAGE_TAG" = "$REVISION" ]
-            [[ "$ACCEPTED" =~ ^findb/accepted/${REVISION}/[0-9a-f]{64}[.]tar$ ]]
-            printf 'mode=replay\nbundle_key=%s\n' "$ACCEPTED" >> "$GITHUB_OUTPUT"
+            case "$DEPLOYMENT_MODE" in
+              candidate)
+                [ "$CANDIDATE_CONFIRMATION" = deploy-new-candidate ]
+                [ -z "$ACCEPTED" ] && [ -z "$IMAGE_TAG" ]
+                echo 'mode=candidate' >> "$GITHUB_OUTPUT"
+                ;;
+              replay)
+                [ -z "$CANDIDATE_CONFIRMATION" ]
+                [ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ]
+                [ "$IMAGE_TAG" = "$REVISION" ]
+                [[ "$ACCEPTED" =~ ^findb/accepted/${REVISION}/[0-9a-f]{64}[.]tar$ ]]
+                printf 'mode=replay\nbundle_key=%s\n' "$ACCEPTED" >> "$GITHUB_OUTPUT"
+                ;;
+              *) exit 1 ;;
+            esac
           else
-            [ "${{ github.event_name }}" = push ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
+            [ "${{ github.event_name }}" = push ] && [ -z "$DEPLOYMENT_MODE" ] && [ -z "$CANDIDATE_CONFIRMATION" ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
             echo 'mode=candidate' >> "$GITHUB_OUTPUT"
           fi
 

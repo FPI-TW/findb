@@ -642,11 +642,15 @@ def test_v1_staging_replay_uses_the_bundle_local_validator_without_a_bare_sha_fa
         assert "manifest-missing" not in text
 
 
-def test_prepare_contracts_are_main_push_candidate_or_exact_manual_replay() -> None:
+def test_prepare_contracts_are_main_push_or_confirmed_manual_candidate_or_exact_replay() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         assert 'github.event_name }}" = workflow_dispatch' in text
-        assert '[ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ] || exit 1' in text
+        assert "options: [replay, candidate]" in text
+        assert '[ "$CANDIDATE_CONFIRMATION" = deploy-new-candidate ]' in text
+        assert '[ -z "$ACCEPTED" ] && [ -z "$IMAGE_TAG" ]' in text
+        assert '[ -z "$CANDIDATE_CONFIRMATION" ]' in text
+        assert '[ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ]' in text
         assert '[ "${{ github.event_name }}" = push ]' in text
         assert f"{unit}/candidates/${{REVISION}}/" in text
         assert "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar" in text
