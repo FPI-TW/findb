@@ -18,11 +18,10 @@ rejected credential events. Two bounded SSM associations install and run the
 dependency-free collector every five minutes using the existing instance
 roles; no inbound port or persistent credential is added. It manages only
 monitoring resources and associations; it does not manage or import the
-referenced EC2/RDS resources. The previously applied baseline and its
-notification path have completed live staging acceptance; newly declared
-signals remain declarations until separately applied and accepted. The
-operator procedure, current evidence, explicit thresholds, remaining coverage
-gaps, and cost/retention caveats are in
+referenced EC2/RDS resources. The monitoring baseline, including the four
+governance/security signals, and its notification path have completed live
+staging acceptance. The operator procedure, current evidence, explicit
+thresholds, remaining coverage gaps, and cost/retention caveats are in
 [`docs/operations/monitoring.md`](../../docs/operations/monitoring.md).
 
 `staging/backup.tf` selects only the root volumes currently attached to the

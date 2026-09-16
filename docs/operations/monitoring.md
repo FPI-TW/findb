@@ -57,6 +57,24 @@ are all that repository source alone can prove.
   metrics changing from `0` to `1`; both alarms changed from `OK` to `ALARM`.
   `ActiveFeedDQErrors` stayed `0/OK`, proving that the signals remained
   separated. These are staging calibration records, not production incidents.
+- On 2026-09-16, protected-`main` merge SHA
+  `a72fe2e3ebcd12392ad9c806d207249984f73413` added four governance/security
+  alarms. The fresh saved plan was `4 create, 5 in-place update, 0 destroy`
+  with no replacements; apply was `4 added, 4 changed, 0 destroyed`, and the
+  plan-time IAM policy update required no write after apply-time recomputation.
+  The post-apply plan had no changes. FinDB and Fetcher publisher associations
+  both completed successfully, and the new lineage orphan, EOD default
+  partition, credential usage aggregate mismatch, and invalid-credential
+  series each published `0` in the 09:50 and 09:55 five-minute buckets.
+- A controlled request used an explicitly invalid non-production key and
+  returned `403`; neither the collector nor CloudWatch retained the supplied
+  value. `InvalidCredentialEvents` changed from `0` to `1`, and alarm
+  `findb-staging-invalid-credential-events` changed `OK -> ALARM` at 09:57.
+  CloudWatch recorded a successful SNS action; SNS recorded one delivery and
+  zero failures for the transition. After the overlapping ten-minute log
+  window expired, the metric naturally returned to `0` and the alarm changed
+  `ALARM -> OK` at 10:07 without `SetAlarmState`. Final inventory was 46
+  bounded metric series and 54/54 alarms `OK`, with actions enabled on all.
 
 This record closes the owner/channel, subscription-confirmation, SSM log
 retention, and synthetic-notification portion of Phase 6. It does not close the
@@ -143,10 +161,10 @@ check compares only durable counters; invalid-key events are counted from the
 two API containers over an overlapping ten-minute window without parsing or
 retaining the rejected key.
 
-The four governance/security metrics and alarms added after the 2026-09-15
-acceptance record are declarations until their protected-`main` plan, apply,
-two healthy periods, and controlled invalid-key notification test are recorded.
-Do not add them to the 42-series/50-alarm live baseline before that acceptance.
+The four governance/security metrics and alarms completed protected-`main`
+apply, two healthy periods, and controlled invalid-key notification acceptance
+on 2026-09-16. They extend the prior 42-series/50-alarm baseline to 46 series
+and 54 alarms.
 
 The thresholds and evaluation settings are fixed-by-validation variables in
 `infra/tofu/staging/variables.tf`; changing them requires a reviewed IaC

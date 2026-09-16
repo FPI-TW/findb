@@ -3,12 +3,6 @@
 > 只保存已核准範圍內的未完成工作。完成後直接移除；歷史由Git追溯。Active feeds與pilot
 > 範圍見[現行架構](../architecture/overview.md#active-feeds)。
 
-## P1：待合併後live apply
-
-- [ ] 將lineage orphan、EOD default partition、credential usage aggregate mismatch與
-  invalid-key四組bounded metrics／alarms由protected `main`執行fresh saved plan與apply；驗證連續
-  兩個健康週期，並以不記錄key material的受控invalid-key事件完成`OK -> ALARM -> OK`通知測試。
-
 ## 延後：平台強化
 
 Production foundation與live promotion／rollback acceptance由
