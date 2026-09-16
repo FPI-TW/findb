@@ -13,6 +13,9 @@ from findb_fetcher.universe import UniverseError, load_symbol_universe
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "twelve_data_us_common_stocks.v1.json"
 )
+PRODUCTION_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "configs" / "twelve_data_nasdaq_100_2026_09_14.v2.json"
+)
 
 
 @pytest.fixture
@@ -44,6 +47,17 @@ def test_repository_universe_contains_no_credential_fields() -> None:
     assert "api_key" not in raw
     assert "secret" not in raw
     assert "token" not in raw
+
+
+def test_production_universe_is_reviewed_batched_and_checksum_bound() -> None:
+    universe = load_symbol_universe(PRODUCTION_CONFIG_PATH)
+
+    assert universe.universe_version == 2
+    assert len(universe.symbols) == 101
+    assert universe.batch_size == universe.limits.max_symbols_per_run == 5
+    assert universe.inter_batch_seconds == 60
+    assert universe.estimated_credits == 5
+    assert {member.symbol for member in universe.symbols} >= {"GOOG", "GOOGL", "SPCX"}
 
 
 @pytest.mark.parametrize(

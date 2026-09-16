@@ -1,0 +1,388 @@
+{
+  "version": 2,
+  "universe_id": "shioaji_tw50_2026_09_21_v2",
+  "source_url": "https://taiwanindex.com.tw/news/450",
+  "effective_date": "2026-09-21",
+  "source_sha256": "8c4105fe6c40cb8542c26f5f727f63522e37721d294f8639598c189446f2cabe",
+  "symbols_sha256": "ad277d884e64cd7a9d169209b6d432cd6206adc3dc9cf4045964fb648d90733e",
+  "governance": {
+    "max_requests": 50,
+    "rolling_seconds": 60,
+    "max_attempts_per_sequence": 3,
+    "cutoff": "17:00",
+    "timezone": "Asia/Taipei"
+  },
+  "sequences": [
+    {
+      "symbol": "2330",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 1,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2454",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 2,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2308",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 3,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2317",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 4,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3711",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 5,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2303",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 6,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2383",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 7,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2881",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 8,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3037",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 9,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2891",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 10,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "1303",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 11,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2882",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 12,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2887",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 13,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3017",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 14,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2345",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 15,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2382",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 16,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2327",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 17,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2885",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 18,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2360",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 19,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2884",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 20,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "6669",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 21,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2059",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 22,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2357",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 23,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2886",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 24,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2883",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 25,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2890",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 26,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3008",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 27,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2412",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 28,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3231",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 29,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2301",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 30,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2408",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 31,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2344",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 32,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3443",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 33,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3653",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 34,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2892",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 35,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2880",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 36,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "1216",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 37,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "4958",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 38,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3665",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 39,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "7769",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 40,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2368",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 41,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2395",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 42,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2449",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 43,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "5880",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 44,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "6446",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 45,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "2603",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 46,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "8046",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 47,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "4904",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 48,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "3045",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 49,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "6505",
+      "dataset_key": "tw_equity_minute",
+      "asset_class": "equity",
+      "sequence": 50,
+      "sequence_count": 50
+    },
+    {
+      "symbol": "0050",
+      "dataset_key": "tw_etf_minute",
+      "asset_class": "etf",
+      "sequence": 1,
+      "sequence_count": 3
+    },
+    {
+      "symbol": "0056",
+      "dataset_key": "tw_etf_minute",
+      "asset_class": "etf",
+      "sequence": 2,
+      "sequence_count": 3
+    },
+    {
+      "symbol": "006201",
+      "dataset_key": "tw_etf_minute",
+      "asset_class": "etf",
+      "sequence": 3,
+      "sequence_count": 3
+    }
+  ]
+}

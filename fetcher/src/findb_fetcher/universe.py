@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -10,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 _MAX_CONFIG_BYTES = 64 * 1024
-_MAX_SYMBOLS_ABSOLUTE = 5
+_MAX_SYMBOLS_ABSOLUTE_V1 = 5
+_MAX_SYMBOLS_ABSOLUTE_V2 = 128
 _MAX_RECORDS_PER_SYMBOL_ABSOLUTE = 5000
 _MAX_TOTAL_RECORDS_ABSOLUTE = 10_000
 _MAX_DATE_SPAN_DAYS_ABSOLUTE = 3660
@@ -29,6 +31,14 @@ _ROOT_KEYS = {
     "credit_cost_per_symbol",
     "limits",
     "symbols",
+}
+_V2_GOVERNANCE_KEYS = {
+    "source_url",
+    "effective_date",
+    "source_sha256",
+    "symbols_sha256",
+    "batch_size",
+    "inter_batch_seconds",
 }
 _LIMIT_KEYS = {
     "max_symbols_per_run",
@@ -76,10 +86,19 @@ class SymbolUniverse:
     credit_cost_per_symbol: int
     limits: UniverseLimits
     symbols: tuple[UniverseSymbol, ...]
+    source_url: str | None = None
+    effective_date: date | None = None
+    source_sha256: str | None = None
+    symbols_sha256: str | None = None
+    batch_size: int | None = None
+    inter_batch_seconds: int | None = None
 
     @property
     def estimated_credits(self) -> int:
-        return len(self.symbols) * self.credit_cost_per_symbol
+        members = len(self.symbols)
+        if self.universe_version == 2:
+            members = min(members, self.limits.max_symbols_per_run)
+        return members * self.credit_cost_per_symbol
 
     def validate_query_bounds(
         self,
@@ -106,7 +125,7 @@ class SymbolUniverse:
 
 
 def load_symbol_universe(path: Path) -> SymbolUniverse:
-    """Load one strict v1 universe without accepting unknown or secret-bearing fields."""
+    """Load a strict governed universe without accepting unknown fields."""
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -117,12 +136,15 @@ def load_symbol_universe(path: Path) -> SymbolUniverse:
         value = json.loads(raw, object_pairs_hook=_unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJSONKeyError) as exc:
         raise UniverseError("universe config must be valid UTF-8 JSON with unique keys") from exc
-    if not isinstance(value, dict) or set(value) != _ROOT_KEYS:
-        raise UniverseError(f"universe config keys must be exactly {sorted(_ROOT_KEYS)}")
+    if not isinstance(value, dict):
+        raise UniverseError("universe config must be an object")
 
     universe_version = _positive_int(value, "universe_version")
-    if universe_version != 1:
-        raise UniverseError("universe_version must be 1")
+    expected_keys = _ROOT_KEYS if universe_version == 1 else _ROOT_KEYS | _V2_GOVERNANCE_KEYS
+    if universe_version not in {1, 2} or set(value) != expected_keys:
+        raise UniverseError(
+            f"universe v{universe_version} keys must be exactly {sorted(expected_keys)}"
+        )
     universe_id = _identifier(value, "universe_id")
     provider = _identifier(value, "provider")
     dataset_key = _identifier(value, "dataset_key")
@@ -136,20 +158,50 @@ def load_symbol_universe(path: Path) -> SymbolUniverse:
     if dataset_key != "us_equity_eod":
         raise UniverseError("dataset_key must be us_equity_eod")
     if market != "US" or asset_class != "equity" or instrument_type != "Common Stock":
-        raise UniverseError("v1 universe supports only US Common Stock")
+        raise UniverseError("universe supports only US Common Stock")
     if credit_cost_per_symbol != 1:
         raise UniverseError("Twelve Data time_series credit cost must be 1 per symbol")
 
+    absolute_symbols = (
+        _MAX_SYMBOLS_ABSOLUTE_V1 if universe_version == 1 else _MAX_SYMBOLS_ABSOLUTE_V2
+    )
     limits = _load_limits(value["limits"])
-    symbols = _load_symbols(value["symbols"])
-    if len(symbols) > limits.max_symbols_per_run:
+    symbols = _load_symbols(value["symbols"], absolute_symbols=absolute_symbols)
+    if universe_version == 1 and len(symbols) > limits.max_symbols_per_run:
         raise UniverseError("symbol count exceeds max_symbols_per_run")
-    estimated_credits = len(symbols) * credit_cost_per_symbol
+    estimated_credits = min(len(symbols), limits.max_symbols_per_run) * credit_cost_per_symbol
     if estimated_credits > limits.max_credits_per_run:
         raise UniverseError("estimated credits exceed max_credits_per_run")
     if limits.max_total_records_per_run < limits.max_records_per_symbol:
         raise UniverseError("max_total_records_per_run must be at least max_records_per_symbol")
 
+    governance: dict[str, Any] = {}
+    if universe_version == 2:
+        source_url = _required_string(value, "source_url")
+        if not source_url.startswith("https://"):
+            raise UniverseError("source_url must use HTTPS")
+        effective_date = _iso_date(value, "effective_date")
+        source_sha256 = _sha256(value, "source_sha256")
+        symbols_sha256 = _sha256(value, "symbols_sha256")
+        expected_symbols_sha256 = hashlib.sha256(
+            ("\n".join(symbol.canonical_symbol for symbol in symbols) + "\n").encode()
+        ).hexdigest()
+        if symbols_sha256 != expected_symbols_sha256:
+            raise UniverseError("symbols_sha256 does not match normalized canonical symbols")
+        batch_size = _positive_int(value, "batch_size")
+        inter_batch_seconds = _positive_int(value, "inter_batch_seconds")
+        if batch_size != limits.max_symbols_per_run or batch_size > 5:
+            raise UniverseError("v2 batch_size must equal max_symbols_per_run and be at most 5")
+        if inter_batch_seconds < 60:
+            raise UniverseError("v2 inter_batch_seconds must be at least 60")
+        governance = {
+            "source_url": source_url,
+            "effective_date": effective_date,
+            "source_sha256": source_sha256,
+            "symbols_sha256": symbols_sha256,
+            "batch_size": batch_size,
+            "inter_batch_seconds": inter_batch_seconds,
+        }
     return SymbolUniverse(
         universe_version=universe_version,
         universe_id=universe_id,
@@ -161,6 +213,7 @@ def load_symbol_universe(path: Path) -> SymbolUniverse:
         credit_cost_per_symbol=credit_cost_per_symbol,
         limits=limits,
         symbols=symbols,
+        **governance,
     )
 
 
@@ -178,7 +231,7 @@ def _load_limits(value: Any) -> UniverseLimits:
         (
             "max_symbols_per_run",
             limits.max_symbols_per_run,
-            _MAX_SYMBOLS_ABSOLUTE,
+            5,
         ),
         (
             "max_records_per_symbol",
@@ -207,7 +260,7 @@ def _load_limits(value: Any) -> UniverseLimits:
     return limits
 
 
-def _load_symbols(value: Any) -> tuple[UniverseSymbol, ...]:
+def _load_symbols(value: Any, *, absolute_symbols: int) -> tuple[UniverseSymbol, ...]:
     if not isinstance(value, list) or not value:
         raise UniverseError("symbols must be a non-empty list")
     symbols: list[UniverseSymbol] = []
@@ -238,9 +291,24 @@ def _load_symbols(value: Any) -> tuple[UniverseSymbol, ...]:
                 exchange=exchange,
             )
         )
-    if len(symbols) > _MAX_SYMBOLS_ABSOLUTE:
+    if len(symbols) > absolute_symbols:
         raise UniverseError("symbol count exceeds absolute safety limit")
     return tuple(symbols)
+
+
+def _iso_date(parent: dict[str, Any], key: str) -> date:
+    value = _required_string(parent, key)
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise UniverseError(f"{key} must be an ISO date") from exc
+
+
+def _sha256(parent: dict[str, Any], key: str) -> str:
+    value = _required_string(parent, key)
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise UniverseError(f"{key} must be a lowercase SHA-256 digest")
+    return value
 
 
 def _required_string(parent: dict[str, Any], key: str) -> str:

@@ -6,6 +6,7 @@ acquisition, then submits data through the normal raw-first Source ingest API.
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -32,13 +33,33 @@ CAPABILITIES: dict[tuple[str, str], str] = {
     ("shioaji", "tw_equity_minute"): "executable",
     ("shioaji", "tw_etf_minute"): "executable",
 }
-MAX_BACKFILL_DAYS = 31
+STAGING_MAX_BACKFILL_DAYS = 31
+PRODUCTION_MAX_BACKFILL_DAYS = 366
+# Compatibility for existing staging callers; production uses the target-aware helper.
+MAX_BACKFILL_DAYS = STAGING_MAX_BACKFILL_DAYS
 LEASE_DURATION = timedelta(minutes=15)
 PROVIDER_TIMEZONES: dict[str, str] = {
     "twelve_data": "America/New_York",
     "finlab": "Asia/Taipei",
     "shioaji": "Asia/Taipei",
 }
+
+
+def _max_backfill_days() -> int:
+    return (
+        PRODUCTION_MAX_BACKFILL_DAYS
+        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        else STAGING_MAX_BACKFILL_DAYS
+    )
+
+
+def _supports_backfill(provider: str, dataset_key: str) -> bool:
+    if (
+        os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        and provider == "shioaji"
+    ):
+        return False
+    return (provider, dataset_key) in CAPABILITIES
 
 
 class HistoricalBackfillError(ValueError):
@@ -115,10 +136,13 @@ async def create_request(
 ) -> tuple[HistoricalBackfillRequest, bool]:
     provider = provider.lower()
     today = today or utc_now().date()
-    if start_date < today - timedelta(days=MAX_BACKFILL_DAYS - 1) or end_date > today:
-        raise HistoricalBackfillError("backfill dates must be within the latest 31 calendar days")
-    if (end_date - start_date).days >= MAX_BACKFILL_DAYS:
-        raise HistoricalBackfillError("backfill range exceeds 31 days")
+    max_days = _max_backfill_days()
+    if start_date < today - timedelta(days=max_days - 1) or end_date > today:
+        raise HistoricalBackfillError(
+            f"backfill dates must be within the latest {max_days} calendar days"
+        )
+    if (end_date - start_date).days >= max_days:
+        raise HistoricalBackfillError(f"backfill range exceeds {max_days} days")
     existing = (
         await db.execute(
             select(HistoricalBackfillRequest)
@@ -138,7 +162,7 @@ async def create_request(
     dataset = await db.get(DatasetRegistry, dataset_key)
     if dataset is None or not dataset.is_active:
         raise HistoricalBackfillError("dataset is not active")
-    if (provider, dataset_key) not in CAPABILITIES:
+    if not _supports_backfill(provider, dataset_key):
         raise HistoricalBackfillError("provider does not support historical backfill for dataset")
     scope = (
         await db.execute(
@@ -209,6 +233,8 @@ async def list_enabled_scopes(db: AsyncSession) -> list[tuple[str, str, str, boo
     """Expose only configured active scopes; no credential information leaks."""
     rows: list[tuple[str, str, str, bool]] = []
     for (provider, dataset_key), capability in CAPABILITIES.items():
+        if not _supports_backfill(provider, dataset_key):
+            continue
         dataset = await db.get(DatasetRegistry, dataset_key)
         if dataset is None or not dataset.is_active:
             continue
@@ -255,11 +281,11 @@ async def preview_request(
     scope_reason: str | None = None
     if end_date < start_date:
         scope_reason = "date_order_invalid"
-    elif start_date < today - timedelta(days=MAX_BACKFILL_DAYS - 1) or end_date > today:
-        scope_reason = "outside_latest_31_days"
+    elif start_date < today - timedelta(days=_max_backfill_days() - 1) or end_date > today:
+        scope_reason = f"outside_latest_{_max_backfill_days()}_days"
     elif dataset is None or not dataset.is_active:
         scope_reason = "dataset_inactive"
-    elif (provider, dataset_key) not in CAPABILITIES:
+    elif not _supports_backfill(provider, dataset_key):
         scope_reason = "provider_dataset_unsupported"
     elif (
         await db.execute(
@@ -341,7 +367,7 @@ async def claim_next_item(
 ) -> HistoricalBackfillItem | None:
     """Lease one date only when its request has no earlier unfinished item."""
     now = now or utc_now()
-    expiry_date = _provider_current_date(provider, now) - timedelta(days=MAX_BACKFILL_DAYS)
+    expiry_date = _provider_current_date(provider, now) - timedelta(days=_max_backfill_days())
     expired = (
         (
             await db.execute(

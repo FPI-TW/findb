@@ -57,6 +57,12 @@ validate_image "$SHIOAJI_IMAGE_REF" "findb/$DEPLOYMENT_TARGET/fetcher/shioaji"
 # consumer's allowlisted values into /run and removes them after the child exits.
 preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
+schedule_file=/app/configs/daily_scheduler.v2.json
+shioaji_manifest=/app/configs/shioaji_tw_pilot.v1.json
+if [ "$DEPLOYMENT_TARGET" = production ]; then
+  schedule_file=/app/configs/daily_scheduler.production.v3.json
+  shioaji_manifest=/app/configs/shioaji_tw50_2026_09_21.v2.json
+fi
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -162,7 +168,7 @@ run_runtime --consumer twelve-data --ecr-registry "$ECR_REGISTRY" --docker-login
   /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
   findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
   findb-fetcher-scheduler-preflight - \
-  findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.v2.json \
+  findb-fetch-scheduler --schedule-file "$schedule_file" \
   --slot-id western_markets_window --dataset-key us_equity_eod
 
 register_provider findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-previous
@@ -171,7 +177,7 @@ run_runtime --consumer finlab --ecr-registry "$ECR_REGISTRY" --docker-login -- \
   /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
   findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
   findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache \
-  findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json \
+  findb-fetch-finlab-scheduler --schedule-file "$schedule_file" \
   --slot-id taiwan_market_window --dataset-key tw_equity_eod
 
 register_provider findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-previous
@@ -180,7 +186,7 @@ run_runtime --consumer shioaji --ecr-registry "$ECR_REGISTRY" --docker-login -- 
   /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
   findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
   findb-fetcher-shioaji-scheduler-preflight /var/lib/findb-shioaji-fetcher/cache \
-  findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json
+  findb-fetch-shioaji-scheduler --manifest "$shioaji_manifest"
 
 if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
   rollback_processed

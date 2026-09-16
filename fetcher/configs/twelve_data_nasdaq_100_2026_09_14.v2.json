@@ -1,0 +1,530 @@
+{
+  "universe_version": 2,
+  "universe_id": "twelve_data_nasdaq_100_2026_09_14",
+  "provider": "twelve_data",
+  "dataset_key": "us_equity_eod",
+  "market": "US",
+  "asset_class": "equity",
+  "instrument_type": "Common Stock",
+  "credit_cost_per_symbol": 1,
+  "source_url": "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQ/holdings/fund?idType=ticker&interval=monthly&productType=ETF",
+  "effective_date": "2026-09-14",
+  "source_sha256": "1e557d2be09bc5f1218c451dfc874e7b5442bfb19c41c9e34254971310fb4239",
+  "symbols_sha256": "a22e838114481101b9bac1c6822bbb0edab2c9377683071b6df8c2198021cb9f",
+  "batch_size": 5,
+  "inter_batch_seconds": 60,
+  "limits": {
+    "max_symbols_per_run": 5,
+    "max_records_per_symbol": 366,
+    "max_total_records_per_run": 1830,
+    "max_date_span_days": 366,
+    "max_credits_per_run": 5
+  },
+  "symbols": [
+    {
+      "symbol": "NVDA",
+      "canonical_symbol": "NVDA",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AAPL",
+      "canonical_symbol": "AAPL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MSFT",
+      "canonical_symbol": "MSFT",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MU",
+      "canonical_symbol": "MU",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AMZN",
+      "canonical_symbol": "AMZN",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AMD",
+      "canonical_symbol": "AMD",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "GOOGL",
+      "canonical_symbol": "GOOGL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "META",
+      "canonical_symbol": "META",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "GOOG",
+      "canonical_symbol": "GOOG",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "TSLA",
+      "canonical_symbol": "TSLA",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AVGO",
+      "canonical_symbol": "AVGO",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "WMT",
+      "canonical_symbol": "WMT",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "INTC",
+      "canonical_symbol": "INTC",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CSCO",
+      "canonical_symbol": "CSCO",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "COST",
+      "canonical_symbol": "COST",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PLTR",
+      "canonical_symbol": "PLTR",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "LRCX",
+      "canonical_symbol": "LRCX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "NFLX",
+      "canonical_symbol": "NFLX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AMAT",
+      "canonical_symbol": "AMAT",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PANW",
+      "canonical_symbol": "PANW",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "SPCX",
+      "canonical_symbol": "SPCX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "TXN",
+      "canonical_symbol": "TXN",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CRWD",
+      "canonical_symbol": "CRWD",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "SNDK",
+      "canonical_symbol": "SNDK",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "KLAC",
+      "canonical_symbol": "KLAC",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "LIN",
+      "canonical_symbol": "LIN",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AMGN",
+      "canonical_symbol": "AMGN",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "TMUS",
+      "canonical_symbol": "TMUS",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MRVL",
+      "canonical_symbol": "MRVL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "QCOM",
+      "canonical_symbol": "QCOM",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PEP",
+      "canonical_symbol": "PEP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "GILD",
+      "canonical_symbol": "GILD",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "STX",
+      "canonical_symbol": "STX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ADI",
+      "canonical_symbol": "ADI",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "SHOP",
+      "canonical_symbol": "SHOP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "WDC",
+      "canonical_symbol": "WDC",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ASML",
+      "canonical_symbol": "ASML",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "BKNG",
+      "canonical_symbol": "BKNG",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ISRG",
+      "canonical_symbol": "ISRG",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "VRTX",
+      "canonical_symbol": "VRTX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "FTNT",
+      "canonical_symbol": "FTNT",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "SBUX",
+      "canonical_symbol": "SBUX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ADP",
+      "canonical_symbol": "ADP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ADBE",
+      "canonical_symbol": "ADBE",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "APP",
+      "canonical_symbol": "APP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ARM",
+      "canonical_symbol": "ARM",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MELI",
+      "canonical_symbol": "MELI",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CEG",
+      "canonical_symbol": "CEG",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "INTU",
+      "canonical_symbol": "INTU",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CSX",
+      "canonical_symbol": "CSX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MAR",
+      "canonical_symbol": "MAR",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CMCSA",
+      "canonical_symbol": "CMCSA",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MNST",
+      "canonical_symbol": "MNST",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "DASH",
+      "canonical_symbol": "DASH",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "REGN",
+      "canonical_symbol": "REGN",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CTAS",
+      "canonical_symbol": "CTAS",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MDLZ",
+      "canonical_symbol": "MDLZ",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CDNS",
+      "canonical_symbol": "CDNS",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "DDOG",
+      "canonical_symbol": "DDOG",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ROST",
+      "canonical_symbol": "ROST",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "SNPS",
+      "canonical_symbol": "SNPS",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ORLY",
+      "canonical_symbol": "ORLY",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ABNB",
+      "canonical_symbol": "ABNB",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "WBD",
+      "canonical_symbol": "WBD",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AEP",
+      "canonical_symbol": "AEP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "LITE",
+      "canonical_symbol": "LITE",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PCAR",
+      "canonical_symbol": "PCAR",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "HON",
+      "canonical_symbol": "HON",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "FANG",
+      "canonical_symbol": "FANG",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "FAST",
+      "canonical_symbol": "FAST",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "NXPI",
+      "canonical_symbol": "NXPI",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "BKR",
+      "canonical_symbol": "BKR",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MPWR",
+      "canonical_symbol": "MPWR",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PDD",
+      "canonical_symbol": "PDD",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "HONA",
+      "canonical_symbol": "HONA",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "TER",
+      "canonical_symbol": "TER",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ADSK",
+      "canonical_symbol": "ADSK",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PYPL",
+      "canonical_symbol": "PYPL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "NBIS",
+      "canonical_symbol": "NBIS",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CCEP",
+      "canonical_symbol": "CCEP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "XEL",
+      "canonical_symbol": "XEL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MSTR",
+      "canonical_symbol": "MSTR",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "EXC",
+      "canonical_symbol": "EXC",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ALAB",
+      "canonical_symbol": "ALAB",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "KDP",
+      "canonical_symbol": "KDP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "PAYX",
+      "canonical_symbol": "PAYX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "TTWO",
+      "canonical_symbol": "TTWO",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "TRI",
+      "canonical_symbol": "TRI",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "IDXX",
+      "canonical_symbol": "IDXX",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ROP",
+      "canonical_symbol": "ROP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "AXON",
+      "canonical_symbol": "AXON",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "FER",
+      "canonical_symbol": "FER",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "WDAY",
+      "canonical_symbol": "WDAY",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MCHP",
+      "canonical_symbol": "MCHP",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ODFL",
+      "canonical_symbol": "ODFL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CRWV",
+      "canonical_symbol": "CRWV",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "RKLB",
+      "canonical_symbol": "RKLB",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "ALNY",
+      "canonical_symbol": "ALNY",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "DXCM",
+      "canonical_symbol": "DXCM",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "CPRT",
+      "canonical_symbol": "CPRT",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "GEHC",
+      "canonical_symbol": "GEHC",
+      "exchange": "NASDAQ"
+    }
+  ]
+}

@@ -25,7 +25,12 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
 
 
 def _daily_provider(provider: str) -> dict[str, Any]:
-    schedule_path = Path(os.getenv("FETCHER_SCHEDULE_FILE", "/app/configs/daily_scheduler.v2.json"))
+    default_schedule = (
+        "/app/configs/daily_scheduler.production.v3.json"
+        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        else "/app/configs/daily_scheduler.v2.json"
+    )
+    schedule_path = Path(os.getenv("FETCHER_SCHEDULE_FILE", default_schedule))
     schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
     feed = next(item for item in schedule["feeds"] if item["provider"] == provider)
     universe_path = schedule_path.parent / feed["universe_file"]
@@ -65,7 +70,10 @@ def _daily_provider(provider: str) -> dict[str, Any]:
     history = [dict(row) for row in rows if str(row["target_data_date"]) in selected_dates]
     symbols = universe.get("symbols", [])
     if provider == "twelve_data":
-        estimated_credits: int | None = len(symbols) * int(universe["credit_cost_per_symbol"])
+        batch_size = int(universe.get("limits", {}).get("max_symbols_per_run", len(symbols)))
+        estimated_credits: int | None = min(len(symbols), batch_size) * int(
+            universe["credit_cost_per_symbol"]
+        )
         universe_id = universe["universe_id"]
     else:
         estimated_credits = None
@@ -106,10 +114,15 @@ def _daily_provider(provider: str) -> dict[str, Any]:
 
 
 def _shioaji() -> dict[str, Any]:
+    default_manifest = (
+        "/app/configs/shioaji_tw50_2026_09_21.v2.json"
+        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        else "/app/configs/shioaji_tw_pilot.v1.json"
+    )
     manifest_path = Path(
         os.getenv(
             "FETCHER_SHIOAJI_PRODUCTION_MANIFEST",
-            "/app/configs/shioaji_tw_pilot.v1.json",
+            default_manifest,
         )
     )
     state_path = Path(

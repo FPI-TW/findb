@@ -28,6 +28,9 @@ from findb_fetcher.shioaji_staging_state import ShioajiStagingState
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 MANIFEST = Path(__file__).resolve().parents[1] / "configs" / "shioaji_tw_pilot.v1.json"
+PRODUCTION_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "configs" / "shioaji_tw50_2026_09_21.v2.json"
+)
 
 
 @pytest.mark.parametrize(
@@ -81,6 +84,17 @@ def test_exact_production_manifest_and_no_staging_identity(tmp_path: Path) -> No
     duplicate.write_text('{"version":1,"version":1}')
     with pytest.raises(ProductionManifestError):
         load_manifest(duplicate)
+
+
+def test_reviewed_v2_manifest_has_two_exact_dataset_sequences() -> None:
+    manifest = load_manifest(PRODUCTION_MANIFEST)
+    equity = [item for item in manifest["sequences"] if item["dataset_key"] == "tw_equity_minute"]
+    etf = [item for item in manifest["sequences"] if item["dataset_key"] == "tw_etf_minute"]
+
+    assert len(equity) == 50
+    assert [item["symbol"] for item in etf] == ["0050", "0056", "006201"]
+    assert all(item["sequence_count"] == 50 for item in equity)
+    assert all(item["sequence_count"] == 3 for item in etf)
 
 
 def test_existing_production_state_runs_sqlite_integrity_check() -> None:
