@@ -1,5 +1,23 @@
 # Staging OpenTofu control plane
 
+`production-bootstrap/` creates only the Production remote-state KMS key and
+private versioned bucket `findb-production-tofu-state-289112218471` in account
+`289112218471`. `production/` is an independent state root at
+`production/control-plane.tfstate`; it does not import, move, or share staging
+state. Its provider has an account allowlist and an additional runtime account
+guard.
+
+Production declares the dedicated `10.20.0.0/16` VPC, public compute/private
+RDS subnets in `ap-southeast-1a` and `1c`, two EIP-backed SSM-only Ubuntu hosts,
+Single-AZ PostgreSQL 16, immutable unit-scoped ECR, encrypted deployment
+bundles, runtime secret metadata, DLM, CloudWatch/SNS, multi-region CloudTrail,
+GuardDuty, and unit-scoped GitHub OIDC roles. It intentionally creates no
+Secrets Manager versions and contains no Cloudflare credentials. Follow
+[`docs/operations/production.md`](../../docs/operations/production.md) for the
+review/apply/bootstrap order. `PRODUCTION_DEPLOY_ENABLED` must remain absent.
+
+## Staging control-plane details
+
 This directory contains the Phase 1 control-plane foundation and the Phase 2
 runtime-secret metadata foundation. It creates IAM, target-specific KMS keys,
 Secrets Manager metadata, S3, CloudWatch, and SSM resources and references the

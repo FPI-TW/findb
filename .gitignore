@@ -44,6 +44,7 @@ backend/app/static/data/macro-series.json
 *.tfvars
 !*.tfvars.example
 infra/tofu/bootstrap/backend.tf
+infra/tofu/production-bootstrap/backend.tf
 
 .idea/
 .vscode/
