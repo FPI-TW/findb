@@ -65,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.state_path,
             read_only=args.check or args.require_stopped,
             require_existing=args.require_stopped,
+            manifest=manifest,
         )
         fetcher, calendar_config, raw_config = validate_production_runtime()
         contracts = validate_contracts(fetcher.contracts_dir)
@@ -90,7 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return _emit({"code": "STOPPED_OK", "stage": "control", "count": 0})
 
-        state = open_production_state(args.state_path)
+        state = open_production_state(args.state_path, manifest)
         try:
             if args.run_forever:
                 return _run_forever(

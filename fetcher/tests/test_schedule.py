@@ -11,6 +11,9 @@ from findb_fetcher.schedule import ScheduleError, load_schedule_manifest
 
 V2_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.v2.json"
 V2_CALENDAR_PATH = V2_CONFIG_PATH.parent / "calendars" / "us_equity_2026_2028.v1.json"
+V3_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.production.v3.json"
+)
 
 
 def _write_v2_manifest(tmp_path: Path, value: object) -> Path:
@@ -33,6 +36,28 @@ def test_repository_schedule_is_strict_and_bounded() -> None:
     assert schedule.outputsize == 20
     assert schedule.max_attempts == 5
     assert schedule.lease_seconds > schedule.wait_timeout_seconds
+
+
+def test_production_schedule_is_target_bound_and_uses_reviewed_universes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+    manifest = load_schedule_manifest(V3_CONFIG_PATH)
+
+    assert manifest.schedule_version == 3
+    assert manifest.deployment_target == "production"
+    assert [feed.universe_file.name for feed in manifest.feeds] == [
+        "twelve_data_nasdaq_100_2026_09_14.v2.json",
+        "finlab_tw50_2026_09_21.v2.json",
+    ]
+    with pytest.raises(ScheduleError, match="production target"):
+        load_schedule_manifest(V2_CONFIG_PATH)
+
+
+def test_staging_target_rejects_production_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEPLOYMENT_TARGET", "staging")
+    with pytest.raises(ScheduleError, match="does not match"):
+        load_schedule_manifest(V3_CONFIG_PATH)
 
 
 def test_v1_schedule_is_rejected(tmp_path: Path) -> None:

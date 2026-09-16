@@ -8,6 +8,9 @@ import pytest
 from findb_fetcher.finlab_universe import FinLabUniverseError, load_finlab_universe
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "finlab_tw_review_required.v1.json"
+PRODUCTION_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "configs" / "finlab_tw50_2026_09_21.v2.json"
+)
 
 
 def _config() -> dict[str, object]:
@@ -76,3 +79,15 @@ def test_loader_rejects_missing_required_fields_and_duplicate_json_keys(tmp_path
     path.write_text(duplicate, encoding="utf-8")
     with pytest.raises(FinLabUniverseError, match="unique"):
         load_finlab_universe(path)
+
+
+def test_loader_accepts_checksum_bound_tw50_production_snapshot() -> None:
+    universe = load_finlab_universe(PRODUCTION_CONFIG_PATH)
+
+    assert universe.manifest_version == 2
+    assert universe.effective_date is not None
+    assert universe.effective_date.isoformat() == "2026-09-21"
+    assert len(universe.symbols) == 50
+    assert {item.source_symbol for item in universe.symbols} >= {"2330", "6446"}
+    assert "3661" not in {item.source_symbol for item in universe.symbols}
+    assert universe.expected_record_count == 50

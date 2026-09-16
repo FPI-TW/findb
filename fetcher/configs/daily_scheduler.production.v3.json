@@ -1,0 +1,51 @@
+{
+  "schedule_version": 3,
+  "deployment_target": "production",
+  "timezone": "Asia/Taipei",
+  "feeds": [
+    {
+      "slot_id": "western_markets_window",
+      "provider": "twelve_data",
+      "market": "US",
+      "dataset_key": "us_equity_eod",
+      "universe_file": "twelve_data_nasdaq_100_2026_09_14.v2.json",
+      "scheduled_time": "08:15",
+      "target_date_lag_days": 1,
+      "target_date_policy": "latest_trade_date",
+      "calendar_file": "calendars/us_equity_2026_2028.v1.json",
+      "grace_seconds": 7200,
+      "outputsize": 20,
+      "max_attempts": 5,
+      "retry_base_seconds": 60,
+      "retry_max_seconds": 3600,
+      "lease_seconds": 2400,
+      "poll_interval_seconds": 60,
+      "wait_timeout_seconds": 1800,
+      "max_credits_per_run": 5,
+      "max_records_per_run": 1830,
+      "enabled": true
+    },
+    {
+      "slot_id": "taiwan_market_window",
+      "provider": "finlab",
+      "market": "TW",
+      "dataset_key": "tw_equity_eod",
+      "universe_file": "finlab_tw50_2026_09_21.v2.json",
+      "scheduled_time": "14:30",
+      "target_date_lag_days": 0,
+      "target_date_policy": "latest_weekday",
+      "calendar_file": null,
+      "grace_seconds": 9000,
+      "outputsize": 50,
+      "max_attempts": 5,
+      "retry_base_seconds": 60,
+      "retry_max_seconds": 3600,
+      "lease_seconds": 2400,
+      "poll_interval_seconds": 60,
+      "wait_timeout_seconds": 1800,
+      "max_credits_per_run": 5,
+      "max_records_per_run": 50,
+      "enabled": true
+    }
+  ]
+}

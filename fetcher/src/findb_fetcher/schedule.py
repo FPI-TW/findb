@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 _MAX_CONFIG_BYTES = 64 * 1024
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 _V2_ROOT_KEYS = {"schedule_version", "timezone", "feeds"}
+_V3_ROOT_KEYS = {"schedule_version", "deployment_target", "timezone", "feeds"}
 _V2_FEED_KEYS = {
     "slot_id",
     "provider",
@@ -162,6 +164,7 @@ class ScheduleManifest:
     schedule_version: int
     timezone_name: str
     feeds: tuple[ScheduleConfig, ...]
+    deployment_target: str = "staging"
 
 
 def load_schedule_config(path: Path) -> ScheduleConfig:
@@ -173,7 +176,7 @@ def load_schedule_config(path: Path) -> ScheduleConfig:
 
 
 def load_schedule_manifest(path: Path) -> ScheduleManifest:
-    """Load the current v2 schedule manifest."""
+    """Load a target-bound schedule manifest and reject cross-target identity mixing."""
     try:
         raw = path.read_bytes()
         if len(raw) > _MAX_CONFIG_BYTES:
@@ -183,12 +186,28 @@ def load_schedule_manifest(path: Path) -> ScheduleManifest:
         raise ScheduleError("schedule config must be valid UTF-8 JSON with unique keys") from exc
     if not isinstance(value, dict):
         raise ScheduleError("schedule config must be an object")
-    return _load_v2_manifest(path, value)
+    version = value.get("schedule_version")
+    target = os.getenv("DEPLOYMENT_TARGET", "").strip().lower()
+    if version == 2:
+        if target == "production":
+            raise ScheduleError("production target cannot load a staging v2 schedule")
+        return _load_manifest(path, value, version=2, deployment_target="staging")
+    if version == 3:
+        configured_target = _required_string(value, "deployment_target")
+        if configured_target != "production":
+            raise ScheduleError("v3 deployment_target must be production")
+        if target and target != configured_target:
+            raise ScheduleError("schedule deployment_target does not match runtime target")
+        return _load_manifest(path, value, version=3, deployment_target=configured_target)
+    raise ScheduleError(f"v2 schedule keys must be exactly {sorted(_V2_ROOT_KEYS)}")
 
 
-def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
-    if set(value) != _V2_ROOT_KEYS or value.get("schedule_version") != 2:
-        raise ScheduleError(f"v2 schedule keys must be exactly {sorted(_V2_ROOT_KEYS)}")
+def _load_manifest(
+    path: Path, value: dict[str, Any], *, version: int, deployment_target: str
+) -> ScheduleManifest:
+    root_keys = _V2_ROOT_KEYS if version == 2 else _V3_ROOT_KEYS
+    if set(value) != root_keys or value.get("schedule_version") != version:
+        raise ScheduleError(f"v{version} schedule keys must be exactly {sorted(root_keys)}")
     timezone_name = _required_string(value, "timezone")
     if timezone_name != "Asia/Taipei":
         raise ScheduleError("v2 scheduler timezone must be Asia/Taipei")
@@ -227,7 +246,7 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
             timezone_name=timezone_name,
         )
         config = ScheduleConfig(
-            schedule_version=2,
+            schedule_version=version,
             schedule_id=f"{provider}_{slot_id}_{dataset_key}",
             universe_file=universe_file,
             outputsize=_bounded_int(item, "outputsize", 1, 5000),
@@ -265,7 +284,7 @@ def _load_v2_manifest(path: Path, value: dict[str, Any]) -> ScheduleManifest:
         if config.target_date_policy == "latest_trade_date" and config.enabled and calendar is None:
             raise ScheduleError("enabled trade-date policy requires a governed calendar")
         feeds.append(config)
-    return ScheduleManifest(2, timezone_name, tuple(feeds))
+    return ScheduleManifest(version, timezone_name, tuple(feeds), deployment_target)
 
 
 def _identifier(parent: dict[str, Any], key: str) -> str:

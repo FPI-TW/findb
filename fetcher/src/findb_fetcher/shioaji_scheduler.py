@@ -43,6 +43,7 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_OUTPUT_BYTES = 4096
 PILOT_UNIVERSE_ID = "shioaji_tw_pilot_v1"
+PRODUCTION_UNIVERSE_PREFIX = "shioaji_tw50_"
 PILOT_MARKET = "TW"
 PILOT_POLL_SECONDS = 60
 PILOT_DUE = clock_time(14, 30)
@@ -127,7 +128,7 @@ def _strict_equal(expected: Any, actual: Any) -> bool:
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    """Load only the reviewed four-symbol production-pilot manifest."""
+    """Load a reviewed pilot or production manifest and fail closed."""
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -138,25 +139,96 @@ def load_manifest(path: Path) -> dict[str, Any]:
         value = json.loads(raw, object_pairs_hook=_pairs)
     except (UnicodeDecodeError, json.JSONDecodeError, ProductionManifestError) as exc:
         raise ProductionManifestError("invalid production manifest") from exc
-    expected: dict[str, Any] = {
-        "version": 1,
-        "universe_id": PILOT_UNIVERSE_ID,
-        "governance": GOVERNANCE,
-        "sequences": [dict(item) for item in EXPECTED],
-    }
-    if not _strict_equal(expected, value):
-        raise ProductionManifestError("manifest is not the reviewed production pilot")
+    if not isinstance(value, dict):
+        raise ProductionManifestError("manifest must be an object")
+    if value.get("version") == 1:
+        expected: dict[str, Any] = {
+            "version": 1,
+            "universe_id": PILOT_UNIVERSE_ID,
+            "governance": GOVERNANCE,
+            "sequences": [dict(item) for item in EXPECTED],
+        }
+        if not _strict_equal(expected, value):
+            raise ProductionManifestError("manifest is not the reviewed production pilot")
+        return value
+    _validate_v2_manifest(value)
     return value
+
+
+def _validate_v2_manifest(value: dict[str, Any]) -> None:
+    expected_keys = {
+        "version",
+        "universe_id",
+        "source_url",
+        "effective_date",
+        "source_sha256",
+        "symbols_sha256",
+        "governance",
+        "sequences",
+    }
+    if set(value) != expected_keys or value.get("version") != 2:
+        raise ProductionManifestError("production manifest v2 has invalid keys")
+    identity = value.get("universe_id")
+    if not isinstance(identity, str) or not identity.startswith(PRODUCTION_UNIVERSE_PREFIX):
+        raise ProductionManifestError("production manifest v2 has invalid identity")
+    if not isinstance(value.get("source_url"), str) or not value["source_url"].startswith(
+        "https://"
+    ):
+        raise ProductionManifestError("production source_url must use HTTPS")
+    try:
+        date.fromisoformat(value["effective_date"])
+    except (TypeError, ValueError) as exc:
+        raise ProductionManifestError("production effective_date must be an ISO date") from exc
+    for key in ("source_sha256", "symbols_sha256"):
+        digest = value.get(key)
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ProductionManifestError(f"{key} must be a lowercase SHA-256 digest")
+    if not _strict_equal(GOVERNANCE, value.get("governance")):
+        raise ProductionManifestError("production governance does not match reviewed limits")
+    sequences = value.get("sequences")
+    if not isinstance(sequences, list) or len(sequences) != 53:
+        raise ProductionManifestError("production manifest must contain 50 equities and 3 ETFs")
+    expected_keys = {"symbol", "dataset_key", "asset_class", "sequence", "sequence_count"}
+    if any(not isinstance(item, dict) or set(item) != expected_keys for item in sequences):
+        raise ProductionManifestError("production sequence keys are invalid")
+    equity = [item for item in sequences if item.get("dataset_key") == "tw_equity_minute"]
+    etf = [item for item in sequences if item.get("dataset_key") == "tw_etf_minute"]
+    if len(equity) != 50 or len(etf) != 3:
+        raise ProductionManifestError("production dataset sequence sizes are invalid")
+    if [item.get("symbol") for item in etf] != ["0050", "0056", "006201"]:
+        raise ProductionManifestError("production ETF membership is invalid")
+    for group, asset_class in ((equity, "equity"), (etf, "etf")):
+        count = len(group)
+        if any(
+            item.get("asset_class") != asset_class
+            or item.get("sequence") != index
+            or item.get("sequence_count") != count
+            or not isinstance(item.get("symbol"), str)
+            for index, item in enumerate(group, start=1)
+        ):
+            raise ProductionManifestError("production sequence ordering is invalid")
+    symbols = [f"{item['dataset_key']}:{item['symbol']}" for item in sequences]
+    digest = hashlib.sha256(("\n".join(symbols) + "\n").encode()).hexdigest()
+    if digest != value["symbols_sha256"]:
+        raise ProductionManifestError("symbols_sha256 does not match normalized sequences")
 
 
 def default_manifest_path() -> Path:
     configured = os.getenv("FETCHER_SHIOAJI_PRODUCTION_MANIFEST")
     if configured:
         return Path(configured)
-    container_path = Path("/app/configs/shioaji_tw_pilot.v1.json")
+    target = os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower()
+    filename = (
+        "shioaji_tw50_2026_09_21.v2.json" if target == "production" else "shioaji_tw_pilot.v1.json"
+    )
+    container_path = Path("/app/configs") / filename
     if container_path.is_file():
         return container_path
-    return Path(__file__).resolve().parents[2] / "configs" / "shioaji_tw_pilot.v1.json"
+    return Path(__file__).resolve().parents[2] / "configs" / filename
 
 
 def default_state_path() -> Path:
@@ -165,7 +237,11 @@ def default_state_path() -> Path:
 
 
 def validate_production_state_path(
-    path: Path, *, read_only: bool = False, require_existing: bool = False
+    path: Path,
+    *,
+    read_only: bool = False,
+    require_existing: bool = False,
+    manifest: dict[str, Any] | None = None,
 ) -> None:
     """Reject staging SQLite and malformed existing state without migration."""
     if not isinstance(path, Path):
@@ -197,10 +273,10 @@ def validate_production_state_path(
         return
     if not resolved.is_file():
         raise ProductionStateError("production state path is not a file")
-    _inspect_existing_state(resolved)
+    _inspect_existing_state(resolved, manifest or load_manifest(default_manifest_path()))
 
 
-def _inspect_existing_state(path: Path) -> None:
+def _inspect_existing_state(path: Path, manifest: dict[str, Any]) -> None:
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
             db.execute("PRAGMA query_only = ON")
@@ -222,8 +298,9 @@ def _inspect_existing_state(path: Path) -> None:
             identities = {
                 str(row[0]) for row in db.execute("SELECT DISTINCT universe_id FROM daily_updates")
             }
-            if any(identity != PILOT_UNIVERSE_ID for identity in identities):
-                raise ProductionStateError("production state identity is not the pilot universe")
+            universe_id = str(manifest["universe_id"])
+            if any(identity != universe_id for identity in identities):
+                raise ProductionStateError("production state identity does not match manifest")
             expected_sequences = {
                 (
                     item["symbol"],
@@ -231,7 +308,7 @@ def _inspect_existing_state(path: Path) -> None:
                     item["sequence"],
                     item["sequence_count"],
                 )
-                for item in EXPECTED
+                for item in manifest["sequences"]
             }
             for (daily_id,) in db.execute("SELECT daily_id FROM daily_updates"):
                 actual_sequences = set(
@@ -249,8 +326,10 @@ def _inspect_existing_state(path: Path) -> None:
         raise ProductionStateError("production state cannot be inspected") from exc
 
 
-def open_production_state(path: Path) -> ShioajiStagingState:
-    validate_production_state_path(path)
+def open_production_state(
+    path: Path, manifest: dict[str, Any] | None = None
+) -> ShioajiStagingState:
+    validate_production_state_path(path, manifest=manifest)
     try:
         return ShioajiStagingState(path)
     except ShioajiStagingStateError as exc:
@@ -315,10 +394,10 @@ class ProductionCoordinator(_StagingCoordinator):
         manifest = kwargs.get("manifest")
         if manifest is None and len(args) > 1:
             manifest = args[1]
-        if not isinstance(manifest, dict) or not str(manifest.get("universe_id", "")).startswith(
-            PILOT_UNIVERSE_ID
+        if not isinstance(manifest, dict) or not _coordinator_universe_id(
+            manifest.get("universe_id")
         ):
-            raise ProductionManifestError("production coordinator requires pilot identity")
+            raise ProductionManifestError("production coordinator requires reviewed identity")
         kwargs["terminal_on_exhaustion"] = True
         super().__init__(*args, **kwargs)
 
@@ -386,8 +465,8 @@ class ShioajiProductionScheduler:
         calendar: Calendar,
         coordinator_factory: Callable[[datetime], ProductionCoordinator],
     ) -> None:
-        if manifest.get("universe_id") != PILOT_UNIVERSE_ID:
-            raise ProductionManifestError("production coordinator requires pilot identity")
+        if not _supported_universe_id(manifest.get("universe_id")):
+            raise ProductionManifestError("production coordinator requires reviewed identity")
         self.state = state
         self.manifest = manifest
         self.calendar = calendar
@@ -401,7 +480,7 @@ class ShioajiProductionScheduler:
         if local.time() < PILOT_DUE:
             return SchedulerRun(target, "skipped", skip_reason="not_due")
         if local.time() >= PILOT_CUTOFF:
-            self.state.mark_cutoff(f"{PILOT_UNIVERSE_ID}:{target.isoformat()}")
+            self.state.mark_cutoff(f"{self.manifest['universe_id']}:{target.isoformat()}")
             return SchedulerRun(target, "skipped", skip_reason="cutoff_reached")
         day, revision = self.calendar.get_day(PILOT_MARKET, target)
         day_status = getattr(day, "day_status", None)
@@ -488,8 +567,22 @@ def _source_client(fetcher: FetcherConfig, contracts: ContractRegistry) -> Any:
     return SourceAPIClient(fetcher, contracts)
 
 
-def stable_daily_id(target: date) -> str:
-    return hashlib.sha256(f"{PILOT_UNIVERSE_ID}:{target.isoformat()}".encode()).hexdigest()[:32]
+def _supported_universe_id(value: Any) -> bool:
+    return value == PILOT_UNIVERSE_ID or (
+        isinstance(value, str) and value.startswith(PRODUCTION_UNIVERSE_PREFIX)
+    )
+
+
+def _coordinator_universe_id(value: Any) -> bool:
+    return isinstance(value, str) and (
+        value.startswith(PILOT_UNIVERSE_ID) or value.startswith(PRODUCTION_UNIVERSE_PREFIX)
+    )
+
+
+def stable_daily_id(target: date, universe_id: str = PILOT_UNIVERSE_ID) -> str:
+    if not _supported_universe_id(universe_id):
+        raise ProductionManifestError("daily identity requires reviewed universe")
+    return hashlib.sha256(f"{universe_id}:{target.isoformat()}".encode()).hexdigest()[:32]
 
 
 __all__ = [

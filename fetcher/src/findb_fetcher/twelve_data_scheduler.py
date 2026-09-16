@@ -335,7 +335,14 @@ class SchedulerService:
             self._schedule,
             self._universe,
             now=now,
-            limit=len(self._universe.symbols),
+            limit=min(
+                len(self._universe.symbols),
+                getattr(
+                    self._universe.limits,
+                    "max_symbols_per_run",
+                    len(self._universe.symbols),
+                ),
+            ),
         )
         results: list[ScheduledJobResult] = []
         for job in jobs:

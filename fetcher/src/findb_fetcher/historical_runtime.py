@@ -31,9 +31,12 @@ class HistoricalRuntimeError(RuntimeError):
 
 
 def _schedule(provider: str, dataset_key: str) -> ScheduleConfig:
-    path = Path(
-        os.getenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/app/configs/daily_scheduler.v2.json")
+    default_schedule = (
+        "/app/configs/daily_scheduler.production.v3.json"
+        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        else "/app/configs/daily_scheduler.v2.json"
     )
+    path = Path(os.getenv("FETCHER_HISTORICAL_SCHEDULE_FILE", default_schedule))
     for feed in load_schedule_manifest(path).feeds:
         if feed.provider == provider and feed.dataset_key == dataset_key and feed.enabled:
             return feed
@@ -111,9 +114,12 @@ class FinLabHistoricalRunner:
         if item.provider != "finlab":
             raise HistoricalRuntimeError("provider mismatch")
         schedule = _schedule(item.provider, item.dataset_key)
-        universe_path = Path(
-            os.getenv("FETCHER_FINLAB_UNIVERSE_FILE", "/app/configs/finlab_tw_equity_eod.v1.json")
+        default_universe = (
+            "/app/configs/finlab_tw50_2026_09_21.v2.json"
+            if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+            else "/app/configs/finlab_tw_review_required.v1.json"
         )
+        universe_path = Path(os.getenv("FETCHER_FINLAB_UNIVERSE_FILE", default_universe))
         universe = load_finlab_universe(universe_path)
         config = FetcherConfig.from_env()
         registry = ContractRegistry(config.contracts_dir)
