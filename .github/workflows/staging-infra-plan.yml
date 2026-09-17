@@ -250,7 +250,9 @@ jobs:
 
           plan_file="$scratch/plan"
           show_file="$scratch/plan.json"
-          if ! tofu -chdir=infra/tofu/staging plan -refresh=true -input=false -no-color \
+          # The stack contains many CloudWatch alarms. Keep refresh concurrency
+          # below the API burst limit used by shared GitHub-hosted runners.
+          if ! tofu -chdir=infra/tofu/staging plan -refresh=true -input=false -no-color -parallelism=2 \
             -var-file=terraform.tfvars.example -out="$plan_file" > "$scratch/plan.log" 2>&1; then
             echo "OpenTofu refresh plan failed" >&2
             exit 1
