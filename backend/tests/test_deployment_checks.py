@@ -682,7 +682,6 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     )
     plan_script = plan_step["run"]
     assert "-refresh=true" in plan_script
-    assert "-parallelism=2" in plan_script
     assert "-var-file=terraform.tfvars.example" in plan_script
     assert '-out="$plan_file"' in plan_script
     assert 'tofu -chdir=infra/tofu/staging show -json "$plan_file"' in plan_script

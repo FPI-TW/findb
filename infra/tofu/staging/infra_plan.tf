@@ -95,6 +95,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       [for role in aws_iam_role.deploy : role.arn],
       [for role in aws_iam_role.instance : role.arn],
       [for role in aws_iam_role.ecr_publisher : role.arn],
+      [for role in aws_iam_role.production_promotion_reader : role.arn],
       [aws_iam_role.infra_plan.arn, local.infra_plan_dlm_role_arn],
     )
   }

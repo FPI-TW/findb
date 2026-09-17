@@ -177,6 +177,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     assert "[for role in aws_iam_role.deploy : role.arn]" in permissions
     assert "[for role in aws_iam_role.instance : role.arn]" in permissions
     assert "[for role in aws_iam_role.ecr_publisher : role.arn]" in permissions
+    assert "[for role in aws_iam_role.production_promotion_reader : role.arn]" in permissions
     assert "[aws_iam_role.infra_plan.arn, local.infra_plan_dlm_role_arn]" in permissions
     assert ":role/findb-staging-dlm-root-volume-backup" in plan
     assert 'sid    = "ReadExactRootVolumeBackupPolicy"' in permissions
