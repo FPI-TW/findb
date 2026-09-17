@@ -250,6 +250,31 @@ def test_findb_production_runtime_configuration_schema_is_consumer_consistent() 
     } <= declared[0]
 
 
+def test_fetcher_production_runtime_configuration_schema_is_consumer_consistent() -> None:
+    catalog = _catalog("fetcher")
+    runtime_definitions = [
+        secret
+        for consumer_name in ("twelve-data", "finlab", "shioaji")
+        for secret in catalog["consumers"][consumer_name]["secrets"]
+        if secret["name"] == "runtime/configuration"
+    ]
+    declared = [
+        set((*definition.get("required_keys", []), *definition.get("optional_keys", [])))
+        for definition in runtime_definitions
+    ]
+
+    assert declared[0] == declared[1] == declared[2]
+    assert {
+        "TWELVE_DATA_BASE_URL",
+        "TWELVE_DATA_TIMEOUT_SECONDS",
+        "TWELVE_DATA_MAX_RESPONSE_BYTES",
+        "SHIOAJI_SIMULATION",
+        "CLOUDFLARE_R2_ACCOUNT_ID",
+        "CLOUDFLARE_R2_RAW_BUCKET",
+        "CLOUDFLARE_R2_MAX_OBJECT_BYTES",
+    } <= declared[0]
+
+
 def test_staging_consumer_skips_production_only_runtime_configuration() -> None:
     loader = _loader()
     catalog = {
