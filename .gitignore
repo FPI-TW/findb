@@ -14,6 +14,7 @@ crt/*
 venv/
 ENV/
 env/
+private/
 !infra/env/
 !infra/env/**
 infra/env/**/.env.remote

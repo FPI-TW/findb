@@ -72,6 +72,12 @@ desired/observed state都必須為`stopped`；不可複製staging canonical/raw/
 並在對應年度開始前發布新revision。Production feed不得以weekday推測取代官方資料，執行日期超出
 目前reviewed coverage時必須fail closed。
 
+首次部署的 predeploy gate 只在`DEPLOYMENT_TARGET=production`接受完全沒有任何使用者 relation 的
+乾淨資料庫；candidate acceptance落盤後，activation才可執行唯一一次`alembic upgrade head`。
+只要已存在任一 table、partition、view、materialized view、sequence或foreign table卻沒有Alembic
+revision，即使帶有bootstrap旗標也必須fail closed。Staging與後續已有revision的Production部署維持
+原本的相容性／exact revision檢查，不得以手動migration、staging image或跳過preflight繞過。
+
 由 OpenTofu outputs填入兩份 ignored `infra/env/production/*/.env.remote`，先執行 sync script的
 dry-run，再建立 branch policy僅允許 `main` 的 `production-findb` 與 `production-fetcher`。兩個
 Environment 只存 control-plane variables，不存 application secrets。只有下列 gate 全通過才可另外

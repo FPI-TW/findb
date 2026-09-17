@@ -3250,6 +3250,61 @@ def test_predeploy_database_state_rejects_missing_or_unnegotiated_tls() -> None:
     ]
 
 
+def test_predeploy_empty_database_bootstrap_requires_explicit_allowance() -> None:
+    state = {
+        "database_empty": True,
+        "user_relation_count": 0,
+        "alembic_revision": None,
+        "duplicate_raw_run_ids": 0,
+        "long_transactions_over_5m": 0,
+        "connection_headroom": 120,
+        "postgresql_tls_in_use": True,
+    }
+
+    assert validate_predeploy_state(state, minimum_connection_headroom=80) == [
+        "empty database bootstrap is not allowed"
+    ]
+    assert (
+        validate_predeploy_state(
+            state,
+            minimum_connection_headroom=80,
+            allow_empty_database_bootstrap=True,
+        )
+        == []
+    )
+
+
+def test_predeploy_unversioned_nonempty_database_fails_with_bootstrap_allowance() -> None:
+    state = {
+        "database_empty": False,
+        "user_relation_count": 1,
+        "alembic_revision": None,
+        "duplicate_raw_run_ids": 0,
+        "long_transactions_over_5m": 0,
+        "connection_headroom": 120,
+        "postgresql_tls_in_use": True,
+    }
+
+    assert validate_predeploy_state(
+        state,
+        minimum_connection_headroom=80,
+        allow_empty_database_bootstrap=True,
+    ) == ["database contains user relations without an Alembic revision"]
+
+
+def test_empty_database_bootstrap_flag_is_production_only() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    migration_check = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
+        "\nMIGRATION_CHECK_SCRIPT", 1
+    )[0]
+
+    assert 'if [ "$DEPLOYMENT_TARGET" = production ]; then' in migration_check
+    assert "bootstrap_arg=--allow-empty-database-bootstrap" in migration_check
+    assert 'if [ "$DEPLOYMENT_TARGET" = staging ]' not in migration_check
+
+
 def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
     tmp_path: Path,
 ) -> None:
