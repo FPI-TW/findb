@@ -339,6 +339,13 @@ docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
   --deployment-target "$DEPLOYMENT_TARGET"
+if [ "$DEPLOYMENT_TARGET" = production ]; then
+  docker compose -f "$compose_file" run --rm --no-deps ingest \
+    python /app/scripts/seed_production_calendars.py \
+    --deployment-target production \
+    --apply \
+    --actor production-bootstrap
+fi
 MIGRATION_SCRIPT
 fi
 

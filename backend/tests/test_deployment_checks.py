@@ -78,6 +78,20 @@ UniqueKeyLoader.add_constructor(
 )
 
 
+def test_production_calendar_seed_runs_after_migration_only_for_production() -> None:
+    helper = (
+        REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh"
+    ).read_text()
+    migration = helper.index("uv run alembic upgrade head")
+    production_gate = helper.index('if [ "$DEPLOYMENT_TARGET" = production ]; then', migration)
+    seed = helper.index("python /app/scripts/seed_production_calendars.py", production_gate)
+
+    assert migration < production_gate < seed
+    assert "--deployment-target production" in helper[seed : seed + 240]
+    assert "--apply" in helper[seed : seed + 240]
+    assert "COPY configs ./configs" in (REPO_ROOT / "backend" / "Dockerfile").read_text()
+
+
 def _run_ssm_marker_gate(
     tmp_path: Path, response: dict[str, object] | None, *, aws_error: str = ""
 ) -> subprocess.CompletedProcess[str]:
