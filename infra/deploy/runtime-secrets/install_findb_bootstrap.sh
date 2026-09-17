@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install a nonsecret boot-time dependency that recreates the nginx lookup key
-# in /run before Docker restores the FinDB containers.
+# and production origin TLS material in /run before Docker restores containers.
 
 set -euo pipefail
 set +x
@@ -48,7 +48,7 @@ trap 'exit 129' HUP
 
 cat >"$unit_tmp" <<UNIT
 [Unit]
-Description=Materialize FinDB nginx runtime secret into tmpfs
+Description=Materialize FinDB nginx runtime secrets into tmpfs
 Wants=network-online.target
 After=network-online.target
 Before=docker.service

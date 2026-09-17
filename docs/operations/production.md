@@ -49,6 +49,10 @@ Raw lifecycle 30 日並保護前 7 日；Fetcher raw credential只可讀寫 raw�
 certificate。Fetcher EIP 的 `/32` 必須成為 `SOURCE_ALLOWLIST_CIDRS`。憑證、R2、DB、RabbitMQ、
 四類 API key 與三個 provider credential 全部重新產生，分別寫入 OpenTofu 已建立的
 `findb/production/findb/*` 或 `findb/production/fetcher/*` metadata；不得重用 staging 值。
+Origin certificate secret固定使用單行 base64 欄位
+`FINDB_ORIGIN_CERTIFICATE_PEM_B64`與`FINDB_ORIGIN_PRIVATE_KEY_PEM_B64`；部署只在instance上解碼、
+驗證hostname、至少30日效期與keypair一致性，再原子寫入`/run/findb-runtime-secrets/nginx/`。
+憑證與私鑰不得持久化到`/home/ubuntu`或進入GitHub Environment。
 
 Source client scopes固定為：
 

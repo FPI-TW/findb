@@ -197,8 +197,8 @@ services:
         - ${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}/cloudflare-real-ip.conf:/etc/nginx/cloudflare-real-ip.conf:ro
         - ${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}/source-allowlist.conf:/etc/nginx/source-allowlist.conf:ro
         - /run/findb-runtime-secrets/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro
-        - /home/ubuntu/etc/nginx/ssl/server.crt:/etc/nginx/ssl/server.crt:ro
-        - /home/ubuntu/etc/nginx/ssl/server.key:/etc/nginx/ssl/server.key:ro
+        - ${FINDB_TLS_CERT_PATH:-/home/ubuntu/etc/nginx/ssl/server.crt}:/etc/nginx/ssl/server.crt:ro
+        - ${FINDB_TLS_PRIVATE_KEY_PATH:-/home/ubuntu/etc/nginx/ssl/server.key}:/etc/nginx/ssl/server.key:ro
       healthcheck:
         test: ["CMD-SHELL", "wget -q --no-check-certificate --spider https://127.0.0.1/health"]
         interval: 15s
