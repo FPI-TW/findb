@@ -225,7 +225,8 @@ for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
   fi
 done
 for tls_file in server.crt server.key; do
-  if [ ! -f "/home/ubuntu/etc/nginx/ssl/$tls_file" ]; then
+  if [ "$DEPLOYMENT_TARGET" = staging ] \
+    && [ ! -f "/home/ubuntu/etc/nginx/ssl/$tls_file" ]; then
     echo "findb_aws_deploy=failed reason=tls_file_missing" >&2
     exit 1
   fi
@@ -246,12 +247,22 @@ PULL_SCRIPT
 # removes it before returning.  Only activation/legacy may render the live
 # lookup-key file consumed by the fixed nginx container.
 if [ "$deploy_mode" = candidate ]; then
-  # A successful wrapper invocation proves the target-scoped nginx catalog can
-  # be loaded.  Do not name or inspect its secret value in this helper.
-  run_runtime --consumer nginx -- true
-  echo "findb_aws_deploy=candidate_nginx_secret_catalog_validated"
+  # Validate target-scoped TLS in short-lived tmpfs files without replacing
+  # any live nginx bind mount before durable candidate acceptance.
+  sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" \
+    "$FINDB_PUBLIC_HOST" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID" validate
+  echo "findb_aws_deploy=candidate_nginx_runtime_validated"
 else
   sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID"
+  if [ "$DEPLOYMENT_TARGET" = production ]; then
+    for tls_file in server.crt server.key; do
+      if [ ! -f "/run/findb-runtime-secrets/nginx/$tls_file" ] \
+        || [ "$(stat -c '%u:%g:%a' "/run/findb-runtime-secrets/nginx/$tls_file")" != "0:0:600" ]; then
+        echo "findb_aws_deploy=failed reason=tls_file_missing_or_unsafe" >&2
+        exit 1
+      fi
+    done
+  fi
 fi
 
 run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'

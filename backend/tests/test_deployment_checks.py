@@ -1567,6 +1567,14 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
         in nginx_volumes
     )
     assert not any("/home/ubuntu/etc/nginx/serve-key.conf:" in volume for volume in nginx_volumes)
+    for tls_file in ("server.crt", "server.key"):
+        variable = (
+            "FINDB_TLS_CERT_PATH" if tls_file == "server.crt" else "FINDB_TLS_PRIVATE_KEY_PATH"
+        )
+        assert any(
+            volume.startswith(f"${{{variable}:-/home/ubuntu/etc/nginx/ssl/{tls_file}}}:")
+            for volume in nginx_volumes
+        )
     for config in ("nginx.conf", "cloudflare-real-ip.conf", "source-allowlist.conf"):
         assert any(
             f"${{FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}}/{config}:" in volume
@@ -1584,6 +1592,9 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     )
     assert "render_nginx_runtime.sh" in findb
     assert "/home/ubuntu/etc/nginx/serve-key.conf" not in findb
+    assert '"$AWS_ACCOUNT_ID" validate' in findb
+    assert "candidate_nginx_runtime_validated" in findb
+    assert "tls_file_missing_or_unsafe" in findb
     assert 'nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"' in findb
     assert '[ "$nginx_config_dir" != /etc/findb/nginx ]' in findb
     assert "require_root_owned_nginx_directory /etc/findb" in findb
@@ -1592,7 +1603,16 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     nginx_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh").read_text(
         encoding="utf-8"
     )
-    assert "/run/findb-runtime-secrets/nginx/serve-key.conf" in nginx_helper
+    assert "runtime_output_dir=/run/findb-runtime-secrets/nginx" in nginx_helper
+    assert 'serve_key_output="$runtime_output_dir/serve-key.conf"' in nginx_helper
+    assert 'certificate_output="$runtime_output_dir/server.crt"' in nginx_helper
+    assert 'private_key_output="$runtime_output_dir/server.key"' in nginx_helper
+    assert 'openssl x509 -in "$certificate_tmp" -noout -checkhost "$public_host"' in nginx_helper
+    assert 'openssl x509 -in "$certificate_tmp" -noout -checkend 2592000' in nginx_helper
+    assert "tls_keypair_mismatch" in nginx_helper
+    assert "tls_output_unsafe" in nginx_helper
+    assert 'render_mode="${6:-materialize}"' in nginx_helper
+    assert "validate|materialize" in nginx_helper
     assert (
         "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb"
         in nginx_helper
@@ -2741,9 +2761,9 @@ def test_findb_candidate_exits_before_live_writer_or_compose_mutation() -> None:
         "# A candidate must validate that its target-scoped nginx secret can load, but", 1
     )[1].split("\n\nrun_runtime --consumer migration", 1)[0]
     candidate_secret_branch, live_render_branch = secret_dispatch.split("else", 1)
-    assert "run_runtime --consumer nginx -- true" in candidate_secret_branch
-    assert "candidate_nginx_secret_catalog_validated" in candidate_secret_branch
-    assert '"$nginx_runtime"' not in candidate_secret_branch
+    assert '"$nginx_runtime" "$catalog" "$AWS_REGION"' in candidate_secret_branch
+    assert '"$AWS_ACCOUNT_ID" validate' in candidate_secret_branch
+    assert "candidate_nginx_runtime_validated" in candidate_secret_branch
     assert "/run/findb-runtime-secrets/nginx/serve-key.conf" not in candidate_secret_branch
     assert '"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"' in live_render_branch
 

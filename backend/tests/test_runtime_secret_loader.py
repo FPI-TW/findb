@@ -53,6 +53,7 @@ def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
             "rabbitmq/runtime",
             "r2/canonical-publisher",
             "r2/canonical-reader",
+            "tls/origin-certificate",
         },
         "fetcher": {
             "runtime/configuration",
@@ -183,6 +184,70 @@ def test_production_consumer_loads_target_scoped_runtime_configuration() -> None
     )
 
     assert loaded == {"SHIOAJI_SIMULATION": "true", "TOKEN": "production-token"}
+
+
+def test_findb_nginx_loads_origin_tls_only_in_production() -> None:
+    loader = _loader()
+    catalog = _catalog("findb")
+    fetched: list[str] = []
+
+    payloads = {
+        "findb/production/findb/api/lookup-serve": {"FINDB_LOOKUP_SERVE_API_KEY": "lookup-key"},
+        "findb/production/findb/tls/origin-certificate": {
+            "FINDB_ORIGIN_CERTIFICATE_PEM_B64": "certificate-base64",
+            "FINDB_ORIGIN_PRIVATE_KEY_PEM_B64": "private-key-base64",
+        },
+    }
+
+    def fetch(name: str) -> str:
+        fetched.append(name)
+        return json.dumps(payloads[name])
+
+    loaded = loader.load_consumer(
+        catalog,
+        "nginx",
+        fetch,
+        deployment_target="production",
+    )
+
+    assert loaded == {
+        "FINDB_LOOKUP_SERVE_API_KEY": "lookup-key",
+        "FINDB_ORIGIN_CERTIFICATE_PEM_B64": "certificate-base64",
+        "FINDB_ORIGIN_PRIVATE_KEY_PEM_B64": "private-key-base64",
+    }
+    assert fetched == list(payloads)
+
+    fetched.clear()
+    staging = loader.load_consumer(
+        catalog,
+        "nginx",
+        lambda name: (
+            fetched.append(name) or json.dumps({"FINDB_LOOKUP_SERVE_API_KEY": "staging-lookup-key"})
+        ),
+        deployment_target="staging",
+    )
+    assert staging == {"FINDB_LOOKUP_SERVE_API_KEY": "staging-lookup-key"}
+    assert fetched == ["findb/staging/findb/api/lookup-serve"]
+
+
+def test_findb_production_runtime_configuration_schema_is_consumer_consistent() -> None:
+    catalog = _catalog("findb")
+    runtime_definitions = [
+        secret
+        for consumer_name in ("deployment", "compose")
+        for secret in catalog["consumers"][consumer_name]["secrets"]
+        if secret["name"] == "runtime/configuration"
+    ]
+    declared = [
+        set((*definition.get("required_keys", []), *definition.get("optional_keys", [])))
+        for definition in runtime_definitions
+    ]
+    assert declared[0] == declared[1]
+    assert {
+        "SOURCE_ALLOWLIST_CIDRS",
+        "FINDB_TLS_CERT_PATH",
+        "FINDB_TLS_PRIVATE_KEY_PATH",
+    } <= declared[0]
 
 
 def test_staging_consumer_skips_production_only_runtime_configuration() -> None:
