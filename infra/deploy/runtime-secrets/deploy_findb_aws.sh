@@ -268,6 +268,10 @@ fi
 run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'
 set -euo pipefail
 compose_file="$1"
+bootstrap_arg=""
+if [ "$DEPLOYMENT_TARGET" = production ]; then
+  bootstrap_arg=--allow-empty-database-bootstrap
+fi
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
   expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
@@ -276,16 +280,19 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
       python /app/scripts/predeploy_db_check.py \
         --expected-alembic-revision "$expected_revision" \
         --expected-rds-endpoint "$expected_rds_endpoint" \
-        --require-exact-alembic-revision
+        --require-exact-alembic-revision \
+        ${bootstrap_arg:+"$bootstrap_arg"}
   else
     docker compose -f "$compose_file" run --rm --no-deps ingest \
       python /app/scripts/predeploy_db_check.py \
         --expected-alembic-revision "$expected_revision" \
-        --expected-rds-endpoint "$expected_rds_endpoint"
+        --expected-rds-endpoint "$expected_rds_endpoint" \
+        ${bootstrap_arg:+"$bootstrap_arg"}
   fi
 else
   docker compose -f "$compose_file" run --rm --no-deps ingest \
-    python /app/scripts/predeploy_db_check.py
+    python /app/scripts/predeploy_db_check.py \
+      ${bootstrap_arg:+"$bootstrap_arg"}
 fi
 MIGRATION_CHECK_SCRIPT
 

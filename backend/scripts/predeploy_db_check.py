@@ -75,6 +75,99 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
     engine = create_async_engine(database_url, pool_size=1, max_overflow=0)
     try:
         async with engine.connect() as connection:
+            alembic_table_present = bool(
+                await connection.scalar(
+                    text("SELECT to_regclass('public.alembic_version') IS NOT NULL")
+                )
+            )
+            user_relation_count = int(
+                await connection.scalar(
+                    text("""
+                        SELECT count(*)
+                        FROM pg_class AS relation
+                        JOIN pg_namespace AS namespace
+                          ON namespace.oid = relation.relnamespace
+                        WHERE namespace.nspname <> 'information_schema'
+                          AND namespace.nspname !~ '^pg_'
+                          AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+                        """)
+                )
+                or 0
+            )
+            max_connections = int(
+                await connection.scalar(text("SELECT current_setting('max_connections')::int")) or 0
+            )
+            reserved_connection_slots = int(
+                await connection.scalar(
+                    text("""
+                        SELECT
+                            current_setting('superuser_reserved_connections')::int
+                            + COALESCE(
+                                NULLIF(current_setting('reserved_connections', true), '')::int,
+                                0
+                            )
+                        """)
+                )
+                or 0
+            )
+            current_connections = int(
+                await connection.scalar(
+                    text("""
+                        SELECT count(*)
+                        FROM pg_stat_activity
+                        WHERE backend_type = 'client backend'
+                        """)
+                )
+                or 0
+            )
+            long_transactions = int(
+                await connection.scalar(
+                    text("""
+                        SELECT count(*)
+                        FROM pg_stat_activity
+                        WHERE datname = current_database()
+                          AND pid <> pg_backend_pid()
+                          AND xact_start IS NOT NULL
+                          AND now() - xact_start > interval '5 minutes'
+                        """)
+                )
+                or 0
+            )
+            tls_in_use = bool(
+                await connection.scalar(
+                    text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+                )
+            )
+            base_state = {
+                "alembic_table_present": alembic_table_present,
+                "database_empty": user_relation_count == 0,
+                "user_relation_count": user_relation_count,
+                "max_connections": max_connections,
+                "reserved_connection_slots": reserved_connection_slots,
+                "current_connections": current_connections,
+                "connection_headroom": calculate_connection_headroom(
+                    max_connections=max_connections,
+                    current_connections=current_connections,
+                    reserved_connection_slots=reserved_connection_slots,
+                ),
+                "long_transactions_over_5m": long_transactions,
+                "postgresql_tls_in_use": tls_in_use,
+            }
+            if not alembic_table_present:
+                return {
+                    **base_state,
+                    "alembic_revision": None,
+                    "raw_table_size": None,
+                    "raw_rows": 0,
+                    "duplicate_raw_run_ids": 0,
+                    "pending_or_processing_with_raw": 0,
+                    "pending_or_processing_missing_raw": 0,
+                    "noncanonical_scheduler_control_slots": 0,
+                    "noncanonical_dataset_delivery_schedule_slots": 0,
+                    "legacy_finlab_scheduler_keys": 0,
+                    "dataset_keys_projection_mismatches": 0,
+                    "dataset_keys_projection_status": "not_applicable",
+                }
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
             raw_size = await connection.scalar(
                 text("SELECT pg_size_pretty(pg_total_relation_size('raw.market_payload'))")
@@ -226,54 +319,11 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                 )
             else:
                 dataset_keys_projection_mismatches = 0
-            max_connections = int(
-                await connection.scalar(text("SELECT current_setting('max_connections')::int")) or 0
-            )
-            reserved_connection_slots = int(
-                await connection.scalar(
-                    text("""
-                        SELECT
-                            current_setting('superuser_reserved_connections')::int
-                            + COALESCE(
-                                NULLIF(current_setting('reserved_connections', true), '')::int,
-                                0
-                            )
-                        """)
-                )
-                or 0
-            )
-            current_connections = int(
-                await connection.scalar(
-                    text("""
-                        SELECT count(*)
-                        FROM pg_stat_activity
-                        WHERE backend_type = 'client backend'
-                        """)
-                )
-                or 0
-            )
-            long_transactions = int(
-                await connection.scalar(
-                    text("""
-                        SELECT count(*)
-                        FROM pg_stat_activity
-                        WHERE datname = current_database()
-                          AND pid <> pg_backend_pid()
-                          AND xact_start IS NOT NULL
-                          AND now() - xact_start > interval '5 minutes'
-                        """)
-                )
-                or 0
-            )
-            tls_in_use = bool(
-                await connection.scalar(
-                    text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
-                )
-            )
     finally:
         await engine.dispose()
 
     return {
+        **base_state,
         "alembic_revision": revision,
         "raw_table_size": raw_size,
         "raw_rows": int(raw_rows or 0),
@@ -287,16 +337,6 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
         "dataset_keys_projection_status": (
             "present" if dataset_keys_projection_present else "not_applicable"
         ),
-        "max_connections": max_connections,
-        "reserved_connection_slots": reserved_connection_slots,
-        "current_connections": current_connections,
-        "connection_headroom": calculate_connection_headroom(
-            max_connections=max_connections,
-            current_connections=current_connections,
-            reserved_connection_slots=reserved_connection_slots,
-        ),
-        "long_transactions_over_5m": long_transactions,
-        "postgresql_tls_in_use": tls_in_use,
     }
 
 
@@ -304,6 +344,7 @@ def validate_predeploy_state(
     state: dict[str, Any],
     *,
     minimum_connection_headroom: int,
+    allow_empty_database_bootstrap: bool = False,
 ) -> list[str]:
     """Return deployment blockers found in a collected database snapshot."""
     errors: list[str] = []
@@ -317,6 +358,13 @@ def validate_predeploy_state(
         )
     if state.get("postgresql_tls_in_use") is not True:
         errors.append("database connection did not negotiate PostgreSQL TLS")
+    if state.get("database_empty") is True:
+        if not allow_empty_database_bootstrap:
+            errors.append("empty database bootstrap is not allowed")
+        return errors
+    if state.get("alembic_revision") is None and state.get("user_relation_count", 0):
+        errors.append("database contains user relations without an Alembic revision")
+        return errors
     if state.get("noncanonical_scheduler_control_slots", 0):
         errors.append("scheduler_control contains non-canonical slot_id values")
     if state.get("noncanonical_dataset_delivery_schedule_slots", 0):
@@ -363,6 +411,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "--expected-alembic-revision; activation never performs a migration."
         ),
     )
+    parser.add_argument(
+        "--allow-empty-database-bootstrap",
+        action="store_true",
+        help=(
+            "Allow a completely empty database to pass schema checks for the one-time "
+            "production bootstrap. Any user relation makes this exception fail closed."
+        ),
+    )
     return parser
 
 
@@ -389,21 +445,30 @@ async def _main() -> int:
         return 1
 
     state = await collect_predeploy_state(database_url)
+    empty_bootstrap_allowed = bool(args.allow_empty_database_bootstrap and state["database_empty"])
+    state["initial_empty_database_bootstrap_allowed"] = empty_bootstrap_allowed
     if args.expected_alembic_revision:
         state["target_alembic_revision"] = args.expected_alembic_revision
-        state["schema_compatible_with_target"] = is_schema_compatible_with_target(
-            current_revision=state["alembic_revision"],
-            target_revision=args.expected_alembic_revision,
+        state["schema_compatible_with_target"] = (
+            empty_bootstrap_allowed
+            or is_schema_compatible_with_target(
+                current_revision=state["alembic_revision"],
+                target_revision=args.expected_alembic_revision,
+            )
         )
         if args.require_exact_alembic_revision:
-            state["schema_exactly_at_target"] = database_revision_matches_expected(
-                current_revision=state["alembic_revision"],
-                expected_revision=args.expected_alembic_revision,
+            state["schema_exactly_at_target"] = (
+                empty_bootstrap_allowed
+                or database_revision_matches_expected(
+                    current_revision=state["alembic_revision"],
+                    expected_revision=args.expected_alembic_revision,
+                )
             )
     print(json.dumps(state, indent=2, sort_keys=True, default=str))
     errors = validate_predeploy_state(
         state,
         minimum_connection_headroom=max(1, args.minimum_connection_headroom),
+        allow_empty_database_bootstrap=args.allow_empty_database_bootstrap,
     )
     if args.expected_alembic_revision and not state["schema_compatible_with_target"]:
         errors.append("current database revision is not compatible with the selected target")
