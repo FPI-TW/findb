@@ -7,6 +7,11 @@ data "aws_iam_policy_document" "instance_trust" {
     }
   }
 }
+
+locals {
+  host_packages = "docker.io docker-compose-v2 jq python3"
+}
+
 resource "aws_iam_role" "instance" {
   for_each           = local.units
   name               = "${each.value.role_prefix}-production-instance"
@@ -129,7 +134,7 @@ resource "aws_instance" "unit" {
     systemctl enable amazon-ssm-agent || true
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y docker.io jq python3
+    apt-get install -y ${local.host_packages}
     snap install aws-cli --classic || snap refresh aws-cli
     systemctl enable --now docker
     install -d -m 0750 /opt/findb/releases /run/findb-runtime-secrets
@@ -142,6 +147,33 @@ resource "aws_instance" "unit" {
     prevent_destroy = true
   }
 }
+
+resource "aws_ssm_association" "host_dependencies" {
+  for_each                         = local.units
+  association_name                 = "findb-production-${each.key}-host-dependencies"
+  name                             = "AWS-RunShellScript"
+  apply_only_at_cron_interval      = false
+  compliance_severity              = "HIGH"
+  max_concurrency                  = "1"
+  max_errors                       = "0"
+  wait_for_success_timeout_seconds = 600
+  parameters = {
+    commands = join("\n", [
+      "set -eu",
+      "export DEBIAN_FRONTEND=noninteractive",
+      "cloud-init status --wait >/dev/null || true",
+      "apt-get update",
+      "apt-get install -y ${local.host_packages}",
+      "systemctl enable --now docker",
+      "docker compose version >/dev/null",
+    ])
+  }
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.unit[each.key].id]
+  }
+}
+
 resource "aws_eip" "unit" {
   for_each = local.units
   domain   = "vpc"

@@ -20,6 +20,15 @@ def test_production_hosts_use_explicit_eips_without_provider_replacement_drift()
     assert "map_public_ip_on_launch = false" in network
 
 
+def test_production_hosts_install_the_compose_v2_runtime_dependency() -> None:
+    compute = (REPO_ROOT / "infra/tofu/production/compute.tf").read_text(encoding="utf-8")
+
+    assert 'host_packages = "docker.io docker-compose-v2 jq python3"' in compute
+    assert "apt-get install -y ${local.host_packages}" in compute
+    assert 'resource "aws_ssm_association" "host_dependencies"' in compute
+    assert '"docker compose version >/dev/null"' in compute
+
+
 def test_only_findb_production_deployer_can_resolve_the_rds_endpoint() -> None:
     iam = (REPO_ROOT / "infra/tofu/production/iam.tf").read_text(encoding="utf-8")
     deploy_policy = iam.split('data "aws_iam_policy_document" "deploy"', 1)[1].split(
