@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir "uv==0.9.9" && \
 COPY app ./app
 COPY migrations ./migrations
 COPY scripts ./scripts
+COPY configs ./configs
 
 # Set environment variables
 ENV PYTHONPATH=/app

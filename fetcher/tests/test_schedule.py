@@ -50,6 +50,17 @@ def test_production_schedule_is_target_bound_and_uses_reviewed_universes(
         "twelve_data_nasdaq_100_2026_09_14.v2.json",
         "finlab_tw50_2026_09_21.v2.json",
     ]
+    tw_feed = manifest.feeds[1]
+    assert tw_feed.target_date_policy == "latest_trade_date"
+    assert tw_feed.calendar_id == "tw_equity_2025_2026"
+    assert tw_feed.target_date(datetime(2025, 1, 24, 6, 30, tzinfo=timezone.utc)) == date(
+        2025, 1, 22
+    )
+    assert tw_feed.target_date(datetime(2026, 2, 20, 6, 30, tzinfo=timezone.utc)) == date(
+        2026, 2, 11
+    )
+    with pytest.raises(ScheduleError, match="outside the governed market calendar"):
+        tw_feed.target_date(datetime(2027, 1, 4, 6, 30, tzinfo=timezone.utc))
     with pytest.raises(ScheduleError, match="production target"):
         load_schedule_manifest(V2_CONFIG_PATH)
 

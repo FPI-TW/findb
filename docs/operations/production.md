@@ -65,10 +65,12 @@ acceptance 後執行並留下不含 secret 的 fingerprint/evidence。
 
 ## DB bootstrap 與 Environment gate
 
-Migration後只 seed dataset registry、2025–2028 已審核 US/TW calendar revisions、獨立 DB-backed
-credentials與三個 scheduler controls。三個 scheduler 的 desired/observed state 都必須為
-`stopped`；不可複製 staging canonical/raw/workflow data。若任一年官方 calendar 尚未發布或未完成
-checksum review，seed 必須 fail closed，Production feed不得以 weekday 推測取代官方資料。
+Migration後只 seed dataset registry、已審核 US calendar、TWSE 已正式發布的 2025–2026 calendar
+revisions、獨立 DB-backed credentials與三個 scheduler controls。三個 scheduler 的
+desired/observed state都必須為`stopped`；不可複製staging canonical/raw/workflow data。
+2027以後尚未發布的TW calendar不阻塞首次部署；正式資料發布後必須以PR加入、完成checksum review
+並在對應年度開始前發布新revision。Production feed不得以weekday推測取代官方資料，執行日期超出
+目前reviewed coverage時必須fail closed。
 
 由 OpenTofu outputs填入兩份 ignored `infra/env/production/*/.env.remote`，先執行 sync script的
 dry-run，再建立 branch policy僅允許 `main` 的 `production-findb` 與 `production-fetcher`。兩個
