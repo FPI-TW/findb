@@ -497,6 +497,14 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
             f"--output /run/findb-runtime-secrets/preflight-{unit}/runtime.env --check-only" in text
         )
         assert '--output \\"\\$work/runtime.env\\" --check-only' not in text
+        preflight_block = re.search(
+            r"- name: Run target-aware read-only SSM preflight(?P<body>.*?)(?=\n      - name:)",
+            text,
+            re.S,
+        ).group("body")
+        assert "if ! docker ps --format '{{.Names}}' | grep -Eq" in preflight_block
+        assert "then [ $q_target = production ];" in preflight_block
+        assert '[ -z \\"\\$(docker ps -aq)\\" ]; fi' in preflight_block
 
     findb_text = (ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text()
     assert "docker compose" in findb_text

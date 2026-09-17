@@ -77,6 +77,10 @@ desired/observed state都必須為`stopped`；不可複製staging canonical/raw/
 只要已存在任一 table、partition、view、materialized view、sequence或foreign table卻沒有Alembic
 revision，即使帶有bootstrap旗標也必須fail closed。Staging與後續已有revision的Production部署維持
 原本的相容性／exact revision檢查，不得以手動migration、staging image或跳過preflight繞過。
+SSM host preflight通常要求至少一個目標服務容器正在執行；只有Production首次部署可在Docker完全沒有
+任何既有或停止容器時通過乾淨host例外。Staging、已有任一容器的Production host，或服務容器全數
+停止但仍有殘留容器時都必須fail closed；此例外不放寬後續的exact digest、secret isolation與乾淨DB
+檢查。
 
 由 OpenTofu outputs填入兩份 ignored `infra/env/production/*/.env.remote`，先執行 sync script的
 dry-run，再建立 branch policy僅允許 `main` 的 `production-findb` 與 `production-fetcher`。兩個
