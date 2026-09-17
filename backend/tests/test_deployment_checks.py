@@ -1613,6 +1613,9 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     assert '[ "$nginx_config_dir" != /etc/findb/nginx ]' in findb
     assert "require_root_owned_nginx_directory /etc/findb" in findb
     assert "nginx_config_target_unsafe" in findb
+    assert 'chown root:root -- "$nginx_config_dir/$conf"' in findb
+    assert 'chmod 0644 -- "$nginx_config_dir/$conf"' in findb
+    assert "nginx_config_metadata_update_failed" in findb
     assert "nginx_config_metadata_invalid" in findb
     nginx_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh").read_text(
         encoding="utf-8"

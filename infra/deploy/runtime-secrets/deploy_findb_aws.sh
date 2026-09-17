@@ -218,10 +218,16 @@ for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
     echo "findb_aws_deploy=failed reason=nginx_config_missing_or_unsafe" >&2
     exit 1
   fi
-  if [ -n "${FINDB_RELEASE_ROOT:-}" ] \
-    && [ "$(stat -c '%u:%g:%a' "$nginx_config_dir/$conf")" != "0:0:644" ]; then
-    echo "findb_aws_deploy=failed reason=nginx_config_metadata_invalid" >&2
-    exit 1
+  if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
+    if ! chown root:root -- "$nginx_config_dir/$conf" \
+      || ! chmod 0644 -- "$nginx_config_dir/$conf"; then
+      echo "findb_aws_deploy=failed reason=nginx_config_metadata_update_failed" >&2
+      exit 1
+    fi
+    if [ "$(stat -c '%u:%g:%a' "$nginx_config_dir/$conf")" != "0:0:644" ]; then
+      echo "findb_aws_deploy=failed reason=nginx_config_metadata_invalid" >&2
+      exit 1
+    fi
   fi
 done
 for tls_file in server.crt server.key; do
