@@ -491,7 +491,6 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
         assert "aws s3api get-object" in text
         assert "materialize-bundle" in text
         assert 'docker --config \\"\\$work/docker\\" pull' in text
-        assert "AccessDenied" in text
         assert "load_runtime_secrets.py" in text
         assert (
             f"--output /run/findb-runtime-secrets/preflight-{unit}/runtime.env --check-only" in text
@@ -505,6 +504,12 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
         assert "if ! docker ps --format '{{.Names}}' | grep -Eq" in preflight_block
         assert "then [ $q_target = production ];" in preflight_block
         assert '[ -z \\"\\$(docker ps -aq)\\" ]; fi' in preflight_block
+        assert "phase1-preflight-denial-probe" not in preflight_block
+        cross_unit = "fetcher" if unit == "findb" else "findb"
+        assert (
+            f"--secret-id findb/$q_target/{cross_unit}/runtime/configuration >/dev/null 2>&1"
+            in preflight_block
+        )
 
     findb_text = (ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text()
     assert "docker compose" in findb_text

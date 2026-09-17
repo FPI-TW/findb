@@ -25,7 +25,8 @@ ECR、S3、IAM、DB、host、runtime secret path 與 staging 完全隔離。此�
 
 - VPC CIDR 必須是 `10.20.0.0/16`，無 NAT；RDS subnets 無 internet route。
 - FinDB `t3.large`、Fetcher `t3.medium`，IMDSv2 required、hop limit 2、無 key pair、無 TCP 22。
-  FinDB 443 只接受 Cloudflare published CIDRs；Fetcher security group 無 ingress。
+  FinDB 443 只接受 Cloudflare published CIDRs；Fetcher security group 無 ingress。兩台host都必須安裝
+  Docker Engine與Compose v2；`docker compose version`是部署前必要檢查。
 - RDS 必須為 private PostgreSQL 16、`db.t4g.medium`、100 GiB gp3、KMS、Single-AZ、14 日
   backup、deletion protection，5432 僅接受 FinDB security group。
 - 五個 ECR repository 必須 immutable 且 scan-on-push；instance role 只 pull 自己 unit，deploy
@@ -80,7 +81,8 @@ revision，即使帶有bootstrap旗標也必須fail closed。Staging與後續已
 SSM host preflight通常要求至少一個目標服務容器正在執行；只有Production首次部署可在Docker完全沒有
 任何既有或停止容器時通過乾淨host例外。Staging、已有任一容器的Production host，或服務容器全數
 停止但仍有殘留容器時都必須fail closed；此例外不放寬後續的exact digest、secret isolation與乾淨DB
-檢查。
+檢查。Secret isolation probe固定讀取另一unit已建立的`runtime/configuration`名稱並要求失敗，隨後
+必須成功載入本unit catalog；不得以不存在的同unit假secret或僅比對AWS CLI錯誤文字取代。
 
 由 OpenTofu outputs填入兩份 ignored `infra/env/production/*/.env.remote`，先執行 sync script的
 dry-run，再建立 branch policy僅允許 `main` 的 `production-findb` 與 `production-fetcher`。兩個
