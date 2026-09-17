@@ -98,15 +98,15 @@ resource "aws_cloudwatch_log_group" "ssm" {
 }
 
 resource "aws_instance" "unit" {
-  for_each                    = local.units
-  ami                         = data.aws_ssm_parameter.ubuntu_ami.value
-  instance_type               = each.value.instance_type
-  subnet_id                   = aws_subnet.production[each.value.subnet].id
-  vpc_security_group_ids      = [each.key == "findb" ? aws_security_group.findb.id : aws_security_group.fetcher.id]
-  iam_instance_profile        = aws_iam_instance_profile.instance[each.key].name
-  associate_public_ip_address = false
-  key_name                    = null
-  monitoring                  = true
+  for_each               = local.units
+  depends_on             = [aws_iam_role_policy.instance_base]
+  ami                    = data.aws_ssm_parameter.ubuntu_ami.value
+  instance_type          = each.value.instance_type
+  subnet_id              = aws_subnet.production[each.value.subnet].id
+  vpc_security_group_ids = [each.key == "findb" ? aws_security_group.findb.id : aws_security_group.fetcher.id]
+  iam_instance_profile   = aws_iam_instance_profile.instance[each.key].name
+  key_name               = null
+  monitoring             = true
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
