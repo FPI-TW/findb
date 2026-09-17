@@ -43,6 +43,17 @@ data "aws_iam_policy_document" "deploy" {
     actions   = ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus", "ssm:DescribeInstanceInformation", "ssm:GetCommandInvocation"]
     resources = ["*"]
   }
+  # Only the FinDB deploy workflow resolves the production RDS endpoint before
+  # sending its SSM command. DescribeDBInstances does not support resource-level
+  # permissions, so keep the wildcard action isolated from the Fetcher deployer.
+  dynamic "statement" {
+    for_each = each.key == "findb" ? [true] : []
+    content {
+      sid       = "ReadFinDBRdsEndpoint"
+      actions   = ["rds:DescribeDBInstances"]
+      resources = ["*"]
+    }
+  }
   statement {
     sid       = "SendDocument"
     actions   = ["ssm:SendCommand"]

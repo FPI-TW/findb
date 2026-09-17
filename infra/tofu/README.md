@@ -208,11 +208,12 @@ The gate uses the reviewed nonsecret backend contract
 The `staging-infra-plan` OIDC role is a distinct identity from both deployment
 roles. Its trust is limited to
 `repo:FPI-TW/findb:pull_request` with `aud=sts.amazonaws.com`; it has only the
-read APIs needed to refresh this stack, exact state-object read/list access,
-exact state KMS decrypt, and native lockfile Get/Put/Delete access. Its only
-KMS GenerateDataKey exception is the exact state CMK through S3 with the state
-bucket-key encryption context. It cannot read runtime secret values or mutate
-managed AWS resources. The workflow
+read APIs needed to refresh this stack, including exact grants for every
+managed deploy, instance, ECR publisher, production promotion-reader, infra-plan,
+and DLM role. It also has exact state-object read/list access, exact state KMS
+decrypt, and native lockfile Get/Put/Delete access. Its only KMS GenerateDataKey
+exception is the exact state CMK through S3 with the state bucket-key encryption
+context. It cannot read runtime secret values or mutate managed AWS resources. The workflow
 inspects an ephemeral JSON plan and normally fails closed for every delete
 action, including replacement, without uploading a plan artifact. Ordinary
 infrastructure pull requests call their local reusable workflow with the

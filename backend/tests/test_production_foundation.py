@@ -18,3 +18,19 @@ def test_production_hosts_use_explicit_eips_without_provider_replacement_drift()
     assert 'resource "aws_eip" "unit"' in compute
     assert "instance = aws_instance.unit[each.key].id" in compute
     assert "map_public_ip_on_launch = false" in network
+
+
+def test_only_findb_production_deployer_can_resolve_the_rds_endpoint() -> None:
+    iam = (REPO_ROOT / "infra/tofu/production/iam.tf").read_text(encoding="utf-8")
+    deploy_policy = iam.split('data "aws_iam_policy_document" "deploy"', 1)[1].split(
+        'resource "aws_iam_role_policy" "deploy"', 1
+    )[0]
+    rds_statement = deploy_policy.split("# Only the FinDB deploy workflow", 1)[1].split(
+        'sid       = "SendDocument"', 1
+    )[0]
+
+    assert 'for_each = each.key == "findb" ? [true] : []' in rds_statement
+    assert 'sid       = "ReadFinDBRdsEndpoint"' in rds_statement
+    assert 'actions   = ["rds:DescribeDBInstances"]' in rds_statement
+    assert 'resources = ["*"]' in rds_statement
+    assert deploy_policy.count('"rds:DescribeDBInstances"') == 1
