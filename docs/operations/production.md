@@ -123,6 +123,32 @@ restart count 0。三個scheduler controls後驗仍為`desired=stopped`／`obser
 SSM command `deb08244-8078-4959-a90d-144cee600dbf`另以migration identity撤銷application role對
 `public.alembic_version`的寫入權限，後驗為可`SELECT`且不可`INSERT`／`UPDATE`／`DELETE`。
 
+## Production v0.1.2 deployment evidence（2026-09-18）
+
+Release commit `b7a520c0df325d4726d0bd5368e111bb7b027940`以`findb-v0.1.2`與
+`fetcher-v0.1.2`兩個immutable tags依序完成promotion。FinDB run
+[35302455968](https://github.com/FPI-TW/findb/actions/runs/35302455968)與Fetcher run
+[35303227094](https://github.com/FPI-TW/findb/actions/runs/35303227094)均成功，部署後兩個
+`PRODUCTION_DEPLOY_ENABLED` Environment gates已立即恢復為`false`。
+
+FinDB production acceptance bundle SHA-256為
+`340d9f2cd37d6f20686356db57c7716808248f960cd80cfb40474ac0164db67c`，active release使用backend
+`sha256:0933e093588aff68a015d278da188186a945fa5b96e46cbd17e64b38606da610`與Dashboard
+`sha256:54117506170b530f0eb6fc54f4ef325f31b508db16c462a24d29fb1e3c992576`，Alembic revision為
+`a8b9c0d1e2f3`。Public health、Dashboard、lookup redirect與Referer注入的Serve查詢均通過；SSM
+command `8e0cfdb0-f285-4114-8410-0b6028502455`確認8個FinDB containers正常，active symlink指向本次
+accepted release。
+
+Fetcher production acceptance bundle SHA-256為
+`506bf8427194ded00e71c2836ea4ab525dfa5d24a0776bbc1d5675ad8bc3c46f`。Twelve Data、FinLab與
+Shioaji分別使用`sha256:5b80c0a88f24f6c05285734ef74e96c09993fcff137b1c8168e171b732b2ac9e`、
+`sha256:1725611d326a2c0b7b878093241330f8dea5ad56c87b7ad995cb54e1912a9288`及
+`sha256:67b6b6ca6344330c7da7891e3a21b06001a37221088ec51dc8555b91219d84e3`。SSM command
+`0f840f66-3223-4f4c-89d9-0661963e1105`確認三個stable containers皆為accepted exact-digest、running、
+restart count 0，三個historical containers亦為running；command
+`fef787dc-18ce-4782-8d47-95ad5805cd4e`確認三個scheduler controls均維持
+`desired=stopped`／`observed=stopped`、heartbeat新鮮且沒有error。部署沒有啟用任何provider。
+
 首次Shioaji host沒有SQLite state，而既有`--require-stopped`按設計只接受可唯讀檢查的既有state；
 因此首次cutover先以exact Shioaji digest離線建立空白schema，未載入secret或啟動provider，再重跑
 candidate與activation。版本控制內的release helper現在只在state不存在且stable container不存在時執行
