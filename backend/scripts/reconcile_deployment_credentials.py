@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -85,11 +85,9 @@ def validate_application_database_url(database_url: str) -> URL:
     """Require a PostgreSQL application connection with an explicit identity."""
     url = make_url(database_url)
     if url.get_backend_name() != "postgresql":
-        raise DeploymentCredentialError("application database URL must use PostgreSQL")
+        raise DeploymentCredentialError("application_database_url_not_postgresql")
     if not url.host or not url.database or not url.username:
-        raise DeploymentCredentialError(
-            "application database URL must include host, database, and username"
-        )
+        raise DeploymentCredentialError("application_database_url_incomplete")
     return url
 
 
@@ -97,8 +95,26 @@ def validate_plaintext_api_key(api_key: str) -> str:
     """Reject malformed secret values without logging their contents."""
     value = api_key.strip()
     if value != api_key or not 32 <= len(value) <= 512 or any(char.isspace() for char in value):
-        raise DeploymentCredentialError("deployment API key has an unsafe format")
+        raise DeploymentCredentialError("api_key_format_invalid")
     return value
+
+
+def validate_deployment_target(deployment_target: str) -> str:
+    """Restrict legacy adoption to the exact active deployment target."""
+    if deployment_target not in {"staging", "production"}:
+        raise DeploymentCredentialError("deployment_target_invalid")
+    return deployment_target
+
+
+def legacy_names_for_spec(spec: CredentialSpec, deployment_target: str) -> tuple[str, ...]:
+    """Return narrowly scoped names used before deployment-owned identities existed."""
+    if spec.env_name == QUEUE_HEALTH_SPEC.env_name:
+        return (f"{deployment_target} queue health",)
+    if spec.env_name == LOOKUP_SERVE_SPEC.env_name:
+        return (f"{deployment_target} lookup",)
+    if spec.env_name == STATIC_CACHE_SPEC.env_name:
+        return (f"{deployment_target} static cache",)
+    return ()
 
 
 def _is_active(row: APIKey, now: datetime) -> bool:
@@ -129,6 +145,8 @@ async def reconcile_machine_credential(
     db: AsyncSession,
     plaintext_api_key: str,
     spec: CredentialSpec,
+    *,
+    legacy_names: tuple[str, ...] = (),
 ) -> ReconciliationResult:
     """Create or rotate one dedicated deployment machine credential."""
     plaintext = validate_plaintext_api_key(plaintext_api_key)
@@ -149,18 +167,30 @@ async def reconcile_machine_credential(
     active_named = [row for row in rows if row.name == spec.name and _is_active(row, now)]
 
     if len(hash_matches) > 1 or len(active_named) > 1:
-        raise DeploymentCredentialError("deployment credential state is ambiguous")
+        raise DeploymentCredentialError("credential_state_ambiguous")
 
     if hash_matches:
         row = hash_matches[0]
-        if row.name != spec.name or row.kind != spec.kind:
-            raise DeploymentCredentialError(
-                "deployment API key is already used by another identity"
+        if row.name != spec.name:
+            if row.name not in legacy_names or row.kind != spec.kind:
+                raise DeploymentCredentialError("api_key_used_by_another_identity")
+            if not _is_active(row, now) or row.expires_at is not None:
+                raise DeploymentCredentialError("legacy_credential_revoked_or_expiring")
+            if active_named:
+                raise DeploymentCredentialError("canonical_credential_already_active")
+            row.name = spec.name
+            _apply_credential_policy(row, spec, key_hash)
+            return ReconciliationResult(
+                name=spec.name,
+                action="adopted",
+                fingerprint=key_hash[:16],
             )
+        if row.kind != spec.kind:
+            raise DeploymentCredentialError("credential_kind_mismatch")
         if not _is_active(row, now) or row.expires_at is not None:
-            raise DeploymentCredentialError("deployment credential is revoked or expiring")
+            raise DeploymentCredentialError("credential_revoked_or_expiring")
         if active_named and active_named[0].key_id != row.key_id:
-            raise DeploymentCredentialError("another deployment credential is active")
+            raise DeploymentCredentialError("canonical_credential_already_active")
         changed = _apply_credential_policy(row, spec, key_hash)
         return ReconciliationResult(
             name=spec.name,
@@ -213,18 +243,40 @@ async def reconcile_queue_health_credential(
 async def reconcile_deployment_credentials(
     application_database_url: str,
     plaintext_by_env: dict[str, str],
+    deployment_target: str,
+    *,
+    check_only: bool = False,
 ) -> list[ReconciliationResult]:
     """Open one application-role transaction and reconcile deployment credentials."""
     url = validate_application_database_url(application_database_url)
+    target = validate_deployment_target(deployment_target)
     engine = create_async_engine(url, pool_size=1, max_overflow=0)
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as db:
-            results = [
-                await reconcile_machine_credential(db, plaintext_by_env[spec.env_name], spec)
-                for spec in DEPLOYMENT_CREDENTIAL_SPECS
-            ]
-            await db.commit()
+            api_key_table_present = bool(
+                await db.scalar(text("SELECT to_regclass('public.api_key') IS NOT NULL"))
+            )
+            if check_only and not api_key_table_present:
+                await db.rollback()
+                return []
+            results = []
+            for spec in DEPLOYMENT_CREDENTIAL_SPECS:
+                try:
+                    result = await reconcile_machine_credential(
+                        db,
+                        plaintext_by_env[spec.env_name],
+                        spec,
+                        legacy_names=legacy_names_for_spec(spec, target),
+                    )
+                except DeploymentCredentialError as exc:
+                    raise DeploymentCredentialError(f"{spec.name}:{exc}") from exc
+                results.append(result)
+            await db.flush()
+            if check_only:
+                await db.rollback()
+            else:
+                await db.commit()
             return results
     finally:
         await engine.dispose()
@@ -236,6 +288,17 @@ def parse_args() -> argparse.Namespace:
         "--application-database-url",
         default=os.getenv("APPLICATION_DATABASE_URL"),
         help="application connection URL; defaults to APPLICATION_DATABASE_URL",
+    )
+    parser.add_argument(
+        "--deployment-target",
+        default=os.getenv("DEPLOYMENT_TARGET"),
+        choices=("staging", "production"),
+        help="target used to constrain legacy identity adoption",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="validate and flush reconciliation in a transaction, then roll it back",
     )
     parser.add_argument(
         "--queue-health-api-key",
@@ -262,7 +325,11 @@ def main() -> int:
         "FINDB_LOOKUP_SERVE_API_KEY": args.lookup_serve_api_key,
         "FINDB_STATIC_CACHE_SERVE_API_KEY": args.static_cache_serve_api_key,
     }
-    if not args.application_database_url or not all(plaintext_by_env.values()):
+    if (
+        not args.application_database_url
+        or not args.deployment_target
+        or not all(plaintext_by_env.values())
+    ):
         print("deployment_credentials=failed reason=credential_input_missing", file=sys.stderr)
         return 1
     try:
@@ -270,13 +337,19 @@ def main() -> int:
             reconcile_deployment_credentials(
                 args.application_database_url,
                 plaintext_by_env,
+                args.deployment_target,
+                check_only=args.check_only,
             )
         )
-    except (DeploymentCredentialError, SQLAlchemyError, OSError):
+    except DeploymentCredentialError as exc:
+        print(f"deployment_credentials=failed reason={exc}", file=sys.stderr)
+        return 1
+    except (SQLAlchemyError, OSError):
         print("deployment_credentials=failed reason=reconciliation_failed", file=sys.stderr)
         return 1
     summary = ",".join(f"{result.name}:{result.action}:{result.fingerprint}" for result in results)
-    print(f"deployment_credentials=ready credentials={summary}")
+    state = "checked" if args.check_only else "ready"
+    print(f"deployment_credentials={state} credentials={summary}")
     return 0
 
 
