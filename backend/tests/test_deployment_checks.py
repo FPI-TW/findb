@@ -31,6 +31,10 @@ from scripts.predeploy_db_check import (
     is_schema_compatible_with_target,
     validate_predeploy_state,
 )
+from scripts.reconcile_database_privileges import (
+    DatabasePrivilegeError,
+    validate_database_binding,
+)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -1568,9 +1572,75 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert findb.count("--map MIGRATION_DATABASE_URL=DATABASE_URL") == 2
     second_migration_start = findb.rindex("run_runtime --consumer migration")
     long_lived_start = findb.index("run_runtime --consumer compose", second_migration_start)
+    second_migration_block = findb[second_migration_start:long_lived_start]
+    assert "--map DATABASE_URL=APPLICATION_DATABASE_URL" in second_migration_block
+    assert "--consumer credentials" in second_migration_block
+    assert "python /app/scripts/reconcile_database_privileges.py" in second_migration_block
+    assert "python /app/scripts/reconcile_deployment_credentials.py" in second_migration_block
+    assert "-e APPLICATION_DATABASE_URL ingest" in second_migration_block
+    assert "-e FINDB_QUEUE_HEALTH_ADMIN_API_KEY" in second_migration_block
+    assert "-e FINDB_LOOKUP_SERVE_API_KEY" in second_migration_block
+    assert "-e FINDB_STATIC_CACHE_SERVE_API_KEY ingest" in second_migration_block
     assert "MIGRATION_DATABASE_URL" not in findb[long_lived_start:]
     up_script = findb.split("<<'UP_SCRIPT'\n", 1)[1].split("\nUP_SCRIPT", 1)[0]
     assert "exec -T -e CELERY_BROKER_URL ingest" in up_script
+
+
+def test_production_rabbitmq_health_waits_for_running_application() -> None:
+    compose = yaml.safe_load(PROD_COMPOSE.read_text(encoding="utf-8"))
+
+    assert compose["services"]["rabbitmq"]["healthcheck"]["test"] == [
+        "CMD",
+        "rabbitmq-diagnostics",
+        "-q",
+        "check_running",
+    ]
+
+
+def test_database_privilege_binding_accepts_default_and_explicit_postgres_ports() -> None:
+    binding = validate_database_binding(
+        "postgresql+asyncpg://findb_migration:secret@db.example.com/findb",
+        "postgresql+asyncpg://findb_app:secret@DB.EXAMPLE.COM:5432/findb",
+    )
+
+    assert binding.migration_role == "findb_migration"
+    assert binding.application_role == "findb_app"
+
+    source = (REPO_ROOT / "backend/scripts/reconcile_database_privileges.py").read_text(
+        encoding="utf-8"
+    )
+    assert "REVOKE INSERT, UPDATE, DELETE ON TABLE public.alembic_version" in source
+    assert "GRANT SELECT ON TABLE public.alembic_version" in source
+    assert "application role must have read-only access to Alembic revision state" in source
+
+
+@pytest.mark.parametrize(
+    ("migration_url", "application_url"),
+    [
+        (
+            "postgresql+asyncpg://findb_migration:secret@db.example.com:5432/findb",
+            "postgresql+asyncpg://findb_app:secret@other.example.com:5432/findb",
+        ),
+        (
+            "postgresql+asyncpg://findb_migration:secret@db.example.com:5432/findb",
+            "postgresql+asyncpg://findb_migration:other@db.example.com:5432/findb",
+        ),
+        (
+            "postgresql+asyncpg://FindbMigration:secret@db.example.com:5432/findb",
+            "postgresql+asyncpg://findb_app:secret@db.example.com:5432/findb",
+        ),
+        (
+            "sqlite+aiosqlite:///findb.db",
+            "postgresql+asyncpg://findb_app:secret@db.example.com:5432/findb",
+        ),
+    ],
+)
+def test_database_privilege_binding_rejects_unsafe_identity_or_endpoint(
+    migration_url: str,
+    application_url: str,
+) -> None:
+    with pytest.raises(DatabasePrivilegeError):
+        validate_database_binding(migration_url, application_url)
 
 
 def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persistent_key() -> None:
@@ -2120,6 +2190,23 @@ def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_input
         encoding="utf-8"
     )
     assert "/var/lib/findb-shioaji-fetcher/cache" in deploy_helper
+
+
+def test_aws_fetcher_release_bootstraps_only_missing_shioaji_state_offline() -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = helper.split(
+        'if [ "$provider" = shioaji ] && ! sudo test -e "$state_path"; then', 1
+    )[1].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
+
+    assert 'docker container inspect "$stable"' in bootstrap
+    assert "reason=shioaji_state_missing_with_stable" in bootstrap
+    assert 'docker rm -f "$state_bootstrap_name"' in bootstrap
+    assert "--initialize-state" in bootstrap
+    assert '--state-path "$state_path"' in bootstrap
+    assert '"${runtime_env_args[@]}"' not in bootstrap
+    assert "reason=shioaji_state_bootstrap" in bootstrap
 
 
 def test_aws_fetcher_release_preserves_staging_raw_marker_identities() -> None:

@@ -52,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-path", type=Path, default=default_state_path())
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
+    mode.add_argument("--initialize-state", action="store_true")
     mode.add_argument("--run-forever", action="store_true")
     mode.add_argument("--require-stopped", action="store_true")
     return parser
@@ -61,6 +62,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = build_parser().parse_args(argv)
         manifest = load_manifest(args.manifest)
+        if args.initialize_state:
+            # First-deploy bootstrap is deliberately offline. It creates only
+            # the reviewed SQLite schema and must not construct any provider,
+            # Source, calendar, or R2 client.
+            validate_production_state_path(args.state_path, manifest=manifest)
+            state = open_production_state(args.state_path, manifest)
+            state.close()
+            validate_production_state_path(
+                args.state_path,
+                read_only=True,
+                require_existing=True,
+                manifest=manifest,
+            )
+            return _emit({"code": "STATE_READY", "stage": "state", "count": 0})
         validate_production_state_path(
             args.state_path,
             read_only=args.check or args.require_stopped,

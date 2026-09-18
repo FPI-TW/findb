@@ -18,6 +18,8 @@ def test_parser_modes_are_mutually_exclusive() -> None:
     with pytest.raises(ValueError):
         cli.build_parser().parse_args(["--check", "--run-forever"])
     with pytest.raises(ValueError):
+        cli.build_parser().parse_args(["--initialize-state", "--require-stopped"])
+    with pytest.raises(ValueError):
         cli.build_parser().parse_args(["--as-of", "2026-08-03T06:30:00Z"])
 
 
@@ -77,6 +79,49 @@ def test_require_stopped_rejects_missing_state_without_control_or_creation(
         "stage": "setup",
         "count": 0,
     }
+
+
+def test_initialize_state_is_offline_idempotent_and_validated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_path = tmp_path / "production" / "state.sqlite3"
+    monkeypatch.setattr(
+        cli,
+        "validate_production_runtime",
+        lambda: pytest.fail("state bootstrap validated runtime secrets"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "validate_contracts",
+        lambda _path: pytest.fail("state bootstrap validated runtime contracts"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "require_scheduler_stopped",
+        lambda *_args, **_kwargs: pytest.fail("state bootstrap reached scheduler control"),
+    )
+
+    for _ in range(2):
+        result = cli.main(
+            [
+                "--initialize-state",
+                "--manifest",
+                str(MANIFEST),
+                "--state-path",
+                str(state_path),
+            ]
+        )
+        assert result == cli.EXIT_OK
+        assert json.loads(capsys.readouterr().out) == {
+            "code": "STATE_READY",
+            "stage": "state",
+            "count": 0,
+        }
+
+    assert state_path.is_file()
+    assert state_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_bounded_summary_and_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:

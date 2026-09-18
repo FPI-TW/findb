@@ -147,11 +147,12 @@ control plane，不代表 production Environment 或 AWS資源已建立。現況
 | --- | --- |
 | `staging-findb` GitHub Environment | 已建立，為目前FinDB staging target |
 | `staging-fetcher` GitHub Environment | 已建立，為目前Fetcher staging target |
-| `production-findb` GitHub Environment | N/A（尚未建立） |
-| `production-fetcher` GitHub Environment | N/A（尚未建立） |
-| Production FinDB EC2 | N/A（尚未建立） |
-| Production FinDB RDS | N/A（尚未建立） |
-| Production promotion snapshot／dump／seed | N/A（尚未建立） |
+| `production-findb` GitHub Environment | 已建立；部署 gate 預設為`false` |
+| `production-fetcher` GitHub Environment | 已建立；部署 gate 預設為`false` |
+| Production FinDB EC2 | 已建立並以SSM管理；無SSH入口 |
+| Production Fetcher EC2 | 已建立並以SSM管理；無ingress |
+| Production FinDB RDS | 已建立；private PostgreSQL 16且只接受FinDB security group |
+| Production promotion snapshot／dump／seed | 不複製staging資料；使用乾淨migration與reviewed seed |
 
 Push至`main`依 shared change policy 執行 same-revision CI；相關 unit 自動 rollout 至 staging，
 contract-only 只跑兩個 CI。unit-specific staging caller或reusable deploy workflow本身變更時，亦必須
@@ -202,6 +203,19 @@ Raw與Canonical使用不同private buckets。Raw object key由provider／dataset
 Fetcher SQLite位於provider-specific EBS paths，owner為runtime UID，目錄`0700`、檔案
 `0600`。Raw bucket binding marker不符時deployment fail closed；不同bucket的state與
 prepared refs不得混用。Candidate通過preflight與single-writer檢查後才能取代stable。
+Shioaji首次部署若state不存在且沒有stable container，release helper會以exact digest執行
+`--initialize-state`，只建立並驗證reviewed SQLite schema；此模式不驗證runtime secret、不建立
+provider、Source、calendar或R2 client。若stable已存在但state遺失則視為資料異常並fail closed，
+不得用空白state覆寫或掩蓋遺失。
+
+Fetcher instance role與FinDB instance role維持cross-unit Secrets Manager deny。Production首次建庫或
+Fetcher key輪替時，由受信任operator在本機記憶體讀取四把Fetcher runtime key並計算lowercase SHA-256，
+只把四個hash交給FinDB application-role one-shot
+`reconcile_fetcher_credentials.py`；plaintext不得出現在SSM command、DB或log。腳本原子校準
+`fetcher-twelve-data`、`fetcher-finlab`、`fetcher-shioaji`三個Source clients與
+`fetcher-calendar` Serve key，輸出只含action與16字元fingerprint。此hashed bridge不得改成授予任一
+instance role跨unit讀取secret；校準完成且三個scheduler desired／observed皆為`stopped`後，才能開啟
+Fetcher production deploy gate。
 
 ## Network與GitHub protection
 
@@ -234,7 +248,10 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
 2. **Operator pre-deploy**：確認target、backup／PITR、disk／inode、container state、觀察窗口及
    必要external dependencies；現行workflow未自動涵蓋的項目必須人工留證。
 3. **Workflow**：執行remote與DB preflight；FinDB migration前停止本unit所有DB writers，
-   由單一migration job升級。
+   由單一migration job升級。Alembic完成後，同一個one-shot migration secret scope會以
+   `reconcile_database_privileges.py`校準application role在`public`與`raw`的schema `USAGE`、
+   table DML及sequence權限，並設定migration owner的default privileges；application role不得取得
+   schema `CREATE`，migration credential也不得進入常駐container。
 4. **Workflow**：啟動candidate，檢查container、internal health、nginx、RabbitMQ topology、
    worker ping及DB-authoritative queue health。
 5. **Operator acceptance**：從外部驗證public TLS／routing，執行bounded fixed-idempotency
@@ -268,6 +285,20 @@ temporary allowlist已移除；後續所有provider與image一律套用相同的
 
 ORM與migration必須在同一PR；runtime只驗證revision，不執行`create_all()`。Staging採
 forward-only；downgrade只供本機round-trip測試。
+
+Migration job與application使用不同DB role。每次`alembic upgrade head`後、registry seed前，workflow
+必須執行`reconcile_database_privileges.py`；它會先確認兩個URL指向同一PostgreSQL database、目前連線
+確為migration role，且application role可登入但不具superuser／`CREATEDB`／`CREATEROLE`，再授予
+`public`與`raw`既有及未來relation所需的最小runtime權限。驗證失敗時部署fail closed，禁止改由
+application role執行migration或手動授予schema `CREATE`；`public.alembic_version`只保留`SELECT`，
+明確撤銷application role的`INSERT`／`UPDATE`／`DELETE`。
+
+首次建庫及Secrets Manager輪替後，workflow另以application role執行
+`reconcile_deployment_credentials.py`，將queue-health Admin viewer、Dashboard lookup Serve與
+static-cache Serve三把專用key只以SHA-256 hash建立為固定名稱的DB-backed machine credential。
+輪替會撤銷前一把同名active key並記錄
+`rotated_from_id`；已撤銷／過期key重用、hash被其他identity占用或多把同名active key一律fail closed。
+plaintext只存在one-shot tmpfs secret scope，不寫入DB或部署log。
 
 本機：
 
@@ -579,6 +610,33 @@ Environment secret清單刪後均為空。SSM commands `fb74877d-3829-4260-9d4b-
 instance role從Secrets Manager載入，且check-only輸出均已移除。Queue unpublished outbox、expired leases及
 missing deliveries皆為0，三個scheduler fresh／ready，public health與Dashboard為HTTP 200，兩台SSM Online，
 43個alarms為43 OK。刪除僅影響GitHub staging Environment copies，不影響AWS Secrets Manager或production。
+
+### Production initial cutover record（2026-09-18）
+
+- Release commit `916e077359efc874d4a8fd8bed6f0cb173fc16ed`以immutable tags
+  `findb-v0.1.1`與`fetcher-v0.1.1`部署。FinDB run
+  [35247678383](https://github.com/FPI-TW/findb/actions/runs/35247678383)與Fetcher run
+  [35291487946](https://github.com/FPI-TW/findb/actions/runs/35291487946)最後皆成功；兩個Environment的
+  `PRODUCTION_DEPLOY_ENABLED`均在terminal success後恢復為`false`。
+- FinDB後端與Dashboard exact digests分別為
+  `sha256:7e4908ab26d2b3c598b1c78272bd2d6b164e3f33b08875ff239f23b3baa33627`與
+  `sha256:fb6c76c145d412ee635f72b5d0453a6cb082c3a9eec349697ff50e7549670a86`；Alembic為
+  `a8b9c0d1e2f3`。Public `/health`、`/dashboard/`、`/dashboard/lookup`及exact-host Referer
+  lookup Serve probe均為HTTP 200；RabbitMQ policy、worker ping及DB-authoritative queue health通過，
+  DLQ、unpublished outbox、expired lease與missing delivery皆為0。
+- Fetcher Twelve Data、FinLab與Shioaji exact digests分別為
+  `sha256:66540f479e4627881aea7ed804a9a4ec61b9df17962f20562ad45f3ae44086ce`、
+  `sha256:a09d4d3e6153269fb03e9b3d3345194da0380826ae68109c59c2a49dd6bb801f`與
+  `sha256:12fd775d45c8bf5af864690234511839971382d037b6817d1b4cb5052edac57b`。
+  三個scheduler與三個historical containers皆為`running`、restart count 0、accepted label true；
+  三個DB scheduler controls仍為`desired=stopped`、`observed=stopped`，部署沒有擅自啟用provider。
+- 首次cutover發現FinDB DB role privileges、DB-backed deployment credentials、Fetcher DB credentials與
+  Shioaji空白state bootstrap四個缺口。前三者以最小權限reconciliation及hashed operator bridge修正；
+  Shioaji以exact production digest只建立空白schema後完成candidate與activation。後續release helper已
+  納入相同offline first-deploy bootstrap，避免新環境依賴即席操作。
+- SSM command `deb08244-8078-4959-a90d-144cee600dbf`後驗確認application role對
+  `public.alembic_version`只有`SELECT`，`INSERT`／`UPDATE`／`DELETE`皆已撤銷；runtime secret loader
+  的migration與compose scopes完成後已清理，command為Success且stderr空白。
 
 2026-09-15由乾淨protected `main` merge SHA
 `5a7f6c74ab8e972b9a798026a9f37a3c7523b18b`完成TLS certificate expiry monitoring與Fetcher

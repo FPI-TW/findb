@@ -76,6 +76,19 @@ desired/observed state都必須為`stopped`；不可複製staging canonical/raw/
 
 首次部署的 predeploy gate 只在`DEPLOYMENT_TARGET=production`接受完全沒有任何使用者 relation 的
 乾淨資料庫；candidate acceptance落盤後，activation才可執行唯一一次`alembic upgrade head`。
+Alembic完成後、任何常駐服務啟動前，activation必須在同一個one-shot migration secret scope校準並
+驗證application DB role的最小權限；只允許`public`與`raw`的schema `USAGE`、table DML及sequence
+使用權，不得授予schema `CREATE`或把migration credential帶入常駐container；Alembic revision table
+是例外，只允許application role讀取，不得修改。
+同一個bootstrap階段也必須將Secrets Manager的queue-health Admin viewer、Dashboard lookup Serve與
+static-cache Serve三把key以hash校準成DB-backed machine credentials，確保readiness與cache probe不
+依賴break-glass key；plaintext不得寫入DB或log。
+Fetcher-facing DB credentials由另一個明確的hashed operator bridge校準：受信任operator讀取
+`fetcher` unit的三把Source key與calendar Serve key，只把lowercase SHA-256傳給FinDB host上的
+`reconcile_fetcher_credentials.py`。FinDB與Fetcher instance roles仍必須互相拒絕讀取對方Secrets
+Manager values；不得為了自動化bootstrap放寬cross-unit IAM。腳本只輸出identity、action與短
+fingerprint，並將Source allowlist固定為`twelve_data/us_equity_eod`、`finlab/tw_equity_eod`及
+`shioaji/{tw_equity_minute,tw_etf_minute}`，calendar key固定為`serve` scope及page size 1000。
 只要已存在任一 table、partition、view、materialized view、sequence或foreign table卻沒有Alembic
 revision，即使帶有bootstrap旗標也必須fail closed。Staging與後續已有revision的Production部署維持
 原本的相容性／exact revision檢查，不得以手動migration、staging image或跳過preflight繞過。
@@ -97,3 +110,21 @@ Environment 只存 control-plane variables，不存 application secrets。只有
 
 任一 live gate失敗，移除或將 gate設為非 `true`，所有 scheduler恢復 `stopped`。不得 fallback至
 SHA tag、staging bundle、舊 image或 rebuild；Production只部署 `repository@sha256`。
+
+## Initial production deployment evidence（2026-09-18）
+
+Release commit `916e077359efc874d4a8fd8bed6f0cb173fc16ed`的FinDB與Fetcher promotion runs
+[35247678383](https://github.com/FPI-TW/findb/actions/runs/35247678383)、
+[35291487946](https://github.com/FPI-TW/findb/actions/runs/35291487946)均成功。FinDB public health、
+Dashboard、lookup Referer injection、Alembic、RabbitMQ topology、worker ping及DB-authoritative queue
+health皆通過；Fetcher三個scheduler與三個historical containers均為accepted exact-digest、running且
+restart count 0。三個scheduler controls後驗仍為`desired=stopped`／`observed=stopped`，沒有因部署
+自動開啟production資料取得。兩個production Environment gate均已恢復為`false`。
+SSM command `deb08244-8078-4959-a90d-144cee600dbf`另以migration identity撤銷application role對
+`public.alembic_version`的寫入權限，後驗為可`SELECT`且不可`INSERT`／`UPDATE`／`DELETE`。
+
+首次Shioaji host沒有SQLite state，而既有`--require-stopped`按設計只接受可唯讀檢查的既有state；
+因此首次cutover先以exact Shioaji digest離線建立空白schema，未載入secret或啟動provider，再重跑
+candidate與activation。版本控制內的release helper現在只在state不存在且stable container不存在時執行
+同等的`--initialize-state`；建立後必須通過schema/integrity與`10001:10001:0600`metadata檢查。stable
+已存在卻遺失state時仍fail closed，operator必須依backup/recovery程序處理，不得自動重建。

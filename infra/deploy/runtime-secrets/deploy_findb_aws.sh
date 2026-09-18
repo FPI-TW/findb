@@ -342,13 +342,29 @@ STOP_SCRIPT
 # Keep the migration URL confined to one-shot commands. It is mapped to the
 # compose DATABASE_URL name only for this invocation and never for a long-lived
 # service startup.
-run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- "$compose_file" <<'MIGRATION_SCRIPT'
+# Preserve the application URL under a one-shot name before mapping the
+# migration URL to DATABASE_URL. The reconciliation command needs both
+# identities, while neither migration credential is exposed to long-lived
+# services.
+run_runtime --consumer migration --consumer compose --consumer credentials \
+  --map DATABASE_URL=APPLICATION_DATABASE_URL \
+  --map MIGRATION_DATABASE_URL=DATABASE_URL \
+  -- bash -s -- "$compose_file" <<'MIGRATION_SCRIPT'
 set -euo pipefail
 compose_file="$1"
 docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
   uv run alembic upgrade head
   uv run alembic current
 '
+docker compose -f "$compose_file" run --rm --no-deps \
+  -e APPLICATION_DATABASE_URL ingest \
+  python /app/scripts/reconcile_database_privileges.py
+docker compose -f "$compose_file" run --rm --no-deps \
+  -e APPLICATION_DATABASE_URL \
+  -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
+  -e FINDB_LOOKUP_SERVE_API_KEY \
+  -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
+  python /app/scripts/reconcile_deployment_credentials.py
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
   --deployment-target "$DEPLOYMENT_TARGET"
