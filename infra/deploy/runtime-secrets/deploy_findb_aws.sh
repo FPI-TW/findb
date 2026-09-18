@@ -355,25 +355,25 @@ compose_file="$1"
 docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
   uv run alembic upgrade head
   uv run alembic current
-'
+' </dev/null
 docker compose -f "$compose_file" run --rm --no-deps \
   -e APPLICATION_DATABASE_URL ingest \
-  python /app/scripts/reconcile_database_privileges.py
+  python /app/scripts/reconcile_database_privileges.py </dev/null
 docker compose -f "$compose_file" run --rm --no-deps \
   -e APPLICATION_DATABASE_URL \
   -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
   -e FINDB_LOOKUP_SERVE_API_KEY \
   -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
-  python /app/scripts/reconcile_deployment_credentials.py
+  python /app/scripts/reconcile_deployment_credentials.py </dev/null
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
-  --deployment-target "$DEPLOYMENT_TARGET"
+  --deployment-target "$DEPLOYMENT_TARGET" </dev/null
 if [ "$DEPLOYMENT_TARGET" = production ]; then
   docker compose -f "$compose_file" run --rm --no-deps ingest \
     python /app/scripts/seed_production_calendars.py \
     --deployment-target production \
     --apply \
-    --actor production-bootstrap
+    --actor production-bootstrap </dev/null
 fi
 MIGRATION_SCRIPT
 fi

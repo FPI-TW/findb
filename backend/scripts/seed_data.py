@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from copy import deepcopy
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -158,7 +159,7 @@ def _contract_config(
     }
 
 
-DATASETS = [
+DATASETS: list[dict[str, Any]] = [
     {
         "dataset_key": "us_equity_eod",
         "name": "美股日K",

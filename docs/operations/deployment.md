@@ -300,6 +300,15 @@ static-cache Serve三把專用key只以SHA-256 hash建立為固定名稱的DB-ba
 `rotated_from_id`；已撤銷／過期key重用、hash被其他identity占用或多把同名active key一律fail closed。
 plaintext只存在one-shot tmpfs secret scope，不寫入DB或部署log。
 
+Migration、privilege reconciliation、credential reconciliation、registry provisioning與production
+calendar seed由同一個activation序列依序執行。序列若透過`bash -s`接收腳本，每個
+`docker compose run`都必須以`</dev/null>`隔離stdin；否則第一個Compose process可能消耗剩餘腳本並
+讓activation假成功。測試必須以會主動讀完stdin的fake Docker驗證production序列五個commands全部
+執行。Registry provisioning需在同一transaction鎖定並校準`us_equity_eod`、`tw_equity_eod`、
+`tw_equity_minute`與`tw_etf_minute`四列，保留operator-owned overrides，同時要求每個正式source都有
+可解析的`latest_date` policy；缺列、policy不完整或calendar source drift都必須在常駐服務重啟前
+fail closed。
+
 本機：
 
 ```bash
@@ -655,6 +664,9 @@ Deploy後至少完成：
 - **Operator acceptance**：public TLS／routing、bounded API smoke、terminal state與lineage。
 - **Operator acceptance**：Fetcher另核對heartbeat、desired／observed state及terminal
   delivery。
+- **Operator acceptance**：Scheduler market freshness不得有`configuration_errors`；US目前需有
+  2025–2028 published revisions、TW需有2025–2026 published revisions，三個controls在人工啟用前仍須
+  為`desired=stopped`／`observed=stopped`。
 
 失敗時：
 

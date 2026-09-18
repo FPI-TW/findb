@@ -96,6 +96,57 @@ def test_production_calendar_seed_runs_after_migration_only_for_production() -> 
     assert "COPY configs ./configs" in (REPO_ROOT / "backend" / "Dockerfile").read_text()
 
 
+def test_migration_script_does_not_let_compose_consume_remaining_commands(
+    tmp_path: Path,
+) -> None:
+    helper = (REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    migration_script = helper.split("<<'MIGRATION_SCRIPT'\n", 1)[1].split("\nMIGRATION_SCRIPT", 1)[
+        0
+    ]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_calls = tmp_path / "docker-calls"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf "%q " "$@" >> "$DOCKER_CALLS"\n'
+        'printf "\\n" >> "$DOCKER_CALLS"\n'
+        # Compose run normally attaches stdin.  Consume it here so this test
+        # reproduces the production failure if any invocation lacks an
+        # explicit /dev/null redirect.
+        "cat >/dev/null\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", "-s", "--", "/tmp/compose.yml"],
+        input=migration_script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "DEPLOYMENT_TARGET": "production",
+            "DOCKER_CALLS": str(docker_calls),
+        },
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    calls = docker_calls.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 5
+    assert "alembic upgrade head" in calls[0]
+    assert "reconcile_database_privileges.py" in calls[1]
+    assert "reconcile_deployment_credentials.py" in calls[2]
+    assert "provision_registry.py --deployment-target production" in calls[3]
+    assert "seed_production_calendars.py --deployment-target production --apply" in calls[4]
+
+
 def _run_ssm_marker_gate(
     tmp_path: Path, response: dict[str, object] | None, *, aws_error: str = ""
 ) -> subprocess.CompletedProcess[str]:
