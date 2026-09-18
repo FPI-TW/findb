@@ -19,11 +19,14 @@ import logging
 import os
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+
+from app.services.delivery_policy import DeliveryExpectation
+from scripts.seed_data import DATASETS, SUPPORTED_DATASETS, _merge_operator_config
 
 DEPLOYMENT_TARGETS = ("staging", "production")
 DATASET_KEY = "tw_equity_eod"
@@ -53,6 +56,8 @@ class ProvisioningReport:
     previous_finlab_override: str
     resulting_finlab_override: str
     global_minimum_record_count: int | None | str
+    reconciled_dataset_keys: tuple[str, ...] = ()
+    changed_dataset_keys: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +68,8 @@ class ProvisioningReport:
             "previous_finlab_override": self.previous_finlab_override,
             "resulting_finlab_override": self.resulting_finlab_override,
             "global_minimum_record_count": self.global_minimum_record_count,
+            "reconciled_dataset_keys": list(self.reconciled_dataset_keys),
+            "changed_dataset_keys": list(self.changed_dataset_keys),
         }
 
 
@@ -180,6 +187,72 @@ def provision_registry_config(
     return working, report
 
 
+def reconcile_supported_dataset_configs(
+    existing_configs: Mapping[str, Mapping[str, Any] | None],
+    *,
+    deployment_target: str,
+) -> tuple[dict[str, dict[str, Any]], ProvisioningReport]:
+    """Restore authoritative declarations while preserving operator policy overrides."""
+    target = _validate_target(deployment_target)
+    expected_keys = set(SUPPORTED_DATASETS)
+    actual_keys = set(existing_configs)
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        unexpected = sorted(actual_keys - expected_keys)
+        raise RegistryProvisioningError(
+            "supported dataset registry rows differ "
+            f"(missing={missing!r}, unexpected={unexpected!r})"
+        )
+
+    seed_configs = {dataset["dataset_key"]: dataset["config"] for dataset in DATASETS}
+    reconciled: dict[str, dict[str, Any]] = {}
+    changed: list[str] = []
+    for dataset_key in SUPPORTED_DATASETS:
+        existing = existing_configs[dataset_key]
+        if existing is not None and not isinstance(existing, Mapping):
+            raise RegistryProvisioningError(
+                f"dataset registry config must be a JSON object or null: {dataset_key}"
+            )
+        merged = _merge_operator_config(
+            dataset_key,
+            seed_configs[dataset_key],
+            dict(existing) if existing is not None else None,
+        )
+        raw_expectation = merged.get("delivery_expectation")
+        try:
+            expectation = DeliveryExpectation.model_validate(raw_expectation)
+        except ValueError as exc:
+            raise RegistryProvisioningError(
+                f"dataset delivery expectation is invalid: {dataset_key}"
+            ) from exc
+        allowed_sources = merged.get("allowed_sources")
+        if not isinstance(allowed_sources, list) or any(
+            not isinstance(source, str) or expectation.for_source(source).latest_date is None
+            for source in allowed_sources
+        ):
+            raise RegistryProvisioningError(
+                f"dataset latest-date policy is incomplete: {dataset_key}"
+            )
+        reconciled[dataset_key] = merged
+        if merged != existing:
+            changed.append(dataset_key)
+
+    tw_config, report = provision_registry_config(
+        reconciled[DATASET_KEY],
+        deployment_target=target,
+    )
+    reconciled[DATASET_KEY] = tw_config
+    if tw_config != existing_configs[DATASET_KEY] and DATASET_KEY not in changed:
+        changed.append(DATASET_KEY)
+    return reconciled, replace(
+        report,
+        action=f"{target}_registry_reconciled" if changed else report.action,
+        changed=bool(changed),
+        reconciled_dataset_keys=tuple(SUPPORTED_DATASETS),
+        changed_dataset_keys=tuple(changed),
+    )
+
+
 async def _lock_registry(connection: AsyncConnection) -> None:
     await connection.execute(
         text("SELECT pg_advisory_xact_lock(:lock_key)"),
@@ -200,24 +273,24 @@ async def provision_registry(
             await _lock_registry(connection)
             result = await connection.execute(
                 text("""
-                    SELECT config
+                    SELECT dataset_key, config
                     FROM dataset_registry
-                    WHERE dataset_key = :dataset_key
+                    WHERE dataset_key IN (
+                        'us_equity_eod',
+                        'tw_equity_eod',
+                        'tw_equity_minute',
+                        'tw_etf_minute'
+                    )
+                    ORDER BY dataset_key
                     FOR UPDATE
                 """),
-                {"dataset_key": DATASET_KEY},
             )
-            row = result.mappings().one_or_none()
-            if row is None:
-                raise RegistryProvisioningError(
-                    f"required dataset registry row is missing: {DATASET_KEY}"
-                )
-
-            new_config, report = provision_registry_config(
-                row["config"],
+            rows = result.mappings().all()
+            new_configs, report = reconcile_supported_dataset_configs(
+                {row["dataset_key"]: row["config"] for row in rows},
                 deployment_target=target,
             )
-            if report.changed:
+            for dataset_key in report.changed_dataset_keys:
                 await connection.execute(
                     text("""
                         UPDATE dataset_registry
@@ -225,8 +298,11 @@ async def provision_registry(
                         WHERE dataset_key = :dataset_key
                     """),
                     {
-                        "dataset_key": DATASET_KEY,
-                        "config": json.dumps(new_config, separators=(",", ":")),
+                        "dataset_key": dataset_key,
+                        "config": json.dumps(
+                            new_configs[dataset_key],
+                            separators=(",", ":"),
+                        ),
                     },
                 )
         return report

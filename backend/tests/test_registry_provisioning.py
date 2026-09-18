@@ -1,6 +1,7 @@
 """Target-aware dataset registry provisioning checks."""
 
 import importlib.util
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -134,32 +135,90 @@ def test_malformed_policy_fails_closed() -> None:
         )
 
 
+def test_supported_registry_reconciliation_restores_missing_us_policy() -> None:
+    existing = {
+        dataset["dataset_key"]: deepcopy(dataset["config"]) for dataset in provisioning.DATASETS
+    }
+    existing["us_equity_eod"]["delivery_expectation"] = {
+        "missing_delivery": {
+            "action": "warn",
+            "expected_sources": ["twelve_data"],
+            "deadline_local_time": "10:00:00",
+        },
+        "schedule": {
+            "enabled": True,
+            "slot_id": "western_markets_window",
+            "local_time": "09:00:00",
+            "timezone": "Asia/Taipei",
+            "target_date_lag_days": 1,
+            "expected_sources": ["twelve_data"],
+        },
+    }
+    existing["us_equity_eod"]["operator_note"] = "preserve"
+
+    reconciled, report = provisioning.reconcile_supported_dataset_configs(
+        existing,
+        deployment_target="production",
+    )
+
+    us_policy = reconciled["us_equity_eod"]["delivery_expectation"]
+    assert us_policy["latest_date"]["calendar_market"] == "US"
+    assert us_policy["baseline"]["strategy"] == "rolling_median"
+    assert us_policy["record_count"]["minimum_record_count"] == 1
+    assert us_policy["schedule"]["local_time"] == "09:00:00"
+    assert reconciled["us_equity_eod"]["operator_note"] == "preserve"
+    assert report.changed is True
+    assert report.action == "production_registry_reconciled"
+    assert report.reconciled_dataset_keys == provisioning.SUPPORTED_DATASETS
+    assert report.changed_dataset_keys == ("us_equity_eod",)
+
+
+def test_supported_registry_reconciliation_requires_all_four_rows() -> None:
+    existing = {
+        dataset["dataset_key"]: deepcopy(dataset["config"])
+        for dataset in provisioning.DATASETS
+        if dataset["dataset_key"] != "tw_etf_minute"
+    }
+
+    with pytest.raises(provisioning.RegistryProvisioningError, match="tw_etf_minute"):
+        provisioning.reconcile_supported_dataset_configs(
+            existing,
+            deployment_target="production",
+        )
+
+
 class _FakeResult:
-    def __init__(self, config: dict):
-        self.config = config
+    def __init__(self, configs: dict[str, dict]):
+        self.configs = configs
 
     def mappings(self):
         return self
 
-    def one_or_none(self):
-        return {"config": self.config}
+    def all(self):
+        return [
+            {"dataset_key": dataset_key, "config": config}
+            for dataset_key, config in self.configs.items()
+        ]
 
 
 class _FakeConnection:
     def __init__(self, config: dict, *, fail_update: bool = False):
-        self.config = config
+        self.configs = {
+            dataset["dataset_key"]: deepcopy(dataset["config"]) for dataset in provisioning.DATASETS
+        }
+        self.configs[provisioning.DATASET_KEY] = config
         self.fail_update = fail_update
         self.updated = False
 
     async def execute(self, statement, params=None):
         sql = str(statement)
-        if "SELECT config" in sql:
-            return _FakeResult(self.config)
+        if "SELECT dataset_key, config" in sql:
+            return _FakeResult(self.configs)
         if "UPDATE dataset_registry" in sql:
             self.updated = True
             if self.fail_update:
                 raise RuntimeError("simulated update failure")
-        return _FakeResult(self.config)
+        return _FakeResult(self.configs)
 
 
 class _FakeTransaction:

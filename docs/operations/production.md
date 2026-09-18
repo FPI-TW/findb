@@ -67,8 +67,9 @@ acceptance 後執行並留下不含 secret 的 fingerprint/evidence。
 
 ## DB bootstrap 與 Environment gate
 
-Migration後只 seed dataset registry、已審核 US calendar、TWSE 已正式發布的 2025–2026 calendar
-revisions、獨立 DB-backed credentials與三個 scheduler controls。三個 scheduler 的
+Migration後只 seed四個正式dataset registry declarations、已審核的NYSE 2025–2028 calendar、
+TWSE已正式發布的2025–2026 calendar revisions、獨立DB-backed credentials與三個scheduler
+controls。三個 scheduler 的
 desired/observed state都必須為`stopped`；不可複製staging canonical/raw/workflow data。
 2027以後尚未發布的TW calendar不阻塞首次部署；正式資料發布後必須以PR加入、完成checksum review
 並在對應年度開始前發布新revision。Production feed不得以weekday推測取代官方資料，執行日期超出
@@ -148,6 +149,22 @@ Shioaji分別使用`sha256:5b80c0a88f24f6c05285734ef74e96c09993fcff137b1c8168e17
 restart count 0，三個historical containers亦為running；command
 `fef787dc-18ce-4782-8d47-95ad5805cd4e`確認三個scheduler controls均維持
 `desired=stopped`／`observed=stopped`、heartbeat新鮮且沒有error。部署沒有啟用任何provider。
+
+部署後的market-freshness驗收另發現三張Scheduler卡片皆顯示「設定錯誤」。Runtime controls本身正常；
+FinLab與Shioaji的錯誤是production DB沒有任何published calendar revision，Twelve Data則是fresh-install
+產生的`us_equity_eod.delivery_expectation`只有schedule與missing-delivery設定，缺少`latest_date`等完整
+policy。根因是activation以`bash -s`從stdin執行migration區塊，第一個`docker compose run`繼承並消耗
+剩餘stdin，令後續privilege／credential reconciliation、四feed registry provisioning與calendar seed
+靜默跳過，但外層shell仍以0結束。Application與migration URLs已去敏確認指向同一個production RDS
+database，排除寫入錯誤DB。
+
+同次forward修正為每個migration one-shot明確使用`</dev/null>`、以可重現stdin消耗的測試保證五個
+commands完整執行，並把registry provisioning擴充為原子校準四個正式feed：contract declaration採版本
+控制值、operator-owned policy overrides保留、每個source都必須具有可解析的`latest_date`。Production
+calendar seed同時發布repo內已審核的NYSE 2025–2028與TWSE 2025–2026完整年度revision；任一既有
+revision與reviewed source不同即fail closed。修正部署驗收必須再次確認三張卡片的
+`configuration_status=ready`，scheduler仍維持`desired=stopped`／`observed=stopped`，不得因修復設定而
+啟動provider。
 
 ## Initial named Admin Owner evidence（2026-09-18）
 
