@@ -149,6 +149,14 @@ restart count 0，三個historical containers亦為running；command
 `fef787dc-18ce-4782-8d47-95ad5805cd4e`確認三個scheduler controls均維持
 `desired=stopped`／`observed=stopped`、heartbeat新鮮且沒有error。部署沒有啟用任何provider。
 
+## Initial named Admin Owner evidence（2026-09-18）
+
+Production首次具名管理者以break-glass bootstrap建立為`geai_admin`，顯示名稱`GEAI Admin`，角色為
+`owner`且帳號啟用。Bootstrap完成後立即以password reset流程標記
+`must_change_password=true`並撤銷bootstrap session；另以一次性密碼完成login、`/auth/me`身分確認與
+logout驗收，驗收session亦已撤銷。一次性密碼只交付至operator本機剪貼簿，未寫入Git、SSM command、
+部署log或本文件。
+
 首次Shioaji host沒有SQLite state，而既有`--require-stopped`按設計只接受可唯讀檢查的既有state；
 因此首次cutover先以exact Shioaji digest離線建立空白schema，未載入secret或啟動provider，再重跑
 candidate與activation。版本控制內的release helper現在只在state不存在且stable container不存在時執行
