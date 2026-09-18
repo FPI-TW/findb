@@ -271,7 +271,10 @@ else
   fi
 fi
 
-run_runtime --consumer migration --consumer compose --map MIGRATION_DATABASE_URL=DATABASE_URL -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'
+run_runtime --consumer migration --consumer compose --consumer credentials \
+  --map DATABASE_URL=APPLICATION_DATABASE_URL \
+  --map MIGRATION_DATABASE_URL=DATABASE_URL \
+  -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'
 set -euo pipefail
 compose_file="$1"
 bootstrap_arg=""
@@ -287,19 +290,27 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
         --expected-alembic-revision "$expected_revision" \
         --expected-rds-endpoint "$expected_rds_endpoint" \
         --require-exact-alembic-revision \
-        ${bootstrap_arg:+"$bootstrap_arg"}
+        ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
   else
     docker compose -f "$compose_file" run --rm --no-deps ingest \
       python /app/scripts/predeploy_db_check.py \
         --expected-alembic-revision "$expected_revision" \
         --expected-rds-endpoint "$expected_rds_endpoint" \
-        ${bootstrap_arg:+"$bootstrap_arg"}
+        ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
   fi
 else
   docker compose -f "$compose_file" run --rm --no-deps ingest \
     python /app/scripts/predeploy_db_check.py \
-      ${bootstrap_arg:+"$bootstrap_arg"}
+      ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
 fi
+docker compose -f "$compose_file" run --rm --no-deps \
+  -e APPLICATION_DATABASE_URL \
+  -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
+  -e FINDB_LOOKUP_SERVE_API_KEY \
+  -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
+  python /app/scripts/reconcile_deployment_credentials.py \
+  --deployment-target "$DEPLOYMENT_TARGET" \
+  --check-only </dev/null
 MIGRATION_CHECK_SCRIPT
 
 # Candidate validation is deliberately non-disruptive: it has authenticated,
@@ -364,7 +375,8 @@ docker compose -f "$compose_file" run --rm --no-deps \
   -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
   -e FINDB_LOOKUP_SERVE_API_KEY \
   -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
-  python /app/scripts/reconcile_deployment_credentials.py </dev/null
+  python /app/scripts/reconcile_deployment_credentials.py \
+  --deployment-target "$DEPLOYMENT_TARGET" </dev/null
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
   --deployment-target "$DEPLOYMENT_TARGET" </dev/null

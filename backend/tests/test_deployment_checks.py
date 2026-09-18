@@ -147,6 +147,53 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
     assert "seed_production_calendars.py --deployment-target production --apply" in calls[4]
 
 
+def test_predeploy_script_checks_credentials_without_consuming_remaining_commands(
+    tmp_path: Path,
+) -> None:
+    helper = (REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    predeploy_script = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
+        "\nMIGRATION_CHECK_SCRIPT", 1
+    )[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_calls = tmp_path / "docker-calls"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf "%q " "$@" >> "$DOCKER_CALLS"\n'
+        'printf "\\n" >> "$DOCKER_CALLS"\n'
+        "cat >/dev/null\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", "-s", "--", "/tmp/compose.yml"],
+        input=predeploy_script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "DEPLOYMENT_TARGET": "staging",
+            "DOCKER_CALLS": str(docker_calls),
+        },
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    calls = docker_calls.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2
+    assert "predeploy_db_check.py" in calls[0]
+    assert (
+        "reconcile_deployment_credentials.py --deployment-target staging --check-only" in calls[1]
+    )
+
+
 def _run_ssm_marker_gate(
     tmp_path: Path, response: dict[str, object] | None, *, aws_error: str = ""
 ) -> subprocess.CompletedProcess[str]:
@@ -1618,7 +1665,12 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     migration_end = findb.index("writer_services=", migration_start)
     migration_block = findb[migration_start:migration_end]
     assert "MIGRATION_DATABASE_URL=DATABASE_URL" in migration_block
+    assert "DATABASE_URL=APPLICATION_DATABASE_URL" in migration_block
+    assert "--consumer credentials" in migration_block
     assert "run --rm --no-deps" in migration_block
+    assert "reconcile_deployment_credentials.py" in migration_block
+    assert '--deployment-target "$DEPLOYMENT_TARGET"' in migration_block
+    assert "--check-only" in migration_block
     assert " up " not in migration_block
     assert findb.count("--map MIGRATION_DATABASE_URL=DATABASE_URL") == 2
     second_migration_start = findb.rindex("run_runtime --consumer migration")
@@ -1628,6 +1680,7 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert "--consumer credentials" in second_migration_block
     assert "python /app/scripts/reconcile_database_privileges.py" in second_migration_block
     assert "python /app/scripts/reconcile_deployment_credentials.py" in second_migration_block
+    assert '--deployment-target "$DEPLOYMENT_TARGET"' in second_migration_block
     assert "-e APPLICATION_DATABASE_URL ingest" in second_migration_block
     assert "-e FINDB_QUEUE_HEALTH_ADMIN_API_KEY" in second_migration_block
     assert "-e FINDB_LOOKUP_SERVE_API_KEY" in second_migration_block

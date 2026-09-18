@@ -83,7 +83,10 @@ Alembic完成後、任何常駐服務啟動前，activation必須在同一個one
 是例外，只允許application role讀取，不得修改。
 同一個bootstrap階段也必須將Secrets Manager的queue-health Admin viewer、Dashboard lookup Serve與
 static-cache Serve三把key以hash校準成DB-backed machine credentials，確保readiness與cache probe不
-依賴break-glass key；plaintext不得寫入DB或log。
+依賴break-glass key；plaintext不得寫入DB或log。停止writers前必須先在application role transaction
+執行`--check-only`並rollback；production既有的`production queue health`、`production lookup`與
+`production static cache`只有在各自hash、kind、active與不過期條件全數符合時才能原地採用為
+canonical deployment identities，其它identity reuse一律fail closed。
 Fetcher-facing DB credentials由另一個明確的hashed operator bridge校準：受信任operator讀取
 `fetcher` unit的三把Source key與calendar Serve key，只把lowercase SHA-256傳給FinDB host上的
 `reconcile_fetcher_credentials.py`。FinDB與Fetcher instance roles仍必須互相拒絕讀取對方Secrets

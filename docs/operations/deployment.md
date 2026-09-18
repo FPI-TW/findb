@@ -298,7 +298,17 @@ application role執行migration或手動授予schema `CREATE`；`public.alembic_
 static-cache Serve三把專用key只以SHA-256 hash建立為固定名稱的DB-backed machine credential。
 輪替會撤銷前一把同名active key並記錄
 `rotated_from_id`；已撤銷／過期key重用、hash被其他identity占用或多把同名active key一律fail closed。
-plaintext只存在one-shot tmpfs secret scope，不寫入DB或部署log。
+舊環境曾以`<deployment-target> queue health`、`<deployment-target> lookup`與
+`<deployment-target> static cache`命名這三把key；只有當名稱與目前target完全相符、hash就是對應的
+Secrets Manager值、kind正確且credential為active／不過期時，reconciliation才可原地收斂為上述
+canonical identity並套用目前的scope、owner、rate limit與page size政策。任意名稱、跨target名稱或
+kind不符仍視為identity reuse並fail closed。plaintext只存在one-shot tmpfs secret scope，不寫入DB或
+部署log。
+
+Candidate／activation在停止writers前都必須以`--check-only`執行credential reconciliation：同一
+transaction完成查詢、policy套用與flush後強制rollback，用來提前攔截legacy identity衝突、唯一性或
+DB grant問題。只有activation通過此前置檢查後才可停止writers，並在migration／privilege
+reconciliation後執行正式commit；錯誤log只可輸出固定reason code，不得包含plaintext或完整hash。
 
 Migration、privilege reconciliation、credential reconciliation、registry provisioning與production
 calendar seed由同一個activation序列依序執行。序列若透過`bash -s`接收腳本，每個
