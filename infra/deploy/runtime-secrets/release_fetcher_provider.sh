@@ -228,6 +228,35 @@ if [ "$cache_dir" != "-" ]; then
   cache_mount=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
 
+if [ "$provider" = shioaji ] && ! sudo test -e "$state_path"; then
+  if docker container inspect "$stable" >/dev/null 2>&1; then
+    echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
+    exit 1
+  fi
+  state_bootstrap_name="${preflight_name}-state"
+  if docker container inspect "$state_bootstrap_name" >/dev/null 2>&1; then
+    docker rm -f "$state_bootstrap_name"
+  fi
+  # A fresh host has no Shioaji SQLite file yet, while --require-stopped is
+  # intentionally read-only and requires one. Create only the reviewed schema
+  # before the stopped-state probe; this mode never constructs network clients.
+  docker run --rm \
+    --name "$state_bootstrap_name" \
+    --user 10001:10001 \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --mount "type=bind,src=$state_dir,dst=$state_dir" \
+    "${cache_mount[@]}" \
+    "$image" "$@" --state-path "$state_path" --initialize-state
+  if [ ! -f "$state_path" ] \
+    || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; then
+    echo "release_fetcher_provider=failed reason=shioaji_state_bootstrap" >&2
+    exit 1
+  fi
+fi
+
 docker run --rm \
   --name "$preflight_name" \
   --user 10001:10001 \

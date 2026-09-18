@@ -12,6 +12,17 @@
         {"name": "database/migration", "required_keys": ["MIGRATION_DATABASE_URL"]}
       ]
     },
+    "credentials": {
+      "secrets": [
+        {"name": "api/admin-break-glass", "required_keys": ["ADMIN_BREAK_GLASS_API_KEY"]},
+        {"name": "api/queue-health-admin", "required_keys": ["FINDB_QUEUE_HEALTH_ADMIN_API_KEY"]},
+        {"name": "api/lookup-serve", "required_keys": ["FINDB_LOOKUP_SERVE_API_KEY"]},
+        {"name": "api/static-cache-serve", "required_keys": ["FINDB_STATIC_CACHE_SERVE_API_KEY"]}
+      ],
+      "distinct_keys": [
+        ["FINDB_LOOKUP_SERVE_API_KEY", "FINDB_STATIC_CACHE_SERVE_API_KEY", "FINDB_QUEUE_HEALTH_ADMIN_API_KEY", "ADMIN_BREAK_GLASS_API_KEY"]
+      ]
+    },
     "nginx": {
       "secrets": [
         {"name": "api/lookup-serve", "required_keys": ["FINDB_LOOKUP_SERVE_API_KEY"]},
