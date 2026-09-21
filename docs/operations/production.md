@@ -169,6 +169,36 @@ revision與reviewed source不同即fail closed。修正部署驗收必須再次�
 `configuration_status=ready`，scheduler仍維持`desired=stopped`／`observed=stopped`，不得因修復設定而
 啟動provider。
 
+## Production v0.1.3 deployment evidence（2026-09-21）
+
+Release commit `819c468ebeb60d8bf42d75149339912ec90b233c`以`findb-v0.1.3`與
+`fetcher-v0.1.3`兩個immutable tags依序完成promotion。FinDB run
+[35558260416](https://github.com/FPI-TW/findb/actions/runs/35558260416)與Fetcher run
+[35558999253](https://github.com/FPI-TW/findb/actions/runs/35558999253)均成功；兩個
+`PRODUCTION_DEPLOY_ENABLED` Environment gates在各自terminal success後立即恢復為`false`。
+
+FinDB production acceptance bundle SHA-256為
+`7680fbc2b5c8668de32b61f08455fd020cdf90ca40683240490edd5eb6eacadd`，active release使用backend
+`sha256:04655ac3c6da8234df8a1f8891860d55f63b5f48795941140c50b612aa2ba6dc`與Dashboard
+`sha256:a382be436ee921bb3f2fe12fc660f7cac83453fc5b1f948a9e835ea88e56f6a5`。SSM commands
+`9b516e4a-15de-4cf5-a260-ecb00502bf24`與`0554e397-171c-42f7-a363-7b2efbe6a381`確認active symlink
+指向本次accepted release、8個FinDB containers正常、worker回覆`pong`且exact digests生效；public
+health、Dashboard、lookup redirect及exact-host Referer注入的Serve查詢皆為HTTP 200。
+
+Fetcher production acceptance bundle SHA-256為
+`848d99156027b015151b062baf0f1229848cb973970b58fd60b2523f3f116d96`。Twelve Data、FinLab與
+Shioaji分別使用`sha256:1124ecbe039b594bd72675a7c47aa55ba31ceb70530c3f5bbccd4223a3bfbe76`、
+`sha256:0e830429356b4a4374962bee5dd3d0291e98559cf98da930b861d6659b964d06`及
+`sha256:38d39a90fcba259f8d161179880d44a58588491d506d3a5adc10cc8e35458915`。SSM command
+`76e3e277-e4e2-43b3-bc73-9797d165dab3`確認active symlink指向本次accepted release，三個stable與
+三個historical containers皆為accepted exact-digest、running且restart count 0。
+
+SSM command `39a7509e-714c-4ebd-ab5d-3f4bafb2ef26`在Fetcher activation後重新確認FinLab、Shioaji與
+Twelve Data三個scheduler controls均為`desired=stopped`／`observed=stopped`、revision 1且沒有
+`last_error`；三張market-freshness卡片皆為`configuration_status=ready`且
+`configuration_errors=[]`。因此v0.1.2發現的calendar與`latest_date`設定缺口已由正式release修復，
+部署仍未啟用任何provider。
+
 ## Initial named Admin Owner evidence（2026-09-18）
 
 Production首次具名管理者以break-glass bootstrap建立為`geai_admin`，顯示名稱`GEAI Admin`，角色為
