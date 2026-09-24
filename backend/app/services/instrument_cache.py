@@ -19,12 +19,9 @@ INSTRUMENT_FIELDS = (
     "asset_class",
     "symbol",
     "name",
-    "short_name",
     "currency",
     "status",
-    "first_trade_date",
-    "latest_trade_date",
-    "latest_price",
+    "coverage",
 )
 
 
@@ -172,30 +169,63 @@ def _normalize_instrument_item(item: Any) -> dict[str, Any]:
         raise InstrumentCacheValidationError("Each instrument must include symbol")
 
     normalized = {field: item.get(field) for field in INSTRUMENT_FIELDS}
-    for field in ("market", "asset_class", "name", "short_name", "currency", "status"):
+    for field in ("market", "asset_class", "name", "currency", "status"):
         value = normalized[field]
         if value is not None and not isinstance(value, str):
             raise InstrumentCacheValidationError(f"Instrument field {field} must be a string")
 
-    for field in ("first_trade_date", "latest_trade_date"):
-        field_value = normalized[field]
-        if field_value is not None and not isinstance(field_value, str):
-            raise InstrumentCacheValidationError(f"Instrument field {field} must be a string")
-    latest_price = normalized["latest_price"]
-    if latest_price is not None and not isinstance(latest_price, (int, float, str)):
-        raise InstrumentCacheValidationError(
-            "Instrument field latest_price must be a string or number"
-        )
+    normalized["coverage"] = _normalize_coverage(normalized["coverage"])
 
     return normalized
+
+
+def _normalize_coverage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"eod", "minute"}:
+        raise InstrumentCacheValidationError("Instrument coverage must contain eod and minute")
+    return {
+        "eod": _normalize_coverage_domain(
+            value["eod"],
+            ("first_date", "latest_date", "latest_close"),
+            "eod",
+        ),
+        "minute": _normalize_coverage_domain(
+            value["minute"],
+            ("first_bar_at", "latest_bar_at", "latest_close"),
+            "minute",
+        ),
+    }
+
+
+def _normalize_coverage_domain(
+    value: Any,
+    fields: tuple[str, str, str],
+    domain: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise InstrumentCacheValidationError(
+            f"Instrument {domain} coverage must contain {', '.join(fields)}"
+        )
+    for field in fields[:2]:
+        if value[field] is not None and not isinstance(value[field], str):
+            raise InstrumentCacheValidationError(
+                f"Instrument {domain} coverage field {field} must be a string"
+            )
+    latest_close = value[fields[2]]
+    if latest_close is not None and not isinstance(latest_close, (int, float, str)):
+        raise InstrumentCacheValidationError(
+            f"Instrument {domain} coverage field {fields[2]} must be a string or number"
+        )
+    return {field: value[field] for field in fields}
 
 
 def _sort_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     market = str(item.get("market") or "")
     symbol = str(item.get("symbol") or "")
     name = str(item.get("name") or "")
-    short_name = str(item.get("short_name") or "")
-    return (market.upper(), symbol.upper(), name.upper(), short_name.upper())
+    instrument_id = str(item.get("instrument_id") or "")
+    return (market.upper(), symbol.upper(), name.upper(), instrument_id)
 
 
 def _utc_now_iso() -> str:

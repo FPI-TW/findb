@@ -44,8 +44,10 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 | `shioaji` | `tw_equity_minute` | `2330` pilot |
 | `shioaji` | `tw_etf_minute` | `0050`、`0056`、`006201` pilot |
 
-Canonical tables與Serve endpoints可保留歷史或預留read model；這不代表目前有對應
-provider feed。新增資料域必須另案完成contract、registry、normalizer、DQ與Serve驗收。
+Serve catalog由active `dataset_registry`動態解析，四個feed分別公開US/TW equity EOD及TW
+equity/ETF minute。只有至少符合一個active scope的商品會出現在Serve instruments。Canonical
+tables可保留inactive歷史資料，但不因此產生公開route或catalog項目。新增資料域必須另案完成
+contract、registry、normalizer、DQ與Serve驗收。
 
 ## 資料責任
 
@@ -70,8 +72,8 @@ Fetcher負責provider adapter、限流、versioned contract、stable identity、
 SQLite retry／lease／checkpoint及terminal status追蹤；只能透過HTTPS呼叫FinDB，不得
 import backend ORM／normalizer、連FinDB DB或取得RabbitMQ／Admin credentials。
 
-Dashboard只能透過API運作。公開lookup使用canonical Serve API；generated cache僅供
-backend static／Admin cache maintenance。RAG、embedding、vector index與模型runtime屬
+Dashboard只能透過API運作。公開lookup使用單一`/serve/instruments`及新版EOD／minute endpoints；
+generated instrument cache僅供backend static／Admin cache maintenance。RAG、embedding、vector index與模型runtime屬
 下游，不進入FinDB。
 
 允許跨unit共享的內容只有published JSON Schema、contract manifest、無secret fixtures及

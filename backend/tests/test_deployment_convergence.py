@@ -554,7 +554,6 @@ def test_reusable_deployments_forward_complete_staging_runtime_variable_contract
             "RAW_RETENTION_ENABLED",
             "RAW_RETENTION_DAYS",
             "FINDB_STATIC_CACHE_BASE_URL",
-            "FINDB_LATEST_PRICE_WORKERS",
             "CLOUDFLARE_R2_ACCOUNT_ID",
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
         ),

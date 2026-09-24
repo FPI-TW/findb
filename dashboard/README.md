@@ -7,7 +7,7 @@ TanStack Start 前端，整合公開的標的查詢，以及需登入的唯讀�
 | Route                                | 權限   | 用途                   |
 | ------------------------------------ | ------ | ---------------------- |
 | `/dashboard/`                        | 公開   | 首頁與功能入口         |
-| `/dashboard/lookup`                  | 公開   | 金融商品與宏觀序列查詢 |
+| `/dashboard/lookup`                  | 公開   | Active金融商品查詢     |
 | `/dashboard/login`                   | 公開   | 操作人員登入           |
 | `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼     |
 | `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況 |
@@ -37,10 +37,10 @@ Dashboard 統一讀取 repository 根目錄的 `.env`。Dashboard 本身只需�
 Admin API 時以 Bearer token 轉送。Staging cookie 同時啟用 `Secure`；本機 HTTP
 開發則停用 `Secure`，以便在 localhost 測試。
 
-公開 Lookup 透過同源的 `/api/v1/serve/lookup/instruments` 與
-`/api/v1/serve/lookup/macro-series` 取得列表、facets 與分頁資料。前端測試只 mock
-此 HTTP contract，不讀取 backend source 或 generated cache。Lookup 讀取的是 canonical
-read model；它不代表該資料域目前有 active provider feed。
+公開 Lookup 透過同源的`/api/v1/serve/instruments`取得列表、全域facets與分頁資料，並依每筆
+`coverage.eod`／`coverage.minute`載入`/api/v1/serve/eod`與`/api/v1/serve/minute`。舊
+`?ds=macro`書籤會正規化回instruments。前端測試只mock此HTTP contract，不讀取backend source或
+generated cache；列表只會包含active dataset scopes。
 
 直接執行 `pnpm dev:dashboard` 時，開發入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
 

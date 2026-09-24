@@ -606,11 +606,10 @@ FinLab及兩個Shioaji feeds已有同一accepted record後的原生成功證據�
 2026-09-15以2026-09-09 immutable `pre` manifest SHA-256
 `7c234156bdf18964c7f1dc5d164a208a00c42db7458ee35fb30fffc0ec0e8e68`執行自然`post`驗收。FinLab、
 兩個Shioaji feeds與Twelve Data均前進至2026-09-11及2026-09-14交易日，reviewed config／universe
-identity未變；四feed的Source／Raw／job／outbox／DQ／canonical、多交易日與持久化Source `202`均通過，
-minute Serve邊界維持`not_applicable/market_minute_read_model_not_exposed`。Post manifest SHA-256為
-`36489b45ad94e5c10f4037f931898ca1b0ae8474f657395722124adaa5e50a24`，以KMS保存於versioned S3 key
-`evidence/staging/active-feeds/2026-09-15/post-36489b45ad94e5c1.json`，version
-`.quZPhy3PoNJRFp3l5qzp14y7OCpeV7Z`；因此四feed多交易日pre/post P0 gate已關閉。
+identity未變；該次Source／Raw／job／outbox／DQ／canonical與多交易日驗收仍可作為歷史證據，但其
+minute Serve邊界為舊contract，不能用來驗收目前Serve API。新版部署完成後必須重生instrument
+cache，讓evidence probe使用既有static-cache Serve key對四個feed的最新canonical sample執行
+bounded HTTP查詢，並完成Dashboard EOD／minute drawer驗收；在此之前不宣稱新版live acceptance完成。
 
 同日RabbitMQ唯讀健康commands `36989907-c2d4-4e99-a351-f43c6bd91788`與
 `3dc62594-d707-46b9-a746-d89ea6ed475b`確認broker自2026-09-03起連續運行且healthy，restart／OOM／

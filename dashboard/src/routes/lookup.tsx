@@ -3,10 +3,10 @@ import { useCallback } from "react"
 
 import { LookupPage } from "../features/lookup/LookupPage"
 import type { LookupSearch } from "../features/lookup/types"
-import { lookupSearchSchema } from "../features/lookup/utils"
+import { parseLookupSearch } from "../features/lookup/utils"
 
 export const Route = createFileRoute("/lookup")({
-  validateSearch: lookupSearchSchema,
+  validateSearch: parseLookupSearch,
   component: LookupRoute,
 })
 

@@ -65,7 +65,7 @@ else
 fi
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,FINDB_LATEST_PRICE_WORKERS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"
 fi
@@ -560,9 +560,9 @@ done
 # exact same-origin Referer map used by Dashboard lookup requests.
 lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"
 docker compose -f "$compose_file" exec -T nginx \
-  wget -q --no-check-certificate --spider \
+  wget -q --no-check-certificate -O /dev/null --timeout=10 --tries=1 \
     --header="Referer: $lookup_referer" \
-    "https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1" </dev/null
+    "https://127.0.0.1/api/v1/serve/instruments?page_size=1" </dev/null
 
 docker compose -f "$compose_file" exec -T serve \
   sh -lc 'python /app/scripts/generate_instrument_cache.py' </dev/null >/dev/null

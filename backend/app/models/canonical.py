@@ -97,6 +97,16 @@ class InstrumentStats(Base):
     first_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     latest_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     latest_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    eod_first_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    eod_latest_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    eod_latest_close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    minute_first_bar_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    minute_latest_bar_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    minute_latest_close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     instrument: Mapped["Instrument"] = relationship(back_populates="stats")

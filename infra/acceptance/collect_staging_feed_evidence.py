@@ -132,9 +132,13 @@ def _assessment(findb: dict[str, Any], fetcher: dict[str, Any]) -> dict[str, Any
             row["source_http_status"] == 202 and row["attempt_status"] in {"accepted", "duplicate"}
             for row in rows
         )
-    minute_boundaries = {
-        dataset: backend_feeds[("shioaji", dataset)]["lineage_contract"]["serve"]
-        for dataset in ("tw_equity_minute", "tw_etf_minute")
+    serve_boundaries = {
+        f"{source}/{dataset}": item["lineage_contract"]["serve"]
+        for (source, dataset), item in backend_feeds.items()
+    }
+    serve_probes = {
+        f"{source}/{dataset}": bool(item.get("serve_probe", {}).get("success"))
+        for (source, dataset), item in backend_feeds.items()
     }
     backend_multi_date = all(item["multi_trade_date_ready"] for item in findb["feeds"])
     fetcher_multi_date = all(
@@ -152,8 +156,11 @@ def _assessment(findb: dict[str, Any], fetcher: dict[str, Any]) -> dict[str, Any
         "backend_multi_trade_date_complete": backend_multi_date,
         "fetcher_multi_trade_date_complete": fetcher_multi_date,
         "persistent_source_202": source_202,
-        "minute_serve_boundary": minute_boundaries,
-        "minute_serve_boundary_complete": set(minute_boundaries.values()) == {"not_applicable"},
+        "serve_boundary": serve_boundaries,
+        "serve_probe": serve_probes,
+        "serve_boundary_complete": len(serve_boundaries) == 4
+        and set(serve_boundaries.values()) == {"required"}
+        and all(serve_probes.values()),
     }
 
 

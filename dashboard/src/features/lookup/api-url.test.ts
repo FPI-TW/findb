@@ -7,22 +7,22 @@ describe("public API URL", () => {
     "uses the backend port when Dashboard runs locally on %s",
     port => {
       expect(
-        resolvePublicApiUrl("/api/v1/serve/lookup/instruments", {
+        resolvePublicApiUrl("/api/v1/serve/instruments", {
           hostname: "localhost",
           port,
           protocol: "http:",
         })
-      ).toBe("http://localhost:8080/api/v1/serve/lookup/instruments")
+      ).toBe("http://localhost:8080/api/v1/serve/instruments")
     }
   )
 
   it("keeps deployed requests on the same origin for nginx routing", () => {
     expect(
-      resolvePublicApiUrl("/api/v1/serve/lookup/instruments", {
+      resolvePublicApiUrl("/api/v1/serve/instruments", {
         hostname: "findb-staging.tingfong.com",
         port: "",
         protocol: "https:",
       })
-    ).toBe("/api/v1/serve/lookup/instruments")
+    ).toBe("/api/v1/serve/instruments")
   })
 })

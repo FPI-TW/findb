@@ -48,7 +48,6 @@ services:
       DATABASE_MAX_OVERFLOW: "${SERVE_DATABASE_MAX_OVERFLOW:-10}"
       FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://127.0.0.1:${PORT:?PORT must be set in deployment variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
-      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in deployment variables}"
       # Canonical R2 reader credentials are intentionally limited to Serve.
       CLOUDFLARE_R2_ACCOUNT_ID: "${CLOUDFLARE_R2_ACCOUNT_ID:?CLOUDFLARE_R2_ACCOUNT_ID must be set in deployment variables}"
       CLOUDFLARE_R2_CANONICAL_BUCKET: "${CLOUDFLARE_R2_CANONICAL_BUCKET:?CLOUDFLARE_R2_CANONICAL_BUCKET must be set in deployment variables}"
@@ -71,7 +70,6 @@ services:
       DATABASE_MAX_OVERFLOW: "${INGEST_DATABASE_MAX_OVERFLOW:-5}"
       FINDB_STATIC_CACHE_BASE_URL: "${FINDB_STATIC_CACHE_BASE_URL:-http://serve:${PORT:?PORT must be set in deployment variables}}"
       FINDB_STATIC_CACHE_SERVE_API_KEY: "${FINDB_STATIC_CACHE_SERVE_API_KEY:-}"
-      FINDB_LATEST_PRICE_WORKERS: "${FINDB_LATEST_PRICE_WORKERS:?FINDB_LATEST_PRICE_WORKERS must be set in deployment variables}"
       ADMIN_BREAK_GLASS_API_KEY: "${ADMIN_BREAK_GLASS_API_KEY:?ADMIN_BREAK_GLASS_API_KEY must be set in deployment runtime secrets}"
       FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:?FINDB_QUEUE_HEALTH_ADMIN_API_KEY must be set in deployment runtime secrets}"
     restart: unless-stopped

@@ -35,7 +35,6 @@ htmlcov/
 *.log
 artifacts/
 backend/app/static/data/instruments.json
-backend/app/static/data/macro-series.json
 
 # OpenTofu local state, provider cache, plans, and operator variable files.
 **/.terraform/

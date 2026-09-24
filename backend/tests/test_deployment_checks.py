@@ -1978,7 +1978,8 @@ def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_loo
     assert "nginx_serve_key_source=/run/findb-runtime-secrets/nginx/serve-key.conf" in deploy
     assert "{{.Source}} {{.RW}}" in deploy
     assert '--header="Referer: $lookup_referer"' in deploy
-    assert '"https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"' in deploy
+    assert '"https://127.0.0.1/api/v1/serve/instruments?page_size=1"' in deploy
+    assert "wget -q --no-check-certificate -O /dev/null --timeout=10 --tries=1" in deploy
 
 
 def test_findb_staging_candidate_acceptance_checks_durable_topology_and_worker_ping() -> None:
@@ -2272,9 +2273,11 @@ esac
     main_up_at = commands.index("compose -f /tmp/compose.yml up -d --remove-orphans")
     replacement_up_at = commands.index("compose -f /tmp/compose.yml up -d --no-deps nginx")
     lookup_probe_at = commands.index(
-        "compose -f /tmp/compose.yml exec -T nginx wget -q --no-check-certificate --spider "
+        "compose -f /tmp/compose.yml exec -T nginx wget -q --no-check-certificate -O "
+        "/dev/null "
+        "--timeout=10 --tries=1 "
         "--header=Referer: https://findb.example.test/dashboard/lookup "
-        "https://127.0.0.1/api/v1/serve/instruments?include_count=false&page_size=1"
+        "https://127.0.0.1/api/v1/serve/instruments?page_size=1"
     )
     assert main_up_at < replacement_up_at < lookup_probe_at
 

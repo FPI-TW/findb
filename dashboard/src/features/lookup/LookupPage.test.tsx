@@ -16,9 +16,8 @@ import { DEFAULT_SEARCH } from "./config"
 const mocks = vi.hoisted(() => ({
   loadAllLookupItems: vi.fn(),
   loadLookupPage: vi.fn(),
-  loadCorporateActions: vi.fn(),
-  loadMacroObservations: vi.fn(),
-  loadPrices: vi.fn(),
+  loadEod: vi.fn(),
+  loadMinute: vi.fn(),
 }))
 
 vi.mock("./data", () => mocks)
@@ -35,10 +34,18 @@ const response = {
       symbol: "2330",
       name: "台積電",
       currency: "TWD",
+      timezone: "Asia/Taipei",
       status: "active",
-      first_trade_date: "1994-09-05",
-      latest_trade_date: "2026-07-22",
-      latest_price: "1085.5",
+      listed_date: "1994-09-05",
+      delisted_date: null,
+      coverage: {
+        eod: {
+          first_date: "1994-09-05",
+          latest_date: "2026-07-22",
+          latest_close: "1085.5",
+        },
+        minute: null,
+      },
     },
   ],
   pagination: {
@@ -68,9 +75,8 @@ beforeEach(() => {
   localStorage.clear()
   mocks.loadLookupPage.mockReset().mockResolvedValue(response)
   mocks.loadAllLookupItems.mockReset().mockResolvedValue(response.data)
-  mocks.loadPrices.mockReset().mockResolvedValue([])
-  mocks.loadCorporateActions.mockReset().mockResolvedValue([])
-  mocks.loadMacroObservations.mockReset().mockResolvedValue([])
+  mocks.loadEod.mockReset().mockResolvedValue([])
+  mocks.loadMinute.mockReset().mockResolvedValue([])
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -147,7 +153,7 @@ describe("LookupPage", () => {
       <LookupPage search={DEFAULT_SEARCH} updateSearch={vi.fn()} />
     )
 
-    expect(screen.getByText("正在載入金融商品與宏觀序列")).toBeInTheDocument()
+    expect(screen.getByText("正在載入金融商品")).toBeInTheDocument()
     rejectRequest?.(new Error("查詢失敗"))
     expect(await screen.findByRole("alert")).toHaveTextContent("查詢失敗")
     expect(screen.queryByText("沒有符合條件的標的")).not.toBeInTheDocument()

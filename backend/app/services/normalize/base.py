@@ -429,6 +429,9 @@ class BaseNormalizer(ABC):
             first_trade_date=trade_date_value,
             latest_trade_date=trade_date_value if update_latest else None,
             latest_price=latest_price,
+            eod_first_date=trade_date_value,
+            eod_latest_date=trade_date_value if update_latest else None,
+            eod_latest_close=latest_price,
             updated_at=now,
         )
         excluded = stmt.excluded
@@ -461,6 +464,32 @@ class BaseNormalizer(ABC):
                         excluded.latest_price,
                     ),
                     else_=stats.c.latest_price,
+                ),
+                "eod_first_date": func.least(
+                    stats.c.eod_first_date,
+                    excluded.eod_first_date,
+                ),
+                "eod_latest_date": case(
+                    (
+                        excluded.eod_latest_date.is_not(None)
+                        & (
+                            stats.c.eod_latest_date.is_(None)
+                            | (excluded.eod_latest_date >= stats.c.eod_latest_date)
+                        ),
+                        excluded.eod_latest_date,
+                    ),
+                    else_=stats.c.eod_latest_date,
+                ),
+                "eod_latest_close": case(
+                    (
+                        excluded.eod_latest_date.is_not(None)
+                        & (
+                            stats.c.eod_latest_date.is_(None)
+                            | (excluded.eod_latest_date >= stats.c.eod_latest_date)
+                        ),
+                        excluded.eod_latest_close,
+                    ),
+                    else_=stats.c.eod_latest_close,
                 ),
                 "updated_at": now,
             },

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import admin, lookup, serve, source
+from app.api.v1 import admin, serve, source
 from app.config import get_settings
 from app.models.base import async_session_maker, init_db
 from app.services.credential_usage import flush_usage, periodic_flush, record_usage
@@ -108,11 +108,6 @@ if APP_ROLE in {"serve", "all"}:
     app.include_router(
         serve.router,
         prefix=f"{settings.API_V1_PREFIX}/serve",
-        tags=["Serve API"],
-    )
-    app.include_router(
-        lookup.router,
-        prefix=f"{settings.API_V1_PREFIX}/serve/lookup",
         tags=["Serve API"],
     )
 

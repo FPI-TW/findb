@@ -117,18 +117,32 @@ GET /api/v1/serve/calendar/years/{market}/{year}
 
 ## Serve API
 
-Serve只讀canonical tables，涵蓋instrument、EOD、corporate action、macro、futures、
-bonds、calendar及market freshness。保留的endpoint或歷史資料不代表有active provider
-feed；active feed清單見[現行架構](../architecture/overview.md#active-feeds)。
+Serve只讀canonical tables，且只公開active registry可解析的EOD／minute scopes。現行路由為：
 
-List endpoint的filter、pagination與response envelope以OpenAPI為準。使用
-`/serve/instruments`時可選`include_count=false`避免不必要的count query。
+- `GET /serve/datasets`：provider-free active catalog與coverage。
+- `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
+  `coverage.eod`／`coverage.minute`。
+- `GET /serve/eod`：必須指定`instrument_id`，或`market`加最多50個可選symbols；使用
+  opaque cursor且固定最新優先。
+- `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
+  最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
+- `GET /serve/calendar`、`GET /serve/calendar/years/{market}/{year}`與
+  `GET /serve/market-freshness`。
+
+成功回應使用`{success, data}` typed envelope。Instrument list使用page pagination，EOD／minute
+使用opaque cursor且不做total count。已知商品不屬active資料域時回
+`DATASET_NOT_AVAILABLE`；找不到商品、日期範圍與cursor錯誤分別使用
+`INSTRUMENT_NOT_FOUND`、`INVALID_DATE_RANGE`、`INVALID_CURSOR`。Catalog若遇到未知或矛盾的
+active registry config會fail closed，不回傳provider、scheduler或credential資訊。
+
+`/serve/lookup/*`、`/serve/eod/{instrument_id}`、corporate actions、macro、futures與bonds已移除。
+Canonical tables仍保留，但沒有active feed的資料域不構成公開Serve contract。
 
 範例：
 
 ```bash
 curl -H "X-API-Key: $SERVE_KEY" \
-  "https://<host>/api/v1/serve/eod?market=TW&symbols=2330&start_date=2026-07-01"
+  "https://<host>/api/v1/serve/eod?instrument_id=<uuid>&start_date=2026-07-01&end_date=2026-07-31&page_size=100"
 ```
 
 ## Admin API

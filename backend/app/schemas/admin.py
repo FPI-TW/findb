@@ -565,6 +565,23 @@ class MarketFreshnessListResponse(BaseModel):
 # ── Instrument Cache ──────────────────────────────────────────────────────────
 
 
+class InstrumentCacheEODCoverage(BaseModel):
+    first_date: Optional[date] = None
+    latest_date: Optional[date] = None
+    latest_close: Optional[Decimal] = None
+
+
+class InstrumentCacheMinuteCoverage(BaseModel):
+    first_bar_at: Optional[datetime] = None
+    latest_bar_at: Optional[datetime] = None
+    latest_close: Optional[Decimal] = None
+
+
+class InstrumentCacheCoverage(BaseModel):
+    eod: Optional[InstrumentCacheEODCoverage] = None
+    minute: Optional[InstrumentCacheMinuteCoverage] = None
+
+
 class InstrumentCacheItem(BaseModel):
     """產生後的靜態商品快取單一項目。"""
 
@@ -573,12 +590,9 @@ class InstrumentCacheItem(BaseModel):
     asset_class: Optional[str] = None
     symbol: str = Field(..., min_length=1)
     name: Optional[str] = None
-    short_name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
-    first_trade_date: Optional[date] = None
-    latest_trade_date: Optional[date] = None
-    latest_price: Optional[Decimal] = None
+    coverage: InstrumentCacheCoverage
 
 
 class InstrumentCacheDocument(BaseModel):
@@ -604,12 +618,9 @@ class InstrumentCacheItemPatchRequest(BaseModel):
     asset_class: Optional[str] = None
     symbol: Optional[str] = Field(default=None, min_length=1)
     name: Optional[str] = None
-    short_name: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[str] = None
-    first_trade_date: Optional[date] = None
-    latest_trade_date: Optional[date] = None
-    latest_price: Optional[Decimal] = None
+    coverage: Optional[InstrumentCacheCoverage] = None
 
     model_config = ConfigDict(extra="forbid")
 

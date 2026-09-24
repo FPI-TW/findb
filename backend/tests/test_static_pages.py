@@ -30,7 +30,7 @@ async def test_legacy_public_pages_and_html_assets_are_removed():
 
 
 def test_instrument_cache_path_is_gitignored():
-    """Ensure generated cache files are not tracked."""
+    """Only the current generated instrument cache is ignored."""
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "backend/app/static/data/instruments.json" in gitignore
-    assert "backend/app/static/data/macro-series.json" in gitignore
+    assert "backend/app/static/data/macro-series.json" not in gitignore
