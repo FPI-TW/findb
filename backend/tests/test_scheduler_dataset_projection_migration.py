@@ -22,7 +22,7 @@ from tests.migration_database import get_active_migration_database_factory
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 C5_REVISION = "c5d6e7f8a9b0"
 D6_REVISION = "d6e7f8a9b0c1"
-LATEST_REVISION = "a8b9c0d1e2f3"
+LATEST_REVISION = "b9c0d1e2f3a4"
 HISTORICAL_PROJECTION_CONSTRAINT = "ck_scheduler_control_ck_scheduler_control_dataset_keys_array"
 DIRECT_PROJECTION_CONSTRAINT = "ck_scheduler_control_dataset_keys_array"
 

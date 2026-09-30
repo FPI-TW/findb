@@ -16,6 +16,9 @@ Production foundation與live promotion／rollback acceptance由
 - [ ] Production SLA、法遵或客戶稽核需求確立時，建立正式24/7 on-call與企業稽核控制。
 - [ ] Production環境複製或drift治理需求確立時，重新評估既有AWS data-plane資源的全面IaC import；
   目前OpenTofu只納管新增控制面並引用既有EC2／RDS／VPC。
+- [ ] 本次Serve breaking replacement部署至staging後，重生instrument cache，對四個active feeds
+  執行required Serve evidence、bounded latency smoke與Dashboard人工驗收；部署前不得沿用舊
+  minute `not_applicable` evidence宣稱完成。
 
 ## 不變約束
 

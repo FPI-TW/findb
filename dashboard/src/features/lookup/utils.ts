@@ -1,31 +1,12 @@
-import { DEFAULT_SEARCH, PAGE_SIZES } from "./config"
 import { z } from "zod"
+
+import { DEFAULT_SEARCH, PAGE_SIZES } from "./config"
 import type {
   DatasetKey,
+  Instrument,
   LookupColumn,
-  LookupItem,
   LookupSearch,
 } from "./types"
-
-const INSTRUMENT_SORT_KEYS = new Set([
-  "market",
-  "symbol",
-  "name",
-  "asset_class",
-  "currency",
-  "first_trade_date",
-  "latest_trade_date",
-  "latest_price",
-  "status",
-])
-const MACRO_SORT_KEYS = new Set([
-  "market",
-  "source_code",
-  "name",
-  "frequency",
-  "unit",
-  "source",
-])
 
 const sortKeySchema = z.enum([
   "market",
@@ -33,52 +14,35 @@ const sortKeySchema = z.enum([
   "name",
   "asset_class",
   "currency",
-  "first_trade_date",
-  "latest_trade_date",
-  "latest_price",
   "status",
-  "source_code",
-  "frequency",
-  "unit",
-  "source",
+  "eod_first_date",
+  "eod_latest_date",
+  "eod_latest_close",
+  "minute_first_bar_at",
+  "minute_latest_bar_at",
+  "minute_latest_close",
 ])
 
-export const lookupSearchSchema = z
-  .object({
-    ds: z
-      .enum(["instruments", "macro"])
-      .catch("instruments")
-      .default("instruments"),
-    q: z.string().catch("").default(""),
-    m: z.string().catch("ALL").default("ALL"),
-    ac: z.string().catch("ALL").default("ALL"),
-    st: z.string().catch(DEFAULT_SEARCH.st).default(DEFAULT_SEARCH.st),
-    fq: z.string().catch("ALL").default("ALL"),
-    src: z.string().catch("ALL").default("ALL"),
-    sb: sortKeySchema.catch("market").default("market"),
-    sd: z.enum(["asc", "desc"]).catch("asc").default("asc"),
-    ps: z.coerce
-      .number()
-      .refine(
-        value => PAGE_SIZES.includes(value as (typeof PAGE_SIZES)[number]),
-        "Unsupported page size"
-      )
-      .catch(DEFAULT_SEARCH.ps)
-      .default(DEFAULT_SEARCH.ps),
-    p: z.coerce.number().int().positive().catch(1).default(1),
-    id: z.string().catch("").default(""),
-  })
-  .transform(values => ({
-    ...values,
-    st: values.ds === "macro" ? "ALL" : values.st,
-    sb: (values.ds === "macro" ? MACRO_SORT_KEYS : INSTRUMENT_SORT_KEYS).has(
-      values.sb
-    )
-      ? values.sb
-      : "market",
-  }))
+export const lookupSearchSchema = z.object({
+  // `.catch()` intentionally normalizes old `?ds=macro` bookmarks.
+  ds: z.literal("instruments").catch("instruments").default("instruments"),
+  q: z.string().catch("").default(""),
+  m: z.string().catch("ALL").default("ALL"),
+  ac: z.string().catch("ALL").default("ALL"),
+  st: z.string().catch(DEFAULT_SEARCH.st).default(DEFAULT_SEARCH.st),
+  sb: sortKeySchema.catch("market").default("market"),
+  sd: z.enum(["asc", "desc"]).catch("asc").default("asc"),
+  ps: z.coerce
+    .number()
+    .refine(value => PAGE_SIZES.includes(value as (typeof PAGE_SIZES)[number]))
+    .catch(DEFAULT_SEARCH.ps)
+    .default(DEFAULT_SEARCH.ps),
+  p: z.coerce.number().int().positive().catch(1).default(1),
+  id: z.string().catch("").default(""),
+})
 
 export function parseLookupSearch(raw: Record<string, unknown>): LookupSearch {
+  if (raw.ds === "macro") return { ...DEFAULT_SEARCH }
   return lookupSearchSchema.parse(raw)
 }
 
@@ -87,9 +51,8 @@ export function buildPageList(
   totalPages: number,
   sibling = 2
 ): Array<number | "…"> {
-  if (totalPages <= 9) {
+  if (totalPages <= 9)
     return Array.from({ length: totalPages }, (_, index) => index + 1)
-  }
   const start = Math.max(2, Math.min(currentPage - sibling, totalPages - 5))
   const end = Math.min(totalPages - 1, Math.max(currentPage + sibling, 6))
   const pages: Array<number | "…"> = [1]
@@ -106,14 +69,25 @@ function escapeCsvCell(value: unknown) {
   return `"${text.replaceAll('"', '""')}"`
 }
 
-export function buildCsv(items: LookupItem[], columns: LookupColumn[]) {
+function columnValue(item: Instrument, key: LookupColumn["key"]): unknown {
+  if (key.startsWith("eod_")) {
+    return item.coverage.eod?.[
+      key.slice(4) as keyof NonNullable<Instrument["coverage"]["eod"]>
+    ]
+  }
+  if (key.startsWith("minute_")) {
+    return item.coverage.minute?.[
+      key.slice(7) as keyof NonNullable<Instrument["coverage"]["minute"]>
+    ]
+  }
+  return item[key as keyof Instrument]
+}
+
+export function buildCsv(items: Instrument[], columns: LookupColumn[]) {
   const header = columns.map(column => escapeCsvCell(column.label)).join(",")
   const rows = items.map(item =>
     columns
-      .map(column => {
-        const record = item as unknown as Record<string, unknown>
-        return escapeCsvCell(record[column.key])
-      })
+      .map(column => escapeCsvCell(columnValue(item, column.key)))
       .join(",")
   )
   return `\uFEFF${[header, ...rows].join("\r\n")}`
@@ -127,17 +101,14 @@ export function nextDatasetSearch(
     ...DEFAULT_SEARCH,
     ...persisted,
     ds: dataset,
-    st: dataset === "instruments" ? (persisted?.st ?? "active") : "ALL",
-    sb: persisted?.sb ?? "market",
     q: "",
     p: 1,
     id: "",
   }
 }
 
-export function formatCell(item: LookupItem, column: LookupColumn) {
-  const record = item as unknown as Record<string, unknown>
-  const raw = record[column.key]
+export function formatCell(item: Instrument, column: LookupColumn) {
+  const raw = columnValue(item, column.key)
   if (raw === null || raw === undefined || raw === "") return "—"
   if (column.type === "number") {
     const value = Number(raw)

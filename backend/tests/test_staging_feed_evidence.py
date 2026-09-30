@@ -21,7 +21,7 @@ def _load(name: str, path: Path) -> ModuleType:
     return module
 
 
-def test_minute_lineage_explicitly_marks_serve_not_applicable() -> None:
+def test_minute_lineage_requires_the_serve_boundary() -> None:
     module = _load(
         "export_staging_feed_evidence",
         REPO_ROOT / "backend" / "scripts" / "export_staging_feed_evidence.py",
@@ -29,13 +29,53 @@ def test_minute_lineage_explicitly_marks_serve_not_applicable() -> None:
 
     lineage = module._lineage_contract("market_minute")
 
-    assert lineage["serve"] == "not_applicable"
-    assert lineage["serve_reason"] == "market_minute_read_model_not_exposed"
+    assert lineage["serve"] == "required"
+    assert lineage["serve_reason"] is None
     assert lineage["operational_read_paths"] == [
-        "admin_raw",
+        "serve",
         "admin_market_freshness",
         "dashboard",
     ]
+
+
+def test_serve_probe_fails_closed_without_static_cache_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load(
+        "export_staging_feed_evidence_missing_key",
+        REPO_ROOT / "backend" / "scripts" / "export_staging_feed_evidence.py",
+    )
+    monkeypatch.delenv("FINDB_STATIC_CACHE_SERVE_API_KEY", raising=False)
+
+    probe = module._serve_probe(
+        "market_eod",
+        {
+            "sample_instrument_id": "0199aabb-ccdd-7000-8000-000000000001",
+            "sample_trade_date": "2026-09-18",
+        },
+    )
+
+    assert probe == {
+        "success": False,
+        "http_status": None,
+        "reason": "serve_credential_missing",
+    }
+
+
+def test_serve_samples_are_selected_from_canonical_scopes_not_run_ownership() -> None:
+    module = _load(
+        "export_staging_feed_evidence_samples",
+        REPO_ROOT / "backend" / "scripts" / "export_staging_feed_evidence.py",
+    )
+
+    sql = str(module.SAMPLES)
+
+    assert "run_id" not in sql
+    assert "market_data_eod" in sql
+    assert "market_data_minute" in sql
+    assert "i.market = 'US' AND i.asset_class = 'equity'" in sql
+    assert "i.market = 'TW' AND i.asset_class = 'equity'" in sql
+    assert "i.market = 'TW' AND i.asset_class = 'etf'" in sql
 
 
 def test_assessment_requires_persistent_202_and_two_dates() -> None:
@@ -55,9 +95,8 @@ def test_assessment_requires_persistent_202_and_two_dates() -> None:
                 "source": source,
                 "dataset_key": dataset,
                 "multi_trade_date_ready": True,
-                "lineage_contract": {
-                    "serve": "not_applicable" if schema == "market_minute" else "required"
-                },
+                "lineage_contract": {"serve": "required"},
+                "serve_probe": {"success": True},
                 "runs": [
                     {
                         "source_http_status": 202,
@@ -93,7 +132,8 @@ def test_assessment_requires_persistent_202_and_two_dates() -> None:
         "finlab/tw_equity_eod": True,
         "twelve_data/us_equity_eod": True,
     }
-    assert assessment["minute_serve_boundary_complete"] is True
+    assert assessment["serve_boundary_complete"] is True
+    assert set(assessment["serve_probe"].values()) == {True}
 
 
 def test_daily_fetcher_probe_exports_hashes_credit_budget_and_history(

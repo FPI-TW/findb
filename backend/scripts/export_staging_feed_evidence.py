@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections import defaultdict
 from typing import Any
+from urllib import error, parse
+from urllib.request import Request, urlopen
 
 from sqlalchemy import text
 
@@ -61,18 +64,47 @@ RUNS = text(
     """
 )
 
+SAMPLES = text(
+    """
+    WITH samples AS (
+        (SELECT 'twelve_data' AS source, 'us_equity_eod' AS dataset_key,
+                c.instrument_id::text AS sample_instrument_id,
+                c.trade_date::text AS sample_trade_date
+           FROM market_data_eod c
+           JOIN instruments i ON i.instrument_id = c.instrument_id
+          WHERE i.market = 'US' AND i.asset_class = 'equity'
+          ORDER BY c.trade_date DESC, c.instrument_id
+          LIMIT 1)
+        UNION ALL
+        (SELECT 'finlab', 'tw_equity_eod', c.instrument_id::text, c.trade_date::text
+           FROM market_data_eod c
+           JOIN instruments i ON i.instrument_id = c.instrument_id
+          WHERE i.market = 'TW' AND i.asset_class = 'equity'
+          ORDER BY c.trade_date DESC, c.instrument_id
+          LIMIT 1)
+        UNION ALL
+        (SELECT 'shioaji', 'tw_equity_minute', c.instrument_id::text, c.trade_date::text
+           FROM market_data_minute c
+           JOIN instruments i ON i.instrument_id = c.instrument_id
+          WHERE i.market = 'TW' AND i.asset_class = 'equity'
+          ORDER BY c.bar_start_time DESC, c.instrument_id
+          LIMIT 1)
+        UNION ALL
+        (SELECT 'shioaji', 'tw_etf_minute', c.instrument_id::text, c.trade_date::text
+           FROM market_data_minute c
+           JOIN instruments i ON i.instrument_id = c.instrument_id
+          WHERE i.market = 'TW' AND i.asset_class = 'etf'
+          ORDER BY c.bar_start_time DESC, c.instrument_id
+          LIMIT 1)
+    )
+    SELECT source, dataset_key, sample_instrument_id, sample_trade_date
+      FROM samples
+     ORDER BY source, dataset_key
+    """
+)
+
 
 def _lineage_contract(schema_id: str) -> dict[str, Any]:
-    if schema_id == "market_minute":
-        return {
-            "source": "required",
-            "raw": "required",
-            "normalize": "required",
-            "canonical": "required",
-            "serve": "not_applicable",
-            "serve_reason": "market_minute_read_model_not_exposed",
-            "operational_read_paths": ["admin_raw", "admin_market_freshness", "dashboard"],
-        }
     return {
         "source": "required",
         "raw": "required",
@@ -84,12 +116,58 @@ def _lineage_contract(schema_id: str) -> dict[str, Any]:
     }
 
 
+def _serve_probe(schema_id: str, run: dict[str, Any] | None) -> dict[str, Any]:
+    """Probe one latest canonical sample through the internal Serve HTTP boundary."""
+    if not run or not run.get("sample_instrument_id") or not run.get("sample_trade_date"):
+        return {"success": False, "http_status": None, "reason": "canonical_sample_missing"}
+    endpoint = "eod" if schema_id == "market_eod" else "minute"
+    query = parse.urlencode(
+        {
+            "instrument_id": run["sample_instrument_id"],
+            "start_date": run["sample_trade_date"],
+            "end_date": run["sample_trade_date"],
+            "page_size": 1,
+        }
+    )
+    base_url = (os.getenv("FINDB_STATIC_CACHE_BASE_URL") or "http://serve:8080").rstrip("/")
+    headers = {"Accept": "application/json"}
+    key = os.getenv("FINDB_STATIC_CACHE_SERVE_API_KEY", "").strip()
+    if not key:
+        return {"success": False, "http_status": None, "reason": "serve_credential_missing"}
+    headers["X-API-Key"] = key
+    request = Request(f"{base_url}/api/v1/serve/{endpoint}?{query}", headers=headers)
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.load(response)
+            items = payload.get("data") if isinstance(payload, dict) else None
+            matched = bool(
+                payload.get("success") is True
+                and isinstance(items, list)
+                and items
+                and str(items[0].get("instrument_id")) == run["sample_instrument_id"]
+                and str(items[0].get("trade_date")) == run["sample_trade_date"]
+            )
+            return {
+                "success": matched,
+                "http_status": response.status,
+                "instrument_id": run["sample_instrument_id"],
+                "trade_date": run["sample_trade_date"],
+                "reason": None if matched else "sample_not_returned",
+            }
+    except error.HTTPError as exc:
+        return {"success": False, "http_status": exc.code, "reason": "http_error"}
+    except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return {"success": False, "http_status": None, "reason": "probe_failed"}
+
+
 async def export() -> dict[str, Any]:
     async with async_session_maker() as session:
         rows = (await session.execute(RUNS)).mappings().all()
+        sample_rows = (await session.execute(SAMPLES)).mappings().all()
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[(str(row["source"]), str(row["dataset_key"]))].append(dict(row))
+    samples = {(str(row["source"]), str(row["dataset_key"])): dict(row) for row in sample_rows}
     feeds = []
     for source, dataset_key, schema_id in ACTIVE_FEEDS:
         evidence = grouped[(source, dataset_key)]
@@ -102,6 +180,9 @@ async def export() -> dict[str, Any]:
                 "lineage_contract": _lineage_contract(schema_id),
                 "observed_trade_dates": dates,
                 "multi_trade_date_ready": len(dates) >= 2,
+                "serve_probe": await asyncio.to_thread(
+                    _serve_probe, schema_id, samples.get((source, dataset_key))
+                ),
                 "runs": evidence,
             }
         )

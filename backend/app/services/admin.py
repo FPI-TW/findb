@@ -247,6 +247,9 @@ async def _update_stats_after_eod_patch(db: AsyncSession, eod: MarketDataEOD) ->
         first_trade_date=eod.trade_date,
         latest_trade_date=eod.trade_date,
         latest_price=eod.close,
+        eod_first_date=eod.trade_date,
+        eod_latest_date=eod.trade_date,
+        eod_latest_close=eod.close,
         updated_at=now,
     )
     excluded = stmt.excluded
@@ -269,6 +272,23 @@ async def _update_stats_after_eod_patch(db: AsyncSession, eod: MarketDataEOD) ->
                     excluded.latest_price,
                 ),
                 else_=stats.c.latest_price,
+            ),
+            "eod_first_date": func.least(stats.c.eod_first_date, excluded.eod_first_date),
+            "eod_latest_date": case(
+                (
+                    stats.c.eod_latest_date.is_(None)
+                    | (excluded.eod_latest_date >= stats.c.eod_latest_date),
+                    excluded.eod_latest_date,
+                ),
+                else_=stats.c.eod_latest_date,
+            ),
+            "eod_latest_close": case(
+                (
+                    stats.c.eod_latest_date.is_(None)
+                    | (excluded.eod_latest_date >= stats.c.eod_latest_date),
+                    excluded.eod_latest_close,
+                ),
+                else_=stats.c.eod_latest_close,
             ),
             "updated_at": now,
         },

@@ -46,11 +46,11 @@ TW舊Big5亂碼只有在候選集合已確認時才使用`--overwrite-existing`�
 
 ```text
 backend/app/static/data/instruments.json
-backend/app/static/data/macro-series.json
 ```
 
-Canonical data改變後使用`backend/scripts/generate_instrument_cache.py`重生。Cache失敗時
-修正canonical data或generator，不直接編輯JSON。
+Canonical data改變後使用`backend/scripts/generate_instrument_cache.py`重生。Generator以每頁100筆
+讀取`/api/v1/serve/instruments`的nested coverage，不再逐商品補查EOD，也不再產生macro cache；每次
+執行會先移除舊`macro-series.json`。Cache失敗時修正canonical data或generator，不直接編輯JSON。
 
 ## Staging data reset
 

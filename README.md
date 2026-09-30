@@ -175,7 +175,7 @@ uv --directory backend run mypy app
 | API | Prefix | 認證 | 邊界 |
 | --- | --- | --- | --- |
 | Source | `/api/v1/source` | 必須 `X-API-Key` | 接受delivery與查run，不直接暴露DB |
-| Serve | `/api/v1/serve` | 由 `SERVE_REQUIRE_AUTH` 控制 | 唯讀canonical query |
+| Serve | `/api/v1/serve` | 由 `SERVE_REQUIRE_AUTH` 控制 | Active EOD/minute、instrument、calendar與freshness唯讀查詢 |
 | Admin | `/api/v1/admin` | 必須 `X-API-Key` | DQ、修正、raw audit、keys與queue health |
 
 新Fetcher只使用：
@@ -202,7 +202,7 @@ GET /api/v1/source/contracts/{schema_id}/versions/{schema_version}
 
 - Raw：`raw.market_payload`，retention預設停用。
 - Workflow：attempt、run、job與outbox長期提供audit/recovery。
-- Canonical：instrument、calendar、EOD、corporate action、macro、futures、bonds。
+- Canonical：instrument、calendar、EOD、minute、corporate action、macro、futures、bonds；inactive domains不自動成為Serve contract。
 - Source/Admin keys不得提供給一般Serve consumer。
 - Fetcher不得取得FinDB DB、RabbitMQ或Admin credentials。
 - Secrets只能經Settings與環境注入，不得hardcode。

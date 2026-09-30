@@ -125,12 +125,16 @@ def _sample_instrument_cache() -> dict:
                 "asset_class": "equity",
                 "symbol": "AAPL",
                 "name": None,
-                "short_name": "Apple",
                 "currency": "USD",
                 "status": "active",
-                "first_trade_date": "2024-01-03",
-                "latest_trade_date": "2025-01-02",
-                "latest_price": "153.00",
+                "coverage": {
+                    "eod": {
+                        "first_date": "2024-01-03",
+                        "latest_date": "2025-01-02",
+                        "latest_close": "153.00",
+                    },
+                    "minute": None,
+                },
             },
             {
                 "instrument_id": "instrument-hk-0700",
@@ -138,12 +142,16 @@ def _sample_instrument_cache() -> dict:
                 "asset_class": "equity",
                 "symbol": "0700",
                 "name": "Tencent",
-                "short_name": "Tencent",
                 "currency": "HKD",
                 "status": "active",
-                "first_trade_date": "2023-06-01",
-                "latest_trade_date": "2025-01-02",
-                "latest_price": "390.50",
+                "coverage": {
+                    "eod": {
+                        "first_date": "2023-06-01",
+                        "latest_date": "2025-01-02",
+                        "latest_close": "390.50",
+                    },
+                    "minute": None,
+                },
             },
         ],
     }
@@ -347,7 +355,7 @@ class TestInstrumentCacheAdmin:
         data = response.json()
         assert data["total"] == 2
         assert data["data"][0]["instrument_id"] == "instrument-us-aapl"
-        assert data["data"][0]["short_name"] == "Apple"
+        assert data["data"][0]["coverage"]["eod"]["latest_close"] == "153.00"
 
     @pytest.mark.asyncio
     async def test_get_instrument_cache_missing_file_returns_404(
@@ -385,8 +393,7 @@ class TestInstrumentCacheAdmin:
         assert stored["total"] == 2
         assert stored["markets"] == ["HK", "US"]
         assert stored["data"][0]["instrument_id"] == "instrument-hk-0700"
-        assert stored["data"][0]["first_trade_date"] == "2023-06-01"
-        assert stored["data"][0]["short_name"] == "Tencent"
+        assert stored["data"][0]["coverage"]["eod"]["first_date"] == "2023-06-01"
 
     @pytest.mark.asyncio
     async def test_patch_instrument_cache_item_updates_json(
@@ -412,10 +419,9 @@ class TestInstrumentCacheAdmin:
         stored_item = next(
             item for item in stored["data"] if item["instrument_id"] == "instrument-us-aapl"
         )
-        assert stored_item["first_trade_date"] == "2024-01-03"
+        assert stored_item["coverage"]["eod"]["first_date"] == "2024-01-03"
         assert stored_item["name"] == "Apple Inc."
         assert stored_item["status"] == "inactive"
-        assert stored_item["short_name"] == "Apple"
 
     @pytest.mark.asyncio
     async def test_patch_instrument_cache_item_not_found_returns_404(
@@ -496,6 +502,8 @@ class TestPatchEOD:
         assert stats is not None
         assert stats.latest_trade_date == date(2025, 1, 2)
         assert stats.latest_price == Decimal("152.50")
+        assert stats.eod_latest_date == date(2025, 1, 2)
+        assert stats.eod_latest_close == Decimal("152.50")
 
     @pytest.mark.asyncio
     async def test_patch_eod_multiple_fields(

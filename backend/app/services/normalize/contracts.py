@@ -2,11 +2,14 @@
 
 import hashlib
 from datetime import date, datetime
+from decimal import Decimal
+from uuid import UUID
 
+from sqlalchemy import case, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.models.canonical import Instrument, MarketDataMinute
+from app.models.canonical import Instrument, InstrumentStats, MarketDataMinute
 from app.services.dq.validators import DQIssueRecord
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.types import MappedRecord, MarketMinuteRecord
@@ -274,8 +277,10 @@ class MarketMinuteContractNormalizer(BaseNormalizer):
                 key = (str(record.market or "").upper(), record.symbol, record.bar_start_time)
                 key_counts[key] = key_counts.get(key, 0) + 1
             seen_keys = {key for key, count in key_counts.items() if count > 1}
+            applied_stats: dict[UUID, tuple[datetime, datetime, Decimal]] = {}
             for processed, record in enumerate(records, start=1):
                 instrument: Instrument | None = None
+                instrument_id: UUID | None = None
                 try:
                     anomalies = self._anomalies_for_record(raw_payload, record)
                     anomaly_fields = {str(anomaly.get("field")) for anomaly in anomalies}
@@ -289,6 +294,7 @@ class MarketMinuteContractNormalizer(BaseNormalizer):
                         result.failed_records += 1
                         continue
                     instrument = await self.resolve_instrument(record)
+                    instrument_id = instrument.instrument_id
                     delisted_issue = self._check_delisted_instrument(
                         instrument, record.trade_date, record.raw_data
                     )
@@ -308,16 +314,37 @@ class MarketMinuteContractNormalizer(BaseNormalizer):
                         )
                     if any(issue.severity == "error" for issue in issues):
                         for issue in issues:
-                            await self.record_dq_issue(issue, run_id, instrument.instrument_id)
+                            await self.record_dq_issue(issue, run_id, instrument_id)
                             result.dq_issues.append(issue)
                         result.failed_records += 1
                         continue
                     await self.get_or_create_trading_day(record.trade_date, market=record.market)
                     for issue in issues:
-                        await self.record_dq_issue(issue, run_id, instrument.instrument_id)
+                        await self.record_dq_issue(issue, run_id, instrument_id)
                         result.dq_issues.append(issue)
-                    if await self.upsert_minute(instrument.instrument_id, record, run_id):
+                    if await self.upsert_minute(instrument_id, record, run_id):
                         result.success_records += 1
+                        assert record.bar_start_time is not None
+                        assert record.close is not None
+                        current = applied_stats.get(instrument_id)
+                        if current is None:
+                            applied_stats[instrument_id] = (
+                                record.bar_start_time,
+                                record.bar_start_time,
+                                record.close,
+                            )
+                        else:
+                            first_at, latest_at, latest_close = current
+                            if record.bar_start_time < first_at:
+                                first_at = record.bar_start_time
+                            if record.bar_start_time >= latest_at:
+                                latest_at = record.bar_start_time
+                                latest_close = record.close
+                            applied_stats[instrument_id] = (
+                                first_at,
+                                latest_at,
+                                latest_close,
+                            )
                     else:
                         result.precedence_rejected_records += 1
                 except Exception as exc:
@@ -331,12 +358,17 @@ class MarketMinuteContractNormalizer(BaseNormalizer):
                         trade_date=record.bar_start_time,
                         raw_data=record.raw_data,
                     )
-                    await self.record_dq_issue(
-                        issue, run_id, instrument.instrument_id if instrument else None
-                    )
+                    await self.record_dq_issue(issue, run_id, instrument_id)
                     result.dq_issues.append(issue)
                 finally:
                     await self._maybe_flush(processed)
+            for instrument_id, (first_at, latest_at, latest_close) in applied_stats.items():
+                await self._update_minute_instrument_stats(
+                    instrument_id,
+                    first_at=first_at,
+                    latest_at=latest_at,
+                    latest_close=latest_close,
+                )
             await self.record_precedence_rejection_summary(result, run_id)
             await self.update_run_status(
                 run_id,
@@ -352,3 +384,50 @@ class MarketMinuteContractNormalizer(BaseNormalizer):
             await self.db.rollback()
             raise
         return result
+
+    async def _update_minute_instrument_stats(
+        self,
+        instrument_id: UUID,
+        *,
+        first_at: datetime,
+        latest_at: datetime,
+        latest_close: Decimal,
+    ) -> None:
+        """Update minute read statistics once per affected instrument and batch."""
+        now = utc_now()
+        stats = InstrumentStats.__table__
+        stmt = insert(InstrumentStats).values(
+            instrument_id=instrument_id,
+            minute_first_bar_at=first_at,
+            minute_latest_bar_at=latest_at,
+            minute_latest_close=latest_close,
+            updated_at=now,
+        )
+        excluded = stmt.excluded
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["instrument_id"],
+            set_={
+                "minute_first_bar_at": func.least(
+                    stats.c.minute_first_bar_at,
+                    excluded.minute_first_bar_at,
+                ),
+                "minute_latest_bar_at": case(
+                    (
+                        stats.c.minute_latest_bar_at.is_(None)
+                        | (excluded.minute_latest_bar_at >= stats.c.minute_latest_bar_at),
+                        excluded.minute_latest_bar_at,
+                    ),
+                    else_=stats.c.minute_latest_bar_at,
+                ),
+                "minute_latest_close": case(
+                    (
+                        stats.c.minute_latest_bar_at.is_(None)
+                        | (excluded.minute_latest_bar_at >= stats.c.minute_latest_bar_at),
+                        excluded.minute_latest_close,
+                    ),
+                    else_=stats.c.minute_latest_close,
+                ),
+                "updated_at": now,
+            },
+        )
+        await self.db.execute(stmt)

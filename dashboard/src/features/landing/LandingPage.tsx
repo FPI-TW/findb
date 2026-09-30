@@ -2,7 +2,6 @@ import { Link } from "@tanstack/react-router"
 import {
   Activity,
   ArrowRight,
-  ChartNoAxesCombined,
   CircleCheckBig,
   Database,
   Gauge,
@@ -21,11 +20,6 @@ import {
   CardTitle,
 } from "../../components/ui/card"
 import { DEFAULT_SEARCH } from "../lookup/config"
-
-const MACRO_SEARCH = {
-  ...DEFAULT_SEARCH,
-  ds: "macro" as const,
-}
 
 export default function LandingPage() {
   return (
@@ -87,12 +81,12 @@ export default function LandingPage() {
                   <h3>Lookup</h3>
                 </CardTitle>
                 <CardDescription className="leading-6">
-                  僅從 canonical layer
-                  查詢金融商品與宏觀序列，維持一致的識別與欄位定義。
+                  僅從 canonical layer 查詢 active canonical 金融商品，並檢視
+                  EOD 與 minute coverage。
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid flex-1 grid-rows-[1fr_auto] gap-4 py-5">
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2">
                   <Link
                     to="/lookup"
                     search={DEFAULT_SEARCH}
@@ -106,25 +100,6 @@ export default function LandingPage() {
                     <strong className="block text-sm">金融商品</strong>
                     <span className="mt-1 block text-xs leading-5 text-muted">
                       Canonical identifier 與市場屬性
-                    </span>
-                    <ArrowRight
-                      className="mt-3 size-4 text-accent transition-transform group-hover:translate-x-0.5"
-                      aria-hidden="true"
-                    />
-                  </Link>
-                  <Link
-                    to="/lookup"
-                    search={MACRO_SEARCH}
-                    preload="intent"
-                    className="group rounded-lg border border-line bg-surface-soft p-3 outline-none transition-colors hover:border-accent/40 hover:bg-accent-soft/55 focus-visible:ring-3 focus-visible:ring-accent/20"
-                  >
-                    <ChartNoAxesCombined
-                      className="mb-3 size-5 text-accent"
-                      aria-hidden="true"
-                    />
-                    <strong className="block text-sm">宏觀序列</strong>
-                    <span className="mt-1 block text-xs leading-5 text-muted">
-                      統一頻率、單位與來源定義
                     </span>
                     <ArrowRight
                       className="mt-3 size-4 text-accent transition-transform group-hover:translate-x-0.5"

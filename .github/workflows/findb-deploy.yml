@@ -205,14 +205,13 @@ jobs:
           RAW_RETENTION_ENABLED: ${{ inputs.deployment_target == 'staging' && vars.RAW_RETENTION_ENABLED || '' }}
           RAW_RETENTION_DAYS: ${{ inputs.deployment_target == 'staging' && vars.RAW_RETENTION_DAYS || '' }}
           FINDB_STATIC_CACHE_BASE_URL: ${{ inputs.deployment_target == 'staging' && vars.FINDB_STATIC_CACHE_BASE_URL || '' }}
-          FINDB_LATEST_PRICE_WORKERS: ${{ inputs.deployment_target == 'staging' && vars.FINDB_LATEST_PRICE_WORKERS || '' }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_ACCOUNT_ID || '' }}
           CLOUDFLARE_R2_CANONICAL_BUCKET: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_CANONICAL_BUCKET || '' }}
           DNS_CHECK_NAME: ${{ vars.AWS_DNS_CHECK_NAME }}
         run: |
           set -euo pipefail
           [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
-          runtime_variable_names="APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL FINDB_LATEST_PRICE_WORKERS CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET"
+          runtime_variable_names="APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET"
           runtime_exports=""
           for name in $runtime_variable_names; do
             if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi
@@ -305,13 +304,12 @@ jobs:
           RAW_RETENTION_ENABLED: ${{ inputs.deployment_target == 'staging' && vars.RAW_RETENTION_ENABLED || '' }}
           RAW_RETENTION_DAYS: ${{ inputs.deployment_target == 'staging' && vars.RAW_RETENTION_DAYS || '' }}
           FINDB_STATIC_CACHE_BASE_URL: ${{ inputs.deployment_target == 'staging' && vars.FINDB_STATIC_CACHE_BASE_URL || '' }}
-          FINDB_LATEST_PRICE_WORKERS: ${{ inputs.deployment_target == 'staging' && vars.FINDB_LATEST_PRICE_WORKERS || '' }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_ACCOUNT_ID || '' }}
           CLOUDFLARE_R2_CANONICAL_BUCKET: ${{ inputs.deployment_target == 'staging' && vars.CLOUDFLARE_R2_CANONICAL_BUCKET || '' }}
           TARGET: ${{ inputs.deployment_target }}
         run: |
           set -euo pipefail
-          runtime_variable_names="APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL FINDB_LATEST_PRICE_WORKERS CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET"
+          runtime_variable_names="APP_NAME APP_VERSION DEBUG PORT DATABASE_POOL_SIZE DATABASE_MAX_OVERFLOW API_V1_PREFIX API_KEY_HEADER SOURCE_TRUST_PROXY_HEADERS SERVE_REQUIRE_AUTH RATE_LIMIT_REQUESTS RATE_LIMIT_WINDOW RAW_RETENTION_ENABLED RAW_RETENTION_DAYS FINDB_STATIC_CACHE_BASE_URL CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_CANONICAL_BUCKET"
           runtime_exports=""
           for name in $runtime_variable_names; do
             if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi

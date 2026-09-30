@@ -9,7 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from app.models.canonical import Instrument, MarketDataMinute
+from app.models.canonical import Instrument, InstrumentStats, MarketDataMinute
 from app.models.registry import DatasetRegistry, DQIssue, IngestionRun, NormalizationJob
 from app.schemas.ingress import minute_sequence_key_digest
 from app.services.ingestion import _select_normalizer_for_payload
@@ -222,6 +222,11 @@ async def test_market_minute_process_persists_anomaly_lineage_and_uses_natural_k
     assert minute.trade_date.isoformat() == "2026-07-30"
     assert minute.volume is None
     assert minute.run_id == run.run_id
+    stats = await test_session.get(InstrumentStats, minute.instrument_id)
+    assert stats is not None
+    assert stats.minute_first_bar_at == minute.bar_start_time
+    assert stats.minute_latest_bar_at == minute.bar_start_time
+    assert stats.minute_latest_close == minute.close
     anomaly = (
         await test_session.execute(
             select(DQIssue).where(

@@ -1,63 +1,73 @@
 import "@testing-library/jest-dom/vitest"
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const mocks = vi.hoisted(() => ({
-  loadCorporateActions: vi.fn(),
-  loadMacroObservations: vi.fn(),
-  loadPrices: vi.fn(),
-}))
-
+const mocks = vi.hoisted(() => ({ loadEod: vi.fn(), loadMinute: vi.fn() }))
 vi.mock("./data", () => mocks)
 
 import { DetailDrawer } from "./DetailDrawer"
+import type { Instrument } from "./types"
 
-const instrument = {
+const instrument: Instrument = {
   instrument_id: "instrument-1",
   market: "TW",
   asset_class: "equity",
   symbol: "2330",
   name: "台積電",
   currency: "TWD",
+  timezone: "Asia/Taipei",
   status: "active",
-  first_trade_date: "1994-09-05",
-  latest_trade_date: "2026-07-22",
-  latest_price: "1085.5",
+  listed_date: "1994-09-05",
+  delisted_date: null,
+  coverage: {
+    eod: {
+      first_date: "1994-09-05",
+      latest_date: "2026-07-22",
+      latest_close: "1085.5",
+    },
+    minute: {
+      first_bar_at: "2026-07-22T01:00:00Z",
+      latest_bar_at: "2026-07-22T05:30:00Z",
+      latest_close: "1086",
+    },
+  },
 }
 
-function renderDrawer() {
+function renderDrawer(item = instrument, onClose = vi.fn()) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
-      <DetailDrawer
-        dataset="instruments"
-        item={instrument}
-        onClose={vi.fn()}
-        onCopied={vi.fn()}
-      />
+      <DetailDrawer item={item} onClose={onClose} onCopied={vi.fn()} />
     </QueryClientProvider>
   )
+  return { ...view, onClose }
 }
 
 beforeEach(() => {
-  mocks.loadPrices
+  mocks.loadEod
     .mockReset()
     .mockResolvedValue([
       { trade_date: "2026-07-22", close: "1085.5", volume: 1234 },
     ])
-  mocks.loadCorporateActions.mockReset().mockResolvedValue([
+  mocks.loadMinute.mockReset().mockResolvedValue([
     {
-      ex_date: "2026-07-01",
-      action_type: "cash_dividend",
-      cash_amount: 4.5,
-      currency: "TWD",
+      trade_date: "2026-07-22",
+      bar_start_time: "2026-07-22T05:30:00Z",
+      close: "1086",
+      volume: 12,
     },
   ])
-  mocks.loadMacroObservations.mockReset().mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -66,38 +76,74 @@ afterEach(() => {
 })
 
 describe("DetailDrawer", () => {
-  it("loads ID-scoped feeds through DataTable and keeps close/copy controls", async () => {
+  it("loads EOD and minute feeds only when coverage exists", async () => {
     renderDrawer()
-
     expect(await screen.findByText("1085.5")).toBeInTheDocument()
-    expect(screen.getByText("cash_dividend")).toBeInTheDocument()
-    expect(
-      screen.getByRole("columnheader", { name: "交易日" })
-    ).toBeInTheDocument()
-    expect(mocks.loadPrices).toHaveBeenCalledWith(
+    expect(await screen.findByText("2026-07-22T05:30:00Z")).toBeInTheDocument()
+    expect(mocks.loadEod).toHaveBeenCalledWith(
       "instrument-1",
       expect.any(AbortSignal)
     )
-    expect(mocks.loadCorporateActions).toHaveBeenCalledWith(
+    expect(mocks.loadMinute).toHaveBeenCalledWith(
       "instrument-1",
       expect.any(AbortSignal)
     )
-    expect(
-      screen.getAllByRole("button", { name: "關閉詳情" })
-    ).not.toHaveLength(0)
-
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" })
   })
 
-  it("renders independent loading, error, and empty feed states", async () => {
-    mocks.loadPrices.mockRejectedValue(new Error("價格服務失敗"))
-    mocks.loadCorporateActions.mockResolvedValue([])
-    renderDrawer()
-
-    expect(await screen.findByText("價格服務失敗")).toBeInTheDocument()
-    expect(screen.getByText("目前沒有公司事件。")).toBeInTheDocument()
+  it("shows unavailable and error states independently", async () => {
+    mocks.loadEod.mockRejectedValue(new Error("EOD 服務失敗"))
+    renderDrawer({
+      ...instrument,
+      coverage: { ...instrument.coverage, minute: null },
+    })
+    expect(await screen.findByText("EOD 服務失敗")).toBeInTheDocument()
     expect(
-      screen.getAllByRole("button", { name: "重試" }).length
-    ).toBeGreaterThan(0)
+      screen.getByText("此商品沒有 active minute dataset coverage。")
+    ).toBeInTheDocument()
+    expect(mocks.loadMinute).not.toHaveBeenCalled()
+  })
+
+  it("contains keyboard focus and restores the prior focus", async () => {
+    const trigger = document.createElement("button")
+    document.body.append(trigger)
+    trigger.focus()
+    const { onClose, unmount } = renderDrawer()
+    const dialog = screen.getByRole("dialog")
+    const drawer = within(dialog)
+    const close = drawer.getByRole("button", { name: "關閉詳情" })
+    const copyId = drawer.getByRole("button", { name: "複製 ID" })
+    await waitFor(() => expect(dialog).toHaveFocus())
+
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true })
+    expect(copyId).toHaveFocus()
+    fireEvent.keyDown(copyId, { key: "Tab" })
+    expect(close).toHaveFocus()
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true })
+    expect(copyId).toHaveFocus()
+
+    const hidden = document.createElement("button")
+    hidden.hidden = true
+    dialog.append(hidden)
+    close.focus()
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true })
+    expect(copyId).toHaveFocus()
+
+    const buttons = drawer.getAllByRole("button")
+    for (const button of buttons) button.setAttribute("disabled", "")
+    dialog.focus()
+    fireEvent.keyDown(dialog, { key: "Tab" })
+    expect(dialog).toHaveFocus()
+    close.removeAttribute("disabled")
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true })
+    expect(close).toHaveFocus()
+    fireEvent.keyDown(close, { key: "Tab" })
+    expect(close).toHaveFocus()
+
+    fireEvent.keyDown(close, { key: "Escape" })
+    expect(onClose).toHaveBeenCalledOnce()
+    unmount()
+    expect(trigger).toHaveFocus()
+    trigger.remove()
   })
 })

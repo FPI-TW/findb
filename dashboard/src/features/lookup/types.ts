@@ -1,4 +1,4 @@
-export type DatasetKey = "instruments" | "macro"
+export type DatasetKey = "instruments"
 export type SortDirection = "asc" | "desc"
 export type LookupSortKey =
   | "market"
@@ -6,58 +6,56 @@ export type LookupSortKey =
   | "name"
   | "asset_class"
   | "currency"
-  | "first_trade_date"
-  | "latest_trade_date"
-  | "latest_price"
   | "status"
-  | "source_code"
-  | "frequency"
-  | "unit"
-  | "source"
+  | "eod_first_date"
+  | "eod_latest_date"
+  | "eod_latest_close"
+  | "minute_first_bar_at"
+  | "minute_latest_bar_at"
+  | "minute_latest_close"
+
+export interface EodCoverage {
+  first_date: string
+  latest_date: string
+  latest_close: string | number | null
+}
+
+export interface MinuteCoverage {
+  first_bar_at: string
+  latest_bar_at: string
+  latest_close: string | number
+}
 
 export interface Instrument {
   instrument_id: string
-  market: string | null
-  asset_class: string | null
-  symbol: string | null
+  market: string
+  asset_class: string
+  symbol: string
   name: string | null
   currency: string | null
-  status: string | null
-  first_trade_date: string | null
-  latest_trade_date: string | null
-  latest_price: string | number | null
+  timezone: string | null
+  status: string
+  listed_date: string | null
+  delisted_date: string | null
+  coverage: {
+    eod: EodCoverage | null
+    minute: MinuteCoverage | null
+  }
 }
 
-export interface MacroSeries {
-  series_id: string
-  name: string | null
-  unit: string | null
-  frequency: string | null
-  market: string | null
-  source_code: string | null
-  source: string | null
-}
-
-export type LookupItem = Instrument | MacroSeries
+export type LookupItem = Instrument
 
 export interface LookupPagination {
   page: number
   page_size: number
   total_records: number
   total_pages: number
-  next_cursor?: string | null
 }
 
 export interface InstrumentFacets {
   markets: string[]
   asset_classes: string[]
   statuses: string[]
-}
-
-export interface MacroFacets {
-  markets: string[]
-  frequencies: string[]
-  sources: string[]
 }
 
 export interface InstrumentLookupResponse {
@@ -67,14 +65,7 @@ export interface InstrumentLookupResponse {
   facets: InstrumentFacets
 }
 
-export interface MacroLookupResponse {
-  success: boolean
-  data: MacroSeries[]
-  pagination: LookupPagination
-  facets: MacroFacets
-}
-
-export type LookupResponse = InstrumentLookupResponse | MacroLookupResponse
+export type LookupResponse = InstrumentLookupResponse
 
 export interface LookupSearch {
   ds: DatasetKey
@@ -82,8 +73,6 @@ export interface LookupSearch {
   m: string
   ac: string
   st: string
-  fq: string
-  src: string
   sb: LookupSortKey
   sd: SortDirection
   ps: number
@@ -97,25 +86,15 @@ export interface LookupColumn {
   type?: "text" | "number" | "date" | "status"
 }
 
-export interface PriceRow {
-  trade_date?: string | null
-  close?: string | number | null
-  volume?: string | number | null
+export interface EodRow {
+  trade_date: string
+  close: string | number | null
+  volume: string | number | null
 }
 
-export interface CorporateActionRow {
-  ex_date?: string | null
-  action_type?: string | null
-  cash_amount?: string | number | null
-  currency?: string | null
+export interface MinuteRow {
+  trade_date: string
+  bar_start_time: string
+  close: string | number
+  volume: string | number | null
 }
-
-export interface MacroObservationRow {
-  obs_date?: string | null
-  value?: string | number | null
-}
-
-export type DetailFeedState<T> =
-  | { status: "loading"; data: T[] }
-  | { status: "ready"; data: T[] }
-  | { status: "error"; data: T[]; message: string }

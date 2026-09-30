@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { DATASET_CONFIG, DEFAULT_SEARCH } from "./config"
+import { DEFAULT_SEARCH, LOOKUP_COLUMNS } from "./config"
 import type { Instrument } from "./types"
 import { buildCsv, buildPageList, parseLookupSearch } from "./utils"
 
@@ -11,61 +11,70 @@ const INSTRUMENT: Instrument = {
   symbol: "2330",
   name: '台積電, "晶圓"',
   currency: "TWD",
+  timezone: "Asia/Taipei",
   status: "active",
-  first_trade_date: "1994-09-05",
-  latest_trade_date: "2026-07-22",
-  latest_price: "1085.5",
+  listed_date: "1994-09-05",
+  delisted_date: null,
+  coverage: {
+    eod: {
+      first_date: "1994-09-05",
+      latest_date: "2026-07-22",
+      latest_close: "1085.5",
+    },
+    minute: null,
+  },
 }
 
 describe("lookup utilities", () => {
-  it("canonicalizes the default search identically on the server and client", () => {
-    expect(parseLookupSearch({})).toEqual(parseLookupSearch({ st: "active" }))
+  it("canonicalizes defaults and old macro bookmarks to instruments", () => {
     expect(parseLookupSearch({})).toEqual(DEFAULT_SEARCH)
-    expect(parseLookupSearch({ ds: "instruments", st: undefined })).toEqual(
-      DEFAULT_SEARCH
-    )
-  })
-
-  it("defaults instruments to the active status filter", () => {
-    expect(parseLookupSearch({})).toMatchObject({
-      ds: "instruments",
-      st: "active",
-      sb: "market",
-      sd: "asc",
-      p: 1,
-      ps: 50,
-    })
-  })
-
-  it("validates pagination, dataset, and supported sort values", () => {
     expect(
       parseLookupSearch({
         ds: "macro",
+        fq: "monthly",
+        src: "legacy",
+        q: "CPI",
+        m: "US",
+        ac: "macro",
+        st: "ALL",
+        sb: "name",
+        sd: "desc",
+        ps: "100",
+        p: "4",
+        id: "legacy-series-id",
+      })
+    ).toEqual(DEFAULT_SEARCH)
+  })
+
+  it("validates pagination and current sort values", () => {
+    expect(
+      parseLookupSearch({
         ps: "100",
         p: "3",
         sd: "desc",
-        sb: "source_code",
-        id: "series-cpi",
+        sb: "minute_latest_close",
       })
     ).toMatchObject({
-      ds: "macro",
       ps: 100,
       p: 3,
       sd: "desc",
-      sb: "source_code",
-      id: "series-cpi",
-      st: "ALL",
+      sb: "minute_latest_close",
     })
     expect(
-      parseLookupSearch({ ds: "macro", ps: "17", p: "-2", sb: "latest_price" })
-    ).toMatchObject({ ps: 50, p: 1, sb: "market" })
+      parseLookupSearch({ ps: "200", p: "-2", sb: "source_code" })
+    ).toMatchObject({
+      ps: 50,
+      p: 1,
+      sb: "market",
+    })
   })
 
-  it("exports rows as CSV with a BOM and escaped cells", () => {
-    const csv = buildCsv([INSTRUMENT], DATASET_CONFIG.instruments.columns)
+  it("exports nested coverage as CSV with escaped cells", () => {
+    const csv = buildCsv([INSTRUMENT], LOOKUP_COLUMNS)
     expect(csv.startsWith("\uFEFF")).toBe(true)
     expect(csv).toContain('"台積電, ""晶圓"""')
-    expect(csv).toContain("2330")
+    expect(csv).toContain("1994-09-05")
+    expect(csv).toContain("1085.5")
   })
 
   it("keeps boundary pages and ellipses in long pagination", () => {

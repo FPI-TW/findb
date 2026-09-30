@@ -1,677 +1,695 @@
-"""
-Tests for Serve API endpoints.
-"""
+"""Contract tests for the current canonical Serve API."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.models.canonical import (
-    BondDetails,
-    BondEOD,
-    CalendarMarket,
-    CalendarRevisionDay,
-    CalendarYearRevision,
-    CorporateAction,
-    FuturesContinuousEOD,
-    FuturesContract,
-    Instrument,
-    InstrumentStats,
-    MacroObservation,
-    MacroSeries,
-    MarketDataEOD,
-    RollRule,
-    TradingCalendar,
-)
+from app.config import get_settings
+from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD, MarketDataMinute
+from app.models.registry import DatasetRegistry
+from app.services import serve as serve_service
+from app.services.api_keys import create_api_key
 from app.utils import utc_now, uuid7
 
 
-@pytest.mark.asyncio
-async def test_list_instruments_returns_data(client: AsyncClient, test_session):
-    """Ensure instruments list returns seeded instruments."""
-    instrument_id = uuid7()
-    instrument = Instrument(
+def dataset(
+    key: str,
+    *,
+    market: str,
+    asset_class: str,
+    schema_id: str,
+    active: bool = True,
+) -> DatasetRegistry:
+    minute = schema_id == "market_minute"
+    defaults = {"market": market, "asset_class": asset_class, "currency": "TWD"}
+    if minute:
+        defaults.update({"market_timezone": "Asia/Taipei", "price_adjustment": "none"})
+    return DatasetRegistry(
+        dataset_key=key,
+        name=key,
+        asset_class=asset_class,
+        market=market,
+        frequency="minute" if minute else "daily",
+        is_active=active,
+        config={
+            "schema_id": schema_id,
+            "accepted_schema_versions": [1],
+            "current_schema_version": 1,
+            "schema_enforcement": "enforce",
+            "allowed_sources": ["secret_provider"],
+            "defaults": defaults,
+        },
+    )
+
+
+def instrument(
+    instrument_id: UUID,
+    symbol: str,
+    *,
+    market: str = "TW",
+    asset_class: str = "equity",
+    name: str | None = None,
+) -> Instrument:
+    return Instrument(
         instrument_id=instrument_id,
-        asset_class="crypto",
-        market="CRYPTO",
-        symbol="BTC",
-        name="Bitcoin",
+        market=market,
+        asset_class=asset_class,
+        symbol=symbol,
+        name=name,
+        currency="TWD" if market == "TW" else "USD",
+        timezone="Asia/Taipei" if market == "TW" else "America/New_York",
         status="active",
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    stale_eod = MarketDataEOD(
-        instrument_id=instrument_id,
-        trade_date=date(2026, 1, 15),
-        close=Decimal("95700.00"),
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    latest_eod = MarketDataEOD(
-        instrument_id=instrument_id,
-        trade_date=date(2026, 1, 16),
-        close=Decimal("95709.01"),
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    stats = InstrumentStats(
-        instrument_id=instrument_id,
-        first_trade_date=date(2026, 1, 15),
-        latest_trade_date=date(2026, 1, 16),
-        latest_price=Decimal("95709.01"),
-        updated_at=utc_now(),
-    )
-    test_session.add_all([instrument, stale_eod, latest_eod, stats])
-    await test_session.commit()
 
-    response = await client.get("/api/v1/serve/instruments?market=CRYPTO")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["success"] is True
-    assert len(data["data"]) == 1
-    assert data["data"][0]["symbol"] == "BTC"
-    assert data["data"][0]["latest_trade_date"] == "2026-01-16"
-    assert data["data"][0]["latest_price"] == "95709.01000000"
+
+def eod(instrument_id: UUID, trade_date: date, close: str = "100") -> MarketDataEOD:
+    now = utc_now()
+    return MarketDataEOD(
+        instrument_id=instrument_id,
+        trade_date=trade_date,
+        open=Decimal(close),
+        high=Decimal(close),
+        low=Decimal(close),
+        close=Decimal(close),
+        volume=10,
+        source="secret_provider",
+        source_fetched_at=now,
+        asof_ts=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def minute(instrument_id: UUID, start: datetime, close: str) -> MarketDataMinute:
+    now = utc_now()
+    return MarketDataMinute(
+        instrument_id=instrument_id,
+        trade_date=(start.astimezone(timezone(timedelta(hours=8)))).date(),
+        bar_start_time=start,
+        bar_end_time=start + timedelta(minutes=1),
+        signal_time=start + timedelta(minutes=1),
+        market_timezone="Asia/Taipei",
+        open=Decimal(close),
+        high=Decimal(close),
+        low=Decimal(close),
+        close=Decimal(close),
+        volume=10,
+        turnover=Decimal("1000"),
+        trade_count=None,
+        price_adjustment="none",
+        source="secret_provider",
+        source_fetched_at=now,
+        asof_ts=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def assert_error(response, status: int, code: str) -> None:
+    assert response.status_code == status
+    assert response.json()["detail"]["code"] == code
 
 
 @pytest.mark.asyncio
-async def test_list_instruments_supports_keyset_without_count(
-    client: AsyncClient,
-    test_session,
+async def test_dataset_catalog_is_active_provider_free_and_reports_configured_empty(
+    client: AsyncClient, test_session
 ):
-    """Cursor pagination can skip count for deep instrument scans."""
-    instruments = [
-        Instrument(
-            instrument_id=uuid7(),
-            asset_class="equity",
-            market="US",
-            symbol=symbol,
-            name=symbol,
-            status="active",
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        )
-        for symbol in ("AAA", "BBB", "CCC")
-    ]
-    test_session.add_all(instruments)
-    await test_session.commit()
-
-    first_page = await client.get(
-        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false"
-    )
-    assert first_page.status_code == 200
-    first_payload = first_page.json()
-    assert [item["symbol"] for item in first_payload["data"]] == ["AAA", "BBB"]
-    assert first_payload["pagination"]["total_records"] is None
-    assert first_payload["pagination"]["total_pages"] is None
-    assert first_payload["pagination"]["next_cursor"].startswith("BBB|")
-
-    second_page = await client.get(
-        "/api/v1/serve/instruments?market=US&page_size=2&include_count=false"
-        f"&cursor={first_payload['pagination']['next_cursor']}"
-    )
-    assert second_page.status_code == 200
-    second_payload = second_page.json()
-    assert [item["symbol"] for item in second_payload["data"]] == ["CCC"]
-    assert second_payload["pagination"]["next_cursor"] is None
-
-
-@pytest.mark.asyncio
-async def test_list_instruments_cursor_handles_duplicate_symbols(client: AsyncClient, test_session):
-    instruments = [
-        Instrument(
-            instrument_id=UUID("11111111-1111-1111-1111-111111111111"),
-            asset_class="equity",
-            market="US",
-            symbol="DUP",
-            status="active",
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        ),
-        Instrument(
-            instrument_id=UUID("22222222-2222-2222-2222-222222222222"),
-            asset_class="equity",
-            market="HK",
-            symbol="DUP",
-            status="active",
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        ),
-        Instrument(
-            instrument_id=UUID("33333333-3333-3333-3333-333333333333"),
-            asset_class="equity",
-            market="US",
-            symbol="ZZZ",
-            status="active",
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        ),
-    ]
-    test_session.add_all(instruments)
-    await test_session.commit()
-
-    first_page = await client.get("/api/v1/serve/instruments?page_size=1")
-    assert first_page.status_code == 200
-    first_payload = first_page.json()
-    assert first_payload["data"][0]["symbol"] == "DUP"
-    assert first_payload["pagination"]["total_records"] == 3
-
-    second_page = await client.get(
-        f"/api/v1/serve/instruments?page_size=1&cursor={first_payload['pagination']['next_cursor']}"
-    )
-    assert second_page.status_code == 200
-    second_payload = second_page.json()
-    assert second_payload["data"][0]["symbol"] == "DUP"
-    assert second_payload["pagination"]["total_records"] == 3
-
-
-@pytest.mark.asyncio
-async def test_get_instrument_by_id(client: AsyncClient, test_session):
-    """Ensure instrument detail endpoint works."""
-    instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="crypto",
-        market="CRYPTO",
-        symbol="ETH",
-        name="Ethereum",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add(instrument)
-    await test_session.commit()
-
-    response = await client.get(f"/api/v1/serve/instruments/{instrument_id}")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["symbol"] == "ETH"
-    assert data["latest_trade_date"] is None
-    assert data["latest_price"] is None
-
-
-@pytest.mark.asyncio
-async def test_list_eod_filters(client: AsyncClient, test_session):
-    """Ensure EOD endpoint filters by market/symbol/date range."""
-    instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="crypto",
-        market="CRYPTO",
-        symbol="BTC",
-        name="Bitcoin",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add(instrument)
-
-    eod_one = MarketDataEOD(
-        instrument_id=instrument_id,
-        trade_date=date(2026, 1, 15),
-        open=Decimal("100"),
-        high=Decimal("110"),
-        low=Decimal("90"),
-        close=Decimal("105"),
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    eod_two = MarketDataEOD(
-        instrument_id=instrument_id,
-        trade_date=date(2026, 1, 16),
-        open=Decimal("101"),
-        high=Decimal("111"),
-        low=Decimal("91"),
-        close=Decimal("106"),
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add_all([eod_one, eod_two])
-    await test_session.commit()
-
-    response = await client.get(
-        "/api/v1/serve/eod?market=CRYPTO&symbols=BTC&start_date=2026-01-16&end_date=2026-01-16"
-    )
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["success"] is True
-    assert len(payload["data"]) == 1
-    assert payload["data"][0]["trade_date"] == "2026-01-16"
-
-
-@pytest.mark.asyncio
-async def test_get_instrument_eod(client: AsyncClient, test_session):
-    """Ensure instrument-specific EOD endpoint works."""
-    instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="crypto",
-        market="CRYPTO",
-        symbol="SOL",
-        name="Solana",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add(instrument)
-
-    eod = MarketDataEOD(
-        instrument_id=instrument_id,
-        trade_date=date(2026, 1, 16),
-        open=Decimal("10"),
-        high=Decimal("11"),
-        low=Decimal("9"),
-        close=Decimal("10.5"),
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add(eod)
-    await test_session.commit()
-
-    response = await client.get(
-        f"/api/v1/serve/eod/{instrument_id}?start_date=2026-01-16&end_date=2026-01-16"
-    )
-    assert response.status_code == 200
-    payload = response.json()
-    assert len(payload["data"]) == 1
-    assert payload["data"][0]["symbol"] == "SOL"
-
-
-@pytest.mark.asyncio
-async def test_eod_endpoints_return_total_ticks(client: AsyncClient, test_session):
-    """Ensure EOD responses include total_ticks when present."""
-    instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="equity",
-        market="TW",
-        symbol="6160",
-        name="欣技",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    eod = MarketDataEOD(
-        instrument_id=instrument_id,
-        trade_date=date(2024, 4, 29),
-        open=Decimal("20.45"),
-        high=Decimal("21.50"),
-        low=Decimal("20.45"),
-        close=Decimal("21.10"),
-        volume=528,
-        total_ticks=221,
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add_all([instrument, eod])
-    await test_session.commit()
-
-    list_response = await client.get(
-        "/api/v1/serve/eod?market=TW&symbols=6160&start_date=2024-04-29&end_date=2024-04-29"
-    )
-    assert list_response.status_code == 200
-    list_payload = list_response.json()["data"]
-    assert len(list_payload) == 1
-    assert list_payload[0]["total_ticks"] == 221
-
-    detail_response = await client.get(
-        f"/api/v1/serve/eod/{instrument_id}?start_date=2024-04-29&end_date=2024-04-29"
-    )
-    assert detail_response.status_code == 200
-    detail_payload = detail_response.json()["data"]
-    assert len(detail_payload) == 1
-    assert detail_payload[0]["total_ticks"] == 221
-
-
-@pytest.mark.asyncio
-async def test_list_calendar(client: AsyncClient, test_session):
-    """Only complete published managed days are exposed to Serve clients."""
-    market = CalendarMarket(market="CRYPTO", display_name="Crypto", timezone="UTC", weekend_days=[])
-    revision = CalendarYearRevision(
-        market="CRYPTO",
-        year=2026,
-        revision=1,
-        status="published",
-        expected_days=365,
-        actual_days=365,
-        timezone="UTC",
-        source_kind="test",
-    )
-    test_session.add_all([market, revision])
-    await test_session.flush()
+    us_id = uuid7()
     test_session.add_all(
         [
-            CalendarRevisionDay(
-                calendar_revision_id=revision.id,
-                trade_date=date(2026, 1, 1) + timedelta(days=offset),
-                is_open=(date(2026, 1, 1) + timedelta(days=offset)).weekday() < 5,
-                day_status=(
-                    "open"
-                    if (date(2026, 1, 1) + timedelta(days=offset)).weekday() < 5
-                    else "closed"
-                ),
-                source_kind="test",
-            )
-            for offset in range(365)
-        ]
-        + [
-            TradingCalendar(
-                id=uuid7(),
-                market="CRYPTO",
-                trade_date=date(2026, 1, 16),
-                is_open=False,
-                day_status="closed",
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            dataset(
+                "tw_equity_minute",
+                market="TW",
+                asset_class="equity",
+                schema_id="market_minute",
             ),
+            dataset(
+                "inactive", market="HK", asset_class="equity", schema_id="market_eod", active=False
+            ),
+            instrument(us_id, "AAPL", market="US"),
+            eod(us_id, date(2026, 9, 18), "250"),
         ]
     )
     await test_session.commit()
 
-    response = await client.get(
-        "/api/v1/serve/calendar?market=CRYPTO&start_date=2026-01-16&end_date=2026-01-16"
-    )
+    response = await client.get("/api/v1/serve/datasets")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["success"] is True
-    assert len(payload["data"]) == 1
-    assert payload["data"][0]["trade_date"] == "2026-01-16"
-    assert payload["data"][0]["is_open"] is True
-
-    open_response = await client.get(
-        "/api/v1/serve/calendar?market=CRYPTO&start_date=2026-01-15&end_date=2026-01-17&is_open=true"
-    )
-    assert open_response.status_code == 200
-    assert [row["trade_date"] for row in open_response.json()["data"]] == [
-        "2026-01-15",
-        "2026-01-16",
+    assert [item["dataset_key"] for item in payload["data"]] == [
+        "tw_equity_minute",
+        "us_equity_eod",
     ]
-    first_page = await client.get("/api/v1/serve/calendar?market=CRYPTO&page=1&page_size=2")
-    second_page = await client.get("/api/v1/serve/calendar?market=CRYPTO&page=2&page_size=2")
-    assert first_page.status_code == second_page.status_code == 200
-    assert first_page.json()["pagination"] == {
-        "page": 1,
-        "page_size": 2,
-        "total_records": 365,
-        "total_pages": 183,
-        "next_cursor": None,
+    assert payload["data"][0]["availability"] == "configured_empty"
+    assert payload["data"][1]["coverage"] == {
+        "coverage_start_date": "2026-09-18",
+        "coverage_end_date": "2026-09-18",
+        "instrument_count": 1,
     }
-    assert [row["trade_date"] for row in first_page.json()["data"]] == [
-        "2026-01-01",
-        "2026-01-02",
-    ]
-    assert [row["trade_date"] for row in second_page.json()["data"]] == [
-        "2026-01-03",
-        "2026-01-04",
-    ]
-
-    test_session.add_all(
-        [
-            CalendarMarket(
-                market="WTX", display_name="WTX", timezone="Asia/Taipei", weekend_days=[5, 6]
-            ),
-            CalendarYearRevision(
-                market="WTX",
-                year=2026,
-                revision=1,
-                status="draft",
-                expected_days=365,
-                actual_days=1,
-                timezone="Asia/Taipei",
-                source_kind="test",
-            ),
-            TradingCalendar(id=uuid7(), market="WTX", trade_date=date(2026, 1, 16), is_open=True),
-        ]
-    )
-    await test_session.commit()
-    wtx_response = await client.get(
-        "/api/v1/serve/calendar?market=WTX&start_date=2026-01-16&end_date=2026-01-16"
-    )
-    assert wtx_response.status_code == 200
-    assert wtx_response.json()["data"] == []
-
-    test_session.add_all(
-        [
-            CalendarMarket(
-                market="US", display_name="US", timezone="America/New_York", weekend_days=[5, 6]
-            ),
-            CalendarYearRevision(
-                market="US",
-                year=2026,
-                revision=1,
-                status="published",
-                expected_days=365,
-                actual_days=364,
-                timezone="America/New_York",
-                source_kind="test",
-            ),
-        ]
-    )
-    await test_session.commit()
-    incomplete_response = await client.get(
-        "/api/v1/serve/calendar?market=US&start_date=2026-01-16&end_date=2026-01-16"
-    )
-    assert incomplete_response.status_code == 200
-    assert incomplete_response.json()["pagination"]["total_records"] == 0
-    assert incomplete_response.json()["data"] == []
+    serialized = response.text.lower()
+    assert "secret_provider" not in serialized
+    assert "credential" not in serialized
 
 
 @pytest.mark.asyncio
-async def test_list_corporate_actions(client: AsyncClient, test_session):
-    instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="equity",
-        market="US",
-        symbol="AAPL",
-        name="Apple",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
+async def test_unknown_or_mismatched_active_registry_config_fails_closed(
+    client: AsyncClient, test_session
+):
+    invalid = dataset("bad", market="TW", asset_class="equity", schema_id="market_eod")
+    invalid.config["defaults"]["market"] = "US"
+    test_session.add(invalid)
+    await test_session.commit()
+
+    response = await client.get("/api/v1/serve/datasets")
+    assert_error(response, 503, "SERVE_CONFIGURATION_INVALID")
+    assert "US" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_internally_consistent_unsupported_active_scope_fails_closed(
+    client: AsyncClient, test_session
+):
+    test_session.add(
+        dataset("hk_equity_eod", market="HK", asset_class="equity", schema_id="market_eod")
     )
-    action = CorporateAction(
-        action_id=uuid7(),
-        instrument_id=instrument_id,
-        action_type="split",
-        ex_date=date(2026, 1, 20),
-        ratio=Decimal("2.0"),
-        asof_ts=utc_now(),
-        source="bloomberg",
+    await test_session.commit()
+
+    response = await client.get("/api/v1/serve/datasets")
+
+    assert_error(response, 503, "SERVE_CONFIGURATION_INVALID")
+    assert "HK" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_instruments_search_facets_sort_pagination_and_domain_coverage(
+    client: AsyncClient, test_session
+):
+    first_id = UUID("11111111-1111-1111-1111-111111111111")
+    second_id = UUID("22222222-2222-2222-2222-222222222222")
+    etf_id = UUID("33333333-3333-3333-3333-333333333333")
+    hidden_id = UUID("44444444-4444-4444-4444-444444444444")
+    partial_id = UUID("55555555-5555-5555-5555-555555555555")
+    test_session.add_all(
+        [
+            dataset("tw_equity_eod", market="TW", asset_class="equity", schema_id="market_eod"),
+            dataset(
+                "tw_equity_minute",
+                market="TW",
+                asset_class="equity",
+                schema_id="market_minute",
+            ),
+            dataset("tw_etf_minute", market="TW", asset_class="etf", schema_id="market_minute"),
+            instrument(first_id, "2330", name="台積電"),
+            instrument(second_id, "2317", name="鴻海"),
+            instrument(etf_id, "0050", asset_class="etf", name="元大台灣50"),
+            instrument(hidden_id, "BTC", market="CRYPTO", asset_class="crypto"),
+            instrument(partial_id, "PART", name="Partial stats"),
+            InstrumentStats(
+                instrument_id=first_id,
+                eod_first_date=date(2020, 1, 2),
+                eod_latest_date=date(2026, 9, 18),
+                eod_latest_close=Decimal("1300"),
+                minute_first_bar_at=datetime(2026, 9, 1, 1, tzinfo=timezone.utc),
+                minute_latest_bar_at=datetime(2026, 9, 18, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("1301"),
+                updated_at=utc_now(),
+            ),
+            InstrumentStats(
+                instrument_id=etf_id,
+                # Legacy EOD fields must not leak into an unsupported EOD domain.
+                eod_first_date=date(2020, 1, 2),
+                eod_latest_date=date(2026, 9, 18),
+                eod_latest_close=Decimal("200"),
+                minute_first_bar_at=datetime(2026, 9, 1, 1, tzinfo=timezone.utc),
+                minute_latest_bar_at=datetime(2026, 9, 18, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("201"),
+                updated_at=utc_now(),
+            ),
+            InstrumentStats(
+                instrument_id=partial_id,
+                eod_latest_date=date(2026, 9, 18),
+                eod_latest_close=Decimal("150"),
+                minute_latest_bar_at=datetime(2026, 9, 18, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("151"),
+                updated_at=utc_now(),
+            ),
+        ]
     )
-    test_session.add_all([instrument, action])
     await test_session.commit()
 
     response = await client.get(
-        "/api/v1/serve/corporate-actions?market=US&symbols=AAPL&action_type=split"
+        "/api/v1/serve/instruments?q=２３３０&has_eod=true&sort_by=eod_latest_close&sort_dir=desc&page=1&page_size=1"
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["success"] is True
-    assert len(payload["data"]) == 1
-    assert payload["data"][0]["symbol"] == "AAPL"
-    assert payload["data"][0]["action_type"] == "split"
+    assert payload["pagination"]["total_records"] == 1
+    assert payload["data"][0]["symbol"] == "2330"
+    assert payload["data"][0]["coverage"]["eod"]["latest_close"] == "1300.00000000"
+    assert payload["data"][0]["coverage"]["minute"]["latest_close"] == "1301.00000000"
+    assert payload["facets"] == {
+        "markets": ["TW"],
+        "asset_classes": ["equity", "etf"],
+        "statuses": ["active"],
+    }
+
+    sorted_response = await client.get(
+        "/api/v1/serve/instruments?sort_by=eod_latest_close&sort_dir=asc&page_size=4"
+    )
+    assert [item["symbol"] for item in sorted_response.json()["data"]] == [
+        "2330",
+        "2317",
+        "0050",
+        "PART",
+    ]
+    assert sorted_response.json()["data"][2]["coverage"]["eod"] is None
+    assert sorted_response.json()["data"][3]["coverage"] == {"eod": None, "minute": None}
+
+    minute_sorted = await client.get(
+        "/api/v1/serve/instruments?sort_by=minute_latest_close&sort_dir=asc&page_size=4"
+    )
+    assert [item["symbol"] for item in minute_sorted.json()["data"]] == [
+        "0050",
+        "2330",
+        "2317",
+        "PART",
+    ]
+    no_eod = await client.get("/api/v1/serve/instruments?has_eod=false&page_size=4")
+    assert [item["symbol"] for item in no_eod.json()["data"]] == ["2317", "0050", "PART"]
+    no_minute = await client.get("/api/v1/serve/instruments?has_minute=false&page_size=4")
+    assert [item["symbol"] for item in no_minute.json()["data"]] == ["2317", "PART"]
+
+    etf = await client.get(f"/api/v1/serve/instruments/{etf_id}")
+    assert etf.json()["data"]["coverage"]["eod"] is None
+    assert etf.json()["data"]["coverage"]["minute"] is not None
+    assert_error(
+        await client.get(f"/api/v1/serve/instruments/{hidden_id}"), 404, "INSTRUMENT_NOT_FOUND"
+    )
 
 
 @pytest.mark.asyncio
-async def test_list_macro_series_and_observations(client: AsyncClient, test_session):
-    series_id = uuid7()
-    series = MacroSeries(
-        series_id=series_id,
-        name="US CPI",
-        unit="index",
-        frequency="monthly",
-        market="US",
-        source_code="CPI_US",
-        source="fred",
-        created_at=utc_now(),
-        updated_at=utc_now(),
+async def test_all_coverage_sorts_mask_inactive_partial_and_missing_stats(
+    client: AsyncClient, test_session
+):
+    tw_equity_id = UUID("10000000-0000-0000-0000-000000000001")
+    tw_etf_id = UUID("20000000-0000-0000-0000-000000000002")
+    us_equity_id = UUID("30000000-0000-0000-0000-000000000003")
+    partial_id = UUID("40000000-0000-0000-0000-000000000004")
+    empty_id = UUID("50000000-0000-0000-0000-000000000005")
+    test_session.add_all(
+        [
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            dataset("tw_equity_eod", market="TW", asset_class="equity", schema_id="market_eod"),
+            dataset(
+                "tw_equity_minute",
+                market="TW",
+                asset_class="equity",
+                schema_id="market_minute",
+            ),
+            dataset("tw_etf_minute", market="TW", asset_class="etf", schema_id="market_minute"),
+            instrument(tw_equity_id, "TW_EQ"),
+            instrument(tw_etf_id, "TW_ETF", asset_class="etf"),
+            instrument(us_equity_id, "US_EQ", market="US"),
+            instrument(partial_id, "PART"),
+            instrument(empty_id, "EMPTY"),
+            InstrumentStats(
+                instrument_id=tw_equity_id,
+                eod_first_date=date(2020, 1, 2),
+                eod_latest_date=date(2026, 9, 18),
+                eod_latest_close=Decimal("100"),
+                minute_first_bar_at=datetime(2026, 9, 1, 1, tzinfo=timezone.utc),
+                minute_latest_bar_at=datetime(2026, 9, 18, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("100"),
+                updated_at=utc_now(),
+            ),
+            InstrumentStats(
+                instrument_id=tw_etf_id,
+                eod_first_date=date(2019, 1, 2),
+                eod_latest_date=date(2026, 9, 19),
+                eod_latest_close=Decimal("50"),
+                minute_first_bar_at=datetime(2026, 9, 2, 1, tzinfo=timezone.utc),
+                minute_latest_bar_at=datetime(2026, 9, 17, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("50"),
+                updated_at=utc_now(),
+            ),
+            InstrumentStats(
+                instrument_id=us_equity_id,
+                eod_first_date=date(2021, 1, 2),
+                eod_latest_date=date(2026, 9, 17),
+                eod_latest_close=Decimal("75"),
+                minute_first_bar_at=datetime(2026, 8, 1, 1, tzinfo=timezone.utc),
+                minute_latest_bar_at=datetime(2026, 9, 19, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("25"),
+                updated_at=utc_now(),
+            ),
+            InstrumentStats(
+                instrument_id=partial_id,
+                eod_latest_date=date(2026, 9, 20),
+                eod_latest_close=Decimal("10"),
+                minute_latest_bar_at=datetime(2026, 9, 20, 5, 30, tzinfo=timezone.utc),
+                minute_latest_close=Decimal("10"),
+                updated_at=utc_now(),
+            ),
+        ]
     )
-    observation = MacroObservation(
-        id=uuid7(),
-        series_id=series_id,
-        obs_date=date(2026, 1, 31),
-        value=Decimal("302.1000"),
-        source="fred",
-        asof_ts=utc_now(),
-    )
-    test_session.add_all([series, observation])
     await test_session.commit()
 
-    series_response = await client.get("/api/v1/serve/macro/series?market=US&source_code=CPI_US")
-    assert series_response.status_code == 200
-    series_payload = series_response.json()
-    assert series_payload["success"] is True
-    assert len(series_payload["data"]) == 1
-    assert series_payload["data"][0]["source_code"] == "CPI_US"
+    expected_orders = {
+        "eod_first_date": {
+            "asc": ["TW_EQ", "US_EQ", "TW_ETF", "PART", "EMPTY"],
+            "desc": ["US_EQ", "TW_EQ", "TW_ETF", "PART", "EMPTY"],
+        },
+        "eod_latest_date": {
+            "asc": ["US_EQ", "TW_EQ", "TW_ETF", "PART", "EMPTY"],
+            "desc": ["TW_EQ", "US_EQ", "TW_ETF", "PART", "EMPTY"],
+        },
+        "eod_latest_close": {
+            "asc": ["US_EQ", "TW_EQ", "TW_ETF", "PART", "EMPTY"],
+            "desc": ["TW_EQ", "US_EQ", "TW_ETF", "PART", "EMPTY"],
+        },
+        "minute_first_bar_at": {
+            "asc": ["TW_EQ", "TW_ETF", "US_EQ", "PART", "EMPTY"],
+            "desc": ["TW_ETF", "TW_EQ", "US_EQ", "PART", "EMPTY"],
+        },
+        "minute_latest_bar_at": {
+            "asc": ["TW_ETF", "TW_EQ", "US_EQ", "PART", "EMPTY"],
+            "desc": ["TW_EQ", "TW_ETF", "US_EQ", "PART", "EMPTY"],
+        },
+        "minute_latest_close": {
+            "asc": ["TW_ETF", "TW_EQ", "US_EQ", "PART", "EMPTY"],
+            "desc": ["TW_EQ", "TW_ETF", "US_EQ", "PART", "EMPTY"],
+        },
+    }
+    for sort_by, directions in expected_orders.items():
+        for sort_dir, expected in directions.items():
+            response = await client.get(
+                "/api/v1/serve/instruments",
+                params={"sort_by": sort_by, "sort_dir": sort_dir, "page_size": 5},
+            )
+            assert response.status_code == 200
+            assert [item["symbol"] for item in response.json()["data"]] == expected
 
-    obs_response = await client.get("/api/v1/serve/macro/observations?market=US&source_code=CPI_US")
-    assert obs_response.status_code == 200
-    obs_payload = obs_response.json()
-    assert obs_payload["success"] is True
-    assert len(obs_payload["data"]) == 1
-    assert obs_payload["data"][0]["series_name"] == "US CPI"
+    payload = (await client.get("/api/v1/serve/instruments?sort_by=symbol&page_size=5")).json()[
+        "data"
+    ]
+    by_symbol = {item["symbol"]: item["coverage"] for item in payload}
+    assert by_symbol["TW_ETF"]["eod"] is None
+    assert by_symbol["US_EQ"]["minute"] is None
+    assert by_symbol["PART"] == {"eod": None, "minute": None}
+    assert by_symbol["EMPTY"] == {"eod": None, "minute": None}
 
 
 @pytest.mark.asyncio
-async def test_list_futures_contracts_and_continuous(client: AsyncClient, test_session):
+async def test_eod_requires_scope_and_distinguishes_unsupported_from_empty(
+    client: AsyncClient, test_session
+):
+    equity_id, etf_id = uuid7(), uuid7()
+    test_session.add_all(
+        [
+            dataset("tw_equity_eod", market="TW", asset_class="equity", schema_id="market_eod"),
+            dataset("tw_etf_minute", market="TW", asset_class="etf", schema_id="market_minute"),
+            instrument(equity_id, "2330"),
+            instrument(etf_id, "0050", asset_class="etf"),
+        ]
+    )
+    await test_session.commit()
+
+    assert_error(await client.get("/api/v1/serve/eod"), 422, "QUERY_SCOPE_REQUIRED")
+    assert_error(
+        await client.get(f"/api/v1/serve/eod?instrument_id={etf_id}"),
+        422,
+        "DATASET_NOT_AVAILABLE",
+    )
+    empty = await client.get(f"/api/v1/serve/eod?instrument_id={equity_id}")
+    assert empty.status_code == 200
+    assert empty.json()["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_eod_cursor_is_stable_and_rejects_scope_changes(client: AsyncClient, test_session):
     instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="future",
-        market="WTX",
-        symbol="TX",
-        name="Taiwan Index Future",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
+    test_session.add_all(
+        [
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            instrument(instrument_id, "AAPL", market="US"),
+            eod(instrument_id, date(2026, 9, 18), "250"),
+            eod(instrument_id, date(2026, 9, 17), "249"),
+        ]
     )
-    roll_rule_id = uuid7()
-    roll_rule = RollRule(
-        rule_id=roll_rule_id,
-        name="front-month",
-        description="Front month roll",
-        config={"type": "front_month"},
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    contract = FuturesContract(
-        contract_id=uuid7(),
-        instrument_id=instrument_id,
-        contract_code="TXF202602",
-        contract_month="202602",
-        expiry_date=date(2026, 2, 19),
-        currency="TWD",
-        source="taifex",
-        asof_ts=utc_now(),
-    )
-    continuous = FuturesContinuousEOD(
-        id=uuid7(),
-        instrument_id=instrument_id,
-        roll_rule_id=roll_rule_id,
-        trade_date=date(2026, 1, 16),
-        open=Decimal("21000"),
-        high=Decimal("21100"),
-        low=Decimal("20900"),
-        close=Decimal("21050"),
-        volume=12000,
-        turnover=Decimal("987654.1234"),
-        open_interest=23000,
-        active_contract_code="TXF202602",
-        roll_adjustment=Decimal("1.5"),
-        source="taifex",
-        asof_ts=utc_now(),
-    )
-    test_session.add_all([instrument, roll_rule, contract, continuous])
     await test_session.commit()
 
-    contracts_response = await client.get("/api/v1/serve/futures/contracts?market=WTX&symbols=TX")
-    assert contracts_response.status_code == 200
-    contracts_payload = contracts_response.json()
-    assert contracts_payload["success"] is True
-    assert len(contracts_payload["data"]) == 1
-    assert contracts_payload["data"][0]["contract_code"] == "TXF202602"
-
-    continuous_response = await client.get(
-        "/api/v1/serve/futures/continuous?market=WTX&symbols=TX&start_date=2026-01-16&end_date=2026-01-16"
+    first = await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}&page_size=1")
+    assert first.json()["data"][0]["trade_date"] == "2026-09-18"
+    cursor = first.json()["pagination"]["next_cursor"]
+    second = await client.get(
+        f"/api/v1/serve/eod?instrument_id={instrument_id}&page_size=1&cursor={cursor}"
     )
-    assert continuous_response.status_code == 200
-    continuous_payload = continuous_response.json()
-    assert continuous_payload["success"] is True
-    assert len(continuous_payload["data"]) == 1
-    assert continuous_payload["data"][0]["roll_rule_name"] == "front-month"
-    assert continuous_payload["data"][0]["open_interest"] == 23000
-    assert continuous_payload["data"][0]["active_contract_code"] == "TXF202602"
-    assert continuous_payload["data"][0]["roll_adjustment"] == "1.5"
+    assert second.json()["data"][0]["trade_date"] == "2026-09-17"
+    assert_error(
+        await client.get(
+            f"/api/v1/serve/eod?instrument_id={instrument_id}&start_date=2026-09-18&cursor={cursor}"
+        ),
+        422,
+        "INVALID_CURSOR",
+    )
+    assert_error(
+        await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}&cursor=%%%"),
+        422,
+        "INVALID_CURSOR",
+    )
 
-    detail_response = await client.get(f"/api/v1/serve/futures/continuous/{instrument_id}")
-    assert detail_response.status_code == 200
-    detail = detail_response.json()["data"][0]
-    assert detail["open_interest"] == 23000
-    assert detail["active_contract_code"] == "TXF202602"
-    assert detail["roll_adjustment"] == "1.5"
+
+def test_cursor_decoder_rejects_non_urlsafe_base64_alphabet() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        serve_service._decode_cursor("abc+def")
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "INVALID_CURSOR"
 
 
 @pytest.mark.asyncio
-async def test_list_bonds_and_bond_eod(client: AsyncClient, test_session):
+async def test_eod_market_symbol_validation_is_atomic(client: AsyncClient, test_session):
     instrument_id = uuid7()
-    instrument = Instrument(
-        instrument_id=instrument_id,
-        asset_class="bond",
-        market="US",
-        symbol="US10Y-2026",
-        name="US Treasury 10Y",
-        currency="USD",
-        status="active",
-        created_at=utc_now(),
-        updated_at=utc_now(),
+    test_session.add_all(
+        [
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            instrument(instrument_id, "AAPL", market="US"),
+        ]
     )
-    details = BondDetails(
-        instrument_id=instrument_id,
-        issuer="US Treasury",
-        coupon=Decimal("0.045"),
-        maturity_date=date(2036, 2, 15),
-        rating="AA+",
-        face_value=Decimal("1000"),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    eod = BondEOD(
-        id=uuid7(),
-        instrument_id=instrument_id,
-        trade_date=date(2026, 1, 16),
-        yield_to_maturity=Decimal("0.0412"),
-        clean_price=Decimal("99.25"),
-        dirty_price=Decimal("99.40"),
-        duration=Decimal("8.1"),
-        source="bloomberg",
-        asof_ts=utc_now(),
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    test_session.add_all([instrument, details, eod])
     await test_session.commit()
 
-    bonds_response = await client.get("/api/v1/serve/bonds?market=US&issuer=Treasury")
-    assert bonds_response.status_code == 200
-    bonds_payload = bonds_response.json()
-    assert bonds_payload["success"] is True
-    assert bonds_payload["data"][0]["symbol"] == "US10Y-2026"
-    assert bonds_payload["data"][0]["issuer"] == "US Treasury"
-    assert bonds_payload["data"][0]["maturity_date"] == "2036-02-15"
+    assert_error(await client.get("/api/v1/serve/eod?market="), 422, "QUERY_SCOPE_REQUIRED")
+    assert_error(await client.get("/api/v1/serve/eod?market=%20%20"), 422, "QUERY_SCOPE_REQUIRED")
 
-    eod_response = await client.get(
-        "/api/v1/serve/bonds/eod?market=US&symbols=US10Y-2026&start_date=2026-01-16"
+    assert_error(
+        await client.get("/api/v1/serve/eod?market=US&symbols=AAPL,MISSING"),
+        404,
+        "INSTRUMENT_NOT_FOUND",
     )
-    assert eod_response.status_code == 200
-    eod_payload = eod_response.json()
-    assert eod_payload["success"] is True
-    assert len(eod_payload["data"]) == 1
-    assert eod_payload["data"][0]["yield_to_maturity"] == "0.0412"
-    assert eod_payload["data"][0]["clean_price"] == "99.25"
+    assert_error(
+        await client.get(
+            "/api/v1/serve/eod?market=US&symbols=" + ",".join(f"S{i}" for i in range(51))
+        ),
+        422,
+        "INVALID_SYMBOLS",
+    )
+    assert_error(
+        await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}&symbols=AAPL"),
+        422,
+        "INVALID_SYMBOLS",
+    )
+
+
+@pytest.mark.asyncio
+async def test_minute_default_range_and_cursor_freeze_latest_available_window(
+    client: AsyncClient, test_session
+):
+    instrument_id = uuid7()
+    test_session.add_all(
+        [
+            dataset(
+                "tw_equity_minute",
+                market="TW",
+                asset_class="equity",
+                schema_id="market_minute",
+            ),
+            instrument(instrument_id, "2330"),
+            minute(instrument_id, datetime(2026, 3, 31, 5, 30, tzinfo=timezone.utc), "1301"),
+            minute(instrument_id, datetime(2026, 3, 31, 5, 29, tzinfo=timezone.utc), "1300"),
+        ]
+    )
+    await test_session.commit()
+
+    first = await client.get(f"/api/v1/serve/minute?instrument_id={instrument_id}&page_size=1")
+    payload = first.json()
+    assert payload["range"] == {
+        "start_date": "2026-02-28",
+        "end_date": "2026-03-31",
+        "anchor": "latest_available",
+    }
+    assert payload["data"][0]["bar_start_time"].endswith("Z")
+    cursor = payload["pagination"]["next_cursor"]
+    second = await client.get(
+        f"/api/v1/serve/minute?instrument_id={instrument_id}&page_size=1&cursor={cursor}"
+    )
+    assert second.json()["range"] == payload["range"]
+    assert second.json()["data"][0]["close"] == "1300.00000000"
+
+
+@pytest.mark.asyncio
+async def test_minute_range_semantics_include_leap_day_boundary(client: AsyncClient, test_session):
+    instrument_id = uuid7()
+    test_session.add_all(
+        [
+            dataset(
+                "tw_equity_minute",
+                market="TW",
+                asset_class="equity",
+                schema_id="market_minute",
+            ),
+            instrument(instrument_id, "2330"),
+        ]
+    )
+    await test_session.commit()
+
+    accepted = await client.get(
+        f"/api/v1/serve/minute?instrument_id={instrument_id}&start_date=2024-02-29&end_date=2029-02-28"
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["range"] == {
+        "start_date": None,
+        "end_date": None,
+        "anchor": "explicit",
+    }
+    assert_error(
+        await client.get(
+            f"/api/v1/serve/minute?instrument_id={instrument_id}&start_date=2024-02-29&end_date=2029-03-01"
+        ),
+        422,
+        "INVALID_DATE_RANGE",
+    )
+    assert_error(
+        await client.get(
+            f"/api/v1/serve/minute?instrument_id={instrument_id}&start_date=2026-01-01"
+        ),
+        422,
+        "INVALID_DATE_RANGE",
+    )
+
+    upper_bound = await client.get(
+        f"/api/v1/serve/minute?instrument_id={instrument_id}&start_date=9999-01-01&end_date=9999-01-01"
+    )
+    assert upper_bound.status_code == 200
+    assert upper_bound.json()["range"] == {
+        "start_date": None,
+        "end_date": None,
+        "anchor": "explicit",
+    }
+
+    for forged_start, forged_end in (
+        ("2000-01-01", "2026-01-01"),
+        ("2026-01-02", "2026-01-01"),
+    ):
+        forged_cursor = serve_service._encode_cursor(
+            {
+                "v": 1,
+                "kind": "minute",
+                "instrument_id": str(instrument_id),
+                "start_date": forged_start,
+                "end_date": forged_end,
+                "anchor": "explicit",
+                "last_bar_start_time": "2026-01-01T00:00:00+00:00",
+            }
+        )
+        assert_error(
+            await client.get(
+                f"/api/v1/serve/minute?instrument_id={instrument_id}&cursor={forged_cursor}"
+            ),
+            422,
+            "INVALID_CURSOR",
+        )
+
+
+@pytest.mark.asyncio
+async def test_minute_no_data_has_empty_resolved_range(client: AsyncClient, test_session):
+    instrument_id = uuid7()
+    test_session.add_all(
+        [
+            dataset("tw_etf_minute", market="TW", asset_class="etf", schema_id="market_minute"),
+            instrument(instrument_id, "0050", asset_class="etf"),
+        ]
+    )
+    await test_session.commit()
+
+    response = await client.get(f"/api/v1/serve/minute?instrument_id={instrument_id}")
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+    assert response.json()["range"] == {
+        "start_date": None,
+        "end_date": None,
+        "anchor": "latest_available",
+    }
+
+
+@pytest.mark.asyncio
+async def test_current_serve_routes_use_optional_auth_dependency(client: AsyncClient, test_session):
+    settings = get_settings()
+    original = settings.SERVE_REQUIRE_AUTH
+    settings.SERVE_REQUIRE_AUTH = True
+    _, key = await create_api_key(
+        test_session,
+        owner="serve-test",
+        tier="standard",
+        scopes=["serve"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        page_size_limit=1000,
+        kind="serve",
+        name="serve-test",
+        role=None,
+        commit=False,
+    )
+    try:
+        assert (await client.get("/api/v1/serve/datasets")).status_code == 401
+        assert (
+            await client.get("/api/v1/serve/datasets", headers={settings.API_KEY_HEADER: key})
+        ).status_code == 200
+    finally:
+        settings.SERVE_REQUIRE_AUTH = original
+
+
+@pytest.mark.asyncio
+async def test_removed_routes_are_404_and_absent_from_openapi(client: AsyncClient):
+    removed = [
+        "/api/v1/serve/lookup/instruments",
+        "/api/v1/serve/lookup/macro-series",
+        "/api/v1/serve/eod/11111111-1111-1111-1111-111111111111",
+        "/api/v1/serve/corporate-actions",
+        "/api/v1/serve/macro/series",
+        "/api/v1/serve/macro/observations",
+        "/api/v1/serve/futures/contracts",
+        "/api/v1/serve/futures/continuous",
+        "/api/v1/serve/bonds",
+        "/api/v1/serve/bonds/eod",
+    ]
+    for path in removed:
+        assert (await client.get(path)).status_code == 404
+
+    paths = (await client.get("/openapi.json")).json()["paths"]
+    for path in removed:
+        assert path not in paths
+    assert {
+        "/api/v1/serve/datasets",
+        "/api/v1/serve/instruments",
+        "/api/v1/serve/instruments/{instrument_id}",
+        "/api/v1/serve/eod",
+        "/api/v1/serve/minute",
+        "/api/v1/serve/calendar",
+        "/api/v1/serve/calendar/years/{market}/{year}",
+        "/api/v1/serve/market-freshness",
+    }.issubset(paths)

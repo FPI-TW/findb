@@ -19,7 +19,7 @@ from sqlalchemy.exc import DBAPIError
 from tests.migration_database import get_active_migration_database_factory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-LATEST_REVISION = "a8b9c0d1e2f3"
+LATEST_REVISION = "b9c0d1e2f3a4"
 
 
 async def _run_alembic(database_url: str, revision: str, command: str = "upgrade") -> None:
@@ -84,6 +84,7 @@ def test_tw_minute_migration_is_single_linear_head():
     ingestion_coverage = scripts.get_revision("b4c5d6e7f8a9")
     twelve_data_schedule_0815 = scripts.get_revision("c5d6e7f8a9b0")
     scheduler_dataset_projection_removal = scripts.get_revision("d6e7f8a9b0c1")
+    serve_stats = scripts.get_revision("b9c0d1e2f3a4")
     assert foundation is not None
     assert foundation.down_revision == "f8a9b0c1d2e3"
     assert activation is not None
@@ -112,6 +113,8 @@ def test_tw_minute_migration_is_single_linear_head():
     assert twelve_data_schedule_0815.down_revision == "b4c5d6e7f8a9"
     assert scheduler_dataset_projection_removal is not None
     assert scheduler_dataset_projection_removal.down_revision == "c5d6e7f8a9b0"
+    assert serve_stats is not None
+    assert serve_stats.down_revision == "a8b9c0d1e2f3"
     assert scripts.get_heads() == [LATEST_REVISION]
 
 

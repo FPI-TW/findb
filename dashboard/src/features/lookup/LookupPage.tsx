@@ -31,20 +31,14 @@ import {
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import { Skeleton } from "../../components/ui/skeleton"
-import { DATASET_CONFIG, LOOKUP_STORAGE_KEY, PAGE_SIZES } from "./config"
+import { LOOKUP_COLUMNS, LOOKUP_STORAGE_KEY, PAGE_SIZES } from "./config"
 import { loadAllLookupItems, loadLookupPage } from "./data"
 import { DetailDrawer } from "./DetailDrawer"
-import type {
-  DatasetKey,
-  LookupItem,
-  LookupResponse,
-  LookupSearch,
-} from "./types"
+import type { LookupItem, LookupResponse, LookupSearch } from "./types"
 import { buildCsv, formatCell, nextDatasetSearch } from "./utils"
 
 interface PersistedPreferences {
   instruments?: Partial<LookupSearch>
-  macro?: Partial<LookupSearch>
 }
 
 function readPreferences(): PersistedPreferences {
@@ -63,8 +57,6 @@ function savePreferences(search: LookupSearch) {
       m: search.m,
       ac: search.ac,
       st: search.st,
-      fq: search.fq,
-      src: search.src,
       sb: search.sb,
       sd: search.sd,
       ps: search.ps,
@@ -78,7 +70,7 @@ function savePreferences(search: LookupSearch) {
 function LookupLoading() {
   return (
     <Card role="status" aria-live="polite">
-      <span className="sr-only">正在載入金融商品與宏觀序列</span>
+      <span className="sr-only">正在載入金融商品</span>
       <CardHeader>
         <Skeleton className="h-5 w-40" />
         <Skeleton className="h-4 w-72 max-w-full" />
@@ -189,19 +181,13 @@ export function LookupPage({
     }
   }, [lookupQuery.data, search, updateSearch])
 
-  const config = DATASET_CONFIG[search.ds]
   const response = lookupQuery.data as LookupResponse | undefined
   const items = (response?.data ?? []) as LookupItem[]
   const totalPages = Math.max(1, response?.pagination.total_pages ?? 1)
   const currentPage = Math.min(search.p, totalPages)
   const selectedItem =
     items.find(item => {
-      const record = item as unknown as Record<string, unknown>
-      return (
-        String(
-          search.ds === "macro" ? record.series_id : record.instrument_id
-        ) === search.id
-      )
+      return item.instrument_id === search.id
     }) ?? null
 
   const currentSorting: SortingState = [
@@ -209,7 +195,7 @@ export function LookupPage({
   ]
 
   const tableColumns = useMemo<ColumnDef<LookupItem, unknown>[]>(() => {
-    const dataColumns = config.columns.map(column => ({
+    const dataColumns = LOOKUP_COLUMNS.map(column => ({
       id: column.key,
       accessorFn: (item: LookupItem) =>
         (item as unknown as Record<string, unknown>)[column.key],
@@ -217,19 +203,11 @@ export function LookupPage({
       enableSorting: true,
       meta: {
         minWidth:
-          column.key === "name" || column.key === "source"
-            ? 160
-            : column.key === "symbol" || column.key === "source_code"
-              ? 132
-              : 104,
+          column.key === "name" ? 160 : column.key === "symbol" ? 132 : 104,
       },
       cell: ({ row }: { row: { original: LookupItem } }) => {
-        const copyColumn =
-          (search.ds === "macro" && column.key === "source_code") ||
-          (search.ds === "instruments" && column.key === "symbol")
-        const record = row.original as unknown as Record<string, unknown>
-        const copyValue =
-          search.ds === "macro" ? record.source_code : record.symbol
+        const copyColumn = column.key === "symbol"
+        const copyValue = row.original.symbol
         const value = formatCell(row.original, column)
         if (copyColumn) {
           return (
@@ -242,12 +220,7 @@ export function LookupPage({
               }
               aria-label={`複製 ${String(copyValue ?? "")}`}
               title={`複製 ${String(copyValue ?? "")}`}
-              onClick={() =>
-                void copyIdentifier(
-                  copyValue,
-                  search.ds === "macro" ? "Source Code" : "Symbol"
-                )
-              }
+              onClick={() => void copyIdentifier(copyValue, "Symbol")}
             >
               {value}
               <Clipboard size={13} aria-hidden />
@@ -272,15 +245,8 @@ export function LookupPage({
         enableSorting: false,
         meta: { width: 76, pin: "right", align: "center" },
         cell: ({ row }: { row: { original: LookupItem } }) => {
-          const record = row.original as unknown as Record<string, unknown>
-          const id = String(
-            search.ds === "macro" ? record.series_id : record.instrument_id
-          )
-          const title = String(
-            search.ds === "macro"
-              ? record.source_code || record.name || id
-              : record.symbol || id
-          )
+          const id = row.original.instrument_id
+          const title = row.original.symbol || id
           return (
             <Button
               type="button"
@@ -296,12 +262,12 @@ export function LookupPage({
         },
       },
     ]
-  }, [config.columns, search])
+  }, [search])
 
   const handleSortingChange: OnChangeFn<SortingState> = nextOrUpdater => {
     const next = functionalUpdate(nextOrUpdater, currentSorting)
     const first = next[0] ?? { id: search.sb, desc: false }
-    if (!config.columns.some(column => column.key === first.id)) return
+    if (!LOOKUP_COLUMNS.some(column => column.key === first.id)) return
     updateSearch({
       ...search,
       sb: first.id as LookupSearch["sb"],
@@ -334,16 +300,11 @@ export function LookupPage({
     updateSearch({ ...search, ...patch })
   }
 
-  function switchDataset(dataset: DatasetKey) {
-    const persisted = readPreferences()[dataset]
-    updateSearch(nextDatasetSearch(dataset, persisted))
-  }
-
   function clearFilters() {
     updateSearch(
       nextDatasetSearch(search.ds, {
         ps: search.ps,
-        st: search.ds === "instruments" ? "active" : "ALL",
+        st: "active",
       })
     )
     setQueryInput("")
@@ -353,7 +314,7 @@ export function LookupPage({
     setExporting(true)
     try {
       const allItems = await loadAllLookupItems(search)
-      const csv = buildCsv(allItems, config.columns)
+      const csv = buildCsv(allItems, LOOKUP_COLUMNS)
       const url = URL.createObjectURL(
         new Blob([csv], { type: "text/csv;charset=utf-8" })
       )
@@ -384,25 +345,14 @@ export function LookupPage({
 
   const facets = response?.facets
   const markets = facets?.markets ?? []
-  const secondaryOptions =
-    search.ds === "macro" && facets && "frequencies" in facets
-      ? facets.frequencies
-      : facets && "asset_classes" in facets
-        ? facets.asset_classes
-        : []
-  const tertiaryOptions =
-    search.ds === "macro" && facets && "sources" in facets
-      ? facets.sources
-      : facets && "statuses" in facets
-        ? facets.statuses
-        : []
+  const secondaryOptions = facets?.asset_classes ?? []
+  const tertiaryOptions = facets?.statuses ?? []
   const totalRecords = response?.pagination.total_records ?? 0
   const filtersDirty =
     search.q !== "" ||
     search.m !== "ALL" ||
-    (search.ds === "macro"
-      ? search.fq !== "ALL" || search.src !== "ALL"
-      : search.ac !== "ALL" || search.st !== "active")
+    search.ac !== "ALL" ||
+    search.st !== "active"
 
   const queryError = lookupQuery.error
   const hasResponse = response !== undefined
@@ -419,10 +369,11 @@ export function LookupPage({
             Public data explorer
           </p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-            標的與宏觀查詢
+            金融商品查詢
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
-            查詢 FinDB 金融商品與宏觀序列，並查看最近價格、公司事件與觀測值。
+            查詢 active dataset 範圍內的金融商品，並分別查看 EOD 與 minute
+            coverage。
           </p>
         </div>
         {response && (
@@ -434,34 +385,10 @@ export function LookupPage({
 
       <Card className="gap-4 py-4">
         <CardHeader className="px-4 sm:px-5">
-          <div
-            className="grid grid-cols-2 gap-2"
-            role="tablist"
-            aria-label="資料集"
-          >
-            {(["instruments", "macro"] as const).map(dataset => {
-              const active = search.ds === dataset
-              const count =
-                active && response
-                  ? response.pagination.total_records
-                  : undefined
-              return (
-                <Button
-                  key={dataset}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  variant={active ? "default" : "outline"}
-                  onClick={() => switchDataset(dataset)}
-                >
-                  {DATASET_CONFIG[dataset].label}
-                  <Badge variant={active ? "secondary" : "outline"}>
-                    {count?.toLocaleString() ?? "—"}
-                  </Badge>
-                </Button>
-              )
-            })}
-          </div>
+          <CardTitle>金融商品</CardTitle>
+          <CardDescription>
+            僅顯示至少屬於一個 active dataset scope 的商品。
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 px-4 sm:px-5">
           <div className="relative">
@@ -474,7 +401,7 @@ export function LookupPage({
               className="pl-10"
               type="search"
               value={queryInput}
-              placeholder={config.searchPlaceholder}
+              placeholder="標的名稱、Symbol、Instrument ID…"
               aria-label="搜尋"
               onChange={event => setQueryInput(event.target.value)}
             />
@@ -489,29 +416,17 @@ export function LookupPage({
             />
             <SelectField
               id="lookup-secondary"
-              label={search.ds === "macro" ? "頻率" : "類別"}
-              value={search.ds === "macro" ? search.fq : search.ac}
+              label="類別"
+              value={search.ac}
               options={secondaryOptions}
-              onChange={value =>
-                patchSearch(
-                  search.ds === "macro"
-                    ? { fq: value, p: 1, id: "" }
-                    : { ac: value, p: 1, id: "" }
-                )
-              }
+              onChange={value => patchSearch({ ac: value, p: 1, id: "" })}
             />
             <SelectField
               id="lookup-tertiary"
-              label={search.ds === "macro" ? "來源" : "狀態"}
-              value={search.ds === "macro" ? search.src : search.st}
+              label="狀態"
+              value={search.st}
               options={tertiaryOptions}
-              onChange={value =>
-                patchSearch(
-                  search.ds === "macro"
-                    ? { src: value, p: 1, id: "" }
-                    : { st: value, p: 1, id: "" }
-                )
-              }
+              onChange={value => patchSearch({ st: value, p: 1, id: "" })}
             />
             <div className="flex items-end">
               <Button
@@ -600,17 +515,15 @@ export function LookupPage({
           </CardHeader>
           <CardContent className="px-0 pb-4">
             <DataTable
-              ariaLabel={`${config.label}查詢結果`}
-              caption={`${config.label}查詢結果`}
+              ariaLabel="金融商品查詢結果"
+              caption="金融商品查詢結果"
               columns={tableColumns}
               data={items}
               emptyState={
                 <div className="grid min-h-64 place-items-center px-5 text-center">
                   <div>
                     <Database className="mx-auto text-muted" aria-hidden />
-                    <p className="mt-3 font-medium">
-                      沒有符合條件的{config.itemLabel}
-                    </p>
+                    <p className="mt-3 font-medium">沒有符合條件的標的</p>
                     {filtersDirty && (
                       <Button
                         className="mt-3"
@@ -624,14 +537,7 @@ export function LookupPage({
                   </div>
                 </div>
               }
-              getRowId={item => {
-                const record = item as unknown as Record<string, unknown>
-                return String(
-                  search.ds === "macro"
-                    ? record.series_id
-                    : record.instrument_id
-                )
-              }}
+              getRowId={item => item.instrument_id}
               isRefreshing={refreshing}
               manualPagination
               manualSorting
@@ -658,7 +564,6 @@ export function LookupPage({
 
       <DetailDrawer
         key={search.id || "closed"}
-        dataset={search.ds}
         item={selectedItem}
         onClose={() => patchSearch({ id: "" })}
         onCopied={setAnnouncement}
