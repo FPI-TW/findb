@@ -77,6 +77,9 @@ desired/observed state都必須為`stopped`；不可複製staging canonical/raw/
 
 首次部署的 predeploy gate 只在`DEPLOYMENT_TARGET=production`接受完全沒有任何使用者 relation 的
 乾淨資料庫；candidate acceptance落盤後，activation才可執行唯一一次`alembic upgrade head`。
+正式`findb-production-cd`／reusable deploy workflow會提供validated release root並走上述
+candidate／accepted-record／activation序列；helper在沒有release root時保留的legacy direct-invocation分支
+只供既有相容流程，不是標準production release順序。
 Alembic完成後、任何常駐服務啟動前，activation必須在同一個one-shot migration secret scope校準並
 驗證application DB role的最小權限；只允許`public`與`raw`的schema `USAGE`、table DML及sequence
 使用權，不得授予schema `CREATE`或把migration credential帶入常駐container；Alembic revision table
@@ -95,7 +98,9 @@ fingerprint，並將Source allowlist固定為`twelve_data/us_equity_eod`、`finl
 `shioaji/{tw_equity_minute,tw_etf_minute}`，calendar key固定為`serve` scope及page size 1000。
 只要已存在任一 table、partition、view、materialized view、sequence或foreign table卻沒有Alembic
 revision，即使帶有bootstrap旗標也必須fail closed。Staging與後續已有revision的Production部署維持
-原本的相容性／exact revision檢查，不得以手動migration、staging image或跳過preflight繞過。
+既有的revision安全邊界：Staging在migration前驗證相容性並在migration後驗證exact revision；Production
+依既有predeploy、`alembic current`及application啟動revision gate驗證。不得以手動migration、staging image
+或跳過preflight繞過。
 SSM host preflight通常要求至少一個目標服務容器正在執行；只有Production首次部署可在Docker完全沒有
 任何既有或停止容器時通過乾淨host例外。Staging、已有任一容器的Production host，或服務容器全數
 停止但仍有殘留容器時都必須fail closed；此例外不放寬後續的exact digest、secret isolation與乾淨DB

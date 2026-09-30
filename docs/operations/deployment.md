@@ -247,13 +247,16 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
    `./fetcher`不是合法context，否則無法包含共享contracts。
 2. **Operator pre-deploy**：確認target、backup／PITR、disk／inode、container state、觀察窗口及
    必要external dependencies；現行workflow未自動涵蓋的項目必須人工留證。
-3. **Workflow**：執行remote與DB preflight；FinDB migration前停止本unit所有DB writers，
-   由單一migration job升級。Alembic完成後，同一個one-shot migration secret scope會以
+3. **Workflow**：candidate先執行non-disruptive remote／DB preflight、exact image與runtime secret
+   validation；通過後才寫入immutable accepted record，不停止writers、不執行migration也不啟動candidate services。
+4. **Workflow**：activation重新通過preflight後停止本unit所有DB writers，由單一migration job升級；
+   Alembic完成後，staging先驗證exact selected revision，production則保留`alembic current`與application
+   啟動revision gate；接著於同一個one-shot migration secret scope以
    `reconcile_database_privileges.py`校準application role在`public`與`raw`的schema `USAGE`、
    table DML及sequence權限，並設定migration owner的default privileges；application role不得取得
-   schema `CREATE`，migration credential也不得進入常駐container。
-4. **Workflow**：啟動candidate，檢查container、internal health、nginx、RabbitMQ topology、
-   worker ping及DB-authoritative queue health。
+   schema `CREATE`，migration credential也不得進入常駐container。完成credential／registry校準後才啟動
+   accepted services，檢查container、internal health、nginx、RabbitMQ topology、worker ping及
+   DB-authoritative queue health。
 5. **Operator acceptance**：從外部驗證public TLS／routing，執行bounded fixed-idempotency
    smoke並確認terminal state。
 6. **Operator acceptance**：記錄實際image、Alembic revision、設定checksum及驗收結果。
@@ -362,15 +365,19 @@ bundle；內容只含該 unit 的 allowlist、契約 manifest/schema 與 release
 bucket（`findb/` 或 `fetcher/` prefix），SSM preflight 先以 instance role 下載、比對 SHA、驗證
 bundle/manifest 與 exact `repository@sha256` image refs，才會 pull image 或中斷 writer。
 
-FinDB staging candidate 僅可在bounded checks期間啟動，成功回傳前必須直接停下固定的public／application／writer
-containers，且不可變更`current` pointer。candidate成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA
+FinDB staging candidate 僅可執行non-disruptive bounded checks，不可停止live public／application／writer
+containers，也不可變更`current` pointer。candidate成功後，workflow 才可把相同 bytes 寫入以 commit 與 bundle SHA
 命名的 `*/accepted/` key；strict acceptance record 才是 accepted 的 commit point，只有 bundle 而無等價 record
-不可 replay。record存在後才可送出另一個bounded SSM activation command；activation只接受DB已在exact selected
-Alembic revision，絕不再次migration。條件寫入遇到既有
+不可 replay。record存在後才可送出另一個bounded SSM activation command；activation在停止writers前要求目前所有
+Alembic heads都可由selected target migration graph到達，接著執行唯一一次`alembic upgrade head`，並在啟動任何
+常駐服務前要求DB只有selected target這個exact revision。accepted replay走同一序列，已在target時upgrade為no-op；
+落後於目前schema或含未知head的舊bundle會在停止writers前fail closed。條件寫入遇到既有
 bundle時會重新驗證 SHA，遇到既有 record 時只接受相同 immutable identity，因此可安全完成 orphan bundle 的
 record。失敗 run 不得寫入 accepted evidence。replay 必須指向同 unit 的 accepted immutable key，不能使用
 candidate、latest 或跨 unit key，也不可重新產生 manifest。Phase 3的兩個unit normal accepted deployment與
 replay live acceptance已完成；FinDB與Fetcher日常host transport已分別在Phase 4與Phase 5切換為SSM。
+Migration graph可達不代表支援任意歷史schema直接跨代升級；若舊schema缺少目前predeploy inventory所需的table或
+column，candidate會在停止writers前fail closed，operator必須先走已驗證的中繼升級或restore程序，不得略過preflight。
 
 `AWS-RunShellScript`原生以`/bin/sh`解讀command；workflow因此先以
 `infra/deploy/ssm_bash_command.py`把完整host script轉為POSIX-safe wrapper，再由wrapper
