@@ -25,7 +25,7 @@ from scripts.check_queue_health import (
 from scripts.predeploy_db_check import (
     DEFAULT_MINIMUM_CONNECTION_HEADROOM,
     calculate_connection_headroom,
-    database_revision_matches_expected,
+    database_revisions_match_expected,
     database_url_matches_expected_host,
     database_url_requires_tls,
     is_schema_compatible_with_target,
@@ -145,6 +145,62 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
     assert "reconcile_deployment_credentials.py" in calls[2]
     assert "provision_registry.py --deployment-target production" in calls[3]
     assert "seed_production_calendars.py --deployment-target production --apply" in calls[4]
+
+
+def test_staging_migration_requires_exact_revision_before_reconciliation_or_service_start(
+    tmp_path: Path,
+) -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    migration_start = helper.index("<<'MIGRATION_SCRIPT'\n")
+    migration_end = helper.index("\nMIGRATION_SCRIPT", migration_start)
+    migration_script = helper[migration_start + len("<<'MIGRATION_SCRIPT'\n") : migration_end]
+    exact_check = helper.index("--require-exact-alembic-revision", migration_start)
+    service_start = helper.index("<<'UP_SCRIPT'\n", migration_end)
+    assert migration_start < exact_check < migration_end < service_start
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_calls = tmp_path / "docker-calls"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf "%q " "$@" >> "$DOCKER_CALLS"\n'
+        'printf "\\n" >> "$DOCKER_CALLS"\n'
+        'case "$*" in *--require-exact-alembic-revision*) exit 42 ;; esac\n'
+        "cat >/dev/null\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", "-s", "--", "/tmp/compose.yml"],
+        input=migration_script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "DEPLOYMENT_TARGET": "staging",
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "target-revision",
+            "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.com",
+            "DOCKER_CALLS": str(docker_calls),
+        },
+        timeout=10,
+    )
+
+    assert completed.returncode == 42
+    calls = docker_calls.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2
+    assert "alembic upgrade head" in calls[0]
+    assert "predeploy_db_check.py" in calls[1]
+    assert "--expected-alembic-revision target-revision" in calls[1]
+    assert "--expected-rds-endpoint db.example.com" in calls[1]
+    assert "--require-exact-alembic-revision" in calls[1]
+    assert all("reconcile_" not in call for call in calls)
 
 
 def test_predeploy_script_checks_credentials_without_consuming_remaining_commands(
@@ -3388,8 +3444,11 @@ def test_predeploy_schema_compatibility_allows_current_or_ancestor(
     monkeypatch.setattr(
         predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts()
     )
-    assert is_schema_compatible_with_target(current_revision="target", target_revision="target")
-    assert is_schema_compatible_with_target(current_revision="current", target_revision="target")
+    assert is_schema_compatible_with_target(current_revisions=["target"], target_revision="target")
+    assert is_schema_compatible_with_target(current_revisions=["current"], target_revision="target")
+    assert is_schema_compatible_with_target(
+        current_revisions=["current", "base"], target_revision="target"
+    )
 
 
 def test_predeploy_schema_compatibility_rejects_newer_or_unknown_database_revision(
@@ -3410,26 +3469,53 @@ def test_predeploy_schema_compatibility_rejects_newer_or_unknown_database_revisi
         predeploy_db_check.ScriptDirectory, "from_config", lambda _config: Scripts()
     )
     assert not is_schema_compatible_with_target(
-        current_revision="newer-database", target_revision="older-target"
+        current_revisions=["newer-database"], target_revision="older-target"
     )
     assert not is_schema_compatible_with_target(
-        current_revision="current", target_revision="unknown"
+        current_revisions=["current"], target_revision="unknown"
     )
 
 
-def test_activation_requires_database_at_the_exact_selected_revision() -> None:
-    assert database_revision_matches_expected(current_revision="target", expected_revision="target")
-    assert not database_revision_matches_expected(
-        current_revision="ancestor", expected_revision="target"
+def test_activation_requires_database_at_the_single_exact_selected_revision() -> None:
+    assert database_revisions_match_expected(
+        current_revisions=["target"], expected_revision="target"
     )
-    assert not database_revision_matches_expected(current_revision=None, expected_revision="target")
+    assert not database_revisions_match_expected(
+        current_revisions=["ancestor"], expected_revision="target"
+    )
+    assert not database_revisions_match_expected(current_revisions=[], expected_revision="target")
+    assert not database_revisions_match_expected(
+        current_revisions=["target", "unknown-head"], expected_revision="target"
+    )
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
-    assert "--require-exact-alembic-revision" in helper
+    precheck_block = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
+        "\nMIGRATION_CHECK_SCRIPT", 1
+    )[0]
+    assert "--require-exact-alembic-revision" not in precheck_block
     migration_block = helper.split("<<'MIGRATION_SCRIPT'", 1)[1].split("MIGRATION_SCRIPT", 1)[0]
     assert "alembic upgrade head" in migration_block
+    assert "--require-exact-alembic-revision" in migration_block
+    assert migration_block.index("alembic upgrade head") < migration_block.index(
+        "--require-exact-alembic-revision"
+    )
     assert helper.count("alembic upgrade head") == 1
+
+
+def test_predeploy_state_accepts_multiple_recorded_alembic_heads() -> None:
+    state = {
+        "database_empty": False,
+        "user_relation_count": 1,
+        "alembic_revision": None,
+        "alembic_revisions": ["branch-head-a", "branch-head-b"],
+        "duplicate_raw_run_ids": 0,
+        "long_transactions_over_5m": 0,
+        "connection_headroom": 120,
+        "postgresql_tls_in_use": True,
+    }
+
+    assert validate_predeploy_state(state, minimum_connection_headroom=80) == []
 
 
 def test_predeploy_database_state_rejects_missing_or_unnegotiated_tls() -> None:

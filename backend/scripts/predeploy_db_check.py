@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -31,31 +32,33 @@ def database_url_requires_tls(database_url: str) -> bool:
 def database_url_matches_expected_host(database_url: str, expected_host: str) -> bool:
     """Bind the loaded runtime URL to the reviewed RDS endpoint without logging it."""
     hostname = urlsplit(database_url).hostname
-    return bool(hostname) and hostname.casefold() == expected_host.strip().casefold()
+    return hostname is not None and hostname.casefold() == expected_host.strip().casefold()
 
 
-def database_revision_matches_expected(
-    *, current_revision: str | None, expected_revision: str
+def database_revisions_match_expected(
+    *, current_revisions: Sequence[str], expected_revision: str
 ) -> bool:
-    """Return whether the database is already at the selected exact revision."""
-    return bool(current_revision) and current_revision == expected_revision
+    """Return whether the database has exactly the single selected revision."""
+    return len(current_revisions) == 1 and current_revisions[0] == expected_revision
 
 
-def is_schema_compatible_with_target(*, current_revision: str | None, target_revision: str) -> bool:
-    """Require the running schema to be an ancestor of the selected application.
+def is_schema_compatible_with_target(
+    *, current_revisions: Sequence[str], target_revision: str
+) -> bool:
+    """Require every running schema head to be an ancestor of the selected application.
 
     A rollback image whose migration graph cannot reach the current schema is
     rejected before writers are stopped.  Alembic's script directory is the
     application-owned compatibility authority; do not infer ordering from IDs.
     """
-    if not current_revision:
+    if not current_revisions:
         return False
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
     try:
-        return any(
-            revision.revision == current_revision
-            for revision in scripts.iterate_revisions(target_revision, "base")
-        )
+        target_ancestors = {
+            revision.revision for revision in scripts.iterate_revisions(target_revision, "base")
+        }
+        return all(revision in target_ancestors for revision in current_revisions)
     except Exception:
         return False
 
@@ -157,6 +160,7 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                 return {
                     **base_state,
                     "alembic_revision": None,
+                    "alembic_revisions": [],
                     "raw_table_size": None,
                     "raw_rows": 0,
                     "duplicate_raw_run_ids": 0,
@@ -168,7 +172,11 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
                     "dataset_keys_projection_mismatches": 0,
                     "dataset_keys_projection_status": "not_applicable",
                 }
-            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+            revision_rows = await connection.execute(
+                text("SELECT version_num FROM alembic_version ORDER BY version_num")
+            )
+            revisions = [str(revision) for revision in revision_rows.scalars().all()]
+            revision = revisions[0] if len(revisions) == 1 else None
             raw_size = await connection.scalar(
                 text("SELECT pg_size_pretty(pg_total_relation_size('raw.market_payload'))")
             )
@@ -325,6 +333,7 @@ async def collect_predeploy_state(database_url: str) -> dict[str, Any]:
     return {
         **base_state,
         "alembic_revision": revision,
+        "alembic_revisions": revisions,
         "raw_table_size": raw_size,
         "raw_rows": int(raw_rows or 0),
         "duplicate_raw_run_ids": int(duplicate_run_ids or 0),
@@ -362,7 +371,13 @@ def validate_predeploy_state(
         if not allow_empty_database_bootstrap:
             errors.append("empty database bootstrap is not allowed")
         return errors
-    if state.get("alembic_revision") is None and state.get("user_relation_count", 0):
+    alembic_revisions = state.get("alembic_revisions")
+    has_alembic_revision = (
+        bool(alembic_revisions)
+        if alembic_revisions is not None
+        else state.get("alembic_revision") is not None
+    )
+    if not has_alembic_revision and state.get("user_relation_count", 0):
         errors.append("database contains user relations without an Alembic revision")
         return errors
     if state.get("noncanonical_scheduler_control_slots", 0):
@@ -407,8 +422,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--require-exact-alembic-revision",
         action="store_true",
         help=(
-            "Require the database to already be exactly at "
-            "--expected-alembic-revision; activation never performs a migration."
+            "Require the database to have exactly one revision row equal to "
+            "--expected-alembic-revision."
         ),
     )
     parser.add_argument(
@@ -452,15 +467,15 @@ async def _main() -> int:
         state["schema_compatible_with_target"] = (
             empty_bootstrap_allowed
             or is_schema_compatible_with_target(
-                current_revision=state["alembic_revision"],
+                current_revisions=state["alembic_revisions"],
                 target_revision=args.expected_alembic_revision,
             )
         )
         if args.require_exact_alembic_revision:
             state["schema_exactly_at_target"] = (
                 empty_bootstrap_allowed
-                or database_revision_matches_expected(
-                    current_revision=state["alembic_revision"],
+                or database_revisions_match_expected(
+                    current_revisions=state["alembic_revisions"],
                     expected_revision=args.expected_alembic_revision,
                 )
             )

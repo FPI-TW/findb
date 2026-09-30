@@ -284,20 +284,11 @@ fi
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
   expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
-  if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
-    docker compose -f "$compose_file" run --rm --no-deps ingest \
-      python /app/scripts/predeploy_db_check.py \
-        --expected-alembic-revision "$expected_revision" \
-        --expected-rds-endpoint "$expected_rds_endpoint" \
-        --require-exact-alembic-revision \
-        ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
-  else
-    docker compose -f "$compose_file" run --rm --no-deps ingest \
-      python /app/scripts/predeploy_db_check.py \
-        --expected-alembic-revision "$expected_revision" \
-        --expected-rds-endpoint "$expected_rds_endpoint" \
-        ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
-  fi
+  docker compose -f "$compose_file" run --rm --no-deps ingest \
+    python /app/scripts/predeploy_db_check.py \
+      --expected-alembic-revision "$expected_revision" \
+      --expected-rds-endpoint "$expected_rds_endpoint" \
+      ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
 else
   docker compose -f "$compose_file" run --rm --no-deps ingest \
     python /app/scripts/predeploy_db_check.py \
@@ -367,6 +358,15 @@ docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
   uv run alembic upgrade head
   uv run alembic current
 ' </dev/null
+if [ "$DEPLOYMENT_TARGET" = staging ]; then
+  expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
+  expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
+  docker compose -f "$compose_file" run --rm --no-deps ingest \
+    python /app/scripts/predeploy_db_check.py \
+      --expected-alembic-revision "$expected_revision" \
+      --expected-rds-endpoint "$expected_rds_endpoint" \
+      --require-exact-alembic-revision </dev/null
+fi
 docker compose -f "$compose_file" run --rm --no-deps \
   -e APPLICATION_DATABASE_URL ingest \
   python /app/scripts/reconcile_database_privileges.py </dev/null
