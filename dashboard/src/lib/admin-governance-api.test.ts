@@ -42,12 +42,18 @@ const credential = {
 }
 
 describe("admin governance wire contracts", () => {
-  it("exposes only the currently enabled providers and datasets", () => {
-    expect(SOURCE_PROVIDERS).toEqual(["twelve_data", "finlab", "shioaji"])
+  it("exposes governed provider credential scopes including inactive staged feeds", () => {
+    expect(SOURCE_PROVIDERS).toEqual([
+      "twelve_data",
+      "finlab",
+      "shioaji",
+      "taifex",
+    ])
     expect(SOURCE_PROVIDER_DATASETS).toEqual({
-      twelve_data: ["us_equity_eod"],
-      finlab: ["tw_equity_eod"],
+      twelve_data: ["us_equity_eod", "hk_equity_eod"],
+      finlab: ["tw_equity_eod", "tw_etf_eod"],
       shioaji: ["tw_equity_minute", "tw_etf_minute"],
+      taifex: ["tw_futures_eod"],
     })
   })
 

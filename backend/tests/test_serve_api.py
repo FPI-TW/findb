@@ -176,14 +176,14 @@ async def test_internally_consistent_unsupported_active_scope_fails_closed(
     client: AsyncClient, test_session
 ):
     test_session.add(
-        dataset("hk_equity_eod", market="HK", asset_class="equity", schema_id="market_eod")
+        dataset("cn_equity_eod", market="CN", asset_class="equity", schema_id="market_eod")
     )
     await test_session.commit()
 
     response = await client.get("/api/v1/serve/datasets")
 
     assert_error(response, 503, "SERVE_CONFIGURATION_INVALID")
-    assert "HK" not in response.text
+    assert "CN" not in response.text
 
 
 @pytest.mark.asyncio
@@ -268,7 +268,11 @@ async def test_instruments_search_facets_sort_pagination_and_domain_coverage(
         "PART",
     ]
     assert sorted_response.json()["data"][2]["coverage"]["eod"] is None
-    assert sorted_response.json()["data"][3]["coverage"] == {"eod": None, "minute": None}
+    assert sorted_response.json()["data"][3]["coverage"] == {
+        "eod": None,
+        "minute": None,
+        "futures": None,
+    }
 
     minute_sorted = await client.get(
         "/api/v1/serve/instruments?sort_by=minute_latest_close&sort_dir=asc&page_size=4"
@@ -400,8 +404,8 @@ async def test_all_coverage_sorts_mask_inactive_partial_and_missing_stats(
     by_symbol = {item["symbol"]: item["coverage"] for item in payload}
     assert by_symbol["TW_ETF"]["eod"] is None
     assert by_symbol["US_EQ"]["minute"] is None
-    assert by_symbol["PART"] == {"eod": None, "minute": None}
-    assert by_symbol["EMPTY"] == {"eod": None, "minute": None}
+    assert by_symbol["PART"] == {"eod": None, "minute": None, "futures": None}
+    assert by_symbol["EMPTY"] == {"eod": None, "minute": None, "futures": None}
 
 
 @pytest.mark.asyncio

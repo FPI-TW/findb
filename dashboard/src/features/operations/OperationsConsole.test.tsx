@@ -27,6 +27,7 @@ import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScop
 const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
   loadRawPayloadDetail: vi.fn(),
+  loadDeliveryPlans: vi.fn(),
   updateScheduler: vi.fn(),
   createHistoricalBackfill: vi.fn(),
   cancelHistoricalBackfill: vi.fn(),
@@ -229,6 +230,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.loadDashboard.mockResolvedValue(qualityResponse())
   mocks.loadRawPayloadDetail.mockResolvedValue(makeRawPayload())
+  mocks.loadDeliveryPlans.mockResolvedValue({ data: [] })
   mocks.previewHistoricalBackfill.mockResolvedValue({
     provider: "shioaji",
     dataset_key: "tw_equity_minute",

@@ -24,6 +24,8 @@ InstrumentSort = Literal[
     "minute_first_bar_at",
     "minute_latest_bar_at",
     "minute_latest_close",
+    "futures_first_date",
+    "futures_latest_date",
 ]
 
 
@@ -42,6 +44,7 @@ class MinuteCoverageResponse(BaseModel):
 class InstrumentCoverageResponse(BaseModel):
     eod: EODCoverageResponse | None = None
     minute: MinuteCoverageResponse | None = None
+    futures: EODCoverageResponse | None = None
 
 
 class InstrumentResponse(BaseModel):
@@ -88,7 +91,7 @@ class DatasetResponse(BaseModel):
     market: str
     asset_class: str
     frequency: Literal["daily", "minute"]
-    data_kind: Literal["eod", "minute"]
+    data_kind: Literal["eod", "minute", "futures_eod"]
     interval: Literal["1d", "1m"]
     availability: Literal["available", "configured_empty"]
     coverage: DatasetCoverageResponse
@@ -129,6 +132,34 @@ class EODResponse(BaseModel):
 class EODListResponse(BaseModel):
     success: Literal[True] = True
     data: list[EODResponse]
+    pagination: CursorPaginationInfo
+
+
+class FuturesEODResponse(BaseModel):
+    contract_id: UUID
+    instrument_id: UUID
+    product_code: str
+    contract_code: str
+    contract_month: str | None
+    trade_date: date
+    session: Literal["regular", "after_hours"]
+    open: Decimal | None = None
+    high: Decimal | None = None
+    low: Decimal | None = None
+    close: Decimal | None = None
+    volume: int | None = None
+    settlement_price: Decimal | None = None
+    open_interest: int | None = None
+    source: str | None = None
+    source_fetched_at: datetime | None = None
+    asof_ts: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class FuturesEODListResponse(BaseModel):
+    success: Literal[True] = True
+    data: list[FuturesEODResponse]
     pagination: CursorPaginationInfo
 
 

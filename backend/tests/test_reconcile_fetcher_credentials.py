@@ -10,9 +10,11 @@ from app.models.registry import APIKey, SourceClient
 from scripts.reconcile_fetcher_credentials import (
     CALENDAR_CREDENTIAL_NAME,
     CALENDAR_HASH_ENV,
+    FULL_MARKET_SOURCE_SPECS,
     SOURCE_SPECS,
     FetcherCredentialError,
     reconcile_fetcher_credentials_in_session,
+    source_specs_for_profile,
 )
 
 
@@ -94,3 +96,39 @@ async def test_fetcher_credentials_reject_reused_hash(
 
     with pytest.raises(FetcherCredentialError):
         await reconcile_fetcher_credentials_in_session(test_session, hashes)
+
+
+async def test_full_market_profile_expands_exact_scopes_and_retains_bounded_default(test_session):
+    from app.models.registry import AdminAuditEvent
+
+    hashes = {CALENDAR_HASH_ENV: _hash("calendar")}
+    hashes.update({spec.env_name: _hash(spec.source_name) for spec in FULL_MARKET_SOURCE_SPECS})
+    with pytest.raises(FetcherCredentialError):
+        await reconcile_fetcher_credentials_in_session(test_session, hashes)
+    await reconcile_fetcher_credentials_in_session(test_session, _hashes())
+    results = await reconcile_fetcher_credentials_in_session(
+        test_session, hashes, runtime_profile="full-market"
+    )
+    assert [result.action for result in results] == [
+        "updated",
+        "updated",
+        "unchanged",
+        "created",
+        "unchanged",
+    ]
+    rows = (await test_session.scalars(select(SourceClient))).all()
+    by_provider = {row.source_name: row for row in rows}
+    for spec in FULL_MARKET_SOURCE_SPECS:
+        assert by_provider[spec.source_name].allowed_datasets == list(spec.allowed_datasets)
+    audits = (
+        await test_session.scalars(
+            select(AdminAuditEvent).where(AdminAuditEvent.actor_type == "deployment")
+        )
+    ).all()
+    assert len(audits) == 7 and all("key_hash" not in (row.details or {}) for row in audits)
+    with pytest.raises(FetcherCredentialError):
+        await reconcile_fetcher_credentials_in_session(
+            test_session, _hashes(), runtime_profile="full-market"
+        )
+    with pytest.raises(FetcherCredentialError):
+        source_specs_for_profile("unreviewed")

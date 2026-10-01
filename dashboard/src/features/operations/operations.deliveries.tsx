@@ -32,6 +32,7 @@ import {
   useOperationsDashboardQuery,
   useOperationsDashboardState,
 } from "./operations.queries"
+import { DeliveryPlansPanel } from "./DeliveryPlansPanel"
 
 export type DeliveriesSearchUpdate =
   | DeliveriesPageSearch
@@ -270,6 +271,7 @@ export function DeliveriesPage({
         description="追蹤預期日期尚未收到的資料集交付。"
       />
       <OperationsDashboardStatus state={state} />
+      <DeliveryPlansPanel />
       <Panel
         eyebrow="Open alerts"
         title="未解決的交付缺漏"

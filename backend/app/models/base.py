@@ -100,7 +100,17 @@ def _current_db_heads(connection: Connection) -> tuple[str, ...]:
 
 
 async def _verify_required_objects(conn) -> None:
-    required_objects = ("public.dataset_registry", "public.instruments", "raw.market_payload")
+    required_objects = (
+        "public.dataset_registry",
+        "public.instruments",
+        "raw.market_payload",
+        "public.futures_contract_eod",
+        "public.universe_release",
+        "public.universe_member",
+        "public.daily_delivery_plan",
+        "public.daily_delivery_part",
+        "public.daily_delivery_member",
+    )
     for relation in required_objects:
         exists = await conn.scalar(
             text("SELECT to_regclass(:relation) IS NOT NULL"), {"relation": relation}

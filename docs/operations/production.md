@@ -56,7 +56,7 @@ Origin certificate secret固定使用單行 base64 欄位
 憑證與私鑰不得持久化到`/home/ubuntu`或進入GitHub Environment。部署產生的三個非秘密nginx
 設定檔必須在驗證前正規化為root-owned `0644`；tmpfs中的憑證、私鑰與lookup key仍維持`0600`。
 
-Source client scopes固定為：
+預設 bounded production Source client scopes固定為：
 
 - `twelve_data`：`us_equity_eod`
 - `finlab`：`tw_equity_eod`
@@ -65,9 +65,44 @@ Source client scopes固定為：
 Secrets Manager 寫值與 Cloudflare credential 建立都屬獨立敏感操作，必須在 foundation live
 acceptance 後執行並留下不含 secret 的 fingerprint/evidence。
 
+## Full-market profile 與 credential scope
+
+Full-market deployment 採 [opt-in runtime runbook](deployment.md#opt-in-full-market-production-runtime)，
+不改既有 bounded release／staging defaults，也不新增第四張 image。三張 provider image 的完整
+published contract registry必須包含 `futures_eod.v1`；TAIFEX 使用 generic image，但自己的
+Source key與consumer隔離，不載入其他 provider credentials。
+
+Owner 經 readiness review 才簽發／調整下列 DB-backed Source dataset allowlists，並安全校準
+對應 production Secrets Manager 值；key 的 source identity 必須一致。
+`reconcile_fetcher_credentials.py --runtime-profile bounded|full-market` bridge 預設 bounded；
+operator 必須從已驗證的 Fetcher accepted bundle `release-manifest.json` 讀取 runtime_profile（舊
+manifest 缺值為 bounded），再傳同一 profile，不能由 provider secrets 或 mutable env 推測。
+Full-market bridge要求三個 provider Source hashes、獨立 TAIFEX Source hash與calendar Serve
+hash的精確集合；只校準 allowlist/hash並留下 deployment audit，不啟用 feed或scheduler。
+Bridge跨unit只傳 lowercase SHA-256，兩邊 instance roles仍互相拒絕secret讀取。
+
+| Source | Full-market dataset allowlist |
+| --- | --- |
+| `twelve_data` | `us_equity_eod`、`hk_equity_eod` |
+| `finlab` | `tw_equity_eod`、`tw_etf_eod` |
+| `shioaji` | `tw_equity_minute`、`tw_etf_minute` |
+| `taifex` | `tw_futures_eod` |
+
+Calendar Serve key與四個 Source keys須分離，且 Fetcher不取得 Admin或FinDB DB credential。
+`enable_full_market_runtime=false` 預設不宣告 TAIFEX secret metadata；明確 opt-in 與 secret
+population需依原 foundation review 執行。Secrets或image已存在不等同provider entitlement、
+quota／capacity、official baseline或live coverage已通過。
+
+Migration／seed先加入 inactive HK equity、TW ETF EOD、TAIFEX registry與 stopped
+`full_market_{twelve_data,finlab,shioaji,taifex}_v1` controls。Owner發布 baseline與完整
+HK／TW／US／TAIFEX exchange calendar，指定activation date後才進 acceptance；TW、HK、US、
+futures各五個連續實際開市日準時 complete才能切active。全市場權限與五日實際執行結果仍是
+[未完成 external acceptance](../dev/backlog.md#full-market-external-acceptance)，不是本次程式或
+IaC驗證的完成宣稱。
+
 ## DB bootstrap 與 Environment gate
 
-Migration後只 seed四個正式dataset registry declarations、已審核的NYSE 2025–2028 calendar、
+Default bounded bootstrap seed四個正式dataset registry declarations與三個 inactive 新 declarations、已審核的NYSE 2025–2028 calendar、
 TWSE已正式發布的2025–2026 calendar revisions、獨立DB-backed credentials與三個scheduler
 controls。三個 scheduler 的
 desired/observed state都必須為`stopped`；不可複製staging canonical/raw/workflow data。

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +35,7 @@ async def list_sequenced_snapshot_groups(
     schema_id: str,
     schema_version: int,
     data_date: date | None = None,
+    delivery_part_id: UUID | None = None,
 ) -> list[SequencedSnapshotGroup]:
     """List coherent groups, reducing retries to their latest sequence attempt.
 
@@ -54,6 +56,8 @@ async def list_sequenced_snapshot_groups(
         IngestionRun.sequence.is_not(None),
         IngestionRun.sequence_count.is_not(None),
     ]
+    if delivery_part_id is not None:
+        criteria.append(IngestionRun.delivery_part_id == delivery_part_id)
     if data_date is not None:
         criteria.append(IngestionRun.batch_data_date == data_date)
 

@@ -305,8 +305,12 @@ async def test_historical_backfill_requests_are_newest_first_and_paginated(test_
 @pytest.mark.asyncio
 async def test_failure_stops_later_dates_without_manually_resolving_delivery_alerts(
     test_session,
+    monkeypatch,
 ) -> None:
     today = date(2026, 9, 1)
+    monkeypatch.setattr(
+        historical_backfill, "utc_now", lambda: datetime(2026, 9, 1, 0, tzinfo=timezone.utc)
+    )
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
@@ -329,7 +333,10 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
     test_session.add(alert)
     await test_session.flush()
     item = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        test_session,
+        provider="shioaji",
+        allowed_datasets=["tw_equity_minute"],
+        now=datetime(2026, 9, 1, 0, tzinfo=timezone.utc),
     )
     assert item is not None and item.trade_date == today - timedelta(days=2)
     assert item.lease_token is not None
@@ -987,9 +994,12 @@ async def test_operator_lists_historical_backfills_with_requested_pagination(
 
 @pytest.mark.asyncio
 async def test_create_endpoint_skips_published_closed_dates_but_preserves_requested_range(
-    client, test_session, admin_headers
+    client, test_session, admin_headers, monkeypatch
 ) -> None:
     today = date(2026, 9, 1)
+    monkeypatch.setattr(
+        historical_backfill, "utc_now", lambda: datetime(2026, 9, 1, 0, tzinfo=timezone.utc)
+    )
     closed = today - timedelta(days=1)
     await _seed_scope(test_session, today)
     await test_session.execute(

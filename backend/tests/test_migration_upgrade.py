@@ -525,7 +525,7 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
             "action": "warn",
             "expected_sources": ["operator_feed"],
         }
-        assert default_monitor_config is None
+        assert default_monitor_config == {"action": "disabled", "expected_sources": []}
         assert us_equity_contract_config["schema_id"] == "market_eod"
         assert us_equity_contract_config["accepted_schema_versions"] == [1]
         assert us_equity_contract_config["current_schema_version"] == 1

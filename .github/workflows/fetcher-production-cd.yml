@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode: {description: Promote staging or replay production, required: true, type: choice, options: [promote, rollback]}
+      runtime_profile: {description: Reviewed runtime scope, required: true, type: choice, default: bounded, options: [bounded, full-market]}
       release_tag: {description: Exact immutable fetcher-vMAJOR.MINOR.PATCH tag, required: true, type: string}
       accepted_bundle_key: {description: Exact staging or production accepted bundle key, required: true, type: string}
       confirmation: {description: Type PROMOTE_FETCHER_PRODUCTION, required: true, type: string}
@@ -22,6 +23,7 @@ jobs:
           ENABLED: ${{ vars.PRODUCTION_DEPLOY_ENABLED }}
           CONFIRMATION: ${{ inputs.confirmation }}
           MODE: ${{ inputs.mode }}
+          RUNTIME_PROFILE: ${{ inputs.runtime_profile }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
         run: |
@@ -29,6 +31,7 @@ jobs:
           [ "$ENABLED" = true ]
           [ "$CONFIRMATION" = PROMOTE_FETCHER_PRODUCTION ]
           [[ "$MODE" =~ ^(promote|rollback)$ ]]
+          [[ "$RUNTIME_PROFILE" =~ ^(bounded|full-market)$ ]]
           [[ "$RELEASE_TAG" =~ ^fetcher-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
           if [ "$MODE" = promote ]; then
             [[ "$BUNDLE_KEY" =~ ^fetcher/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
@@ -230,7 +233,7 @@ jobs:
             args+=(--image "$name=$destination_repository@${source_ref##*@}")
           done
           [ "$(jq -r .migration_revision "$manifest")" = none ]
-          python3 infra/deploy/release_manifest.py generate --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target production --registry "$REGISTRY" --account-id "$ACCOUNT_ID" --release-tag "$RELEASE_TAG" --promotion-source-bundle-key "$SOURCE_BUNDLE_KEY" --promotion-source-registry "$SOURCE_REGISTRY" "${args[@]}" --output "$RUNNER_TEMP/production-manifest.json"
+          python3 infra/deploy/release_manifest.py generate --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target production --runtime-profile "${{ inputs.runtime_profile }}" --registry "$REGISTRY" --account-id "$ACCOUNT_ID" --release-tag "$RELEASE_TAG" --promotion-source-bundle-key "$SOURCE_BUNDLE_KEY" --promotion-source-registry "$SOURCE_REGISTRY" "${args[@]}" --output "$RUNNER_TEMP/production-manifest.json"
           python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/production-manifest.json" --output "$RUNNER_TEMP/production-bundle.tar"
           bundle_sha256="$(sha256sum "$RUNNER_TEMP/production-bundle.tar" | cut -d ' ' -f1)"
           candidate_key="fetcher/production/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${bundle_sha256}.tar"
@@ -241,10 +244,10 @@ jobs:
     needs: [resolve, bind-release-tag, verify, promote]
     if: ${{ inputs.mode == 'promote' && needs.promote.result == 'success' }}
     uses: ./.github/workflows/fetcher-deploy.yml
-    with: {deployment_target: production, revision: '${{ needs.resolve.outputs.revision }}', mode: candidate, bundle_key: '${{ needs.promote.outputs.candidate_bundle_key }}', release_tag: '${{ inputs.release_tag }}'}
+    with: {runtime_profile: '${{ inputs.runtime_profile }}', deployment_target: production, revision: '${{ needs.resolve.outputs.revision }}', mode: candidate, bundle_key: '${{ needs.promote.outputs.candidate_bundle_key }}', release_tag: '${{ inputs.release_tag }}'}
 
   deploy-rollback:
     needs: [resolve, bind-release-tag, verify]
     if: ${{ inputs.mode == 'rollback' && needs.verify.result == 'success' }}
     uses: ./.github/workflows/fetcher-deploy.yml
-    with: {deployment_target: production, revision: '${{ needs.resolve.outputs.revision }}', mode: replay, bundle_key: '${{ inputs.accepted_bundle_key }}', release_tag: '${{ inputs.release_tag }}'}
+    with: {runtime_profile: '${{ inputs.runtime_profile }}', deployment_target: production, revision: '${{ needs.resolve.outputs.revision }}', mode: replay, bundle_key: '${{ inputs.accepted_bundle_key }}', release_tag: '${{ inputs.release_tag }}'}

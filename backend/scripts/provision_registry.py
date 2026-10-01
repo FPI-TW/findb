@@ -279,7 +279,10 @@ async def provision_registry(
                         'us_equity_eod',
                         'tw_equity_eod',
                         'tw_equity_minute',
-                        'tw_etf_minute'
+                        'tw_etf_minute',
+                        'hk_equity_eod',
+                        'tw_etf_eod',
+                        'tw_futures_eod'
                     )
                     ORDER BY dataset_key
                     FOR UPDATE

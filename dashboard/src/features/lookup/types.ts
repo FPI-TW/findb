@@ -98,3 +98,40 @@ export interface MinuteRow {
   close: string | number
   volume: string | number | null
 }
+
+export type FuturesSession = "regular" | "after_hours"
+
+export interface FuturesEodRow {
+  contract_id: string
+  instrument_id: string
+  product_code: string
+  contract_code: string
+  contract_month: string
+  trade_date: string
+  session: FuturesSession
+  open: string | number | null
+  high: string | number | null
+  low: string | number | null
+  close: string | number | null
+  volume: string | number | null
+  settlement_price: string | number | null
+  open_interest: string | number | null
+  source: string
+  source_fetched_at: string | null
+  asof_ts: string | null
+}
+
+export interface FuturesEodFilters {
+  productCode: string
+  contractCode: string
+  startDate: string
+  endDate: string
+  session: FuturesSession | ""
+  cursor: string
+}
+
+export interface FuturesEodResponse {
+  success: true
+  data: FuturesEodRow[]
+  pagination: { page_size: number; next_cursor: string | null }
+}

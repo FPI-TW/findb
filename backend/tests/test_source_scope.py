@@ -12,9 +12,10 @@ from app.services.source_clients import (
 @pytest.mark.parametrize(
     ("provider", "expected"),
     [
-        ("twelve_data", ["us_equity_eod"]),
-        ("finlab", ["tw_equity_eod"]),
+        ("twelve_data", ["us_equity_eod", "hk_equity_eod"]),
+        ("finlab", ["tw_equity_eod", "tw_etf_eod"]),
         ("shioaji", ["tw_equity_minute", "tw_etf_minute"]),
+        ("taifex", ["tw_futures_eod"]),
     ],
 )
 def test_provider_scope_expands_null_to_complete_mapping(provider, expected):

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, m
 
 from app.schemas.ingress import (
     CurrencyCode,
+    FuturesEODIngressRequest,
     IngressRequestV1,
     MarketEODIngressRequest,
     MarketMinuteIngressRequest,
@@ -17,13 +18,18 @@ from app.services.delivery_policy import DeliveryExpectation
 from app.vocabulary import SOURCE_NAME_PATTERN, normalize_asset_class, normalize_market
 
 ContractKey = tuple[str, int]
-ContractModel = type[MarketEODIngressRequest] | type[MarketMinuteIngressRequest]
+ContractModel = (
+    type[MarketEODIngressRequest]
+    | type[MarketMinuteIngressRequest]
+    | type[FuturesEODIngressRequest]
+)
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
 _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
     {
         ("market_eod", 1): MarketEODIngressRequest,
         ("market_minute", 1): MarketMinuteIngressRequest,
+        ("futures_eod", 1): FuturesEODIngressRequest,
     }
 )
 
@@ -263,6 +269,8 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 "fields": (
                     ["symbol", "bar_start_time"]
                     if schema_id == "market_minute"
+                    else ["product_code", "contract_code", "trade_date", "session"]
+                    if schema_id == "futures_eod"
                     else ["symbol", "trade_date"]
                 ),
             },
@@ -316,6 +324,42 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             },
         },
     ]
+    if schema_id == "futures_eod":
+        observation_fields = ["open", "high", "low", "close", "settlement_price", "open_interest"]
+        schema["$defs"]["FuturesEODRow"]["anyOf"] = [
+            {"required": [field], "properties": {field: {"not": {"type": "null"}}}}
+            for field in observation_fields
+        ] + [
+            {
+                "required": ["volume"],
+                "properties": {"volume": {"type": "integer", "exclusiveMinimum": 0}},
+            }
+        ]
+        semantic_rules.append(
+            {
+                "id": "futures.row.minimum_observation",
+                "scope": "payload.data[*]",
+                "description": "every futures row requires a source-provided OHLC, settlement price or open interest (including zero), or positive volume",
+                "parameters": {
+                    "operator": "any_non_null_or_positive",
+                    "non_null_fields": observation_fields,
+                    "positive_field": "volume",
+                    "exclusive_minimum": 0,
+                },
+                "context_dependencies": [],
+                "error_code": "INGRESS_SCHEMA_INVALID",
+            }
+        )
+        semantic_rules.append(
+            {
+                "id": "futures.exchange_trade_date_and_session",
+                "scope": "payload.data[*]",
+                "description": "trade_date is TAIFEX attribution date; expiry and session are distinct contract identities; no midnight inference",
+                "parameters": {"market": "TW", "products": ["TX", "MTX", "TMF", "TE", "TF"]},
+                "context_dependencies": [],
+                "error_code": "INGRESS_SCHEMA_INVALID",
+            }
+        )
     if schema_id == "market_eod":
         semantic_rules.append(
             {
@@ -374,6 +418,12 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             ]
         )
     row_string_paths = {
+        "futures_eod": [
+            "payload.data[*].product_code",
+            "payload.data[*].contract_code",
+            "payload.data[*].contract_month",
+            "payload.data[*].session",
+        ],
         "market_eod": [
             "payload.data[*].symbol",
             "payload.data[*].source_symbol",

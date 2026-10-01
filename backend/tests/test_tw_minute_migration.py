@@ -115,7 +115,7 @@ def test_tw_minute_migration_is_single_linear_head():
     assert scheduler_dataset_projection_removal.down_revision == "c5d6e7f8a9b0"
     assert serve_stats is not None
     assert serve_stats.down_revision == "a8b9c0d1e2f3"
-    assert scripts.get_heads() == [LATEST_REVISION]
+    assert scripts.get_heads() == ["1331cb73adad"]
 
 
 def test_minute_migration_downgrade_preserves_policy_provenance():
@@ -393,7 +393,7 @@ async def test_twelve_data_schedule_migration_preserves_operator_json_and_downgr
                 "09:00:00"
             )
 
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
         async with target_engine.connect() as connection:
             config = await connection.scalar(
                 text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
@@ -486,7 +486,7 @@ async def test_twelve_data_0815_schedule_roundtrip_preserves_operator_json() -> 
                 )
             )
 
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
         async with target_engine.connect() as connection:
             config = await connection.scalar(
                 text("SELECT config FROM dataset_registry WHERE dataset_key = 'us_equity_eod'")
@@ -599,7 +599,7 @@ async def test_twelve_data_0815_downgrade_leaves_one_sided_drift_untouched(
         database_url,
         target_engine,
     ):
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
         async with target_engine.begin() as connection:
             if drift_kind == "scheduler_time":
                 await connection.execute(
@@ -749,7 +749,7 @@ async def test_twelve_data_0815_policy_step_failure_rolls_back_scheduler(directi
         target_engine,
     ):
         if direction == "downgrade":
-            await _run_alembic(database_url, "head")
+            await _run_alembic(database_url, LATEST_REVISION)
 
         async with target_engine.begin() as connection:
             await connection.execute(
@@ -829,7 +829,7 @@ async def test_twelve_data_schedule_downgrade_leaves_one_sided_drift_untouched(
     async with get_active_migration_database_factory().clone(
         "f2a3b4c5d6e7", "twelve_schedule_downgrade"
     ) as (database_url, target_engine):
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
 
         async with target_engine.begin() as connection:
             if drift_kind == "scheduler_time":
@@ -1315,10 +1315,10 @@ async def test_minute_identity_migration_backfills_legacy_runs_safely():
                 delivery_mode="full_snapshot",
             )
 
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
         # Re-running Alembic at head is a no-op; f4 SQL is also guarded by
         # IF NOT EXISTS/NULL-only predicates for partial deploy recovery.
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
 
         async with target_engine.connect() as connection:
             rows = (
@@ -1454,7 +1454,7 @@ async def test_scheduler_definition_backfill_preserves_state_and_downgrades():
                 )
             ).all()
 
-        await _run_alembic(database_url, "head")
+        await _run_alembic(database_url, LATEST_REVISION)
         async with target_engine.connect() as connection:
             definitions = (
                 await connection.execute(

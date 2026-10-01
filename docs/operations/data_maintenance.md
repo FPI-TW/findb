@@ -110,6 +110,24 @@ preview／create／list API，不持有provider secret；Fetcher worker只消費
 已核准request。任何scheduler在backfill期間仍保持`stopped`，未驗證Raw R2、Source、outbox、DQ、
 canonical與Serve前不可擴大下一批。
 
+## Full-market universe maintenance
+
+Full-market 清單與既有 reviewed bounded manifests 分開。官方 US、HKEX、TWSE／TPEx 與 TAIFEX
+快照保留不可變原始來源 checksum、effective date、分類、provider symbol／contract mapping；
+不得在 runtime 靜默改集合。第一份完整 baseline 先由 Owner 依官方證據發布；之後相對已
+published release 異動超過 20 或 2% 時需明確 exception approval，未通過的 candidate 不改
+既有 plan。
+
+TW ordinary equity 與各種 ETF 分開 dataset，ETF 不限 0050／0056 等 pilot；US ADR 與多股類，
+HK GEM，以及 TAIFEX 實際月／週合約都需列入官方 expected。Mapping 不支援時保存 gap，
+不能濾除。Futures expected 以 product／expiry／session 計數，日盤和盤後不合併；settlement
+與 open interest 缺失保持 null。
+
+Rollback 停止新 full-market scope，恢復前一 accepted bounded runtime及其 versioned universe；保留 canonical、
+raw、prepared checkpoint 與原 daily gaps。不可刪除 gap 或改寫舊 plan 達成 complete；已有
+schema migration 仍採 forward fix。Full-market 只補 activation 後缺口，不建立 continuous
+futures 或 historical backfill 工作；既有 bounded EOD historical workflow 維持獨立操作。
+
 ## EOD default partition recovery
 
 `market_data_eod_default`正常必須為空；application在寫入前會確認目標年度的

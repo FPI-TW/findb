@@ -1,7 +1,8 @@
-"""Normalizers for the two supported versioned ingress schemas."""
+"""Normalizers for supported versioned ingress schemas."""
 
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.contracts import (
+    FuturesEODContractNormalizer,
     MarketEODContractNormalizer,
     MarketMinuteContractNormalizer,
 )
@@ -14,4 +15,5 @@ __all__ = [
     "MarketMinuteRecord",
     "MarketEODContractNormalizer",
     "MarketMinuteContractNormalizer",
+    "FuturesEODContractNormalizer",
 ]

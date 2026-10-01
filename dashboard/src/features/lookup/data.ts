@@ -1,6 +1,8 @@
 import { resolvePublicApiUrl } from "./api-url"
 import type {
   EodRow,
+  FuturesEodFilters,
+  FuturesEodResponse,
   Instrument,
   InstrumentLookupResponse,
   LookupSearch,
@@ -110,4 +112,37 @@ export async function loadMinute(id: string, signal?: AbortSignal) {
       signal
     )
   )
+}
+
+export async function loadFuturesEod(
+  filters: FuturesEodFilters,
+  signal?: AbortSignal
+): Promise<FuturesEodResponse> {
+  const params = new URLSearchParams({
+    product_code: filters.productCode,
+    page_size: "20",
+  })
+  if (filters.contractCode.trim())
+    params.set("contract_code", filters.contractCode.trim().toUpperCase())
+  if (filters.startDate) params.set("start_date", filters.startDate)
+  if (filters.endDate) params.set("end_date", filters.endDate)
+  if (filters.session) params.set("session", filters.session)
+  if (filters.cursor) params.set("cursor", filters.cursor)
+  const payload = await fetchJson<FuturesEodResponse>(
+    `/api/v1/serve/futures/eod?${params}`,
+    signal
+  )
+  if (
+    payload.success !== true ||
+    !Array.isArray(payload.data) ||
+    !payload.pagination ||
+    typeof payload.pagination.page_size !== "number" ||
+    !(
+      payload.pagination.next_cursor === null ||
+      typeof payload.pagination.next_cursor === "string"
+    )
+  ) {
+    throw new Error("期貨 EOD API 回應格式不正確")
+  }
+  return payload
 }

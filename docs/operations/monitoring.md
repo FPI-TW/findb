@@ -400,3 +400,21 @@ CloudWatch Logs retention policy separate from these alarms. Custom metric
 retention follows the CloudWatch service lifecycle; the stack does not create
 a separate retention resource. Retain
 operator test evidence according to the project's change/audit practice.
+
+## Full-market monitoring acceptance
+
+Full-market monitoring 使用 durable daily plan，將 universe／release、expected、data、no_data、
+missing、blocked、deadline 與 gap reason 分開呈現。既有四個 bounded active-feed metrics 與
+staging 原生告警不證明新範圍已上線；未執行 external capability 與五日 live acceptance 前，不
+宣稱全市場健康或 production coverage 完成。
+
+每個交易日核對 Source plan summary 與 canonical lineage；TW／HK／TAIFEX 截止台北當日
+23:00，US 截止次日 09:00。晚到資料可供查詢但須保留遲到紀錄；停牌／無成交的 no_data
+必須有 durable official/provider evidence。Quota、entitlement、mapping、source error 形成
+blocked；空 response 與缺結果不能歸為 no_data。
+
+Runtime recovery 另外檢查 shared quota reservation、prepared raw checksum、provider-scoped
+checkpoint 與 request identity。四個 provider credentials 保持隔離；不記錄 keys、tokens、
+presigned URLs 或 provider request secrets。每個 rollout stage 需保存連續五個 actual exchange
+open days 的準時 complete 證據，包括市場日曆 revision、universe digest、deadline 與 Serve
+查詢結果。這些證據須由實際運行產生，unit tests 與 IaC validation 不取代。

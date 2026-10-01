@@ -73,7 +73,7 @@ Coverage metadata會保存到run供missing-delivery判定；同日incremental或
 
 ## `market_eod.v1`
 
-適用`us_equity_eod`與`tw_equity_eod`：
+適用股票／ETF EOD registry scopes（包括 US、HK、TW）；是否公開以 active registry 為準：
 
 - 必填row欄位：`symbol`、`trade_date`、`close`。
 - 選填：`source_symbol`、`name`、`currency`、OHLC、`volume`、`turnover`、`total_ticks`。
@@ -112,6 +112,62 @@ Minute request identity使用compact、sorted-key JSON：
 reason。無效volume／turnover可映射為`null`，但必須有且只能有一筆對應anomaly；anomaly
 包含安全化且不超過500字元的`raw_value`、`reason`及相符的`raw_value_sha256`。不得包含
 provider request context、exception、trace、credential或其他敏感內容。
+
+## `futures_eod.v1`
+
+TAIFEX 使用 provider-neutral 的實際到期合約 contract；不是連續期貨序列。
+`product_code` 限 TX／MTX／TMF／TE／TF，`contract_month` 是有效月份的 `YYYYMM`、
+`YYYYMMW1..W5` 或 `YYYYMMF1..F5`；Universe 與 quote 使用相同格式驗證，保留官方實際到期識別。
+`contract_code` 必須等於 `product_code:contract_month`。發布的自然鍵欄位為
+`product_code`、`contract_code`、交易所歸屬 `trade_date` 與 `session`
+（`regular`／`after_hours`）；同 delivery 不可重複，同合約的兩個 session 可同批交付。
+
+OHLC／volume／settlement／OI 不得為負，high／low 必須包住所有已提供的 OHLC 價格。
+OHLC（包含 close）、volume、`settlement_price` 與 `open_interest` 缺漏時保留 null，
+不得用 settlement、前日或另一 session 補值；來源明確提供的 0 必須保留。
+每筆 canonical quote 至少有一個來源提供的 OHLC／settlement／OI，或正成交量；
+發布的 JSON Schema 與 `futures.row.minimum_observation` 語意規則也檢查此條件，供 producer 在交付前驗證。
+零成交但仍有 settlement／OI 的資料照常入庫並可由 Serve 查詢。所有行情欄位缺漏且官方
+volume 明確為 0 才由 Fetcher 提交具持久化證據的 `no_trade`，不建立空 canonical quote；
+volume 也未知時保持 blocked，不視為 no_data。Batch 仍使用共用 EOD coverage、raw
+reference 與 count validation；原始 TAIFEX 訊息由 Fetcher mapping，不由 Backend 解析。
+
+## Frozen universe 與 daily plan protocol
+
+Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest JSON Schema
+分開。Source key 只可操作自身 provider 與 dataset allowlist：
+
+- `/source/universes` 提交／列出不可變 release，`/{release_id}` 讀取完整成員與 evidence。
+  Catch-up 使用 `GET /source/universes?dataset_key=...&as_of=YYYY-MM-DD` 取得該日適用 release；
+  不以今天的 published universe 改寫過去分母。
+- `/source/delivery-plans` 建立／列出交易日 plan，`/{plan_id}` 讀取 frozen parts。
+  列表依交易日降冪，`start_date`／`end_date` 為包含端點的日期篩選，`limit` 為 1–100；
+  以 `start_date=end_date=目標日` 與 `limit=1` 找回原 frozen plan，provider 由 Source key 決定。
+- `/source/delivery-plans/{plan_id}/outcomes` 記錄 no_data／blocked。
+
+Universe material change 計入新增／刪除與 mapping、分類、幣別、exchange、契約身分等欄位變更；
+僅每日 `raw_evidence_ref` 更新不計入 `>20` 或 `>2%` 異常門檻。Provenance 仍保留於
+不可變 release 成員與 digest，重送相同內容仍使用既有 release。
+
+每 part 最多 50 成員，work item identity 為 `fp1:<part UUID hex>`。Ingest 的 `delivery.work_item_id`
+指向 plan part，dataset、provider、日期、member、currency／provider symbol 必須與 frozen
+release 一致。重送既有日期只能使用原 release；不得混用新版 universe 補成另一份分母。
+同 minute part 可連結多個 symbol 的 sequenced snapshot；canonical row 僅在自身 snapshot／
+daily_update group 的所有 sequences 完成後計入 data，其他完成群組不會使部分交付成員完整。
+
+治理中的 Source 實際交付不得使用交易所當地未來交易日，`fetched_at` 不得超過伺服器時間
+五分鐘。EOD／minute 的伺服器時間與 `fetched_at` 都須已過 published calendar 的當日收盤；
+缺個別日期時間時，保守採 US 16:00 New York、HK 16:10 Hong Kong（含收市競價）、
+TW 13:30 Taipei、TAIFEX regular 13:45 Taipei。TAIFEX after_hours 採歸屬交易日 Taipei 05:00，
+不等待日盤收盤。這些限制只適用啟用 full-market governance 的 feeds，未來 plan 仍可預先建立。
+
+`no_data` 限 `halted`／`no_trade`，必須有 credential-free HTTPS URL、SHA-256、observed_at、
+source_symbol、trade_date、source_status 與 bounded excerpt；futures 同時匹配 session。
+最終 no_data 亦須通過上述交易日／session 收盤限制：伺服器與 evidence `observed_at`
+皆已到收盤，`observed_at` 不得超過伺服器時間五分鐘；收盤前仍可登錄非最終 blocked。
+缺權限、mapping gap、限流、下載錯誤、空 response 都不能視為 no_data；blocked 原因限
+`mapping_gap`／`rate_limited`／`source_error`。Data 由 canonical reconciliation 判定，producer
+不能直接宣告 data completion。
 
 ## 發布與dataset declaration
 

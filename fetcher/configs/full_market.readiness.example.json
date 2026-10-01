@@ -1,0 +1,17 @@
+{
+  "provider": "twelve_data",
+  "status": "unknown",
+  "datasets": [
+    "us_equity_eod",
+    "hk_equity_eod"
+  ],
+  "verified_at": null,
+  "expires_at": null,
+  "evidence_url": null,
+  "evidence_sha256": null,
+  "requests_per_day": null,
+  "requests_per_minute": null,
+  "bytes_per_day": null,
+  "max_response_bytes": null,
+  "requests_per_second": null
+}

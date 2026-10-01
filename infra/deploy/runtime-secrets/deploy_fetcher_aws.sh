@@ -15,6 +15,14 @@ set +x
 : "${FINLAB_IMAGE_REF:?FINLAB_IMAGE_REF is required}"
 : "${SHIOAJI_IMAGE_REF:?SHIOAJI_IMAGE_REF is required}"
 
+FETCHER_RUNTIME_PROFILE="${FETCHER_RUNTIME_PROFILE:-bounded}"
+export FETCHER_RUNTIME_PROFILE
+if [[ ! "$FETCHER_RUNTIME_PROFILE" =~ ^(bounded|full-market)$ ]] \
+  || { [ "$FETCHER_RUNTIME_PROFILE" = full-market ] && [ "$DEPLOYMENT_TARGET" != production ]; }; then
+  echo "fetcher_aws_deploy=failed reason=runtime_profile_invalid" >&2
+  exit 1
+fi
+
 expected_registry="$AWS_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
 if [ "$AWS_REGION" != ap-southeast-1 ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || [[ ! "$DEPLOYMENT_TARGET" =~ ^(staging|production)$ ]] || [ "$ECR_REGISTRY" != "$expected_registry" ]; then
   echo "fetcher_aws_deploy=failed reason=aws_route_invalid" >&2
@@ -42,6 +50,19 @@ for path in "$catalog" "$runtime_command" "$provider_helper"; do
   }
 done
 
+manifest_profile="$(python3 - "$FETCHER_RELEASE_ROOT/release-manifest.json" <<'PROFILE'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+print(manifest.get("runtime_profile", "bounded"))
+PROFILE
+)"
+if [ "$manifest_profile" != "$FETCHER_RUNTIME_PROFILE" ]; then
+  echo "fetcher_aws_deploy=failed reason=runtime_profile_manifest_mismatch" >&2
+  exit 1
+fi
+
 validate_image() {
   local image="$1" repository="$2"
   printf '%s' "$image" | grep -Eq "^${expected_registry}/${repository}@sha256:[0-9a-f]{64}$" || {
@@ -55,7 +76,7 @@ validate_image "$SHIOAJI_IMAGE_REF" "findb/$DEPLOYMENT_TARGET/fetcher/shioaji"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
+preserve_env=FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,TAIFEX_BASE_URL,TAIFEX_TIMEOUT_SECONDS,TAIFEX_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 schedule_file=/app/configs/daily_scheduler.v2.json
 shioaji_manifest=/app/configs/shioaji_tw_pilot.v1.json
@@ -162,36 +183,84 @@ if [ "$FETCHER_DEPLOY_MODE" = activate ]; then
   pointer_temp=""
 fi
 
-register_provider findb-fetcher-scheduler findb-fetcher-scheduler-previous
-run_runtime --consumer twelve-data --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-  "$provider_helper" twelve-data "$TWELVE_IMAGE_REF" \
-  /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
-  findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
-  findb-fetcher-scheduler-preflight - \
-  findb-fetch-scheduler --schedule-file "$schedule_file" \
-  --slot-id western_markets_window --dataset-key us_equity_eod
+retire_runtime() {
+  local stable="$1" previous="${1}-previous"
+  register_provider "$stable" "$previous"
+  if docker container inspect "$stable" >/dev/null 2>&1; then
+    if [ "$(docker inspect --format '{{.State.Running}}' "$stable")" = true ]; then
+      docker stop --time 30 "$stable" >/dev/null
+      [ "$(docker inspect --format '{{.State.ExitCode}}' "$stable")" -eq 0 ]
+    fi
+    if docker container inspect "$previous" >/dev/null 2>&1; then
+      docker rm "$previous" >/dev/null
+    fi
+    docker rename "$stable" "$previous"
+  fi
+}
 
-register_provider findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-previous
-run_runtime --consumer finlab --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-  "$provider_helper" finlab "$FINLAB_IMAGE_REF" \
-  /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
-  findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
-  findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache \
-  findb-fetch-finlab-scheduler --schedule-file "$schedule_file" \
-  --slot-id taiwan_market_window --dataset-key tw_equity_eod
+# Preserve historical workers for transaction recovery. Only bounded creates
+# replacement workers; expanded runtime never consumes historical requests.
+for stable in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetcher-shioaji-scheduler; do
+  retire_runtime "${stable}-historical"
+done
+provider_count=3
+if [ "$FETCHER_RUNTIME_PROFILE" = full-market ]; then
+  full_market_state=/var/lib/findb-full-market
+  for provider in twelve-data finlab shioaji taifex; do
+    case "$provider" in
+      twelve-data) identity=twelve_data; image="$TWELVE_IMAGE_REF"; stable=findb-fetcher-scheduler ;;
+      finlab) identity=finlab; image="$FINLAB_IMAGE_REF"; stable=findb-fetcher-finlab-scheduler ;;
+      shioaji) identity=shioaji; image="$SHIOAJI_IMAGE_REF"; stable=findb-fetcher-shioaji-scheduler ;;
+      taifex) identity=taifex; image="$TWELVE_IMAGE_REF"; stable=findb-fetcher-taifex-scheduler ;;
+    esac
+    cache_dir=-
+    case "$provider" in
+      finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
+      shioaji) cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
+    esac
+    register_provider "$stable" "${stable}-previous"
+    run_runtime --consumer "$provider" --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+      "$provider_helper" "$provider" "$image" \
+      "$full_market_state" "$full_market_state/state.sqlite3" \
+      "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
+      findb-fetch-full-market --config /app/configs/full_market.production.v1.json \
+      --provider "$identity" --readiness-file "$full_market_state/readiness/$identity.json"
+  done
+  provider_count=4
+else
+  # Switching back to bounded stops the TAIFEX process without deleting state.
+  retire_runtime findb-fetcher-taifex-scheduler
+  register_provider findb-fetcher-scheduler findb-fetcher-scheduler-previous
+  run_runtime --consumer twelve-data --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+    "$provider_helper" twelve-data "$TWELVE_IMAGE_REF" \
+    /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
+    findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
+    findb-fetcher-scheduler-preflight - \
+    findb-fetch-scheduler --schedule-file "$schedule_file" \
+    --slot-id western_markets_window --dataset-key us_equity_eod
 
-register_provider findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-previous
-run_runtime --consumer shioaji --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-  "$provider_helper" shioaji "$SHIOAJI_IMAGE_REF" \
-  /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
-  findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
-  findb-fetcher-shioaji-scheduler-preflight /var/lib/findb-shioaji-fetcher/cache \
-  findb-fetch-shioaji-scheduler --manifest "$shioaji_manifest"
+  register_provider findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-previous
+  run_runtime --consumer finlab --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+    "$provider_helper" finlab "$FINLAB_IMAGE_REF" \
+    /var/lib/findb-finlab-fetcher /var/lib/findb-finlab-fetcher/state.sqlite3 \
+    findb-fetcher-finlab-scheduler findb-fetcher-finlab-scheduler-candidate findb-fetcher-finlab-scheduler-previous \
+    findb-fetcher-finlab-scheduler-preflight /var/lib/findb-finlab-fetcher/cache \
+    findb-fetch-finlab-scheduler --schedule-file "$schedule_file" \
+    --slot-id taiwan_market_window --dataset-key tw_equity_eod
+
+  register_provider findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-previous
+  run_runtime --consumer shioaji --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+    "$provider_helper" shioaji "$SHIOAJI_IMAGE_REF" \
+    /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
+    findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
+    findb-fetcher-shioaji-scheduler-preflight /var/lib/findb-shioaji-fetcher/cache \
+    findb-fetch-shioaji-scheduler --manifest "$shioaji_manifest"
+fi
 
 if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
   rollback_processed
   trap - ERR INT TERM HUP
-  echo "fetcher_aws_deploy=candidate_ready_for_acceptance providers=3"
+  echo "fetcher_aws_deploy=candidate_ready_for_acceptance providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"
   exit 0
 fi
 
@@ -203,4 +272,4 @@ for entry in "${processed[@]}"; do
     docker rm "$previous" >/dev/null
   fi
 done
-echo "fetcher_aws_deploy=activated providers=3"
+echo "fetcher_aws_deploy=activated providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"

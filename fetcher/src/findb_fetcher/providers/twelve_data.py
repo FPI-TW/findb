@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -14,6 +14,8 @@ from math import isfinite
 from typing import Any
 
 import httpx
+
+from findb_fetcher.http_response import BoundedResponseError, read_identity_response
 
 TWELVE_DATA_SOURCE = "twelve_data"
 TWELVE_DATA_DEFAULT_BASE_URL = "https://api.twelvedata.com"
@@ -43,7 +45,9 @@ class TwelveDataResponseError(TwelveDataError):
         *,
         status_code: int | None = None,
         provider_code: int | None = None,
+        observed_bytes: int = 0,
     ) -> None:
+        self.observed_bytes = observed_bytes
         self.status_code = status_code
         self.provider_code = provider_code
         super().__init__(message)
@@ -149,7 +153,14 @@ class TwelveDataClient:
         end_date: date | None = None,
         outputsize: int | None = None,
         exchange: str | None = None,
+        max_response_bytes: int | None = None,
+        on_http_rate_limited: Callable[[], None] | None = None,
     ) -> TwelveDataResponse:
+        bound = self._config.max_response_bytes
+        if max_response_bytes is not None:
+            if type(max_response_bytes) is not int or max_response_bytes < 1:
+                raise ValueError("response byte bound must be a positive integer")
+            bound = min(bound, max_response_bytes)
         normalized_symbol = symbol.strip()
         if not normalized_symbol or len(normalized_symbol) > 100:
             raise ValueError("symbol must contain between 1 and 100 characters")
@@ -180,6 +191,7 @@ class TwelveDataClient:
                 raise ValueError("exchange must contain 1 to 100 supported ASCII characters")
             params["exchange"] = normalized_exchange
 
+        response_status_code = None
         try:
             with self._client.stream(
                 "GET",
@@ -187,44 +199,33 @@ class TwelveDataClient:
                 params=params,
                 headers={"Accept-Encoding": "identity"},
             ) as response:
-                content_encoding = response.headers.get("content-encoding")
-                if content_encoding is not None and content_encoding.strip().lower() != "identity":
-                    raise TwelveDataResponseError(
-                        "Twelve Data returned an unsupported Content-Encoding"
-                    )
-                content_length = response.headers.get("content-length")
-                if content_length is not None:
-                    try:
-                        declared_length = int(content_length)
-                    except ValueError as exc:
-                        raise TwelveDataResponseError(
-                            "Twelve Data returned an invalid Content-Length"
-                        ) from exc
-                    if declared_length < 0:
-                        raise TwelveDataResponseError(
-                            "Twelve Data returned an invalid Content-Length"
-                        )
-                    if declared_length > self._config.max_response_bytes:
-                        raise TwelveDataResponseError("Twelve Data response exceeds the size limit")
-                raw_buffer = bytearray()
-                chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
-                for chunk in chunks:
-                    if len(raw_buffer) + len(chunk) > self._config.max_response_bytes:
-                        raise TwelveDataResponseError("Twelve Data response exceeds the size limit")
-                    raw_buffer.extend(chunk)
-                raw_bytes = bytes(raw_buffer)
                 response_status_code = response.status_code
+                if response_status_code == 429 and on_http_rate_limited is not None:
+                    on_http_rate_limited()
+                try:
+                    raw_bytes = read_identity_response(response, bound=bound)
+                except BoundedResponseError as exc:
+                    raise TwelveDataResponseError(
+                        f"Twelve Data {exc}",
+                        status_code=response_status_code,
+                        observed_bytes=exc.observed_bytes,
+                    ) from exc
         except httpx.TransportError as exc:
-            raise TwelveDataResponseError("Twelve Data transport request failed") from exc
+            raise TwelveDataResponseError(
+                "Twelve Data transport request failed", status_code=response_status_code
+            ) from exc
 
         try:
             payload = json.loads(raw_bytes)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise TwelveDataResponseError(
-                f"Twelve Data returned non-JSON HTTP {response_status_code}"
+                f"Twelve Data returned non-JSON HTTP {response_status_code}",
+                status_code=response_status_code,
             ) from exc
         if not isinstance(payload, dict):
-            raise TwelveDataResponseError("Twelve Data response must be a JSON object")
+            raise TwelveDataResponseError(
+                "Twelve Data response must be a JSON object", status_code=response_status_code
+            )
 
         provider_status = payload.get("status")
         if response_status_code >= 400 or provider_status == "error":
@@ -237,7 +238,9 @@ class TwelveDataClient:
                 provider_code=provider_code,
             )
         if provider_status != "ok":
-            raise TwelveDataResponseError("Twelve Data response status must be 'ok'")
+            raise TwelveDataResponseError(
+                "Twelve Data response status must be 'ok'", status_code=response_status_code
+            )
         return TwelveDataResponse(payload, raw_bytes=raw_bytes)
 
     def close(self) -> None:

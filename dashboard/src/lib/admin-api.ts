@@ -3,6 +3,58 @@ import { z } from "zod"
 const isoDateTime = z.string().datetime({ offset: true })
 const nullableDateTime = isoDateTime.nullable()
 
+export const deliveryPlansRequestSchema = z.object({
+  datasetKey: z.string().trim().max(100).default(""),
+  tradeDate: z.union([z.iso.date(), z.literal("")]).default(""),
+  limit: z.number().int().min(1).max(100).default(25),
+})
+export type DeliveryPlansRequest = z.infer<typeof deliveryPlansRequestSchema>
+
+export const deliveryPlansSchema = z.object({
+  data: z.array(
+    z.object({
+      plan_id: z.string(),
+      dataset_key: z.string(),
+      provider: z.string(),
+      trade_date: z.iso.date(),
+      release_id: z.string(),
+      deadline_at: isoDateTime,
+      status: z.enum([
+        "pending",
+        "running",
+        "complete",
+        "incomplete",
+        "blocked",
+      ]),
+      parts: z.array(
+        z.object({
+          part_id: z.string(),
+          work_item_id: z.string(),
+          member_keys: z.array(z.string()),
+          member_sha256: z.string(),
+        })
+      ),
+      summary: z.object({
+        expected: z.number().int().nonnegative(),
+        data: z.number().int().nonnegative(),
+        no_data: z.number().int().nonnegative(),
+        missing: z.number().int().nonnegative(),
+        blocked: z.number().int().nonnegative(),
+        deadline_at: isoDateTime,
+        is_late: z.boolean(),
+        gaps: z.array(
+          z.object({
+            member_key: z.string(),
+            status: z.string(),
+            reason: z.string().nullable().optional(),
+          })
+        ),
+      }),
+    })
+  ),
+})
+export type DeliveryPlan = z.infer<typeof deliveryPlansSchema>["data"][number]
+
 export const auditFiltersSchema = z.object({
   datasetKey: z.string().trim().max(100).default(""),
   runId: z.union([z.uuid(), z.literal("")]).default(""),

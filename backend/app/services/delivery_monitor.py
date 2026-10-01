@@ -12,13 +12,22 @@ from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
+from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
+from app.models.registry import (
+    DailyDeliveryPart,
+    DailyDeliveryPlan,
+    DatasetRegistry,
+    IngestionRun,
+    MissingDeliveryAlert,
+)
+from app.services.calendar_management import complete_published_revision_ids
 from app.services.delivery_policy import (
     delivery_run_coverage_condition,
     parse_delivery_expectation,
     resolve_expected_data_date,
 )
 from app.services.feed_scope import lock_feed_scope
+from app.services.full_market import _calendar_market, _deadline, reconcile_plan
 from app.services.ingress_contracts import DatasetContractDeclaration
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
@@ -103,6 +112,20 @@ async def scan_missing_deliveries(
                 dataset_key[:50],
             )
             diagnostics.append(_bounded_diagnostic(dataset_key, "", "invalid_dataset_contract"))
+            continue
+        if ((dataset_config or {}).get("full_market") or {}).get("enabled"):
+            for source in declaration.provider_scope():
+                created, closed = await _scan_full_market_feed(
+                    db,
+                    dataset=dataset,
+                    source=source,
+                    schema_id=declaration.schema_id,
+                    schema_version=declaration.current_schema_version,
+                    evaluated_at=evaluated_at,
+                )
+                refreshed += created
+                resolved += closed
+            await db.commit()
             continue
         if expectation is None or expectation.missing_delivery.action == "disabled":
             continue
@@ -242,6 +265,112 @@ async def scan_missing_deliveries(
     )
 
 
+async def _scan_full_market_feed(
+    db: AsyncSession,
+    *,
+    dataset: DatasetRegistry,
+    source: str,
+    schema_id: str,
+    schema_version: int,
+    evaluated_at: datetime,
+) -> tuple[int, int]:
+    governance = (dataset.config or {}).get("full_market") or {}
+    start_value = governance.get("activation_date")
+    if not start_value:
+        return 0, 0
+    start_date = date.fromisoformat(start_value)
+    dates = (
+        await db.scalars(
+            select(CalendarRevisionDay.trade_date)
+            .join(
+                CalendarYearRevision,
+                CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
+            )
+            .where(
+                CalendarYearRevision.market == _calendar_market(dataset),
+                CalendarYearRevision.id.in_(complete_published_revision_ids()),
+                CalendarRevisionDay.is_open.is_(True),
+                CalendarRevisionDay.trade_date >= start_date,
+                CalendarRevisionDay.trade_date <= evaluated_at.date(),
+            )
+            .order_by(CalendarRevisionDay.trade_date)
+        )
+    ).all()
+    plans = list(
+        (
+            await db.scalars(
+                select(DailyDeliveryPlan).where(
+                    DailyDeliveryPlan.dataset_key == dataset.dataset_key,
+                    DailyDeliveryPlan.provider == source,
+                    DailyDeliveryPlan.trade_date >= start_date,
+                )
+            )
+        ).all()
+    )
+    by_date = {plan.trade_date: plan for plan in plans}
+    created = 0
+    resolved = 0
+    for trade_date in dates:
+        deadline = _deadline(dataset, trade_date)
+        if evaluated_at < deadline:
+            continue
+        plan = by_date.get(trade_date)
+        summary = await reconcile_plan(db, plan, now=evaluated_at) if plan else None
+        complete = bool(summary and summary.data + summary.no_data == summary.expected)
+        if complete:
+            resolution = await db.execute(
+                update(MissingDeliveryAlert)
+                .where(
+                    MissingDeliveryAlert.dataset_key == dataset.dataset_key,
+                    MissingDeliveryAlert.source == source,
+                    MissingDeliveryAlert.schema_id == schema_id,
+                    MissingDeliveryAlert.schema_version == schema_version,
+                    MissingDeliveryAlert.expected_data_date == trade_date,
+                    MissingDeliveryAlert.status == "open",
+                )
+                .values(status="resolved", resolved_at=evaluated_at)
+                .returning(MissingDeliveryAlert.alert_id)
+            )
+            resolved += len(resolution.scalars().all())
+            continue
+        details = {
+            "code": "FULL_MARKET_INCOMPLETE",
+            "plan_id": str(plan.plan_id) if plan else None,
+            "expected": summary.expected if summary else None,
+            "data": summary.data if summary else 0,
+            "no_data": summary.no_data if summary else 0,
+            "missing": summary.missing if summary else None,
+            "blocked": summary.blocked if summary else None,
+            "deadline_at": deadline.isoformat(),
+        }
+        await db.execute(
+            insert(MissingDeliveryAlert)
+            .values(
+                alert_id=uuid7(),
+                dataset_key=dataset.dataset_key,
+                source=source,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                expected_data_date=trade_date,
+                status="open",
+                first_detected_at=evaluated_at,
+                last_detected_at=evaluated_at,
+                details=details,
+            )
+            .on_conflict_do_update(
+                constraint="uq_missing_delivery_identity_date",
+                set_={
+                    "status": "open",
+                    "resolved_at": None,
+                    "last_detected_at": evaluated_at,
+                    "details": details,
+                },
+            )
+        )
+        created += 1
+    return created, resolved
+
+
 async def _resolve_open_alerts_for_feed(
     db: AsyncSession,
     *,
@@ -345,6 +474,14 @@ async def resolve_missing_delivery_for_run(
         or run.failed_records != 0
     ):
         return 0
+    if run.delivery_part_id is not None:
+        part = await db.get(DailyDeliveryPart, run.delivery_part_id)
+        plan = await db.get(DailyDeliveryPlan, part.plan_id) if part else None
+        if plan is None:
+            return 0
+        summary = await reconcile_plan(db, plan)
+        if summary.data + summary.no_data != summary.expected:
+            return 0
     if delivery_mode is None:
         dataset = await db.get(DatasetRegistry, dataset_key)
         expectation = parse_delivery_expectation(dataset.config if dataset else None)

@@ -482,6 +482,15 @@ def _validate_images_for_unit(
             raise ManifestError(f"image repository or digest invalid: {name}")
 
 
+def validate_runtime_profile(profile: object, *, unit: str, target: str) -> str:
+    """Bind expanded provider scope to an explicit production Fetcher release."""
+    if not isinstance(profile, str) or profile not in {"bounded", "full-market"}:
+        raise ManifestError("runtime_profile invalid")
+    if profile == "full-market" and (unit != "fetcher" or target != "production"):
+        raise ManifestError("full-market profile is production Fetcher only")
+    return profile
+
+
 def validate_manifest(
     manifest: dict[str, Any],
     contract_manifest: ContractManifest,
@@ -521,6 +530,8 @@ def validate_manifest(
             required.add("promotion_source")
     else:
         raise ManifestError("schema_version invalid")
+    if schema_version == 2 and "runtime_profile" in manifest:
+        required.add("runtime_profile")
     unknown = set(manifest) - required
     missing = required - set(manifest)
     if unknown or missing:
@@ -539,6 +550,7 @@ def validate_manifest(
         manifest["commit_sha"]
     ):
         raise ManifestError("commit_sha must be a lowercase 40-character SHA")
+    validate_runtime_profile(manifest.get("runtime_profile", "bounded"), unit=unit, target=target)
     images = manifest["images"]
     registry = REGISTRY
     if schema_version == 2:
@@ -1129,6 +1141,8 @@ def generate(args: argparse.Namespace) -> None:
             "account_id": args.account_id,
             "release_tag": args.release_tag,
         }
+        if getattr(args, "runtime_profile", "bounded") != "bounded":
+            manifest["runtime_profile"] = args.runtime_profile
         if args.deployment_target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": args.promotion_source_bundle_key,
@@ -1213,6 +1227,9 @@ def main(argv: list[str] | None = None) -> int:
     generate_parser.add_argument("--created-by-run-id", required=True)
     generate_parser.add_argument(
         "--deployment-target", choices=("staging", "production"), default="staging"
+    )
+    generate_parser.add_argument(
+        "--runtime-profile", choices=("bounded", "full-market"), default="bounded"
     )
     generate_parser.add_argument("--registry", default=REGISTRY)
     generate_parser.add_argument("--account-id", default=REGISTRY.split(".", 1)[0])

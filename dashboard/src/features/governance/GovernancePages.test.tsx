@@ -202,7 +202,7 @@ describe("governance pages", () => {
         name: "fetcher",
         owner: "data-platform",
         source_name: "twelve_data",
-        allowed_datasets: ["us_equity_eod"],
+        allowed_datasets: ["us_equity_eod", "hk_equity_eod"],
       }),
     })
     fireEvent.click(screen.getByRole("button", { name: "關閉" }))
@@ -230,6 +230,11 @@ describe("governance pages", () => {
     expect(screen.queryByText("tw_equity_eod")).not.toBeInTheDocument()
     expect(screen.getByText("tw_equity_minute")).toBeInTheDocument()
     expect(screen.getByText("tw_etf_minute")).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Source name"), {
+      target: { value: "taifex" },
+    })
+    expect(screen.getByText("tw_futures_eod")).toBeInTheDocument()
+    expect(screen.queryByText("tw_equity_minute")).not.toBeInTheDocument()
   })
 
   it("issues a source credential with the provider's exact governed datasets", async () => {
@@ -242,7 +247,7 @@ describe("governance pages", () => {
         scopes: ["tw_equity_eod"],
         policies: {
           source_name: "finlab",
-          allowed_datasets: ["tw_equity_eod"],
+          allowed_datasets: ["tw_equity_eod", "tw_etf_eod"],
         },
       },
     })
@@ -266,7 +271,7 @@ describe("governance pages", () => {
         data: expect.objectContaining({
           kind: "source",
           source_name: "finlab",
-          allowed_datasets: ["tw_equity_eod"],
+          allowed_datasets: ["tw_equity_eod", "tw_etf_eod"],
         }),
       })
     )

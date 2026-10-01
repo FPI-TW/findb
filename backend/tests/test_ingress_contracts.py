@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.schemas.ingress import MarketEODIngressRequest
+from app.schemas.ingress import FuturesEODIngressRequest, MarketEODIngressRequest
 from app.services.canonical_ingestion import _select_validation_error
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
@@ -365,7 +365,7 @@ def test_registry_dispatches_explicit_contract_version():
     request = validate_ingress_request(_market_eod_request())
 
     assert isinstance(request, MarketEODIngressRequest)
-    assert supported_contracts() == (("market_eod", 1), ("market_minute", 1))
+    assert supported_contracts() == (("futures_eod", 1), ("market_eod", 1), ("market_minute", 1))
 
 
 @pytest.mark.parametrize(
@@ -670,3 +670,130 @@ def test_supported_dataset_contract_declarations_are_enforced(dataset_key: str):
 
     assert declaration is not None
     assert declaration.schema_enforcement == "enforce"
+
+
+def test_futures_published_delivery_key_matches_multi_session_validation():
+    fields = next(
+        rule
+        for rule in get_contract_json_schema("futures_eod", 1)["x-findb-semantic-rules"]
+        if rule["id"] == "payload.delivery_key.unique"
+    )["parameters"]["fields"]
+    assert fields == ["product_code", "contract_code", "trade_date", "session"]
+    request = _market_eod_request()
+    request.update(dataset_key="tw_futures_eod", schema_id="futures_eod", source="taifex")
+    rows = [
+        dict(
+            product_code="TX",
+            contract_code="TX:202608",
+            contract_month="202608",
+            trade_date="2026-07-21",
+            session=session,
+            close="100",
+        )
+        for session in ("regular", "after_hours")
+    ]
+    request["payload"].update(data=rows)
+    request["payload"]["batch"].update(delivery_mode="incremental", declared_record_count=2)
+    parsed = FuturesEODIngressRequest.model_validate(request)
+    assert len(parsed.payload.data) == 2
+    assert len({tuple(row[field] for field in fields) for row in rows}) == 2
+    request["payload"]["data"][1] = rows[0].copy()
+    with pytest.raises(ValidationError) as caught:
+        FuturesEODIngressRequest.model_validate(request)
+    assert caught.value.errors(include_input=False)[0]["type"] == "duplicate_delivery_key"
+
+
+@pytest.mark.parametrize(
+    ("observations", "accepted"),
+    [
+        ({}, False),
+        ({"volume": 0}, False),
+        ({"volume": None}, False),
+        (
+            dict.fromkeys(
+                ["open", "high", "low", "close", "settlement_price", "open_interest", "volume"]
+            ),
+            False,
+        ),
+        (
+            {
+                **dict.fromkeys(
+                    ["open", "high", "low", "close", "settlement_price", "open_interest"]
+                ),
+                "volume": 0,
+            },
+            False,
+        ),
+        ({"settlement_price": "0", "close": None, "volume": 0}, True),
+        ({"open_interest": 0, "close": None, "volume": 0}, True),
+        ({"open": "0", "close": None}, True),
+        ({"high": "10", "close": None}, True),
+        ({"low": "0", "close": None}, True),
+        ({"close": "0"}, True),
+        ({"volume": 1, "close": None}, True),
+        ({"volume": -1}, False),
+    ],
+)
+def test_futures_minimum_observation_source_validation(observations: dict, accepted: bool):
+    request = _market_eod_request()
+    request.update(dataset_key="tw_futures_eod", schema_id="futures_eod", source="taifex")
+    request["payload"]["data"] = [
+        {
+            "product_code": "TX",
+            "contract_code": "TX:202608",
+            "contract_month": "202608",
+            "trade_date": "2026-07-21",
+            "session": "regular",
+            **observations,
+        }
+    ]
+    if not accepted:
+        with pytest.raises(ValidationError):
+            FuturesEODIngressRequest.model_validate(request)
+        return
+
+    parsed = FuturesEODIngressRequest.model_validate(request)
+    row = parsed.payload.data[0]
+    assert row.close == (Decimal(observations["close"]) if observations.get("close") else None)
+    if "settlement_price" in observations:
+        assert row.settlement_price == Decimal("0")
+    if "open_interest" in observations:
+        assert row.open_interest == 0
+
+
+def test_futures_minimum_observation_is_published_in_shape_and_semantics():
+    schema = get_contract_json_schema("futures_eod", 1)
+    assert schema == get_contract_json_schema("futures_eod", 1)
+    rule = next(
+        rule
+        for rule in schema["x-findb-semantic-rules"]
+        if rule["id"] == "futures.row.minimum_observation"
+    )
+    fields = ["open", "high", "low", "close", "settlement_price", "open_interest"]
+    assert rule["scope"] == "payload.data[*]"
+    assert rule["parameters"] == {
+        "operator": "any_non_null_or_positive",
+        "non_null_fields": fields,
+        "positive_field": "volume",
+        "exclusive_minimum": 0,
+    }
+    assert rule["context_dependencies"] == []
+    assert rule["error_code"] == "INGRESS_SCHEMA_INVALID"
+    assert schema["$defs"]["FuturesEODRow"]["anyOf"] == [
+        {"required": [field], "properties": {field: {"not": {"type": "null"}}}} for field in fields
+    ] + [
+        {
+            "required": ["volume"],
+            "properties": {"volume": {"type": "integer", "exclusiveMinimum": 0}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_futures_schema_endpoint_publishes_minimum_observation(client, source_headers):
+    url = "/api/v1/source/contracts/futures_eod/versions/1"
+    first = await client.get(url, headers=source_headers)
+    second = await client.get(url, headers=source_headers)
+    assert first.status_code == 200
+    assert first.content == second.content
+    assert first.json() == get_contract_json_schema("futures_eod", 1)

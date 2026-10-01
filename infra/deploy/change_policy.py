@@ -56,6 +56,9 @@ def classify(paths: list[str]) -> dict[str, bool]:
             if path in FETCHER_STAGING_WORKFLOWS:
                 result["fetcher_staging"] = True
             continue
+        if path.startswith("infra/tests/"):
+            result["findb_ci"] = True
+            continue
         if path.startswith("contracts/"):
             result["findb_ci"] = result["fetcher_ci"] = True
             continue

@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "../../components/ui/alert"
 import { Button } from "../../components/ui/button"
 import { Skeleton } from "../../components/ui/skeleton"
 import { loadEod, loadMinute } from "./data"
+import { FuturesFeed } from "./FuturesFeed"
 import type { EodRow, Instrument, MinuteRow } from "./types"
 
 function focusableElements(container: HTMLElement): HTMLElement[] {
@@ -150,7 +151,8 @@ export function DetailDrawer({
   const drawerRef = useRef<HTMLElement>(null)
   const priorFocusRef = useRef<HTMLElement | null>(null)
   const id = item?.instrument_id ?? ""
-  const hasEod = Boolean(item?.coverage.eod)
+  const isFuture = item?.asset_class === "future"
+  const hasEod = Boolean(item?.coverage.eod) && !isFuture
   const hasMinute = Boolean(item?.coverage.minute)
   const eodQuery = useQuery({
     queryKey: ["lookup-detail", "eod", id],
@@ -304,55 +306,63 @@ export function DetailDrawer({
             </div>
           </section>
 
-          <section aria-labelledby="lookup-eod-heading">
-            <h3
-              id="lookup-eod-heading"
-              className="mb-3 flex items-center gap-2 text-sm font-semibold"
-            >
-              <LineChart size={16} />
-              EOD 最近資料
-            </h3>
-            {hasEod ? (
-              <Feed
-                label="EOD 資料"
-                data={eodQuery.data ?? []}
-                columns={EOD_COLUMNS}
-                error={eodQuery.error}
-                isLoading={eodQuery.isPending}
-                isRefreshing={eodQuery.isFetching && !eodQuery.isPending}
-                retry={() => void eodQuery.refetch()}
-              />
-            ) : (
-              <p className="text-sm text-muted">
-                此商品沒有 active EOD dataset coverage。
-              </p>
-            )}
-          </section>
+          {isFuture ? (
+            <FuturesFeed key={id} productCode={item.symbol} />
+          ) : (
+            <section aria-labelledby="lookup-eod-heading">
+              <h3
+                id="lookup-eod-heading"
+                className="mb-3 flex items-center gap-2 text-sm font-semibold"
+              >
+                <LineChart size={16} />
+                EOD 最近資料
+              </h3>
+              {hasEod ? (
+                <Feed
+                  label="EOD 資料"
+                  data={eodQuery.data ?? []}
+                  columns={EOD_COLUMNS}
+                  error={eodQuery.error}
+                  isLoading={eodQuery.isPending}
+                  isRefreshing={eodQuery.isFetching && !eodQuery.isPending}
+                  retry={() => void eodQuery.refetch()}
+                />
+              ) : (
+                <p className="text-sm text-muted">
+                  此商品沒有 active EOD dataset coverage。
+                </p>
+              )}
+            </section>
+          )}
 
-          <section aria-labelledby="lookup-minute-heading">
-            <h3
-              id="lookup-minute-heading"
-              className="mb-3 flex items-center gap-2 text-sm font-semibold"
-            >
-              <LineChart size={16} />
-              Minute 最近資料
-            </h3>
-            {hasMinute ? (
-              <Feed
-                label="Minute 資料"
-                data={minuteQuery.data ?? []}
-                columns={MINUTE_COLUMNS}
-                error={minuteQuery.error}
-                isLoading={minuteQuery.isPending}
-                isRefreshing={minuteQuery.isFetching && !minuteQuery.isPending}
-                retry={() => void minuteQuery.refetch()}
-              />
-            ) : (
-              <p className="text-sm text-muted">
-                此商品沒有 active minute dataset coverage。
-              </p>
-            )}
-          </section>
+          {!isFuture && (
+            <section aria-labelledby="lookup-minute-heading">
+              <h3
+                id="lookup-minute-heading"
+                className="mb-3 flex items-center gap-2 text-sm font-semibold"
+              >
+                <LineChart size={16} />
+                Minute 最近資料
+              </h3>
+              {hasMinute ? (
+                <Feed
+                  label="Minute 資料"
+                  data={minuteQuery.data ?? []}
+                  columns={MINUTE_COLUMNS}
+                  error={minuteQuery.error}
+                  isLoading={minuteQuery.isPending}
+                  isRefreshing={
+                    minuteQuery.isFetching && !minuteQuery.isPending
+                  }
+                  retry={() => void minuteQuery.refetch()}
+                />
+              ) : (
+                <p className="text-sm text-muted">
+                  此商品沒有 active minute dataset coverage。
+                </p>
+              )}
+            </section>
+          )}
         </div>
       </aside>
     </>

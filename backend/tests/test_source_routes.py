@@ -9,6 +9,11 @@ def test_source_openapi_contains_only_retained_operational_routes() -> None:
     assert source_paths == {
         "/api/v1/source/contracts/{schema_id}/versions/{schema_version}",
         "/api/v1/source/scheduler-controls/{scheduler_key}/poll",
+        "/api/v1/source/universes",
+        "/api/v1/source/universes/{release_id}",
+        "/api/v1/source/delivery-plans",
+        "/api/v1/source/delivery-plans/{plan_id}",
+        "/api/v1/source/delivery-plans/{plan_id}/outcomes",
         "/api/v1/source/ingest",
         "/api/v1/source/attempts/{attempt_id}",
         "/api/v1/source/runs/{run_id}",

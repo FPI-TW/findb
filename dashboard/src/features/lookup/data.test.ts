@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { DEFAULT_SEARCH } from "./config"
-import { loadAllLookupItems, loadEod, loadLookupPage, loadMinute } from "./data"
+import {
+  loadAllLookupItems,
+  loadEod,
+  loadFuturesEod,
+  loadLookupPage,
+  loadMinute,
+} from "./data"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -98,6 +104,36 @@ describe("lookup API client", () => {
     for (const [, init] of fetchMock.mock.calls) {
       expect(init).not.toHaveProperty("headers.X-API-Key")
     }
+  })
+
+  it("queries futures by product, contract, date, session and cursor without credentials", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      response({
+        success: true,
+        data: [],
+        pagination: { page_size: 20, next_cursor: null },
+      })
+    )
+    await loadFuturesEod({
+      productCode: "TX",
+      contractCode: "tx:202610",
+      startDate: "2026-10-01",
+      endDate: "2026-10-02",
+      session: "after_hours",
+      cursor: "next/page",
+    })
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(new URL(String(url)).pathname).toBe("/api/v1/serve/futures/eod")
+    expect(Object.fromEntries(new URL(String(url)).searchParams)).toEqual({
+      product_code: "TX",
+      contract_code: "TX:202610",
+      start_date: "2026-10-01",
+      end_date: "2026-10-02",
+      session: "after_hours",
+      cursor: "next/page",
+      page_size: "20",
+    })
+    expect(JSON.stringify(init)).not.toContain("API-Key")
   })
 
   it("rejects non-success and malformed list responses", async () => {

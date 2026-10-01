@@ -11,7 +11,11 @@ import {
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const mocks = vi.hoisted(() => ({ loadEod: vi.fn(), loadMinute: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  loadEod: vi.fn(),
+  loadMinute: vi.fn(),
+  loadFuturesEod: vi.fn(),
+}))
 vi.mock("./data", () => mocks)
 
 import { DetailDrawer } from "./DetailDrawer"
@@ -55,6 +59,50 @@ function renderDrawer(item = instrument, onClose = vi.fn()) {
 }
 
 beforeEach(() => {
+  mocks.loadFuturesEod.mockReset().mockResolvedValue({
+    success: true,
+    data: [
+      {
+        contract_id: "contract-1",
+        instrument_id: "instrument-2",
+        product_code: "TX",
+        contract_code: "TX:202610",
+        contract_month: "202610",
+        trade_date: "2026-10-01",
+        session: "regular",
+        open: "100",
+        high: "110",
+        low: "90",
+        close: "105",
+        volume: 1000,
+        settlement_price: null,
+        open_interest: null,
+        source: "shioaji",
+        source_fetched_at: null,
+        asof_ts: null,
+      },
+      {
+        contract_id: "contract-1",
+        instrument_id: "instrument-2",
+        product_code: "TX",
+        contract_code: "TX:202610",
+        contract_month: "202610",
+        trade_date: "2026-10-01",
+        session: "after_hours",
+        open: "106",
+        high: "112",
+        low: "101",
+        close: "110",
+        volume: 800,
+        settlement_price: null,
+        open_interest: null,
+        source: "shioaji",
+        source_fetched_at: null,
+        asof_ts: null,
+      },
+    ],
+    pagination: { page_size: 20, next_cursor: "next" },
+  })
   mocks.loadEod
     .mockReset()
     .mockResolvedValue([
@@ -76,6 +124,44 @@ afterEach(() => {
 })
 
 describe("DetailDrawer", () => {
+  it("uses futures endpoint and keeps day and night contracts separate with null values", async () => {
+    renderDrawer({
+      ...instrument,
+      instrument_id: "instrument-2",
+      asset_class: "future",
+      symbol: "TX",
+      coverage: {
+        eod: {
+          first_date: "2026-10-01",
+          latest_date: "2026-10-01",
+          latest_close: null,
+        },
+        minute: null,
+      },
+    })
+    expect(await screen.findAllByText("TX:202610")).toHaveLength(2)
+    expect(screen.getAllByText("日盤").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText("夜盤").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4)
+    expect(mocks.loadEod).not.toHaveBeenCalled()
+    expect(mocks.loadMinute).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText("交易時段"), {
+      target: { value: "after_hours" },
+    })
+    await waitFor(() =>
+      expect(mocks.loadFuturesEod).toHaveBeenLastCalledWith(
+        expect.objectContaining({ productCode: "TX", session: "after_hours" }),
+        expect.any(AbortSignal)
+      )
+    )
+    fireEvent.click(await screen.findByRole("button", { name: "下一頁" }))
+    await waitFor(() =>
+      expect(mocks.loadFuturesEod).toHaveBeenLastCalledWith(
+        expect.objectContaining({ cursor: "next" }),
+        expect.any(AbortSignal)
+      )
+    )
+  })
   it("loads EOD and minute feeds only when coverage exists", async () => {
     renderDrawer()
     expect(await screen.findByText("1085.5")).toBeInTheDocument()

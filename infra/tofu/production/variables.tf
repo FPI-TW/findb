@@ -50,3 +50,9 @@ variable "cloudflare_ipv6_cidrs" {
   type    = list(string)
   default = ["2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32"]
 }
+
+variable "enable_full_market_runtime" {
+  description = "Declare the isolated TAIFEX Source credential metadata after full-market review; no provider secret."
+  type        = bool
+  default     = false
+}

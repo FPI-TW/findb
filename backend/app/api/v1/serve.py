@@ -15,6 +15,7 @@ from app.schemas.serve import (
     CalendarResponse,
     DatasetListResponse,
     EODListResponse,
+    FuturesEODListResponse,
     InstrumentDetailResponse,
     InstrumentListResponse,
     InstrumentSort,
@@ -119,6 +120,30 @@ async def get_minute(
         instrument_id=instrument_id,
         start_date=start_date,
         end_date=end_date,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+@router.get("/futures/eod", response_model=FuturesEODListResponse)
+async def get_futures_eod(
+    product_code: str | None = None,
+    contract_code: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    session: str | None = None,
+    cursor: str | None = None,
+    page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
+    _: str | None = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> FuturesEODListResponse:
+    return await serve_queries.list_futures_eod(
+        db,
+        product_code=product_code,
+        contract_code=contract_code,
+        start_date=start_date,
+        end_date=end_date,
+        session=session,
         cursor=cursor,
         page_size=page_size,
     )

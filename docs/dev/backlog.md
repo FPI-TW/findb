@@ -20,6 +20,17 @@ Production foundation與live promotion／rollback acceptance由
   執行required Serve evidence、bounded latency smoke與Dashboard人工驗收；部署前不得沿用舊
   minute `not_applicable` evidence宣稱完成。
 
+## Full-market external acceptance
+
+- [ ] 以各 provider 的實際帳號確認 US 普通股／ADR、HK 主板／GEM、TW 上市／上櫃普通股與
+  各類 ETF、Shioaji 分鐘資料 entitlement，並保存完整 official universe mapping、calls／bytes
+  quota、deadline capacity 與 readiness 證據；受限項保持 blocked。
+- [ ] Backend-first 部署 migration／contract／inactive registry，完成 baseline Owner audited approval
+  與 exchange calendar 後，才選用 opt-in production full-market runtime；驗證 TAIFEX 獨立
+  Source credentials、四 runtime secret isolation、durable quota/checkpoint 與 rollback。
+- [ ] TW、HK、US、futures 分階段完成各五個連續實際交易所開市日準時 complete，驗證
+  expected 分母、durable no_data、partial Serve、gap catch-up、session 與 nullable futures fields。
+
 ## 不變約束
 
 - 新資料來源只走provider-neutral Source contract；不恢復legacy direct routes。

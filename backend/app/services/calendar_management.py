@@ -82,6 +82,8 @@ def _all_days(year: int, market: CalendarMarket) -> list[dict[str, Any]]:
 def _apply_rows(
     *, year: int, market: CalendarMarket, rows: list[dict[str, Any]], coverage_mode: str
 ) -> list[dict[str, Any]]:
+    if market.market in {"HK", "TAIFEX"} and coverage_mode != "full_year":
+        raise CalendarError("HK and TAIFEX require explicit full-year exchange dates")
     seen: set[str] = set()
     normalized: list[dict[str, Any]] = []
     for row in rows:

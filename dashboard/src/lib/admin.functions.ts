@@ -8,6 +8,7 @@ import {
   historicalBackfillCancelSchema,
   historicalBackfillCreateSchema,
   historicalBackfillPreviewSchema,
+  deliveryPlansRequestSchema,
 } from "./admin-api"
 import {
   fetchDashboardData,
@@ -16,6 +17,7 @@ import {
   cancelHistoricalBackfillData,
   createHistoricalBackfillData,
   previewHistoricalBackfillData,
+  fetchDeliveryPlansData,
 } from "./admin.server"
 import {
   assertSameOrigin,
@@ -38,6 +40,16 @@ export const loadDashboard = createServerFn({ method: "POST" })
       fetch,
       session.user.role
     )
+  })
+
+export const loadDeliveryPlans = createServerFn({ method: "POST" })
+  .validator(deliveryPlansRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    setResponseHeader("Cache-Control", "no-store")
+    setResponseHeader("Vary", "Cookie")
+    return fetchDeliveryPlansData(data, session.token, config.apiBaseUrl)
   })
 
 export const loadRawPayloadDetail = createServerFn({ method: "POST" })

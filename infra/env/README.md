@@ -121,3 +121,13 @@ created stopped in each environment and enabled only after controlled rollout. C
 and all three provider Source credentials must be pairwise distinct. Removing a
 local value does not delete an already-published GitHub Environment value:
 delete retired remote values explicitly before redeploying.
+
+Production full-market is selected through the reviewed workflow `runtime_profile`
+input, never by provider secrets or a GitHub application variable. The default
+is `bounded`; staging rejects `full-market`. The bundle manifest and acceptance
+record bind the selection, and replay must use the same profile (legacy missing
+values mean `bounded`). Provider entitlement and Owner activation are separate
+readiness gates. TAIFEX has an independent `api/source/taifex` credential and
+loads no provider API key. `enable_full_market_runtime=false` leaves its
+OpenTofu secret metadata absent by default; declaration and secret population
+require their normal review and do not establish live data acceptance.

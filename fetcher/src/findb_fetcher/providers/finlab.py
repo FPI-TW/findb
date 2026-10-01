@@ -187,6 +187,7 @@ class FinLabDatasetConfig:
     currency: str | None
     field_datasets: Mapping[str, str]
     symbols: tuple[FinLabSymbol, ...]
+    production_scope: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "field_datasets", MappingProxyType(dict(self.field_datasets)))
@@ -195,9 +196,11 @@ class FinLabDatasetConfig:
             raise FinLabConfigError("dataset_key must be a lowercase identifier")
         if self.market != "TW":
             raise FinLabConfigError("FinLab v1 mapping supports only market TW")
-        if self.asset_class != "equity":
+        if self.asset_class != "equity" and not (
+            self.production_scope and self.asset_class == "etf"
+        ):
             raise FinLabConfigError("FinLab staging feed supports only asset_class equity")
-        if self.dataset_key != "tw_equity_eod":
+        if self.dataset_key != {"equity": "tw_equity_eod", "etf": "tw_etf_eod"}[self.asset_class]:
             raise FinLabConfigError("asset_class must match its fixed FinLab Source dataset key")
         if self.currency not in {None, "TWD"}:
             raise FinLabConfigError("currency must be TWD or null")

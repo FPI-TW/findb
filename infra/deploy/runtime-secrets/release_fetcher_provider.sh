@@ -43,6 +43,17 @@ if [ "$provider_release_mode" = transactional ]; then
 fi
 
 case "$provider" in
+  taifex)
+    if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" != full-market ] || [ "${DEPLOYMENT_TARGET:-}" != production ]; then
+      echo "release_fetcher_provider=failed reason=taifex_profile_invalid" >&2
+      exit 1
+    fi
+    marker_identity="taifex"
+    image_repository_suffix="twelve-data"
+    source_key="${FETCHER_TAIFEX_SOURCE_CLIENT_KEY:-}"
+    provider_key=""
+    provider_env=(--env TAIFEX_BASE_URL --env TAIFEX_TIMEOUT_SECONDS --env TAIFEX_MAX_RESPONSE_BYTES)
+    ;;
   twelve-data)
     marker_identity="twelve"
     image_repository_suffix="twelve-data"
@@ -98,7 +109,9 @@ require_value() {
 
 require_value source_api_url "${FETCHER_SOURCE_API_URL:-}"
 require_value source_client_key "$source_key"
-require_value provider_credential "$provider_key"
+if [ "$provider" != taifex ]; then
+  require_value provider_credential "$provider_key"
+fi
 if [ "$provider" = "shioaji" ]; then
   require_value provider_secret_credential "$provider_secret_key"
 fi
@@ -173,7 +186,31 @@ if [ "$cache_dir" != "-" ]; then
   fi
 fi
 
+readiness_mount=()
+if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+  # The official TW ISIN full universe exceeds the bounded 8 MiB default.
+  # Keep the expanded raw/response ceiling explicit and profile-scoped.
+  export CLOUDFLARE_R2_MAX_OBJECT_BYTES=16777216
+  export TWELVE_DATA_MAX_RESPONSE_BYTES=16777216
+  export TAIFEX_MAX_RESPONSE_BYTES=16777216
+  # Readiness is operator evidence, never writable by the provider process.
+  readiness_dir=/etc/findb-full-market/readiness
+  sudo mkdir -p "$readiness_dir"
+  [ ! -L "$readiness_dir" ] || { echo "release_fetcher_provider=failed reason=readiness_directory_unsafe" >&2; exit 1; }
+  sudo chown 0:0 "$readiness_dir"
+  sudo chmod 0755 "$readiness_dir"
+  [ "$(sudo stat -c '%u:%g:%a' "$readiness_dir")" = "0:0:755" ] || {
+    echo "release_fetcher_provider=failed reason=readiness_directory_metadata" >&2
+    exit 1
+  }
+  readiness_mount=(--mount "type=bind,src=$readiness_dir,dst=$state_dir/readiness,readonly")
+fi
+
 raw_marker="$state_dir/raw-bucket.sha256"
+if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+  # All four providers share only the quota/checkpoint DB, never credentials.
+  marker_identity="full-market"
+fi
 fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$marker_identity" | sha256sum | cut -d ' ' -f1)"
 write_marker() {
   marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
@@ -228,8 +265,8 @@ if [ "$cache_dir" != "-" ]; then
   cache_mount=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
 
-if [ "$provider" = shioaji ] && ! sudo test -e "$state_path"; then
-  if docker container inspect "$stable" >/dev/null 2>&1; then
+if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then
+  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && docker container inspect "$stable" >/dev/null 2>&1; then
     echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
     exit 1
   fi
@@ -237,7 +274,7 @@ if [ "$provider" = shioaji ] && ! sudo test -e "$state_path"; then
   if docker container inspect "$state_bootstrap_name" >/dev/null 2>&1; then
     docker rm -f "$state_bootstrap_name"
   fi
-  # A fresh host has no Shioaji SQLite file yet, while --require-stopped is
+  # A fresh host has no SQLite file yet, while --require-stopped is
   # intentionally read-only and requires one. Create only the reviewed schema
   # before the stopped-state probe; this mode never constructs network clients.
   docker run --rm \
@@ -249,6 +286,7 @@ if [ "$provider" = shioaji ] && ! sudo test -e "$state_path"; then
     --tmpfs /tmp:rw,noexec,nosuid,size=16m \
     --mount "type=bind,src=$state_dir,dst=$state_dir" \
     "${cache_mount[@]}" \
+    ${readiness_mount[@]+"${readiness_mount[@]}"} \
     "$image" "$@" --state-path "$state_path" --initialize-state
   if [ ! -f "$state_path" ] \
     || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; then
@@ -266,6 +304,7 @@ docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --mount "type=bind,src=$state_dir,dst=$state_dir" \
   "${cache_mount[@]}" \
+  ${readiness_mount[@]+"${readiness_mount[@]}"} \
   "${runtime_env_args[@]}" \
   "$image" "$@" --check
 
@@ -320,6 +359,7 @@ docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --mount "type=bind,src=$state_dir,dst=$state_dir" \
   "${cache_mount[@]}" \
+  ${readiness_mount[@]+"${readiness_mount[@]}"} \
   "${runtime_env_args[@]}" \
   "$image" "$@" --require-stopped
 
@@ -335,6 +375,9 @@ common_args=(
 )
 if [ "$cache_dir" != "-" ]; then
   common_args+=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
+fi
+if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+  common_args+=("${readiness_mount[@]}")
 fi
 if [ "$accepted_release" = false ]; then
   # Candidate mode has already executed the CLI's offline check and strict
@@ -388,6 +431,11 @@ fi
 # provider consumer's secret set has been loaded.  Reuse only that already
 # allowlisted ``runtime_env_args`` array; the outer deployment shell never
 # receives SOURCE_CLIENT_KEY/provider/R2 credentials.
+if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+  trap - ERR INT TERM HUP
+  echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"
+  exit 0
+fi
 case "$provider" in
   twelve-data) historical_provider=twelve_data ;;
   finlab) historical_provider=finlab ;;

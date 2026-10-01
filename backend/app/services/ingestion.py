@@ -26,9 +26,11 @@ from app.models.registry import (
 from app.schemas.ingress import IngressRequestV1
 from app.services.delivery_policy import (
     DeliveryPolicyRejectedError,
+    DeliveryPolicyResult,
     evaluate_delivery_policy,
     lock_delivery_policy_scope,
 )
+from app.services.full_market import FullMarketError, validate_ingest_part
 from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
@@ -38,6 +40,7 @@ from app.services.ingress_contracts import (
 )
 from app.services.normalize import (
     BaseNormalizer,
+    FuturesEODContractNormalizer,
     MarketEODContractNormalizer,
     MarketMinuteContractNormalizer,
 )
@@ -59,6 +62,7 @@ class NormalizerFactory(Protocol):
 CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
     ("market_eod", 1): MarketEODContractNormalizer,
     ("market_minute", 1): MarketMinuteContractNormalizer,
+    ("futures_eod", 1): FuturesEODContractNormalizer,
 }
 
 
@@ -325,6 +329,7 @@ class IngestionService:
         request: IngressRequestV1,
         request_payload_sha256: str,
         attempt_id: UUID,
+        delivery_part_id: UUID | None = None,
     ) -> tuple[UUID, str, bool]:
         """Validate and return one exact idempotent canonical delivery."""
         existing_digest = existing_raw.payload_sha256 or payload_sha256(existing_raw.payload)
@@ -338,6 +343,10 @@ class IngestionService:
                 "idempotency_key is already associated with different contract content"
             )
         existing_run = await self.db.get(IngestionRun, existing_raw.run_id)
+        if existing_run is not None and existing_run.delivery_part_id != delivery_part_id:
+            raise IdempotencyPayloadMismatchError(
+                "idempotency_key is bound to another delivery part"
+            )
         status = existing_run.status if existing_run else "unknown"
         await IngestionAttemptService(self.db).mark_accepted(
             attempt_id,
@@ -382,6 +391,7 @@ class IngestionService:
         daily_update_id: str | None = None,
         sequence: int | None = None,
         sequence_count: int | None = None,
+        delivery_part_id: UUID | None = None,
     ) -> IngestionRun:
         """Create a new ingestion run record."""
         run = IngestionRun(
@@ -390,6 +400,7 @@ class IngestionService:
             source=source,
             source_client_id=self.source_client_id,
             raw_payload_id=raw_payload_id,
+            delivery_part_id=delivery_part_id,
             request_key=request_key,
             schema_id=schema_id,
             schema_version=schema_version,
@@ -584,6 +595,10 @@ class IngestionService:
             "rerun_from_idempotency_key": raw_payload.idempotency_key,
         }
 
+        original_run = await self.db.get(IngestionRun, run_id)
+        if original_run is None:
+            raise RawPayloadNotFoundError(f"Original run {run_id} not found")
+
         run = await self.create_ingestion_run(
             raw_payload.dataset_key,
             source=raw_payload.source,
@@ -594,6 +609,7 @@ class IngestionService:
             schema_id=raw_payload.schema_id,
             schema_version=raw_payload.schema_version,
             is_rerun=True,
+            delivery_part_id=original_run.delivery_part_id,
             **_rerun_batch_metadata(
                 retained_request.payload.model_dump(mode="json"),
                 dataset_key=raw_payload.dataset_key,
@@ -661,6 +677,11 @@ class IngestionService:
 
         validate_request_currency(declaration, request)
 
+        governance = (dataset.config or {}).get("full_market") or {}
+        if governance.get("required") and not governance.get("enabled"):
+            raise FullMarketError("Full-market feed is not activated", 409)
+        delivery_part_id = await validate_ingest_part(self.db, request, dataset)
+
         canonical_payload = request.payload.model_dump(mode="json")
         request_payload_sha256 = payload_sha256(canonical_payload)
         existing_raw = await self.get_raw_payload_by_idempotency_key(
@@ -673,6 +694,7 @@ class IngestionService:
                 request,
                 request_payload_sha256,
                 attempt_id,
+                delivery_part_id,
             )
 
         # Fixed global lock ordering: the exact DB unique scope is acquired and
@@ -695,15 +717,23 @@ class IngestionService:
                 request,
                 request_payload_sha256,
                 attempt_id,
+                delivery_part_id,
             )
 
         await lock_delivery_policy_scope(self.db, request)
 
-        policy_result = await evaluate_delivery_policy(
-            self.db,
-            request,
-            declaration.delivery_expectation,
-        )
+        if delivery_part_id is not None:
+            # Frozen membership and canonical reconciliation replace aggregate
+            # snapshot count thresholds for independently delivered plan parts.
+            policy_result = DeliveryPolicyResult(
+                outcome="pass", baseline_status="not_applicable", evaluated_at=utc_now()
+            )
+        else:
+            policy_result = await evaluate_delivery_policy(
+                self.db,
+                request,
+                declaration.delivery_expectation,
+            )
         policy_details = policy_result.bounded_details()
         if policy_result.outcome == "reject":
             raise DeliveryPolicyRejectedError(policy_result)
@@ -735,6 +765,7 @@ class IngestionService:
                 metadata=metadata,
                 run_id=run_id,
                 raw_payload_id=raw_payload.raw_payload_id,
+                delivery_part_id=delivery_part_id,
                 schema_id=request.schema_id,
                 schema_version=request.schema_version,
                 batch_data_date=request.payload.batch.data_date,
@@ -782,6 +813,7 @@ class IngestionService:
                 request,
                 request_payload_sha256,
                 attempt_id,
+                delivery_part_id,
             )
 
         logger.info(
