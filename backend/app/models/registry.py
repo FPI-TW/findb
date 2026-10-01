@@ -67,6 +67,169 @@ class DatasetRegistry(Base):
     scheduler_datasets: Mapped[list["SchedulerDataset"]] = relationship(back_populates="dataset")
 
 
+class UniverseRelease(Base):
+    """Immutable submitted provider membership; publication is Admin-governed."""
+
+    __tablename__ = "universe_release"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_key",
+            "provider",
+            "effective_date",
+            "member_sha256",
+            name="uq_universe_release_submission",
+        ),
+        CheckConstraint(
+            "status IN ('candidate', 'published')", name="universe_release_status_valid"
+        ),
+        CheckConstraint(
+            "member_count >= 1 AND member_count <= 100000", name="universe_release_count_bounded"
+        ),
+        Index("idx_universe_release_scope", "dataset_key", "provider", "status", "effective_date"),
+    )
+
+    release_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    change_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    change_ratio: Mapped[Decimal] = mapped_column(NUMERIC(12, 8), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="candidate")
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    approval_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    members: Mapped[list["UniverseMember"]] = relationship(
+        back_populates="release", order_by="UniverseMember.member_key"
+    )
+
+
+class UniverseMember(Base):
+    __tablename__ = "universe_member"
+    __table_args__ = (
+        UniqueConstraint("release_id", "member_key", name="uq_universe_member_key"),
+        Index("idx_universe_member_symbol", "symbol"),
+    )
+
+    member_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    release_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("universe_release.release_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    member_key: Mapped[str] = mapped_column(String(150), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(50), nullable=False)
+    provider_symbol: Mapped[str] = mapped_column(String(100), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(30), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False)
+    asset_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    classification: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    contract_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    product_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    contract_month: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    session: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    mapping_status: Mapped[str] = mapped_column(String(10), nullable=False)
+    raw_evidence_ref: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+
+    release: Mapped["UniverseRelease"] = relationship(back_populates="members")
+
+
+class DailyDeliveryPlan(Base):
+    """A frozen expected member set for one provider, dataset, and exchange date."""
+
+    __tablename__ = "daily_delivery_plan"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_key", "provider", "trade_date", name="uq_daily_delivery_plan_scope_date"
+        ),
+        Index("idx_daily_delivery_plan_deadline", "deadline_at", "dataset_key"),
+    )
+
+    plan_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    release_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("universe_release.release_id"), nullable=False
+    )
+    activation_cutoff: Mapped[date] = mapped_column(Date, nullable=False)
+    deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    release: Mapped["UniverseRelease"] = relationship()
+    parts: Mapped[list["DailyDeliveryPart"]] = relationship(
+        back_populates="plan", order_by="DailyDeliveryPart.part_number"
+    )
+
+
+class DailyDeliveryPart(Base):
+    __tablename__ = "daily_delivery_part"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "part_number", name="uq_daily_delivery_part_number"),
+        UniqueConstraint("work_item_id", name="uq_daily_delivery_part_work_item"),
+    )
+
+    part_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    plan_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("daily_delivery_plan.plan_id"), nullable=False
+    )
+    part_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    work_item_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    plan: Mapped["DailyDeliveryPlan"] = relationship(back_populates="parts")
+    members: Mapped[list["DailyDeliveryMember"]] = relationship(
+        back_populates="part", order_by="DailyDeliveryMember.member_key"
+    )
+
+
+class DailyDeliveryMember(Base):
+    __tablename__ = "daily_delivery_member"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "member_key", name="uq_daily_delivery_member_key"),
+        Index("idx_daily_delivery_member_part", "part_id"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('no_data', 'blocked')",
+            name="daily_delivery_member_outcome_valid",
+        ),
+    )
+
+    member_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    plan_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("daily_delivery_plan.plan_id"), nullable=False
+    )
+    part_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("daily_delivery_part.part_id"), nullable=False
+    )
+    member_key: Mapped[str] = mapped_column(String(150), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(50), nullable=False)
+    provider_symbol: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    contract_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    session: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    mapping_status: Mapped[str] = mapped_column(String(10), nullable=False)
+    outcome: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    outcome_reason: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    outcome_evidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    outcome_history: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    outcome_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    part: Mapped["DailyDeliveryPart"] = relationship(back_populates="members")
+
+
 class SchedulerControl(Base):
     """Durable desired/observed state for a provider-owned scheduler.
 
@@ -895,6 +1058,9 @@ class IngestionRun(Base):
         PG_UUID(as_uuid=True),
         ForeignKey("raw.market_payload.raw_payload_id", ondelete="SET NULL"),
         nullable=True,
+    )
+    delivery_part_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("daily_delivery_part.part_id"), nullable=True
     )
     request_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     schema_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

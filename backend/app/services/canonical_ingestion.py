@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.ingress import IngressRequestV1
 from app.services.delivery_policy import DeliveryPolicyRejectedError
+from app.services.full_market import FullMarketError
 from app.services.ingestion import (
     DatasetAccessDeniedError,
     DatasetContractNotConfiguredError,
@@ -287,6 +288,14 @@ async def accept_canonical_ingest(
             attempt_id,
             status_code=409,
             code="IDEMPOTENCY_PAYLOAD_MISMATCH",
+            message=str(exc),
+        )
+    except FullMarketError as exc:
+        await _reject(
+            attempt_service,
+            attempt_id,
+            status_code=exc.status_code,
+            code="FULL_MARKET_PLAN_INVALID",
             message=str(exc),
         )
     except (OperationalError, DBAPIError):

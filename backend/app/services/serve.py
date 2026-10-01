@@ -23,6 +23,8 @@ from sqlalchemy.sql import ColumnElement
 from app.models.canonical import (
     CalendarRevisionDay,
     CalendarYearRevision,
+    FuturesContract,
+    FuturesContractEOD,
     Instrument,
     InstrumentStats,
     MarketDataEOD,
@@ -40,6 +42,8 @@ from app.schemas.serve import (
     EODCoverageResponse,
     EODListResponse,
     EODResponse,
+    FuturesEODListResponse,
+    FuturesEODResponse,
     InstrumentCoverageResponse,
     InstrumentDetailResponse,
     InstrumentFacetsResponse,
@@ -56,7 +60,7 @@ from app.services.calendar_management import complete_published_revision_ids
 from app.services.ingress_contracts import DatasetContractDeclaration
 
 LookupColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
-DataKind = Literal["eod", "minute"]
+DataKind = Literal["eod", "minute", "futures_eod"]
 MAX_CURSOR_LENGTH = 2048
 MAX_CURSOR_BYTES = 1536
 BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -64,6 +68,9 @@ SUPPORTED_ACTIVE_SCOPES = frozenset(
     {
         ("market_eod", "US", "equity"),
         ("market_eod", "TW", "equity"),
+        ("market_eod", "TW", "etf"),
+        ("market_eod", "HK", "equity"),
+        ("futures_eod", "TW", "future"),
         ("market_minute", "TW", "equity"),
         ("market_minute", "TW", "etf"),
     }
@@ -120,6 +127,8 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
                 expected_frequency, data_kind, interval = "daily", "eod", "1d"
             elif schema_id == "market_minute":
                 expected_frequency, data_kind, interval = "minute", "minute", "1m"
+            elif schema_id == "futures_eod":
+                expected_frequency, data_kind, interval = "daily", "futures_eod", "1d"
             else:
                 raise ValueError("active dataset does not have a Serve read model")
             if frequency != expected_frequency:
@@ -192,10 +201,12 @@ def _instrument_response(
     stats: InstrumentStats | None,
     eod_pairs: set[tuple[str, str]],
     minute_pairs: set[tuple[str, str]],
+    futures_pairs: set[tuple[str, str]],
 ) -> InstrumentResponse:
     pair = (instrument.market, instrument.asset_class)
     eod = None
     minute = None
+    futures = None
     if stats is not None and pair in eod_pairs and stats.eod_first_date and stats.eod_latest_date:
         eod = EODCoverageResponse(
             first_date=stats.eod_first_date,
@@ -214,6 +225,17 @@ def _instrument_response(
             latest_bar_at=stats.minute_latest_bar_at,
             latest_close=stats.minute_latest_close,
         )
+    if (
+        stats is not None
+        and pair in futures_pairs
+        and stats.futures_first_date
+        and stats.futures_latest_date
+    ):
+        futures = EODCoverageResponse(
+            first_date=stats.futures_first_date,
+            latest_date=stats.futures_latest_date,
+            latest_close=None,
+        )
     return InstrumentResponse(
         instrument_id=instrument.instrument_id,
         asset_class=instrument.asset_class,
@@ -225,7 +247,7 @@ def _instrument_response(
         status=instrument.status,
         listed_date=instrument.listed_date,
         delisted_date=instrument.delisted_date,
-        coverage=InstrumentCoverageResponse(eod=eod, minute=minute),
+        coverage=InstrumentCoverageResponse(eod=eod, minute=minute, futures=futures),
     )
 
 
@@ -237,6 +259,9 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
         if scope.data_kind == "eod":
             table = MarketDataEOD
             date_column = MarketDataEOD.trade_date
+        elif scope.data_kind == "futures_eod":
+            table = FuturesContractEOD
+            date_column = FuturesContractEOD.trade_date
         else:
             table = MarketDataMinute
             date_column = MarketDataMinute.trade_date
@@ -367,6 +392,7 @@ async def list_instruments(
     all_pairs = _pairs(scopes)
     eod_pairs = _pairs(scopes, "eod")
     minute_pairs = _pairs(scopes, "minute")
+    futures_pairs = _pairs(scopes, "futures_eod")
     scope_filter = _instrument_scope_filter(all_pairs)
     eod_coverage_available = and_(
         _instrument_scope_filter(eod_pairs),
@@ -444,6 +470,14 @@ async def list_instruments(
         "minute_latest_close": case(
             (minute_coverage_available, InstrumentStats.minute_latest_close), else_=None
         ),
+        "futures_first_date": case(
+            (_instrument_scope_filter(futures_pairs), InstrumentStats.futures_first_date),
+            else_=None,
+        ),
+        "futures_latest_date": case(
+            (_instrument_scope_filter(futures_pairs), InstrumentStats.futures_latest_date),
+            else_=None,
+        ),
     }
     primary = sort_columns[sort_by].desc() if sort_dir == "desc" else sort_columns[sort_by].asc()
     rows = (
@@ -456,7 +490,7 @@ async def list_instruments(
     facets = await _instrument_facets(db, all_pairs)
     return InstrumentListResponse(
         data=[
-            _instrument_response(instrument, stats, eod_pairs, minute_pairs)
+            _instrument_response(instrument, stats, eod_pairs, minute_pairs, futures_pairs)
             for instrument, stats in rows
         ],
         pagination=PaginationInfo(
@@ -508,7 +542,11 @@ async def get_instrument(db: AsyncSession, instrument_id: UUID) -> InstrumentDet
     instrument, stats = row
     return InstrumentDetailResponse(
         data=_instrument_response(
-            instrument, stats, _pairs(scopes, "eod"), _pairs(scopes, "minute")
+            instrument,
+            stats,
+            _pairs(scopes, "eod"),
+            _pairs(scopes, "minute"),
+            _pairs(scopes, "futures_eod"),
         )
     )
 
@@ -922,4 +960,121 @@ async def list_minute(
             end_date=end_date if records else None,
             anchor=anchor,
         ),
+    )
+
+
+async def list_futures_eod(
+    db: AsyncSession,
+    *,
+    product_code: str | None,
+    contract_code: str | None,
+    start_date: date | None,
+    end_date: date | None,
+    session: str | None,
+    cursor: str | None,
+    page_size: int,
+) -> FuturesEODListResponse:
+    """Read actual expiry/session quotes with a query-bound stable cursor."""
+    scopes = await active_dataset_scopes(db)
+    if ("TW", "future") not in _pairs(scopes, "futures_eod"):
+        raise serve_error(422, "DATASET_NOT_AVAILABLE", "Futures EOD data is not active")
+    if product_code is not None and product_code not in {"TX", "MTX", "TMF", "TE", "TF"}:
+        raise serve_error(422, "INVALID_PRODUCT", "Unsupported futures product")
+    if session is not None and session not in {"regular", "after_hours"}:
+        raise serve_error(422, "INVALID_SESSION", "Unsupported futures session")
+    if contract_code is not None and (len(contract_code) > 50 or not contract_code):
+        raise serve_error(422, "INVALID_CONTRACT", "Invalid contract code")
+    _validate_dates(start_date, end_date)
+    filters = {
+        "product_code": product_code,
+        "contract_code": contract_code,
+        "start_date": _date_text(start_date),
+        "end_date": _date_text(end_date),
+        "session": session,
+    }
+    last_date: date | None = None
+    last_id: UUID | None = None
+    if cursor is not None:
+        payload = _decode_cursor(cursor)
+        if (
+            set(payload) != {"v", "kind", "filters", "last_date", "last_id"}
+            or payload.get("v") != 1
+            or payload.get("kind") != "futures_eod"
+            or payload.get("filters") != filters
+        ):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor does not match this query")
+        try:
+            last_date = date.fromisoformat(payload["last_date"])
+            last_id = UUID(payload["last_id"])
+        except (TypeError, ValueError):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor is invalid") from None
+    stmt = (
+        select(FuturesContractEOD, FuturesContract, Instrument)
+        .join(FuturesContract, FuturesContract.contract_id == FuturesContractEOD.contract_id)
+        .join(Instrument, Instrument.instrument_id == FuturesContract.instrument_id)
+        .where(Instrument.market == "TW", Instrument.asset_class == "future")
+    )
+    if product_code is not None:
+        stmt = stmt.where(Instrument.symbol == product_code)
+    if contract_code is not None:
+        stmt = stmt.where(FuturesContract.contract_code == contract_code)
+    if start_date is not None:
+        stmt = stmt.where(FuturesContractEOD.trade_date >= start_date)
+    if end_date is not None:
+        stmt = stmt.where(FuturesContractEOD.trade_date <= end_date)
+    if session is not None:
+        stmt = stmt.where(FuturesContractEOD.session == session)
+    if last_date is not None and last_id is not None:
+        stmt = stmt.where(
+            or_(
+                FuturesContractEOD.trade_date < last_date,
+                and_(FuturesContractEOD.trade_date == last_date, FuturesContractEOD.id < last_id),
+            )
+        )
+    rows = (
+        await db.execute(
+            stmt.order_by(FuturesContractEOD.trade_date.desc(), FuturesContractEOD.id.desc()).limit(
+                page_size + 1
+            )
+        )
+    ).all()
+    next_cursor = None
+    if len(rows) > page_size:
+        last = rows[page_size - 1][0]
+        next_cursor = _encode_cursor(
+            {
+                "v": 1,
+                "kind": "futures_eod",
+                "filters": filters,
+                "last_date": last.trade_date.isoformat(),
+                "last_id": str(last.id),
+            }
+        )
+        rows = rows[:page_size]
+    return FuturesEODListResponse(
+        data=[
+            FuturesEODResponse(
+                contract_id=contract.contract_id,
+                instrument_id=instrument.instrument_id,
+                product_code=instrument.symbol,
+                contract_code=contract.contract_code,
+                contract_month=contract.contract_month,
+                trade_date=quote.trade_date,
+                session=cast(Literal["regular", "after_hours"], quote.session),
+                open=quote.open,
+                high=quote.high,
+                low=quote.low,
+                close=quote.close,
+                volume=quote.volume,
+                settlement_price=quote.settlement_price,
+                open_interest=quote.open_interest,
+                source=quote.source,
+                source_fetched_at=quote.source_fetched_at,
+                asof_ts=quote.asof_ts,
+                created_at=quote.created_at,
+                updated_at=quote.updated_at,
+            )
+            for quote, contract, instrument in rows
+        ],
+        pagination=CursorPaginationInfo(page_size=page_size, next_cursor=next_cursor),
     )

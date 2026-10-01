@@ -128,6 +128,7 @@ findb/
 - Raw payload persistence 使用 PostgreSQL schema `raw`，核心 table 是 `raw.market_payload`。
 - Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `CONTRACT_NORMALIZER_MAP`；缺少或不支援 schema/version 時一律 fail closed。
 - Source API 只接受 versioned provider-neutral contracts；不提供 market-specific、provider-specific 或 `.../direct` compatibility routes。
+- Full-market 採 opt-in production runtime 與 immutable official universe／frozen daily plan；新 HK、TW ETF EOD、TAIFEX feeds 預設 inactive，須 Owner baseline approval、readiness 與五個連續交易日驗收。`expected = data + no_data + missing + blocked`，no_data 必須有 durable evidence；只補 activation 後缺口，不建立 continuous futures 或 historical backfill。
 - staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 與 `shioaji/tw_etf_minute`。
 - Instrument lookup data 可產生為`backend/app/static/data/instruments.json`；不再產生macro cache，generated cache不是source-of-truth data。
 - 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 exact-host Referer regex 比對，對 Dashboard `/dashboard/lookup` 觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
@@ -162,7 +163,7 @@ findb/
 - 測試資料表由 function-scope fixture 建立與清理。
 - 測試 fixture 會在需要時建立 DB-backed Source/Admin credentials；`DEBUG=true`。
 - Repo-wide preferred test runner 是 `pnpm test` 或 `make test`，會涵蓋 contracts、Backend、
-  Fetcher 與 Dashboard 的 unit／browser／e2e 測試；只跑 Backend 時使用
+  Fetcher、Infra 與 Dashboard 的 unit／browser／e2e 測試；只跑 Backend 時使用
   `pnpm test:backend` 或 `make test-backend`，會先確保 DB container 已啟動。
 - `pnpm check`／`make check` 僅執行全 repo 的 lint、type check 與 format check；改動完成後及
   commit 前必須執行。Git pre-commit 執行 `check`，pre-push 依序執行 `check` 與 `test`。

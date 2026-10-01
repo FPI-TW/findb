@@ -64,7 +64,7 @@ def test_wave5_is_single_linear_head_and_does_not_edit_c5() -> None:
     assert wave5 is not None
     assert wave5.down_revision == C5_REVISION
     assert c5 is not None
-    assert scripts.get_heads() == [LATEST_REVISION]
+    assert scripts.get_heads() == ["1331cb73adad"]
 
 
 @pytest.mark.asyncio

@@ -558,6 +558,7 @@ def test_reusable_deployments_forward_complete_staging_runtime_variable_contract
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
         ),
         "fetcher": (
+            "FETCHER_RUNTIME_PROFILE",
             "FETCHER_SOURCE_API_URL",
             "FINDB_SERVE_BASE_URL",
             "FETCHER_CALENDAR_TIMEOUT_SECONDS",
@@ -588,10 +589,16 @@ def test_reusable_deployments_forward_complete_staging_runtime_variable_contract
                 for item in workflow["jobs"]["deploy"]["steps"]
                 if item.get("name") == step_name
             )
-            assert set(expected_names) <= set(step["env"])
+            effective_env = {**workflow["jobs"]["deploy"].get("env", {}), **step["env"]}
+            assert set(expected_names) <= set(effective_env)
             for name in expected_names:
-                assert "inputs.deployment_target == 'staging'" in step["env"][name]
-                assert f"vars.{name}" in step["env"][name]
+                if name == "FETCHER_RUNTIME_PROFILE":
+                    # Scope is bound to the reviewed caller input, not a secret
+                    # or mutable runtime variable loaded on the host.
+                    assert effective_env[name] == "${{ inputs.runtime_profile }}"
+                else:
+                    assert "inputs.deployment_target == 'staging'" in effective_env[name]
+                    assert f"vars.{name}" in effective_env[name]
             match = re.search(r'^runtime_variable_names="([A-Z0-9_ ]+)"$', step["run"], re.M)
             assert match
             assert tuple(match.group(1).split()) == expected_names

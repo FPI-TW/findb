@@ -6,7 +6,12 @@ const nullableDateTime = isoDateTime.nullable()
 export const adminRoleSchema = z.enum(["owner", "operator", "viewer"])
 export type AdminRole = z.infer<typeof adminRoleSchema>
 
-export const SOURCE_PROVIDERS = ["twelve_data", "finlab", "shioaji"] as const
+export const SOURCE_PROVIDERS = [
+  "twelve_data",
+  "finlab",
+  "shioaji",
+  "taifex",
+] as const
 export const sourceProviderSchema = z.enum(SOURCE_PROVIDERS)
 export type SourceProvider = z.infer<typeof sourceProviderSchema>
 
@@ -14,9 +19,10 @@ export const SOURCE_PROVIDER_DATASETS: Record<
   SourceProvider,
   readonly string[]
 > = {
-  twelve_data: ["us_equity_eod"],
-  finlab: ["tw_equity_eod"],
+  twelve_data: ["us_equity_eod", "hk_equity_eod"],
+  finlab: ["tw_equity_eod", "tw_etf_eod"],
   shioaji: ["tw_equity_minute", "tw_etf_minute"],
+  taifex: ["tw_futures_eod"],
 }
 
 export const adminUserSchema = z.object({

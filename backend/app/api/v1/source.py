@@ -7,17 +7,30 @@ of the published versioned ingress contracts.
 """
 
 import logging
+from datetime import date
 from typing import Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
+from app.models.registry import DailyDeliveryPlan
+from app.schemas.full_market import (
+    DeliveryOutcomeRequest,
+    DeliveryPlanCreateRequest,
+    DeliveryPlanResponse,
+    DeliverySummaryResponse,
+    UniverseListResponse,
+    UniverseReleaseDetailResponse,
+    UniverseReleaseResponse,
+    UniverseSubmitRequest,
+)
 from app.schemas.source import (
     CanonicalIngestResponse,
     DatasetInfo,
@@ -35,6 +48,15 @@ from app.schemas.source import (
 from app.services.canonical_ingestion import (
     CanonicalIngestRejectionError,
     accept_canonical_ingest,
+)
+from app.services.full_market import (
+    FullMarketError,
+    create_plan,
+    get_plan,
+    get_universe,
+    list_universes,
+    record_outcome,
+    submit_universe,
 )
 from app.services.historical_backfill import (
     HistoricalBackfillConflictError,
@@ -66,6 +88,138 @@ from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _full_market_source_scope(
+    db: AsyncSession, provider: str | None = None
+) -> tuple[str, list[str] | None]:
+    authenticated_provider = db.info.get("source_name")
+    if not isinstance(authenticated_provider, str) or not authenticated_provider:
+        raise HTTPException(status_code=403, detail="Source provider identity unavailable")
+    if provider is not None and provider != authenticated_provider:
+        raise HTTPException(status_code=403, detail="Source provider scope mismatch")
+    datasets = db.info.get("allowed_datasets")
+    if datasets is not None and not isinstance(datasets, list):
+        raise HTTPException(status_code=403, detail="Source dataset scope unavailable")
+    return authenticated_provider, datasets
+
+
+def _full_market_http_error(exc: FullMarketError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/universes", response_model=UniverseReleaseResponse)
+async def submit_universe_endpoint(
+    body: UniverseSubmitRequest,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseReleaseResponse:
+    _, datasets = _full_market_source_scope(db, body.provider)
+    try:
+        return await submit_universe(db, body, allowed_datasets=datasets)
+    except FullMarketError as exc:
+        raise _full_market_http_error(exc) from exc
+
+
+@router.get("/universes", response_model=UniverseListResponse)
+async def list_universes_endpoint(
+    dataset_key: str,
+    as_of: date | None = None,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseListResponse:
+    provider, datasets = _full_market_source_scope(db)
+    try:
+        return await list_universes(
+            db, dataset_key=dataset_key, provider=provider, allowed_datasets=datasets, as_of=as_of
+        )
+    except FullMarketError as exc:
+        raise _full_market_http_error(exc) from exc
+
+
+@router.get("/universes/{release_id}", response_model=UniverseReleaseDetailResponse)
+async def get_universe_endpoint(
+    release_id: UUID,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseReleaseDetailResponse:
+    provider, datasets = _full_market_source_scope(db)
+    try:
+        return await get_universe(db, release_id, provider=provider, allowed_datasets=datasets)
+    except FullMarketError as exc:
+        raise _full_market_http_error(exc) from exc
+
+
+@router.post("/delivery-plans", response_model=DeliveryPlanResponse)
+async def create_delivery_plan_endpoint(
+    body: DeliveryPlanCreateRequest,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> DeliveryPlanResponse:
+    _, datasets = _full_market_source_scope(db, body.provider)
+    try:
+        return await create_plan(db, body, allowed_datasets=datasets)
+    except FullMarketError as exc:
+        raise _full_market_http_error(exc) from exc
+
+
+@router.get("/delivery-plans/{plan_id}", response_model=DeliveryPlanResponse)
+async def get_delivery_plan_endpoint(
+    plan_id: UUID,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> DeliveryPlanResponse:
+    provider, datasets = _full_market_source_scope(db)
+    try:
+        return await get_plan(db, plan_id, provider=provider, allowed_datasets=datasets)
+    except FullMarketError as exc:
+        raise _full_market_http_error(exc) from exc
+
+
+@router.get("/delivery-plans")
+async def list_delivery_plans_endpoint(
+    dataset_key: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    limit: int = 100,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    provider, datasets = _full_market_source_scope(db)
+    if not datasets or dataset_key not in datasets:
+        raise HTTPException(status_code=403, detail="Source dataset scope denied")
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+    stmt = select(DailyDeliveryPlan).where(
+        DailyDeliveryPlan.dataset_key == dataset_key,
+        DailyDeliveryPlan.provider == provider,
+    )
+    if start_date is not None:
+        stmt = stmt.where(DailyDeliveryPlan.trade_date >= start_date)
+    if end_date is not None:
+        stmt = stmt.where(DailyDeliveryPlan.trade_date <= end_date)
+    plans = (
+        await db.scalars(stmt.order_by(DailyDeliveryPlan.trade_date.desc()).limit(limit))
+    ).all()
+    responses = [
+        await get_plan(db, plan.plan_id, provider=provider, allowed_datasets=datasets)
+        for plan in plans
+    ]
+    return {"data": [response.model_dump(mode="json") for response in responses]}
+
+
+@router.post("/delivery-plans/{plan_id}/outcomes", response_model=DeliverySummaryResponse)
+async def record_delivery_outcome_endpoint(
+    plan_id: UUID,
+    body: DeliveryOutcomeRequest,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> DeliverySummaryResponse:
+    provider, datasets = _full_market_source_scope(db)
+    try:
+        return await record_outcome(db, plan_id, body, provider=provider, allowed_datasets=datasets)
+    except FullMarketError as exc:
+        raise _full_market_http_error(exc) from exc
 
 
 @router.post("/historical-backfills/claim", response_model=HistoricalBackfillClaimResponse)

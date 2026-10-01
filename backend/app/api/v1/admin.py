@@ -31,6 +31,7 @@ from app.models.registry import (
     AdminSession,
     AdminUser,
     APIKey,
+    DailyDeliveryPlan,
     IngestionRun,
     SourceClient,
 )
@@ -110,6 +111,14 @@ from app.schemas.admin import (
     SuccessResponse,
 )
 from app.schemas.common import PaginationInfo
+from app.schemas.full_market import (
+    DeliveryPlanResponse,
+    DeliverySummaryResponse,
+    FeedActivateRequest,
+    FeedDeactivateRequest,
+    UniversePublishRequest,
+    UniverseReleaseResponse,
+)
 from app.services.admin import (
     AlreadyResolvedError,
     InvalidCorrectionError,
@@ -160,6 +169,14 @@ from app.services.credentials import (
     present_source,
 )
 from app.services.delivery_monitor import list_missing_delivery_alerts
+from app.services.full_market import (
+    FullMarketError,
+    activate_feed,
+    deactivate_feed,
+    get_plan,
+    publish_universe,
+    reconcile_plan,
+)
 from app.services.historical_backfill import (
     HistoricalBackfillConflictError,
     HistoricalBackfillError,
@@ -208,6 +225,130 @@ from app.vocabulary import normalize_market
 from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
+
+
+@router.post("/universes/{release_id}/publish", response_model=UniverseReleaseResponse)
+async def publish_full_market_universe(
+    release_id: UUID,
+    body: UniversePublishRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseReleaseResponse:
+    try:
+        response = await publish_universe(db, release_id, body, actor=str(principal))
+    except FullMarketError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="publish",
+        resource_type="universe_release",
+        resource_id=str(release_id),
+        details={
+            "first_baseline_approved": body.first_baseline_approved,
+            "threshold_exception_approved": body.threshold_exception_approved,
+            "evidence_note": body.evidence_note,
+        },
+        commit=False,
+    )
+    await db.commit()
+    return response
+
+
+@router.post("/feeds/{dataset_key}/activate")
+async def activate_full_market_feed(
+    dataset_key: str,
+    body: FeedActivateRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        response = await activate_feed(db, dataset_key, body)
+    except FullMarketError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="activate",
+        resource_type="full_market_feed",
+        resource_id=dataset_key,
+        details={
+            "mode": body.mode,
+            "activation_date": body.activation_date.isoformat(),
+            "readiness_evidence_note": body.readiness_evidence_note,
+        },
+        commit=False,
+    )
+    await db.commit()
+    return response
+
+
+@router.post("/feeds/{dataset_key}/deactivate")
+async def deactivate_full_market_feed(
+    dataset_key: str,
+    body: FeedDeactivateRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        response = await deactivate_feed(db, dataset_key)
+    except FullMarketError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="deactivate",
+        resource_type="full_market_feed",
+        resource_id=dataset_key,
+        details={**response, "evidence_note": body.evidence_note},
+        commit=False,
+    )
+    await db.commit()
+    return response
+
+
+@router.get("/delivery-plans", response_model=dict)
+async def list_full_market_delivery_plans(
+    dataset_key: str | None = None,
+    trade_date: date | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    stmt = select(DailyDeliveryPlan)
+    if dataset_key is not None:
+        stmt = stmt.where(DailyDeliveryPlan.dataset_key == dataset_key)
+    if trade_date is not None:
+        stmt = stmt.where(DailyDeliveryPlan.trade_date == trade_date)
+    plans = (
+        await db.scalars(
+            stmt.order_by(
+                DailyDeliveryPlan.trade_date.desc(), DailyDeliveryPlan.created_at.desc()
+            ).limit(limit)
+        )
+    ).all()
+    data: list[DeliveryPlanResponse] = []
+    for plan in plans:
+        data.append(
+            await get_plan(
+                db, plan.plan_id, provider=plan.provider, allowed_datasets=[plan.dataset_key]
+            )
+        )
+    return {"data": [item.model_dump(mode="json") for item in data]}
+
+
+@router.get("/delivery-plans/{plan_id}/summary", response_model=DeliverySummaryResponse)
+async def get_full_market_delivery_summary(
+    plan_id: UUID,
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> DeliverySummaryResponse:
+    plan = await db.get(DailyDeliveryPlan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Delivery plan not found")
+    return await reconcile_plan(db, plan)
+
+
 settings = get_settings()
 
 

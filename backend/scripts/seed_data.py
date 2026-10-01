@@ -1,18 +1,20 @@
-"""Seed the four staging feeds and their versioned contract declarations."""
+"""Seed bounded and staged full-market feed contract declarations."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from copy import deepcopy
+from datetime import time
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.models.base import Base
-from app.models.registry import DatasetRegistry
+from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.utils import utc_now
 
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +27,9 @@ SUPPORTED_DATASETS = (
     "tw_equity_eod",
     "tw_equity_minute",
     "tw_etf_minute",
+    "hk_equity_eod",
+    "tw_etf_eod",
+    "tw_futures_eod",
 )
 
 
@@ -130,7 +135,7 @@ def _contract_config(
     schema_id: str,
     market: str,
     asset_class: str,
-    currency: str,
+    currency: str | None,
     allowed_sources: list[str],
     delivery_expectation: dict,
 ) -> dict:
@@ -291,6 +296,113 @@ DATASETS: list[dict[str, Any]] = [
 ]
 
 
+for _dataset in DATASETS:
+    if _dataset["dataset_key"] in {
+        "us_equity_eod",
+        "tw_equity_eod",
+        "tw_equity_minute",
+        "tw_etf_minute",
+    }:
+        _dataset["config"]["full_market"] = {
+            "enabled": False,
+            "required": False,
+            "readiness_approved": False,
+            "activation_date": None,
+        }
+
+
+def _staged_eod_dataset(
+    dataset_key: str,
+    name: str,
+    *,
+    market: str,
+    asset_class: str,
+    currency: str | None,
+    provider: str,
+    schema_id: str,
+    calendar_market: str,
+) -> dict[str, Any]:
+    expectation = _eod_delivery_expectation(
+        mode="full_snapshot",
+        market=calendar_market,
+        timezone="Asia/Hong_Kong" if market == "HK" else "Asia/Taipei",
+        close_time="16:10:00"
+        if market == "HK"
+        else "13:45:00"
+        if calendar_market == "TAIFEX"
+        else "13:30:00",
+        source=provider,
+        minimum_count=0,
+        slot_id="taiwan_market_window",
+        local_time="14:30:00",
+        monitor_deadline="23:00:00",
+    )
+    expectation["schedule"]["enabled"] = False
+    expectation["missing_delivery"] = {"action": "disabled", "expected_sources": []}
+    config = _contract_config(
+        schema_id=schema_id,
+        market=market,
+        asset_class=asset_class,
+        currency=currency,
+        allowed_sources=[provider],
+        delivery_expectation=expectation,
+    )
+    config["full_market"] = {
+        "enabled": False,
+        "required": True,
+        "readiness_approved": False,
+        "activation_date": None,
+        "calendar_market": calendar_market,
+    }
+    config["source_precedence"] = [provider]
+    return {
+        "dataset_key": dataset_key,
+        "name": name,
+        "description": f"Staged {provider} {schema_id}.v1 full-market daily feed",
+        "asset_class": asset_class,
+        "market": market,
+        "frequency": "daily",
+        "is_active": False,
+        "config": config,
+    }
+
+
+DATASETS.extend(
+    [
+        _staged_eod_dataset(
+            "hk_equity_eod",
+            "港股日K",
+            market="HK",
+            asset_class="equity",
+            currency=None,
+            provider="twelve_data",
+            schema_id="market_eod",
+            calendar_market="HK",
+        ),
+        _staged_eod_dataset(
+            "tw_etf_eod",
+            "台灣 ETF 日K",
+            market="TW",
+            asset_class="etf",
+            currency="TWD",
+            provider="finlab",
+            schema_id="market_eod",
+            calendar_market="TW",
+        ),
+        _staged_eod_dataset(
+            "tw_futures_eod",
+            "台灣期貨契約日K",
+            market="TW",
+            asset_class="future",
+            currency="TWD",
+            provider="taifex",
+            schema_id="futures_eod",
+            calendar_market="TAIFEX",
+        ),
+    ]
+)
+
+
 _LEGACY_CONFIG_KEYS = {
     "source_format",
     "field_mapping",
@@ -365,7 +477,7 @@ def _merge_operator_config(
 
 
 async def seed_datasets(session: AsyncSession) -> None:
-    """Upsert exactly the four supported feed declarations."""
+    """Upsert bounded feeds and inactive new full-market declarations."""
     logger.info("Seeding supported datasets: %s", ", ".join(SUPPORTED_DATASETS))
     for dataset in DATASETS:
         existing = await session.get(DatasetRegistry, dataset["dataset_key"])
@@ -391,13 +503,45 @@ async def seed_datasets(session: AsyncSession) -> None:
         existing.asset_class = dataset["asset_class"]
         existing.market = dataset["market"]
         existing.frequency = dataset["frequency"]
-        existing.is_active = dataset["is_active"]
+        if dataset["dataset_key"] not in {"hk_equity_eod", "tw_etf_eod", "tw_futures_eod"}:
+            existing.is_active = dataset["is_active"]
         existing.config = _merge_operator_config(
             dataset["dataset_key"],
             dataset["config"],
             existing.config,
         )
         existing.updated_at = utc_now()
+    await session.flush()
+    for provider, datasets, slot, clock in (
+        ("twelve_data", ["us_equity_eod", "hk_equity_eod"], "western_markets_window", time(8)),
+        ("finlab", ["tw_equity_eod", "tw_etf_eod"], "taiwan_market_window", time(18)),
+        ("shioaji", ["tw_equity_minute", "tw_etf_minute"], "taiwan_market_window", time(18)),
+        ("taifex", ["tw_futures_eod"], "taiwan_market_window", time(18)),
+    ):
+        key = f"full_market_{provider}_v1"
+        await session.execute(
+            insert(SchedulerControl)
+            .values(
+                scheduler_key=key,
+                provider=provider,
+                slot_id=slot,
+                scheduled_local_time=clock,
+                timezone="Asia/Taipei",
+                desired_state="stopped",
+                observed_state="stopped",
+                revision=1,
+            )
+            .on_conflict_do_nothing(index_elements=["scheduler_key"])
+        )
+        for dataset_key in datasets:
+            await session.execute(
+                insert(SchedulerDataset)
+                .values(
+                    scheduler_key=key,
+                    dataset_key=dataset_key,
+                )
+                .on_conflict_do_nothing()
+            )
     await session.commit()
     logger.info("Seeded %d datasets", len(DATASETS))
 

@@ -18,6 +18,7 @@ from app.vocabulary import SOURCE_NAME_PATTERN
 
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
+FUTURES_CONTRACT_MONTH_PATTERN = r"[0-9]{4}(?:0[1-9]|1[0-2])(?:[WF][1-5])?"
 CurrencyCode = Annotated[
     str,
     Field(min_length=3, max_length=10, pattern=r"^[A-Z0-9]+$"),
@@ -187,6 +188,83 @@ class MarketEODPayload(BaseModel):
                 "duplicate_delivery_key",
                 "duplicate (symbol, trade_date) rows are not allowed",
             )
+        ensure_payload_size_within_limit(self.model_dump(mode="json"))
+        return self
+
+
+class FuturesEODRow(_IngressRow):
+    """An actual TAIFEX expiry and exchange-attributed trading session."""
+
+    product_code: Literal["TX", "MTX", "TMF", "TE", "TF"]
+    contract_code: str = Field(
+        min_length=2,
+        max_length=50,
+        pattern=rf"^(TX|MTX|TMF|TE|TF):{FUTURES_CONTRACT_MONTH_PATTERN}$",
+    )
+    contract_month: str = Field(
+        min_length=2, max_length=10, pattern=rf"^{FUTURES_CONTRACT_MONTH_PATTERN}$"
+    )
+    trade_date: date
+    session: Literal["regular", "after_hours"]
+    open: Optional[NonNegativeDecimal] = None
+    high: Optional[NonNegativeDecimal] = None
+    low: Optional[NonNegativeDecimal] = None
+    close: Optional[NonNegativeDecimal] = None
+    volume: Optional[NonNegativeInt] = None
+    settlement_price: Optional[NonNegativeDecimal] = None
+    open_interest: Optional[NonNegativeInt] = None
+
+    @model_validator(mode="after")
+    def validate_prices(self) -> "FuturesEODRow":
+        if self.contract_code != f"{self.product_code}:{self.contract_month}":
+            raise ValueError("contract_code must preserve product and source contract month")
+        values = [
+            value for value in (self.open, self.high, self.low, self.close) if value is not None
+        ]
+        if self.high is not None and values and self.high < max(values):
+            raise ValueError("high must not be below another OHLC value")
+        if self.low is not None and values and self.low > min(values):
+            raise ValueError("low must not be above another OHLC value")
+        if (
+            not values
+            and self.settlement_price is None
+            and self.open_interest is None
+            and not (self.volume is not None and self.volume > 0)
+        ):
+            raise ValueError("futures quote must contain a source-provided observation")
+        return self
+
+
+class FuturesEODPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    batch: IngressBatch
+    data: list[FuturesEODRow]
+
+    @model_validator(mode="after")
+    def validate_batch_and_rows(self) -> "FuturesEODPayload":
+        ensure_data_items_count_within_limit(len(self.data))
+        if self.batch.declared_record_count != len(self.data):
+            raise PydanticCustomError(
+                "declared_record_count_mismatch",
+                "declared_record_count must equal the number of data rows",
+            )
+        keys = [
+            (row.product_code, row.contract_code, row.trade_date, row.session) for row in self.data
+        ]
+        if len(keys) != len(set(keys)):
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate futures contract/date/session rows are not allowed",
+            )
+        dates = [row.trade_date for row in self.data]
+        if dates and (min(dates) != self.batch.data_date or max(dates) != self.batch.data_date):
+            if self.batch.coverage_start_date is None or self.batch.coverage_end_date is None:
+                raise ValueError("coverage dates are required for multi-date futures batches")
+            if self.batch.coverage_start_date > min(dates) or self.batch.coverage_end_date < max(
+                dates
+            ):
+                raise ValueError("coverage dates must include every futures trade_date")
         ensure_payload_size_within_limit(self.model_dump(mode="json"))
         return self
 
@@ -467,6 +545,15 @@ class MarketMinuteIngressRequest(_IngressRequest):
         return self
 
 
+class FuturesEODIngressRequest(_IngressRequest):
+    """Complete ``futures_eod.v1`` contract request."""
+
+    schema_id: Literal["futures_eod"]
+    schema_version: Literal[1]
+    source: Literal["taifex"]
+    payload: FuturesEODPayload
+
+
 def minute_sequence_key_digest(
     *, dataset_key: str, data_date: date, snapshot_id: str, sequence: int
 ) -> str:
@@ -487,4 +574,4 @@ def minute_sequence_key_digest(
     ).hexdigest()
 
 
-IngressRequestV1 = MarketEODIngressRequest | MarketMinuteIngressRequest
+IngressRequestV1 = MarketEODIngressRequest | MarketMinuteIngressRequest | FuturesEODIngressRequest

@@ -133,6 +133,29 @@ Minute feeds使用`sequenced_snapshot`。只有相同`snapshot_id + daily_update
 missing alert。不同snapshot不得拼接；partial、failed或identity缺失都維持未完成。診斷時
 查run保存的sequence identity、job、outbox與terminal state，不依賴有限期raw JSON。
 
+## Full-market daily reconciliation
+
+Full-market plan 以官方 published universe 與 exchange calendar 凍結 expected 成員；activation
+之前不建立 plan，也不將舊 canonical 資料當成本次 delivery。每日查詢
+`GET /api/v1/admin/delivery-plans` 與 `/{plan_id}/summary`，核對
+`expected = data + no_data + missing + blocked`，並保留 release digest、part／work item、raw
+reference、run／job 與 canonical lineage。
+
+`data` 來自成功 canonical persistence；`no_data` 僅接受可稽核停牌／無成交來源 evidence。
+空 payload、權限失敗、provider response 錯誤或超限列為 missing／blocked。不得用 subset
+清單替換原 plan，或把缺資料補為零。某 part 成功不阻擋其 canonical 查詢，但全日需
+`data + no_data = expected` 且 missing／blocked 均為零才 complete。
+
+TW、HK 與 TAIFEX 當日台北 23:00，US 次日台北 09:00 為 deadline；Source 202、provider fetch
+成功、container running 都不能取代 canonical completion。TW、HK、US、futures 分階段 rollout，
+各需連續五個實際開市日準時 complete，且最後日期在交易所當地已到達並已收盤，才由 Owner
+將 acceptance 切到 active。預建未來 plan 不算實際驗收天數。仍缺 entitlement、
+全 universe mapping、quota／capacity 證據時維持 blocked，不能藉付費升級或縮小集合通過。
+
+故障後沿 activation-forward plan 查缺口：prepared raw 先保存於 R2 與 durable checkpoint，
+重啟只重送穩定 request／idempotency identity，不再耗 provider quota 重新下載已準備的 response。
+日後新增 universe release 只影響新 plan；補既有缺口仍使用當日 frozen release。
+
 ## 監控
 
 最低告警：

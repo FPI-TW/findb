@@ -4,19 +4,19 @@ TanStack Start 前端，整合公開的標的查詢，以及需登入的唯讀�
 
 ## Routes
 
-| Route                                | 權限   | 用途                   |
-| ------------------------------------ | ------ | ---------------------- |
-| `/dashboard/`                        | 公開   | 首頁與功能入口         |
-| `/dashboard/lookup`                  | 公開   | Active金融商品查詢     |
-| `/dashboard/login`                   | 公開   | 操作人員登入           |
-| `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼     |
-| `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況 |
-| `/dashboard/operations/deliveries`   | 需登入 | 缺漏交付               |
-| `/dashboard/operations/quality`      | 需登入 | 未解決 DQ 問題         |
-| `/dashboard/operations/corrections`  | 需登入 | 修正稽核紀錄           |
-| `/dashboard/operations/raw-payloads` | 需登入 | Raw payload 稽核查詢   |
-| `/dashboard/operations/credentials`  | 需登入 | API credential 治理    |
-| `/dashboard/operations/users`        | Owner  | 管理者帳號與角色       |
+| Route                                | 權限   | 用途                           |
+| ------------------------------------ | ------ | ------------------------------ |
+| `/dashboard/`                        | 公開   | 首頁與功能入口                 |
+| `/dashboard/lookup`                  | 公開   | Active金融商品查詢             |
+| `/dashboard/login`                   | 公開   | 操作人員登入                   |
+| `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼             |
+| `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況         |
+| `/dashboard/operations/deliveries`   | 需登入 | 全市場交付計畫、缺漏交付與回補 |
+| `/dashboard/operations/quality`      | 需登入 | 未解決 DQ 問題                 |
+| `/dashboard/operations/corrections`  | 需登入 | 修正稽核紀錄                   |
+| `/dashboard/operations/raw-payloads` | 需登入 | Raw payload 稽核查詢           |
+| `/dashboard/operations/credentials`  | 需登入 | API credential 治理            |
+| `/dashboard/operations/users`        | Owner  | 管理者帳號與角色               |
 
 ## Local development
 
@@ -38,9 +38,16 @@ Admin API 時以 Bearer token 轉送。Staging cookie 同時啟用 `Secure`；�
 開發則停用 `Secure`，以便在 localhost 測試。
 
 公開 Lookup 透過同源的`/api/v1/serve/instruments`取得列表、全域facets與分頁資料，並依每筆
-`coverage.eod`／`coverage.minute`載入`/api/v1/serve/eod`與`/api/v1/serve/minute`。舊
+`coverage.eod`／`coverage.minute`載入`/api/v1/serve/eod`與`/api/v1/serve/minute`。
+`asset_class=future`的商品詳情使用`/api/v1/serve/futures/eod`，依商品、合約、日期及
+日盤／夜盤查詢各合約行情，並使用cursor分頁；商品coverage的`latest_close`為空時不推算
+任一合約收盤價。舊
 `?ds=macro`書籤會正規化回instruments。前端測試只mock此HTTP contract，不讀取backend source或
 generated cache；列表只會包含active dataset scopes。
+
+交付頁透過登入session的server function讀取`/api/v1/admin/delivery-plans`，顯示各批次
+預期、有資料、正常無資料、缺漏、受阻與逾時狀態；讀取失敗會顯示錯誤，不當作空計畫。
+計畫面板僅供查閱，不提供啟用或發布操作。
 
 直接執行 `pnpm dev:dashboard` 時，開發入口是 `http://localhost:3000/dashboard/`。若要以獨立 container 啟動：
 

@@ -45,6 +45,56 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > staging告警與復原證據見[monitoring runbook](monitoring.md)，尚未完成的production與平台強化只列於
 > [current backlog](../dev/backlog.md)。
 
+## Opt-in full-market production runtime
+
+Production Fetcher dispatch 新增 `runtime_profile=bounded|full-market`，預設 bounded；staging
+只允許 bounded。選定 profile 綁定 release bundle manifest 與 immutable accepted record；rollback
+必須指定原 record 的相同 profile，舊 record 未帶此欄位視為 bounded。Full-market 改變 bundle
+checksum，不可在相同 accepted identity 下靜默切換範圍。它仍使用 accepted Twelve Data、FinLab、
+Shioaji 三個 exact image digests；TAIFEX 公開資料 adapter 使用 generic Twelve Data image，
+不新增 image pipeline 或 provider credential。
+
+上線順序：
+
+1. Backend-first 部署 migration、`futures_eod.v1` 與 inactive 新 registry，保持新 scope stopped。
+2. 以官方快照提交 universe；Owner audited baseline publish，確認完整 exchange calendar。
+3. 逐 provider 以實際帳號核對 entitlement、全集合 mapping、quota／bytes、deadline capacity；
+   保留 scoped readiness evidence，未確認維持 blocked。
+4. 對 production 的 `full-market` candidate 做離線 preflight、credential isolation 與 durable state
+   驗證；accepted record durable 後才 activation。Provider secret 存在本身不會啟用 dataset。
+5. Owner 指定 activation_date，以 acceptance 模式分 TW、HK、US、futures 執行；首次日期不得
+   早於交易所當地當日，可預約未來日期，不得回填歷史日期作為驗收起點。各完成連續
+   五個實際交易所開市日準時 complete，才切 active。
+
+Full-market profile將 raw／response ceiling明確設為16 MiB，容納官方TW ISIN完整原文；
+既有bounded 8 MiB預設不變。
+
+四 runtime 使用 `/var/lib/findb-full-market/state.sqlite3` 的 shared durable quota／checkpoint，
+work lease 按 provider 隔離；Twelve Data US／HK 使用同一 account quota，不各自重設。
+Readiness evidence 由 operator 保存在 root-owned `/etc/findb-full-market/readiness/`，以 readonly
+bind mount提供 `/var/lib/findb-full-market/readiness/{twelve_data,finlab,shioaji,taifex}.json`。
+Proof files 使用 root-owned `0644`，僅保存已安全化的 account capability／quota evidence與checksum，
+不含 credentials；UID10001需可讀，不能使用root `0600`。Operator驗證provider／dataset scope、
+evidence與有效期限；missing或unreadable proof均須blocked，不能跳過readiness gate。
+缺少證據時可保持 idle／blocked，不能呼叫 provider。FinLab／Shioaji SDK cache 仍位於各自
+專用 mount，不存入 shared state；prepared body／receipt 不保存 provider credentials。
+`--check` 是 local validation；`--initialize-state` 只建 SQLite，`--require-stopped` 以 Source
+讀取 `full_market_<provider>_v1` 的 stopped desired state。缺少 Backend control／calendar 即
+fail closed；runtime 取得 Source activation 且相符 control running 後才可能建立新 cycle。
+
+TAIFEX 只載入 `findb/production/fetcher/api/source/taifex`、calendar Serve 與 Raw R2 credentials；
+不載入 Twelve Data／FinLab／Shioaji provider keys。OpenTofu `enable_full_market_runtime=false`
+預設不新增 secret metadata；明確 opt-in 只宣告 TAIFEX Source secret，值仍由已授權 operator
+另行安全載入。本次 repo change 不建立 live AWS resources，也不宣稱 readiness／五日驗收已完成。
+
+Rollback 先由 Owner 呼叫 `POST /admin/feeds/{dataset_key}/deactivate` 並提供 evidence_note，
+停用新 full-market scope及匹配的 provider control；同 provider 的所有 full-market feeds都停止。
+保留 durable state、prepared raw、canonical 與 gaps，恢復前一 accepted bounded config及其
+versioned universe；不能藉刪除 missing members 讓舊 plan complete。Full-market runtime
+不啟動 historical-backfill worker，不產生 continuous futures，也不追補 activation 前日期。
+重新進入 acceptance 時使用原 activation_date，保留原日期 cutoff 與 gaps；不得透過停止／恢復
+改成較晚日期來抹除原先未交付的成員或交易日。
+
 ## Workflow與release units
 
 | Workflow | Unit | Trigger | Environment／concurrency |

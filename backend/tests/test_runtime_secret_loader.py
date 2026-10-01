@@ -61,6 +61,7 @@ def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
             "api/source/twelve-data",
             "api/source/finlab",
             "api/source/shioaji",
+            "api/source/taifex",
             "provider/twelve-data",
             "provider/finlab",
             "provider/shioaji",

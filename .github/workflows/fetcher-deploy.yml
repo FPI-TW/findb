@@ -8,6 +8,7 @@ on:
       mode: {required: true, type: string}
       bundle_key: {required: true, type: string}
       release_tag: {required: false, type: string, default: ''}
+      runtime_profile: {required: false, type: string, default: bounded}
     outputs:
       accepted_bundle_key: {value: '${{ jobs.deploy.outputs.accepted_bundle_key }}'}
       target_id: {value: '${{ jobs.deploy.outputs.target_id }}'}
@@ -20,6 +21,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      FETCHER_RUNTIME_PROFILE: ${{ inputs.runtime_profile }}
     environment: ${{ inputs.deployment_target }}-fetcher
     concurrency: {group: '${{ inputs.deployment_target }}-fetcher-deploy', cancel-in-progress: false}
     outputs:
@@ -44,6 +47,8 @@ jobs:
           [ "$(git rev-parse HEAD)" = "$EXPECTED_SHA" ]
           [[ "$TARGET" =~ ^(staging|production)$ ]]
           [[ "$MODE" =~ ^(candidate|replay)$ ]]
+          [[ "$FETCHER_RUNTIME_PROFILE" =~ ^(bounded|full-market)$ ]]
+          [ "$FETCHER_RUNTIME_PROFILE" = bounded ] || [ "$TARGET" = production ]
           if [ "$TARGET" = production ]; then
             [ "$PRODUCTION_ENABLED" = true ]
             [[ "$RELEASE_TAG" =~ ^fetcher-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
@@ -118,6 +123,7 @@ jobs:
           tar -xOf "$RUNNER_TEMP/release-bundle.tar" release-manifest.json > "$RUNNER_TEMP/release-manifest.json"
           [ "$(jq -r .deployment_target "$RUNNER_TEMP/release-manifest.json")" = "$TARGET" ]
           [ "$(jq -r .release_tag "$RUNNER_TEMP/release-manifest.json")" = "$RELEASE_TAG" ]
+          [ "$(jq -r '.runtime_profile // "bounded"' "$RUNNER_TEMP/release-manifest.json")" = "$FETCHER_RUNTIME_PROFILE" ]
           if [ "$TARGET" = production ]; then
             [ "$(jq -r .promotion_source.staging_registry "$RUNNER_TEMP/release-manifest.json")" = "$STAGING_ECR_REGISTRY" ]
           fi
@@ -138,6 +144,9 @@ jobs:
               # Existing v1 accepted records remain staging recycle-only; candidates always write v2.
               jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '(.schema_version == 2 and .deployment_target == "staging" and .release_tag == "" and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "fetcher" and .commit_sha == $revision and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))) or ((.schema_version | not) and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "fetcher" and .commit_sha == $revision and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")))' "$RUNNER_TEMP/acceptance.json" >/dev/null
             fi
+          fi
+          if [ "$MODE" = replay ]; then
+            [ "$(jq -r '.runtime_profile // "bounded"' "$RUNNER_TEMP/acceptance.json")" = "$FETCHER_RUNTIME_PROFILE" ]
           fi
           validator_sha256="$(sha256sum infra/deploy/release_manifest.py | cut -d ' ' -f1)"
           printf 'bundle_sha256=%s\ntwelve_data=%s\nfinlab=%s\nshioaji=%s\ntarget_id=%s\nvalidator_sha256=%s\n' "$bundle_sha256" "$twelve_data" "$finlab" "$shioaji" "$target_id" "$validator_sha256" >> "$GITHUB_OUTPUT"
@@ -206,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
-          runtime_variable_names="FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          runtime_variable_names="FETCHER_RUNTIME_PROFILE FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
           runtime_exports=""
           for name in $runtime_variable_names; do
             if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi
@@ -261,10 +270,10 @@ jobs:
             aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$accepted_key" --body "$RUNNER_TEMP/release-bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
           fi
           record_key="${accepted_key%.tar}.acceptance.json"
-          jq -cn --arg target "${{ inputs.deployment_target }}" --arg unit fetcher --arg commit_sha "$REVISION" --arg bundle_sha256 "$BUNDLE_SHA256" --arg bundle_key "$accepted_key" --arg release_tag "$RELEASE_TAG" --arg candidate_key "$CANDIDATE_KEY" --arg ssm_command_id "$COMMAND_ID" --arg validator_sha256 "$VALIDATOR_SHA256" --arg twelve "$TWELVE_IMAGE" --arg finlab "$FINLAB_IMAGE" --arg shioaji "$SHIOAJI_IMAGE" --arg workflow_run_id "$GITHUB_RUN_ID" --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" '{schema_version:2,deployment_target:$target,unit:$unit,commit_sha:$commit_sha,bundle_sha256:$bundle_sha256,bundle_key:$bundle_key,release_tag:$release_tag,candidate_key:$candidate_key,ssm_command_id:$ssm_command_id,validator_sha256:$validator_sha256,migration_revision:"none",images:{twelve_data:$twelve,finlab:$finlab,shioaji:$shioaji},workflow_run_id:$workflow_run_id,workflow_run_attempt:$workflow_run_attempt,state:"accepted"}' > "$RUNNER_TEMP/acceptance.json"
+          jq -cn --arg runtime_profile "$FETCHER_RUNTIME_PROFILE" --arg target "${{ inputs.deployment_target }}" --arg unit fetcher --arg commit_sha "$REVISION" --arg bundle_sha256 "$BUNDLE_SHA256" --arg bundle_key "$accepted_key" --arg release_tag "$RELEASE_TAG" --arg candidate_key "$CANDIDATE_KEY" --arg ssm_command_id "$COMMAND_ID" --arg validator_sha256 "$VALIDATOR_SHA256" --arg twelve "$TWELVE_IMAGE" --arg finlab "$FINLAB_IMAGE" --arg shioaji "$SHIOAJI_IMAGE" --arg workflow_run_id "$GITHUB_RUN_ID" --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" '{schema_version:2,runtime_profile:$runtime_profile,deployment_target:$target,unit:$unit,commit_sha:$commit_sha,bundle_sha256:$bundle_sha256,bundle_key:$bundle_key,release_tag:$release_tag,candidate_key:$candidate_key,ssm_command_id:$ssm_command_id,validator_sha256:$validator_sha256,migration_revision:"none",images:{twelve_data:$twelve,finlab:$finlab,shioaji:$shioaji},workflow_run_id:$workflow_run_id,workflow_run_attempt:$workflow_run_attempt,state:"accepted"}' > "$RUNNER_TEMP/acceptance.json"
           if aws s3api head-object --bucket "$BUNDLE_BUCKET" --key "$record_key" >/dev/null 2>&1; then
             aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/existing-acceptance.json" >/dev/null
-            jq -e --arg target "${{ inputs.deployment_target }}" --arg key "$accepted_key" --arg sha "$BUNDLE_SHA256" --arg revision "$REVISION" --arg release_tag "$RELEASE_TAG" '.schema_version == 2 and .deployment_target == $target and .state == "accepted" and .unit == "fetcher" and .bundle_key == $key and .bundle_sha256 == $sha and .commit_sha == $revision and .release_tag == $release_tag' "$RUNNER_TEMP/existing-acceptance.json" >/dev/null
+            jq -e --arg runtime_profile "$FETCHER_RUNTIME_PROFILE" --arg target "${{ inputs.deployment_target }}" --arg key "$accepted_key" --arg sha "$BUNDLE_SHA256" --arg revision "$REVISION" --arg release_tag "$RELEASE_TAG" '(.runtime_profile // "bounded") == $runtime_profile and .schema_version == 2 and .deployment_target == $target and .state == "accepted" and .unit == "fetcher" and .bundle_key == $key and .bundle_sha256 == $sha and .commit_sha == $revision and .release_tag == $release_tag' "$RUNNER_TEMP/existing-acceptance.json" >/dev/null
           else
             aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$record_key" --body "$RUNNER_TEMP/acceptance.json" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
           fi
@@ -298,7 +307,7 @@ jobs:
           TARGET: ${{ inputs.deployment_target }}
         run: |
           set -euo pipefail
-          runtime_variable_names="FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          runtime_variable_names="FETCHER_RUNTIME_PROFILE FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
           runtime_exports=""
           for name in $runtime_variable_names; do
             if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi

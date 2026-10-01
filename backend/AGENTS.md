@@ -66,6 +66,28 @@ Admin負責已認證的營運、修正與治理操作。
 
 - `market_eod.v1` -> `MarketEODContractNormalizer`
 - `market_minute.v1` -> `MarketMinuteContractNormalizer`
+- `futures_eod.v1` -> `FuturesEODContractNormalizer`，依實際產品／到期契約／交易日期／交易時段寫入
+  `futures_contract_eod`；不得由契約價格產生 continuous 或產品層級 latest close。
+  到期識別保留實際 `YYYYMM`、`YYYYMMW1..W5` 或 `YYYYMMF1..F5`，不得接受價差或連續合約。
+
+全市場 universe 與 daily plan 由 `app/services/full_market.py` 管理。Source credentials 必須同時
+符合 provider 與 dataset scope；每日成員凍結後，以 `fp1:<part UUID hex>` 連結 ingestion run。
+EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查詢，但成員完整性須等待
+該 canonical row 所屬的 sequenced snapshot group 完成，同 part 的其他群組不會帶過部分交付。
+`expected = data + no_data + missing + blocked` 只依 canonical
+provenance 與持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
+
+新 HK／TW ETF／TAIFEX feeds 與 `full_market_*_v1` schedulers 預設停用。Owner 須審核 baseline、
+完整交易所日曆並開啟 acceptance，五個連續實際開市日準時完整後才能 active；HK 與 TAIFEX
+日曆必須輸入完整年度日期，不得套用平日推測。Owner deactivate 保留 universe、plan 與 canonical
+歷史，停用新的 feeds，並停止該 provider 共用的全市場 scheduler；舊 bounded feeds 保持 active。
+首次 activation_date 不得早於交易所當地今天，可預約未來日期；deactivate／resume／active 升級
+保留首次 activation_date，resume 不得改日期以丟棄原有 gaps。
+active 驗收排除交易所當地尚未到達的日期，同日須已達 published calendar 的收盤時間；若未提供
+個別日期時間，採 US 16:00 New York、HK 16:10 Hong Kong、TW 13:30 Taipei、TAIFEX 13:45 Taipei
+的保守界線。Source 實際交付不得使用未來交易日或超過五分鐘時鐘誤差的 fetched_at；未來 plan
+仍可事先建立。治理中的 EOD／minute 實際交付要求 server time 及 fetched_at 都已過收盤；
+TAIFEX after_hours 採 attributed trade_date 當地 05:00，regular 採 published close 或保守13:45。
 
 `app/services/ingestion.py`的`CONTRACT_NORMALIZER_MAP`是唯一dispatch來源，只能依明確
 `(schema_id, schema_version)`選擇normalizer；缺少或不支援的metadata必須fail closed。

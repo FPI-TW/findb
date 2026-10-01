@@ -18,6 +18,8 @@ import {
   historicalBackfillSchema,
   historicalBackfillScopesSchema,
   historicalBackfillPreviewResponseSchema,
+  deliveryPlansSchema,
+  type DeliveryPlansRequest,
   type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
@@ -29,6 +31,24 @@ import type { AdminRole } from "./admin-governance-api"
 
 type FetchImplementation = typeof fetch
 const UPSTREAM_TIMEOUT_MS = 10_000
+
+export async function fetchDeliveryPlansData(
+  request: DeliveryPlansRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  const params = new URLSearchParams({ limit: String(request.limit) })
+  if (request.datasetKey) params.set("dataset_key", request.datasetKey)
+  if (request.tradeDate) params.set("trade_date", request.tradeDate)
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/delivery-plans?${params}`,
+    deliveryPlansSchema,
+    fetchImplementation
+  )
+}
 
 function isTimeoutError(reason: unknown) {
   return (

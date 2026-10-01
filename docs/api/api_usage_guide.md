@@ -117,7 +117,7 @@ GET /api/v1/serve/calendar/years/{market}/{year}
 
 ## Serve API
 
-Serve只讀canonical tables，且只公開active registry可解析的EOD／minute scopes。現行路由為：
+Serve只讀canonical tables，且只公開active registry可解析的EOD／minute／futures scopes。現行路由為：
 
 - `GET /serve/datasets`：provider-free active catalog與coverage。
 - `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
@@ -126,6 +126,9 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   opaque cursor且固定最新優先。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
+- `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；
+  OHLC（包含 close）、volume、`settlement_price`／`open_interest` 缺漏時回傳 null；
+  零成交但來源仍提供 settlement／OI 的紀錄可查詢，明確的 0 保留，不補造價格或 continuous series。
 - `GET /serve/calendar`、`GET /serve/calendar/years/{market}/{year}`與
   `GET /serve/market-freshness`。
 
@@ -135,7 +138,7 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 `INSTRUMENT_NOT_FOUND`、`INVALID_DATE_RANGE`、`INVALID_CURSOR`。Catalog若遇到未知或矛盾的
 active registry config會fail closed，不回傳provider、scheduler或credential資訊。
 
-`/serve/lookup/*`、`/serve/eod/{instrument_id}`、corporate actions、macro、futures與bonds已移除。
+`/serve/lookup/*`、`/serve/eod/{instrument_id}`、corporate actions、macro與bonds已移除；期貨使用獨立 `/serve/futures/eod`。
 Canonical tables仍保留，但沒有active feed的資料域不構成公開Serve contract。
 
 範例：
@@ -144,6 +147,25 @@ Canonical tables仍保留，但沒有active feed的資料域不構成公開Serve
 curl -H "X-API-Key: $SERVE_KEY" \
   "https://<host>/api/v1/serve/eod?instrument_id=<uuid>&start_date=2026-07-01&end_date=2026-07-31&page_size=100"
 ```
+
+## Full-market control API
+
+Source 以自身 provider-scoped key 呼叫 universe／delivery plan v1；完整 request 型別以部署版本
+OpenAPI 為準。Universe first baseline 或異動超過 20 個成員／2% 的 candidate，需要 Owner
+呼叫 `POST /admin/universes/{release_id}/publish`，提供 `evidence_note` 與對應
+`first_baseline_approved`／`threshold_exception_approved`，並留下 audit。
+
+Owner 使用 `POST /admin/feeds/{dataset_key}/activate` 指定 activation_date、
+readiness_evidence_note 及 `mode=acceptance`。有適用的 published baseline 與完整 published
+exchange calendar 才可建立 plan；`mode=active` 另外要求連續五個實際開市日 complete 且準時，
+最後交易日必須在交易所當地已到達並已過官方當日收盤或保守市場收盤界線。
+首次 activation_date 不得早於交易所當地當日，可指定未來日期；停止後恢復 acceptance 或升級
+active 時，必須提供原 activation_date，保留原 cutoff 與尚未交付的 gaps。
+Owner 可呼叫 `POST /admin/feeds/{dataset_key}/deactivate` 並提供 evidence_note，停用 full-market
+governance與同 provider的full-market control；該control停止會影響其所有full-market datasets。
+既有canonical、plans與universes保留，新required feed退出active scope，原bounded feeds保持active。
+`GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
+deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
 
 ## Admin API
 

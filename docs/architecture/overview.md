@@ -49,6 +49,39 @@ equity/ETF minute。只有至少符合一個active scope的商品會出現在Ser
 tables可保留inactive歷史資料，但不因此產生公開route或catalog項目。新增資料域必須另案完成
 contract、registry、normalizer、DQ與Serve驗收。
 
+## Full-market governance
+
+Full-market 是 production 明確選用的 runtime profile；既有 bounded staging 與固定 production
+universe 預設維持不變。Backend 先發布 schema／migration／registry；新增
+`hk_equity_eod`、`tw_etf_eod`、`tw_futures_eod` 預設 inactive，完成 readiness 與 Owner
+activation 前不構成已啟用或已驗證的全市場 coverage。
+
+| Provider | 目標範圍 | Contract |
+| --- | --- | --- |
+| `twelve_data` | US 主要交易所普通股與 ADR；HK 主板與 GEM | `market_eod.v1` |
+| `finlab` | TW 上市／上櫃普通股與各類 ETF 日線 | `market_eod.v1` |
+| `shioaji` | 相同 TW 股票／ETF 的一分鐘 bars | `market_minute.v1` |
+| `taifex` | TX、MTX、TMF、TE、TF 實際月／週到期合約，日盤與盤後分開 | `futures_eod.v1` |
+
+Universe 由官方清單建立 immutable release，保留來源 URL、checksum、觀測時間、effective
+date、classification 與 provider mapping。第一份 baseline 需要 Owner 明確 audited approval；
+相對上一份 published release 異動超過 20 個成員或 2% 時保留 candidate，須明確 exception
+approval 才可發布。Mapping gap 仍列為 expected，不能刪除成員來降低分母。
+
+每個實際開市日建立 frozen daily delivery plan，以 release 固定成員、交易日與 work item。
+完整度恆等式是 `expected = data + no_data + missing + blocked`；data 只計入成功 canonical
+lineage，no_data 只接受停牌／無成交的 durable source evidence。成功部分立即可查，partial
+coverage 不等同全日 complete；mapping、quota、permission 或 source error 均保留 gap。
+
+啟用從 activation date 向前運作，只追補啟用後缺口；full-market 不建立歷史回補或連續期貨。
+TAIFEX trade date 使用交易所歸屬日，盤後不由 timestamp 推算成隔日；無 settlement／open
+interest 保留 null。Published exchange calendar 是開市日權威，TAIFEX 使用獨立市場日曆。
+
+帳號 entitlement、完整 universe mapping、provider quota 與 deadline capacity 必須有實際
+readiness 證據。受限時標示 blocked，不自動升級付費方案，也不以縮小 subset 宣稱全市場完成。
+分 TW、HK、US、futures 各驗證連續五個實際交易所開市日，TW／HK／TAIFEX 截止當日台北
+23:00，US 截止次日台北 09:00；live acceptance 尚待部署後執行。
+
 ## 資料責任
 
 | 層級 | 儲存位置 | 規則 |

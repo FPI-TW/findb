@@ -2355,15 +2355,22 @@ def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_input
     assert "/var/lib/findb-shioaji-fetcher/cache" in deploy_helper
 
 
-def test_aws_fetcher_release_bootstraps_only_missing_shioaji_state_offline() -> None:
+def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_offline() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
         encoding="utf-8"
     )
     bootstrap = helper.split(
-        'if [ "$provider" = shioaji ] && ! sudo test -e "$state_path"; then', 1
+        'if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then',
+        1,
     )[1].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
 
-    assert 'docker container inspect "$stable"' in bootstrap
+    # Existing bounded state is still required when a bounded Shioaji stable
+    # exists. A profile transition initializes the separate full-market DB even
+    # while its old bounded stable container exists, without loading secrets.
+    assert (
+        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && docker container inspect "$stable"'
+        in bootstrap
+    )
     assert "reason=shioaji_state_missing_with_stable" in bootstrap
     assert 'docker rm -f "$state_bootstrap_name"' in bootstrap
     assert "--initialize-state" in bootstrap
@@ -2591,9 +2598,7 @@ def test_fetcher_transaction_tracks_provider_before_interruption(
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
         encoding="utf-8"
     )
-    transaction = helper.split("processed=()", 1)[1].split(
-        "register_provider findb-fetcher-scheduler ", 1
-    )[0]
+    transaction = helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
     state_dir.mkdir()
@@ -2687,9 +2692,7 @@ def test_fetcher_candidate_cleanup_remains_recoverable_during_each_rollback_oper
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
         encoding="utf-8"
     )
-    transaction = helper.split("processed=()", 1)[1].split(
-        "register_provider findb-fetcher-scheduler ", 1
-    )[0]
+    transaction = helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
     state_dir.mkdir()

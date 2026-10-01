@@ -12,7 +12,7 @@ import asyncio
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from sqlalchemy import select
@@ -20,7 +20,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.registry import APIKey, SourceClient
+from app.models.registry import AdminAuditEvent, APIKey, SourceClient
 from app.utils import utc_now, uuid7
 
 
@@ -72,6 +72,28 @@ SOURCE_SPECS = (
         allowed_datasets=("tw_equity_minute", "tw_etf_minute"),
     ),
 )
+FULL_MARKET_SOURCE_SPECS = (
+    replace(SOURCE_SPECS[0], allowed_datasets=("us_equity_eod", "hk_equity_eod")),
+    replace(SOURCE_SPECS[1], allowed_datasets=("tw_equity_eod", "tw_etf_eod")),
+    SOURCE_SPECS[2],
+    SourceCredentialSpec(
+        env_name="FETCHER_TAIFEX_SOURCE_CLIENT_KEY_HASH",
+        name="fetcher-taifex",
+        source_name="taifex",
+        description="Production TAIFEX Fetcher Source client",
+        allowed_datasets=("tw_futures_eod",),
+    ),
+)
+
+
+def source_specs_for_profile(runtime_profile: str) -> tuple[SourceCredentialSpec, ...]:
+    if runtime_profile == "bounded":
+        return SOURCE_SPECS
+    if runtime_profile == "full-market":
+        return FULL_MARKET_SOURCE_SPECS
+    raise FetcherCredentialError("unsupported Fetcher runtime profile")
+
+
 CALENDAR_HASH_ENV = "FETCHER_CALENDAR_SERVE_API_KEY_HASH"
 CALENDAR_CREDENTIAL_NAME = "fetcher-calendar"
 
@@ -272,17 +294,37 @@ async def reconcile_calendar_credential(
 async def reconcile_fetcher_credentials_in_session(
     db: AsyncSession,
     hashes_by_env: dict[str, str],
+    *,
+    runtime_profile: str = "bounded",
 ) -> list[ReconciliationResult]:
+    specs = source_specs_for_profile(runtime_profile)
     normalized = {name: validate_key_hash(value) for name, value in hashes_by_env.items()}
-    required = {CALENDAR_HASH_ENV, *(spec.env_name for spec in SOURCE_SPECS)}
+    required = {CALENDAR_HASH_ENV, *(spec.env_name for spec in specs)}
     if set(normalized) != required or len(set(normalized.values())) != len(required):
         raise FetcherCredentialError("Fetcher credential hashes are missing or reused")
     now = utc_now()
     results = [
         await reconcile_source_credential(db, normalized[spec.env_name], spec, now)
-        for spec in SOURCE_SPECS
+        for spec in specs
     ]
     results.append(await reconcile_calendar_credential(db, normalized[CALENDAR_HASH_ENV], now))
+    for result in results:
+        if result.action != "unchanged":
+            db.add(
+                AdminAuditEvent(
+                    actor_type="deployment",
+                    actor_id="fetcher-credential-reconcile",
+                    actor_display_name="Fetcher deployment",
+                    action="reconcile",
+                    resource_type="fetcher_credential",
+                    resource_id=result.name,
+                    details={
+                        "runtime_profile": runtime_profile,
+                        "action": result.action,
+                        "fingerprint": result.fingerprint,
+                    },
+                )
+            )
     await db.commit()
     return results
 
@@ -290,21 +332,26 @@ async def reconcile_fetcher_credentials_in_session(
 async def reconcile_fetcher_credentials(
     application_database_url: str,
     hashes_by_env: dict[str, str],
+    *,
+    runtime_profile: str = "bounded",
 ) -> list[ReconciliationResult]:
     url = validate_application_database_url(application_database_url)
     engine = create_async_engine(url, pool_size=1, max_overflow=0)
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as db:
-            return await reconcile_fetcher_credentials_in_session(db, hashes_by_env)
+            return await reconcile_fetcher_credentials_in_session(
+                db, hashes_by_env, runtime_profile=runtime_profile
+            )
     finally:
         await engine.dispose()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runtime-profile", choices=("bounded", "full-market"), default="bounded")
     parser.add_argument("--application-database-url", default=os.getenv("APPLICATION_DATABASE_URL"))
-    for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in SOURCE_SPECS)):
+    for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in FULL_MARKET_SOURCE_SPECS)):
         parser.add_argument(
             f"--{env_name.lower().replace('_', '-')}",
             dest=env_name,
@@ -317,14 +364,19 @@ def main() -> int:
     args = parse_args()
     hashes_by_env = {
         env_name: getattr(args, env_name)
-        for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in SOURCE_SPECS))
+        for env_name in (
+            CALENDAR_HASH_ENV,
+            *(spec.env_name for spec in source_specs_for_profile(args.runtime_profile)),
+        )
     }
     if not args.application_database_url or not all(hashes_by_env.values()):
         print("fetcher_credentials=failed reason=input_missing", file=sys.stderr)
         return 1
     try:
         results = asyncio.run(
-            reconcile_fetcher_credentials(args.application_database_url, hashes_by_env)
+            reconcile_fetcher_credentials(
+                args.application_database_url, hashes_by_env, runtime_profile=args.runtime_profile
+            )
         )
     except (FetcherCredentialError, SQLAlchemyError, OSError):
         print("fetcher_credentials=failed reason=reconciliation_failed", file=sys.stderr)

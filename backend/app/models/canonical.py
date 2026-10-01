@@ -75,6 +75,7 @@ class Instrument(Base):
     minute_data: Mapped[list["MarketDataMinute"]] = relationship(back_populates="instrument")
     corporate_actions: Mapped[list["CorporateAction"]] = relationship(back_populates="instrument")
     futures_contracts: Mapped[list["FuturesContract"]] = relationship(back_populates="instrument")
+    futures_eod: Mapped[list["FuturesContractEOD"]] = relationship(back_populates="instrument")
     futures_continuous_eod: Mapped[list["FuturesContinuousEOD"]] = relationship(
         back_populates="instrument"
     )
@@ -100,6 +101,8 @@ class InstrumentStats(Base):
     eod_first_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     eod_latest_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     eod_latest_close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    futures_first_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    futures_latest_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     minute_first_bar_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -709,6 +712,76 @@ class FuturesContract(Base):
     )
 
     instrument: Mapped["Instrument"] = relationship(back_populates="futures_contracts")
+    eod_data: Mapped[list["FuturesContractEOD"]] = relationship(back_populates="contract")
+
+
+class FuturesContractEOD(Base):
+    """Actual expiry daily quote, keyed by TAIFEX trade date and session."""
+
+    __tablename__ = "futures_contract_eod"
+    __table_args__ = (
+        UniqueConstraint(
+            "contract_id", "trade_date", "session", name="uq_futures_contract_eod_slot"
+        ),
+        CheckConstraint(
+            "session IN ('regular', 'after_hours')", name="futures_contract_eod_session_valid"
+        ),
+        CheckConstraint(
+            "volume IS NULL OR volume >= 0", name="futures_contract_eod_volume_nonnegative"
+        ),
+        CheckConstraint(
+            "open_interest IS NULL OR open_interest >= 0",
+            name="futures_contract_eod_oi_nonnegative",
+        ),
+        CheckConstraint("open IS NULL OR open >= 0", name="futures_contract_eod_open_nonnegative"),
+        CheckConstraint("high IS NULL OR high >= 0", name="futures_contract_eod_high_nonnegative"),
+        CheckConstraint("low IS NULL OR low >= 0", name="futures_contract_eod_low_nonnegative"),
+        CheckConstraint(
+            "close IS NULL OR close >= 0", name="futures_contract_eod_close_nonnegative"
+        ),
+        CheckConstraint(
+            "settlement_price IS NULL OR settlement_price >= 0",
+            name="futures_contract_eod_settlement_nonnegative",
+        ),
+        CheckConstraint(
+            "high IS NULL OR low IS NULL OR high >= low", name="futures_contract_eod_bounds_valid"
+        ),
+        Index("idx_futures_contract_eod_date", "trade_date", "session"),
+        Index("idx_futures_contract_eod_instrument", "instrument_id", "trade_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("instruments.instrument_id"), nullable=False
+    )
+    contract_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("futures_contract.contract_id"), nullable=False
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    session: Mapped[str] = mapped_column(String(20), nullable=False)
+    open: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    high: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    low: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    volume: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    settlement_price: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    open_interest: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("ingestion_run.run_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    instrument: Mapped["Instrument"] = relationship(back_populates="futures_eod")
+    contract: Mapped["FuturesContract"] = relationship(back_populates="eod_data")
 
 
 class FuturesContinuousEOD(Base):

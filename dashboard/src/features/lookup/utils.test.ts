@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { DEFAULT_SEARCH, LOOKUP_COLUMNS } from "./config"
 import type { Instrument } from "./types"
-import { buildCsv, buildPageList, parseLookupSearch } from "./utils"
+import { buildCsv, buildPageList, formatCell, parseLookupSearch } from "./utils"
 
 const INSTRUMENT: Instrument = {
   instrument_id: "instrument-tsm",
@@ -75,6 +75,23 @@ describe("lookup utilities", () => {
     expect(csv).toContain('"台積電, ""晶圓"""')
     expect(csv).toContain("1994-09-05")
     expect(csv).toContain("1085.5")
+  })
+
+  it("preserves zero-padded HK symbols and currency in display and CSV", () => {
+    const hk: Instrument = {
+      ...INSTRUMENT,
+      market: "HK",
+      symbol: "00700",
+      currency: "HKD",
+    }
+    expect(
+      formatCell(
+        hk,
+        LOOKUP_COLUMNS.find(column => column.key === "symbol")!
+      )
+    ).toBe("00700")
+    expect(buildCsv([hk], LOOKUP_COLUMNS)).toContain("HK,00700")
+    expect(buildCsv([hk], LOOKUP_COLUMNS)).toContain("HKD")
   })
 
   it("keeps boundary pages and ellipses in long pagination", () => {
