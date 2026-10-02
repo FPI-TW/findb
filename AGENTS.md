@@ -158,9 +158,13 @@ findb/
   workflow 變動，另須執行與影響範圍相符的測試；修正既有測試失敗時，至少重跑原失敗測試與
   相關 test suite。靜態檢查不能取代測試執行；若受環境限制無法執行，必須明確記錄未執行項目
   與原因，不得宣稱測試通過。
-- 預設測試 DB 是 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`，可用 `TEST_DATABASE_URL` 覆蓋。
-- `backend/tests/conftest.py` 會在需要時建立 `findb_test` database。
-- 測試資料表由 function-scope fixture 建立與清理。
+- 預設測試連線設定是 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`，可用
+  `TEST_DATABASE_URL` 覆蓋；只使用其 server、credentials 與連線選項，不修改指定基底 DB。
+- `backend/tests/conftest.py` 為每個 pytest session／xdist worker 建立唯一的暫存 ORM database；
+  schema 建立一次，結束時只刪除該 session 自行建立的 DB。帳號需具有 `CREATEDB` 權限。
+- 一般測試以外層 transaction rollback 隔離；直接要求 `test_engine` 的測試則在結束後
+  truncate 該 session 專屬 DB 的 ORM tables。Migration tests 繼續使用各自的 immutable templates／clones。
+- 並行與失敗清理驗證、環境限制見 `docs/operations/testing.md`。
 - 測試 fixture 會在需要時建立 DB-backed Source/Admin credentials；`DEBUG=true`。
 - Repo-wide preferred test runner 是 `pnpm test` 或 `make test`，會涵蓋 contracts、Backend、
   Fetcher、Infra 與 Dashboard 的 unit／browser／e2e 測試；只跑 Backend 時使用
