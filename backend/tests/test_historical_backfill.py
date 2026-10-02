@@ -28,12 +28,19 @@ from app.services.historical_backfill import (
 )
 from app.services.normalize.base import BaseNormalizer
 from app.services.source_clients import create_source_client
-from app.utils import utc_now, uuid7
+from app.utils import uuid7
 
 
 class _StatusOnlyNormalizer(BaseNormalizer):
     def map_fields(self, raw_data: dict) -> list:
         return []
+
+
+@pytest.fixture
+def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    now = datetime(2026, 9, 1, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(historical_backfill, "utc_now", lambda: now)
+    return now
 
 
 def test_production_allows_one_year_eod_and_disables_shioaji_history(
@@ -370,9 +377,9 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
 
 @pytest.mark.asyncio
 async def test_completed_run_must_match_terminal_delivery_before_backfill_item_completes(
-    test_session,
+    test_session, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
@@ -527,9 +534,9 @@ async def test_full_snapshot_alert_waits_for_normalizer_terminal_success(test_se
 
 @pytest.mark.asyncio
 async def test_expired_lease_is_reclaimed_and_late_completion_cannot_overwrite(
-    test_session,
+    test_session, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
@@ -546,7 +553,7 @@ async def test_expired_lease_is_reclaimed_and_late_completion_cannot_overwrite(
     )
     assert first is not None and first.lease_token is not None
     first_token = first.lease_token
-    first.lease_expires_at = utc_now() - timedelta(seconds=1)
+    first.lease_expires_at = historical_backfill_clock - timedelta(seconds=1)
     await test_session.flush()
     reclaimed = await claim_next_item(
         test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
@@ -578,8 +585,10 @@ async def test_expired_lease_is_reclaimed_and_late_completion_cannot_overwrite(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_request_rejects_inflight_completion(test_session) -> None:
-    today = date(2026, 9, 1)
+async def test_cancelled_request_rejects_inflight_completion(
+    test_session, historical_backfill_clock
+) -> None:
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
@@ -622,9 +631,9 @@ async def test_cancelled_request_rejects_inflight_completion(test_session) -> No
 
 @pytest.mark.asyncio
 async def test_claim_fails_expired_historical_item_and_cancels_following_dates(
-    test_session,
+    test_session, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
@@ -763,9 +772,9 @@ async def test_preview_explains_open_and_unpublished_dates_before_create(test_se
 
 @pytest.mark.asyncio
 async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
-    client, test_session
+    client, test_session, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
@@ -794,6 +803,9 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
     assert claim.status_code == 200
     item_id = claim.json()["item_id"]
     lease_token = claim.json()["lease_token"]
+    assert item_id is not None
+    assert lease_token
+    assert claim.json()["trade_date"] == (today - timedelta(days=1)).isoformat()
     complete = await client.post(
         f"/api/v1/source/historical-backfills/{item_id}/complete",
         headers={"X-API-Key": key},
@@ -812,9 +824,9 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
 
 @pytest.mark.asyncio
 async def test_source_complete_requires_matching_terminal_run_and_lease_token(
-    client, test_session
+    client, test_session, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
@@ -840,6 +852,9 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
     claim = await client.post("/api/v1/source/historical-backfills/claim", headers=headers)
     assert claim.status_code == 200
     item_id, lease_token = claim.json()["item_id"], claim.json()["lease_token"]
+    assert item_id is not None
+    assert lease_token
+    assert claim.json()["trade_date"] == today.isoformat()
     missing_run = await client.post(
         f"/api/v1/source/historical-backfills/{item_id}/complete",
         headers=headers,
@@ -925,9 +940,9 @@ async def test_operator_historical_endpoints_reject_viewer(client, test_session)
 
 @pytest.mark.asyncio
 async def test_operator_can_preview_create_list_scope_and_cancel_historical_backfill(
-    client, test_session, admin_headers
+    client, test_session, admin_headers, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     body = {
         "provider": "shioaji",
@@ -1044,9 +1059,9 @@ async def test_create_endpoint_skips_published_closed_dates_but_preserves_reques
 
 @pytest.mark.asyncio
 async def test_create_endpoint_calendar_gap_rejects_without_persisting_scope(
-    client, test_session, admin_headers
+    client, test_session, admin_headers, historical_backfill_clock
 ) -> None:
-    today = date(2026, 9, 1)
+    today = historical_backfill_clock.date()
     await _seed_scope(test_session, today)
     await test_session.execute(
         delete(CalendarRevisionDay).where(
@@ -1065,6 +1080,7 @@ async def test_create_endpoint_calendar_gap_rejects_without_persisting_scope(
         },
     )
     assert response.status_code == 422
+    assert response.json()["detail"] == "requested dates include unpublished calendar days"
     assert (
         await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
     ) == 0

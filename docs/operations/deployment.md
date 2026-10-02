@@ -452,7 +452,13 @@ values：workflow傳入空外層值，instance-side runtime-secret wrapper再從
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
 root-owned immutable release directory；SSM preflight 不會改寫 active Compose、runtime helper 或 Nginx
-paths。staging canary/deploy/provider helper、catalog、Compose 與 Nginx render scripts 都從該 release root
+paths。FinDB與Fetcher的release root均保存`release-manifest.json`：只在完整bundle、契約、來源checksum與
+外部expected release inputs驗證成功後，將已驗證metadata重新序列化為canonical JSON（含結尾換行），
+以固定`0644` mode經由同一個pinned directory descriptor、`O_NOFOLLOW|O_EXCL` writer建立；不直接複製
+未驗證的tar metadata。release root維持`root:root:0700`，來源allowlist與executable/data mode保持固定。
+Fetcher candidate／activation在provider、secret與container工作前讀取此manifest，比對要求的runtime profile；
+缺少或不一致時fail closed，舊manifest未帶`runtime_profile`仍視為`bounded`。
+staging canary/deploy/provider helper、catalog、Compose 與 Nginx render scripts 都從該 release root
 執行，僅在 deployment health 成功後更新 current pointer。acceptance record同時綁定 validator SHA，host在執行
 archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
 且 bucket keys 關閉以保留 unit-prefix KMS encryption context。
