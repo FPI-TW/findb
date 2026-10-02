@@ -448,6 +448,7 @@ sudo chown 10001:10001 "$historical_state_dir"
 sudo chmod 0700 "$historical_state_dir"
 docker rm -f "$historical_name" >/dev/null 2>&1 || true
 docker run -d --name "$historical_name" --label "com.findb.fetcher.accepted=$accepted_release" \
+  --label com.findb.fetcher.historical-shutdown=date-boundary-v1 \
   --restart unless-stopped "${common_args[@]}" "${runtime_env_args[@]}" \
   --env "FETCHER_HISTORICAL_STATE_DIR=$historical_state_dir" \
   "$image" findb-fetch-historical-backfill --provider "$historical_provider" --run-forever >/dev/null

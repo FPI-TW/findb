@@ -110,6 +110,14 @@ preview／create／list API，不持有provider secret；Fetcher worker只消費
 已核准request。任何scheduler在backfill期間仍保持`stopped`，未驗證Raw R2、Source、outbox、DQ、
 canonical與Serve前不可擴大下一批。
 
+Historical CLI收到`SIGTERM`／`SIGINT`後立即停止新日期claim，完成當前日期的raw-first交付與
+terminal回報；idle時立即退出。部署停止期限仍為30秒，執行中的日期可能較久，應先等待request
+terminal且沒有running item；scheduler停止狀態不代表historical worker已排空。若程序被強制終止，
+running item保留到15分鐘lease到期，後續claim將其改為pending並核發新token／增加attempt；
+同一日期交付保持immutable identity，舊token不能覆寫重試結果。不要手動刪除raw、SQLite或
+縮短lease以跳過此恢復邊界。僅已確認staging舊historical映像有exit `137`過渡例外，範圍與digest
+見[部署流程](deployment.md)；新historical worker、日常scheduler、OOM或Docker Error仍fail closed。
+
 維護 historical backfill API 與 service 測試時，涉及日期視窗或 claim／lease 的案例應明確使用
 test-local、UTC-aware 固定 service clock，並由同一時鐘建立交易日期與 calendar fixtures；
 claim 成功後須確認實際 item 與非空 lease token，再驗證 terminal state。固定時鐘僅限選用的
