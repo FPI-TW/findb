@@ -110,6 +110,11 @@ preview／create／list API，不持有provider secret；Fetcher worker只消費
 已核准request。任何scheduler在backfill期間仍保持`stopped`，未驗證Raw R2、Source、outbox、DQ、
 canonical與Serve前不可擴大下一批。
 
+維護 historical backfill API 與 service 測試時，涉及日期視窗或 claim／lease 的案例應明確使用
+test-local、UTC-aware 固定 service clock，並由同一時鐘建立交易日期與 calendar fixtures；
+claim 成功後須確認實際 item 與非空 lease token，再驗證 terminal state。固定時鐘僅限選用的
+測試，不套用全域 autouse patch；日期邊界、provider 當地日期與過期案例仍須保留各自的時間設定。
+
 ## Full-market universe maintenance
 
 Full-market 清單與既有 reviewed bounded manifests 分開。官方 US、HKEX、TWSE／TPEx 與 TAIFEX
