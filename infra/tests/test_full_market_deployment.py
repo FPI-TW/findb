@@ -1,6 +1,7 @@
 """Offline tests for expanded runtime scope and credential isolation."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -82,6 +83,79 @@ class FullMarketDeploymentTests(unittest.TestCase):
         bounded = self.manifest()
         expanded = dict(bounded, runtime_profile="full-market")
         self.assertNotEqual(release.canonical_json(bounded), release.canonical_json(expanded))
+
+    def test_materialized_fetcher_bundle_passes_actual_profile_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            for target, profile in (("staging", "bounded"), ("production", "full-market")):
+                with self.subTest(target=target, profile=profile):
+                    manifest = self.manifest(target)
+                    if profile == "full-market":
+                        manifest["runtime_profile"] = profile
+                    with release.SourceBundleReader(ROOT) as sources:
+                        contracts = sources.load_selected_contract_manifest(
+                            ROOT / "contracts/manifest.json"
+                        )
+                        manifest["contract_versions"] = list(contracts.versions)
+                        manifest["contract_manifest_sha256"] = contracts.canonical_sha256
+                        manifest["deployment_source_bundle_sha256"] = (
+                            sources.deployment_source_bundle_sha256("fetcher")
+                        )
+                    manifest_path = base / f"{target}.json"
+                    manifest_path.write_bytes(release.canonical_json(manifest))
+                    bundle = release.build_bundle(ROOT, manifest_path, "fetcher")
+                    digest = hashlib.sha256(bundle).hexdigest()
+                    expected_inputs = {
+                        "unit": "fetcher",
+                        "commit_sha": manifest["commit_sha"],
+                        "migration_revision": "none",
+                        "created_by_run_id": manifest["created_by_run_id"],
+                        "images": manifest["images"],
+                        "deployment_target": target,
+                    }
+                    release.validate_bundle_bytes(
+                        bundle,
+                        expected_sha256=digest,
+                        unit="fetcher",
+                        expected_inputs=expected_inputs,
+                    )
+                    output = base / f"{target}-release"
+                    release.materialize_validated_bundle(
+                        bundle,
+                        expected_sha256=digest,
+                        unit="fetcher",
+                        output=output,
+                        expected_inputs=expected_inputs,
+                    )
+                    # Run the exact host profile preflight from the bundled
+                    # deployment helper. Stop before image/provider/secret or
+                    # container work, without creating a host /opt release.
+                    source = (
+                        output / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+                    ).read_text()
+                    start = source.index('manifest_profile="$(python3 ')
+                    end = source.index("\nvalidate_image()", start)
+                    preflight = "set -euo pipefail\n" + source[start:end]
+                    for requested in (
+                        profile,
+                        "full-market" if profile == "bounded" else "bounded",
+                    ):
+                        completed = subprocess.run(
+                            ["bash", "-c", preflight],
+                            env={
+                                **os.environ,
+                                "FETCHER_RELEASE_ROOT": str(output),
+                                "FETCHER_RUNTIME_PROFILE": requested,
+                            },
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        self.assertEqual(
+                            completed.returncode == 0, requested == profile, completed.stderr
+                        )
+                        if requested != profile:
+                            self.assertIn("runtime_profile_manifest_mismatch", completed.stderr)
 
     def test_taifex_loads_no_provider_credentials(self):
         catalog = json.loads((ROOT / "infra/deploy/runtime-secrets/fetcher.json").read_text())

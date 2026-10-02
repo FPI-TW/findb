@@ -331,11 +331,109 @@ def test_deployment_bundle_is_deterministic_and_rejects_tampering(tmp_path: Path
         "contracts/manifest.json",
     ):
         assert stat.S_IMODE((output / relative).stat().st_mode) == 0o644
-    assert not (output / "release-manifest.json").exists()
+    materialized_manifest = output / release_manifest.BUNDLE_MANIFEST_PATH
+    assert materialized_manifest.read_bytes() == release_manifest.canonical_json(validated)
+    assert stat.S_IMODE(materialized_manifest.stat().st_mode) == 0o644
     with pytest.raises(release_manifest.ManifestError, match="already exists"):
         release_manifest.materialize_validated_bundle(
             first, expected_sha256=digest, unit="findb", output=output
         )
+
+
+def _replace_bundle_manifest(bundle: bytes, manifest_raw: bytes) -> bytes:
+    stream = io.BytesIO()
+    with (
+        tarfile.open(fileobj=io.BytesIO(bundle), mode="r:") as source,
+        tarfile.open(fileobj=stream, mode="w", format=tarfile.GNU_FORMAT) as target,
+    ):
+        for member in source.getmembers():
+            extracted = source.extractfile(member)
+            assert extracted is not None
+            content = (
+                manifest_raw
+                if member.name == release_manifest.BUNDLE_MANIFEST_PATH
+                else extracted.read()
+            )
+            target.addfile(
+                release_manifest._bundle_tarinfo(member.name, content), io.BytesIO(content)
+            )
+    return stream.getvalue()
+
+
+@pytest.mark.parametrize("unit", ("findb", "fetcher"))
+@pytest.mark.parametrize("variant", ("pretty", "malformed", "duplicate", "tampered", "mismatch"))
+def test_materialized_manifest_is_canonical_and_validation_precedes_output(
+    tmp_path: Path, unit: str, variant: str
+) -> None:
+    root = tmp_path / "repo"
+    _write_selected_source_bundle(root, unit)
+    manifest = _manifest(unit)
+    manifest["deployment_source_bundle_sha256"] = release_manifest.deployment_source_bundle_sha256(
+        root, unit
+    )
+    manifest_path = tmp_path / "release.json"
+    manifest_path.write_bytes(release_manifest.canonical_json(manifest))
+    bundle = release_manifest.build_bundle(root, manifest_path, unit)
+    changed = dict(manifest)
+    if variant == "tampered":
+        changed["contract_manifest_sha256"] = "e" * 64
+    elif variant == "mismatch":
+        changed["commit_sha"] = "f" * 40
+    raw_manifest = json.dumps(changed, indent=2).encode()
+    if variant == "malformed":
+        raw_manifest = b"{not JSON"
+    elif variant == "duplicate":
+        raw_manifest = b'{"unit":"findb","unit":"fetcher"}'
+    bundle = _replace_bundle_manifest(bundle, raw_manifest)
+    output = tmp_path / "release"
+    arguments = {
+        "expected_sha256": hashlib.sha256(bundle).hexdigest(),
+        "unit": unit,
+        "output": output,
+        "expected_inputs": {
+            "unit": unit,
+            "commit_sha": COMMIT,
+            "migration_revision": manifest["migration_revision"],
+            "created_by_run_id": manifest["created_by_run_id"],
+            "images": manifest["images"],
+        },
+    }
+    if variant != "pretty":
+        with pytest.raises(release_manifest.ManifestError):
+            release_manifest.materialize_validated_bundle(bundle, **arguments)
+        assert not output.exists()
+        return
+    validated = release_manifest.materialize_validated_bundle(bundle, **arguments)
+    persisted = output / release_manifest.BUNDLE_MANIFEST_PATH
+    assert persisted.read_bytes() == release_manifest.canonical_json(validated)
+    assert persisted.read_bytes() != raw_manifest
+    assert stat.S_IMODE(persisted.stat().st_mode) == 0o644
+    assert persisted.stat().st_uid == os.getuid()
+    assert persisted.stat().st_gid == output.stat().st_gid
+
+
+@pytest.mark.parametrize("existing_kind", ("file", "symlink"))
+def test_materialized_manifest_writer_does_not_replace_existing_entries(
+    tmp_path: Path, existing_kind: str
+) -> None:
+    output = tmp_path / "release"
+    root_fd = release_manifest._create_materialization_root(output)
+    external = tmp_path / "external.json"
+    external.write_bytes(b"unchanged\n")
+    persisted = output / release_manifest.BUNDLE_MANIFEST_PATH
+    if existing_kind == "symlink":
+        persisted.symlink_to(external)
+    else:
+        persisted.write_bytes(b"unchanged\n")
+    try:
+        with pytest.raises(release_manifest.ManifestError, match="unable to safely materialize"):
+            release_manifest._write_materialized_file(
+                root_fd, release_manifest.BUNDLE_MANIFEST_PATH, b"replacement\n", 0o644
+            )
+    finally:
+        os.close(root_fd)
+    assert external.read_bytes() == b"unchanged\n"
+    assert persisted.read_bytes() == b"unchanged\n"
 
 
 def test_bundle_rejects_tampered_member_mode_and_materializes_runnable_tools(

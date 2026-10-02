@@ -827,7 +827,8 @@ def materialize_validated_bundle(
 
     `tarfile.extract*` is deliberately never used: archive paths are untrusted
     until validation completes and each output file is created with
-    O_NOFOLLOW|O_EXCL below a newly-created root.
+    O_NOFOLLOW|O_EXCL below a newly-created root. The release metadata is
+    serialized from the validated manifest rather than copied from the tar.
     """
     manifest = validate_bundle_bytes(
         raw,
@@ -837,6 +838,12 @@ def materialize_validated_bundle(
     )
     root_fd = _create_materialization_root(output)
     try:
+        _write_materialized_file(
+            root_fd,
+            BUNDLE_MANIFEST_PATH,
+            canonical_json(manifest),
+            bundle_file_mode(BUNDLE_MANIFEST_PATH),
+        )
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
             for member in archive.getmembers():
                 if member.name == BUNDLE_MANIFEST_PATH:
