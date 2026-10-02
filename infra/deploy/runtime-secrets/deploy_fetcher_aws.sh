@@ -2,7 +2,7 @@
 # Transactional Fetcher staging deployment. Secrets are loaded independently
 # for each provider by the instance role and never cross this host boundary.
 
-set -euo pipefail
+set -Eeuo pipefail
 set +x
 
 : "${AWS_REGION:?AWS_REGION is required}"
@@ -96,18 +96,40 @@ pointer_committed=0
 previous_pointer=""
 pointer_temp=""
 rollback_provider() {
-  local stable="$1" previous="$2" old_available="$3" state
+  local stable="$1" previous="$2" old_available="$3" original_id="$4" state
+  # A failed retirement may leave both the original stable and a stale
+  # previous container. Never replace that original with the stale copy.
+  if [ "$old_available" -eq 1 ] && docker container inspect "$stable" >/dev/null 2>&1 \
+    && [ "$(docker inspect --format '{{.Id}}' "$stable")" = "$original_id" ]; then
+    if [ "$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")" = false ]; then
+      echo "fetcher_aws_deploy=failed reason=rollback_unaccepted_original runtime=$stable" >&2
+      return 1
+    fi
+    docker start "$stable" >/dev/null || return 1
+    return 0
+  fi
+  if [ "$old_available" -eq 1 ]; then
+    if ! docker container inspect "$previous" >/dev/null 2>&1 \
+      || [ "$(docker inspect --format '{{.Id}}' "$previous")" != "$original_id" ]; then
+      echo "fetcher_aws_deploy=failed reason=rollback_original_missing runtime=$stable" >&2
+      return 1
+    fi
+    if [ "$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$previous")" = false ]; then
+      echo "fetcher_aws_deploy=failed reason=rollback_unaccepted_original runtime=$previous" >&2
+      return 1
+    fi
+  fi
   if docker container inspect "$stable" >/dev/null 2>&1; then
     if docker container inspect "$previous" >/dev/null 2>&1 || [ "$old_available" -eq 0 ]; then
       state="$(docker inspect --format '{{.State.Running}}' "$stable")"
       if [ "$state" = true ]; then
         docker stop --time 30 "$stable" >/dev/null || return 1
-        [ "$(docker inspect --format '{{.State.ExitCode}}' "$stable")" -eq 0 ] || return 1
       fi
+      require_retired_runtime "$stable" || return 1
       docker rm "$stable" >/dev/null || return 1
     fi
   fi
-  if docker container inspect "$previous" >/dev/null 2>&1; then
+  if [ "$old_available" -eq 1 ] && docker container inspect "$previous" >/dev/null 2>&1; then
     docker rename "$previous" "$stable" >/dev/null || return 1
   fi
   if [ "$old_available" -eq 1 ] && docker container inspect "$stable" >/dev/null 2>&1; then
@@ -115,14 +137,16 @@ rollback_provider() {
   fi
 }
 rollback_processed() {
-  local index entry stable remainder previous old_available
+  local index entry stable remainder previous old_available original_id
   for ((index=${#processed[@]}-1; index>=0; index--)); do
     entry="${processed[$index]}"
     stable="${entry%%:*}"
     remainder="${entry#*:}"
     previous="${remainder%%:*}"
-    old_available="${entry##*:}"
-    rollback_provider "$stable" "$previous" "$old_available" || rollback_failed=1
+    remainder="${remainder#*:}"
+    old_available="${remainder%%:*}"
+    original_id="${remainder#*:}"
+    rollback_provider "$stable" "$previous" "$old_available" "$original_id" || rollback_failed=1
   done
   if [ "$rollback_failed" -ne 0 ]; then
     echo "fetcher_aws_deploy=failed reason=transaction_rollback_failed" >&2
@@ -153,14 +177,29 @@ trap 'abort_transaction 143' TERM
 trap 'abort_transaction 129' HUP
 
 register_provider() {
-  local stable="$1" previous="$2" old_available=0 stable_accepted
-  if docker container inspect "$previous" >/dev/null 2>&1; then
-    old_available=1
-  elif docker container inspect "$stable" >/dev/null 2>&1; then
+  local stable="$1" previous="$2" old_available=0 stable_accepted original_id=- unsafe_previous=0
+  if docker container inspect "$stable" >/dev/null 2>&1; then
     stable_accepted="$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")"
-    [ "$stable_accepted" = false ] || old_available=1
+    if [ "$stable_accepted" != false ]; then
+      old_available=1
+      original_id="$(docker inspect --format '{{.Id}}' "$stable")"
+    fi
   fi
-  processed+=("${stable}:${previous}:${old_available}")
+  if [ "$old_available" -eq 0 ] && docker container inspect "$previous" >/dev/null 2>&1; then
+    if [ "$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$previous")" = false ]; then
+      unsafe_previous=1
+    else
+      old_available=1
+      original_id="$(docker inspect --format '{{.Id}}' "$previous")"
+    fi
+  fi
+  # One complete append is the registration boundary. A signal can never see
+  # a partially registered provider, and no runtime mutation precedes it.
+  processed+=("${stable}:${previous}:${old_available}:${original_id}")
+  if [ "$unsafe_previous" -eq 1 ]; then
+    echo "fetcher_aws_deploy=failed reason=unaccepted_retained_runtime runtime=$previous" >&2
+    return 1
+  fi
 }
 
 if [ "$FETCHER_DEPLOY_MODE" = activate ]; then
@@ -183,13 +222,66 @@ if [ "$FETCHER_DEPLOY_MODE" = activate ]; then
   pointer_temp=""
 fi
 
+legacy_historical_shutdown() {
+  local stable="$1" provider repository digest
+  [ "$DEPLOYMENT_TARGET" = staging ] && [ "$FETCHER_RUNTIME_PROFILE" = bounded ] || return 1
+  case "$stable" in
+    findb-fetcher-scheduler-historical)
+      provider=twelve_data; repository=twelve-data; digest=2f64ab8c40e082e6601a00839b2345c35c504afcf1d453026d779ac151f46d03 ;;
+    findb-fetcher-finlab-scheduler-historical)
+      provider=finlab; repository=finlab; digest=bcd882dff3412a55f14921474d16ca27950dc51f37252fae404b03eccb862bc2 ;;
+    findb-fetcher-shioaji-scheduler-historical)
+      provider=shioaji; repository=shioaji; digest=161991e5b056becbdc35d67c547a7092807f1e0aa66a34b7b921ed57ecc6bd13 ;;
+    *) return 1 ;;
+  esac
+  # Transitional exception for the observed pre-signal-handler staging binaries only.
+  # They ignore SIGTERM as PID 1. Leased dates replay after server expiry;
+  # this is crash recovery, never a successful graceful shutdown.
+  [ "$AWS_ACCOUNT_ID" = 439622209937 ] \
+    && [ "$(docker inspect --format '{{.Config.Image}}' "$stable")" = "$expected_registry/findb/staging/fetcher/$repository@sha256:$digest" ] \
+    && [ "$(docker inspect --format '{{.Path}}' "$stable")" = findb-fetch-historical-backfill ] \
+    && [ "$(docker inspect --format '{{json .Args}}' "$stable")" = "[\"--provider\",\"$provider\",\"--run-forever\"]" ] \
+    && [ "$(docker inspect --format '{{ join .Config.Cmd " " }}' "$stable")" = "findb-fetch-historical-backfill --provider $provider --run-forever" ] \
+    && [ "$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")" = true ] \
+    && [ -z "$(docker inspect --format '{{range $key, $_ := .Config.Labels}}{{if eq $key "com.findb.fetcher.historical-shutdown"}}present{{end}}{{end}}' "$stable")" ]
+}
+
+require_retired_runtime() {
+  local stable="$1" running exit_code oom error
+  running="$(docker inspect --format '{{.State.Running}}' "$stable")"
+  exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")"
+  oom="$(docker inspect --format '{{.State.OOMKilled}}' "$stable")"
+  error="$(docker inspect --format '{{.State.Error}}' "$stable")"
+  if [ "$running" = false ] && [ "$oom" = false ] && [ -z "$error" ]; then
+    if [ "$exit_code" = 0 ]; then
+      return 0
+    fi
+    if [ "$exit_code" = 137 ] && legacy_historical_shutdown "$stable"; then
+      echo "fetcher_aws_deploy=legacy_historical_crash_recovery runtime=$stable lease_policy=expire_and_replay" >&2
+      return 0
+    fi
+  fi
+  # Docker's Error may include host details. Emit only a fixed safe reason.
+  echo "fetcher_aws_deploy=failed reason=runtime_retirement_failed runtime=$stable" >&2
+  return 1
+}
+
 retire_runtime() {
   local stable="$1" previous="${1}-previous"
   register_provider "$stable" "$previous"
   if docker container inspect "$stable" >/dev/null 2>&1; then
     if [ "$(docker inspect --format '{{.State.Running}}' "$stable")" = true ]; then
-      docker stop --time 30 "$stable" >/dev/null
-      [ "$(docker inspect --format '{{.State.ExitCode}}' "$stable")" -eq 0 ]
+      if ! docker stop --time 30 "$stable" >/dev/null 2>&1; then
+        echo "fetcher_aws_deploy=failed reason=runtime_stop_failed runtime=$stable" >&2
+        return 1
+      fi
+    fi
+    require_retired_runtime "$stable"
+    # Interrupted unaccepted stable state must not displace the accepted
+    # original selected from previous. Apply the same strict stop gate first.
+    if [ "$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")" = false ]; then
+      docker rm "$stable" >/dev/null
+      return 0
     fi
     if docker container inspect "$previous" >/dev/null 2>&1; then
       docker rm "$previous" >/dev/null

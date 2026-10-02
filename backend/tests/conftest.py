@@ -10,8 +10,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import reset_source_rate_limit_state
 from app.config import get_settings
@@ -22,6 +21,7 @@ from tests.migration_database import (
     MigrationDatabaseFactory,
     set_active_migration_database_factory,
 )
+from tests.orm_database import orm_test_database
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
@@ -49,21 +49,9 @@ def _requests_fixture_directly(request, fixture_name: str) -> bool:
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def test_engine():
-    """Create the test schema once for the whole test session."""
-    await ensure_test_database()
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-    await engine.dispose()
+    """Create the ORM schema in a database owned by this pytest session only."""
+    async with orm_test_database(TEST_DATABASE_URL) as engine:
+        yield engine
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -89,24 +77,6 @@ async def clean_test_database(request):
             await conn.execute(
                 text(f"TRUNCATE TABLE {', '.join(table_names)} RESTART IDENTITY CASCADE")
             )
-
-
-async def ensure_test_database():
-    """Create the test database if it does not exist."""
-    url = make_url(TEST_DATABASE_URL)
-    admin_url = url.set(database="postgres")
-    engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :db_name"),
-                {"db_name": url.database},
-            )
-            exists = result.scalar_one_or_none() is not None
-            if not exists:
-                await conn.execute(text(f'CREATE DATABASE "{url.database}"'))
-    finally:
-        await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="function")

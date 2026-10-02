@@ -332,7 +332,40 @@ exact accepted release，作為durable desired-release journal，再啟動三個
 後收到stop也不得啟動新provider cycle；已開始的cycle則完成terminal report後退出。Workflow
 以30秒grace period停止stable container並要求exit code為`0`，否則fail closed並恢復原stable，
 不得把exit `137`或其它非零退出視為成功promotion。首次signal-handler bootstrap已完成且
-temporary allowlist已移除；後續所有provider與image一律套用相同的strict exit-`0` gate。
+temporary daily scheduler allowlist已移除；daily scheduler一律套用相同的strict exit-`0` gate。
+
+Historical worker同樣將`SIGTERM`／`SIGINT`轉為stop event，idle wait立即喚醒；訊號後不再claim新日期，
+已claim日期完成provider acquisition、raw-first delivery與terminal report後退出。新容器標示
+`com.findb.fetcher.historical-shutdown=date-boundary-v1`，仍要求30秒停止期限內exit `0`、
+非OOM且Docker Error為空。日期工作可能超過30秒；部署前應等待historical request terminal／無
+running item再rollout，不能把日常scheduler的desired／observed `stopped`當作historical已排空。
+超時仍中止交易並恢復原runtime；未完成日期依15分鐘lease到期後重試，不縮短lease或新增claim scope。
+
+Staging既有historical映像在PID 1忽略SIGTERM，2026-10-02部署失敗留下exit `137`。
+Coordinator只對下列已確認舊binary提供暫時crash-recovery相容性：target必須staging、profile必須
+bounded、account必須`439622209937`、container為對應`*-historical`名稱、accepted label為`true`、
+沒有上述shutdown label，且`Config.Image`為表列repository／digest、實際`Path`／`Args`與
+`Config.Cmd`完全符合`findb-fetch-historical-backfill --provider <identity> --run-forever`。
+停止後或重播前已停止的容器僅在exit `137`、非OOM且Docker Error為空時允許退休；記錄
+`legacy_historical_crash_recovery`與`lease_policy=expire_and_replay`，不宣稱優雅停止。
+
+| Historical provider | Staging ECR repository suffix | 已確認舊digest（sha256） |
+| --- | --- | --- |
+| `twelve_data` | `findb/staging/fetcher/twelve-data` | `2f64ab8c40e082e6601a00839b2345c35c504afcf1d453026d779ac151f46d03` |
+| `finlab` | `findb/staging/fetcher/finlab` | `bcd882dff3412a55f14921474d16ca27950dc51f37252fae404b03eccb862bc2` |
+| `shioaji` | `findb/staging/fetcher/shioaji` | `161991e5b056becbdc35d67c547a7092807f1e0aa66a34b7b921ed57ecc6bd13` |
+
+此例外不適用production、full-market、新label、未知digest或其他非零退出。正常claim在舊lease
+到期後重新核發token，同request/date/symbol的immutable delivery identity維持不變；舊token的
+late completion會被拒絕。無須刪除SQLite、raw object或改寫Backend lease。Coordinator的ERR trap
+繼承至functions，退休失敗、provider失敗或candidate結束都按原container ID恢復accepted runtime；
+activation失敗另恢復舊current pointer。若新容器停止失敗或原container已遺失，保留previous並明確
+回報rollback failure，需操作員依accepted release重播／處理，不以其他舊容器冒充原runtime。
+每個runtime在任何停止／刪除／rename前，以單次append登記名稱、previous名稱、原容器可用性與
+完整原ID，避免登記途中收到`INT`／`TERM`／`HUP`留下半筆journal而阻斷其餘回復。
+Interrupted state中的`accepted=false` stable只有通過相同strict stop gate後才能移除，不能覆蓋
+accepted previous；若僅剩`accepted=false` previous，交易直接fail closed並保留該容器供操作員
+檢查，不會rename或start為accepted runtime。Historical與TAIFEX退休共用此規則。
 
 ## Alembic migration
 

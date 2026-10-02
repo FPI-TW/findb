@@ -11,7 +11,10 @@ def test_historical_worker_starts_inside_provider_secret_wrapper() -> None:
     assert '"${runtime_env_args[@]}"' in helper
     assert '"$image" findb-fetch-historical-backfill' in helper
     assert "FETCHER_HISTORICAL_STATE_DIR=$historical_state_dir" in helper
+    assert "--label com.findb.fetcher.historical-shutdown=date-boundary-v1" in helper
     # The outer script deliberately has no source/provider secrets. Starting
     # containers there would make Docker receive unset --env names.
-    assert marker not in deploy
+    # The coordinator may inspect a legacy command identity, but must never
+    # construct a credential-bearing runtime outside the secret wrapper.
+    assert "docker run" not in deploy
     assert "start_historical_worker" not in deploy

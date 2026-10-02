@@ -2605,10 +2605,11 @@ def test_fetcher_transaction_tracks_provider_before_interruption(
     fake_bin.mkdir()
     if had_old:
         (state_dir / "stable").write_text("running\n", encoding="utf-8")
+    original_inode = (state_dir / "stable").stat().st_ino if had_old else None
     fake_docker = fake_bin / "docker"
     fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
     fake_docker.chmod(0o755)
-    harness = f"""set -euo pipefail
+    harness = f"""set -Eeuo pipefail
 FETCHER_DEPLOY_MODE=candidate
 processed=(){transaction}
 register_provider stable previous
@@ -2635,6 +2636,7 @@ kill -TERM "$$"
     assert completed.returncode == 143
     if had_old:
         assert (state_dir / "stable").read_text(encoding="utf-8").strip() == "running"
+        assert (state_dir / "stable").stat().st_ino == original_inode
     else:
         assert not (state_dir / "stable").exists()
     assert not (state_dir / "previous").exists()
@@ -2699,13 +2701,17 @@ def test_fetcher_candidate_cleanup_remains_recoverable_during_each_rollback_oper
     fake_bin.mkdir()
     (state_dir / "stable").write_text("running\n", encoding="utf-8")
     (state_dir / "previous").write_text("stopped\n", encoding="utf-8")
+    original_inode = (state_dir / "previous").stat().st_ino
+    candidate_inode = (state_dir / "stable").stat().st_ino
     fake_docker = fake_bin / "docker"
     fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
     fake_docker.chmod(0o755)
-    harness = f"""set -euo pipefail
+    harness = f"""set -Eeuo pipefail
 FETCHER_DEPLOY_MODE=candidate
 processed=(){transaction}
-processed=(stable:previous:1)
+# The interrupted candidate is not accepted; the original is in previous.
+# Register through the real coordinator to initialize the complete journal entry.
+register_provider stable previous
 rollback_processed
 trap - ERR INT TERM HUP
 """
@@ -2715,6 +2721,7 @@ trap - ERR INT TERM HUP
         FAKE_DOCKER_STATE=str(state_dir),
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
         FAKE_IMAGE="image:test",
+        FAKE_UNACCEPTED_IDS=f"fake-{candidate_inode}",
         FAKE_SIGNAL_ON=signal_operation,
         FAKE_SIGNAL_SENT=str(tmp_path / "signal-sent"),
     )
@@ -2729,6 +2736,7 @@ trap - ERR INT TERM HUP
 
     assert completed.returncode == 143
     assert (state_dir / "stable").read_text(encoding="utf-8").strip() == "running"
+    assert (state_dir / "stable").stat().st_ino == original_inode
     assert not (state_dir / "previous").exists()
 
 
@@ -3172,6 +3180,12 @@ case "$operation" in
     status="$(cat "$state_dir/$name")"
     case "$format" in
       *Config.Labels*)
+        # Labels belong to an identity and survive rename. Older fixtures may
+        # still identify an initial unaccepted container by its fixed name.
+        container_id="$(ls -i "$state_dir/$name" | awk '{print "fake-" $1}')"
+        case ",${FAKE_UNACCEPTED_IDS:-}," in
+          *",$container_id,"*) printf 'false\\n'; exit 0 ;;
+        esac
         case ",${FAKE_UNACCEPTED_NAMES:-}," in
           *",$name,"*) printf 'false\\n' ;;
           *) printf '<no value>\\n' ;;
@@ -3183,6 +3197,12 @@ case "$operation" in
       *State.Running*) [ "$status" = running ] && printf 'true\\n' || printf 'false\\n' ;;
       *State.Status*) printf '%s\\n' "$status" ;;
       *State.ExitCode*) printf '%s\\n' "${FAKE_STABLE_EXIT_CODE:-0}" ;;
+      *State.OOMKilled*) printf 'false\\n' ;;
+      *State.Error*) printf '\\n' ;;
+      *'{{.Id}}'*)
+        # Container identity survives rename and state changes, unlike status.
+        ls -i "$state_dir/$name" | awk '{print "fake-" $1}'
+        ;;
       *RestartCount*) printf '0\\n' ;;
       *) printf '%s\\n' "$status" ;;
     esac

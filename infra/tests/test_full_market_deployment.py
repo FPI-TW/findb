@@ -87,7 +87,10 @@ class FullMarketDeploymentTests(unittest.TestCase):
     def test_materialized_fetcher_bundle_passes_actual_profile_preflight(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory).resolve()
-            for target, profile in (("staging", "bounded"), ("production", "full-market")):
+            for target, profile in (
+                ("staging", "bounded"),
+                ("production", "full-market"),
+            ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
                     if profile == "full-market":
@@ -152,7 +155,9 @@ class FullMarketDeploymentTests(unittest.TestCase):
                             check=False,
                         )
                         self.assertEqual(
-                            completed.returncode == 0, requested == profile, completed.stderr
+                            completed.returncode == 0,
+                            requested == profile,
+                            completed.stderr,
                         )
                         if requested != profile:
                             self.assertIn("runtime_profile_manifest_mismatch", completed.stderr)
@@ -269,6 +274,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
         functions = []
         for name in (
             "register_provider",
+            "require_retired_runtime",
             "retire_runtime",
             "rollback_provider",
             "rollback_processed",
@@ -292,6 +298,9 @@ docker() {
         *State.Running*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $2}' ;;
         *State.Identity*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $3}' ;;
         *State.ExitCode*) echo 0 ;;
+        *State.OOMKilled*) echo false ;;
+        *State.Error*) echo '' ;;
+        *'{{.Id}}'*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $3}' ;;
         *) echo true ;;
       esac ;;
     stop) container_rows="$(printf '%s\n' "$container_rows" | awk -F: -v name="$4" 'BEGIN {OFS=":"} $1 == name {$2="false"} NF {print}')" ;;
