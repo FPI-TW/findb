@@ -4,6 +4,44 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 ECR、S3、IAM、DB、host、runtime secret path 與 staging 完全隔離。此文件是執行契約；PR 中
 的 plan 或資源宣告不等於 live acceptance。
 
+## Shioaji 缺口與 DQ 調查（2026-10-05）
+
+Production 2026-10-01、10-02、10-05 共六筆未結案 missing alerts，分別對應每日的
+`tw_equity_minute` 與 `tw_etf_minute`。三日的 SQLite checkpoint 均顯示 equity sequence 1
+（`2330`）成功，sequence 2（`2454`）在第一次 attempt 以 `KBARS_PAYLOAD` /
+`contract_access` 終止；其餘 48 檔股票與 3 檔 ETF 尚未嘗試，排程窗口已到 cutoff。
+這是 provider contract access 階段失敗，不能把未嘗試序列判定為商品無資料。
+
+Runtime 固定使用 Shioaji `1.7.1`。隔離的 bounded simulation 驗證確認 login 成功後，
+`api.contracts` 實際為 `ContractsApi`；讀取 `.stocks` 立即拋出 `AttributeError`。
+直接呼叫 `api.contracts.get("2454")` 則回傳 `BaseContract`，identity 為
+`code=2454`、`exchange=TSE`、`security_type=STK`、`region=TW`，並成功 logout。
+失敗根因是 runtime binding 的公開介面與已安裝 `_core.pyi` 中的 legacy `stocks`
+宣告不一致，不是商品無資料或已確認的 catalog timeout。唯讀 direct lookup 另確認 frozen
+53 商品全部可取得：code 與 manifest 一致、security type 均為 STK、region 均為 TW，
+其中 52 檔為 TSE、1 檔為 OTC，無需推測 exchange。
+
+Provider fallback 已改為 [官方合約文件](https://sinotrade.github.io/tutor/contract/)
+公開的 `api.contracts.get(code)`；維持 missing contract 分類、credential-free error 封裝，
+以及 `2330`、`0050`、`0056`、`006201` 四個已驗證 `BaseContract` identity shortcut。
+Production 53 商品 manifest、sequence 順序與 cutoff／terminal 政策維持原設定。
+
+修復 provider 不會自動重設既有 terminal checkpoint 或補送上述缺口。現有 production
+backfill 流程排除 Shioaji，且沒有已核准的 production terminal reset 路徑；上述六筆
+alerts 與舊日期缺口仍待 recovery 設計及驗收。不可刪除 SQLite state、鬆綁 cutoff 或把
+terminal error 自動轉為 retry。部署驗證與歷史缺口復原須各自留下驗收證據。
+
+同次唯讀調查的 26 筆未解決 DQ issues 均為 `INGRESS_DELIVERY_POLICY_WARNING`，severity
+為 `warning`。其中 16 筆為 Shioaji 09-21 至 09-24 的 historical payload 在 09-30 送達，
+觸發 `LATEST_DATE_MISSING`（expected latest date 為 09-29）；另 10 筆為 FinLab snapshot
+低於 delivery policy 最低 2,100 筆，五次各 50 筆、五次各 2 筆，其中四次同時缺 latest date。
+Bounded FinLab production manifest `fetcher/configs/finlab_tw50_2026_09_21.v2.json`
+只選 50 檔，與 full snapshot 的 2,100 筆 threshold
+不相符，須獨立檢視政策與執行範圍。這 26 個 ingestion runs 均為 completed，合計成功
+寫入 3,668 筆，`failed_records` 合計為 0；warning 不阻擋 canonical 寫入。
+DQ 問題需逐筆經管理流程人工結案；provider 修復或部署不可自動 resolve，也未授權修改
+DQ／delivery policy。
+
 ## Foundation apply
 
 1. 使用 `findb-production` profile 驗證 caller identity，先在

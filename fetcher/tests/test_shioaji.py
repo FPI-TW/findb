@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -187,38 +187,33 @@ def test_provider_protocol_failures_are_bounded_payload_reasons() -> None:
         assert caught.value.reason == "kbars_scalar" and "secret" not in str(caught.value)
 
 
-@pytest.mark.parametrize("failure", ("contracts", "stocks", "get"))
+@pytest.mark.parametrize("failure", ("contracts", "get"))
 def test_contract_access_failures_are_secret_free_and_distinct(
     monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
+    logouts: list[bool] = []
+
     class SecretError(RuntimeError):
         pass
 
-    class Stocks:
+    class ContractsApi:
         def get(self, _symbol: str) -> object:
             if failure == "get":
                 raise SecretError("secret get")
             return "contract"
 
-    class Contracts:
-        @property
-        def stocks(self) -> Stocks:
-            if failure == "stocks":
-                raise SecretError("secret stocks")
-            return Stocks()
-
     class Api:
         @property
-        def contracts(self) -> Contracts:
+        def contracts(self) -> ContractsApi:
             if failure == "contracts":
                 raise SecretError("secret contracts")
-            return Contracts()
+            return ContractsApi()
 
         def login(self, **_kwargs: object) -> None:
             pass
 
         def logout(self) -> None:
-            pass
+            logouts.append(True)
 
     class Sdk:
         Shioaji = staticmethod(lambda **_: Api())
@@ -237,6 +232,7 @@ def test_contract_access_failures_are_secret_free_and_distinct(
         "reason": "contract_access",
     }
     assert b"secret" not in wire and b"SecretError" not in wire
+    assert logouts == [True]
 
 
 def test_reviewed_symbols_use_exact_public_base_contract_without_catalog(
@@ -281,16 +277,13 @@ def test_reviewed_symbols_use_exact_public_base_contract_without_catalog(
 def test_nonreviewed_symbol_preserves_catalog_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[object] = []
 
-    class Stocks:
+    class ContractsApi:
         def get(self, symbol: str) -> str:
             events.append(("catalog", symbol))
             return "catalog-contract"
 
     class Api:
-        class Contracts:
-            stocks = Stocks()
-
-        contracts = Contracts()
+        contracts = ContractsApi()
 
         def login(self, **_kwargs: object) -> None:
             pass
@@ -311,8 +304,116 @@ def test_nonreviewed_symbol_preserves_catalog_fallback(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
     )
-    ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("UNLISTED", date(2026, 7, 29))
-    assert events == [("catalog", "UNLISTED")]
+    ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2454", date(2026, 7, 29))
+    assert events == [("catalog", "2454")]
+
+
+def test_missing_contract_stays_distinct_and_logs_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    class ContractsApi:
+        def get(self, symbol: str) -> None:
+            events.append(symbol)
+            return None
+
+    class Api:
+        contracts = ContractsApi()
+
+        def login(self, **_kwargs: object) -> None:
+            pass
+
+        def kbars(self, *_args: object, **_kwargs: object) -> None:
+            pytest.fail("missing contract must not call kbars")
+
+        def logout(self) -> None:
+            events.append("logout")
+
+    class Sdk:
+        Shioaji = staticmethod(lambda **_: Api())
+
+    monkeypatch.setattr(shioaji.importlib.metadata, "version", lambda _: "1.7.1")
+    with pytest.raises(ShioajiSdkError) as caught:
+        ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2454", date(2026, 7, 29))
+    assert (caught.value.code, caught.value.reason) == ("CONTRACT", None)
+    assert events == ["2454", "logout"]
+
+
+def test_pinned_runtime_contracts_api_acquires_entire_production_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from findb_fetcher.shioaji_scheduler import ProductionCoordinator, load_manifest
+    from findb_fetcher.shioaji_staging_state import ShioajiStagingState
+
+    manifest = load_manifest(
+        Path(__file__).resolve().parents[1] / "configs" / "shioaji_tw50_2026_09_21.v2.json"
+    )
+    symbols = [item["symbol"] for item in manifest["sequences"]]
+    catalog: list[str] = []
+    shortcuts: list[str] = []
+    acquired: list[str] = []
+    logouts: list[bool] = []
+
+    class ContractsApi:
+        # Shioaji 1.7.1's observed runtime binding has direct get and no stocks.
+        def get(self, code: str) -> str:
+            assert code in symbols
+            catalog.append(code)
+            return code
+
+    class Api:
+        contracts = ContractsApi()
+
+        def login(self, **_kwargs: object) -> None:
+            pass
+
+        def kbars(self, contract: str, **kwargs: object) -> dict[str, list[object]]:
+            assert kwargs == {"start": "2026-10-06", "end": "2026-10-06"}
+            acquired.append(contract)
+            return {**_kbars(), "ts": [_ns(2026, 10, 6, 9, 1)]}
+
+        def logout(self) -> None:
+            logouts.append(True)
+
+    def base_contract(**kwargs: str) -> str:
+        shortcuts.append(kwargs["code"])
+        assert kwargs == {
+            "security_type": "STK",
+            "exchange": "TSE",
+            "region": "TW",
+            "code": kwargs["code"],
+        }
+        return kwargs["code"]
+
+    class Sdk:
+        Shioaji = staticmethod(lambda **_: Api())
+        BaseContract = staticmethod(base_contract)
+
+    current = datetime(2026, 10, 6, 6, 30, tzinfo=timezone.utc)
+
+    def now() -> datetime:
+        nonlocal current
+        # Model elapsed acquisition time without changing the 50/60s budget.
+        current += timedelta(seconds=2)
+        return current
+
+    monkeypatch.setattr(shioaji.importlib.metadata, "version", lambda _: "1.7.1")
+    state = ShioajiStagingState(tmp_path / "production-contracts.sqlite3")
+    try:
+        results = ProductionCoordinator(
+            state, manifest, ShioajiSdkGateway("key", "secret", _sdk=Sdk()), now=now
+        ).run(date(2026, 10, 6))
+        assert len(results) == len(symbols) == 53
+        assert {item.code for item in results} == {"VALIDATED"}
+        assert acquired == symbols
+        assert catalog == [symbol for symbol in symbols if symbol not in shortcuts]
+        assert shortcuts == ["2330", "0050", "0056", "006201"]
+        assert len(logouts) == 53
+        assert state.db.execute(
+            "SELECT COUNT(*) FROM snapshot_sequences WHERE snapshot IS NOT NULL "
+            "AND terminal_status IS NULL AND attempts=1"
+        ).fetchone() == (53,)
+    finally:
+        state.close()
 
 
 def test_plain_kbars_canonicalizes_decimal_and_rejects_non_json_scalars() -> None:
@@ -618,12 +719,9 @@ def test_normalizes_numpy_like_scalars_and_keeps_usage_bytes_separate(
     assert type(plain["ts"][0]) is int and type(plain["Open"][0]) is int
     events: list[str] = []
 
-    class Stocks:
+    class Contracts:
         def get(self, _code: str) -> str:
             return "contract"
-
-    class Contracts:
-        stocks = Stocks()
 
     class KbarsResult:
         def dict(self) -> dict[str, list[object]]:
@@ -665,13 +763,10 @@ def test_gateway_uses_lowercase_contracts_and_always_logs_out(
 ) -> None:
     events: list[object] = []
 
-    class Stocks:
+    class Contracts:
         def get(self, code: str) -> str:
             events.append(("get", code))
             return "contract"
-
-    class Contracts:
-        stocks = Stocks()
 
     class Api:
         contracts = Contracts()
@@ -703,6 +798,7 @@ def test_gateway_uses_lowercase_contracts_and_always_logs_out(
         gateway.fetch_kbars("UNLISTED", date(2026, 7, 29))
     assert "secret" not in str(exc.value)
     assert ("factory", False) in events
+    assert ("get", "UNLISTED") in events
     assert events[-1] == "logout"
 
 
