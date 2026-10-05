@@ -1,5 +1,6 @@
 """Read-only market freshness projection and endpoint behavior."""
 
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
@@ -19,8 +20,52 @@ from app.models.registry import (
 from app.schemas.serve import MarketFreshnessSummaryResponse
 from app.services.market_freshness import list_market_freshness
 from app.utils import uuid7
+from scripts.seed_data import DATASETS
 
 NOW = datetime(2026, 7, 22, 8, tzinfo=timezone.utc)
+
+FULL_MARKET_SCOPES = {
+    "finlab": ["tw_equity_eod", "tw_etf_eod"],
+    "shioaji": ["tw_equity_minute", "tw_etf_minute"],
+    "taifex": ["tw_futures_eod"],
+    "twelve_data": ["us_equity_eod", "hk_equity_eod"],
+}
+
+
+async def _setup_full_market(session, provider: str):
+    datasets = {}
+    for definition in DATASETS:
+        if definition["dataset_key"] in FULL_MARKET_SCOPES[provider]:
+            dataset = DatasetRegistry(**deepcopy(definition))
+            session.add(dataset)
+            datasets[dataset.dataset_key] = dataset
+    control = SchedulerControl(
+        scheduler_key=f"full_market_{provider}_v1",
+        provider=provider,
+        slot_id="taiwan_market_window",
+        scheduled_local_time=time(18),
+        timezone="Asia/Taipei",
+        desired_state="stopped",
+        observed_state="stopped",
+        revision=1,
+    )
+    session.add(control)
+    await session.flush()
+    session.add_all(
+        [SchedulerDataset(scheduler_key=control.scheduler_key, dataset_key=key) for key in datasets]
+    )
+    await _seed_published_calendar_year(session, market="TW", year=2026)
+    await _seed_published_calendar_year(session, market="US", year=2026)
+    await session.flush()
+    return control, datasets
+
+
+def _enable_full_market(dataset):
+    config = deepcopy(dataset.config)
+    config["full_market"].update(
+        enabled=True, readiness_approved=True, mode="acceptance", activation_date="2026-07-22"
+    )
+    dataset.config = config
 
 
 def _config(sources: list[str]) -> dict:
@@ -168,6 +213,168 @@ def _run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", FULL_MARKET_SCOPES)
+async def test_dormant_full_market_reports_prerequisites_without_runtime_failure(
+    test_session, provider
+):
+    await _setup_full_market(test_session, provider)
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.monitor_kind == "full_market"
+    assert row.activation_state == "not_activated"
+    assert row.configuration_status == "ready"
+    assert row.configuration_errors == ()
+    assert row.active_dataset_keys == ()
+    assert row.status == "not_due"
+    assert row.feed_count == row.fresh_feed_count == row.late_feed_count == 0
+    assert len(row.pending_feeds) == len(FULL_MARKET_SCOPES[provider])
+    assert all("activation_disabled" in feed.blockers for feed in row.pending_feeds)
+    assert all(not feed.runtime_eligible for feed in row.feeds)
+    if provider in {"taifex", "twelve_data"}:
+        unavailable = next(
+            feed
+            for feed in row.pending_feeds
+            if feed.dataset_key in {"tw_futures_eod", "hk_equity_eod"}
+        )
+        assert "dataset_inactive" in unavailable.blockers
+        assert "calendar_does_not_cover_evaluation_date" in unavailable.blockers
+
+
+@pytest.mark.asyncio
+async def test_partial_full_market_aggregates_enabled_scope_and_keeps_bounded_details(test_session):
+    control, datasets = await _setup_full_market(test_session, "finlab")
+    _enable_full_market(datasets["tw_equity_eod"])
+    control.desired_state = "running"
+    test_session.add(_run("finlab", date(2026, 7, 22)))
+    await test_session.flush()
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.configuration_status == "ready"
+    assert row.activation_state == "activated"
+    assert row.active_dataset_keys == ("tw_equity_eod",)
+    assert row.status == "fresh"
+    assert row.feed_count == row.fresh_feed_count == 1
+    assert row.pending_feeds[0].dataset_key == "tw_etf_eod"
+    assert row.last_successful_update_at == NOW
+    assert row.last_heartbeat_at is None
+    assert row.heartbeat_age_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_running_full_market_without_enabled_scope_is_configuration_error(test_session):
+    control, _ = await _setup_full_market(test_session, "shioaji")
+    control.desired_state = "running"
+    await test_session.flush()
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert "full_market_no_enabled_datasets" in row.configuration_errors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [("market", "CN"), ("asset_class", "futures")])
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_full_market_registry_contract_scope_conflicts_remain_configuration_errors(
+    test_session, client, admin_headers, field, value, enabled
+):
+    _, datasets = await _setup_full_market(test_session, "finlab")
+    dataset = datasets["tw_equity_eod"]
+    if enabled:
+        _enable_full_market(dataset)
+    setattr(dataset, field, value)
+    await test_session.commit()
+
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.configuration_status == "error"
+    assert "tw_equity_eod:contract_scope_mismatch" in row.configuration_errors
+    assert row.activation_state == ("activated" if enabled else "not_activated")
+    pending_etf = next(feed for feed in row.pending_feeds if feed.dataset_key == "tw_etf_eod")
+    assert pending_etf.blockers == (
+        "activation_disabled",
+        "dataset_inactive",
+        "readiness_not_approved",
+    )
+
+    response = await client.get("/api/v1/admin/market-freshness", headers=admin_headers)
+    assert response.status_code == 200
+    payload = response.json()["data"][0]
+    assert payload["configuration_status"] == "error"
+    assert "tw_equity_eod:contract_scope_mismatch" in payload["configuration_errors"]
+    assert any(feed["dataset_key"] == "tw_etf_eod" for feed in payload["pending_feeds"])
+
+
+@pytest.mark.asyncio
+async def test_enabled_full_market_inactive_and_missing_calendar_are_errors_even_stopped(
+    test_session,
+):
+    _, datasets = await _setup_full_market(test_session, "taifex")
+    _enable_full_market(datasets["tw_futures_eod"])
+    await test_session.flush()
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.activation_state == "activated"
+    assert "tw_futures_eod:dataset_inactive" in row.configuration_errors
+    assert "tw_futures_eod:calendar_does_not_cover_evaluation_date" in row.configuration_errors
+    assert row.configuration_status == "error"
+    assert row.pending_feeds == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid", ["governance", "provider", "schema", "version", "timezone", "mapping"]
+)
+async def test_dormant_full_market_structural_errors_are_not_hidden(test_session, invalid):
+    control, datasets = await _setup_full_market(test_session, "finlab")
+    config = deepcopy(datasets["tw_equity_eod"].config)
+    if invalid == "governance":
+        config["full_market"]["enabled"] = "false"
+    elif invalid == "provider":
+        control.provider = "taifex"
+    elif invalid == "schema":
+        config["schema_id"] = "unsupported_schema"
+    elif invalid == "version":
+        config["current_schema_version"] = -1
+    elif invalid == "timezone":
+        control.timezone = "Invalid/Timezone"
+    else:
+        from sqlalchemy import delete
+
+        await test_session.execute(
+            delete(SchedulerDataset).where(SchedulerDataset.scheduler_key == control.scheduler_key)
+        )
+    datasets["tw_equity_eod"].config = config
+    await test_session.flush()
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.configuration_status == "error"
+    assert row.configuration_errors
+
+
+@pytest.mark.asyncio
+async def test_deactivated_full_market_retains_original_activation_date(test_session):
+    _, datasets = await _setup_full_market(test_session, "shioaji")
+    config = deepcopy(datasets["tw_equity_minute"].config)
+    config["full_market"].update(activation_date="2026-07-01", mode="off")
+    datasets["tw_equity_minute"].config = config
+    await test_session.flush()
+    row = (await list_market_freshness(test_session, now=NOW))[0]
+    assert row.activation_state == "deactivated"
+    assert datasets["tw_equity_minute"].config["full_market"]["activation_date"] == "2026-07-01"
+
+
+@pytest.mark.asyncio
+async def test_full_market_endpoint_keeps_pending_metadata_without_feed_details(
+    client, test_session, admin_headers
+):
+    await _setup_full_market(test_session, "taifex")
+    await test_session.commit()
+    response = await client.get(
+        "/api/v1/admin/market-freshness?include_feeds=false", headers=admin_headers
+    )
+    assert response.status_code == 200
+    row = response.json()["data"][0]
+    assert row["monitor_kind"] == "full_market"
+    assert row["activation_state"] == "not_activated"
+    assert row["pending_feeds"][0]["dataset_key"] == "tw_futures_eod"
+    assert "calendar_does_not_cover_evaluation_date" in row["pending_feeds"][0]["blockers"]
+    assert row["feeds"] == []
+
+
+@pytest.mark.asyncio
 async def test_configured_market_without_runs_is_never_received(test_session):
     await _setup(test_session)
     rows = await list_market_freshness(test_session, now=NOW)
@@ -175,6 +382,9 @@ async def test_configured_market_without_runs_is_never_received(test_session):
     assert rows[0].status == "never_received"
     assert rows[0].feeds[0].status == "never_received"
     assert rows[0].expected_data_date == date(2026, 7, 22)
+    assert rows[0].monitor_kind == "bounded"
+    assert rows[0].activation_state is None
+    assert rows[0].feeds[0].runtime_eligible
 
     before_due = await list_market_freshness(
         test_session, now=datetime(2026, 7, 22, 4, tzinfo=timezone.utc)

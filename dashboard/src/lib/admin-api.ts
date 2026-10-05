@@ -187,6 +187,17 @@ export const marketFreshnessSchema = z.object({
       heartbeat_age_seconds: z.number().nonnegative().nullable(),
       configuration_status: z.enum(["ready", "error"]),
       configuration_errors: z.array(z.string()),
+      monitor_kind: z.enum(["bounded", "full_market"]).default("bounded"),
+      activation_state: z
+        .enum(["not_activated", "activated", "deactivated"])
+        .nullable()
+        .default(null),
+      active_dataset_keys: z.array(z.string()).default([]),
+      pending_feeds: z
+        .array(
+          z.object({ dataset_key: z.string(), blockers: z.array(z.string()) })
+        )
+        .default([]),
       status: freshnessStatusSchema,
       expected_data_date: z.iso.date().nullable(),
       coverage_data_date: z.iso.date().nullable(),
@@ -216,6 +227,8 @@ export const marketFreshnessSchema = z.object({
             open_missing_delivery_alert: z.boolean(),
             last_failure_code: z.string().nullable(),
             configuration_error: z.string().nullable(),
+            runtime_eligible: z.boolean().default(true),
+            activation_blockers: z.array(z.string()).default([]),
             status: freshnessStatusSchema,
           })
         )

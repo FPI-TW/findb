@@ -1064,6 +1064,13 @@ async def list_market_freshness_endpoint(
             "heartbeat_age_seconds": row.heartbeat_age_seconds,
             "configuration_status": row.configuration_status,
             "configuration_errors": list(row.configuration_errors),
+            "monitor_kind": row.monitor_kind,
+            "activation_state": row.activation_state,
+            "active_dataset_keys": list(row.active_dataset_keys),
+            "pending_feeds": [
+                {"dataset_key": feed.dataset_key, "blockers": list(feed.blockers)}
+                for feed in row.pending_feeds
+            ],
             "status": row.status,
             "expected_data_date": row.expected_data_date,
             "coverage_data_date": row.coverage_data_date,
@@ -1092,6 +1099,8 @@ async def list_market_freshness_endpoint(
                     "open_missing_delivery_alert": feed.open_missing_delivery_alert,
                     "last_failure_code": feed.last_failure_code,
                     "configuration_error": feed.configuration_error,
+                    "runtime_eligible": feed.runtime_eligible,
+                    "activation_blockers": list(feed.activation_blockers),
                     "status": feed.status,
                 }
                 for feed in row.feeds

@@ -7,7 +7,7 @@ invalid or missing block never removes the scheduler card from this view.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -29,6 +29,10 @@ from app.services.delivery_policy import (
     delivery_run_covers_date,
     delivery_run_mode_condition,
     resolve_expected_data_date,
+)
+from app.services.ingress_contracts import (
+    parse_dataset_contract_declaration,
+    validate_dataset_contract_scope,
 )
 from app.services.scheduler_control import (
     list_scheduler_controls,
@@ -60,6 +64,14 @@ class FreshnessFeed:
     last_failure_code: str | None
     configuration_error: str | None
     status: FreshnessStatus
+    runtime_eligible: bool = True
+    activation_blockers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingFeed:
+    dataset_key: str
+    blockers: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -92,6 +104,10 @@ class MarketFreshness:
     fresh_feed_count: int
     late_feed_count: int
     feeds: tuple[FreshnessFeed, ...]
+    monitor_kind: Literal["bounded", "full_market"]
+    activation_state: Literal["not_activated", "activated", "deactivated"] | None
+    active_dataset_keys: tuple[str, ...]
+    pending_feeds: tuple[PendingFeed, ...]
 
 
 @dataclass(frozen=True)
@@ -455,7 +471,11 @@ def _feed_configuration(
     schema_id_value = config.get("schema_id")
     schema_version_value = config.get("current_schema_version")
     schema_id = schema_id_value if isinstance(schema_id_value, str) and schema_id_value else None
-    schema_version = schema_version_value if type(schema_version_value) is int else None
+    schema_version = (
+        schema_version_value
+        if type(schema_version_value) is int and schema_version_value > 0
+        else None
+    )
     if schema_id is None:
         errors.append("schema_id_missing")
     if schema_version is None:
@@ -491,12 +511,75 @@ def _feed_configuration(
     return feeds
 
 
+def _full_market_configuration(
+    dataset: DatasetRegistry, provider: str
+) -> tuple[bool, bool, list[str], list[str]]:
+    """Separate opted-out readiness prerequisites from invalid registry configuration."""
+    config = dataset.config if isinstance(dataset.config, dict) else {}
+    errors: list[str] = []
+    blockers: list[str] = []
+    try:
+        declaration = parse_dataset_contract_declaration(config)
+        if declaration is None:
+            errors.append("contract_declaration_missing")
+    except ValueError:
+        errors.append("contract_declaration_invalid")
+    else:
+        if declaration is not None:
+            if provider not in declaration.provider_scope():
+                errors.append("provider_scope_mismatch")
+            try:
+                validate_dataset_contract_scope(
+                    declaration, market=dataset.market, asset_class=dataset.asset_class
+                )
+            except ValueError:
+                errors.append("contract_scope_mismatch")
+    governance = config.get("full_market")
+    if not isinstance(governance, dict):
+        return False, False, [*errors, "full_market_governance_invalid"], blockers
+    enabled = governance.get("enabled") is True
+    if type(governance.get("enabled")) is not bool:
+        errors.append("full_market_enabled_invalid")
+    if type(governance.get("readiness_approved")) is not bool:
+        errors.append("full_market_readiness_invalid")
+    mode = governance.get("mode")
+    if mode is not None and (
+        not isinstance(mode, str) or mode not in {"off", "acceptance", "active"}
+    ):
+        errors.append("full_market_mode_invalid")
+    activation = governance.get("activation_date")
+    activated_before = False
+    if activation is not None:
+        try:
+            if not isinstance(activation, str):
+                raise ValueError("Invalid date")
+            date.fromisoformat(activation)
+            activated_before = True
+        except ValueError:
+            errors.append("full_market_activation_date_invalid")
+    prerequisites: list[str] = []
+    if not dataset.is_active:
+        prerequisites.append("dataset_inactive")
+    if not governance.get("readiness_approved"):
+        prerequisites.append("readiness_not_approved")
+    if enabled:
+        errors.extend(prerequisites)
+        if not activated_before:
+            errors.append("activation_date_missing")
+        if not isinstance(mode, str) or mode not in {"acceptance", "active"}:
+            errors.append("full_market_mode_invalid")
+    else:
+        blockers.extend(["activation_disabled", *prerequisites])
+    return enabled, activated_before, errors, blockers
+
+
 async def _build_scheduler_freshness(
     db: AsyncSession,
     definition: _SchedulerDefinition,
     datasets: dict[str, DatasetRegistry],
     evaluated_at: datetime,
 ) -> MarketFreshness:
+    full_market = definition.scheduler_key.startswith("full_market_")
     configuration_errors: list[str] = []
     if not definition.dataset_keys:
         configuration_errors.append("scheduler_dataset_mapping_missing")
@@ -506,6 +589,9 @@ async def _build_scheduler_freshness(
         configuration_errors.append("scheduler_timezone_invalid")
 
     feed_configs: list[_ConfiguredFeed] = []
+    active_keys: list[str] = []
+    previously_activated = False
+    activation_blockers: dict[str, list[str]] = {}
     markets: list[str] = []
     for dataset_key in definition.dataset_keys:
         dataset = datasets.get(dataset_key)
@@ -513,13 +599,26 @@ async def _build_scheduler_freshness(
             configuration_errors.append(f"dataset_not_found:{dataset_key}")
             continue
         markets.append(dataset.market)
-        if not dataset.is_active:
+        if full_market:
+            enabled, previous, errors, blockers = _full_market_configuration(
+                dataset, definition.provider
+            )
+            previously_activated = previously_activated or previous
+            if enabled:
+                active_keys.append(dataset_key)
+            activation_blockers[dataset_key] = blockers
+            configuration_errors.extend(f"{dataset_key}:{error}" for error in errors)
+        elif not dataset.is_active:
             configuration_errors.append(f"dataset_inactive:{dataset_key}")
         feed_configs.extend(_feed_configuration(dataset, definition.providers))
+
+    if full_market and definition.desired_state == "running" and not active_keys:
+        configuration_errors.append("full_market_no_enabled_datasets")
 
     expected_by_feed: list[date | None] = []
     feed_rows: list[FreshnessFeed] = []
     for feed in feed_configs:
+        eligible = not full_market or feed.dataset.dataset_key in active_keys
         expected: date | None = None
         feed_errors = list(feed.configuration_errors)
         effective_expectation = (
@@ -552,7 +651,19 @@ async def _build_scheduler_freshness(
             except (ValueError, ZoneInfoNotFoundError):
                 reason = "latest_date_policy_invalid"
             if expected is None:
-                feed_errors.append(reason or "latest_date_policy_unavailable")
+                error = reason or "latest_date_policy_unavailable"
+                if (
+                    full_market
+                    and not eligible
+                    and error
+                    in {
+                        "calendar_does_not_cover_evaluation_date",
+                        "no_closed_open_session_in_calendar_window",
+                    }
+                ):
+                    activation_blockers[feed.dataset.dataset_key].append(error)
+                else:
+                    feed_errors.append(error)
         configured = _ConfiguredFeed(
             dataset=feed.dataset,
             source=feed.source,
@@ -561,18 +672,28 @@ async def _build_scheduler_freshness(
             expectation=effective_expectation,
             configuration_errors=tuple(feed_errors),
         )
-        expected_by_feed.append(expected)
-        feed_rows.append(await _feed_freshness(db, configured, expected))
+        if eligible:
+            expected_by_feed.append(expected)
+        feed_rows.append(
+            replace(
+                await _feed_freshness(db, configured, expected),
+                runtime_eligible=eligible,
+                activation_blockers=tuple(activation_blockers.get(feed.dataset.dataset_key, [])),
+            )
+        )
         configuration_errors.extend(f"{feed.dataset.dataset_key}:{error}" for error in feed_errors)
 
-    states = [feed.status for feed in feed_rows]
+    runtime_feeds = [feed for feed in feed_rows if feed.runtime_eligible]
+    states = [feed.status for feed in runtime_feeds]
     fresh_count = states.count("fresh")
     late_count = sum(value in {"late", "partial", "never_received"} for value in states)
-    configured_errors = [feed.configuration_error for feed in feed_rows if feed.configuration_error]
-    if not feed_rows:
+    configured_errors = [
+        feed.configuration_error for feed in runtime_feeds if feed.configuration_error
+    ]
+    if not runtime_feeds:
         group_status: FreshnessStatus = "not_due"
     elif configured_errors and not any(
-        feed.status in {"fresh", "late", "failed"} for feed in feed_rows
+        feed.status in {"fresh", "late", "failed"} for feed in runtime_feeds
     ):
         group_status = "not_due"
     elif states and all(value == "never_received" for value in states):
@@ -583,7 +704,7 @@ async def _build_scheduler_freshness(
         group_status = "failed"
     elif "partial" in states:
         group_status = "partial"
-    elif fresh_count == len(feed_rows):
+    elif fresh_count == len(runtime_feeds):
         group_status = "fresh"
     elif fresh_count:
         group_status = "partial"
@@ -592,23 +713,26 @@ async def _build_scheduler_freshness(
 
     coverage_dates = [
         feed.latest_successful_data_date
-        for feed in feed_rows
+        for feed in runtime_feeds
         if feed.latest_successful_data_date is not None
     ]
-    coverage = min(coverage_dates) if len(coverage_dates) == len(feed_rows) and feed_rows else None
+    coverage = (
+        min(coverage_dates) if len(coverage_dates) == len(runtime_feeds) and runtime_feeds else None
+    )
     expected_dates = [value for value in expected_by_feed if value is not None]
     expected_data_date = min(expected_dates) if expected_dates else None
     last_completed = [feed.last_completed_at for feed in feed_rows if feed.last_completed_at]
+    runtime_completed = [feed.last_completed_at for feed in runtime_feeds if feed.last_completed_at]
     last_fetched = [feed.last_fetched_at for feed in feed_rows if feed.last_fetched_at]
     all_current = bool(
-        feed_rows
+        runtime_feeds
         and expected_dates
         and all(
             feed.configuration_error is None
             and feed.expected_data_date is not None
             and feed.latest_successful_data_date is not None
             and feed.latest_successful_data_date >= feed.expected_data_date
-            for feed in feed_rows
+            for feed in runtime_feeds
         )
     )
     card_errors = tuple(dict.fromkeys(configuration_errors))
@@ -644,16 +768,32 @@ async def _build_scheduler_freshness(
         coverage_data_date=coverage,
         last_fetched_at=max(last_fetched, default=None),
         last_successful_update_at=max(last_completed, default=None),
-        last_complete_at=max(last_completed, default=None) if all_current else None,
+        last_complete_at=max(runtime_completed, default=None) if all_current else None,
         next_scheduled_at=_next_scheduled_at(
             evaluated_at,
             definition.scheduled_local_time,
             definition.timezone,
         ),
-        feed_count=len(feed_rows),
+        feed_count=len(runtime_feeds),
         fresh_feed_count=fresh_count,
         late_feed_count=late_count,
         feeds=tuple(feed_rows),
+        monitor_kind="full_market" if full_market else "bounded",
+        activation_state=(
+            "activated"
+            if active_keys
+            else "deactivated"
+            if previously_activated
+            else "not_activated"
+        )
+        if full_market
+        else None,
+        active_dataset_keys=tuple(active_keys) if full_market else definition.dataset_keys,
+        pending_feeds=tuple(
+            PendingFeed(dataset_key=key, blockers=tuple(dict.fromkeys(blockers)))
+            for key, blockers in activation_blockers.items()
+            if key not in active_keys
+        ),
     )
 
 

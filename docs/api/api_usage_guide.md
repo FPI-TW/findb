@@ -115,6 +115,14 @@ GET /api/v1/serve/calendar/years/{market}/{year}
 缺少published revision或年度不完整時回`404`。Dashboard calendar preview、draft、publish
 與rollback由Admin API處理；只有Owner可publish／rollback。
 
+`GET /api/v1/admin/market-freshness` 保留既有 freshness／heartbeat 欄位，另回傳
+`monitor_kind`（`bounded`／`full_market`）、`activation_state`（bounded 為 null；
+全市場為 `not_activated`／`activated`／`deactivated`）、`active_dataset_keys`、
+`pending_feeds[{dataset_key, blockers}]`。`include_feeds=false` 仍保留待啟用前提。
+Feed 明細新增 `runtime_eligible` 與 `activation_blockers`；全市場 aggregate freshness、
+coverage 與 feed counts 只計入 enabled 範圍，歷史 fetched／completed 與 Feed 明細仍可查詢。
+`configuration_status=ready` 不代表已啟用、已部署或通過 full-market acceptance。
+
 ## Serve API
 
 Serve只讀canonical tables，且只公開active registry可解析的EOD／minute／futures scopes。現行路由為：

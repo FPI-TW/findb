@@ -135,6 +135,8 @@ function buildIngestionCards(
 
 export type SchedulerRuntimeStatus =
   | "configuration_error"
+  | "not_activated"
+  | "deactivated"
   | "not_reported"
   | "stale"
   | "stopping"
@@ -149,6 +151,8 @@ type SchedulerRuntimeStatusMeta = {
 
 export const SCHEDULER_RUNTIME_STATUS_META = {
   configuration_error: { label: "設定錯誤", variant: "destructive" },
+  not_activated: { label: "尚未啟用", variant: "secondary" },
+  deactivated: { label: "已停用", variant: "secondary" },
   not_reported: { label: "尚未回報", variant: "warning" },
   stale: { label: "心跳過期", variant: "warning" },
   stopping: { label: "停止中", variant: "warning" },
@@ -168,16 +172,29 @@ export function selectSchedulerRuntimeStatus({
     | "heartbeat_age_seconds"
     | "last_heartbeat_at"
   >
-  freshness: Pick<
-    MarketFreshness,
-    "configuration_status" | "configuration_errors"
-  > | null
+  freshness:
+    | (Pick<MarketFreshness, "configuration_status" | "configuration_errors"> &
+        Partial<Pick<MarketFreshness, "monitor_kind" | "activation_state">>)
+    | null
 }): SchedulerRuntimeStatus {
   if (
     freshness?.configuration_status === "error" ||
-    (freshness?.configuration_errors.length ?? 0) > 0
+    (freshness?.configuration_errors.length ?? 0) > 0 ||
+    (freshness?.monitor_kind === "full_market" &&
+      control.desired_state === "running" &&
+      (freshness.activation_state === "not_activated" ||
+        freshness.activation_state === "deactivated"))
   ) {
     return "configuration_error"
+  }
+  if (
+    freshness?.monitor_kind === "full_market" &&
+    control.desired_state === "stopped" &&
+    control.observed_state === "stopped"
+  ) {
+    if (freshness.activation_state === "not_activated") return "not_activated"
+    if (freshness.activation_state === "deactivated") return "deactivated"
+    return "stopped"
   }
   if (!control.last_heartbeat_at || control.heartbeat_age_seconds === null) {
     return "not_reported"
@@ -722,6 +739,32 @@ function IngestionCardView({
           </AlertDescription>
         </Alert>
       ) : null}
+      {freshness?.monitor_kind === "full_market" && (
+        <div className="grid gap-2 text-xs text-muted">
+          <p className="m-0">
+            全市場已啟用範圍：{freshness.active_dataset_keys.join(", ") || "無"}
+            。 Feed 明細可能來自 bounded runtime；資料更新不代表全市場已啟用或此
+            Scheduler 已回報心跳。
+          </p>
+          {!control.last_heartbeat_at && (
+            <p className="m-0">
+              此全市場 runtime 尚未回報；請確認部署與 Owner 啟用狀態。
+            </p>
+          )}
+          {freshness.pending_feeds.length > 0 && (
+            <div>
+              <strong>待啟用 Feed／readiness 前提：</strong>
+              <ul className="mt-1 mb-0 list-disc pl-5">
+                {freshness.pending_feeds.map(feed => (
+                  <li key={feed.dataset_key}>
+                    {feed.dataset_key}：{feed.blockers.join("；")}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       {control.last_error && (
         <Alert variant="warning" role="status">
           <TriangleAlert size={17} />
