@@ -181,9 +181,26 @@ immutable configs 與獨立 state，舊 accepted identity 不原地縮減。Stag
 舊 historical workers，candidate／failure 恢復原 accepted containers；成功切換後不再建立 historical workers。
 新版 Fetcher release 以 `fetcher_bundle_version=1` 綁定 pilot configs 與 runtime files；既有 accepted
 manifest 未帶此欄位時，按原 allowlist／checksum 重播舊 bundle，不能重新包裝或改寫 accepted identity。
-TAIFEX 使用 generic Twelve image 與隔離 consumer；需先建立 catalog 中的 staging Source secret、完成
-五個 credential hashes bridge、registry/calendar bootstrap，才可部署第四個 runtime。Deploy checksum
-綁定 catalog、configs 與 runtime entrypoints。Provider desired state 由 Owner 控制，不偽造 heartbeat。
+TAIFEX 使用 generic Twelve image 與隔離 consumer；第四個 runtime 的部署仍須先完成首個 credential bridge、
+registry/calendar bootstrap 與其餘 rollout 前置條件。PR #284 已合入
+(`eb4c0a4f0f33dbd43fd06b46e7a925f784a4ed50`)；FinDB CD run `37273574353` 與 Fetcher CD run
+`37273574500`（attempt 2）成功。五個 hash bridge 已以完整 source／kind／hash 精確比對方式採用四個
+既有 legacy-name credentials，保留其 ID、key hash 與 rotation，並新增 TAIFEX scoped credential；五個
+reconciler 重跑均 unchanged。獨立唯讀驗證結果保存在
+`/private/tmp/findb-staging-bridge-validator.json`。TAIFEX secret read 由實際 Fetcher instance 驗證成功；
+FinDB role 對 Fetcher TAIFEX secret／KMS 的 cross-unit read simulation 為 implicit deny，只證明 FinDB
+role 無法讀取 Fetcher secret。FinDB Backend registry/calendar bootstrap 已成功。遠端四個 bounded pilot
+startup 仍待執行，因此不得視為 rollout 或五個 feed 驗收完成。
+Deploy checksum 綁定 catalog、configs 與 runtime entrypoints。Provider desired state 由 Owner 控制，不偽造 heartbeat。
+
+目前 staging rollout 範圍限於 catalog 中的四個 provider、五個 feed 與四個 bounded CLI runtime，分別使用每 provider 1–2 商品與最新
+已完成交易日。四個 CLI 的 transitive call graph 均不 import 或呼叫 full-market runtime；full-market 程式碼
+的實際類別為 `FullMarketRuntime` 與 `FullMarketState`，reservation 方法為
+`FullMarketState.reserve_acquisition`。四個 full-market controls 在遠端實際保持 stopped；staging 僅執行
+bounded pilots。該 reservation 在 request 實際開始前取樣 grant clock 並先提交時，可能令 `next_at` 與
+quota window 早於 commit 後才發生的實際 acquisition，壓縮 acquisition 間隔並將分鐘 quota 歸入錯誤
+window。這是 production full-market activation blocker。啟用前須有 controlled delay 與 window rollover
+regression，檢查間隔與 quota 分類，並以實際 acquisition 時間作斷言，不能只檢查 DB grant clock。
 
 
 Staging用來驗證部署、bounded端到端資料流與故障處理，不承載完整universe或
@@ -336,14 +353,16 @@ Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受�
 
 Fetcher deploy保留DB desired state，不把deployment當成啟用授權。四個staging scheduler分別
 執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
-每次staging rollout前，Dashboard Owner必須在Scheduler頁按「全部停止」，確認逐筆revision-safe更新完成，
-並等待四個scheduler的desired與observed state都顯示`stopped`後再合併或manual dispatch；
+每次staging rollout前，Dashboard Owner必須在導入概況或Scheduler面板分別按「Full market 全部停止」與「Pilot 全部停止」，確認逐筆revision-safe更新完成，
+並等待兩區所有scheduler（包含四個bounded controls）的desired與observed state都顯示`stopped`後再合併或manual dispatch；
 workflow在stable container優雅停止後只回報stopped observation、讀回desired state與驗證definition，
 不修改desired state。任一provider仍為`running`、definition drift或control失聯都fail closed並恢復previous
 containers。Accepted activation完成後，staging Owner恢復四個 bounded controls：
 `twelve_data_us_common_stocks_daily_v1`、`finlab_tw_equity_eod_v1`、`shioaji_tw_pilot_v1`、`taifex_tw_futures_pilot_v1`；
-Shioaji control同時涵蓋`tw_equity_minute`與`tw_etf_minute`。「全部啟動」只送出具啟動資格的
+Shioaji control同時涵蓋`tw_equity_minute`與`tw_etf_minute`。「Pilot 全部啟動」只送出該區具啟動資格的
 controls，確認視窗列出更新數量與跳過原因；再逐筆確認observed state恢復`running`。
+同provider另一區仍為desired或observed running時，單筆與批次啟動確認視窗提示重疊風險；
+Owner可確認繼續，這不是後端互斥保證。應先停止另一區並等候實際停止。
 Staging 的`full_market_*_v1` controls保持`stopped`。Production必須完成readiness、官方 baseline／calendar、
 選定full-market profile並取得Owner acceptance-mode activation後，才啟動對應control並開始連續五個
 交易日驗收。批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
