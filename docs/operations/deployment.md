@@ -110,7 +110,7 @@ called job與仍持有caller lease的workflow自我競爭。CD直接呼叫同rev
 不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署任一unit；需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
-Fetcher的三個provider images是另一個unit。staging在build／reuse後從ECR exact SHA tag取得並嚴格驗證digest，
+Fetcher的三個provider images是另一個unit。TAIFEX public adapter 共用 Twelve Data image，不新增 image repository。staging在build／reuse後從ECR exact SHA tag取得並嚴格驗證digest，
 產生 unit-scoped、canonical JSON release manifest artifact（FinDB兩張、Fetcher三張完整
 `repository@sha256:...` references）。manifest 不含 secret，並記錄 allowlisted deployment
 bundle checksum。image 的 `contract_versions` 直接由 selected source root 的
@@ -173,6 +173,18 @@ job，bounded SSM preflight在任何SSH或writer interruption前以instance role
 dry-run契約，但foundation、AWS資源及live acceptance仍未執行。
 
 ## Staging data policy
+
+現行 functional pilot 以 [Fetcher catalog](../../fetcher/configs/staging_provider_pilots.v1.json) 綁定
+四個 providers／五個 feeds，每 provider 1–2 商品，保留最新已完成交易日的完整 bars；caps 與 controls
+見 [Fetcher 啟動與驗收](../../fetcher/README.md#staging-pilot-啟動與驗收)。Twelve／Shioaji 使用新版
+immutable configs 與獨立 state，舊 accepted identity 不原地縮減。Staging deploy transaction 停止三個
+舊 historical workers，candidate／failure 恢復原 accepted containers；成功切換後不再建立 historical workers。
+新版 Fetcher release 以 `fetcher_bundle_version=1` 綁定 pilot configs 與 runtime files；既有 accepted
+manifest 未帶此欄位時，按原 allowlist／checksum 重播舊 bundle，不能重新包裝或改寫 accepted identity。
+TAIFEX 使用 generic Twelve image 與隔離 consumer；需先建立 catalog 中的 staging Source secret、完成
+五個 credential hashes bridge、registry/calendar bootstrap，才可部署第四個 runtime。Deploy checksum
+綁定 catalog、configs 與 runtime entrypoints。Provider desired state 由 Owner 控制，不偽造 heartbeat。
+
 
 Staging用來驗證部署、bounded端到端資料流與故障處理，不承載完整universe或
 production-scale歷史資料。Active feeds與pilot範圍見
@@ -255,7 +267,7 @@ Fetcher SQLite位於provider-specific EBS paths，owner為runtime UID，目錄`0
 prepared refs不得混用。Candidate通過preflight與single-writer檢查後才能取代stable。
 Shioaji首次部署若state不存在且沒有stable container，release helper會以exact digest執行
 `--initialize-state`，只建立並驗證reviewed SQLite schema；此模式不驗證runtime secret、不建立
-provider、Source、calendar或R2 client。若stable已存在但state遺失則視為資料異常並fail closed，
+provider、Source、calendar或R2 client。新版 staging manifest 切換使用獨立 state directory，允許舊 stable 存在時建立新版空 state；舊 state 保留 rollback。相同 identity 的 state 遺失仍視為資料異常並fail closed，
 不得用空白state覆寫或掩蓋遺失。
 
 Fetcher instance role與FinDB instance role維持cross-unit Secrets Manager deny。Production首次建庫或
@@ -266,6 +278,13 @@ Fetcher key輪替時，由受信任operator在本機記憶體讀取四把Fetcher
 `fetcher-calendar` Serve key，輸出只含action與16字元fingerprint。此hashed bridge不得改成授予任一
 instance role跨unit讀取secret；校準完成且三個scheduler desired／observed皆為`stopped`後，才能開啟
 Fetcher production deploy gate。
+Staging bounded pilot 使用 `--deployment-target staging --runtime-profile bounded` 校準四個 Source
+clients（新增 `fetcher-taifex`，只允許 `tw_futures_eod`）及 calendar key，共五個 hashes；部署前先建立
+`findb/staging/fetcher/api/source/taifex` secret、套用對應 secret catalog／IAM，並發布 TAIFEX calendar。
+TAIFEX staging consumer 僅讀取 calendar Serve、TAIFEX Source 與 Raw R2 三個 secrets；
+`runtime/configuration` 與其它 provider 相同，只在 production 載入。Staging 非 secret 設定仍由
+runtime env 提供，因此 staging IaC 僅新增 TAIFEX Source metadata。上述 hashes 僅為 reconciliation
+當次輸入，不屬於 backend application runtime env 或 GitHub Environment sync 契約。
 
 ## Network與GitHub protection
 
@@ -315,14 +334,14 @@ Contract upgrade固定backend-first：**Workflow**先驗證Backend同時接受�
 **Operator acceptance**完成schema與shadow delivery驗證後，再manual deploy Fetcher切換pin；
 經過保留期才停止舊版。
 
-Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三個scheduler分別
+Fetcher deploy保留DB desired state，不把deployment當成啟用授權。四個staging scheduler分別
 執行offline preflight、SQLite quick-check、bucket binding與single-writer reconciliation。
 每次staging rollout前，Dashboard Owner必須在Scheduler頁按「全部停止」，確認逐筆revision-safe更新完成，
-並等待三個scheduler的desired與observed state都顯示`stopped`後再合併或manual dispatch；
+並等待四個scheduler的desired與observed state都顯示`stopped`後再合併或manual dispatch；
 workflow在stable container優雅停止後只回報stopped observation、讀回desired state與驗證definition，
 不修改desired state。任一provider仍為`running`、definition drift或control失聯都fail closed並恢復previous
-containers。Accepted activation完成後，staging Owner只恢復三個 bounded controls：
-`twelve_data_us_common_stocks_daily_v1`、`finlab_tw_equity_eod_v1`、`shioaji_tw_pilot_v1`；
+containers。Accepted activation完成後，staging Owner恢復四個 bounded controls：
+`twelve_data_us_common_stocks_daily_v1`、`finlab_tw_equity_eod_v1`、`shioaji_tw_pilot_v1`、`taifex_tw_futures_pilot_v1`；
 Shioaji control同時涵蓋`tw_equity_minute`與`tw_etf_minute`。「全部啟動」只送出具啟動資格的
 controls，確認視窗列出更新數量與跳過原因；再逐筆確認observed state恢復`running`。
 Staging 的`full_market_*_v1` controls保持`stopped`。Production必須完成readiness、官方 baseline／calendar、
@@ -331,7 +350,7 @@ Staging 的`full_market_*_v1` controls保持`stopped`。Production必須完成re
 Fetcher candidate只以`docker create --restart no`驗證最終container config，並以
 `com.findb.fetcher.accepted=false`標示；未accepted scheduler從不啟動，因此untrappable command／host
 interruption不會留下未授權writer。Accepted activation先以atomic symlink replacement將`/opt/fetcher/current`寫成
-exact accepted release，作為durable desired-release journal，再啟動三個標示accepted的provider；
+exact accepted release，作為durable desired-release journal，再啟動四個標示accepted的staging provider；
 一般錯誤會同時恢復containers與舊pointer，hard interruption則以同一accepted key重播完成收斂。
 常駐CLI將`SIGTERM`／`SIGINT`轉為shared stop event：idle時立即退出，final running preflight
 後收到stop也不得啟動新provider cycle；已開始的cycle則完成terminal report後退出。Workflow
@@ -775,7 +794,8 @@ Deploy後至少完成：
 - **Operator acceptance**：Fetcher另核對heartbeat、desired／observed state及terminal
   delivery。
 - **Operator acceptance**：Scheduler market freshness不得有`configuration_errors`；US目前需有
-  2025–2028 published revisions、TW需有2025–2026 published revisions，三個controls在人工啟用前仍須
+  2025–2028 published revisions、TW需有2025–2026 published revisions；staging TAIFEX需有獨立2026 published
+  revision，四個bounded controls在人工啟用前仍須
   為`desired=stopped`／`observed=stopped`。
 
 失敗時：

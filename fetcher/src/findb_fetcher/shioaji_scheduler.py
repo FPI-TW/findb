@@ -14,7 +14,7 @@ import os
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as clock_time
 from pathlib import Path
 from typing import Any, Protocol
@@ -141,6 +141,16 @@ def load_manifest(path: Path) -> dict[str, Any]:
         raise ProductionManifestError("invalid production manifest") from exc
     if not isinstance(value, dict):
         raise ProductionManifestError("manifest must be an object")
+    if value.get("version") == 3:
+        from findb_fetcher.pilot_catalog import validate_staging_pilots
+
+        validate_staging_pilots(path.parent)
+        staging_expected = json.loads(
+            (path.parent / "shioaji_tw_staging_pilot.v3.json").read_bytes()
+        )
+        if not _strict_equal(staging_expected, value):
+            raise ProductionManifestError("staging pilot identity differs")
+        return value
     if value.get("version") == 1:
         expected: dict[str, Any] = {
             "version": 1,
@@ -223,7 +233,9 @@ def default_manifest_path() -> Path:
         return Path(configured)
     target = os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower()
     filename = (
-        "shioaji_tw50_2026_09_21.v2.json" if target == "production" else "shioaji_tw_pilot.v1.json"
+        "shioaji_tw50_2026_09_21.v2.json"
+        if target == "production"
+        else "shioaji_tw_staging_pilot.v3.json"
     )
     container_path = Path("/app/configs") / filename
     if container_path.is_file():
@@ -233,7 +245,15 @@ def default_manifest_path() -> Path:
 
 def default_state_path() -> Path:
     configured = os.getenv(PRODUCTION_STATE_ENV)
-    return Path(configured) if configured else DEFAULT_PRODUCTION_STATE_PATH
+    return (
+        Path(configured)
+        if configured
+        else (
+            DEFAULT_PRODUCTION_STATE_PATH
+            if os.getenv("DEPLOYMENT_TARGET", "staging") == "production"
+            else Path("/var/lib/findb-shioaji-fetcher/staging-pilot-v3/state.sqlite3")
+        )
+    )
 
 
 def validate_production_state_path(
@@ -483,6 +503,12 @@ class ShioajiProductionScheduler:
             self.state.mark_cutoff(f"{self.manifest['universe_id']}:{target.isoformat()}")
             return SchedulerRun(target, "skipped", skip_reason="cutoff_reached")
         day, revision = self.calendar.get_day(PILOT_MARKET, target)
+        if self.manifest["universe_id"] == "shioaji_tw_staging_pilot_v3":
+            for _ in range(14):
+                if getattr(day, "day_status", None) == "open" and day.is_open:
+                    break
+                target -= timedelta(days=1)
+                day, revision = self.calendar.get_day(PILOT_MARKET, target)
         day_status = getattr(day, "day_status", None)
         is_open = getattr(day, "is_open", None)
         if day_status is None:
@@ -568,14 +594,16 @@ def _source_client(fetcher: FetcherConfig, contracts: ContractRegistry) -> Any:
 
 
 def _supported_universe_id(value: Any) -> bool:
-    return value == PILOT_UNIVERSE_ID or (
+    return value in {PILOT_UNIVERSE_ID, "shioaji_tw_staging_pilot_v3"} or (
         isinstance(value, str) and value.startswith(PRODUCTION_UNIVERSE_PREFIX)
     )
 
 
 def _coordinator_universe_id(value: Any) -> bool:
     return isinstance(value, str) and (
-        value.startswith(PILOT_UNIVERSE_ID) or value.startswith(PRODUCTION_UNIVERSE_PREFIX)
+        value.startswith(PILOT_UNIVERSE_ID)
+        or value == "shioaji_tw_staging_pilot_v3"
+        or value.startswith(PRODUCTION_UNIVERSE_PREFIX)
     )
 
 

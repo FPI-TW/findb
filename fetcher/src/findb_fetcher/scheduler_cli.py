@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -139,6 +140,13 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json({"mode": "require_stopped", "status": "ok"}, stream=sys.stdout)
             return EXIT_OK
 
+        if universe.universe_id == "twelve_data_us_staging_pilot_v2" and args.state_path.exists():
+            with sqlite3.connect(f"file:{args.state_path}?mode=ro", uri=True) as db:
+                if any(
+                    row[0] != universe.universe_id
+                    for row in db.execute("SELECT DISTINCT universe_id FROM scheduled_job")
+                ):
+                    raise SchedulerStateError("staging pilot requires an isolated universe state")
         state = SchedulerState(args.state_path)
         if args.check:
             _emit_json(
@@ -366,7 +374,7 @@ def _default_schedule_file() -> Path:
     filename = (
         "daily_scheduler.production.v3.json"
         if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
-        else "daily_scheduler.v2.json"
+        else "daily_scheduler.staging.v3.json"
     )
     container_path = Path("/app/configs") / filename
     if container_path.is_file():
@@ -375,7 +383,14 @@ def _default_schedule_file() -> Path:
 
 
 def _default_state_path() -> Path:
-    return Path(os.getenv("FETCHER_STATE_PATH", "/var/lib/findb-fetcher/state.sqlite3"))
+    return Path(
+        os.getenv(
+            "FETCHER_STATE_PATH",
+            "/var/lib/findb-fetcher/state.sqlite3"
+            if os.getenv("DEPLOYMENT_TARGET", "staging") == "production"
+            else "/var/lib/findb-fetcher/staging-pilot-v2/state.sqlite3",
+        )
+    )
 
 
 def _load_selected_schedule(
@@ -385,6 +400,10 @@ def _load_selected_schedule(
     *,
     reject_disabled: bool = True,
 ):
+    if path.name == "daily_scheduler.staging.v3.json":
+        from findb_fetcher.pilot_catalog import validate_staging_pilots
+
+        validate_staging_pilots(path.parent)
     manifest = load_schedule_manifest(path)
     if manifest.schedule_version not in {2, 3}:
         raise ScheduleError("only v2 and v3 schedule manifests are supported")

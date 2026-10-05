@@ -28,7 +28,7 @@ def _daily_provider(provider: str) -> dict[str, Any]:
     default_schedule = (
         "/app/configs/daily_scheduler.production.v3.json"
         if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
-        else "/app/configs/daily_scheduler.v2.json"
+        else "/app/configs/daily_scheduler.staging.v3.json"
     )
     schedule_path = Path(os.getenv("FETCHER_SCHEDULE_FILE", default_schedule))
     schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
@@ -37,17 +37,17 @@ def _daily_provider(provider: str) -> dict[str, Any]:
     universe = json.loads(universe_path.read_text(encoding="utf-8"))
     state_env = "FETCHER_STATE_PATH" if provider == "twelve_data" else "FETCHER_FINLAB_STATE_PATH"
     default_state = (
-        "/var/lib/findb-fetcher/state.sqlite3"
+        "/var/lib/findb-fetcher/staging-pilot-v2/state.sqlite3"
         if provider == "twelve_data"
         else "/var/lib/findb-finlab-fetcher/state.sqlite3"
     )
-    state_path = Path(os.getenv(state_env, default_state))
+    state_path = Path(os.getenv("FETCHER_STATE_PATH", os.getenv(state_env, default_state)))
     with _open_read_only(state_path) as db:
         db.row_factory = sqlite3.Row
         rows = db.execute(
             """
             SELECT target_data_date, scheduled_date, status, last_outcome,
-                   count(*) AS work_items,
+                   group_concat(run_id) AS run_ids, count(*) AS work_items,
                    sum(attempt_count) AS provider_attempts,
                    coalesce(sum(record_count), 0) AS record_count,
                    sum(CASE WHEN attempt_id IS NOT NULL AND run_id IS NOT NULL THEN 1 ELSE 0 END)
@@ -117,7 +117,7 @@ def _shioaji() -> dict[str, Any]:
     default_manifest = (
         "/app/configs/shioaji_tw50_2026_09_21.v2.json"
         if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
-        else "/app/configs/shioaji_tw_pilot.v1.json"
+        else "/app/configs/shioaji_tw_staging_pilot.v3.json"
     )
     manifest_path = Path(
         os.getenv(
@@ -126,7 +126,10 @@ def _shioaji() -> dict[str, Any]:
         )
     )
     state_path = Path(
-        os.getenv("FETCHER_SHIOAJI_STATE_PATH", "/var/lib/findb-shioaji-fetcher/state.sqlite3")
+        os.getenv(
+            "FETCHER_SHIOAJI_STATE_PATH",
+            "/var/lib/findb-shioaji-fetcher/staging-pilot-v3/state.sqlite3",
+        )
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     with _open_read_only(state_path) as db:
@@ -135,7 +138,7 @@ def _shioaji() -> dict[str, Any]:
             """
             SELECT u.target_date, u.execution_date, u.status AS daily_status,
                    s.dataset_key, s.status, s.terminal_status, s.terminal_reason,
-                   count(*) AS work_items, sum(s.attempts) AS provider_attempts,
+                   group_concat(s.source_run_id) AS run_ids, count(*) AS work_items, sum(s.attempts) AS provider_attempts,
                    sum(CASE WHEN s.raw_ref IS NOT NULL THEN 1 ELSE 0 END) AS raw_receipts,
                    sum(CASE WHEN s.source_attempt_id IS NOT NULL AND s.source_run_id IS NOT NULL
                             THEN 1 ELSE 0 END) AS source_receipts
@@ -168,14 +171,59 @@ def _shioaji() -> dict[str, Any]:
     }
 
 
+def _taifex() -> dict[str, Any]:
+    config_path = Path("/app/configs/taifex_tw_staging_pilot.v1.json")
+    state_path = Path(
+        os.getenv(
+            "FETCHER_STATE_PATH",
+            "/var/lib/findb-taifex-fetcher/staging-pilot-v1/state.sqlite3",
+        )
+    )
+    with _open_read_only(state_path) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            "SELECT target_date,status,attempts,requests,run_id,attempt_id,record_count,prepared,last_outcome FROM pilot_day ORDER BY target_date DESC LIMIT 2"
+        ).fetchall()
+    history = []
+    for row in rows:
+        item = dict(row)
+        prepared = json.loads(item.pop("prepared")) if item.get("prepared") else None
+        item["actual_contracts"] = (
+            [
+                {
+                    "contract_code": record["contract_code"],
+                    "contract_month": record["contract_month"],
+                    "session": record["session"],
+                    "trade_date": record["trade_date"],
+                }
+                for record in prepared["payload"]["data"]
+            ]
+            if prepared
+            else []
+        )
+        history.append(item)
+    return {
+        "provider": "taifex",
+        "datasets": ["tw_futures_eod"],
+        "config": {
+            "manifest_sha256": _sha256(config_path),
+            "pilot": json.loads(config_path.read_bytes()),
+        },
+        "credits": {"kind": "not_applicable", "reason": "public_exchange_report"},
+        "recent_trade_dates": history,
+    }
+
+
 def main() -> int:
     provider = os.environ.get("FINDB_EVIDENCE_PROVIDER")
     if provider in {"twelve_data", "finlab"}:
         result = _daily_provider(provider)
+    elif provider == "taifex":
+        result = _taifex()
     elif provider == "shioaji":
         result = _shioaji()
     else:
-        raise SystemExit("FINDB_EVIDENCE_PROVIDER must be twelve_data, finlab, or shioaji")
+        raise SystemExit("FINDB_EVIDENCE_PROVIDER must be twelve_data, finlab, shioaji, or taifex")
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0
 

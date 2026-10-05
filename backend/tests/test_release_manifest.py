@@ -46,6 +46,7 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
         "contract_manifest_sha256": CONTRACT_DATA.canonical_sha256,
         "deployment_source_bundle_sha256": "d" * 64,
         "created_by_run_id": "123456",
+        **({"fetcher_bundle_version": 1} if unit == "fetcher" else {}),
     }
 
 
@@ -60,6 +61,46 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         schema = root / "contracts" / contract["path"]
         schema.parent.mkdir(parents=True, exist_ok=True)
         schema.write_bytes((REPO_ROOT / "contracts" / contract["path"]).read_bytes())
+
+
+def test_legacy_accepted_fetcher_bundle_replay_preserves_identity_and_new_format_is_bound(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "legacy"
+    for relative in release_manifest.bundle_source_paths(
+        "fetcher", CONTRACT_DATA, pilot_format=False
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((REPO_ROOT / relative).read_bytes())
+    manifest = _manifest("fetcher")
+    manifest.pop("fetcher_bundle_version")
+    with release_manifest.SourceBundleReader(root) as reader:
+        manifest["deployment_source_bundle_sha256"] = reader.deployment_source_bundle_sha256(
+            "fetcher", pilot_format=False
+        )
+    manifest_path = tmp_path / "legacy-manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    raw = release_manifest.build_bundle(root, manifest_path, "fetcher")
+    digest = hashlib.sha256(raw).hexdigest()
+    assert (
+        release_manifest.validate_bundle_bytes(raw, expected_sha256=digest, unit="fetcher")
+        == manifest
+    )
+    assert not (root / "fetcher/configs/staging_provider_pilots.v1.json").exists()
+    assert release_manifest.build_bundle(root, manifest_path, "fetcher") == raw
+    manifest["fetcher_bundle_version"] = 1
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(release_manifest.ManifestError):
+        release_manifest.build_bundle(root, manifest_path, "fetcher")
+
+
+@pytest.mark.parametrize("value", [False, 0, 2, "1"])
+def test_fetcher_bundle_version_rejects_unknown_or_malformed_format(value) -> None:
+    manifest = _manifest("fetcher")
+    manifest["fetcher_bundle_version"] = value
+    with pytest.raises(release_manifest.ManifestError):
+        release_manifest.validate_manifest(manifest, CONTRACT_DATA)
 
 
 def test_protocol_cli_emits_only_the_v2_marker() -> None:

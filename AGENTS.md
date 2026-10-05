@@ -8,7 +8,7 @@ FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以�
 
 整體資料流程是 Fetch -> Source -> durable queue -> Normalize -> Serve：
 
-- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data、FinLab、Shioaji 三個隔離的 staging provider runtime、durable scheduler/checkpoint、contract validation 與 delivery client。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
+- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data、FinLab、Shioaji、TAIFEX 四個隔離的 staging provider runtime、durable scheduler/checkpoint、contract validation 與 delivery client。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
 - Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重，並在同一 transaction 寫入 raw、run、normalization job 與 outbox。
 - Durable queue：dispatcher 將 outbox 發布到 RabbitMQ，Celery worker 執行 normalization；RabbitMQ 可重建，PostgreSQL 是 durable truth。
 - Normalize layer：`backend/app/services/normalize/`，把 contract/raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
@@ -129,7 +129,7 @@ findb/
 - Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `CONTRACT_NORMALIZER_MAP`；缺少或不支援 schema/version 時一律 fail closed。
 - Source API 只接受 versioned provider-neutral contracts；不提供 market-specific、provider-specific 或 `.../direct` compatibility routes。
 - Full-market 採 opt-in production runtime 與 immutable official universe／frozen daily plan；新 HK、TW ETF EOD、TAIFEX feeds 預設 inactive，須 Owner baseline approval、readiness 與五個連續交易日驗收。`expected = data + no_data + missing + blocked`，no_data 必須有 durable evidence；只補 activation 後缺口，不建立 continuous futures 或 historical backfill。
-- staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 與 `shioaji/tw_etf_minute`。
+- staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 、`shioaji/tw_etf_minute` 與 `taifex/tw_futures_eod`；每個 provider 的 staging functional pilot 只取 1–2 商品與最新已完成交易日。新增 provider 必須同步註冊 pilot catalog、支援契約、startup fixture 與 Source → raw → canonical → Serve 驗收，才能通過 readiness／CI。
 - Instrument lookup data 可產生為`backend/app/static/data/instruments.json`；不再產生macro cache，generated cache不是source-of-truth data。
 - 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 exact-host Referer regex 比對，對 Dashboard `/dashboard/lookup` 觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
 - Source allowlist、Cloudflare real-IP、Serve key 注入三組 `*.conf` 都是 deploy time 渲染；本機開發不會跑 nginx，FastAPI 自身只負責 API key、rate limit、ingest 邏輯。

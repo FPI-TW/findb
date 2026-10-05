@@ -78,6 +78,12 @@ locals {
       consumer      = "shioaji"
       status        = "active"
     }
+    "fetcher/api/source/taifex" = {
+      unit          = "fetcher"
+      relative_name = "api/source/taifex"
+      consumer      = "taifex"
+      status        = "active"
+    }
     "fetcher/provider/twelve-data" = {
       unit          = "fetcher"
       relative_name = "provider/twelve-data"

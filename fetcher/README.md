@@ -5,19 +5,19 @@ contracts，不 import backend，也不持有 FinDB DB、RabbitMQ 或 Admin 權�
 
 ## Staging active feeds
 
-目前 staging 只啟用四個 provider/dataset 配對：
+staging 的四個 providers 以五個 provider/dataset 配對進行 functional pilot：
 
 | Provider | Dataset | 範圍 |
 | --- | --- | --- |
-| `twelve_data` | `us_equity_eod` | reviewed bounded US equity universe |
-| `finlab` | `tw_equity_eod` | reviewed bounded TW equity universe |
+| `twelve_data` | `us_equity_eod` | `AAPL`、`MSFT` 單日完整日 K |
+| `finlab` | `tw_equity_eod` | `2330`、`2317` 單日完整日 K |
 | `shioaji` | `tw_equity_minute` | `2330` reviewed pilot |
-| `shioaji` | `tw_etf_minute` | `0050`、`0056`、`006201` reviewed pilot |
+| `shioaji` | `tw_etf_minute` | `0050` 完整同日分鐘 K |
+| `taifex` | `tw_futures_eod` | `TX`、`MTX` 各一個 source-observed 近月契約，regular／after_hours |
 
 Canonical/Serve read model 仍可保留歷史或預留資料域，但不代表那些資料域目前有
-active provider feed。舊 provider、direct/market ingest route 與 futures contract feed
-不在 staging；若日後需要，必須另案建立完整新版 contract、dataset registry、normalizer、
-DQ、Serve read model 與 staging 驗收。
+active provider feed。HK、TW ETF EOD 不為 provider coverage 擴張；production full-market
+仍須 Owner baseline/readiness 與五個連續交易日驗收。
 
 目前提供：
 
@@ -38,8 +38,10 @@ retired route、provider-specific route 或不在上述表格的 dataset 都會 
 ### Staging execution boundary
 
 Staging 只驗證完整資料流與故障處理，不承載完整資料集。預設 data-producing profile
-固定使用 AAPL、MSFT、NVDA 與 scheduler `outputsize=20`；fresh cycle 最多 3 個 symbols、
-60 筆 provider rows。不得在 staging 執行完整歷史 backfill、完整 universe 導入或擴大
+由 `configs/staging_provider_pilots.v1.json` 綁定每個 provider 1–2 商品與
+最新已完成交易日，不補歷史缺口。Twelve 最多 2 requests／2 rows／單日；FinLab 一批 2 rows；
+Shioaji 各 dataset 一筆 sequence（sequence_count=1），保留完整同日分鐘 bars；TAIFEX 每日期
+最多 6 次單商品單日報表 requests（3 attempts）、每 response 8 MiB、4 canonical session rows。不得在 staging 執行完整歷史 backfill、完整 universe 導入或擴大
 symbol、日期、record caps；例外須依[staging data policy](../docs/operations/deployment.md#staging-data-policy)
 針對具名 run 另行核准。
 
@@ -141,7 +143,7 @@ key、完整 payload 或任意 Source response body。exit code 以 CLI `--help`
 
 ### Twelve Data reviewed universe
 
-`configs/twelve_data_us_common_stocks.v1.json` 只包含 AAPL、MSFT、NVDA。修改 symbols 或
+保留的 legacy `configs/twelve_data_us_common_stocks.v1.json` 包含 AAPL、MSFT、NVDA；staging 使用上方新版兩商品 pilot。修改 symbols 或
 limits 必須經 code review，不得從 runtime 字串動態擴張。每個 symbol 保持獨立 request 與
 idempotency identity；單一 mapping/delivery 錯誤不污染其它 symbols。Universe 必須遵守
 每次 3 symbols、每 symbol 260 records、總計 780 records、366 天與 3 credits 的 reviewed
@@ -158,7 +160,7 @@ schedule date/symbol 狀態、retry/lease、Source attempt/run identity、prepar
 terminal checkpoint；delivery retry 直接重用相同 body 與 idempotency key。DB scheduler
 control endpoint 是啟停唯一權威，失聯或 mapping 不一致時 fail closed。
 
-三個常駐 scheduler container 使用 `--run-forever`，分別服務 Twelve Data、FinLab、Shioaji；
+四個 staging scheduler container 使用 `--run-forever`，分別服務 Twelve Data、FinLab、Shioaji、TAIFEX；
 stopped 時保持 idle，不建立 provider cycle。state directory 應由 staging deployment 以
 UID/GID `10001:10001`、mode `0700` 的 durable volume 掛載。
 
@@ -166,11 +168,12 @@ UID/GID `10001:10001`、mode `0700` 的 durable volume 掛載。
 會立即以exit `0`結束；若signal落在final running preflight後，runtime不會跨入新的provider
 cycle；已開始的cycle仍會完成terminal report再結束。Deployment要求stable container在30秒
 grace period內exit `0`，exit `137`一律視為no-go並恢復原stable。
+TAIFEX pilot 在 signal 後保留 prepared state、取消 terminal polling，不推進 checkpoint；restart 使用同一 identity 重試。
 
 ## Provider raw storage（Cloudflare R2）
 
 Twelve Data 保存 exact HTTP bytes；FinLab 保存 deterministic SDK bundle；Shioaji 保存
-SDK-detached acquisition snapshot。三者都在 Source delivery 前完成 raw-first persistence，
+SDK-detached acquisition snapshot；TAIFEX 保存兩份官方 report 及 checksum manifest。四者都在 Source delivery 前完成 raw-first persistence，
 並以 `source_raw_ref` 與 `source_raw_sha256` 成對傳遞。
 
 執行順序固定為：bounded provider fetch → R2 raw write → mapping/contract validation →
@@ -204,7 +207,7 @@ Dashboard client bundle。
 ## 全市場正式環境排程
 
 `findb-fetch-full-market` 是獨立的正式環境入口。`configs/full_market.production.v1.json`
-固定保留 `desired_state=stopped`，staging 的 NASDAQ-100、TW50 與 minute pilot 排程維持原有範圍。
+固定保留 `desired_state=stopped`，staging 僅使用上述四個 provider 的 bounded pilots。
 正式環境另以四個 provider process 執行；每個 process 只取得該 provider 的憑證，以及必要的
 Source、Serve calendar 與 R2 憑證。TAIFEX 使用公開來源，不需要 Twelve Data key。
 
@@ -311,3 +314,56 @@ no-data。僅具日期、商品、session、URL/checksum、觀察時間及實質
 其他未能提供來源證據的商品保持缺口。八次無法恢復的 acquisition/source failure、mapping gap
 或 normalization failure 轉 manual，`--health` 保留 unresolved、late 及 manual-required，交由
 營運人員核實處置，不跳過後將整份 plan 宣稱完成。
+
+### Staging pilot 啟動與驗收
+
+部署先準備 `findb/staging/fetcher/api/source/taifex` 專用 secret；TAIFEX 不需 provider token。
+FinDB 以 `reconcile_fetcher_credentials.py --deployment-target staging --runtime-profile bounded`
+接收四把 Source keys 與 calendar Serve key 的五個 SHA-256 hashes；不可傳 plaintext 或開跨 unit secret 權限。
+`provision_registry.py --deployment-target staging` 啟用 `tw_futures_eod` bounded incremental policy
+（18:00、minimum rows=4），新增 stopped 的 `taifex_tw_futures_pilot_v1`，保持 full-market controls 停止。
+`seed_staging_pilot_calendar.py --deployment-target staging` 僅發布缺少的官方 TAIFEX 2026 日曆，
+保留 operator revision，不改 US／TW／HK。calendar 缺少或 credential 不可用即 fail closed。
+
+Owner 在 Dashboard 啟動以下 controls；container startup/readiness 允許 desired=stopped，部署不代為 start。
+
+| Provider | Control key | CLI（附 `--check` 或 `--run-forever`） |
+| --- | --- | --- |
+| Twelve Data | `twelve_data_us_common_stocks_daily_v1` | `findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.staging.v3.json --slot-id western_markets_window --dataset-key us_equity_eod` |
+| FinLab | `finlab_tw_equity_eod_v1` | `findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.staging.v3.json` |
+| Shioaji | `shioaji_tw_pilot_v1` | `findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_staging_pilot.v3.json` |
+| TAIFEX | `taifex_tw_futures_pilot_v1` | `findb-fetch-taifex-pilot --config /app/configs/taifex_tw_staging_pilot.v1.json` |
+
+Twelve state 改用 `/var/lib/findb-fetcher/staging-pilot-v2/state.sqlite3`；Shioaji 改用
+`/var/lib/findb-shioaji-fetcher/staging-pilot-v3/state.sqlite3`。舊 immutable manifest／state 保留作 rollback；
+不移入舊 pending NVDA／ETF prepared requests。TAIFEX 使用 `/var/lib/findb-taifex-fetcher/staging-pilot-v1/state.sqlite3`。
+只選 source-observed `YYYYMM` 近月，每個產品保留兩個 session；weekly、價差與 continuous alias 不進 pilot。
+兩份原始報表先寫 R2，raw manifest 綁定各自 checksum，再凍結 contract/prepared request；restart 重送同一 identity。
+耗盡 request／attempt budget 顯示 blocked；acquisition/Source 錯誤不算 no_data。
+
+新增 provider 必須擴充 validated catalog、supported runtime/schema、最小 Source scope、offline startup 與
+stopped→running fixture、實際 acquisition/durable replay 測試，並收集每個 feed 最新 eligible completed trading day
+五個 feed 的 Source 202、raw、terminal normalization、exact pilot canonical 與 Serve proof。
+`infra/acceptance/collect_staging_feed_evidence.py` 的 `pilot_functional_complete` 是此門檻；
+multi-date metrics 是額外資訊。Fixture 只證明實作行為，不證明 live credentials、供應商授權或資料流已通過。
+
+Staging functional target 由 backend unit-local published 官方日曆的完整 revision 與 UTC 觀測時刻
+推導；US 依台北 08:15 trigger／lag 1，TW EOD／minute 14:30，TAIFEX 18:00，並檢查官方收盤。
+US 09:00 是交付 deadline；minute 過 17:00 cutoff 仍須有同 target 的完成 proof。
+日曆缺漏、revision 不符及最新日期 missing／blocked 不可回退採用舊成功。
+Exporter 每 run 保留 accepted／duplicate 的所有 Source receipts，但 canonical coverage 只計一次，
+使 durable prepared retry／restart 的同一 run 重播仍可驗收。outbox 歷史 delivery generations 聚合保存，
+目前 generation 依 normalization job 的 delivery_id 核對，正常 lost delivery／expired lease recovery 不重複
+canonical proof。Serve 回應須以 source、source_fetched_at、OHLCV、minute 精確 bar 或 futures actual contract／session
+與 run-linked canonical sample 正規化比對，collector 重算 SHA-256 fingerprint 後才接受 run binding；
+同 key 的其他來源或內容不算成功。Fixture recovery／HTTP 測試仍不代表 live credentials 驗收。
+Fetcher 不讀 Backend DB 或 import Backend。
+
+Live evidence collector 在同 unit 的可信 wrapper 內壓縮 standalone probe JSON，stdout inline
+或拆成最多 16,000 字元的 base64 chunks，避免 SSM 24k stdout 截斷。大型資料暫存在 container
+`/tmp` 的唯一 nonce artifact（0600），每次收集有 8 MiB raw／2 MiB compressed／175 chunks 與
+180 秒上限，依序驗證完整 SHA-256 與 bounded 解壓後才接受原始 JSON。所有結果都 best-effort
+清理暫存檔；下次 probe 只移除超過 24 小時、同 owner 的專用 prefix 孤兒檔。
+Probe 的 standalone stdout JSON、UTC 真時鐘與 functional acceptance 語意維持原樣；
+傳輸不新增 S3、IAM、SDK 或跨 unit credentials。完整測試與清理規則見
+[`docs/operations/testing.md`](../docs/operations/testing.md)。

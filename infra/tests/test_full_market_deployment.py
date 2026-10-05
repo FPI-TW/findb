@@ -93,6 +93,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
+                    manifest["fetcher_bundle_version"] = 1
                     if profile == "full-market":
                         manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:

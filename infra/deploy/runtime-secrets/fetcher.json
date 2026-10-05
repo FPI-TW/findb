@@ -40,9 +40,9 @@
     "taifex": {
       "secrets": [
         {"name": "runtime/configuration", "targets": ["production"], "required_keys": ["FETCHER_SOURCE_API_URL", "FINDB_SERVE_BASE_URL", "FETCHER_CALENDAR_TIMEOUT_SECONDS", "FETCHER_CALENDAR_CACHE_TTL_SECONDS", "FETCHER_REQUEST_TIMEOUT_SECONDS", "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS", "FETCHER_MAX_ATTEMPTS", "FETCHER_MAX_RETRY_AFTER_SECONDS", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_RAW_BUCKET", "CLOUDFLARE_R2_MAX_OBJECT_BYTES"], "optional_keys": ["TWELVE_DATA_BASE_URL", "TWELVE_DATA_TIMEOUT_SECONDS", "TWELVE_DATA_MAX_RESPONSE_BYTES", "SHIOAJI_SIMULATION", "TAIFEX_BASE_URL", "TAIFEX_TIMEOUT_SECONDS", "TAIFEX_MAX_RESPONSE_BYTES"]},
-        {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"], "targets": ["production"]},
-        {"name": "api/source/taifex", "required_keys": ["FETCHER_TAIFEX_SOURCE_CLIENT_KEY"], "targets": ["production"]},
-        {"name": "r2/raw", "required_keys": ["CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_RAW_SESSION_TOKEN"], "targets": ["production"]}
+        {"name": "api/calendar-serve", "required_keys": ["FETCHER_CALENDAR_SERVE_API_KEY"]},
+        {"name": "api/source/taifex", "required_keys": ["FETCHER_TAIFEX_SOURCE_CLIENT_KEY"]},
+        {"name": "r2/raw", "required_keys": ["CLOUDFLARE_R2_RAW_ACCESS_KEY_ID", "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_RAW_SESSION_TOKEN"]}
       ],
       "distinct_keys": [["FETCHER_CALENDAR_SERVE_API_KEY", "FETCHER_TAIFEX_SOURCE_CLIENT_KEY"]]
     }

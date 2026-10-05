@@ -210,6 +210,10 @@ def _load_selected_schedule(
     *,
     reject_disabled: bool = True,
 ) -> ScheduleConfig:
+    if path.name == "daily_scheduler.staging.v3.json":
+        from findb_fetcher.pilot_catalog import validate_staging_pilots
+
+        validate_staging_pilots(path.parent)
     manifest = load_schedule_manifest(path)
     if manifest.schedule_version not in {2, 3}:
         raise ScheduleError("FinLab scheduler requires a v2 or v3 schedule manifest")
@@ -402,7 +406,7 @@ def _default_schedule_file() -> Path:
     filename = (
         "daily_scheduler.production.v3.json"
         if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
-        else "daily_scheduler.v2.json"
+        else "daily_scheduler.staging.v3.json"
     )
     container_path = Path("/app/configs") / filename
     if container_path.is_file():

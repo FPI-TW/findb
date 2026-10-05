@@ -78,6 +78,7 @@ def _service(
     state = EmptyState()
     calendar = Calendar(status)
     universe = SimpleNamespace(
+        universe_id="calendar_preflight_fixture",
         limits=SimpleNamespace(max_records_per_symbol=5000),
         symbols=(),
         credit_cost_per_symbol=1,

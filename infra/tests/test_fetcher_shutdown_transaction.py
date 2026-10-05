@@ -63,7 +63,8 @@ elif command == "sudo":
             else: rows[previous] = rows.pop(stable)
         if not status and os.environ["FETCHER_DEPLOY_MODE"] == "activate":
             rows[stable] = dict(id="new-"+stable, running=True, exit=0, oom=False, error="", accepted="true")
-            rows[stable+"-historical"] = dict(id="new-"+stable+"-historical", running=True, exit=0, oom=False, error="", accepted="true", marker="date-boundary-v1")
+            if os.environ["DEPLOYMENT_TARGET"] == "production" and os.environ.get("FETCHER_RUNTIME_PROFILE", "bounded") == "bounded":
+                rows[stable+"-historical"] = dict(id="new-"+stable+"-historical", running=True, exit=0, oom=False, error="", accepted="true", marker="date-boundary-v1")
         if not status and state.get("fault") == "provider_after": status = 9
 elif command == "docker":
     if args[0] == "container": status = 0 if args[-1] in rows else 1
@@ -279,6 +280,10 @@ class FetcherShutdownTransactionTests(unittest.TestCase):
         self.assertEqual(pointer, "a" * 64 + "-123-1")
         self.assertFalse(any(name.endswith("-previous") for name in state["rows"]))
         self.assertTrue(all(row["id"].startswith("new-") for row in state["rows"].values()))
+        self.assertEqual(
+            set(state["rows"]), {row[0] for row in PROVIDERS} | {"findb-fetcher-taifex-scheduler"}
+        )
+        self.assertFalse(any(name.endswith("-historical") for name in state["rows"]))
 
     def test_ordinary_scheduler_137_remains_failure(self):
         before = original_rows()

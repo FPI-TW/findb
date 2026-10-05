@@ -212,8 +212,9 @@ create pre and post at the same observation point merely to close the gate.
 
 The Backend probe treats `ingestion_attempt.http_status` as the durable Source
 HTTP audit truth, so FinLab and Twelve Data acceptance does not depend on
-ephemeral nginx access logs. All four active feeds require a bounded Serve HTTP
-probe against the latest canonical sample, using the existing static-cache Serve
+ephemeral nginx access logs. All five staging pilot feeds require a bounded Serve HTTP
+probe against the pilot canonical sample with completed fetcher/run lineage and exact
+instrument/date coverage, using the existing static-cache Serve
 credential inside the ingest container. A missing sample, auth failure, non-200
 response, mismatched instrument/date, or unavailable Serve scope fails the gate.
 
@@ -404,7 +405,7 @@ operator test evidence according to the project's change/audit practice.
 ## Full-market monitoring acceptance
 
 Full-market monitoring 使用 durable daily plan，將 universe／release、expected、data、no_data、
-missing、blocked、deadline 與 gap reason 分開呈現。既有四個 bounded active-feed metrics 與
+missing、blocked、deadline 與 gap reason 分開呈現。五個 staging bounded pilot feed metrics 與
 staging 原生告警不證明新範圍已上線；未執行 external capability 與五日 live acceptance 前，不
 宣稱全市場健康或 production coverage 完成。
 

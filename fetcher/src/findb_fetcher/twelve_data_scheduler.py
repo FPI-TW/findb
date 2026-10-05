@@ -128,7 +128,10 @@ class TwelveDataScheduledExecutor:
                 query: dict[str, Any]
                 mapping_after_date = job.checkpoint_before
                 target_date = job.target_data_date
-                if job.checkpoint_before is None:
+                if (
+                    job.checkpoint_before is None
+                    or self._universe.universe_id == "twelve_data_us_staging_pilot_v2"
+                ):
                     query = {
                         "start_date": target_date,
                         # Twelve Data treats end_date as an exclusive bound.
@@ -312,6 +315,17 @@ class SchedulerService:
                 self._schedule.market,
                 target_data_date,
             )
+            if self._universe.universe_id in {
+                "twelve_data_us_staging_pilot_v2",
+                "finlab_tw_review_required",
+            }:
+                for _ in range(14):
+                    if day.day_status == "open":
+                        break
+                    target_data_date -= timedelta(days=1)
+                    day, calendar_revision = self._calendar.get_day(
+                        self._schedule.market, target_data_date
+                    )
             if day.day_status != "open":
                 return SchedulerRun(
                     schedule_id=self._schedule.schedule_id,
@@ -324,6 +338,13 @@ class SchedulerService:
                     skip_reason=f"calendar_{day.day_status}",
                     calendar_revision=calendar_revision,
                 )
+        if self._universe.universe_id in {
+            "twelve_data_us_staging_pilot_v2",
+            "finlab_tw_review_required",
+        }:
+            self._state.supersede_older_targets(
+                self._schedule, self._universe, target=target_data_date, now=now
+            )
         enqueued = self._state.enqueue_due(
             self._schedule,
             self._universe,
