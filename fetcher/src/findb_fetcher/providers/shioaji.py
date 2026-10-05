@@ -768,9 +768,13 @@ def _normalize_scalar(value: object, field: str = "Open") -> object:
 
 
 def _stock_contract(api: Any, symbol: str) -> object:
-    """Read the reviewed lower-case contract path without SDK diagnostics."""
+    """Use the public ContractsApi binding verified in Shioaji 1.7.1.
+
+    The installed SDK's legacy type stub still advertises ``stocks``, but
+    the runtime exposes direct ``get`` as documented by the provider.
+    """
     try:
-        contract = api.contracts.stocks.get(symbol)
+        contract = api.contracts.get(symbol)
     except ShioajiError:
         raise
     except Exception:
