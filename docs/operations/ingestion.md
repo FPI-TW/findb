@@ -170,6 +170,25 @@ TW、HK 與 TAIFEX 當日台北 23:00，US 次日台北 09:00 為 deadline；Sou
 Market freshness必須分開呈現provider fetch、normalization completion與feed policy。
 Raw存在但canonical未完成時沿run／job／outbox／queue診斷，不要誤判為provider未送達。
 
+全市場 Scheduler 卡片另外依 `full_market.enabled` 區分已啟用範圍與待啟用 Feed。
+預設停止且未啟用的 runtime 顯示「尚未啟用」；Owner 停用後保留首次 activation date，
+顯示「已停用」。已啟用而明確停止的 runtime 顯示「停止」，歷史心跳不會被當作運行中
+的心跳過期告警；期望執行時仍需該 `full_market_*_v1` control 自己的實際心跳，沒有回報
+或心跳超過 90 秒仍分別顯示「尚未回報」與「心跳過期」。停止中與 stale 的 observed
+running 不會被待啟用狀態遮蔽。
+
+API additive `monitor_kind`、`activation_state`、`active_dataset_keys` 與 `pending_feeds`
+保留觀測到的啟用前提；每個 Feed 的 `runtime_eligible`／`activation_blockers` 區分
+運行範圍與待啟用範圍。全市場 aggregate freshness／feed counts 只計入 enabled feeds，
+不以未啟用 sibling 的 inactive／缺少完整 published calendar 判定整個 provider runtime
+設定失敗。這些前提仍列在卡片與明細中，並非完整 Owner readiness 驗收的替代品。
+Enabled feed 的 inactive／缺少 calendar，或 registry、contract、provider mapping、
+governance／timezone 格式錯誤仍是設定錯誤；期望 running 而没有 enabled feed 也 fail closed。
+Registry 的 market／asset_class 與 contract defaults 必須通過與 ingress 相同的 scope 驗證；
+即使 Feed 未啟用或 Scheduler 已停止，衝突仍回報 `contract_scope_mismatch` 設定錯誤。
+Feed 明細的 raw／canonical 更新可能來自既有 bounded runtime，不能證明全市場已啟用、
+已部署或已回報心跳；此投影不建立假的心跳，也不改動 activation 或 calendar。
+
 ## 常見診斷
 
 | 現象 | 優先檢查 |

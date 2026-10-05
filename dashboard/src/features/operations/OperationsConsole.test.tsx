@@ -22,6 +22,7 @@ import type {
   Scheduler,
   SchedulerMutationResponse,
 } from "../../lib/admin-api"
+import { marketFreshnessSchema } from "../../lib/admin-api"
 import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScope"
 
 const mocks = vi.hoisted(() => ({
@@ -58,6 +59,7 @@ import {
   DQPolicyDetails,
   DeliveriesPage,
   OperationsOverviewPage,
+  IngestionOverviewPanel,
   SCHEDULER_RUNTIME_STATUS_META,
   SchedulerPanel,
   selectSchedulerRuntimeStatus,
@@ -189,6 +191,55 @@ function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
     heartbeat_age_seconds: 5,
     ...overrides,
   }
+}
+
+function makeFullMarketFreshness(
+  provider = "shioaji",
+  overrides: Record<string, unknown> = {}
+) {
+  const scheduler = makeScheduler({
+    scheduler_key: `full_market_${provider}_v1`,
+    provider,
+    last_heartbeat_at: null,
+    heartbeat_age_seconds: null,
+  })
+  const result = marketFreshnessSchema.parse({
+    success: true,
+    data: [
+      {
+        ...scheduler,
+        market: "TW",
+        configuration_status: "ready",
+        configuration_errors: [],
+        monitor_kind: "full_market",
+        activation_state: "not_activated",
+        active_dataset_keys: [],
+        pending_feeds: [
+          {
+            dataset_key: "tw_futures_eod",
+            blockers: [
+              "activation_disabled",
+              "calendar_does_not_cover_evaluation_date",
+            ],
+          },
+        ],
+        status: "not_due",
+        expected_data_date: null,
+        coverage_data_date: null,
+        last_fetched_at: timestamp,
+        last_successful_update_at: timestamp,
+        last_complete_at: null,
+        next_scheduled_at: timestamp,
+        feed_count: 0,
+        fresh_feed_count: 0,
+        late_feed_count: 0,
+        feeds: [],
+        ...overrides,
+      },
+    ],
+  }).data[0]
+  if (!result) throw new Error("Missing full-market test fixture")
+  return result
 }
 
 function makeMissingDelivery(
@@ -416,6 +467,161 @@ describe("Operations presentation", () => {
       ].label
     ).toBe("心跳過期")
   })
+
+  it.each(["finlab", "shioaji", "taifex", "twelve_data"])(
+    "shows dormant %s full-market status without inventing heartbeat",
+    provider => {
+      const freshness = makeFullMarketFreshness(provider)
+      expect(
+        selectSchedulerRuntimeStatus({ control: freshness, freshness })
+      ).toBe("not_activated")
+      expect(freshness.last_heartbeat_at).toBeNull()
+      expect(
+        selectSchedulerRuntimeStatus({
+          control: { ...freshness, desired_state: "running" },
+          freshness,
+        })
+      ).toBe("configuration_error")
+    }
+  )
+
+  it("separates explicit stop/deactivation from missing and stale active runtime", () => {
+    const freshness = makeFullMarketFreshness("shioaji", {
+      activation_state: "activated",
+      active_dataset_keys: ["tw_equity_minute"],
+    })
+    expect(
+      selectSchedulerRuntimeStatus({ control: freshness, freshness })
+    ).toBe("stopped")
+    expect(
+      selectSchedulerRuntimeStatus({
+        control: {
+          ...freshness,
+          last_heartbeat_at: timestamp,
+          heartbeat_age_seconds: 1000,
+        },
+        freshness,
+      })
+    ).toBe("stopped")
+    expect(
+      selectSchedulerRuntimeStatus({
+        control: { ...freshness, desired_state: "running" },
+        freshness,
+      })
+    ).toBe("not_reported")
+    expect(
+      selectSchedulerRuntimeStatus({
+        control: {
+          ...freshness,
+          desired_state: "running",
+          last_heartbeat_at: timestamp,
+          heartbeat_age_seconds: 91,
+        },
+        freshness,
+      })
+    ).toBe("stale")
+    expect(
+      selectSchedulerRuntimeStatus({
+        control: {
+          ...freshness,
+          observed_state: "running",
+          last_heartbeat_at: timestamp,
+          heartbeat_age_seconds: 5,
+        },
+        freshness,
+      })
+    ).toBe("stopping")
+    expect(
+      selectSchedulerRuntimeStatus({
+        control: freshness,
+        freshness: { ...freshness, activation_state: "deactivated" },
+      })
+    ).toBe("deactivated")
+    expect(
+      selectSchedulerRuntimeStatus({
+        control: freshness,
+        freshness: {
+          ...freshness,
+          configuration_status: "error",
+          configuration_errors: ["malformed_governance"],
+        },
+      })
+    ).toBe("configuration_error")
+  })
+
+  it("retains calendar prerequisites and explains that fresh raw detail is not full-market proof", () => {
+    const freshness = makeFullMarketFreshness("taifex")
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <IngestionOverviewPanel
+          freshnessResult={{
+            ok: true,
+            data: { success: true, data: [freshness] },
+          }}
+          schedulersResult={null}
+          loading={false}
+          pending={false}
+          freshnessError=""
+          schedulersError=""
+          role="viewer"
+        />
+      </QueryClientProvider>
+    )
+    expect(screen.getByText("尚未啟用")).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        /tw_futures_eod：activation_disabled；calendar_does_not_cover_evaluation_date/
+      )
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/資料更新不代表全市場已啟用或此 Scheduler 已回報心跳/)
+    ).toBeInTheDocument()
+    expect(screen.getByText(/此全市場 runtime 尚未回報/)).toBeInTheDocument()
+    expect(screen.queryByText("執行中")).not.toBeInTheDocument()
+  })
+
+  it.each(["not_activated", "activated"])(
+    "shows registry contract scope errors for %s full-market cards",
+    activationState => {
+      const freshness = makeFullMarketFreshness("finlab", {
+        activation_state: activationState,
+        configuration_status: "error",
+        configuration_errors: ["tw_equity_eod:contract_scope_mismatch"],
+        pending_feeds: [
+          {
+            dataset_key: "tw_etf_eod",
+            blockers: ["activation_disabled", "dataset_inactive"],
+          },
+        ],
+      })
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <IngestionOverviewPanel
+            freshnessResult={{
+              ok: true,
+              data: { success: true, data: [freshness] },
+            }}
+            schedulersResult={null}
+            loading={false}
+            pending={false}
+            freshnessError=""
+            schedulersError=""
+            role="viewer"
+          />
+        </QueryClientProvider>
+      )
+      expect(screen.getByText("設定錯誤")).toBeInTheDocument()
+      expect(
+        screen.getByText("tw_equity_eod:contract_scope_mismatch", {
+          exact: false,
+        })
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText("tw_etf_eod：activation_disabled；dataset_inactive")
+      ).toBeInTheDocument()
+      expect(screen.queryByText("尚未啟用")).not.toBeInTheDocument()
+    }
+  )
 
   it("updates the overview cache immediately and invalidates the same key after mutation", async () => {
     const queryClient = new QueryClient()

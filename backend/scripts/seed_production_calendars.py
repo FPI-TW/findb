@@ -1,8 +1,8 @@
 """Validate and seed reviewed production trading calendars.
 
-Production uses the reviewed TWSE 2025-2026 schedules and the reviewed NYSE
-2025-2028 holiday calendar committed in this repository.  Calendar coverage
-is explicit and bounded; dates outside it continue to fail closed.
+Production uses reviewed TWSE 2025-2026, NYSE 2025-2028, and explicit 2026
+HK, CN and TAIFEX calendars committed in this repository. Coverage remains
+bounded. Known legacy US 2026 sessions require an explicit reviewed upgrade.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.canonical import CalendarMarket
+from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
 from app.services.calendar_management import (
     CalendarError,
     apply_preview,
@@ -40,6 +40,18 @@ TW_CALENDAR_FILES = {
 CALENDAR_FILES = TW_CALENDAR_FILES
 US_CALENDAR_FILE = "us_equity_2025_2028.v1.json"
 US_CALENDAR_YEARS = (2025, 2026, 2027, 2028)
+REVIEWED_2026_FILES = {
+    "US": "us_equity_2026.v2.json",
+    "HK": "hk_equity_2026.v1.json",
+    "CN": "cn_equity_2026.v1.json",
+    "TAIFEX": "taifex_index_futures_2026.v1.json",
+}
+REVIEWED_TIMEZONES = {
+    "US": "America/New_York",
+    "HK": "Asia/Hong_Kong",
+    "CN": "Asia/Shanghai",
+    "TAIFEX": "Asia/Taipei",
+}
 PRODUCTION_TARGET = "production"
 
 
@@ -101,6 +113,16 @@ def _expected_market(market: str) -> CalendarMarket:
         return expected_tw_market()
     if market == "US":
         return expected_us_market()
+    if market in {"HK", "CN", "TAIFEX"}:
+        return CalendarMarket(
+            market=market,
+            display_name={"HK": "香港", "CN": "中國", "TAIFEX": "臺灣期貨"}[market],
+            timezone=REVIEWED_TIMEZONES[market],
+            weekend_days=[5, 6],
+            default_session_open=None,
+            default_session_close=None,
+            active=True,
+        )
     raise ProductionCalendarSeedError(f"unsupported reviewed calendar market: {market}")
 
 
@@ -208,11 +230,100 @@ def _load_reviewed_us_calendars(calendar_directory: Path) -> list[ReviewedCalend
     return reviewed
 
 
+def _load_reviewed_2026_calendar(directory: Path, market: str) -> ReviewedCalendar:
+    filename = REVIEWED_2026_FILES[market]
+    try:
+        source_bytes = (directory / filename).read_bytes()
+        payload = json.loads(source_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProductionCalendarSeedError(
+            f"reviewed calendar file is unavailable or invalid: {filename}"
+        ) from exc
+    if not isinstance(payload, dict) or any(
+        payload.get(key) != value
+        for key, value in {
+            "market": market,
+            "year": 2026,
+            "timezone": REVIEWED_TIMEZONES[market],
+            "calendar_version": 2 if market == "US" else 1,
+            "coverage_start_date": "2026-01-01",
+            "coverage_end_date": "2026-12-31",
+        }.items()
+    ):
+        raise ProductionCalendarSeedError(f"reviewed {market} 2026 calendar metadata differs")
+    sources = payload.get("sources")
+    if (
+        not isinstance(sources, list)
+        or not sources
+        or not all(
+            isinstance(source, dict)
+            and isinstance(source.get("url"), str)
+            and source["url"].startswith("https://")
+            for source in sources
+        )
+        or not isinstance(payload.get("reviewed_at"), str)
+    ):
+        raise ProductionCalendarSeedError(f"reviewed {market} 2026 calendar provenance is invalid")
+    rows = payload.get("days")
+    required_dates = [
+        (date(2026, 1, 1) + timedelta(days=offset)).isoformat() for offset in range(365)
+    ]
+    if not isinstance(rows, list) or len(rows) != 365:
+        raise ProductionCalendarSeedError(f"reviewed {market} 2026 calendar is incomplete")
+    for expected_date, row in zip(required_dates, rows, strict=True):
+        if (
+            not isinstance(row, dict)
+            or row.get("trade_date") != expected_date
+            or not isinstance(row.get("status"), str)
+            or row.get("status") not in {"open", "closed"}
+        ):
+            raise ProductionCalendarSeedError(f"reviewed {market} 2026 calendar dates are invalid")
+        is_open = row["status"] == "open"
+        if date.fromisoformat(expected_date).weekday() >= 5 and is_open:
+            raise ProductionCalendarSeedError(f"reviewed {market} 2026 weekend cannot be open")
+        try:
+            opened = time.fromisoformat(row["session_open"]) if is_open else None
+            closed = time.fromisoformat(row["session_close"]) if is_open else None
+            if is_open and (
+                opened is None
+                or closed is None
+                or opened >= closed
+                or opened.tzinfo
+                or closed.tzinfo
+            ):
+                raise ValueError("Invalid session")
+            if not is_open and (
+                row.get("session_open") is not None or row.get("session_close") is not None
+            ):
+                raise ValueError("Closed session")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProductionCalendarSeedError(f"reviewed {market} 2026 session is invalid") from exc
+    return ReviewedCalendar(
+        market=market,
+        year=2026,
+        filename=filename,
+        source_kind="reviewed_exchange_json",
+        source_bytes=source_bytes,
+        source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+        detected_encoding="utf-8",
+        rows=rows,
+    )
+
+
 def load_reviewed_calendars(
     calendar_directory: Path = CALENDAR_DIRECTORY,
 ) -> list[ReviewedCalendar]:
-    return _load_reviewed_tw_calendars(calendar_directory) + _load_reviewed_us_calendars(
-        calendar_directory
+    legacy_us = _load_reviewed_us_calendars(calendar_directory)
+    return (
+        _load_reviewed_tw_calendars(calendar_directory)
+        + [
+            _load_reviewed_2026_calendar(calendar_directory, "US") if item.year == 2026 else item
+            for item in legacy_us
+        ]
+        + [
+            _load_reviewed_2026_calendar(calendar_directory, market)
+            for market in ("HK", "CN", "TAIFEX")
+        ]
     )
 
 
@@ -247,47 +358,82 @@ async def _get_or_create_market(db: AsyncSession, market: str) -> CalendarMarket
     return actual
 
 
+def _matches_reviewed_revision(
+    current: CalendarYearRevision, days: list[CalendarRevisionDay], item: ReviewedCalendar
+) -> bool:
+    if not (
+        current.status == "published"
+        and current.timezone == REVIEWED_TIMEZONES.get(item.market, "Asia/Taipei")
+        and current.source_kind == item.source_kind
+        and current.source_filename == item.filename
+        and current.source_sha256 == item.source_sha256
+        and current.actual_days == current.expected_days == len(item.rows)
+        and len(days) == len(item.rows)
+    ):
+        return False
+    return all(
+        day.trade_date.isoformat() == row["trade_date"]
+        and day.day_status == row["status"]
+        and day.is_open == (row["status"] == "open")
+        and day.source_kind == item.source_kind
+        and day.holiday_name == row.get("holiday_name")
+        and day.description == row.get("description")
+        and (day.session_open.isoformat() if day.session_open else None) == row.get("session_open")
+        and (day.session_close.isoformat() if day.session_close else None)
+        == row.get("session_close")
+        for day, row in zip(days, item.rows, strict=True)
+    )
+
+
 async def seed_reviewed_calendars(
     db: AsyncSession,
     *,
     reviewed: list[ReviewedCalendar],
     actor: str,
+    upgrade_reviewed_2026: bool = False,
 ) -> dict[str, Any]:
     """Seed all reviewed market years atomically and return a bounded audit report."""
     expected_identity = [
         *(("TW", year) for year in TW_CALENDAR_FILES),
         *(("US", year) for year in US_CALENDAR_YEARS),
+        *((market, 2026) for market in ("HK", "CN", "TAIFEX")),
     ]
     if [(item.market, item.year) for item in reviewed] != expected_identity:
         raise ProductionCalendarSeedError("reviewed calendars are incomplete or unordered")
-    markets = {market: await _get_or_create_market(db, market) for market in ("TW", "US")}
+    markets = {
+        market: await _get_or_create_market(db, market)
+        for market in ("TW", "US", "HK", "CN", "TAIFEX")
+    }
+    legacy_us_2026 = next(
+        item for item in _load_reviewed_us_calendars(CALENDAR_DIRECTORY) if item.year == 2026
+    )
     results: list[dict[str, Any]] = []
     for item in reviewed:
         market = markets[item.market]
         current = await latest_revision(db, item.market, item.year)
         if current is not None:
             days = await revision_days(db, current.id)
-            exact = (
-                current.status == "published"
-                and current.source_kind == item.source_kind
-                and current.source_filename == item.filename
-                and current.source_sha256 == item.source_sha256
-                and current.actual_days == current.expected_days == len(item.rows)
-                and len(days) == len(item.rows)
+            exact = _matches_reviewed_revision(current, days, item)
+            known_legacy = (
+                item.market == "US"
+                and item.year == 2026
+                and _matches_reviewed_revision(current, days, legacy_us_2026)
             )
-            if not exact:
+            if not exact and not known_legacy:
                 raise ProductionCalendarSeedError(
                     f"existing {item.market} {item.year} calendar differs from reviewed source"
                 )
-            results.append(
-                {
+            if exact or not upgrade_reviewed_2026:
+                result = {
                     "market": item.market,
                     "year": item.year,
-                    "action": "unchanged",
+                    "action": "unchanged" if exact else "pending_reviewed_update",
                     "revision": current.revision,
                 }
-            )
-            continue
+                if not exact:
+                    result["upgrade_required"] = True
+                results.append(result)
+                continue
 
         batch = await create_preview(
             db,
@@ -304,7 +450,7 @@ async def seed_reviewed_calendars(
         revision = await apply_preview(
             db,
             batch_id=batch.id,
-            expected_revision=0,
+            expected_revision=current.revision if current is not None else 0,
             actor=actor,
             commit=False,
         )
@@ -320,7 +466,7 @@ async def seed_reviewed_calendars(
             {
                 "market": item.market,
                 "year": item.year,
-                "action": "created",
+                "action": "upgraded" if current is not None else "created",
                 "revision": published.revision,
             }
         )
@@ -330,6 +476,9 @@ async def seed_reviewed_calendars(
         "coverage": {
             "TW": [min(TW_CALENDAR_FILES), max(TW_CALENDAR_FILES)],
             "US": [min(US_CALENDAR_YEARS), max(US_CALENDAR_YEARS)],
+            "HK": [2026, 2026],
+            "CN": [2026, 2026],
+            "TAIFEX": [2026, 2026],
         },
         "future_years_required_for_initial_deploy": False,
         "results": results,
@@ -350,6 +499,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the reviewed calendars; without this flag only validate files",
     )
     parser.add_argument("--actor", default="production-bootstrap")
+    parser.add_argument(
+        "--upgrade-reviewed-2026",
+        action="store_true",
+        help="Publish US 2026 session-time successor only over the exact known legacy bootstrap",
+    )
     return parser
 
 
@@ -385,7 +539,12 @@ async def _main() -> int:
     try:
         async with session_factory() as db:
             try:
-                report = await seed_reviewed_calendars(db, reviewed=reviewed, actor=args.actor)
+                report = await seed_reviewed_calendars(
+                    db,
+                    reviewed=reviewed,
+                    actor=args.actor,
+                    upgrade_reviewed_2026=args.upgrade_reviewed_2026,
+                )
             except (CalendarError, ProductionCalendarSeedError) as exc:
                 await db.rollback()
                 print(f"error: {exc}", file=sys.stderr)

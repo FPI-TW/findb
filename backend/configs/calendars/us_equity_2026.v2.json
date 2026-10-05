@@ -1,0 +1,2952 @@
+{
+  "calendar_version": 2,
+  "calendar_id": "us_equity_2026.v2",
+  "market": "US",
+  "year": 2026,
+  "timezone": "America/New_York",
+  "coverage_start_date": "2026-01-01",
+  "coverage_end_date": "2026-12-31",
+  "reviewed_at": "2026-10-02",
+  "sources": [
+    {
+      "url": "https://www.nyse.com/trade/hours-calendars",
+      "artifact": "findb-nyse-2026.html",
+      "sha256": "79602f7be5a8f1d39c2b1cac4dd02c4c07f18cf9f92d70602834069154719bad",
+      "fetched_at": "2026-10-02",
+      "role": "primary_exchange"
+    },
+    {
+      "url": "https://www.ibfs.com.tw/Stockoverseas/closedday_us.aspx?xy=2&xt=4",
+      "artifact": "findb-us-ibfs-2026.html",
+      "sha256": "3f1a60b09749e03a9ab4f06abfb0dba4de1136195a66283927a89f5bae0141fc",
+      "fetched_at": "2026-10-02",
+      "role": "supplied_reference_verified_against_exchange"
+    }
+  ],
+  "review_notes": [
+    "NYSE equities remain open on Columbus Day (2026-10-12) and Veterans Day (2026-11-11), correcting the supplied brokerage holiday list.",
+    "NYSE early closes on 2026-11-27 and 2026-12-24 are 13:00 America/New_York; other open sessions are 09:30-16:00."
+  ],
+  "days": [
+    {
+      "trade_date": "2026-01-01",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-03",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-04",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-10",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-11",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-17",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-18",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-19",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-24",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-25",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-01-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-01-31",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-01",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-07",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-08",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-14",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-15",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-16",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-19",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-21",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-22",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-02-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-25",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-02-28",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-01",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-07",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-08",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-14",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-15",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-19",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-21",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-22",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-25",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-28",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-29",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-03-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-03-31",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-03",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-04",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-05",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-11",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-12",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-18",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-19",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-25",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-26",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-04-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-04-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-02",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-03",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-09",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-10",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-16",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-17",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-19",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-23",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-24",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-25",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-05-30",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-05-31",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-06",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-07",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-13",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-14",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-19",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-20",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-21",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-25",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-27",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-28",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-06-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-06-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-03",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-04",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-05",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-11",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-12",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-18",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-19",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-25",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-26",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-07-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-07-31",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-01",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-02",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-08",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-09",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-15",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-16",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-19",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-22",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-23",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-25",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-08-29",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-30",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-08-31",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-05",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-06",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-07",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-12",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-13",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-19",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-20",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-25",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-26",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-27",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-09-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-09-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-03",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-04",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-10",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-11",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-17",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-18",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-19",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-24",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-25",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-10-26",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-10-31",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-01",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-05",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-06",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-07",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-08",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-12",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-13",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-14",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-15",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-19",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-20",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-21",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-22",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-25",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-11-26",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-27",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "13:00:00"
+    },
+    {
+      "trade_date": "2026-11-28",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-29",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-11-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-01",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-02",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-03",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-04",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-05",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-06",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-07",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-08",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-09",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-10",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-11",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-12",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-13",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-14",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-15",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-16",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-17",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-18",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-19",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-20",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-21",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-22",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-23",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-24",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "13:00:00"
+    },
+    {
+      "trade_date": "2026-12-25",
+      "status": "closed",
+      "holiday_name": "Exchange holiday",
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-26",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-27",
+      "status": "closed",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": null,
+      "session_close": null
+    },
+    {
+      "trade_date": "2026-12-28",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-29",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-30",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    },
+    {
+      "trade_date": "2026-12-31",
+      "status": "open",
+      "holiday_name": null,
+      "description": "Reviewed 2026 exchange calendar",
+      "session_open": "09:30:00",
+      "session_close": "16:00:00"
+    }
+  ]
+}

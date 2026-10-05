@@ -523,7 +523,14 @@ class MarketFreshnessFeedResponse(BaseModel):
     open_missing_delivery_alert: bool
     last_failure_code: Optional[str] = None
     configuration_error: Optional[str] = None
+    runtime_eligible: bool = True
+    activation_blockers: list[str] = Field(default_factory=list)
     status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
+
+
+class PendingMarketFeedResponse(BaseModel):
+    dataset_key: str
+    blockers: list[str]
 
 
 class MarketFreshnessResponse(BaseModel):
@@ -544,6 +551,10 @@ class MarketFreshnessResponse(BaseModel):
     heartbeat_age_seconds: Optional[float] = None
     configuration_status: Literal["ready", "error"] = "ready"
     configuration_errors: list[str] = Field(default_factory=list)
+    monitor_kind: Literal["bounded", "full_market"] = "bounded"
+    activation_state: Optional[Literal["not_activated", "activated", "deactivated"]] = None
+    active_dataset_keys: list[str] = Field(default_factory=list)
+    pending_feeds: list[PendingMarketFeedResponse] = Field(default_factory=list)
     status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
     expected_data_date: Optional[date] = None
     coverage_data_date: Optional[date] = None

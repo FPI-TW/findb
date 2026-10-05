@@ -557,6 +557,9 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
               <Badge variant={freshnessVariant(feed.status)}>
                 {STATUS_LABELS[feed.status]}
               </Badge>
+              {!feed.runtime_eligible && (
+                <Badge variant="secondary">待啟用範圍</Badge>
+              )}
               <strong className="font-mono wrap-anywhere">
                 {feed.dataset_key}
               </strong>
@@ -586,6 +589,11 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
             {feed.configuration_error && (
               <p className="mt-1 mb-0 text-danger">
                 設定錯誤：{feed.configuration_error}
+              </p>
+            )}
+            {feed.activation_blockers.length > 0 && (
+              <p className="mt-1 mb-0 text-muted">
+                啟用前提：{feed.activation_blockers.join("；")}
               </p>
             )}
           </div>

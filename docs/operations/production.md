@@ -103,12 +103,40 @@ IaC驗證的完成宣稱。
 ## DB bootstrap 與 Environment gate
 
 Default bounded bootstrap seed四個正式dataset registry declarations與三個 inactive 新 declarations、已審核的NYSE 2025–2028 calendar、
-TWSE已正式發布的2025–2026 calendar revisions、獨立DB-backed credentials與三個scheduler
+TWSE已正式發布的2025–2026及HK／CN／TAIFEX 2026完整calendar revisions、獨立DB-backed credentials與三個scheduler
 controls。三個 scheduler 的
 desired/observed state都必須為`stopped`；不可複製staging canonical/raw/workflow data。
 2027以後尚未發布的TW calendar不阻塞首次部署；正式資料發布後必須以PR加入、完成checksum review
 並在對應年度開始前發布新revision。Production feed不得以weekday推測取代官方資料，執行日期超出
 目前reviewed coverage時必須fail closed。
+
+`backend/configs/calendars/` 的 2026 US v2、HK v1、CN v1、TAIFEX v1 JSON 各有
+365 個明確日期、session 時間、來源 URL／原始檔 SHA-256 與 2026-10-02 review 註記。
+TW 2026 沿用既有 immutable `holiday_schedule_115.csv`，2026-10-02 核對
+[TWSE 官方開休市頁](https://www.twse.com.tw/zh/trading/holiday.html)及其
+[2026 年度 JSON](https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule?date=20260101&response=json)
+的 27 筆日期、名稱與開休市分類完全一致（換行格式不同）；原始 JSON SHA-256 為
+`7fefe785ea7155a5004a2eb74486ad865ea5c4b5f02ee0cffbbdacb1ca2ea390`。
+保留 2/12、2/13 無交易但可結算交割的 `settlement_only`，不以 TAIFEX 的休市分類取代。
+HK 使用 HKEX 年度通告校正國票 HTML 遺漏的 6/19，2/16、12/24、12/31 為半日開市，
+採 closing auction 最晚界線 12:10，正常日 16:10。US 依 NYSE 保留 10/12、11/11 開市，
+11/27、12/24 於 New York 13:00 提前收市；其餘 open rows 為 09:30–16:00。
+CN 取國票 PDF「上海及深圳」本地市場列並核對上交所年度安排，不以北向／南向通休市
+代替本地股市；4/3、4/7、7/1、10/19 維持開市，例假補班週末仍休市，收盤 15:00。
+TAIFEX 僅取官方年度 PDF 的 regular 台灣指數期貨交易日期，2/12、2/13 是休市，
+不能複用 TWSE settlement-only 狀態；regular 收盤 13:45，彩色到期／掛牌標記不視為休市。
+個別契約最後交易日、國外商品與臨時停市不由此 fixture 推測；臨時異動需 Owner 新 revision。
+After-hours 仍保留交易所 attributed trade_date，不能轉成民曆日期或建立 continuous futures。
+
+`seed_production_calendars.py --deployment-target production` 預設只驗證檔案；
+`--apply` 才使用既有 preview → apply → publish 流程發布缺少的完整年度。
+任何未知來源、operator override、draft 或不同 rows 均拒絕覆寫。
+已存在且 source metadata、checksum、365 筆 rows 全部符合舊版 NYSE bootstrap 的 US 2026，
+一般 seed 保留 revision 並回報 `action=pending_reviewed_update, upgrade_required=true`，
+不阻塞一般部署，也不宣稱新 session 已套用。Owner 審核後才以 `--apply --upgrade-reviewed-2026`
+發布 successor，透過 expected revision 的 CAS 防止競爭，原 revision 保留為 superseded。
+HK／CN／TAIFEX 初次套用與 US successor 均不改動 feed activation、首次 activation date、
+readiness、scheduler desired state 或五日 live acceptance；本 repo fixture 的更新不等於 live DB 已調整。
 
 首次部署的 predeploy gate 只在`DEPLOYMENT_TARGET=production`接受完全沒有任何使用者 relation 的
 乾淨資料庫；candidate acceptance落盤後，activation才可執行唯一一次`alembic upgrade head`。
