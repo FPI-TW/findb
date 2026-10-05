@@ -4,6 +4,9 @@ import { defineConfig } from "vitest/config"
 
 export default defineConfig({
   plugins: [tailwindcss()],
+  optimizeDeps: {
+    exclude: ["@tanstack/react-start", "@tanstack/react-start/server"],
+  },
   test: {
     include: ["src/**/*.browser.test.tsx"],
     browser: {

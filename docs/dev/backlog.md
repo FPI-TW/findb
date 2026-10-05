@@ -22,6 +22,11 @@ Production foundation與live promotion／rollback acceptance由
 
 ## Full-market external acceptance
 
+- [ ] 修正 `FullMarketRuntime`／`FullMarketState.reserve_acquisition` 的 provider pacing commit-delay race：
+  request 實際在 commit 後才開始，但 grant clock 若在 commit 前取樣，可能讓 `next_at` 與 quota window
+  早於實際開始時間，壓縮 acquisition 間隔並把分鐘 quota 計入錯誤 window。Production full-market
+  啟用前，須以 controlled delay 與 window rollover regression 驗證 acquisition 間隔和分鐘 quota 分類，
+  並斷言實際 acquisition 時間而非只檢查 DB grant clock。
 - [ ] 以各 provider 的實際帳號確認 US 普通股／ADR、HK 主板／GEM、TW 上市／上櫃普通股與
   各類 ETF、Shioaji 分鐘資料 entitlement，並保存完整 official universe mapping、calls／bytes
   quota、deadline capacity 與 readiness 證據；受限項保持 blocked。

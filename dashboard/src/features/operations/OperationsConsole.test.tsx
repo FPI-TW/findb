@@ -8,6 +8,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import type { ReactNode } from "react"
@@ -680,12 +681,14 @@ describe("Operations presentation", () => {
     )
 
     const stopAllButton = await screen.findByRole("button", {
-      name: "全部停止",
+      name: "Pilot 全部停止",
     })
-    expect(screen.getByRole("button", { name: "全部啟動" })).toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: "Pilot 全部啟動" })
+    ).toBeDisabled()
     fireEvent.click(stopAllButton)
     expect(
-      screen.getByRole("heading", { name: "確認全部停止 Scheduler？" })
+      screen.getByRole("heading", { name: "確認 Pilot 全部停止？" })
     ).toBeInTheDocument()
     expect(
       screen.getByText("finlab / scheduler-finlab / r7")
@@ -708,10 +711,10 @@ describe("Operations presentation", () => {
 
     expect(await screen.findByText("scheduler-finlab")).toBeInTheDocument()
     expect(
-      screen.queryByRole("button", { name: "全部停止" })
+      screen.queryByRole("button", { name: "Pilot 全部停止" })
     ).not.toBeInTheDocument()
     expect(
-      screen.queryByRole("button", { name: "全部啟動" })
+      screen.queryByRole("button", { name: "Pilot 全部啟動" })
     ).not.toBeInTheDocument()
   })
 
@@ -732,10 +735,10 @@ describe("Operations presentation", () => {
       screen.getByText("唯讀：只有 owner 可以變更排程狀態。")
     ).toBeInTheDocument()
     expect(
-      screen.queryByRole("button", { name: "全部停止" })
+      screen.queryByRole("button", { name: "Pilot 全部停止" })
     ).not.toBeInTheDocument()
     expect(
-      screen.queryByRole("button", { name: "全部啟動" })
+      screen.queryByRole("button", { name: "Pilot 全部啟動" })
     ).not.toBeInTheDocument()
   })
 
@@ -756,6 +759,13 @@ describe("Operations presentation", () => {
         revision: 11,
       }),
     ]
+    schedulers.push(
+      makeScheduler({
+        scheduler_key: "full_market_finlab_v1",
+        desired_state: "running",
+        start_allowed: true,
+      })
+    )
     let resolveFirst!: (response: SchedulerMutationResponse) => void
     const firstUpdate = new Promise<SchedulerMutationResponse>(resolve => {
       resolveFirst = resolve
@@ -783,10 +793,10 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
 
-    expect(screen.getByText("部署前人工確認")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
+    expect(screen.getByText(/部署前人工確認：/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Pilot 全部停止" }))
     expect(
-      screen.getByRole("heading", { name: "確認全部停止 Scheduler？" })
+      screen.getByRole("heading", { name: "確認 Pilot 全部停止？" })
     ).toBeInTheDocument()
     expect(
       screen.getByText("finlab / scheduler-finlab / r7")
@@ -794,9 +804,20 @@ describe("Operations presentation", () => {
     expect(
       screen.getByText("shioaji / scheduler-shioaji / r11")
     ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "確認全部停止" }))
+    fireEvent.click(screen.getByRole("button", { name: "確認 Pilot 全部停止" }))
 
     await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(1))
+    expect(
+      screen.getByRole("button", { name: "Full market 全部停止" })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole("button", {
+        name: "Full market finlab full_market_finlab_v1 設為已停止",
+      })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: "Pilot 全部停止" })
+    ).toBeDisabled()
     expect(mocks.updateScheduler).toHaveBeenNthCalledWith(1, {
       data: {
         schedulerKey: "scheduler-finlab",
@@ -871,16 +892,22 @@ describe("Operations presentation", () => {
       screen.getByText(/全部啟動將跳過 2 個 Scheduler/)
     ).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "twelve_data 設為執行中" })
+      screen.getByRole("button", {
+        name: "Full market twelve_data full_market_twelve_data_v1 設為執行中",
+      })
     ).toBeDisabled()
-    fireEvent.click(screen.getByRole("button", { name: "全部啟動" }))
-    expect(screen.getByText(/將依序更新 2 個/)).toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Full market 全部啟動" })
+    )
+    expect(screen.getByText(/將依序更新 1 個/)).toBeInTheDocument()
     expect(screen.getByText(/跳過 2 個無法啟動/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "確認全部啟動" }))
-    await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(2))
+    fireEvent.click(
+      screen.getByRole("button", { name: "確認 Full market 全部啟動" })
+    )
+    await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(1))
     expect(
       mocks.updateScheduler.mock.calls.map(call => call[0].data.schedulerKey)
-    ).toEqual(["bounded", "full_market_finlab_v1"])
+    ).toEqual(["full_market_finlab_v1"])
   })
 
   it("disables all-blocked starts while allowing a running invalid control to stop", () => {
@@ -911,14 +938,22 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    expect(screen.getByRole("button", { name: "全部啟動" })).toBeDisabled()
     expect(
-      screen.getByRole("button", { name: "finlab 設為執行中" })
+      screen.getByRole("button", { name: "Full market 全部啟動" })
     ).toBeDisabled()
     expect(
-      screen.getByRole("button", { name: "shioaji 設為已停止" })
+      screen.getByRole("button", {
+        name: "Full market finlab full_market_finlab_v1 設為執行中",
+      })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole("button", {
+        name: "Full market shioaji full_market_shioaji_v1 設為已停止",
+      })
     ).toBeEnabled()
-    fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: "Full market 全部停止" })
+    )
     expect(screen.getByText(/將依序更新 1 個/)).toBeInTheDocument()
     expect(
       screen.getByText(/shioaji \/ full_market_shioaji_v1/)
@@ -948,12 +983,298 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    fireEvent.click(screen.getByRole("button", { name: "finlab 設為執行中" }))
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Full market finlab full_market_finlab_v1 設為執行中",
+      })
+    )
     fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
     expect(await screen.findByText(/全市場啟動條件已變更/)).toBeInTheDocument()
     expect(
       screen.queryByText(/排程版本已被其他使用者更新/)
     ).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [
+      "Pilot",
+      "pilot_finlab",
+      "Full market",
+      "full_market_finlab_v1",
+      "stopped",
+      "running",
+    ],
+    [
+      "Full market",
+      "full_market_finlab_v1",
+      "Pilot",
+      "pilot_finlab",
+      "stopped",
+      "running",
+    ],
+    [
+      "Pilot",
+      "pilot_finlab",
+      "Full market",
+      "full_market_finlab_v1",
+      "running",
+      "stopped",
+    ],
+    [
+      "Full market",
+      "full_market_finlab_v1",
+      "Pilot",
+      "pilot_finlab",
+      "running",
+      "stopped",
+    ],
+  ] as const)(
+    "warns before %s %s single and bulk starts with %s %s desired=%s observed=%s",
+    async (
+      profile,
+      key,
+      otherProfile,
+      otherKey,
+      desiredState,
+      observedState
+    ) => {
+      const rows = [
+        makeScheduler({ scheduler_key: key, start_allowed: true }),
+        makeScheduler({
+          scheduler_key: otherKey,
+          desired_state: desiredState,
+          observed_state: observedState,
+          start_allowed: true,
+        }),
+      ]
+      mocks.updateScheduler.mockResolvedValue({
+        success: true,
+        data: { ...rows[0]!, desired_state: "running", revision: 2 },
+      })
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <IngestionOverviewPanel
+            freshnessResult={null}
+            schedulersResult={{ ok: true, data: { success: true, data: rows } }}
+            loading={false}
+            pending={false}
+            freshnessError=""
+            schedulersError=""
+            role="owner"
+          />
+        </QueryClientProvider>
+      )
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: `${profile} finlab ${key} 設為執行中`,
+        })
+      )
+      expect(
+        screen.getByText("Full market 與 Pilot 將同時執行")
+      ).toBeInTheDocument()
+      expect(mocks.updateScheduler).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole("button", { name: "取消" }))
+      fireEvent.click(
+        screen.getByRole("button", { name: `${profile} 全部啟動` })
+      )
+      expect(
+        screen.getByText("Full market 與 Pilot 將同時執行")
+      ).toBeInTheDocument()
+      expect(mocks.updateScheduler).not.toHaveBeenCalled()
+      fireEvent.click(
+        screen.getByRole("button", { name: `確認 ${profile} 全部啟動` })
+      )
+      await waitFor(() =>
+        expect(mocks.updateScheduler).toHaveBeenCalledTimes(1)
+      )
+      expect(mocks.updateScheduler).toHaveBeenCalledWith({
+        data: {
+          schedulerKey: key,
+          desiredState: "running",
+          expectedRevision: 1,
+        },
+      })
+      expect(
+        screen.getByRole("region", { name: `${otherProfile} 排程` })
+      ).toBeInTheDocument()
+    }
+  )
+
+  it.each(["Pilot", "Full market"])(
+    "scopes %s bulk stops to its own overview section",
+    async profile => {
+      const rows = [
+        makeScheduler({
+          scheduler_key: "pilot_finlab",
+          desired_state: "running",
+          observed_state: "running",
+        }),
+        makeScheduler({
+          scheduler_key: "full_market_finlab_v1",
+          desired_state: "running",
+          observed_state: "running",
+          start_allowed: true,
+        }),
+      ]
+      const key = profile === "Pilot" ? "pilot_finlab" : "full_market_finlab_v1"
+      mocks.updateScheduler.mockResolvedValue({
+        success: true,
+        data: {
+          ...rows.find(row => row.scheduler_key === key)!,
+          desired_state: "stopped",
+          revision: 2,
+        },
+      })
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <IngestionOverviewPanel
+            freshnessResult={null}
+            schedulersResult={{ ok: true, data: { success: true, data: rows } }}
+            loading={false}
+            pending={false}
+            freshnessError=""
+            schedulersError=""
+            role="owner"
+          />
+        </QueryClientProvider>
+      )
+      const section = screen.getByRole("region", { name: `${profile} 排程` })
+      expect(within(section).getByText(key)).toBeInTheDocument()
+      expect(
+        within(section).queryByText(
+          profile === "Pilot" ? "full_market_finlab_v1" : "pilot_finlab"
+        )
+      ).not.toBeInTheDocument()
+      fireEvent.click(
+        within(section).getByRole("button", { name: `${profile} 全部停止` })
+      )
+      expect(
+        screen.queryByText("Full market 與 Pilot 將同時執行")
+      ).not.toBeInTheDocument()
+      expect(mocks.updateScheduler).not.toHaveBeenCalled()
+      fireEvent.click(
+        screen.getByRole("button", { name: `確認 ${profile} 全部停止` })
+      )
+      await waitFor(() =>
+        expect(mocks.updateScheduler).toHaveBeenCalledTimes(1)
+      )
+      expect(mocks.updateScheduler).toHaveBeenCalledWith({
+        data: {
+          schedulerKey: key,
+          desiredState: "stopped",
+          expectedRevision: 1,
+        },
+      })
+    }
+  )
+
+  it("keeps freshness-only cards out of bulk writes and warns using live fallback status", () => {
+    const rows = [makeScheduler({ scheduler_key: "pilot_finlab" })]
+    const props = {
+      freshnessResult: {
+        ok: true as const,
+        data: {
+          success: true as const,
+          data: [makeFullMarketFreshness("finlab")],
+        },
+      },
+      schedulersResult: {
+        ok: true as const,
+        data: { success: true as const, data: rows },
+      },
+      loading: false,
+      pending: false,
+      freshnessError: "",
+      schedulersError: "",
+      role: "owner" as const,
+    }
+    const client = new QueryClient()
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <IngestionOverviewPanel {...props} />
+      </QueryClientProvider>
+    )
+    expect(
+      within(
+        screen.getByRole("region", { name: "Full market 排程" })
+      ).getByText("full_market_finlab_v1")
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Full market 全部啟動" })
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Pilot 全部啟動" }))
+    expect(
+      screen.queryByText("Full market 與 Pilot 將同時執行")
+    ).not.toBeInTheDocument()
+    rerender(
+      <QueryClientProvider client={client}>
+        <IngestionOverviewPanel
+          {...props}
+          freshnessResult={{
+            ok: true,
+            data: {
+              success: true,
+              data: [
+                makeFullMarketFreshness("finlab", {
+                  observed_state: "running",
+                }),
+              ],
+            },
+          }}
+        />
+      </QueryClientProvider>
+    )
+    expect(
+      screen.getByText("Full market 與 Pilot 將同時執行")
+    ).toBeInTheDocument()
+    expect(screen.getByText(/將依序更新 1 個/)).toBeInTheDocument()
+    expect(mocks.updateScheduler).not.toHaveBeenCalled()
+  })
+
+  it("does not warn for unrelated providers or blocked bulk targets", () => {
+    const rows = [
+      makeScheduler({
+        scheduler_key: "pilot_finlab",
+        desired_state: "running",
+        observed_state: "running",
+      }),
+      makeScheduler({
+        scheduler_key: "full_market_finlab_v1",
+        start_allowed: false,
+      }),
+      makeScheduler({
+        scheduler_key: "full_market_shioaji_v1",
+        provider: "shioaji",
+        start_allowed: true,
+      }),
+    ]
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SchedulerPanel
+          result={{ ok: true, data: { success: true, data: rows } }}
+          loading={false}
+          pending={false}
+          refreshError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Full market shioaji full_market_shioaji_v1 設為執行中",
+      })
+    )
+    expect(
+      screen.queryByText("Full market 與 Pilot 將同時執行")
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "取消" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: "Full market 全部啟動" })
+    )
+    expect(
+      screen.queryByText("Full market 與 Pilot 將同時執行")
+    ).not.toBeInTheDocument()
+    expect(screen.getByText(/跳過 1 個無法啟動/)).toBeInTheDocument()
   })
 
   it("continues a bulk scheduler update after a revision conflict", async () => {
@@ -995,8 +1316,8 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
-    fireEvent.click(screen.getByRole("button", { name: "確認全部停止" }))
+    fireEvent.click(screen.getByRole("button", { name: "Pilot 全部停止" }))
+    fireEvent.click(screen.getByRole("button", { name: "確認 Pilot 全部停止" }))
 
     await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(2))
     expect(

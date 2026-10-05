@@ -41,7 +41,10 @@ API failure都不得enqueue。
 
 ### Scheduler 啟動資格
 
-Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「全部啟動」只更新符合資格且
+Dashboard 導入概況與 Scheduler 面板依 `full_market_` key 前綴區分 Full market 與 Pilot，
+兩區各有獨立的單筆與「全部啟動／全部停止」控制，只有 Owner 可操作。每區批次只更新該區。
+Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「Full market 全部啟動」或
+「Pilot 全部啟動」只更新該區符合資格且
 尚未 running 的 controls，確認視窗顯示實際更新數量與跳過原因；單筆啟動套用相同資格。
 全市場啟動須至少一個 enabled feed，且 registry／contract／provider scope 有效、readiness
 已核准、處於 acceptance 或 active、有合法 activation_date 與已發布 baseline／完整年度
@@ -49,11 +52,17 @@ calendar。未啟用的 sibling 不因 inactive 或尚缺 calendar 阻擋部分�
 設定仍 fail closed。Acceptance 啟動不要求先完成五日驗收。
 
 停止不受啟動資格限制。既存的零 enabled `full_market_*_v1` 若已為 running，Owner 應透過
-單筆或「全部停止」修復，再確認 observed state；系統不自動重設 persisted desired state。
-Staging 只恢復 `twelve_data_us_common_stocks_daily_v1`、`finlab_tw_equity_eod_v1`、
-`shioaji_tw_pilot_v1` 三個 bounded controls；Shioaji 涵蓋兩個 minute feeds。
+單筆或「Full market 全部停止」修復，再確認 observed state；系統不自動重設 persisted desired state。
+Staging bounded controls 依 catalog 包含 `twelve_data_us_common_stocks_daily_v1`、
+`finlab_tw_equity_eod_v1`、`shioaji_tw_pilot_v1` 與 `taifex_tw_futures_pilot_v1` 四項；Shioaji
+涵蓋兩個 minute feeds。四個遠端 pilot startup 尚待完成。
 Production 全市場仍須另選 opt-in runtime 並取得 Owner activation，治理資格不代表 runtime
 已部署或已交付資料。
+
+啟動單筆或批次前，若同 provider 另一區期望或實際狀態仍為 running（包含停止中），
+確認視窗會提醒範圍重疊、重複抓取與 API 用量風險；Owner 可確認繼續，不構成後端互斥保證。
+建議先停止另一區並等待實際停止。停止操作與不同 provider 的活動不觸發此提醒。
+部署前須分別停止兩區並確認所有 desired／observed state 均為 stopped。
 
 ## 上線前檢查
 
