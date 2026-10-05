@@ -321,8 +321,13 @@ Fetcher deploy保留DB desired state，不把deployment當成啟用授權。三�
 並等待三個scheduler的desired與observed state都顯示`stopped`後再合併或manual dispatch；
 workflow在stable container優雅停止後只回報stopped observation、讀回desired state與驗證definition，
 不修改desired state。任一provider仍為`running`、definition drift或control失聯都fail closed並恢復previous
-containers。Accepted activation完成後，由Owner透過Scheduler頁按「全部啟動」，再逐一確認observed state恢復
-`running`；批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
+containers。Accepted activation完成後，staging Owner只恢復三個 bounded controls：
+`twelve_data_us_common_stocks_daily_v1`、`finlab_tw_equity_eod_v1`、`shioaji_tw_pilot_v1`；
+Shioaji control同時涵蓋`tw_equity_minute`與`tw_etf_minute`。「全部啟動」只送出具啟動資格的
+controls，確認視窗列出更新數量與跳過原因；再逐筆確認observed state恢復`running`。
+Staging 的`full_market_*_v1` controls保持`stopped`。Production必須完成readiness、官方 baseline／calendar、
+選定full-market profile並取得Owner acceptance-mode activation後，才啟動對應control並開始連續五個
+交易日驗收。批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
 Fetcher candidate只以`docker create --restart no`驗證最終container config，並以
 `com.findb.fetcher.accepted=false`標示；未accepted scheduler從不啟動，因此untrappable command／host
 interruption不會留下未授權writer。Accepted activation先以atomic symlink replacement將`/opt/fetcher/current`寫成

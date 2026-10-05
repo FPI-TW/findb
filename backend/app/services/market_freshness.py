@@ -30,9 +30,8 @@ from app.services.delivery_policy import (
     delivery_run_mode_condition,
     resolve_expected_data_date,
 )
-from app.services.ingress_contracts import (
-    parse_dataset_contract_declaration,
-    validate_dataset_contract_scope,
+from app.services.full_market_governance import (
+    full_market_configuration as _full_market_configuration,
 )
 from app.services.scheduler_control import (
     list_scheduler_controls,
@@ -509,68 +508,6 @@ def _feed_configuration(
             )
         )
     return feeds
-
-
-def _full_market_configuration(
-    dataset: DatasetRegistry, provider: str
-) -> tuple[bool, bool, list[str], list[str]]:
-    """Separate opted-out readiness prerequisites from invalid registry configuration."""
-    config = dataset.config if isinstance(dataset.config, dict) else {}
-    errors: list[str] = []
-    blockers: list[str] = []
-    try:
-        declaration = parse_dataset_contract_declaration(config)
-        if declaration is None:
-            errors.append("contract_declaration_missing")
-    except ValueError:
-        errors.append("contract_declaration_invalid")
-    else:
-        if declaration is not None:
-            if provider not in declaration.provider_scope():
-                errors.append("provider_scope_mismatch")
-            try:
-                validate_dataset_contract_scope(
-                    declaration, market=dataset.market, asset_class=dataset.asset_class
-                )
-            except ValueError:
-                errors.append("contract_scope_mismatch")
-    governance = config.get("full_market")
-    if not isinstance(governance, dict):
-        return False, False, [*errors, "full_market_governance_invalid"], blockers
-    enabled = governance.get("enabled") is True
-    if type(governance.get("enabled")) is not bool:
-        errors.append("full_market_enabled_invalid")
-    if type(governance.get("readiness_approved")) is not bool:
-        errors.append("full_market_readiness_invalid")
-    mode = governance.get("mode")
-    if mode is not None and (
-        not isinstance(mode, str) or mode not in {"off", "acceptance", "active"}
-    ):
-        errors.append("full_market_mode_invalid")
-    activation = governance.get("activation_date")
-    activated_before = False
-    if activation is not None:
-        try:
-            if not isinstance(activation, str):
-                raise ValueError("Invalid date")
-            date.fromisoformat(activation)
-            activated_before = True
-        except ValueError:
-            errors.append("full_market_activation_date_invalid")
-    prerequisites: list[str] = []
-    if not dataset.is_active:
-        prerequisites.append("dataset_inactive")
-    if not governance.get("readiness_approved"):
-        prerequisites.append("readiness_not_approved")
-    if enabled:
-        errors.extend(prerequisites)
-        if not activated_before:
-            errors.append("activation_date_missing")
-        if not isinstance(mode, str) or mode not in {"acceptance", "active"}:
-            errors.append("full_market_mode_invalid")
-    else:
-        blockers.extend(["activation_disabled", *prerequisites])
-    return enabled, activated_before, errors, blockers
 
 
 async def _build_scheduler_freshness(

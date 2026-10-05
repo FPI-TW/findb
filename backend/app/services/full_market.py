@@ -1136,6 +1136,7 @@ async def deactivate_feed(db: AsyncSession, dataset_key: str) -> dict:
         await db.scalars(
             select(DatasetRegistry)
             .where(DatasetRegistry.dataset_key == dataset_key)
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
     ).one_or_none()
@@ -1159,6 +1160,7 @@ async def deactivate_feed(db: AsyncSession, dataset_key: str) -> dict:
                 SchedulerDataset.dataset_key == dataset_key,
                 SchedulerControl.scheduler_key.startswith("full_market_", autoescape=True),
             )
+            .execution_options(populate_existing=True)
             .with_for_update(of=SchedulerControl)
         )
     ).all()

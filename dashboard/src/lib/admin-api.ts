@@ -115,6 +115,8 @@ export const canonicalSlotIdSchema = z.enum([
 export type CanonicalSlotId = z.infer<typeof canonicalSlotIdSchema>
 
 export const schedulerSchema = z.object({
+  start_allowed: z.boolean().optional(),
+  start_blockers: z.array(z.string()).optional(),
   scheduler_key: z.string().trim().min(1).max(200),
   provider: z.string().trim().min(1).max(100),
   dataset_keys: z.array(z.string().trim().min(1).max(200)),

@@ -326,6 +326,20 @@ export async function patchSchedulerData(
       throw new DashboardAuthenticationError()
     }
     if (response.status === 409) {
+      const payload: unknown = await response.json().catch(() => null)
+      if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "detail" in payload &&
+        typeof payload.detail === "object" &&
+        payload.detail !== null &&
+        "code" in payload.detail &&
+        payload.detail.code === "scheduler_start_blocked"
+      ) {
+        throw new Error(
+          "全市場啟動條件已變更或尚未完成，請重新整理並確認 feed 啟用、readiness、baseline 與日曆。"
+        )
+      }
       throw new Error("Scheduler revision is stale; refresh and retry")
     }
     throw new Error(`FinDB API request failed (${response.status})`)

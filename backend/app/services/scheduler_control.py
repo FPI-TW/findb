@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import AdminPrincipal
 from app.models.registry import SchedulerControl
 from app.services.admin_audit import record_admin_audit
+from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
 from app.utils import ensure_utc, utc_now
 
 
@@ -29,6 +30,14 @@ class SchedulerControlRevisionConflictError(SchedulerControlError):
 
 class SchedulerControlScopeError(SchedulerControlError):
     """The authenticated Source credential is outside the scheduler scope."""
+
+
+class SchedulerControlStartBlockedError(SchedulerControlError):
+    """Governed start prerequisites are unmet; reason codes contain no configuration."""
+
+    def __init__(self, blockers: list[str]):
+        super().__init__("Scheduler start is blocked")
+        self.blockers = blockers
 
 
 # Compatibility aliases for callers that use shorter names.
@@ -71,10 +80,14 @@ async def update_scheduler_desired_state(
     commit: bool = True,
 ) -> SchedulerControl:
     """Atomically update desired state and append its Admin audit event."""
+    datasets = None
+    if desired_state == "running" and scheduler_key.startswith("full_market_"):
+        datasets = await scheduler_start_datasets(db, scheduler_key, lock=True)
     result = await db.execute(
         select(SchedulerControl)
         .options(selectinload(SchedulerControl.scheduler_datasets))
         .where(SchedulerControl.scheduler_key == scheduler_key)
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     row = result.scalar_one_or_none()
@@ -84,6 +97,11 @@ async def update_scheduler_desired_state(
         raise SchedulerControlRevisionConflictError(
             f"scheduler revision is {row.revision}, expected {expected_revision}"
         )
+
+    if desired_state == "running":
+        blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row), datasets)
+        if blockers:
+            raise SchedulerControlStartBlockedError(blockers)
 
     row.desired_state = desired_state
     row.revision += 1
@@ -225,10 +243,23 @@ def present_scheduler_control(
     }
 
 
+async def present_admin_scheduler_control(
+    db: AsyncSession, row: SchedulerControl
+) -> dict[str, Any]:
+    """Add current authoritative start eligibility without changing Source poll shape."""
+    blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row))
+    return {
+        **present_scheduler_control(row),
+        "start_allowed": not blockers,
+        "start_blockers": blockers,
+    }
+
+
 __all__ = [
     "SchedulerControlError",
     "SchedulerControlNotFoundError",
     "SchedulerControlRevisionConflictError",
+    "SchedulerControlStartBlockedError",
     "SchedulerControlScopeError",
     "SchedulerNotFoundError",
     "SchedulerRevisionConflictError",
@@ -237,6 +268,7 @@ __all__ = [
     "list_scheduler_controls",
     "poll_scheduler_control",
     "present_scheduler_control",
+    "present_admin_scheduler_control",
     "scheduler_dataset_keys",
     "update_scheduler_desired_state",
 ]

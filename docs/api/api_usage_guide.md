@@ -106,6 +106,13 @@ POST /api/v1/source/scheduler-controls/{scheduler_key}/poll
 回應包含provider、dataset mapping、slot、本地時間、timezone、desired state與revision。
 Scope或reviewed workload不一致時consumer必須fail closed。
 
+Admin `GET /api/v1/admin/schedulers` 與 Owner `PATCH /api/v1/admin/schedulers/{scheduler_key}`
+回應另包含 `start_allowed: boolean` 與 `start_blockers: string[]`。全市場啟動會在同一
+transaction 鎖定 registry／control 並重新驗證資格；資格不符回 `409`，detail 為
+`{"code":"scheduler_start_blocked","start_blockers":["full_market_no_enabled_datasets"]}`
+（原因依未完成條件而異），不變更 desired state、revision 或 audit。既有 revision conflict
+仍回 `409`；停止永遠保留既有 Owner 權限／revision 檢查，但不要求啟動資格。
+
 Scheduler取得完整published calendar：
 
 ```http
