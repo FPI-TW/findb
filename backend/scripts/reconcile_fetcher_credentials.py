@@ -86,9 +86,19 @@ FULL_MARKET_SOURCE_SPECS = (
 )
 
 
-def source_specs_for_profile(runtime_profile: str) -> tuple[SourceCredentialSpec, ...]:
+def source_specs_for_profile(
+    runtime_profile: str, deployment_target: str = "production"
+) -> tuple[SourceCredentialSpec, ...]:
+    if deployment_target not in {"staging", "production"} or (
+        deployment_target == "staging" and runtime_profile == "full-market"
+    ):
+        raise FetcherCredentialError("unsupported Fetcher deployment target/profile")
     if runtime_profile == "bounded":
-        return SOURCE_SPECS
+        return (
+            (*SOURCE_SPECS, FULL_MARKET_SOURCE_SPECS[3])
+            if deployment_target == "staging"
+            else SOURCE_SPECS
+        )
     if runtime_profile == "full-market":
         return FULL_MARKET_SOURCE_SPECS
     raise FetcherCredentialError("unsupported Fetcher runtime profile")
@@ -296,8 +306,9 @@ async def reconcile_fetcher_credentials_in_session(
     hashes_by_env: dict[str, str],
     *,
     runtime_profile: str = "bounded",
+    deployment_target: str = "production",
 ) -> list[ReconciliationResult]:
-    specs = source_specs_for_profile(runtime_profile)
+    specs = source_specs_for_profile(runtime_profile, deployment_target)
     normalized = {name: validate_key_hash(value) for name, value in hashes_by_env.items()}
     required = {CALENDAR_HASH_ENV, *(spec.env_name for spec in specs)}
     if set(normalized) != required or len(set(normalized.values())) != len(required):
@@ -334,6 +345,7 @@ async def reconcile_fetcher_credentials(
     hashes_by_env: dict[str, str],
     *,
     runtime_profile: str = "bounded",
+    deployment_target: str = "production",
 ) -> list[ReconciliationResult]:
     url = validate_application_database_url(application_database_url)
     engine = create_async_engine(url, pool_size=1, max_overflow=0)
@@ -341,7 +353,10 @@ async def reconcile_fetcher_credentials(
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as db:
             return await reconcile_fetcher_credentials_in_session(
-                db, hashes_by_env, runtime_profile=runtime_profile
+                db,
+                hashes_by_env,
+                runtime_profile=runtime_profile,
+                deployment_target=deployment_target,
             )
     finally:
         await engine.dispose()
@@ -349,6 +364,11 @@ async def reconcile_fetcher_credentials(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--deployment-target",
+        choices=("staging", "production"),
+        default=os.getenv("DEPLOYMENT_TARGET", "production"),
+    )
     parser.add_argument("--runtime-profile", choices=("bounded", "full-market"), default="bounded")
     parser.add_argument("--application-database-url", default=os.getenv("APPLICATION_DATABASE_URL"))
     for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in FULL_MARKET_SOURCE_SPECS)):
@@ -366,7 +386,10 @@ def main() -> int:
         env_name: getattr(args, env_name)
         for env_name in (
             CALENDAR_HASH_ENV,
-            *(spec.env_name for spec in source_specs_for_profile(args.runtime_profile)),
+            *(
+                spec.env_name
+                for spec in source_specs_for_profile(args.runtime_profile, args.deployment_target)
+            ),
         )
     }
     if not args.application_database_url or not all(hashes_by_env.values()):
@@ -375,7 +398,10 @@ def main() -> int:
     try:
         results = asyncio.run(
             reconcile_fetcher_credentials(
-                args.application_database_url, hashes_by_env, runtime_profile=args.runtime_profile
+                args.application_database_url,
+                hashes_by_env,
+                runtime_profile=args.runtime_profile,
+                deployment_target=args.deployment_target,
             )
         )
     except (FetcherCredentialError, SQLAlchemyError, OSError):

@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "target_date_policy": "latest_completed_trade_date_only",
+  "providers": {
+    "twelve_data": {
+      "instruments": [
+        "AAPL",
+        "MSFT"
+      ],
+      "feeds": [
+        {
+          "dataset_key": "us_equity_eod",
+          "schema_id": "market_eod"
+        }
+      ],
+      "schema_version": 1,
+      "runtime_command": "findb-fetch-scheduler",
+      "state_directory": "/var/lib/findb-fetcher/staging-pilot-v2",
+      "fixture_acceptance": "test_staging_pilots:twelve_data",
+      "live_acceptance": "source_raw_terminal_canonical_serve"
+    },
+    "finlab": {
+      "instruments": [
+        "2330",
+        "2317"
+      ],
+      "feeds": [
+        {
+          "dataset_key": "tw_equity_eod",
+          "schema_id": "market_eod"
+        }
+      ],
+      "schema_version": 1,
+      "runtime_command": "findb-fetch-finlab-scheduler",
+      "state_directory": "/var/lib/findb-finlab-fetcher",
+      "fixture_acceptance": "test_staging_pilots:finlab",
+      "live_acceptance": "source_raw_terminal_canonical_serve"
+    },
+    "shioaji": {
+      "instruments": [
+        "2330",
+        "0050"
+      ],
+      "feeds": [
+        {
+          "dataset_key": "tw_equity_minute",
+          "schema_id": "market_minute"
+        },
+        {
+          "dataset_key": "tw_etf_minute",
+          "schema_id": "market_minute"
+        }
+      ],
+      "schema_version": 1,
+      "runtime_command": "findb-fetch-shioaji-scheduler",
+      "state_directory": "/var/lib/findb-shioaji-fetcher/staging-pilot-v3",
+      "fixture_acceptance": "test_staging_pilots:shioaji",
+      "live_acceptance": "source_raw_terminal_canonical_serve"
+    },
+    "taifex": {
+      "instruments": [
+        "TX",
+        "MTX"
+      ],
+      "feeds": [
+        {
+          "dataset_key": "tw_futures_eod",
+          "schema_id": "futures_eod"
+        }
+      ],
+      "schema_version": 1,
+      "runtime_command": "findb-fetch-taifex-pilot",
+      "state_directory": "/var/lib/findb-taifex-fetcher/staging-pilot-v1",
+      "fixture_acceptance": "test_staging_pilots:taifex",
+      "live_acceptance": "source_raw_terminal_canonical_serve"
+    }
+  },
+  "files": {
+    "daily_scheduler.staging.v3.json": "690ed5ef7c9752dfb754c96737ee09514dfee346005da622dbba1c278acc451e",
+    "twelve_data_us_staging_pilot.v2.json": "8ddb523add543b11131708ac0df44c281e0a6200ad1a9b58087a808f96641a1b",
+    "finlab_tw_review_required.v1.json": "15dc19a8d76ed66eaa5fe1bd8e41fcb5e09e69a21da44303264dcd2c6c959f8d",
+    "shioaji_tw_staging_pilot.v3.json": "ef9cab60128892589f949347cf8263ce394d751849c7fb2550a3f9110eac5dbe",
+    "taifex_tw_staging_pilot.v1.json": "d3adbcd5c0b6d102ff6ad1074a5a128f50d8f326d044dca38d90b4360dd96b46"
+  }
+}

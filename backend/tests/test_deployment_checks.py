@@ -2364,19 +2364,125 @@ def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_off
         1,
     )[1].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
 
-    # Existing bounded state is still required when a bounded Shioaji stable
-    # exists. A profile transition initializes the separate full-market DB even
-    # while its old bounded stable container exists, without loading secrets.
+    # A bounded stable may bootstrap only the reviewed versioned staging
+    # directory when its mounted state identity differs. Same-identity state
+    # loss still fails closed; full-market uses a separate state DB.
     assert (
-        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && docker container inspect "$stable"'
+        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && docker container inspect "$stable"'
         in bootstrap
     )
+    assert '[ "${DEPLOYMENT_TARGET:-}" = staging ]' in bootstrap
+    assert '[ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ]' in bootstrap
+    assert 'grep -Fxq "$state_dir" <<< "$stable_mounts"' in bootstrap
     assert "reason=shioaji_state_missing_with_stable" in bootstrap
     assert 'docker rm -f "$state_bootstrap_name"' in bootstrap
     assert "--initialize-state" in bootstrap
     assert '--state-path "$state_path"' in bootstrap
     assert '"${runtime_env_args[@]}"' not in bootstrap
     assert "reason=shioaji_state_bootstrap" in bootstrap
+
+
+@pytest.mark.parametrize(
+    ("target", "profile", "versioned_directory", "stable_mount", "stable_present", "allowed"),
+    [
+        ("staging", "bounded", True, "/var/lib/findb-shioaji-fetcher", True, True),
+        (
+            "staging",
+            "bounded",
+            True,
+            "/var/lib/findb-shioaji-fetcher/staging-pilot-v3",
+            True,
+            False,
+        ),
+        ("staging", "bounded", True, "", False, True),
+        ("staging", "bounded", False, "/legacy/state", True, False),
+        ("production", "bounded", True, "/legacy/state", True, False),
+        ("staging", "full-market", True, "/legacy/state", True, True),
+    ],
+)
+def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
+    tmp_path: Path,
+    target: str,
+    profile: str,
+    versioned_directory: bool,
+    stable_mount: str,
+    stable_present: bool,
+    allowed: bool,
+) -> None:
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    start = helper.index(
+        'if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then'
+    )
+    bootstrap = helper[start:].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
+    script = tmp_path / "bootstrap.sh"
+    # Execute the actual guard and bootstrap command with local stand-ins. The
+    # state file and command log are temporary; no Docker or secret API runs.
+    script.write_text(
+        """set -euo pipefail
+provider=shioaji
+stable=stable
+preflight_name=preflight
+image=reviewed-exact-digest
+cache_mount=(--mount type=bind,src=/reviewed/cache,dst=/home/fetcher)
+runtime_env_args=(--env SOURCE_SECRET=must-not-be-injected)
+set -- findb-fetch-shioaji-tw
+sudo() {
+  if [ "$1" = stat ]; then printf '%s\\n' '10001:10001:600'; else "$@"; fi
+}
+docker() {
+  if [ "$1" = container ]; then
+    [ "$3" = "$stable" ] && [ "$stable_present" = true ]
+  elif [ "$1" = inspect ]; then
+    printf '%s\\n' "$stable_mount_fixture"
+  elif [ "$1" = run ]; then
+    printf '%s\\n' "$@" > "$bootstrap_log"
+    touch "$state_path"
+  else
+    return 99
+  fi
+}
+"""
+        + bootstrap,
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "state.sqlite3"
+    command_log = tmp_path / "command.log"
+    state_directory = "/var/lib/findb-shioaji-fetcher"
+    if versioned_directory:
+        state_directory += "/staging-pilot-v3"
+    completed = subprocess.run(
+        ["bash", str(script)],
+        env={
+            **os.environ,
+            "DEPLOYMENT_TARGET": target,
+            "FETCHER_RUNTIME_PROFILE": profile,
+            "state_dir": state_directory,
+            "state_path": str(state_path),
+            "stable_present": str(stable_present).lower(),
+            "stable_mount_fixture": stable_mount,
+            "bootstrap_log": str(command_log),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    if allowed:
+        assert completed.returncode == 0, completed.stderr
+        assert state_path.exists()
+        arguments = command_log.read_text(encoding="utf-8").splitlines()
+        assert "--initialize-state" in arguments
+        assert "--state-path" in arguments
+        assert str(state_path) in arguments
+        assert "--env" not in arguments
+        assert "SOURCE_SECRET=must-not-be-injected" not in arguments
+    else:
+        assert completed.returncode != 0
+        assert "reason=shioaji_state_missing_with_stable" in completed.stderr
+        assert not state_path.exists()
+        assert not command_log.exists()
 
 
 def test_aws_fetcher_release_preserves_staging_raw_marker_identities() -> None:

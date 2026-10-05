@@ -151,6 +151,28 @@ class SchedulerState:
             connection.commit()
         return inserted
 
+    def supersede_older_targets(
+        self, schedule: ScheduleConfig, universe: SymbolUniverse, *, target: date, now: datetime
+    ) -> None:
+        """Retain evidence but prevent staging latest-only pilots replaying older dates."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE scheduled_job SET status='failed',last_outcome='latest_only_superseded',lease_until=NULL,updated_at=?
+                WHERE schedule_id=? AND universe_id=? AND universe_version=?
+                  AND target_data_date < ? AND status IN ('pending','running','retry_wait')
+            """,
+                (
+                    _datetime_text(now),
+                    schedule.schedule_id,
+                    universe.universe_id,
+                    universe.universe_version,
+                    target.isoformat(),
+                ),
+            )
+            connection.commit()
+
     def claim_due(
         self,
         schedule: ScheduleConfig,

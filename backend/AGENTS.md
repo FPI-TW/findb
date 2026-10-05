@@ -77,7 +77,8 @@ EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查�
 `expected = data + no_data + missing + blocked` 只依 canonical
 provenance 與持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
 
-新 HK／TW ETF／TAIFEX feeds 與 `full_market_*_v1` schedulers 預設停用。Owner 須審核 baseline、
+production 新 HK／TW ETF／TAIFEX feeds 與 `full_market_*_v1` schedulers 預設停用。staging TAIFEX 僅由 target-specific provisioning 啟用兩個實際近月契約 pilot，
+`full_market.required=false`、`enabled=false`，不啟用 full-market controls。Owner 須審核 baseline、
 完整交易所日曆並開啟 acceptance，五個連續實際開市日準時完整後才能 active；HK 與 TAIFEX
 日曆必須輸入完整年度日期，不得套用平日推測。Owner deactivate 保留 universe、plan 與 canonical
 歷史，停用新的 feeds，並停止該 provider 共用的全市場 scheduler；舊 bounded feeds 保持 active。

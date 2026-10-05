@@ -85,16 +85,34 @@ def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
             assert "canary" not in catalog["consumers"]
 
 
-def test_active_staging_catalog_has_seventeen_entries_and_no_ghcr_runtime_secret() -> None:
+def test_active_staging_catalog_matches_exact_metadata_and_no_ghcr_runtime_secret() -> None:
     configured = {
-        secret["name"]
+        f"{unit}/{secret['name']}"
         for unit in ("findb", "fetcher")
         for consumer in _catalog(unit)["consumers"].values()
         for secret in consumer["secrets"]
         if "staging" in secret.get("targets", ["staging", "production"])
     }
-    assert len(configured) == 17
-    assert "registry/ghcr-pull" not in configured
+    assert configured == {
+        "findb/database/application",
+        "findb/database/migration",
+        "findb/api/admin-break-glass",
+        "findb/api/queue-health-admin",
+        "findb/api/lookup-serve",
+        "findb/api/static-cache-serve",
+        "findb/rabbitmq/runtime",
+        "findb/r2/canonical-publisher",
+        "findb/r2/canonical-reader",
+        "fetcher/api/calendar-serve",
+        "fetcher/api/source/twelve-data",
+        "fetcher/api/source/finlab",
+        "fetcher/api/source/shioaji",
+        "fetcher/api/source/taifex",
+        "fetcher/provider/twelve-data",
+        "fetcher/provider/finlab",
+        "fetcher/provider/shioaji",
+        "fetcher/r2/raw",
+    }
     assert "GHCR_USERNAME" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
     assert "GHCR_TOKEN" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
     metadata = (REPO_ROOT / "infra" / "tofu" / "staging" / "secrets.tf").read_text(encoding="utf-8")
@@ -152,6 +170,51 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
     }
     assert "FINLAB_API_TOKEN" not in loaded
     assert "SHIOAJI_API_KEY" not in loaded
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_taifex_consumer_loads_only_its_target_scoped_allowlist(target: str) -> None:
+    loader = _loader()
+    catalog = _catalog("fetcher")
+    prefix = f"findb/{target}/fetcher/"
+    payloads = {
+        prefix + "api/calendar-serve": {"FETCHER_CALENDAR_SERVE_API_KEY": "calendar-key"},
+        prefix + "api/source/taifex": {"FETCHER_TAIFEX_SOURCE_CLIENT_KEY": "taifex-key"},
+        prefix + "r2/raw": {
+            "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID": "r2-id",
+            "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY": "r2-secret",
+        },
+    }
+    expected = {key: value for payload in payloads.values() for key, value in payload.items()}
+    if target == "production":
+        runtime = next(
+            secret
+            for secret in catalog["consumers"]["taifex"]["secrets"]
+            if secret["name"] == "runtime/configuration"
+        )
+        configuration = dict.fromkeys(runtime["required_keys"], "production-config")
+        payloads[prefix + "runtime/configuration"] = configuration
+        expected.update(configuration)
+    fetched: list[str] = []
+
+    def fetch(name: str) -> str:
+        fetched.append(name)
+        return json.dumps(payloads[name])
+
+    loaded = loader.load_consumer(catalog, "taifex", fetch, deployment_target=target)
+
+    assert loaded == expected
+    assert set(fetched) == set(payloads)
+    assert len(fetched) == len(payloads)
+    assert "TWELVE_DATA_API_KEY" not in loaded
+    assert "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY" not in loaded
+    if target == "staging":
+        assert set(fetched) == {
+            prefix + "api/calendar-serve",
+            prefix + "api/source/taifex",
+            prefix + "r2/raw",
+        }
+        assert "FETCHER_SOURCE_API_URL" not in loaded
 
 
 def test_production_consumer_loads_target_scoped_runtime_configuration() -> None:

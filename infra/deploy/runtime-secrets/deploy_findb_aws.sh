@@ -386,6 +386,10 @@ if [ "$DEPLOYMENT_TARGET" = production ]; then
     --deployment-target production \
     --apply \
     --actor production-bootstrap </dev/null
+else
+  docker compose -f "$compose_file" run --rm --no-deps ingest \
+    python /app/scripts/seed_staging_pilot_calendar.py \
+    --deployment-target staging </dev/null
 fi
 MIGRATION_SCRIPT
 fi

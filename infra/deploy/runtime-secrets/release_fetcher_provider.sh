@@ -44,7 +44,7 @@ fi
 
 case "$provider" in
   taifex)
-    if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" != full-market ] || [ "${DEPLOYMENT_TARGET:-}" != production ]; then
+    if ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ] && [ "${DEPLOYMENT_TARGET:-}" = production ]; } && ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "${DEPLOYMENT_TARGET:-}" = staging ]; }; then
       echo "release_fetcher_provider=failed reason=taifex_profile_invalid" >&2
       exit 1
     fi
@@ -142,6 +142,7 @@ export FETCHER_STATE_PATH="$state_path"
 export FETCHER_SHIOAJI_STATE_PATH="$state_path"
 
 runtime_env_args=(
+  --env DEPLOYMENT_TARGET
   --env SOURCE_API_URL
   --env SOURCE_CLIENT_KEY
   --env FINDB_SERVE_BASE_URL
@@ -266,7 +267,18 @@ if [ "$cache_dir" != "-" ]; then
 fi
 
 if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then
-  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && docker container inspect "$stable" >/dev/null 2>&1; then
+  versioned_cutover=false
+  if [ "${DEPLOYMENT_TARGET:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ]; then
+    if ! docker container inspect "$stable" >/dev/null 2>&1; then
+      versioned_cutover=true
+    else
+      stable_mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$stable")" || exit 1
+      if ! grep -Fxq "$state_dir" <<< "$stable_mounts"; then
+        versioned_cutover=true
+      fi
+    fi
+  fi
+  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && docker container inspect "$stable" >/dev/null 2>&1; then
     echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
     exit 1
   fi
@@ -431,7 +443,7 @@ fi
 # provider consumer's secret set has been loaded.  Reuse only that already
 # allowlisted ``runtime_env_args`` array; the outer deployment shell never
 # receives SOURCE_CLIENT_KEY/provider/R2 credentials.
-if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ] || [ "$DEPLOYMENT_TARGET" = staging ]; then
   trap - ERR INT TERM HUP
   echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"
   exit 0

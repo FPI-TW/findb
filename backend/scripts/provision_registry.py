@@ -237,6 +237,15 @@ def reconcile_supported_dataset_configs(
         if merged != existing:
             changed.append(dataset_key)
 
+    reconciled["tw_futures_eod"] = provision_taifex_pilot_config(
+        reconciled["tw_futures_eod"], deployment_target=target
+    )
+    if (
+        reconciled["tw_futures_eod"] != existing_configs["tw_futures_eod"]
+        and "tw_futures_eod" not in changed
+    ):
+        changed.append("tw_futures_eod")
+
     tw_config, report = provision_registry_config(
         reconciled[DATASET_KEY],
         deployment_target=target,
@@ -251,6 +260,83 @@ def reconcile_supported_dataset_configs(
         reconciled_dataset_keys=tuple(SUPPORTED_DATASETS),
         changed_dataset_keys=tuple(changed),
     )
+
+
+def taifex_delivery_expectations() -> tuple[dict[str, Any], dict[str, Any]]:
+    neutral = _copy_json(
+        next(
+            item["config"]["delivery_expectation"]
+            for item in DATASETS
+            if item["dataset_key"] == "tw_futures_eod"
+        )
+    )
+    stage = _copy_json(neutral)
+    stage["delivery_mode"] = "incremental"
+    stage["baseline"]["enabled"] = False
+    stage["record_count"].update(minimum_record_count=4, action="reject")
+    stage["schedule"].update(enabled=True, local_time="18:00:00")
+    stage["missing_delivery"] = {
+        "action": "warn",
+        "expected_sources": ["taifex"],
+        "deadline_local_time": "18:30:00",
+    }
+    return neutral, stage
+
+
+TAIFEX_PILOT_MARKER = {"version": 1, "provider": "taifex", "instruments": ["TX", "MTX"]}
+
+
+def provision_taifex_pilot_config(
+    config: Mapping[str, Any], *, deployment_target: str
+) -> dict[str, Any]:
+    target = _validate_target(deployment_target)
+    working = _copy_json(dict(config))
+    governance = working.get("full_market")
+    if (
+        not isinstance(governance, dict)
+        or type(governance.get("required")) is not bool
+        or type(governance.get("enabled")) is not bool
+    ):
+        raise RegistryProvisioningError("TAIFEX full-market policy is malformed")
+    neutral_expectation, stage_expectation = taifex_delivery_expectations()
+    marker = working.get("staging_pilot")
+    if marker is not None and marker != TAIFEX_PILOT_MARKER:
+        raise RegistryProvisioningError("TAIFEX staging pilot policy is unknown")
+    if marker == TAIFEX_PILOT_MARKER:
+        if working.get("delivery_expectation") != stage_expectation:
+            raise RegistryProvisioningError("TAIFEX staging monitoring policy changed")
+        if governance != {
+            "enabled": False,
+            "required": False,
+            "readiness_approved": False,
+            "activation_date": None,
+            "calendar_market": "TAIFEX",
+        }:
+            raise RegistryProvisioningError(
+                "TAIFEX staging pilot policy changed; operator review required"
+            )
+        if target == "production":
+            working["delivery_expectation"] = neutral_expectation
+            governance["required"] = True
+            working.pop("staging_pilot")
+        return working
+    if target == "staging":
+        if working.get("delivery_expectation") != neutral_expectation:
+            raise RegistryProvisioningError(
+                "TAIFEX staging cannot overwrite operator monitoring policy"
+            )
+        if governance != {
+            "enabled": False,
+            "required": True,
+            "readiness_approved": False,
+            "activation_date": None,
+            "calendar_market": "TAIFEX",
+        }:
+            raise RegistryProvisioningError("TAIFEX staging cannot overwrite operator governance")
+        working["delivery_expectation"] = stage_expectation
+        governance["required"] = False
+        working["staging_pilot"] = _copy_json(TAIFEX_PILOT_MARKER)
+    return working
 
 
 async def _lock_registry(connection: AsyncConnection) -> None:
@@ -307,6 +393,30 @@ async def provision_registry(
                             separators=(",", ":"),
                         ),
                     },
+                )
+            previous = (
+                next(row["config"] for row in rows if row["dataset_key"] == "tw_futures_eod") or {}
+            )
+            if target == "staging" or previous.get("staging_pilot") == TAIFEX_PILOT_MARKER:
+                await connection.execute(
+                    text(
+                        "UPDATE dataset_registry SET is_active=:active, updated_at=now() WHERE dataset_key='tw_futures_eod'"
+                    ),
+                    {"active": target == "staging"},
+                )
+            if target == "staging":
+                await connection.execute(
+                    text("""
+                    INSERT INTO scheduler_control (scheduler_key,provider,slot_id,scheduled_local_time,timezone,desired_state,observed_state,revision,created_at,updated_at)
+                    VALUES ('taifex_tw_futures_pilot_v1','taifex','taiwan_market_window','18:00:00','Asia/Taipei','stopped','stopped',1,now(),now())
+                    ON CONFLICT (scheduler_key) DO NOTHING
+                """)
+                )
+                await connection.execute(
+                    text("""
+                    INSERT INTO scheduler_dataset (scheduler_key,dataset_key)
+                    VALUES ('taifex_tw_futures_pilot_v1','tw_futures_eod') ON CONFLICT DO NOTHING
+                """)
                 )
         return report
     finally:

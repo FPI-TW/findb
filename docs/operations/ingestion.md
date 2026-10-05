@@ -260,3 +260,10 @@ canonical均指向同一rerun，沒有duplicate rows。這是新worker連線的b
 
 Schema migration後不直接回退到不認得目前Alembic head的image；採forward fix。禁止以
 舊route、舊provider identity、volume deletion或大範圍資料刪除作為recovery。
+
+
+Staging provider onboarding 使用四個 provider／五個 feed 的 bounded functional pilots，詳細 scope、
+control keys 與 startup commands 見 [Fetcher](../../fetcher/README.md#staging-pilot-啟動與驗收)。新 provider
+必須提供 supported versioned schema、最小 Source credential scope、catalog pilot、startup fixture、durable replay
+與 Source→raw→terminal canonical→Serve live evidence。TAIFEX staging 是實際近月雙 session 契約，
+以獨立 `TAIFEX` 官方 calendar 選最新已完成交易日；不啟用 production full-market、continuous 或歷史 backfill。

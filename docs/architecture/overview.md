@@ -35,17 +35,20 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 ## Active feeds
 
 文件層級的active feed清單只在本節維護；最終真相是
-`backend/scripts/seed_data.py`及對應Fetcher configs。
+target-aware registry provisioning及`fetcher/configs/staging_provider_pilots.v1.json`。
 
 | Provider | Dataset | Staging範圍 |
 | --- | --- | --- |
-| `twelve_data` | `us_equity_eod` | Reviewed bounded US equity universe |
-| `finlab` | `tw_equity_eod` | Reviewed bounded TW equity universe |
+| `twelve_data` | `us_equity_eod` | `AAPL`、`MSFT` daily pilot |
+| `finlab` | `tw_equity_eod` | `2330`、`2317` daily pilot |
 | `shioaji` | `tw_equity_minute` | `2330` pilot |
-| `shioaji` | `tw_etf_minute` | `0050`、`0056`、`006201` pilot |
+| `shioaji` | `tw_etf_minute` | `0050` pilot |
+| `taifex` | `tw_futures_eod` | `TX`、`MTX` 各一個實際近月合約、兩個 sessions |
 
-Serve catalog由active `dataset_registry`動態解析，四個feed分別公開US/TW equity EOD及TW
-equity/ETF minute。只有至少符合一個active scope的商品會出現在Serve instruments。Canonical
+五個 feed 只驗證最新已完成交易日，不建立 historical backfill。TAIFEX staging override 使用
+`full_market.required=false`、`enabled=false`；production opt-in governance 維持原規則。
+Serve catalog由active `dataset_registry`動態解析，公開US/TW equity EOD、TW
+equity/ETF minute及實際 futures EOD。只有至少符合一個active scope的商品會出現在Serve instruments。Canonical
 tables可保留inactive歷史資料，但不因此產生公開route或catalog項目。新增資料域必須另案完成
 contract、registry、normalizer、DQ與Serve驗收。
 

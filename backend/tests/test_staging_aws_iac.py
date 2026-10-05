@@ -444,11 +444,11 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             for secret in consumer["secrets"]
             if "staging" in secret.get("targets", ["staging", "production"])
         )
-    assert len(catalog_secret_ids) == 17
     assert tofu_secret_ids == catalog_secret_ids
-    assert len(tofu_secret_ids) == 17
+    assert "fetcher/api/source/taifex" in tofu_secret_ids
+    assert "fetcher/runtime/configuration" not in tofu_secret_ids
     assert "registry/ghcr-pull" not in secrets
-    assert secrets.count('status        = "active"') == 17
+    assert secrets.count('status        = "active"') == len(tofu_secret_ids)
     assert secrets.count('resource "aws_kms_key" "runtime_secrets"') == 1
     assert 'name          = "alias/findb-staging-${each.key}-runtime-secrets"' in secrets
     assert 'resource "aws_secretsmanager_secret" "active_runtime"' in secrets
@@ -497,7 +497,11 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             moves,
         )
     )
-    assert moved_pairs == {(secret_id, secret_id) for secret_id in catalog_secret_ids}
+    # TAIFEX Source is the only newly created metadata resource. The original
+    # state addresses keep their existing moves; it has no legacy address.
+    assert moved_pairs == {
+        (secret_id, secret_id) for secret_id in catalog_secret_ids - {"fetcher/api/source/taifex"}
+    }
     assert len(moved_pairs) == 17
     assert "registry/ghcr-pull" not in moves
 

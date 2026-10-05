@@ -78,9 +78,13 @@ validate_image "$SHIOAJI_IMAGE_REF" "findb/$DEPLOYMENT_TARGET/fetcher/shioaji"
 # consumer's allowlisted values into /run and removes them after the child exits.
 preserve_env=FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,TAIFEX_BASE_URL,TAIFEX_TIMEOUT_SECONDS,TAIFEX_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
-schedule_file=/app/configs/daily_scheduler.v2.json
-shioaji_manifest=/app/configs/shioaji_tw_pilot.v1.json
+schedule_file=/app/configs/daily_scheduler.staging.v3.json
+shioaji_manifest=/app/configs/shioaji_tw_staging_pilot.v3.json
+twelve_state=/var/lib/findb-fetcher/staging-pilot-v2
+shioaji_state=/var/lib/findb-shioaji-fetcher/staging-pilot-v3
 if [ "$DEPLOYMENT_TARGET" = production ]; then
+  twelve_state=/var/lib/findb-fetcher
+  shioaji_state=/var/lib/findb-shioaji-fetcher
   schedule_file=/app/configs/daily_scheduler.production.v3.json
   shioaji_manifest=/app/configs/shioaji_tw50_2026_09_21.v2.json
 fi
@@ -320,12 +324,23 @@ if [ "$FETCHER_RUNTIME_PROFILE" = full-market ]; then
   done
   provider_count=4
 else
-  # Switching back to bounded stops the TAIFEX process without deleting state.
-  retire_runtime findb-fetcher-taifex-scheduler
+  if [ "$DEPLOYMENT_TARGET" = staging ]; then
+    register_provider findb-fetcher-taifex-scheduler findb-fetcher-taifex-scheduler-previous
+    taifex_state=/var/lib/findb-taifex-fetcher/staging-pilot-v1
+    run_runtime --consumer taifex --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+      "$provider_helper" taifex "$TWELVE_IMAGE_REF" \
+      "$taifex_state" "$taifex_state/state.sqlite3" \
+      findb-fetcher-taifex-scheduler findb-fetcher-taifex-scheduler-candidate findb-fetcher-taifex-scheduler-previous \
+      findb-fetcher-taifex-scheduler-preflight - \
+      findb-fetch-taifex-pilot --config /app/configs/taifex_tw_staging_pilot.v1.json
+    provider_count=4
+  else
+    retire_runtime findb-fetcher-taifex-scheduler
+  fi
   register_provider findb-fetcher-scheduler findb-fetcher-scheduler-previous
   run_runtime --consumer twelve-data --ecr-registry "$ECR_REGISTRY" --docker-login -- \
     "$provider_helper" twelve-data "$TWELVE_IMAGE_REF" \
-    /var/lib/findb-fetcher /var/lib/findb-fetcher/state.sqlite3 \
+    "$twelve_state" "$twelve_state/state.sqlite3" \
     findb-fetcher-scheduler findb-fetcher-scheduler-candidate findb-fetcher-scheduler-previous \
     findb-fetcher-scheduler-preflight - \
     findb-fetch-scheduler --schedule-file "$schedule_file" \
@@ -343,7 +358,7 @@ else
   register_provider findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-previous
   run_runtime --consumer shioaji --ecr-registry "$ECR_REGISTRY" --docker-login -- \
     "$provider_helper" shioaji "$SHIOAJI_IMAGE_REF" \
-    /var/lib/findb-shioaji-fetcher /var/lib/findb-shioaji-fetcher/state.sqlite3 \
+    "$shioaji_state" "$shioaji_state/state.sqlite3" \
     findb-fetcher-shioaji-scheduler findb-fetcher-shioaji-scheduler-candidate findb-fetcher-shioaji-scheduler-previous \
     findb-fetcher-shioaji-scheduler-preflight /var/lib/findb-shioaji-fetcher/cache \
     findb-fetch-shioaji-scheduler --manifest "$shioaji_manifest"

@@ -38,6 +38,7 @@ _SCHEDULER_KEYS = frozenset(
         "twelve_data_us_common_stocks_daily_v1",
         "finlab_tw_equity_eod_v1",
         "shioaji_tw_pilot_v1",
+        "taifex_tw_futures_pilot_v1",
     }
 )
 _CONTROL_VALUE = Literal["running", "stopped"]
