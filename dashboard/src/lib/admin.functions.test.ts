@@ -472,6 +472,31 @@ describe("FinDB Admin server boundary", () => {
     })
   })
 
+  it("maps blocked start conflicts safely without treating them as stale revisions", async () => {
+    await expect(
+      patchSchedulerData(
+        {
+          schedulerKey: "full_market_finlab_v1",
+          desiredState: "running",
+          expectedRevision: 4,
+        },
+        "owner-secret",
+        undefined,
+        async () =>
+          Response.json(
+            {
+              detail: {
+                code: "scheduler_start_blocked",
+                start_blockers: ["full_market_no_enabled_datasets"],
+                private: "secret",
+              },
+            },
+            { status: 409 }
+          )
+      )
+    ).rejects.toThrow("全市場啟動條件已變更或尚未完成")
+  })
+
   it("maps scheduler revision conflicts and auth failures without leaking upstream bodies", async () => {
     await expect(
       patchSchedulerData(

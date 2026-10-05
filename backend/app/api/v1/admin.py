@@ -208,8 +208,9 @@ from app.services.normalization_queue import queue_health
 from app.services.scheduler_control import (
     SchedulerControlNotFoundError,
     SchedulerControlRevisionConflictError,
+    SchedulerControlStartBlockedError,
     list_scheduler_controls,
-    present_scheduler_control,
+    present_admin_scheduler_control,
     update_scheduler_desired_state,
 )
 from app.services.slot_identity import normalize_slot_id
@@ -602,7 +603,10 @@ async def list_schedulers(
     """List durable scheduler state for Dashboard and operations tooling."""
     rows = await list_scheduler_controls(db)
     return SchedulerControlListResponse(
-        data=[SchedulerControlResponse(**present_scheduler_control(row)) for row in rows]
+        data=[
+            SchedulerControlResponse(**await present_admin_scheduler_control(db, row))
+            for row in rows
+        ]
     )
 
 
@@ -626,8 +630,13 @@ async def patch_scheduler(
         raise HTTPException(status_code=404, detail="Scheduler not found") from exc
     except SchedulerControlRevisionConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SchedulerControlStartBlockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "scheduler_start_blocked", "start_blockers": exc.blockers},
+        ) from exc
     return SchedulerControlMutationResponse(
-        data=SchedulerControlResponse(**present_scheduler_control(row))
+        data=SchedulerControlResponse(**await present_admin_scheduler_control(db, row))
     )
 
 

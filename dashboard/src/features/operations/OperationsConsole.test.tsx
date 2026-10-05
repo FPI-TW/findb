@@ -827,6 +827,135 @@ describe("Operations presentation", () => {
     })
   })
 
+  it("starts only eligible schedulers and explains skipped full-market controls", async () => {
+    const schedulers = [
+      makeScheduler({ scheduler_key: "bounded", desired_state: "stopped" }),
+      makeScheduler({
+        scheduler_key: "full_market_finlab_v1",
+        desired_state: "stopped",
+        start_allowed: true,
+        start_blockers: [],
+      }),
+      makeScheduler({
+        scheduler_key: "full_market_twelve_data_v1",
+        provider: "twelve_data",
+        desired_state: "stopped",
+        start_allowed: false,
+        start_blockers: ["full_market_no_enabled_datasets"],
+      }),
+      makeScheduler({
+        scheduler_key: "full_market_shioaji_v1",
+        desired_state: "stopped",
+      }),
+    ]
+    mocks.updateScheduler.mockImplementation(async ({ data }) => ({
+      success: true,
+      data: {
+        ...schedulers.find(row => row.scheduler_key === data.schedulerKey)!,
+        desired_state: "running",
+        revision: 5,
+      },
+    }))
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SchedulerPanel
+          result={{ ok: true, data: { success: true, data: schedulers } }}
+          loading={false}
+          pending={false}
+          refreshError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+    expect(
+      screen.getByText(/全部啟動將跳過 2 個 Scheduler/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "twelve_data 設為執行中" })
+    ).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "全部啟動" }))
+    expect(screen.getByText(/將依序更新 2 個/)).toBeInTheDocument()
+    expect(screen.getByText(/跳過 2 個無法啟動/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "確認全部啟動" }))
+    await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(2))
+    expect(
+      mocks.updateScheduler.mock.calls.map(call => call[0].data.schedulerKey)
+    ).toEqual(["bounded", "full_market_finlab_v1"])
+  })
+
+  it("disables all-blocked starts while allowing a running invalid control to stop", () => {
+    const schedulers = [
+      makeScheduler({
+        scheduler_key: "full_market_finlab_v1",
+        provider: "finlab",
+        desired_state: "stopped",
+        start_allowed: false,
+        start_blockers: ["full_market_configuration_invalid"],
+      }),
+      makeScheduler({
+        scheduler_key: "full_market_shioaji_v1",
+        provider: "shioaji",
+        desired_state: "running",
+        start_allowed: false,
+        start_blockers: ["full_market_no_enabled_datasets"],
+      }),
+    ]
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SchedulerPanel
+          result={{ ok: true, data: { success: true, data: schedulers } }}
+          loading={false}
+          pending={false}
+          refreshError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+    expect(screen.getByRole("button", { name: "全部啟動" })).toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: "finlab 設為執行中" })
+    ).toBeDisabled()
+    expect(
+      screen.getByRole("button", { name: "shioaji 設為已停止" })
+    ).toBeEnabled()
+    fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
+    expect(screen.getByText(/將依序更新 1 個/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/shioaji \/ full_market_shioaji_v1/)
+    ).toBeInTheDocument()
+  })
+
+  it("allows an eligible full-market single start and displays a changed-governance rejection", async () => {
+    const scheduler = makeScheduler({
+      scheduler_key: "full_market_finlab_v1",
+      provider: "finlab",
+      desired_state: "stopped",
+      start_allowed: true,
+    })
+    mocks.updateScheduler.mockRejectedValue(
+      new Error(
+        "全市場啟動條件已變更或尚未完成，請重新整理並確認 feed 啟用、readiness、baseline 與日曆。"
+      )
+    )
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SchedulerPanel
+          result={{ ok: true, data: { success: true, data: [scheduler] } }}
+          loading={false}
+          pending={false}
+          refreshError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+    fireEvent.click(screen.getByRole("button", { name: "finlab 設為執行中" }))
+    fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
+    expect(await screen.findByText(/全市場啟動條件已變更/)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/排程版本已被其他使用者更新/)
+    ).not.toBeInTheDocument()
+  })
+
   it("continues a bulk scheduler update after a revision conflict", async () => {
     const schedulers = [
       makeScheduler({

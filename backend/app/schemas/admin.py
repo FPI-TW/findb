@@ -784,6 +784,8 @@ class SchedulerControlResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     heartbeat_age_seconds: Optional[float] = None
+    start_allowed: bool
+    start_blockers: list[str]
 
     model_config = ConfigDict(from_attributes=True)
 

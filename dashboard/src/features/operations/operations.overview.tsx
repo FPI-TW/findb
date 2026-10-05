@@ -82,6 +82,8 @@ type SchedulerCardControl = Pick<
   | "last_cycle_completed_at"
   | "last_error"
   | "heartbeat_age_seconds"
+  | "start_allowed"
+  | "start_blockers"
 >
 
 type IngestionCard = {
@@ -240,12 +242,39 @@ function schedulerErrorMessage(reason: unknown) {
 
 type SchedulerMutationTarget = Pick<
   Scheduler,
-  "scheduler_key" | "provider" | "desired_state" | "revision"
+  | "scheduler_key"
+  | "provider"
+  | "desired_state"
+  | "revision"
+  | "start_allowed"
+  | "start_blockers"
 >
+
+function schedulerStartAllowed(control: SchedulerMutationTarget) {
+  return (
+    control.start_allowed ?? !control.scheduler_key.startsWith("full_market_")
+  )
+}
+
+function schedulerStartReason(control: SchedulerMutationTarget) {
+  const reasons: Record<string, string> = {
+    full_market_no_enabled_datasets: "尚未啟用任何全市場 feed",
+    full_market_configuration_invalid:
+      "全市場設定、readiness 或 scope 不符合啟動條件",
+    full_market_baseline_missing: "缺少已發布的官方 baseline",
+    full_market_calendar_missing: "缺少完整已發布的交易所日曆",
+  }
+  return control.start_blockers?.length
+    ? control.start_blockers
+        .map(code => reasons[code] ?? "全市場設定或 scope 無效")
+        .join("；")
+    : "缺少全市場啟動資格，請重新整理並確認治理設定"
+}
 
 type SchedulerBulkConfirmation = {
   desiredState: SchedulerDesiredState
   targets: SchedulerMutationTarget[]
+  skipped: SchedulerMutationTarget[]
 }
 
 function SchedulerConfirmationDialog({
@@ -331,6 +360,17 @@ function SchedulerBulkConfirmationDialog({
               </li>
             ))}
           </ul>
+          {confirmation.skipped.length > 0 && (
+            <p className="text-xs text-muted">
+              跳過 {confirmation.skipped.length} 個無法啟動的 Scheduler：
+              {confirmation.skipped
+                .map(
+                  target =>
+                    `${target.scheduler_key}（${schedulerStartReason(target)}）`
+                )
+                .join("；")}
+            </p>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel>
             <AlertDialogAction
@@ -490,13 +530,26 @@ function useSchedulerActions(
       desiredState: SchedulerDesiredState
     ) => {
       if (bulkPending || pendingKeys.size > 0) return
-      const targets = schedulers.filter(
+      const candidates = schedulers.filter(
         scheduler => scheduler.desired_state !== desiredState
       )
-      if (targets.length > 0) setBulkConfirmation({ desiredState, targets })
+      const skipped =
+        desiredState === "running"
+          ? candidates.filter(scheduler => !schedulerStartAllowed(scheduler))
+          : []
+      const targets = candidates.filter(
+        scheduler =>
+          desiredState === "stopped" || schedulerStartAllowed(scheduler)
+      )
+      if (targets.length > 0)
+        setBulkConfirmation({ desiredState, targets, skipped })
     },
     requestToggleScheduler: (control: SchedulerMutationTarget) => {
-      if (!bulkPending && !pendingKeys.has(control.scheduler_key))
+      if (
+        !bulkPending &&
+        !pendingKeys.has(control.scheduler_key) &&
+        (control.desired_state === "running" || schedulerStartAllowed(control))
+      )
         setConfirmationTarget(control)
     },
     confirm: () => {
@@ -544,6 +597,10 @@ function SchedulerBulkControls({
   actions: ReturnType<typeof useSchedulerActions>
 }) {
   if (schedulers.length === 0) return null
+  const blocked = schedulers.filter(
+    control =>
+      control.desired_state !== "running" && !schedulerStartAllowed(control)
+  )
 
   return (
     <div className="mb-4 grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[1fr_auto] sm:items-center">
@@ -554,6 +611,17 @@ function SchedulerBulkControls({
           部署前請先全部停止，並等待所有卡片的「期望」與「實際」均為已停止；部署仍會
           fail closed，不會自動變更 Scheduler 狀態。
         </p>
+        {blocked.length > 0 && (
+          <p className="mt-2 mb-0 text-xs text-muted" role="note">
+            全部啟動將跳過 {blocked.length} 個 Scheduler：
+            {blocked
+              .map(
+                control =>
+                  `${control.scheduler_key}（${schedulerStartReason(control)}）`
+              )
+              .join("；")}
+          </p>
+        )}
       </div>
       {role === "owner" && (
         <div className="flex flex-wrap gap-2">
@@ -579,7 +647,9 @@ function SchedulerBulkControls({
               actions.bulkPending ||
               actions.pendingKeys.size > 0 ||
               schedulers.every(
-                scheduler => scheduler.desired_state === "running"
+                scheduler =>
+                  scheduler.desired_state === "running" ||
+                  !schedulerStartAllowed(scheduler)
               )
             }
             aria-busy={actions.bulkPending}
@@ -614,17 +684,33 @@ function SchedulerActionButton({
     )
   }
   return (
-    <Button
-      type="button"
-      variant={control.desired_state === "running" ? "destructive" : "default"}
-      onClick={() => requestToggle(control)}
-      disabled={pending}
-      aria-busy={pending}
-      aria-label={`${control.provider} 設為${nextState === "running" ? "執行中" : "已停止"}`}
-    >
-      <Power aria-hidden="true" />
-      {pending ? "更新中…" : nextState === "running" ? "啟用排程" : "停止排程"}
-    </Button>
+    <div className="grid gap-2">
+      <Button
+        type="button"
+        variant={
+          control.desired_state === "running" ? "destructive" : "default"
+        }
+        onClick={() => requestToggle(control)}
+        disabled={
+          pending ||
+          (nextState === "running" && !schedulerStartAllowed(control))
+        }
+        aria-busy={pending}
+        aria-label={`${control.provider} 設為${nextState === "running" ? "執行中" : "已停止"}`}
+      >
+        <Power aria-hidden="true" />
+        {pending
+          ? "更新中…"
+          : nextState === "running"
+            ? "啟用排程"
+            : "停止排程"}
+      </Button>
+      {nextState === "running" && !schedulerStartAllowed(control) && (
+        <span className="text-xs text-muted" role="note">
+          無法啟動：{schedulerStartReason(control)}
+        </span>
+      )}
+    </div>
   )
 }
 

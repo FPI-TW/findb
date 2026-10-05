@@ -39,6 +39,22 @@ state的唯一權威。Fetcher container保持常駐並輪詢Source control endp
 deadline。Market calendar必須有完整published year；休市、`settlement_only`、缺少年度或
 API failure都不得enqueue。
 
+### Scheduler 啟動資格
+
+Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「全部啟動」只更新符合資格且
+尚未 running 的 controls，確認視窗顯示實際更新數量與跳過原因；單筆啟動套用相同資格。
+全市場啟動須至少一個 enabled feed，且 registry／contract／provider scope 有效、readiness
+已核准、處於 acceptance 或 active、有合法 activation_date 與已發布 baseline／完整年度
+calendar。未啟用的 sibling 不因 inactive 或尚缺 calendar 阻擋部分核准 scope；malformed
+設定仍 fail closed。Acceptance 啟動不要求先完成五日驗收。
+
+停止不受啟動資格限制。既存的零 enabled `full_market_*_v1` 若已為 running，Owner 應透過
+單筆或「全部停止」修復，再確認 observed state；系統不自動重設 persisted desired state。
+Staging 只恢復 `twelve_data_us_common_stocks_daily_v1`、`finlab_tw_equity_eod_v1`、
+`shioaji_tw_pilot_v1` 三個 bounded controls；Shioaji 涵蓋兩個 minute feeds。
+Production 全市場仍須另選 opt-in runtime 並取得 Owner activation，治理資格不代表 runtime
+已部署或已交付資料。
+
 ## 上線前檢查
 
 - `predeploy_db_check.py`通過，DB revision、connection headroom與long transaction正常。
@@ -186,6 +202,9 @@ Enabled feed 的 inactive／缺少 calendar，或 registry、contract、provider
 governance／timezone 格式錯誤仍是設定錯誤；期望 running 而没有 enabled feed 也 fail closed。
 Registry 的 market／asset_class 與 contract defaults 必須通過與 ingress 相同的 scope 驗證；
 即使 Feed 未啟用或 Scheduler 已停止，衝突仍回報 `contract_scope_mismatch` 設定錯誤。
+全市場宣告亦須符合固定 runtime feed 的 market／asset_class／frequency 與 schema，並接受其
+輸出的 v1；其它已註冊契約不能替代該 feed 契約。`runtime_contract_mismatch` 或
+`runtime_feed_scope_mismatch` 同時使 freshness 回報設定錯誤並阻擋啟動，包含未啟用 sibling。
 Feed 明細的 raw／canonical 更新可能來自既有 bounded runtime，不能證明全市場已啟用、
 已部署或已回報心跳；此投影不建立假的心跳，也不改動 activation 或 calendar。
 
@@ -201,6 +220,7 @@ Feed 明細的 raw／canonical 更新可能來自既有 bounded runtime，不能
 | Canonical缺資料 | Terminal state、DQ error、source precedence |
 | Missing delivery | Scheduler definition、calendar、provider fetch與expected date |
 | Raw存在但無canonical | Job state、DQ、normalizer transaction |
+| `full_market_no_enabled_datasets` | `full_market` control desired state、dataset `full_market.enabled`、readiness／activation、runtime profile；`is_active` 單獨不足以證明已啟用 |
 
 不要只看HTTP`202`或單一Dashboard card判斷完成。
 
