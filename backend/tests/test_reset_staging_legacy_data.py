@@ -324,3 +324,116 @@ async def test_apply_truncates_mutable_tables_and_preserves_protected_tables(tes
             assert await connection.scalar(text("SELECT count(*) FROM dataset_registry")) == 1
             assert await connection.scalar(text("SELECT count(*) FROM scheduler_control")) == 1
             assert await connection.scalar(text("SELECT count(*) FROM scheduler_dataset")) == 1
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_full_admission_fk_graph_and_preserves_installation_and_first_date(
+    test_engine,
+):
+    from datetime import timedelta
+
+    from app.models.canonical import CalendarYearRevision
+    from app.models.registry import (
+        FullMarketAdmission,
+        FullMarketAdmissionFeed,
+        FullMarketDatasetState,
+        FullMarketEnrollment,
+        FullMarketEnvironment,
+        UniverseRelease,
+    )
+
+    async with test_engine.begin() as connection:
+        async with AsyncSession(bind=connection, expire_on_commit=False) as session:
+            dataset, source = await _seed_protected_rows(session)
+            now = utc_now()
+            first_date = now.date() - timedelta(days=30)
+            environment = FullMarketEnvironment(environment="staging", enabled=True)
+            enrollment = FullMarketEnrollment(
+                environment="staging",
+                provider="twelve_data",
+                source_client_id=source.client_id,
+                runtime_id="installed-runtime",
+                declaration_sha256="c" * 64,
+                declaration={"installed_account": "preserve"},
+                installation_sha256="d" * 64,
+                expires_at=now + timedelta(days=1),
+                reported_at=now,
+            )
+            cutoff = FullMarketDatasetState(
+                dataset_key=dataset.dataset_key, first_start_date=first_date
+            )
+            baseline = UniverseRelease(
+                dataset_key=dataset.dataset_key,
+                provider="twelve_data",
+                effective_date=now.date(),
+                observed_at=now,
+                source_timezone="America/New_York",
+                evidence=[],
+                member_sha256="e" * 64,
+                member_count=1,
+                change_count=0,
+                change_ratio=0,
+                status="published",
+            )
+            calendar = CalendarYearRevision(
+                market="US",
+                year=now.year,
+                revision=1,
+                status="published",
+                expected_days=365,
+                actual_days=365,
+                timezone="America/New_York",
+                source_kind="full_year",
+            )
+            session.add_all([environment, enrollment, cutoff, baseline, calendar])
+            await session.flush()
+            admission = FullMarketAdmission(
+                scheduler_key="staging-reset-test",
+                control_revision=1,
+                enrollment_id=enrollment.enrollment_id,
+                capacity={"members": 1},
+            )
+            session.add(admission)
+            await session.flush()
+            session.add(
+                FullMarketAdmissionFeed(
+                    admission_id=admission.admission_id,
+                    dataset_key=dataset.dataset_key,
+                    baseline_id=baseline.release_id,
+                    calendar_revision_id=calendar.id,
+                )
+            )
+            await session.flush()
+            dry = await reset_staging_legacy_data(connection, apply=False)
+            report = await reset_staging_legacy_data(
+                connection,
+                apply=True,
+                db_writers_stopped=True,
+                target_fingerprint=dry.target_fingerprint,
+            )
+            assert report.before["public.full_market_admission"] == 1
+            assert report.before["public.full_market_admission_feed"] == 1
+            assert all(report.after[name] == 0 for name in TARGET_TABLES)
+            for name in (
+                "public.full_market_environment",
+                "public.full_market_enrollment",
+                "public.full_market_dataset_state",
+            ):
+                assert report.before[name] == report.after[name] == 1
+            assert (
+                await connection.scalar(
+                    text("SELECT first_start_date FROM full_market_dataset_state")
+                )
+                == first_date
+            )
+            assert (
+                await connection.scalar(text("SELECT enabled FROM full_market_environment")) is True
+            )
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT declaration_sha256,installation_sha256,source_client_id FROM full_market_enrollment"
+                    )
+                )
+            ).one()
+            assert tuple(row) == ("c" * 64, "d" * 64, source.client_id)

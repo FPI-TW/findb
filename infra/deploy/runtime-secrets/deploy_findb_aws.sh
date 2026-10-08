@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# findb_environment_contract=app-environment-v1
 # FinDB staging AWS-mode deployment. Runtime secrets are loaded on the host
 # from the instance role and are never supplied by the runner.
 
@@ -30,9 +31,13 @@ nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"
 
 : "${AWS_REGION:?AWS_REGION is required}"
 : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is required}"
-: "${DEPLOYMENT_TARGET:?DEPLOYMENT_TARGET is required}"
+: "${APP_ENVIRONMENT:?APP_ENVIRONMENT is required}"
+if [ "${DEPLOYMENT_TARGET+x}" = x ] && [ "$DEPLOYMENT_TARGET" != "$APP_ENVIRONMENT" ]; then
+  echo "application_environment=failed reason=legacy_environment_conflict" >&2
+  exit 1
+fi
 
-if [ "$AWS_REGION" != "ap-southeast-1" ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || [[ ! "$DEPLOYMENT_TARGET" =~ ^(staging|production)$ ]]; then
+if [ "$AWS_REGION" != "ap-southeast-1" ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || [[ ! "$APP_ENVIRONMENT" =~ ^(staging|production)$ ]]; then
   echo "findb_aws_deploy=failed reason=region_invalid" >&2
   exit 1
 fi
@@ -43,8 +48,8 @@ fi
 : "${FINDB_IMAGE_REF:?FINDB_IMAGE_REF is required}"
 
 expected_ecr_registry="$AWS_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
-expected_findb_image="$expected_ecr_registry/findb/$DEPLOYMENT_TARGET/backend@sha256:"
-expected_dashboard_image="$expected_ecr_registry/findb/$DEPLOYMENT_TARGET/dashboard@sha256:"
+expected_findb_image="$expected_ecr_registry/findb/$APP_ENVIRONMENT/backend@sha256:"
+expected_dashboard_image="$expected_ecr_registry/findb/$APP_ENVIRONMENT/dashboard@sha256:"
 
 if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
   || ! printf '%s' "$FINDB_IMAGE_REF" | grep -Eq "^${expected_findb_image}[0-9a-f]{64}$" \
@@ -65,7 +70,7 @@ else
 fi
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=AWS_REGION,AWS_ACCOUNT_ID,DEPLOYMENT_TARGET,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
+preserve_env=FULL_MARKET_ENABLED,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"
 fi
@@ -74,7 +79,7 @@ run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
     --catalog "$catalog" \
     --region "$AWS_REGION" \
-    --deployment-target "$DEPLOYMENT_TARGET" \
+    --deployment-target "$APP_ENVIRONMENT" \
     --aws-account-id "$AWS_ACCOUNT_ID" \
     "$@"
 }
@@ -194,7 +199,7 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
     python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
       --output "$nginx_config_dir/cloudflare-real-ip.conf"
   }
-  if [ "$DEPLOYMENT_TARGET" = production ]; then
+  if [ "$APP_ENVIRONMENT" = production ]; then
     run_runtime --consumer deployment -- bash -s -- \
       "$release_root" "$nginx_config_dir" "$FINDB_PUBLIC_HOST" <<'RENDER_NGINX_SCRIPT'
 set -euo pipefail
@@ -231,7 +236,7 @@ for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
   fi
 done
 for tls_file in server.crt server.key; do
-  if [ "$DEPLOYMENT_TARGET" = staging ] \
+  if [ "$APP_ENVIRONMENT" = staging ] \
     && [ ! -f "/home/ubuntu/etc/nginx/ssl/$tls_file" ]; then
     echo "findb_aws_deploy=failed reason=tls_file_missing" >&2
     exit 1
@@ -256,11 +261,11 @@ if [ "$deploy_mode" = candidate ]; then
   # Validate target-scoped TLS in short-lived tmpfs files without replacing
   # any live nginx bind mount before durable candidate acceptance.
   sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" \
-    "$FINDB_PUBLIC_HOST" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID" validate
+    "$FINDB_PUBLIC_HOST" "$APP_ENVIRONMENT" "$AWS_ACCOUNT_ID" validate
   echo "findb_aws_deploy=candidate_nginx_runtime_validated"
 else
-  sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID"
-  if [ "$DEPLOYMENT_TARGET" = production ]; then
+  sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$APP_ENVIRONMENT" "$AWS_ACCOUNT_ID"
+  if [ "$APP_ENVIRONMENT" = production ]; then
     for tls_file in server.crt server.key; do
       if [ ! -f "/run/findb-runtime-secrets/nginx/$tls_file" ] \
         || [ "$(stat -c '%u:%g:%a' "/run/findb-runtime-secrets/nginx/$tls_file")" != "0:0:600" ]; then
@@ -278,7 +283,7 @@ run_runtime --consumer migration --consumer compose --consumer credentials \
 set -euo pipefail
 compose_file="$1"
 bootstrap_arg=""
-if [ "$DEPLOYMENT_TARGET" = production ]; then
+if [ "$APP_ENVIRONMENT" = production ]; then
   bootstrap_arg=--allow-empty-database-bootstrap
 fi
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
@@ -300,7 +305,7 @@ docker compose -f "$compose_file" run --rm --no-deps \
   -e FINDB_LOOKUP_SERVE_API_KEY \
   -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
   python /app/scripts/reconcile_deployment_credentials.py \
-  --deployment-target "$DEPLOYMENT_TARGET" \
+  --deployment-target "$APP_ENVIRONMENT" \
   --check-only </dev/null
 MIGRATION_CHECK_SCRIPT
 
@@ -358,7 +363,7 @@ docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
   uv run alembic upgrade head
   uv run alembic current
 ' </dev/null
-if [ "$DEPLOYMENT_TARGET" = staging ]; then
+if [ "$APP_ENVIRONMENT" = staging ]; then
   expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
   expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
   docker compose -f "$compose_file" run --rm --no-deps ingest \
@@ -376,11 +381,11 @@ docker compose -f "$compose_file" run --rm --no-deps \
   -e FINDB_LOOKUP_SERVE_API_KEY \
   -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
   python /app/scripts/reconcile_deployment_credentials.py \
-  --deployment-target "$DEPLOYMENT_TARGET" </dev/null
+  --deployment-target "$APP_ENVIRONMENT" </dev/null
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
-  --deployment-target "$DEPLOYMENT_TARGET" </dev/null
-if [ "$DEPLOYMENT_TARGET" = production ]; then
+  --deployment-target "$APP_ENVIRONMENT" </dev/null
+if [ "$APP_ENVIRONMENT" = production ]; then
   docker compose -f "$compose_file" run --rm --no-deps ingest \
     python /app/scripts/seed_production_calendars.py \
     --deployment-target production \
@@ -585,7 +590,7 @@ UP_SCRIPT
 
 if [ "$deploy_mode" = activate ]; then
   sudo "$release_root/infra/deploy/runtime-secrets/install_findb_bootstrap.sh" \
-    "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$release_root" "$DEPLOYMENT_TARGET" "$AWS_ACCOUNT_ID"
+    "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$release_root" "$APP_ENVIRONMENT" "$AWS_ACCOUNT_ID"
   sudo ln -sfn "$release_root" /opt/findb/current
   transaction_finalized=1
   echo "findb_aws_deploy=activated image_refs=exact-digests"

@@ -1,9 +1,8 @@
 """Governed whole-market delivery, canonical reconciliation and rollout gates."""
 
 from copy import deepcopy
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
-from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -20,14 +19,12 @@ from app.models.registry import DailyDeliveryMember, DatasetRegistry, IngestionR
 from app.schemas.full_market import (
     DeliveryOutcomeRequest,
     DeliveryPlanCreateRequest,
-    FeedActivateRequest,
     UniversePublishRequest,
     UniverseSubmitRequest,
 )
 from app.schemas.ingress import FuturesEODRow
 from app.services.full_market import (
     FullMarketError,
-    activate_feed,
     create_plan,
     get_plan,
     list_universes,
@@ -159,19 +156,14 @@ async def _activated_plan(db, key="tw_futures_eod", count=2, open_dates=None):
         open_dates,
     )
     body, release = await _baseline(db, key, count)
-    with patch(
-        "app.services.full_market.utc_now",
-        return_value=datetime.combine(DAY, datetime.min.time(), timezone.utc),
-    ):
-        await activate_feed(
-            db,
-            key,
-            FeedActivateRequest(
-                activation_date=DAY,
-                readiness_evidence_note="Operator verified source and calendar.",
-            ),
+    from tests.full_market_fixtures import historical_admission
+
+    revision = await db.scalar(
+        select(CalendarYearRevision).where(
+            CalendarYearRevision.market == ("TAIFEX" if key == "tw_futures_eod" else dataset.market)
         )
-    await db.commit()
+    )
+    await historical_admission(db, dataset, release, DAY, revision.id)
     plan = await create_plan(
         db,
         DeliveryPlanCreateRequest(
@@ -672,7 +664,7 @@ async def test_full_scale_frozen_plan_and_pre_activation_boundary(test_session):
         allowed_datasets=[dataset.dataset_key],
     )
     assert repeated.plan_id == plan.plan_id
-    with pytest.raises(FullMarketError, match="Pre-activation"):
+    with pytest.raises(FullMarketError, match="Pre-first-start"):
         await create_plan(
             test_session,
             DeliveryPlanCreateRequest(

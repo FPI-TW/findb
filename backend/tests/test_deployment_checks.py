@@ -87,7 +87,7 @@ def test_production_calendar_seed_runs_after_migration_only_for_production() -> 
         REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh"
     ).read_text()
     migration = helper.index("uv run alembic upgrade head")
-    production_gate = helper.index('if [ "$DEPLOYMENT_TARGET" = production ]; then', migration)
+    production_gate = helper.index('if [ "$APP_ENVIRONMENT" = production ]; then', migration)
     seed = helper.index("python /app/scripts/seed_production_calendars.py", production_gate)
 
     assert migration < production_gate < seed
@@ -131,7 +131,7 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "DEPLOYMENT_TARGET": "production",
+            "APP_ENVIRONMENT": "production",
             "DOCKER_CALLS": str(docker_calls),
         },
         timeout=10,
@@ -184,7 +184,7 @@ def test_staging_migration_requires_exact_revision_before_reconciliation_or_serv
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "DEPLOYMENT_TARGET": "staging",
+            "APP_ENVIRONMENT": "staging",
             "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "target-revision",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.com",
             "DOCKER_CALLS": str(docker_calls),
@@ -235,7 +235,7 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "DEPLOYMENT_TARGET": "staging",
+            "APP_ENVIRONMENT": "staging",
             "DOCKER_CALLS": str(docker_calls),
         },
         timeout=10,
@@ -1281,7 +1281,7 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         PATH=f"{fake_bin}:{os.environ['PATH']}",
         AWS_REGION="ap-southeast-1",
         AWS_ACCOUNT_ID="439622209937",
-        DEPLOYMENT_TARGET="staging",
+        APP_ENVIRONMENT="staging",
         ECR_REGISTRY="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
     )
 
@@ -1725,7 +1725,7 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert "--consumer credentials" in migration_block
     assert "run --rm --no-deps" in migration_block
     assert "reconcile_deployment_credentials.py" in migration_block
-    assert '--deployment-target "$DEPLOYMENT_TARGET"' in migration_block
+    assert '--deployment-target "$APP_ENVIRONMENT"' in migration_block
     assert "--check-only" in migration_block
     assert " up " not in migration_block
     assert findb.count("--map MIGRATION_DATABASE_URL=DATABASE_URL") == 2
@@ -1736,7 +1736,7 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert "--consumer credentials" in second_migration_block
     assert "python /app/scripts/reconcile_database_privileges.py" in second_migration_block
     assert "python /app/scripts/reconcile_deployment_credentials.py" in second_migration_block
-    assert '--deployment-target "$DEPLOYMENT_TARGET"' in second_migration_block
+    assert '--deployment-target "$APP_ENVIRONMENT"' in second_migration_block
     assert "-e APPLICATION_DATABASE_URL ingest" in second_migration_block
     assert "-e FINDB_QUEUE_HEALTH_ADMIN_API_KEY" in second_migration_block
     assert "-e FINDB_LOOKUP_SERVE_API_KEY" in second_migration_block
@@ -2355,12 +2355,18 @@ def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_input
     assert "/var/lib/findb-shioaji-fetcher/cache" in deploy_helper
 
 
+def _runtime_inventory_policy(source: str) -> str:
+    start = source.index("# A failed inspect is not proof of absence:")
+    end = source.index('\n: "${', start)
+    return "\n" + source[start:end] + "\n"
+
+
 def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_offline() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
         encoding="utf-8"
     )
     bootstrap = helper.split(
-        'if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then',
+        "state_bootstrap=false\n",
         1,
     )[1].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
 
@@ -2368,17 +2374,19 @@ def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_off
     # directory when its mounted state identity differs. Same-identity state
     # loss still fails closed; full-market uses a separate state DB.
     assert (
-        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && docker container inspect "$stable"'
+        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"'
         in bootstrap
     )
-    assert '[ "${DEPLOYMENT_TARGET:-}" = staging ]' in bootstrap
+    assert '[ "${APP_ENVIRONMENT:-}" = staging ]' in bootstrap
     assert '[ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ]' in bootstrap
     assert 'grep -Fxq "$state_dir" <<< "$stable_mounts"' in bootstrap
     assert "reason=shioaji_state_missing_with_stable" in bootstrap
-    assert 'docker rm -f "$state_bootstrap_name"' in bootstrap
+    assert 'remove_recovery_runtime "$state_bootstrap_name"' in bootstrap
+    assert "docker rm -f" not in helper
     assert "--initialize-state" in bootstrap
     assert '--state-path "$state_path"' in bootstrap
     assert '"${runtime_env_args[@]}"' not in bootstrap
+    assert '--env "APP_ENVIRONMENT=$APP_ENVIRONMENT"' in bootstrap
     assert "reason=shioaji_state_bootstrap" in bootstrap
 
 
@@ -2412,9 +2420,7 @@ def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
         encoding="utf-8"
     )
-    start = helper.index(
-        'if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then'
-    )
+    start = helper.index("state_bootstrap=false\n")
     bootstrap = helper[start:].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
     script = tmp_path / "bootstrap.sh"
     # Execute the actual guard and bootstrap command with local stand-ins. The
@@ -2427,12 +2433,16 @@ preflight_name=preflight
 image=reviewed-exact-digest
 cache_mount=(--mount type=bind,src=/reviewed/cache,dst=/home/fetcher)
 runtime_env_args=(--env SOURCE_SECRET=must-not-be-injected)
-set -- findb-fetch-shioaji-tw
+set -- findb-fetch-shioaji-scheduler
 sudo() {
   if [ "$1" = stat ]; then printf '%s\\n' '10001:10001:600'; else "$@"; fi
 }
 docker() {
   if [ "$1" = container ]; then
+    if [ "$2" = ls ]; then
+      [ "$stable_present" != true ] || printf '%s\\n' "$stable"
+      return 0
+    fi
     [ "$3" = "$stable" ] && [ "$stable_present" = true ]
   elif [ "$1" = inspect ]; then
     printf '%s\\n' "$stable_mount_fixture"
@@ -2444,6 +2454,7 @@ docker() {
   fi
 }
 """
+        + _runtime_inventory_policy(helper)
         + bootstrap,
         encoding="utf-8",
     )
@@ -2456,7 +2467,7 @@ docker() {
         ["bash", str(script)],
         env={
             **os.environ,
-            "DEPLOYMENT_TARGET": target,
+            "APP_ENVIRONMENT": target,
             "FETCHER_RUNTIME_PROFILE": profile,
             "state_dir": state_directory,
             "state_path": str(state_path),
@@ -2476,7 +2487,8 @@ docker() {
         assert "--initialize-state" in arguments
         assert "--state-path" in arguments
         assert str(state_path) in arguments
-        assert "--env" not in arguments
+        assert arguments.count("--env") == 1
+        assert arguments[arguments.index("--env") + 1] == f"APP_ENVIRONMENT={target}"
         assert "SOURCE_SECRET=must-not-be-injected" not in arguments
     else:
         assert completed.returncode != 0
@@ -2564,7 +2576,7 @@ def _run_twelve_fetcher_release_with_marker(
     environment.update(
         AWS_REGION="ap-southeast-1",
         AWS_ACCOUNT_ID="439622209937",
-        DEPLOYMENT_TARGET="staging",
+        APP_ENVIRONMENT="staging",
         ECR_REGISTRY="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
         FETCHER_SOURCE_API_URL="https://findb.example.test",
         FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY="source-key",
@@ -2704,7 +2716,10 @@ def test_fetcher_transaction_tracks_provider_before_interruption(
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
         encoding="utf-8"
     )
-    transaction = helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+    transaction = (
+        _runtime_inventory_policy(helper)
+        + helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+    )
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
     state_dir.mkdir()
@@ -2800,24 +2815,38 @@ def test_fetcher_candidate_cleanup_remains_recoverable_during_each_rollback_oper
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
         encoding="utf-8"
     )
-    transaction = helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+    transaction = (
+        _runtime_inventory_policy(helper)
+        + helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+    )
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
     state_dir.mkdir()
     fake_bin.mkdir()
     (state_dir / "stable").write_text("running\n", encoding="utf-8")
-    (state_dir / "previous").write_text("stopped\n", encoding="utf-8")
+    original_state = "running" if signal_operation == "start" else "stopped"
+    (state_dir / "previous").write_text(original_state + "\n", encoding="utf-8")
     original_inode = (state_dir / "previous").stat().st_ino
     candidate_inode = (state_dir / "stable").stat().st_ino
     fake_docker = fake_bin / "docker"
     fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
     fake_docker.chmod(0o755)
+    # Model the real helper moving/starting a previous-only original before failure.
+    helper_transition = ""
+    if signal_operation != "rm":
+        helper_state = "stopped" if signal_operation == "start" else "running"
+        helper_transition = (
+            f'rm "{state_dir}/stable"\n'
+            f'mv "{state_dir}/previous" "{state_dir}/stable"\n'
+            f'printf "%s\\n" {helper_state} > "{state_dir}/stable"\n'
+        )
     harness = f"""set -Eeuo pipefail
 FETCHER_DEPLOY_MODE=candidate
 processed=(){transaction}
 # The interrupted candidate is not accepted; the original is in previous.
 # Register through the real coordinator to initialize the complete journal entry.
 register_provider stable previous
+{helper_transition}
 rollback_processed
 trap - ERR INT TERM HUP
 """
@@ -2841,9 +2870,9 @@ trap - ERR INT TERM HUP
     )
 
     assert completed.returncode == 143
-    assert (state_dir / "stable").read_text(encoding="utf-8").strip() == "running"
-    assert (state_dir / "stable").stat().st_ino == original_inode
-    assert not (state_dir / "previous").exists()
+    assert (state_dir / "previous").read_text(encoding="utf-8").strip() == original_state
+    assert (state_dir / "previous").stat().st_ino == original_inode
+    assert not (state_dir / "stable").exists()
 
 
 def test_aws_fetcher_release_recovers_on_errors_and_signals_before_deleting_previous() -> None:
@@ -2854,7 +2883,8 @@ def test_aws_fetcher_release_recovers_on_errors_and_signals_before_deleting_prev
     assert "trap 'recover 130' INT" in helper
     assert "trap 'recover 143' TERM" in helper
     assert "trap 'recover 129' HUP" in helper
-    assert 'docker rm -f "$stable"' in helper
+    assert 'remove_recovery_runtime "$stable"' in helper
+    assert "docker rm -f" not in helper
     final_running_check = helper.rindex("stable_not_running")
     previous_removal = helper.rindex('docker rm "$previous"')
     assert final_running_check < previous_removal
@@ -3224,6 +3254,10 @@ if [ -n "${FAKE_SIGNAL_ON:-}" ] && [ "$operation" = "$FAKE_SIGNAL_ON" ] \
 fi
 case "$operation" in
   container)
+    if [ "$1" = ls ]; then
+      for entry in "$state_dir"/*; do [ ! -f "$entry" ] || basename "$entry"; done
+      exit 0
+    fi
     [ "$1" = inspect ]
     [ -f "$state_dir/$2" ]
     ;;
@@ -3237,7 +3271,15 @@ case "$operation" in
   rm)
     [ "$1" != "--name" ] || shift
     [ "$1" != "-f" ] || shift
-    rm -f "$state_dir/$1"
+    name="$1"
+    if [ ! -f "$state_dir/$name" ]; then
+      for entry in "$state_dir"/*; do
+        [ -f "$entry" ] || continue
+        inode="$(ls -i "$entry" | awk '{print $1}')"
+        if [ "$name" = "fake-$inode" ]; then name="${entry##*/}"; break; fi
+      done
+    fi
+    rm -f "$state_dir/$name"
     ;;
   rename)
     mv "$state_dir/$1" "$state_dir/$2"
@@ -3712,9 +3754,9 @@ def test_empty_database_bootstrap_flag_is_production_only() -> None:
         "\nMIGRATION_CHECK_SCRIPT", 1
     )[0]
 
-    assert 'if [ "$DEPLOYMENT_TARGET" = production ]; then' in migration_check
+    assert 'if [ "$APP_ENVIRONMENT" = production ]; then' in migration_check
     assert "bootstrap_arg=--allow-empty-database-bootstrap" in migration_check
-    assert 'if [ "$DEPLOYMENT_TARGET" = staging ]' not in migration_check
+    assert 'if [ "$APP_ENVIRONMENT" = staging ]' not in migration_check
 
 
 def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
@@ -3756,12 +3798,12 @@ def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
             "catalog=/opt/findb/releases/test/infra/deploy/runtime-secrets/findb.json",
             "AWS_REGION=ap-southeast-1",
             "AWS_ACCOUNT_ID=439622209937",
-            "DEPLOYMENT_TARGET=staging",
+            "APP_ENVIRONMENT=staging",
             "FINDB_RELEASE_ROOT=/opt/findb/releases/test",
             "PREDEPLOY_EXPECTED_ALEMBIC_REVISION=incompatible-target",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT=db.example.com",
             "compose_file=/tmp/compose.yml",
-            "export AWS_REGION AWS_ACCOUNT_ID DEPLOYMENT_TARGET FINDB_RELEASE_ROOT PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT",
+            "export AWS_REGION AWS_ACCOUNT_ID APP_ENVIRONMENT FINDB_RELEASE_ROOT PREDEPLOY_EXPECTED_ALEMBIC_REVISION PREDEPLOY_EXPECTED_RDS_ENDPOINT",
             preserve,
             "run_runtime() {",
             runtime_body,
@@ -3917,3 +3959,99 @@ def test_fetch_dlq_health_rejects_missing_or_non_integer_counters() -> None:
                 b'{"messages_ready": 0, "messages_unacknowledged": false, "messages": 0}'
             ),
         )
+
+
+@pytest.mark.parametrize("allocation", ["unset", "empty", "installed"])
+def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(allocation):
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
+    start = helper.index("common_args=(\n")
+    args = helper[start:].split('\nif [ "$cache_dir"', 1)[0]
+    declaration = {
+        "unset": "",
+        "empty": "account_mount=()",
+        "installed": "account_mount=(--mount type=bind,src=/account,dst=/account --mount type=bind,src=/readiness,dst=/readiness,readonly)",
+    }[allocation]
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            "set -euo pipefail\nstate_dir=/state\n"
+            + declaration
+            + "\n"
+            + args
+            + '\nprintf "%s\\n" "${common_args[@]}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    values = result.stdout.splitlines()
+    assert "type=bind,src=/state,dst=/state" in values
+    assert "" not in values
+    if allocation == "installed":
+        assert values[-4:] == [
+            "--mount",
+            "type=bind,src=/account,dst=/account",
+            "--mount",
+            "type=bind,src=/readiness,dst=/readiness,readonly",
+        ]
+    else:
+        assert values[-1] == "type=bind,src=/state,dst=/state"
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("service", ["findb", "fetcher"])
+@pytest.mark.parametrize("flag", ["true", "false", None, "True", "0", ""])
+def test_env_sync_publishes_exact_full_market_flag_or_rejects_invalid_mock_only(
+    tmp_path,
+    monkeypatch,
+    target,
+    service,
+    flag,
+):
+    import sys
+
+    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
+    globals_ = namespace["main"].__globals__
+    config = namespace["SERVICE_CONFIGS"][service]
+    assert "FULL_MARKET_ENABLED" in config.variables_for(target)
+    values = {
+        name: name + "-fixture"
+        for name in (*config.variables_for(target), *config.secrets_for(target))
+    }
+    values.update(SHIOAJI_SIMULATION="true", SERVE_REQUIRE_AUTH="false")
+    values.pop("FULL_MARKET_ENABLED")
+    if flag is not None:
+        values["FULL_MARKET_ENABLED"] = flag
+    source = tmp_path / target / service / ".env.remote"
+    source.parent.mkdir(parents=True)
+    source.write_text("\n".join(name + "=" + value for name, value in values.items()))
+    calls = []
+    monkeypatch.setitem(globals_, "ENV_ROOT", tmp_path)
+    monkeypatch.setitem(globals_, "_unexpected_remote_r2_names", lambda *args: ())
+    monkeypatch.setitem(globals_, "_ensure_environment", lambda *args: None)
+    monkeypatch.setitem(globals_, "_run", lambda arguments, **kwargs: calls.append(arguments))
+    monkeypatch.setattr(sys, "argv", ["sync", target, service, "--apply"])
+    result = namespace["main"]()
+    valid = flag in {"true", "false", None}
+    assert result == (0 if valid else 1)
+    if valid:
+        published = [
+            command
+            for command in calls
+            if command[:4] == ["gh", "variable", "set", "FULL_MARKET_ENABLED"]
+        ]
+        assert published == [
+            [
+                "gh",
+                "variable",
+                "set",
+                "FULL_MARKET_ENABLED",
+                "--env",
+                target + "-" + service,
+                "--body",
+                flag or "false",
+            ]
+        ]
+    else:
+        assert calls == []

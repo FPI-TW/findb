@@ -13,7 +13,7 @@ import importlib
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import date, datetime, timezone
@@ -92,6 +92,9 @@ class FinLabSdkGateway:
 
     api_token: str = dataclass_field(repr=False, compare=False)
     _sdk: object | None = None
+    on_response_bytes: Callable[[int], None] | None = dataclass_field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         token = self.api_token.strip()
@@ -100,8 +103,10 @@ class FinLabSdkGateway:
         object.__setattr__(self, "api_token", token)
 
     @classmethod
-    def from_env(cls) -> "FinLabSdkGateway":
-        return cls(api_token=os.getenv("FINLAB_API_TOKEN", ""))
+    def from_env(
+        cls, *, on_response_bytes: Callable[[int], None] | None = None
+    ) -> "FinLabSdkGateway":
+        return cls(api_token=os.getenv("FINLAB_API_TOKEN", ""), on_response_bytes=on_response_bytes)
 
     def __repr__(self) -> str:
         return "FinLabSdkGateway(api_token=<redacted>)"
@@ -143,6 +148,9 @@ class FinLabSdkGateway:
         get = getattr(data, "get", None)
         if not callable(login) or not callable(get):
             raise FinLabSdkError("FinLab SDK does not expose the required headless data API")
+        from findb_fetcher.account_governor import provider_permit
+
+        permit = provider_permit("finlab")
         try:
             login(self.api_token)
             frame = get(dataset.strip())
@@ -150,11 +158,17 @@ class FinLabSdkGateway:
             # Never retain provider exceptions: some SDK errors include request context.
             raise FinLabSdkError("FinLab SDK dataset retrieval failed") from None
         try:
-            return _table_from_dataframe(
-                frame,
-                target_date=target_date,
-                reviewed_symbols=reviewed_symbols,
+            if permit or self.on_response_bytes:
+                # Account for the entire SDK frame before reviewed scope projection.
+                observed = len(frame.to_json().encode("utf-8"))
+                if permit:
+                    permit.observe(observed)
+                if self.on_response_bytes:
+                    self.on_response_bytes(observed)
+            table = _table_from_dataframe(
+                frame, target_date=target_date, reviewed_symbols=reviewed_symbols
             )
+            return table
         except FinLabSdkError as exc:
             # Preserve the safe publication-miss subtype while discarding any
             # provider traceback or credential-bearing context.

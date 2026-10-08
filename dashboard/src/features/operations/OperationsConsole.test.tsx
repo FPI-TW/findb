@@ -555,6 +555,7 @@ describe("Operations presentation", () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <IngestionOverviewPanel
+          profile="full_market"
           freshnessResult={{
             ok: true,
             data: { success: true, data: [freshness] },
@@ -598,6 +599,7 @@ describe("Operations presentation", () => {
       render(
         <QueryClientProvider client={new QueryClient()}>
           <IngestionOverviewPanel
+            profile="full_market"
             freshnessResult={{
               ok: true,
               data: { success: true, data: [freshness] },
@@ -1054,6 +1056,7 @@ describe("Operations presentation", () => {
       render(
         <QueryClientProvider client={new QueryClient()}>
           <IngestionOverviewPanel
+            profile={profile === "Full market" ? "full_market" : "pilot"}
             freshnessResult={null}
             schedulersResult={{ ok: true, data: { success: true, data: rows } }}
             loading={false}
@@ -1095,8 +1098,8 @@ describe("Operations presentation", () => {
         },
       })
       expect(
-        screen.getByRole("region", { name: `${otherProfile} 排程` })
-      ).toBeInTheDocument()
+        screen.queryByRole("region", { name: `${otherProfile} 排程` })
+      ).not.toBeInTheDocument()
     }
   )
 
@@ -1128,6 +1131,7 @@ describe("Operations presentation", () => {
       render(
         <QueryClientProvider client={new QueryClient()}>
           <IngestionOverviewPanel
+            profile={profile === "Full market" ? "full_market" : "pilot"}
             freshnessResult={null}
             schedulersResult={{ ok: true, data: { success: true, data: rows } }}
             loading={false}
@@ -1195,10 +1199,8 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
     expect(
-      within(
-        screen.getByRole("region", { name: "Full market 排程" })
-      ).getByText("full_market_finlab_v1")
-    ).toBeInTheDocument()
+      screen.queryByRole("region", { name: "Full market 排程" })
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByRole("button", { name: "Full market 全部啟動" })
     ).not.toBeInTheDocument()

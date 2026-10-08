@@ -53,8 +53,13 @@ class ServiceConfig:
     def variables_for(self, target: str) -> tuple[str, ...]:
         """Return the non-secret variable contract for one deployment target."""
         if target == "staging":
-            return (*self.variables, *STAGING_AWS_VARIABLES, *self.staging_variables)
-        return (*PRODUCTION_AWS_VARIABLES, *self.production_variables)
+            return (
+                "FULL_MARKET_ENABLED",
+                *self.variables,
+                *STAGING_AWS_VARIABLES,
+                *self.staging_variables,
+            )
+        return ("FULL_MARKET_ENABLED", *PRODUCTION_AWS_VARIABLES, *self.production_variables)
 
     def secrets_for(self, target: str) -> tuple[str, ...]:
         if target == "staging":
@@ -108,9 +113,7 @@ SERVICE_CONFIGS: Final = {
             "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN",
         ),
         staging_variables=("RDS_DB_INSTANCE_IDENTIFIER",),
-        production_variables=(
-            "RDS_DB_INSTANCE_IDENTIFIER",
-        ),
+        production_variables=("RDS_DB_INSTANCE_IDENTIFIER",),
     ),
     "fetcher": ServiceConfig(
         variables=(
@@ -328,6 +331,10 @@ def main() -> int:
         parser.error(f"missing ignored source: {source}")
 
     values = {key: str(value or "").strip() for key, value in dotenv_values(source).items()}
+    values.setdefault("FULL_MARKET_ENABLED", "false")
+    if values["FULL_MARKET_ENABLED"] not in {"true", "false"}:
+        print("FULL_MARKET_ENABLED must be exactly true or false")
+        return 1
     unexpected_r2 = _unexpected_r2_names(arguments.service, values)
     if unexpected_r2:
         print(f"{environment} has unsupported R2 names: {', '.join(unexpected_r2)}")

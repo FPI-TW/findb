@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 from typing import Any
+
+from findb_fetcher.config import app_environment
 
 SUPPORTED_PILOTS = {
     "twelve_data": (("us_equity_eod", "market_eod"),),
@@ -25,7 +26,7 @@ PILOT_RUNTIMES = {
 
 def validate_staging_pilots(directory: Path) -> dict[str, Any]:
     """Every provider needs a bounded pilot, supported schema and startup acceptance."""
-    if os.getenv("DEPLOYMENT_TARGET", "staging") != "staging":
+    if app_environment("staging") != "staging":
         raise ValueError("staging pilots require the exact staging deployment target")
     raw = (directory / "staging_provider_pilots.v1.json").read_bytes()
     if len(raw) > 16384:

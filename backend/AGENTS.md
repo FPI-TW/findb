@@ -77,18 +77,18 @@ EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查�
 `expected = data + no_data + missing + blocked` 只依 canonical
 provenance 與持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
 
-production 新 HK／TW ETF／TAIFEX feeds 與 `full_market_*_v1` schedulers 預設停用。staging TAIFEX 僅由 target-specific provisioning 啟用兩個實際近月契約 pilot，
-`full_market.required=false`、`enabled=false`，不啟用 full-market controls。Owner 須審核 baseline、
-完整交易所日曆並開啟 acceptance，五個連續實際開市日準時完整後才能 active；HK 與 TAIFEX
-日曆必須輸入完整年度日期，不得套用平日推測。Owner deactivate 保留 universe、plan 與 canonical
-歷史，停用新的 feeds，並停止該 provider 共用的全市場 scheduler；舊 bounded feeds 保持 active。
-首次 activation_date 不得早於交易所當地今天，可預約未來日期；deactivate／resume／active 升級
-保留首次 activation_date，resume 不得改日期以丟棄原有 gaps。
-active 驗收排除交易所當地尚未到達的日期，同日須已達 published calendar 的收盤時間；若未提供
-個別日期時間，採 US 16:00 New York、HK 16:10 Hong Kong、TW 13:30 Taipei、TAIFEX 13:45 Taipei
-的保守界線。Source 實際交付不得使用未來交易日或超過五分鐘時鐘誤差的 fetched_at；未來 plan
-仍可事先建立。治理中的 EOD／minute 實際交付要求 server time 及 fetched_at 都已過收盤；
-TAIFEX after_hours 採 attributed trade_date 當地 05:00，regular 採 published close 或保守13:45。
+Full market 使用環境 opt-in flag、trusted installation/account enrollment 與 Owner scheduler admission；
+registry `is_active` 保持普通 dataset acceptance，不能代替 Full flag。部分 ready feeds 可 start，
+stopped→running transaction 以 environment→sorted datasets→calendar markets→enrollment→Source
+client→control lock order 重查並凍結 scope/first dates/revision/audit。Baseline publish 先鎖 dataset 再 release。
+容量 repair 必須經 Source-authenticated 唯讀 current enrollment verification 與 fresh installed ACK，
+不能信任任意檔案的 UUID/hash；此 proof check 獨立於 acquisition/Owner stopped/flag，且 GET 不寫 audit/control。
+旗標关闭由 ingest/all lifecycle 或 trusted management stop/audit，Serve/GET 不寫狀態。既有 prepared
+`fp1` delivery/normalization 繼續完成；新 acquisition 不得用 cached desired-state 授權。
+Source 實際交付仍拒絕未来 trade date、超過五分鐘 fetched_at skew，並要求已過市場收盤；
+TAIFEX after_hours 採 attributed trade_date 當地05:00，regular 採 published close 或13:45。
+Migration 保留合法 legacy activation_date，malformed 日期阻擋該 feed；啟動後只补首日後 gaps。
+詳細 current contracts 與 local/deployed 操作見 `docs/operations/full_market.md`。
 
 `app/services/ingestion.py`的`CONTRACT_NORMALIZER_MAP`是唯一dispatch來源，只能依明確
 `(schema_id, schema_version)`選擇normalizer；缺少或不支援的metadata必須fail closed。

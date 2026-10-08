@@ -46,18 +46,13 @@ Dashboard 導入概況與 Scheduler 面板依 `full_market_` key 前綴區分 Fu
 Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「Full market 全部啟動」或
 「Pilot 全部啟動」只更新該區符合資格且
 尚未 running 的 controls，確認視窗顯示實際更新數量與跳過原因；單筆啟動套用相同資格。
-全市場啟動須至少一個 enabled feed，且 registry／contract／provider scope 有效、readiness
-已核准、處於 acceptance 或 active、有合法 activation_date 與已發布 baseline／完整年度
-calendar。未啟用的 sibling 不因 inactive 或尚缺 calendar 阻擋部分核准 scope；malformed
-設定仍 fail closed。Acceptance 啟動不要求先完成五日驗收。
-
-停止不受啟動資格限制。既存的零 enabled `full_market_*_v1` 若已為 running，Owner 應透過
-單筆或「Full market 全部停止」修復，再確認 observed state；系統不自動重設 persisted desired state。
-Staging bounded controls 依 catalog 包含 `twelve_data_us_common_stocks_daily_v1`、
-`finlab_tw_equity_eod_v1`、`shioaji_tw_pilot_v1` 與 `taifex_tw_futures_pilot_v1` 四項；Shioaji
-涵蓋兩個 minute feeds。四個遠端 pilot startup 尚待完成。
-Production 全市場仍須另選 opt-in runtime 並取得 Owner activation，治理資格不代表 runtime
-已部署或已交付資料。
+全市場啟動須至少一個 ready feed，並通過有效環境旗標、trusted installed enrollment、scoped provider
+readiness、Owner baseline approval、完整 published calendar 與 aggregate capacity。stopped→running
+凍結 ready scope；新 ready sibling 須停止再啟動，running 重複 start 不改 scope。首次日期由交易所
+當地今天決定並永久保留。停止不受 start blockers 限制；旗標關閉由 trusted lifecycle/management
+流程停止 Full controls/audit，重新開旗標仍需 Owner 手動 start，GET 不寫 control。
+詳見 [Full market runbook](full_market.md)。Pilot tab 預設，URL `profile=full_market` 選 Full tab；
+切換不寫 state，各 tab 的 bulk 僅處理本 profile。
 
 啟動單筆或批次前，若同 provider 另一區期望或實際狀態仍為 running（包含停止中），
 確認視窗會提醒範圍重疊、重複抓取與 API 用量風險；Owner 可確認繼續，不構成後端互斥保證。
@@ -172,10 +167,8 @@ reference、run／job 與 canonical lineage。
 `data + no_data = expected` 且 missing／blocked 均為零才 complete。
 
 TW、HK 與 TAIFEX 當日台北 23:00，US 次日台北 09:00 為 deadline；Source 202、provider fetch
-成功、container running 都不能取代 canonical completion。TW、HK、US、futures 分階段 rollout，
-各需連續五個實際開市日準時 complete，且最後日期在交易所當地已到達並已收盤，才由 Owner
-將 acceptance 切到 active。預建未來 plan 不算實際驗收天數。仍缺 entitlement、
-全 universe mapping、quota／capacity 證據時維持 blocked，不能藉付費升級或縮小集合通過。
+成功、container running 都不能取代 canonical completion。未完成 entitlement/mapping/quota/byte/deadline
+proof 時 provider blocked；不使用五日 admission 門檻，也不以縮小 universe 通過 capacity。
 
 故障後沿 activation-forward plan 查缺口：prepared raw 先保存於 R2 與 durable checkpoint，
 重啟只重送穩定 request／idempotency identity，不再耗 provider quota 重新下載已準備的 response。
@@ -195,27 +188,11 @@ TW、HK 與 TAIFEX 當日台北 23:00，US 次日台北 09:00 為 deadline；Sou
 Market freshness必須分開呈現provider fetch、normalization completion與feed policy。
 Raw存在但canonical未完成時沿run／job／outbox／queue診斷，不要誤判為provider未送達。
 
-全市場 Scheduler 卡片另外依 `full_market.enabled` 區分已啟用範圍與待啟用 Feed。
-預設停止且未啟用的 runtime 顯示「尚未啟用」；Owner 停用後保留首次 activation date，
-顯示「已停用」。已啟用而明確停止的 runtime 顯示「停止」，歷史心跳不會被當作運行中
-的心跳過期告警；期望執行時仍需該 `full_market_*_v1` control 自己的實際心跳，沒有回報
-或心跳超過 90 秒仍分別顯示「尚未回報」與「心跳過期」。停止中與 stale 的 observed
-running 不會被待啟用狀態遮蔽。
-
-API additive `monitor_kind`、`activation_state`、`active_dataset_keys` 與 `pending_feeds`
-保留觀測到的啟用前提；每個 Feed 的 `runtime_eligible`／`activation_blockers` 區分
-運行範圍與待啟用範圍。全市場 aggregate freshness／feed counts 只計入 enabled feeds，
-不以未啟用 sibling 的 inactive／缺少完整 published calendar 判定整個 provider runtime
-設定失敗。這些前提仍列在卡片與明細中，並非完整 Owner readiness 驗收的替代品。
-Enabled feed 的 inactive／缺少 calendar，或 registry、contract、provider mapping、
-governance／timezone 格式錯誤仍是設定錯誤；期望 running 而没有 enabled feed 也 fail closed。
-Registry 的 market／asset_class 與 contract defaults 必須通過與 ingress 相同的 scope 驗證；
-即使 Feed 未啟用或 Scheduler 已停止，衝突仍回報 `contract_scope_mismatch` 設定錯誤。
-全市場宣告亦須符合固定 runtime feed 的 market／asset_class／frequency 與 schema，並接受其
-輸出的 v1；其它已註冊契約不能替代該 feed 契約。`runtime_contract_mismatch` 或
-`runtime_feed_scope_mismatch` 同時使 freshness 回報設定錯誤並阻擋啟動，包含未啟用 sibling。
-Feed 明細的 raw／canonical 更新可能來自既有 bounded runtime，不能證明全市場已啟用、
-已部署或已回報心跳；此投影不建立假的心跳，也不改動 activation 或 calendar。
+Full market Scheduler 卡片呈現 environment flag、readiness blockers、frozen admitted scope 與 first dates。
+Freshness 只 aggregate running admission 的 feeds，pending sibling 保留 blocker 明細。Registry/contract
+market、asset、frequency 與 schema v1 必須符合實際 runtime；malformed scope 仍回報 configuration error。
+Feed raw/canonical 更新可能來自 Pilot，不能證明 Full runtime 已部署、被授權或回報自己的 heartbeat。
+All-start skip blockers 及 hidden-tab overlap confirmation 見 [runbook](full_market.md)。
 
 ## 常見診斷
 

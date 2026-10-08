@@ -84,6 +84,11 @@ type SchedulerCardControl = Pick<
   | "heartbeat_age_seconds"
   | "start_allowed"
   | "start_blockers"
+  | "full_market_enabled"
+  | "environment"
+  | "admitted_dataset_keys"
+  | "first_start_dates"
+  | "feed_readiness"
 >
 
 type IngestionCard = {
@@ -251,8 +256,8 @@ type SchedulerMutationTarget = Pick<
   | "start_blockers"
 >
 
-const SCHEDULER_PROFILES = ["full_market", "pilot"] as const
-type SchedulerProfile = (typeof SCHEDULER_PROFILES)[number]
+const SCHEDULER_PROFILES = ["pilot", "full_market"] as const
+export type SchedulerProfile = (typeof SCHEDULER_PROFILES)[number]
 
 function schedulerProfile(control: Pick<Scheduler, "scheduler_key">) {
   return control.scheduler_key.startsWith("full_market_")
@@ -319,6 +324,14 @@ function schedulerStartAllowed(control: SchedulerMutationTarget) {
 function schedulerStartReason(control: SchedulerMutationTarget) {
   const reasons: Record<string, string> = {
     full_market_no_enabled_datasets: "尚未啟用任何全市場 feed",
+    full_market_flag_disabled: "環境 Full market flag 關閉",
+    full_market_runtime_missing: "尚未安裝並登錄 runtime",
+    full_market_readiness_not_reported: "已登錄 runtime 尚未回報 readiness",
+    full_market_readiness_expired: "readiness 證據已過期",
+    full_market_no_ready_feeds: "沒有 Ready feed",
+    full_market_request_capacity_insufficient: "provider 每日 request 容量不足",
+    full_market_byte_capacity_insufficient: "provider 每日資料量容量不足",
+    full_market_deadline_capacity_insufficient: "provider 無法在 deadline 完成",
     full_market_configuration_invalid:
       "全市場設定、readiness 或 scope 不符合啟動條件",
     full_market_baseline_missing: "缺少已發布的官方 baseline",
@@ -947,6 +960,27 @@ function IngestionCardView({
           </AlertDescription>
         </Alert>
       ) : null}
+      {schedulerProfile(control) === "full_market" && (
+        <div className="grid gap-2 text-xs text-muted">
+          <p className="m-0">
+            FULL_MARKET_ENABLED：
+            {control.full_market_enabled ? "true" : "false"} ·{" "}
+            {control.environment ?? "—"}
+          </p>
+          <p className="m-0">
+            本次凍結範圍：{control.admitted_dataset_keys?.join(", ") || "無"}
+          </p>
+          {control.feed_readiness?.map(feed => (
+            <p className="m-0" key={feed.dataset_key}>
+              {feed.dataset_key}：
+              {feed.ready ? "Ready" : feed.blockers.join("；")} · 首次日期{" "}
+              {control.first_start_dates?.[feed.dataset_key] ??
+                feed.first_start_date ??
+                "尚未啟動"}
+            </p>
+          ))}
+        </div>
+      )}
       {freshness?.monitor_kind === "full_market" && (
         <div className="grid gap-2 text-xs text-muted">
           <p className="m-0">
@@ -1012,6 +1046,8 @@ function IngestionCardView({
 }
 
 export function IngestionOverviewPanel({
+  profile: selectedProfile = "pilot",
+  updateProfile = () => undefined,
   freshnessResult,
   schedulersResult,
   loading,
@@ -1022,6 +1058,8 @@ export function IngestionOverviewPanel({
   applyScheduler,
   audit = OPERATIONS_OVERVIEW_AUDIT,
 }: {
+  profile?: SchedulerProfile
+  updateProfile?: (profile: SchedulerProfile) => void
   freshnessResult: PanelResult<MarketFreshnessResponse> | null
   schedulersResult: PanelResult<SchedulersResponse> | null
   loading: boolean
@@ -1086,41 +1124,94 @@ export function IngestionOverviewPanel({
             部署前人工確認：請分別停止 Full market 與
             Pilot，確認所有排程的期望與實際狀態均為已停止。
           </p>
-          {SCHEDULER_PROFILES.map(profile => {
+          <div role="tablist" aria-label="導入排程模式" className="flex gap-2">
+            {SCHEDULER_PROFILES.map(profile => (
+              <Button
+                key={profile}
+                role="tab"
+                id={`scheduler-tab-${profile}`}
+                aria-controls={`scheduler-panel-${profile}`}
+                aria-selected={selectedProfile === profile}
+                tabIndex={selectedProfile === profile ? 0 : -1}
+                variant={selectedProfile === profile ? "default" : "outline"}
+                onClick={() => updateProfile(profile)}
+                onKeyDown={event => {
+                  const index = SCHEDULER_PROFILES.indexOf(profile)
+                  const nextIndex =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? SCHEDULER_PROFILES.length - 1
+                        : event.key === "ArrowRight"
+                          ? (index + 1) % SCHEDULER_PROFILES.length
+                          : event.key === "ArrowLeft"
+                            ? (index + SCHEDULER_PROFILES.length - 1) %
+                              SCHEDULER_PROFILES.length
+                            : null
+                  if (nextIndex === null) return
+                  event.preventDefault()
+                  const next = SCHEDULER_PROFILES[nextIndex]!
+                  event.currentTarget.parentElement
+                    ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+                    [nextIndex]?.focus()
+                  updateProfile(next)
+                }}
+              >
+                {schedulerProfileLabel(profile)}（
+                {
+                  cards.filter(
+                    card =>
+                      schedulerProfile(card.control) === profile &&
+                      card.control.desired_state === "running"
+                  ).length
+                }{" "}
+                執行中）
+              </Button>
+            ))}
+          </div>
+          {SCHEDULER_PROFILES.filter(
+            profile => profile === selectedProfile
+          ).map(profile => {
             const profileCards = cards.filter(
               card => schedulerProfile(card.control) === profile
             )
             return (
-              <SchedulerProfileSection
+              <div
                 key={profile}
-                profile={profile}
-                role={role}
-                schedulers={schedulers.filter(
-                  scheduler => schedulerProfile(scheduler) === profile
-                )}
-                actions={actions}
+                role="tabpanel"
+                id={`scheduler-panel-${profile}`}
+                aria-labelledby={`scheduler-tab-${profile}`}
               >
-                {profileCards.length === 0 ? (
-                  <EmptyState>此區目前沒有已註冊的資料抓取排程。</EmptyState>
-                ) : (
-                  <div className="grid gap-3">
-                    {profileCards.map(card => (
-                      <IngestionCardView
-                        card={card}
-                        key={card.control.scheduler_key}
-                        role={role}
-                        pending={
-                          actions.bulkPending || actions.pendingKeys.size > 0
-                        }
-                        actionError={
-                          actions.actionErrors[card.control.scheduler_key]
-                        }
-                        requestToggle={actions.requestToggleScheduler}
-                      />
-                    ))}
-                  </div>
-                )}
-              </SchedulerProfileSection>
+                <SchedulerProfileSection
+                  profile={profile}
+                  role={role}
+                  schedulers={schedulers.filter(
+                    scheduler => schedulerProfile(scheduler) === profile
+                  )}
+                  actions={actions}
+                >
+                  {profileCards.length === 0 ? (
+                    <EmptyState>此區目前沒有已註冊的資料抓取排程。</EmptyState>
+                  ) : (
+                    <div className="grid gap-3">
+                      {profileCards.map(card => (
+                        <IngestionCardView
+                          card={card}
+                          key={card.control.scheduler_key}
+                          role={role}
+                          pending={
+                            actions.bulkPending || actions.pendingKeys.size > 0
+                          }
+                          actionError={
+                            actions.actionErrors[card.control.scheduler_key]
+                          }
+                          requestToggle={actions.requestToggleScheduler}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </SchedulerProfileSection>
+              </div>
             )
           })}
         </div>
@@ -1394,7 +1485,15 @@ export function MarketFreshnessPanel({
   )
 }
 
-export function OperationsOverviewPage({ role }: { role?: AdminRole }) {
+export function OperationsOverviewPage({
+  role,
+  profile = "pilot",
+  updateProfile = () => undefined,
+}: {
+  role?: AdminRole
+  profile?: SchedulerProfile
+  updateProfile?: (profile: SchedulerProfile) => void
+}) {
   const effectiveRole = role ?? "viewer"
   const audit: DashboardRequest["audit"] = {
     ...OPERATIONS_OVERVIEW_AUDIT,
@@ -1414,6 +1513,8 @@ export function OperationsOverviewPage({ role }: { role?: AdminRole }) {
       <OperationsDashboardStatus state={state} />
       <div className="grid gap-5">
         <IngestionOverviewPanel
+          profile={profile}
+          updateProfile={updateProfile ?? (() => undefined)}
           freshnessResult={overview?.freshness ?? null}
           schedulersResult={overview?.schedulers ?? null}
           loading={state.initialLoading}

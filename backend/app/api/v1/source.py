@@ -11,7 +11,7 @@ from datetime import date
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -31,6 +31,7 @@ from app.schemas.full_market import (
     UniverseReleaseResponse,
     UniverseSubmitRequest,
 )
+from app.schemas.full_market_readiness import EnrollmentVerification, ReadinessReport
 from app.schemas.source import (
     CanonicalIngestResponse,
     DatasetInfo,
@@ -57,6 +58,13 @@ from app.services.full_market import (
     list_universes,
     record_outcome,
     submit_universe,
+)
+from app.services.full_market_admission import (
+    AdmissionError,
+    account_authorization,
+    admission_projection,
+    report_readiness,
+    verify_enrollment,
 )
 from app.services.historical_backfill import (
     HistoricalBackfillConflictError,
@@ -106,6 +114,57 @@ def _full_market_source_scope(
 
 def _full_market_http_error(exc: FullMarketError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/full-market/readiness")
+async def report_full_market_readiness(
+    body: ReadinessReport,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await report_readiness(db, body)
+    except AdmissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/full-market/authorization")
+async def full_market_authorization(
+    consumer: str = "full_market",
+    declaration_sha256: str = "",
+    runtime_id: str = "",
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    provider, _ = _full_market_source_scope(db)
+    projection = await admission_projection(db, provider, source=True)
+    if declaration_sha256:
+        account = await account_authorization(
+            db, provider, consumer, declaration_sha256, runtime_id
+        )
+        return {**projection, **account}
+    return projection
+
+
+@router.get("/full-market/enrollment-verification", response_model=EnrollmentVerification)
+async def full_market_enrollment_verification(
+    enrollment_id: UUID,
+    source_client_id: UUID,
+    declaration_sha256: str = Query(pattern=r"^[0-9a-f]{64}$"),
+    runtime_id: str = Query(min_length=1, max_length=200),
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> EnrollmentVerification:
+    try:
+        return await verify_enrollment(
+            db,
+            enrollment_id=enrollment_id,
+            source_client_id=source_client_id,
+            declaration_sha256=declaration_sha256,
+            runtime_id=runtime_id,
+        )
+    except AdmissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.post("/universes", response_model=UniverseReleaseResponse)

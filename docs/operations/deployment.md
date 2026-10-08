@@ -45,55 +45,19 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > staging告警與復原證據見[monitoring runbook](monitoring.md)，尚未完成的production與平台強化只列於
 > [current backlog](../dev/backlog.md)。
 
-## Opt-in full-market production runtime
+## Opt-in Full market runtime
 
-Production Fetcher dispatch 新增 `runtime_profile=bounded|full-market`，預設 bounded；staging
-只允許 bounded。選定 profile 綁定 release bundle manifest 與 immutable accepted record；rollback
-必須指定原 record 的相同 profile，舊 record 未帶此欄位視為 bounded。Full-market 改變 bundle
-checksum，不可在相同 accepted identity 下靜默切換範圍。它仍使用 accepted Twelve Data、FinLab、
-Shioaji 三個 exact image digests；TAIFEX 公開資料 adapter 使用 generic Twelve Data image，
-不新增 image pipeline 或 provider credential。
+Local、staging、production 均以 `FULL_MARKET_ENABLED=false` 預設停用。一般 deployment 依 GitHub
+Environment 旗標選 bounded/full-market；rollback 讀 accepted record 原 profile。Full profile 保留
+獨立 Pilot 與 historical consumers，安裝四個独立 Full workers、共用 durable provider-account governor。
+Fresh post-install inspection receipt、trusted enrollment、Owner baseline publish 與完整 calendar 是手動
+start 前提；不使用 per-feed activation 或五日門檻。旗標關閉的 bounded rollout 保留既有 Full worker
+與 checkpoint 供 prepared backlog drain；不能刪除 payload state 或重用 Pilot container names。
 
-上線順序：
-
-1. Backend-first 部署 migration、`futures_eod.v1` 與 inactive 新 registry，保持新 scope stopped。
-2. 以官方快照提交 universe；Owner audited baseline publish，確認完整 exchange calendar。
-3. 逐 provider 以實際帳號核對 entitlement、全集合 mapping、quota／bytes、deadline capacity；
-   保留 scoped readiness evidence，未確認維持 blocked。
-4. 對 production 的 `full-market` candidate 做離線 preflight、credential isolation 與 durable state
-   驗證；accepted record durable 後才 activation。Provider secret 存在本身不會啟用 dataset。
-5. Owner 指定 activation_date，以 acceptance 模式分 TW、HK、US、futures 執行；首次日期不得
-   早於交易所當地當日，可預約未來日期，不得回填歷史日期作為驗收起點。各完成連續
-   五個實際交易所開市日準時 complete，才切 active。
-
-Full-market profile將 raw／response ceiling明確設為16 MiB，容納官方TW ISIN完整原文；
-既有bounded 8 MiB預設不變。
-
-四 runtime 使用 `/var/lib/findb-full-market/state.sqlite3` 的 shared durable quota／checkpoint，
-work lease 按 provider 隔離；Twelve Data US／HK 使用同一 account quota，不各自重設。
-Readiness evidence 由 operator 保存在 root-owned `/etc/findb-full-market/readiness/`，以 readonly
-bind mount提供 `/var/lib/findb-full-market/readiness/{twelve_data,finlab,shioaji,taifex}.json`。
-Proof files 使用 root-owned `0644`，僅保存已安全化的 account capability／quota evidence與checksum，
-不含 credentials；UID10001需可讀，不能使用root `0600`。Operator驗證provider／dataset scope、
-evidence與有效期限；missing或unreadable proof均須blocked，不能跳過readiness gate。
-缺少證據時可保持 idle／blocked，不能呼叫 provider。FinLab／Shioaji SDK cache 仍位於各自
-專用 mount，不存入 shared state；prepared body／receipt 不保存 provider credentials。
-`--check` 是 local validation；`--initialize-state` 只建 SQLite，`--require-stopped` 以 Source
-讀取 `full_market_<provider>_v1` 的 stopped desired state。缺少 Backend control／calendar 即
-fail closed；runtime 取得 Source activation 且相符 control running 後才可能建立新 cycle。
-
-TAIFEX 只載入 `findb/production/fetcher/api/source/taifex`、calendar Serve 與 Raw R2 credentials；
-不載入 Twelve Data／FinLab／Shioaji provider keys。OpenTofu `enable_full_market_runtime=false`
-預設不新增 secret metadata；明確 opt-in 只宣告 TAIFEX Source secret，值仍由已授權 operator
-另行安全載入。本次 repo change 不建立 live AWS resources，也不宣稱 readiness／五日驗收已完成。
-
-Rollback 先由 Owner 呼叫 `POST /admin/feeds/{dataset_key}/deactivate` 並提供 evidence_note，
-停用新 full-market scope及匹配的 provider control；同 provider 的所有 full-market feeds都停止。
-保留 durable state、prepared raw、canonical 與 gaps，恢復前一 accepted bounded config及其
-versioned universe；不能藉刪除 missing members 讓舊 plan complete。Full-market runtime
-不啟動 historical-backfill worker，不產生 continuous futures，也不追補 activation 前日期。
-重新進入 acceptance 時使用原 activation_date，保留原日期 cutoff 與 gaps；不得透過停止／恢復
-改成較晚日期來抹除原先未交付的成員或交易日。
+操作步驟、local/deployed receipt generators、嚴格 quota/account evidence 與管理命令見
+[Full market runbook](full_market.md)。Backend migration 先於 enrollment/Fetcher rollout；所有 controls
+初始 stopped，開旗標不會自動啟動。新 full-market-only datasets 的 registry 可 active，但普通 Source
+ingest 仍需 `fp1` frozen-plan identity；dataset existence/provider/dataset scope 檢查維持。
 
 ## Workflow與release units
 
@@ -363,9 +327,7 @@ Shioaji control同時涵蓋`tw_equity_minute`與`tw_etf_minute`。「Pilot 全�
 controls，確認視窗列出更新數量與跳過原因；再逐筆確認observed state恢復`running`。
 同provider另一區仍為desired或observed running時，單筆與批次啟動確認視窗提示重疊風險；
 Owner可確認繼續，這不是後端互斥保證。應先停止另一區並等候實際停止。
-Staging 的`full_market_*_v1` controls保持`stopped`。Production必須完成readiness、官方 baseline／calendar、
-選定full-market profile並取得Owner acceptance-mode activation後，才啟動對應control並開始連續五個
-交易日驗收。批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
+Local/staging/production 的 `full_market_*_v1` controls 安裝後保持 `stopped`。有效 opt-in flag、installed runtime/account readiness、Owner published 官方 baseline 與完整 calendar 後，Owner 手動啟動並凍結 ready scope；操作見 [Full market runbook](full_market.md)。批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
 Fetcher candidate只以`docker create --restart no`驗證最終container config，並以
 `com.findb.fetcher.accepted=false`標示；未accepted scheduler從不啟動，因此untrappable command／host
 interruption不會留下未授權writer。Accepted activation先以atomic symlink replacement將`/opt/fetcher/current`寫成
@@ -826,3 +788,26 @@ Deploy後至少完成：
 
 禁止使用`docker compose down -v`、刪資料、`stamp head`、即席production downgrade或R2
 mass delete強迫恢復。Serve健康且schema相容時可維持唯讀服務。
+
+`APP_ENVIRONMENT` 是 Backend Settings、Fetcher 與部署 helper 的唯一正式環境輸入，值為
+`local`、`staging` 或 `production`；它必須與已驗證部署、帳號配置及 runtime config 的環境一致。
+`FULL_MARKET_ENABLED` 仍只控制 Full market opt-in，不改變環境身份。既有 immutable manifest、
+accepted record 與 config JSON 的 `deployment_target` 欄位、CLI `--deployment-target` 保持原契約。
+
+正常 current candidate／activation 僅使用 `APP_ENVIRONMENT`。Verified immutable accepted replay
+若使用沒有 `app-environment-v1` marker 的舊 helper，workflow 才將 canonical 值等值映射至
+`DEPLOYMENT_TARGET`，讓該 bundle 的既有 allowlists、Pilot/historical/Full images 與 Compose 可運作；
+marker 不能取代 bundle digest 與 accepted evidence 驗證，也不重寫任何 immutable bundle/record。
+Current helper 在 bounded accepted replay 保留舊 Full drainer image 時，使用明確
+`FETCHER_LEGACY_ENV_BRIDGE`，只為該容器追加 same-value legacy Docker Env。普通 current runtimes
+不讀 legacy 值；新舊 metadata 衝突時 fail closed，不允許 legacy 覆蓋 canonical。
+
+Installation generator 預設要求實際 process/container 的 `APP_ENVIRONMENT`；只有明確傳
+`--allow-legacy-environment` 才檢查 legacy-only 的已驗證 accepted consumers，receipt 標明使用的
+環境契約版本，image/manifest/account/flag/config guards 仍完整套用。新舊值同時存在且衝突時，
+此選項仍不允許 enrollment。
+
+四組 `infra/env/{staging,production}/{findb,fetcher}/.env.remote` 的同步合約包含非敏感
+`FULL_MARKET_ENABLED`；只能使用精確 `true`／`false`，省略時同步為 `false`。各環境的兩個
+unit 必須一致。`sync_github_environment.py --apply` 發布該值供 workflow 選擇 profile，
+不改 scheduler desired state；現行 examples 均預設 `false`。

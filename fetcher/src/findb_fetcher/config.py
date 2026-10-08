@@ -19,6 +19,19 @@ class ConfigError(ValueError):
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def app_environment(default: str = "local") -> str:
+    """Canonical input; legacy metadata is only a same-value compatibility bridge."""
+    value = os.getenv("APP_ENVIRONMENT")
+    legacy = os.getenv("DEPLOYMENT_TARGET")
+    if legacy is not None and (value is None or value != legacy):
+        raise ConfigError("APP_ENVIRONMENT conflicts with legacy deployment metadata")
+    if value is None:
+        return default
+    if value not in {"local", "staging", "production"}:
+        raise ConfigError("APP_ENVIRONMENT must be local, staging, or production")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class FetcherConfig:
     source_api_url: str
@@ -34,6 +47,7 @@ class FetcherConfig:
 
     @classmethod
     def from_env(cls) -> "FetcherConfig":
+        app_environment()
         source_api_url = _https_origin_env("SOURCE_API_URL")
         source_client_key = _required_env("SOURCE_CLIENT_KEY")
         contracts_dir = Path(os.getenv("FETCHER_CONTRACTS_DIR", "/app/contracts"))
@@ -106,7 +120,14 @@ def _https_origin_env(name: str) -> str:
     except (httpx.InvalidURL, ValueError) as exc:
         raise ConfigError(f"{name} must be a valid HTTPS origin") from exc
     if (
-        parsed.scheme != "https"
+        not (
+            parsed.scheme == "https"
+            or (
+                parsed.scheme == "http"
+                and app_environment() == "local"
+                and parsed.host in {"localhost", "127.0.0.1", "::1"}
+            )
+        )
         or not parsed.host
         or bool(parsed.username)
         or bool(parsed.password)
@@ -118,7 +139,7 @@ def _https_origin_env(name: str) -> str:
         raise ConfigError(f"{name} must be a valid HTTPS origin")
     host = _canonical_host(parsed.host, raw)
     authority = f"{host}:{port}" if port is not None else host
-    return f"https://{authority}"
+    return f"{parsed.scheme}://{authority}"
 
 
 def _canonical_host(host: str, raw_url: str) -> str:

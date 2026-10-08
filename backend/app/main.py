@@ -31,6 +31,12 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     await init_db()
+    if APP_ROLE in {"ingest", "all"}:
+        from app.services.full_market_admission import reconcile_environment
+
+        async with async_session_maker() as db:
+            await reconcile_environment(db, actor="ingest-lifecycle")
+            await db.commit()
     flush_task = asyncio.create_task(
         periodic_flush(async_session_maker, settings.CREDENTIAL_USAGE_FLUSH_SECONDS)
     )

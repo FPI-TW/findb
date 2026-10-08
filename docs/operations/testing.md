@@ -56,7 +56,7 @@ runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 
 Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible 已完成
 交易日的 exact pilot instrument coverage（TAIFEX 兩 actual monthly contracts／四 session rows）、同 run lineage
 的 Source 202、raw、completed queue/canonical 與 Serve proof。兩日期觀測不要求歷史 backfill，也不套用
-production 五交易日全市場 activation gate。
+Full market enrollment/admission 與各環境實際 coverage 驗證。
 
 Staging evidence 使用 backend unit-local `published_year` 驗證完整已發布官方年度日曆，輸出
 `target_calendar_evidence` v1 的 UTC 觀測時刻、revision metadata 與最多 16 日的日期／收盤窗口；

@@ -786,6 +786,16 @@ class SchedulerControlResponse(BaseModel):
     heartbeat_age_seconds: Optional[float] = None
     start_allowed: bool
     start_blockers: list[str]
+    full_market_enabled: bool | None = None
+    environment: str | None = None
+    admission_id: str | None = None
+    admitted_dataset_keys: list[str] = Field(default_factory=list)
+    first_start_dates: dict[str, str | None] = Field(default_factory=dict)
+    acquisition_allowed: bool | None = None
+    acquisition_blockers: list[str] = Field(default_factory=list)
+    declaration_sha256: str | None = None
+    feed_readiness: list[dict] = Field(default_factory=list)
+    capacity: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 

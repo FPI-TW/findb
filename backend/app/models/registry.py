@@ -67,6 +67,88 @@ class DatasetRegistry(Base):
     scheduler_datasets: Mapped[list["SchedulerDataset"]] = relationship(back_populates="dataset")
 
 
+class FullMarketEnvironment(Base):
+    """Trusted lifecycle flag; API reads never reconcile deployment state."""
+
+    __tablename__ = "full_market_environment"
+    environment: Mapped[str] = mapped_column(String(20), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class FullMarketEnrollment(Base):
+    """Management-enrolled immutable provider capability and installation evidence."""
+
+    __tablename__ = "full_market_enrollment"
+    enrollment_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    environment: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_client_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_client.client_id"), nullable=False
+    )
+    runtime_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    declaration_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    declaration: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    installation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    reported_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (
+        Index("idx_full_market_enrollment_identity", "environment", "provider", "created_at"),
+    )
+
+
+class FullMarketAdmission(Base):
+    """One immutable stopped-to-running scope, including its admission proof."""
+
+    __tablename__ = "full_market_admission"
+    admission_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    scheduler_key: Mapped[str] = mapped_column(
+        ForeignKey("scheduler_control.scheduler_key"), nullable=False
+    )
+    control_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    enrollment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("full_market_enrollment.enrollment_id"), nullable=False
+    )
+    capacity: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (
+        UniqueConstraint(
+            "scheduler_key", "control_revision", name="uq_full_market_admission_revision"
+        ),
+    )
+
+
+class FullMarketAdmissionFeed(Base):
+    __tablename__ = "full_market_admission_feed"
+    admission_id: Mapped[UUID] = mapped_column(
+        ForeignKey("full_market_admission.admission_id"), primary_key=True
+    )
+    dataset_key: Mapped[str] = mapped_column(
+        ForeignKey("dataset_registry.dataset_key"), primary_key=True
+    )
+    baseline_id: Mapped[UUID] = mapped_column(
+        ForeignKey("universe_release.release_id"), nullable=False
+    )
+    calendar_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("calendar_year_revision.id"), nullable=False
+    )
+
+
+class FullMarketDatasetState(Base):
+    __tablename__ = "full_market_dataset_state"
+    dataset_key: Mapped[str] = mapped_column(
+        ForeignKey("dataset_registry.dataset_key"), primary_key=True
+    )
+    first_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+
 class UniverseRelease(Base):
     """Immutable submitted provider membership; publication is Admin-governed."""
 

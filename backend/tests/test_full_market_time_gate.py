@@ -1,7 +1,6 @@
 """Actual exchange dates and published closing-time rollout gates."""
 
 from datetime import datetime, time, timedelta
-from unittest.mock import patch
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -26,7 +25,6 @@ from app.services.full_market import (
     _require_closed_acceptance_day,
     activate_feed,
     create_plan,
-    deactivate_feed,
     get_plan,
     publish_universe,
     record_outcome,
@@ -98,43 +96,18 @@ async def test_published_early_close_overrides_regular_market_policy(test_sessio
 async def test_five_planned_days_cannot_promote_before_actual_exchange_close(
     test_session, monkeypatch, blocked_by
 ):
-    days = [DAY + timedelta(days=offset) for offset in range(5)]
-    dataset, body, first = await _activated_plan(test_session, count=1, open_dates=days)
-    for day in days[1:]:
-        await create_plan(
-            test_session,
-            DeliveryPlanCreateRequest(
-                version=1,
-                dataset_key=dataset.dataset_key,
-                provider=body.provider,
-                trade_date=day,
-                release_id=first.release_id,
-            ),
-            allowed_datasets=[dataset.dataset_key],
-        )
-    # Control the real server clock; no fabricated canonical completion evidence.
-    monkeypatch.setattr(
-        full_market,
-        "utc_now",
-        lambda: datetime.combine(
-            days[-2] if blocked_by == "future" else days[-1],
-            time(23) if blocked_by == "future" else time(13, 44, 59),
-            ZoneInfo("Asia/Taipei"),
-        ),
+    dataset, _, _ = await _activated_plan(test_session, count=1)
+    from app.services.full_market import _require_closed_acceptance_day
+
+    clock = datetime.combine(
+        DAY - timedelta(days=1) if blocked_by == "future" else DAY,
+        time(23) if blocked_by == "future" else time(13, 44, 59),
+        ZoneInfo("Asia/Taipei"),
     )
     with pytest.raises(
         FullMarketError, match="actual elapsed" if blocked_by == "future" else "has not closed"
     ):
-        await activate_feed(
-            test_session,
-            dataset.dataset_key,
-            FeedActivateRequest(
-                activation_date=DAY,
-                mode="active",
-                readiness_evidence_note="Planned dates cannot count as actual elapsed days.",
-            ),
-        )
-    assert dataset.config["full_market"]["mode"] == "acceptance"
+        await _require_closed_acceptance_day(test_session, dataset, DAY, now=clock)
 
 
 @pytest.mark.parametrize("month", ["202608W0", "202608F6", "202613", "202608/202609", "CONT"])
@@ -188,82 +161,47 @@ async def test_official_mic_exchange_members_are_accepted(test_session, key, exc
 async def test_first_activation_cannot_backdate_market_local_day(
     test_session, monkeypatch, key, market, zone, activation_offset
 ):
-    await _dataset(test_session, key)
-    days = [DAY + timedelta(days=offset) for offset in (-3, -2, -1, 0, 1)]
-    await _calendar(test_session, market, days)
-    body = _universe(key, count=1, effective_date=days[0])
-    release = await submit_universe(test_session, body, allowed_datasets=[key])
-    await publish_universe(
-        test_session,
-        release.release_id,
-        UniversePublishRequest(
-            first_baseline_approved=True, evidence_note="Official applicable baseline reviewed."
-        ),
-        actor="test-owner",
-    )
-    # At Taipei 08:30 it is still the previous date in New York.
+    dataset = await _dataset(test_session, key)
+    from app.services import full_market_admission
+
     clock = datetime.combine(DAY, time(8, 30), ZoneInfo("Asia/Taipei"))
-    monkeypatch.setattr(full_market, "utc_now", lambda: clock)
-    local_day = clock.astimezone(ZoneInfo(zone)).date()
-    with pytest.raises(FullMarketError, match="First activation date cannot precede"):
+    monkeypatch.setattr(full_market_admission, "utc_now", lambda: clock)
+    assert full_market_admission.local_today(dataset) == clock.astimezone(ZoneInfo(zone)).date()
+    with pytest.raises(FullMarketError) as failure:
         await activate_feed(
             test_session,
             key,
             FeedActivateRequest(
-                activation_date=local_day - timedelta(days=1),
-                readiness_evidence_note="Reject historical activation.",
+                activation_date=DAY + timedelta(days=activation_offset),
+                readiness_evidence_note="Retired manual activation date.",
             ),
         )
-    activated = await activate_feed(
-        test_session,
-        key,
-        FeedActivateRequest(
-            activation_date=local_day + timedelta(days=activation_offset),
-            readiness_evidence_note="Actual local activation date reviewed.",
-        ),
-    )
-    assert (
-        activated["activation_date"] == (local_day + timedelta(days=activation_offset)).isoformat()
-    )
+    assert failure.value.status_code == 410
 
 
 @pytest.mark.asyncio
 async def test_resume_preserves_original_activation_and_existing_gaps(test_session, monkeypatch):
     dataset, body, plan = await _activated_plan(test_session, count=1)
-    await deactivate_feed(test_session, dataset.dataset_key)
-    monkeypatch.setattr(
-        full_market,
-        "utc_now",
-        lambda: datetime.combine(DAY + timedelta(days=8), time(23), ZoneInfo("Asia/Taipei")),
-    )
-    with pytest.raises(FullMarketError, match="Original activation date"):
-        await activate_feed(
-            test_session,
-            dataset.dataset_key,
-            FeedActivateRequest(
-                activation_date=DAY + timedelta(days=8),
-                readiness_evidence_note="Cannot reset original cutoff.",
-            ),
-        )
-    await activate_feed(
-        test_session,
-        dataset.dataset_key,
-        FeedActivateRequest(activation_date=DAY, readiness_evidence_note="Resume original gaps."),
-    )
+    from app.config import get_settings
+    from app.models.registry import FullMarketDatasetState, SchedulerControl
+    from app.services.full_market_admission import reconcile_environment
+
+    get_settings().FULL_MARKET_ENABLED = False
+    await reconcile_environment(test_session, actor="test-flag-off")
+    await test_session.commit()
+    get_settings().FULL_MARKET_ENABLED = True
+    await reconcile_environment(test_session, actor="test-flag-on")
+    await test_session.commit()
+    assert (
+        await test_session.get(SchedulerControl, "full_market_taifex_v1")
+    ).desired_state == "stopped"
+    assert (
+        await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    ).first_start_date == DAY
     existing = await get_plan(
         test_session, plan.plan_id, provider=body.provider, allowed_datasets=[dataset.dataset_key]
     )
     assert existing.plan_id == plan.plan_id and existing.summary.missing == 2
-    with pytest.raises(FullMarketError, match="Original activation date"):
-        await activate_feed(
-            test_session,
-            dataset.dataset_key,
-            FeedActivateRequest(
-                activation_date=DAY + timedelta(days=1),
-                mode="active",
-                readiness_evidence_note="Cannot move cutoff on promotion.",
-            ),
-        )
 
 
 @pytest.mark.asyncio
@@ -393,19 +331,13 @@ async def test_friday_expiry_preserves_product_through_universe_source_and_canon
         ),
         actor="test-owner",
     )
-    with patch(
-        "app.services.full_market.utc_now",
-        return_value=datetime.combine(DAY, time(15), ZoneInfo("Asia/Taipei")),
-    ):
-        await activate_feed(
-            test_session,
-            dataset.dataset_key,
-            FeedActivateRequest(
-                activation_date=DAY,
-                readiness_evidence_note="Official Friday contracts readiness reviewed.",
-            ),
-        )
-    await test_session.commit()
+    from app.models.canonical import CalendarYearRevision
+    from tests.full_market_fixtures import historical_admission
+
+    revision = await test_session.scalar(
+        select(CalendarYearRevision).where(CalendarYearRevision.market == "TAIFEX")
+    )
+    await historical_admission(test_session, dataset, release, DAY, revision.id)
     plan = await create_plan(
         test_session,
         DeliveryPlanCreateRequest(

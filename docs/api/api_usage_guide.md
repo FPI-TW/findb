@@ -170,15 +170,19 @@ OpenAPI 為準。Universe first baseline 或異動超過 20 個成員／2% 的 c
 呼叫 `POST /admin/universes/{release_id}/publish`，提供 `evidence_note` 與對應
 `first_baseline_approved`／`threshold_exception_approved`，並留下 audit。
 
-Owner 使用 `POST /admin/feeds/{dataset_key}/activate` 指定 activation_date、
-readiness_evidence_note 及 `mode=acceptance`。有適用的 published baseline 與完整 published
-exchange calendar 才可建立 plan；`mode=active` 另外要求連續五個實際開市日 complete 且準時，
-最後交易日必須在交易所當地已到達並已過官方當日收盤或保守市場收盤界線。
-首次 activation_date 不得早於交易所當地當日，可指定未來日期；停止後恢復 acceptance 或升級
-active 時，必須提供原 activation_date，保留原 cutoff 與尚未交付的 gaps。
-Owner 可呼叫 `POST /admin/feeds/{dataset_key}/deactivate` 並提供 evidence_note，停用 full-market
-governance與同 provider的full-market control；該control停止會影響其所有full-market datasets。
-既有canonical、plans與universes保留，新required feed退出active scope，原bounded feeds保持active。
+Owner 使用既有 `PATCH /admin/schedulers/{scheduler_key}`，傳 `desired_state` 與
+`expected_revision`。Flag、installed enrollment、有效 scoped readiness、Owner published baseline、
+完整 calendar 與 provider aggregate capacity 通過後，凍結 ready feeds；部分 scope 可 start，重複
+running PATCH 不重凍結。首次日期為交易所當地今天，合法 legacy date 保留，停止／重新啟動不重設。
+舊 `/admin/feeds/{dataset_key}/activate|deactivate` 需 Owner 認證並回傳 410。
+Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/digest/runtime/scope acknowledgement；
+`GET /source/full-market/authorization` 為唯讀 immediate acquisition projection，heartbeat 不延長 evidence。
+`GET /source/full-market/enrollment-verification` 需要 Source key 與 `enrollment_id`、`source_client_id`、
+`declaration_sha256`、`runtime_id` query；只驗證目前有效管理 enrollment 和 90 秒內 installed ACK，
+回傳 typed canonical declaration、installation digest、UUID 與 ACK timestamp。Owner stopped/flag-off
+仍可核對容量修復證據；它不授權抓取，也不寫 control/audit。
+旗標關閉／證據失效阻擋新 acquisition/plan，既有 frozen prepared delivery 與 normalization 可完成。
+詳細管理 enrollment 與 flags 見 [runbook](../operations/full_market.md)。
 `GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
 deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
 

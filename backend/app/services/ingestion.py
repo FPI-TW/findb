@@ -30,7 +30,7 @@ from app.services.delivery_policy import (
     evaluate_delivery_policy,
     lock_delivery_policy_scope,
 )
-from app.services.full_market import FullMarketError, validate_ingest_part
+from app.services.full_market import validate_ingest_part
 from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
@@ -677,9 +677,6 @@ class IngestionService:
 
         validate_request_currency(declaration, request)
 
-        governance = (dataset.config or {}).get("full_market") or {}
-        if governance.get("required") and not governance.get("enabled"):
-            raise FullMarketError("Full-market feed is not activated", 409)
         delivery_part_id = await validate_ingest_part(self.db, request, dataset)
 
         canonical_payload = request.payload.model_dump(mode="json")

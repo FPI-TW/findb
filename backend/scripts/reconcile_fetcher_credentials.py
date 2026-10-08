@@ -47,6 +47,7 @@ class SourceCredentialSpec:
     source_name: str
     description: str
     allowed_datasets: tuple[str, ...]
+    rate_limit_requests: int = 120
 
 
 SOURCE_SPECS = (
@@ -73,15 +74,22 @@ SOURCE_SPECS = (
     ),
 )
 FULL_MARKET_SOURCE_SPECS = (
-    replace(SOURCE_SPECS[0], allowed_datasets=("us_equity_eod", "hk_equity_eod")),
-    replace(SOURCE_SPECS[1], allowed_datasets=("tw_equity_eod", "tw_etf_eod")),
-    SOURCE_SPECS[2],
+    replace(
+        SOURCE_SPECS[0],
+        allowed_datasets=("us_equity_eod", "hk_equity_eod"),
+        rate_limit_requests=2400,
+    ),
+    replace(
+        SOURCE_SPECS[1], allowed_datasets=("tw_equity_eod", "tw_etf_eod"), rate_limit_requests=2400
+    ),
+    replace(SOURCE_SPECS[2], rate_limit_requests=2400),
     SourceCredentialSpec(
         env_name="FETCHER_TAIFEX_SOURCE_CLIENT_KEY_HASH",
         name="fetcher-taifex",
         source_name="taifex",
         description="Production TAIFEX Fetcher Source client",
         allowed_datasets=("tw_futures_eod",),
+        rate_limit_requests=2400,
     ),
 )
 
@@ -89,9 +97,7 @@ FULL_MARKET_SOURCE_SPECS = (
 def source_specs_for_profile(
     runtime_profile: str, deployment_target: str = "production"
 ) -> tuple[SourceCredentialSpec, ...]:
-    if deployment_target not in {"staging", "production"} or (
-        deployment_target == "staging" and runtime_profile == "full-market"
-    ):
+    if deployment_target not in {"local", "staging", "production"}:
         raise FetcherCredentialError("unsupported Fetcher deployment target/profile")
     if runtime_profile == "bounded":
         return (
@@ -131,13 +137,27 @@ def _apply_source_policy(
     key_hash: str,
     now: datetime,
 ) -> bool:
+    # A bounded deployment retains authenticated frozen-plan delivery scopes.
+    # Full-only ordinary ingestion is independently rejected by the ingress policy.
+    maximum = next(
+        (
+            item.allowed_datasets
+            for item in FULL_MARKET_SOURCE_SPECS
+            if item.source_name == spec.source_name
+        ),
+        spec.allowed_datasets,
+    )
+    retained = set(row.allowed_datasets or []) & set(maximum)
     desired: dict[str, object] = {
         "owner": "deployment",
         "description": spec.description,
         "source_name": spec.source_name,
         "fingerprint": key_hash[:16],
-        "allowed_datasets": list(spec.allowed_datasets),
-        "rate_limit_requests": 120,
+        "allowed_datasets": [
+            *spec.allowed_datasets,
+            *sorted(retained - set(spec.allowed_datasets)),
+        ],
+        "rate_limit_requests": max(spec.rate_limit_requests, row.rate_limit_requests),
         "rate_limit_window": 60,
     }
     changed = False
@@ -185,6 +205,14 @@ async def reconcile_source_credential(
 
     rotated_from_id = None
     if active_named:
+        spec = replace(
+            spec,
+            allowed_datasets=tuple(
+                dict.fromkeys([*spec.allowed_datasets, *(active_named[0].allowed_datasets or [])])
+            ),
+            rate_limit_requests=max(spec.rate_limit_requests, active_named[0].rate_limit_requests),
+        )
+    if active_named:
         previous = active_named[0]
         previous.revoked_at = now
         previous.updated_at = now
@@ -199,7 +227,7 @@ async def reconcile_source_credential(
             key_hash=key_hash,
             fingerprint=key_hash[:16],
             allowed_datasets=list(spec.allowed_datasets),
-            rate_limit_requests=120,
+            rate_limit_requests=spec.rate_limit_requests,
             rate_limit_window=60,
             created_at=now,
             updated_at=now,
@@ -310,6 +338,19 @@ async def reconcile_fetcher_credentials_in_session(
 ) -> list[ReconciliationResult]:
     specs = source_specs_for_profile(runtime_profile, deployment_target)
     normalized = {name: validate_key_hash(value) for name, value in hashes_by_env.items()}
+    taifex = FULL_MARKET_SOURCE_SPECS[3]
+    if (
+        runtime_profile == "bounded"
+        and deployment_target == "production"
+        and taifex.env_name in normalized
+    ):
+        existing = await db.scalar(
+            select(SourceClient).where(
+                SourceClient.name == taifex.name, SourceClient.revoked_at.is_(None)
+            )
+        )
+        if existing is not None:
+            specs = (*specs, taifex)
     required = {CALENDAR_HASH_ENV, *(spec.env_name for spec in specs)}
     if set(normalized) != required or len(set(normalized.values())) != len(required):
         raise FetcherCredentialError("Fetcher credential hashes are missing or reused")
@@ -366,8 +407,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--deployment-target",
-        choices=("staging", "production"),
-        default=os.getenv("DEPLOYMENT_TARGET", "production"),
+        choices=("local", "staging", "production"),
+        default=os.getenv("APP_ENVIRONMENT", "production"),
     )
     parser.add_argument("--runtime-profile", choices=("bounded", "full-market"), default="bounded")
     parser.add_argument("--application-database-url", default=os.getenv("APPLICATION_DATABASE_URL"))
@@ -384,13 +425,8 @@ def main() -> int:
     args = parse_args()
     hashes_by_env = {
         env_name: getattr(args, env_name)
-        for env_name in (
-            CALENDAR_HASH_ENV,
-            *(
-                spec.env_name
-                for spec in source_specs_for_profile(args.runtime_profile, args.deployment_target)
-            ),
-        )
+        for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in FULL_MARKET_SOURCE_SPECS))
+        if getattr(args, env_name)
     }
     if not args.application_database_url or not all(hashes_by_env.values()):
         print("fetcher_credentials=failed reason=input_missing", file=sys.stderr)

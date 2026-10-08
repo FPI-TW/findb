@@ -105,6 +105,7 @@ findb/
 - Router handlers 保持薄層；business logic 放在 services。
 - Source API 是 write-path ingest；Serve API 是 read-only query path。
 - Pydantic v2 model 需要 ORM hydration 時使用 `from_attributes=True`。
+- 環境身份以 `APP_ENVIRONMENT=local|staging|production` 為唯一正式輸入，須匹配已驗證 runtime/deployment；immutable `deployment_target` JSON／CLI 契約維持。Legacy accepted replay 的等值 bridge 與衝突拒絕見 `docs/operations/deployment.md`。
 - secrets/config 一律經由 `app.config.Settings` 與 env 載入；不可 hardcode。
 - Source provider names 正規化為穩定 lowercase，例如 `twelve_data`、`finlab`、`shioaji`。
 - Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。
@@ -128,7 +129,7 @@ findb/
 - Raw payload persistence 使用 PostgreSQL schema `raw`，核心 table 是 `raw.market_payload`。
 - Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `CONTRACT_NORMALIZER_MAP`；缺少或不支援 schema/version 時一律 fail closed。
 - Source API 只接受 versioned provider-neutral contracts；不提供 market-specific、provider-specific 或 `.../direct` compatibility routes。
-- Full-market 採 opt-in production runtime 與 immutable official universe／frozen daily plan；新 HK、TW ETF EOD、TAIFEX feeds 預設 inactive，須 Owner baseline approval、readiness 與五個連續交易日驗收。`expected = data + no_data + missing + blocked`，no_data 必須有 durable evidence；只補 activation 後缺口，不建立 continuous futures 或 historical backfill。
+- Full market 在 local/staging/production 以 `FULL_MARKET_ENABLED=false` 預設停用，trusted installed runtime/account enrollment、Owner baseline publish、完整 published calendar 與 aggregate capacity 通過後才可 Owner 手動 start。stopped→running 凍結 ready feeds，首次日期為 exchange-local today 且永不重設；不用 per-feed activation 或五日門檻。Flag off 由管理/lifecycle stop/audit，GET 唯讀；prepared frozen deliveries 可完成。`expected = data + no_data + missing + blocked`，no_data 必須有 durable evidence；僅補首日後 gaps，不建立 continuous futures/historical backfill。Pilot/Full checkpoint隔離，共用帳號 governor 覆蓋 installed consumers；response/universe 超 enrolled bound 的 account capacity violation 永久阻擋新 acquisition，須 fresh installed evidence 與明確 trusted repair CAS 復原，不能透過 restart/隔日清除 usage。操作見 `docs/operations/full_market.md`。
 - staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 、`shioaji/tw_etf_minute` 與 `taifex/tw_futures_eod`；每個 provider 的 staging functional pilot 只取 1–2 商品與最新已完成交易日。新增 provider 必須同步註冊 pilot catalog、支援契約、startup fixture 與 Source → raw → canonical → Serve 驗收，才能通過 readiness／CI。
 - Instrument lookup data 可產生為`backend/app/static/data/instruments.json`；不再產生macro cache，generated cache不是source-of-truth data。
 - 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 exact-host Referer regex 比對，對 Dashboard `/dashboard/lookup` 觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。

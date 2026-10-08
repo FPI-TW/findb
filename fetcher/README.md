@@ -3,6 +3,11 @@
 獨立的 FinDB Source API delivery client。Fetcher 只依賴 repository-level versioned
 contracts，不 import backend，也不持有 FinDB DB、RabbitMQ 或 Admin 權限。
 
+環境身份統一由 `APP_ENVIRONMENT=local|staging|production` 載入；
+`FULL_MARKET_ENABLED` 控制該環境的 Full market opt-in。既有 config/manifest 的
+`deployment_target` 欄位維持原契約；舊 immutable accepted replay 的等值環境映射與
+明確 legacy receipt 檢查見[部署維運規則](../docs/operations/deployment.md)。
+
 ## Staging active feeds
 
 staging 的四個 providers 以五個 provider/dataset 配對進行 functional pilot：
@@ -16,8 +21,8 @@ staging 的四個 providers 以五個 provider/dataset 配對進行 functional p
 | `taifex` | `tw_futures_eod` | `TX`、`MTX` 各一個 source-observed 近月契約，regular／after_hours |
 
 Canonical/Serve read model 仍可保留歷史或預留資料域，但不代表那些資料域目前有
-active provider feed。HK、TW ETF EOD 不為 provider coverage 擴張；production full-market
-仍須 Owner baseline/readiness 與五個連續交易日驗收。
+active provider feed。HK、TW ETF EOD 不為 provider coverage 擴張；環境 opt-in Full market
+須有效的 installed runtime/account readiness、Owner baseline publish 與完整 calendar，之後 Owner 在 Full market tab 手動啟動。
 
 目前提供：
 
@@ -204,34 +209,21 @@ Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管�
 `staging-fetcher` Environment/instance role 載入，不進 log、contract、raw payload 或
 Dashboard client bundle。
 
-## 全市場正式環境排程
+## 全市場手動排程
 
-`findb-fetch-full-market` 是獨立的正式環境入口。`configs/full_market.production.v1.json`
-固定保留 `desired_state=stopped`，staging 僅使用上述四個 provider 的 bounded pilots。
-正式環境另以四個 provider process 執行；每個 process 只取得該 provider 的憑證，以及必要的
-Source、Serve calendar 與 R2 憑證。TAIFEX 使用公開來源，不需要 Twelve Data key。
+`findb-fetch-full-market` 支援 local/staging/production 對應的 `configs/full_market.<target>.v1.json`，
+一律初始 stopped，`FULL_MARKET_ENABLED=false` 預設。Installed readiness/account allocation 與 Source
+credential、runtime/artifact/config identity 必須由 trusted management enrollment 綁定，缺少時只阻擋
+Full market 新 acquisition。Owner published official baseline、完整 calendar、aggregate quota/bytes/retry/
+deadline capacity 通過後，既有 scheduler PATCH 手動啟動並凍結 ready feed scope，首次日期 immutable。
+沒有 per-feed activation/readiness_approved/五日門檻。操作、proof 格式、local/deployed actual installation
+receipt generator 與完整命令見 [Full market runbook](../docs/operations/full_market.md)。
 
-七個 feed 是 Twelve Data 的 US／HK equity EOD、FinLab 的 TW equity／ETF EOD、Shioaji 的
-TW equity／ETF minute，以及 TAIFEX 的 TW futures EOD。正式環境首次 rollout 必須維持停止，
-由 Admin 審核官方名單的第一個 baseline、既有帳號能力及 activation date，再設定
-`full_market_<provider>_v1` control 為 running。Source 決定 published release、每份 plan 的
-50-member parts、deadline 與 canonical coverage；Fetcher 不提供自行縮小範圍或修改 deadline 的參數。
-
-```bash
-# 不使用憑證、不呼叫 provider，只驗證正式環境完整範圍與停止預設
-findb-fetch-full-market --provider twelve_data --config /app/configs/full_market.production.v1.json --check
-
-# 四個 provider 必須共用同一個 SQLite volume；目錄 0700、檔案 0600，執行 UID/GID 10001
-findb-fetch-full-market --provider twelve_data --state-path /var/lib/findb-full-market/state.sqlite3 --initialize-state
-findb-fetch-full-market --provider twelve_data --state-path /var/lib/findb-full-market/state.sqlite3 --require-stopped
-
-# 明確收集、持久化並提交官方 universe；不會自行 publish 或 activate
-findb-fetch-full-market --provider twelve_data --state-path /var/lib/findb-full-market/state.sqlite3 --sync-universes
-
-# 只在 DB control=running 且 Source feed 已啟用時執行；缺少 readiness 仍保持阻擋
-findb-fetch-full-market --provider twelve_data --state-path /var/lib/findb-full-market/state.sqlite3 --run-forever
-findb-fetch-full-market --provider twelve_data --state-path /var/lib/findb-full-market/state.sqlite3 --health
-```
+Pilot/Full checkpoint 分離，所有 opt-in installed consumers 共用 durable account governor。Pilot 與
+historical 以 installed `.account.json` 配置記帳，不依賴 Full readiness TTL；ordinary bounded 未安裝
+allocation 時保留既有行為。每個 provider call 保守預留 full response bytes；FinLab SDK 以完整 frame
+serialization 記錄 bytes，Shioaji 使用 SDK usage delta 與 detached bytes 的較大值。新 provider call
+立即 Source authorization，停止/flag-off/expiry 後只 drain 已 prepared frozen delivery。
 
 官方名單來源為 Nasdaq Trader 的兩份 symbol directories、HKEX `ListOfSecurities.xlsx`、
 TWSE／TPEx 公司資料及 ISIN 的精確 ETF sections，以及 TAIFEX `DailyMarketReportFut`。

@@ -2,10 +2,12 @@
 Application configuration management.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,8 @@ class Settings(BaseSettings):
     APP_ROLE: str = "all"
     DEBUG: bool = False
     PORT: int = 8080
+    APP_ENVIRONMENT: Literal["local", "staging", "production"] = "local"
+    FULL_MARKET_ENABLED: bool = False
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
@@ -81,6 +85,23 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_environment_metadata(self) -> "Settings":
+        legacy = os.getenv("DEPLOYMENT_TARGET")
+        if legacy is not None and (
+            "APP_ENVIRONMENT" not in self.model_fields_set or legacy != self.APP_ENVIRONMENT
+        ):
+            raise ValueError("APP_ENVIRONMENT conflicts with legacy deployment metadata")
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_environment_input(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "DEPLOYMENT_TARGET" in value:
+            if value.get("APP_ENVIRONMENT") != value["DEPLOYMENT_TARGET"]:
+                raise ValueError("APP_ENVIRONMENT conflicts with legacy deployment metadata")
+        return value
 
 
 @lru_cache()

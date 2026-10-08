@@ -1,14 +1,9 @@
 """Authoritative start eligibility for governed full-market controls."""
 
-from datetime import date
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import CalendarYearRevision
-from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset, UniverseRelease
-from app.services.calendar_management import complete_published_revision_ids
-from app.services.full_market_governance import full_market_configuration
+from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 
 
@@ -48,39 +43,6 @@ async def scheduler_start_blockers(
         datasets = await scheduler_start_datasets(db, row.scheduler_key)
     if {dataset.dataset_key for dataset in datasets} != set(dataset_keys):
         return ["full_market_scope_invalid"]
-    enabled: list[tuple[DatasetRegistry, date]] = []
-    for dataset in datasets:
-        opted_in, _, errors, _ = full_market_configuration(dataset, row.provider)
-        if errors:
-            return ["full_market_configuration_invalid"]
-        if opted_in:
-            governance = (dataset.config or {})["full_market"]
-            enabled.append((dataset, date.fromisoformat(governance["activation_date"])))
-    if not enabled:
-        return ["full_market_no_enabled_datasets"]
-    for dataset, activation in enabled:
-        baseline = await db.scalar(
-            select(UniverseRelease.release_id)
-            .where(
-                UniverseRelease.dataset_key == dataset.dataset_key,
-                UniverseRelease.provider == row.provider,
-                UniverseRelease.status == "published",
-                UniverseRelease.effective_date <= activation,
-            )
-            .limit(1)
-        )
-        if baseline is None:
-            return ["full_market_baseline_missing"]
-        calendar_market = "TAIFEX" if dataset.dataset_key == "tw_futures_eod" else dataset.market
-        calendar = await db.scalar(
-            select(CalendarYearRevision.id)
-            .where(
-                CalendarYearRevision.market == calendar_market,
-                CalendarYearRevision.year == activation.year,
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
-            )
-            .limit(1)
-        )
-        if calendar is None:
-            return ["full_market_calendar_missing"]
-    return []
+    from app.services.full_market_admission import eligibility
+
+    return (await eligibility(db, row.provider, datasets))["blockers"]

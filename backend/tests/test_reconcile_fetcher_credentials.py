@@ -112,7 +112,7 @@ async def test_full_market_profile_expands_exact_scopes_and_retains_bounded_defa
     assert [result.action for result in results] == [
         "updated",
         "updated",
-        "unchanged",
+        "updated",
         "created",
         "unchanged",
     ]
@@ -120,12 +120,13 @@ async def test_full_market_profile_expands_exact_scopes_and_retains_bounded_defa
     by_provider = {row.source_name: row for row in rows}
     for spec in FULL_MARKET_SOURCE_SPECS:
         assert by_provider[spec.source_name].allowed_datasets == list(spec.allowed_datasets)
+        assert by_provider[spec.source_name].rate_limit_requests == 2400
     audits = (
         await test_session.scalars(
             select(AdminAuditEvent).where(AdminAuditEvent.actor_type == "deployment")
         )
     ).all()
-    assert len(audits) == 7 and all("key_hash" not in (row.details or {}) for row in audits)
+    assert len(audits) == 8 and all("key_hash" not in (row.details or {}) for row in audits)
     with pytest.raises(FetcherCredentialError):
         await reconcile_fetcher_credentials_in_session(
             test_session, _hashes(), runtime_profile="full-market"

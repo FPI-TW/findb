@@ -114,8 +114,6 @@ from app.schemas.common import PaginationInfo
 from app.schemas.full_market import (
     DeliveryPlanResponse,
     DeliverySummaryResponse,
-    FeedActivateRequest,
-    FeedDeactivateRequest,
     UniversePublishRequest,
     UniverseReleaseResponse,
 )
@@ -171,8 +169,6 @@ from app.services.credentials import (
 from app.services.delivery_monitor import list_missing_delivery_alerts
 from app.services.full_market import (
     FullMarketError,
-    activate_feed,
-    deactivate_feed,
     get_plan,
     publish_universe,
     reconcile_plan,
@@ -257,55 +253,18 @@ async def publish_full_market_universe(
 
 
 @router.post("/feeds/{dataset_key}/activate")
-async def activate_full_market_feed(
-    dataset_key: str,
-    body: FeedActivateRequest,
-    principal: AdminPrincipal = Depends(require_owner),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    try:
-        response = await activate_feed(db, dataset_key, body)
-    except FullMarketError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    await record_admin_audit(
-        db,
-        principal,
-        action="activate",
-        resource_type="full_market_feed",
-        resource_id=dataset_key,
-        details={
-            "mode": body.mode,
-            "activation_date": body.activation_date.isoformat(),
-            "readiness_evidence_note": body.readiness_evidence_note,
-        },
-        commit=False,
-    )
-    await db.commit()
-    return response
-
-
 @router.post("/feeds/{dataset_key}/deactivate")
-async def deactivate_full_market_feed(
+async def retired_full_market_feed_action(
     dataset_key: str,
-    body: FeedDeactivateRequest,
     principal: AdminPrincipal = Depends(require_owner),
-    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    try:
-        response = await deactivate_feed(db, dataset_key)
-    except FullMarketError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    await record_admin_audit(
-        db,
-        principal,
-        action="deactivate",
-        resource_type="full_market_feed",
-        resource_id=dataset_key,
-        details={**response, "evidence_note": body.evidence_note},
-        commit=False,
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "feed_activation_retired",
+            "guidance": "Publish the official baseline, then PATCH /admin/schedulers/{scheduler_key} with desired_state and expected_revision.",
+        },
     )
-    await db.commit()
-    return response
 
 
 @router.get("/delivery-plans", response_model=dict)

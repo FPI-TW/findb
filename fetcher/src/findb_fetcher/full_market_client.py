@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_universe import canonical_bytes
 
@@ -25,6 +26,12 @@ class FullMarketSourceClient:
         self.client = client or httpx.Client(timeout=config.request_timeout_seconds)
         self.owns_client = client is None
 
+    def __enter__(self) -> "FullMarketSourceClient":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
     def close(self) -> None:
         if self.owns_client:
             self.client.close()
@@ -32,6 +39,7 @@ class FullMarketSourceClient:
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         encoded = canonical_bytes(body) if body is not None else None
         for attempt in range(self.config.max_attempts):
+            source_permit(self.config.source_client_key)
             try:
                 with self.client.stream(
                     method,

@@ -329,9 +329,9 @@ def test_taifex_production_rejected_before_clients(
     from findb_fetcher.taifex_pilot import main
 
     if target is None:
-        monkeypatch.delenv("DEPLOYMENT_TARGET", raising=False)
+        monkeypatch.delenv("APP_ENVIRONMENT", raising=False)
     else:
-        monkeypatch.setenv("DEPLOYMENT_TARGET", target)
+        monkeypatch.setenv("APP_ENVIRONMENT", target)
     assert (
         main(
             [
@@ -360,7 +360,7 @@ def test_each_provider_real_cli_starts_offline_readiness(
         "taifex": "taifex_pilot",
     }
     env = {
-        "DEPLOYMENT_TARGET": "staging",
+        "APP_ENVIRONMENT": "staging",
         "SOURCE_API_URL": "https://source.example",
         "SOURCE_CLIENT_KEY": "fixture-source",
         "FINDB_SERVE_BASE_URL": "https://serve.example",

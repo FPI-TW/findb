@@ -12,7 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig
+from findb_fetcher.config import FetcherConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.finlab_scheduler import FinLabScheduledExecutor
 from findb_fetcher.finlab_universe import load_finlab_universe
@@ -33,7 +33,7 @@ class HistoricalRuntimeError(RuntimeError):
 def _schedule(provider: str, dataset_key: str) -> ScheduleConfig:
     default_schedule = (
         "/app/configs/daily_scheduler.production.v3.json"
-        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        if app_environment("staging").strip().lower() == "production"
         else "/app/configs/daily_scheduler.v2.json"
     )
     path = Path(os.getenv("FETCHER_HISTORICAL_SCHEDULE_FILE", default_schedule))
@@ -116,7 +116,7 @@ class FinLabHistoricalRunner:
         schedule = _schedule(item.provider, item.dataset_key)
         default_universe = (
             "/app/configs/finlab_tw50_2026_09_21.v2.json"
-            if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+            if app_environment("staging").strip().lower() == "production"
             else "/app/configs/finlab_tw_review_required.v1.json"
         )
         universe_path = Path(os.getenv("FETCHER_FINLAB_UNIVERSE_FILE", default_universe))

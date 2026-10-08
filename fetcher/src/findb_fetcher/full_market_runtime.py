@@ -81,7 +81,7 @@ def load_readiness(
         if (
             value["provider"] != provider
             or value["status"] != "verified"
-            or set(value["datasets"]) != set(datasets)
+            or not set(datasets) <= set(value["datasets"])
         ):
             raise ValueError
         verified = datetime.fromisoformat(value["verified_at"])
@@ -116,7 +116,9 @@ def load_readiness(
                 or value[field] <= 0
             ):
                 raise ValueError
-        if value["max_response_bytes"] > MAX_SNAPSHOT_BYTES:
+        if value["max_response_bytes"] > (
+            2 * 1024**3 if provider == "finlab" else MAX_SNAPSHOT_BYTES
+        ):
             raise ValueError
     except (KeyError, TypeError, ValueError):
         raise ReadinessBlockedError(
@@ -187,6 +189,7 @@ class FullMarketRuntime:
         )
         self.readiness_file = readiness_file
         self.feeds = [feed for feed in config["feeds"] if feed["provider"] == provider]
+        self.installed_feeds = list(self.feeds)
         self.http = client or httpx.Client(timeout=30)
         self.owns_http = client is None
         self.sdk: PersistentIsolatedShioajiGateway | None = None
@@ -229,9 +232,26 @@ class FullMarketRuntime:
                 failed.close()
             raise
 
+    def _acquisition_allowed(self) -> bool:
+        permit = getattr(self, "account_permit", None)
+        if permit is not None:
+            permit.state.assert_capacity(permit.account)
+        else:
+            self.state.assert_capacity(self.provider)
+        return self.can_acquire()
+
     def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
+        from findb_fetcher.account_governor import enabled, reserve
+
+        if enabled():
+            permit = reserve(self.provider)
+            if not self._acquisition_allowed() or permit is None:
+                raise ReadinessBlockedError("scheduler acquisition stopped")
+            self.reservation_window = permit.window
+            self.account_permit = permit
+            return 0, 1
         while True:
-            if not self.can_acquire():
+            if not self._acquisition_allowed():
                 raise ReadinessBlockedError("scheduler was stopped by Source control")
             now = datetime.now(timezone.utc)
             if datetime.fromisoformat(self.proof["expires_at"]) <= now:
@@ -250,7 +270,7 @@ class FullMarketRuntime:
                 self.reservation_window = window
                 # A contended SQLite transaction may outlive the pre-permit guard.
                 # Retain its conservative reservation when control/expiry changes.
-                if not self.can_acquire():
+                if not self._acquisition_allowed():
                     raise ReadinessBlockedError("scheduler was stopped by Source control")
                 if datetime.fromisoformat(self.proof["expires_at"]) <= datetime.now(timezone.utc):
                     raise ReadinessBlockedError("current account readiness evidence expired")
@@ -258,21 +278,33 @@ class FullMarketRuntime:
             # Recheck control and expiry, including clock rollback and very low rates.
             time.sleep(min(wait, 1))
 
-    def _observed_response(self, size: int, *, usage_bytes: int | None = None) -> None:
+    def _observed_response(
+        self, size: int, *, usage_bytes: int | None = None, declared: int = 0
+    ) -> None:
         """Detached SDK bytes are an observable lower bound, not network measurement."""
         bound = int(self.proof["max_response_bytes"])
         observed = max(size, usage_bytes or 0)
-        if observed > bound:
-            self.state.record_byte_overage(
+        permit = getattr(self, "account_permit", None)
+        if permit is not None:
+            permit.observe(observed, declared=declared)
+        if max(observed, declared) > bound:
+            self.state.observe_capacity(
                 account=self.provider,
                 window=self.reservation_window,
-                byte_count=observed - bound,
+                bound=bound,
+                observed=observed,
+                declared=declared,
+                allocation_sha256=self.proof.get(
+                    "account_allocation_sha256", checksum(canonical_bytes(self.proof))
+                ),
             )
             raise ReadinessBlockedError("provider response exceeds verified size bound")
 
     def _rate_limited(self) -> None:
-        self.state.rate_limited(
-            account=self.provider,
+        permit = getattr(self, "account_permit", None)
+        state = permit.state if permit is not None else self.state
+        state.rate_limited(
+            account=permit.account if permit is not None else self.provider,
             window=datetime.now(timezone.utc).date().isoformat(),
             until=time.time() + 60,
         )
@@ -292,16 +324,30 @@ class FullMarketRuntime:
         try:
             return read_identity_response(response, bound=bound)
         except BoundedResponseError as exc:
-            if provider_response and exc.observed_bytes:
-                self._observed_response(exc.observed_bytes)
+            if provider_response and (exc.observed_bytes or exc.declared_bytes):
+                self._observed_response(exc.observed_bytes, declared=exc.declared_bytes)
             raise ReadinessBlockedError(str(exc)) from exc
+        except httpx.HTTPError as exc:
+            if provider_response:
+                self._observed_response(getattr(exc, "observed_bytes", 0))
+            raise
 
     def _snapshot(self, url: str, *, provider_response: bool = False) -> bytes:
-        bound = int(self.proof["max_response_bytes"]) if provider_response else MAX_SNAPSHOT_BYTES
+        if not provider_response:
+            self._reserve()  # Official universe refresh uses the same installed allocation.
+        if not self._acquisition_allowed():
+            raise ReadinessBlockedError("scheduler acquisition stopped")
+        # Official listings consume the same enrolled response bound and account
+        # bytes as provider data; the parser ceiling is an additional constraint.
+        bound = min(int(self.proof["max_response_bytes"]), MAX_SNAPSHOT_BYTES)
         with self.http.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
+            if response.status_code == 429:
+                # Status is known before a bounded read can reject its body.
+                self._rate_limited()
+            body = self._read_response(response, bound=bound, provider_response=True)
+            self._observed_response(len(body))
             if response.status_code != 200:
                 raise ReadinessBlockedError("official exchange snapshot unavailable")
-            body = self._read_response(response, bound=bound, provider_response=provider_response)
             if url in NASDAQ_URLS:
                 dataset = "us_equity_eod"
             elif url == HKEX_URL:
@@ -316,10 +362,17 @@ class FullMarketRuntime:
             return body
 
     def _ensure_proof(self) -> None:
+        declared_scope = (
+            json.loads(self.readiness_file.read_bytes()).get("datasets", [])
+            if self.readiness_file
+            else []
+        )
+        if not set(declared_scope) <= {feed["dataset_key"] for feed in self.installed_feeds}:
+            raise ReadinessBlockedError("readiness exceeds installed feed scope")
         self.proof = load_readiness(
             self.readiness_file,
             self.provider,
-            [feed["dataset_key"] for feed in self.feeds],
+            declared_scope,
             now=datetime.now(timezone.utc),
         )
 
@@ -329,7 +382,7 @@ class FullMarketRuntime:
                 raise ReadinessBlockedError("FinLab SDK version is unsupported")
         except importlib.metadata.PackageNotFoundError:
             raise ReadinessBlockedError("FinLab pinned SDK is unavailable") from None
-        return FinLabSdkGateway.from_env()
+        return FinLabSdkGateway.from_env(on_response_bytes=self._observed_response)
 
     def _catalogue(self) -> list[dict[str, Any]]:
         self._ensure_proof()
@@ -379,6 +432,10 @@ class FullMarketRuntime:
             return value["data"]
 
     def sync_universes(self) -> list[dict[str, Any]]:
+        self._ensure_proof()
+        self.feeds = [
+            feed for feed in self.installed_feeds if feed["dataset_key"] in self.proof["datasets"]
+        ]
         now = datetime.now(timezone.utc)
         snapshots: dict[str, bytes] = {}
         if self.provider == "twelve_data":
@@ -520,8 +577,36 @@ class FullMarketRuntime:
             result.append(self.source.submit(body))
         return result
 
+    def drain(self) -> dict[str, Any]:
+        """Deliver immutable prepared bodies without acquiring new provider data."""
+        for saved in self.state.pending_plans(self.provider):
+            plan = json.loads(saved["body"])
+            feed = next(
+                (
+                    item
+                    for item in self.installed_feeds
+                    if item["dataset_key"] == plan["dataset_key"]
+                ),
+                None,
+            )
+            if feed is None:
+                continue
+            release = self.source.release(plan["release_id"])
+            self._deliver_plan(plan, release, feed, drain_only=True)
+            self.state.evaluate(self.source.evaluate(plan["plan_id"]))
+        return self.state.health(self.provider)
+
     def cycle(self) -> dict[str, Any]:
+        self.drain()
         self._ensure_proof()
+        authorization = self.source.request("GET", "full-market/authorization")
+        if authorization.get("acquisition_allowed") is not True:
+            return self.state.health(self.provider)
+        self.feeds = [
+            feed
+            for feed in self.installed_feeds
+            if feed["dataset_key"] in authorization["admitted_dataset_keys"]
+        ]
         now = datetime.now(timezone.utc)
         if self.state.refresh_due(self.provider, now.timestamp()):
             try:
@@ -590,7 +675,7 @@ class FullMarketRuntime:
                 )
             due_work.extend((day, feed) for day in due_dates)
         for day, feed in sorted(due_work, key=lambda work: work[0], reverse=True):
-            if not self.can_acquire():
+            if not self._acquisition_allowed():
                 self.pause()
                 return self.state.health(self.provider)
             # Current deadline comes first; catchup retains every unresolved open date.
@@ -666,16 +751,22 @@ class FullMarketRuntime:
         return self.source.release(listed["published_release_id"])
 
     def _deliver_plan(
-        self, plan: dict[str, Any], release: dict[str, Any], feed: dict[str, Any]
+        self,
+        plan: dict[str, Any],
+        release: dict[str, Any],
+        feed: dict[str, Any],
+        *,
+        drain_only: bool = False,
     ) -> bool:
         members = {member["member_key"]: member for member in release["members"]}
         for part in plan["parts"]:
             for member_key in part["member_keys"]:
-                if not self.can_acquire():
-                    self.pause()
-                    return False
                 member = members[member_key]
                 key = part["work_item_id"] + ":" + member_key
+                if self.state.prepared(key) is None and (
+                    drain_only or not self._acquisition_allowed()
+                ):
+                    continue
                 if not self.state.claim(key, now=time.time()):
                     continue
                 try:
@@ -823,9 +914,9 @@ class FullMarketRuntime:
             except TwelveDataResponseError as exc:
                 if exc.is_rate_limited:
                     self._rate_limited()
-                if exc.observed_bytes:
+                if exc.observed_bytes or exc.declared_bytes:
                     try:
-                        self._observed_response(exc.observed_bytes)
+                        self._observed_response(exc.observed_bytes, declared=exc.declared_bytes)
                     except ReadinessBlockedError:
                         # Overage debt is retained without erasing known HTTP/API status.
                         raise exc
@@ -1004,6 +1095,10 @@ class FullMarketRuntime:
                             product=product,
                             max_response_bytes=int(self.proof["max_response_bytes"]),
                             on_observed_bytes=self._observed_response,
+                            on_bounded_response=lambda size, declared: self._observed_response(
+                                size, declared=declared
+                            ),
+                            on_http_rate_limited=self._rate_limited,
                         )
                         self._persist(product_raw, dataset, product)
                         parsed = parse_report(product_raw, target_date=day, historical=True)

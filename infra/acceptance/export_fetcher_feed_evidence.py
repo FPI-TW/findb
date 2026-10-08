@@ -27,7 +27,7 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
 def _daily_provider(provider: str) -> dict[str, Any]:
     default_schedule = (
         "/app/configs/daily_scheduler.production.v3.json"
-        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
         else "/app/configs/daily_scheduler.staging.v3.json"
     )
     schedule_path = Path(os.getenv("FETCHER_SCHEDULE_FILE", default_schedule))
@@ -116,7 +116,7 @@ def _daily_provider(provider: str) -> dict[str, Any]:
 def _shioaji() -> dict[str, Any]:
     default_manifest = (
         "/app/configs/shioaji_tw50_2026_09_21.v2.json"
-        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
         else "/app/configs/shioaji_tw_staging_pilot.v3.json"
     )
     manifest_path = Path(

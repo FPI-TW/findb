@@ -22,6 +22,10 @@ infra/env/
 ```
 
 `remote.env.example` is committed and documents the deployment contract.
+All four unit/environment sources publish `FULL_MARKET_ENABLED` as a non-secret variable.
+Only the exact values `true` and `false` are accepted; an omitted value defaults to `false`.
+Backend and Fetcher must use the same value in each environment. Publishing this flag
+selects the deployment profile and never starts a scheduler.
 `.env.remote` contains real values, must remain ignored with mode `0600`, and
 must never be copied to EC2 or committed.
 

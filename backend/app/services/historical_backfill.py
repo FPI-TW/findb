@@ -48,14 +48,14 @@ PROVIDER_TIMEZONES: dict[str, str] = {
 def _max_backfill_days() -> int:
     return (
         PRODUCTION_MAX_BACKFILL_DAYS
-        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
         else STAGING_MAX_BACKFILL_DAYS
     )
 
 
 def _supports_backfill(provider: str, dataset_key: str) -> bool:
     if (
-        os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
         and provider == "shioaji"
     ):
         return False

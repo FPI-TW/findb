@@ -21,7 +21,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from findb_fetcher.client import PreparedDelivery, SourceAPIDeadlineExceeded
-from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig
+from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.market_calendar import PublishedCalendarClient
 from findb_fetcher.providers.shioaji import IsolatedShioajiGateway
@@ -231,7 +231,7 @@ def default_manifest_path() -> Path:
     configured = os.getenv("FETCHER_SHIOAJI_PRODUCTION_MANIFEST")
     if configured:
         return Path(configured)
-    target = os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower()
+    target = app_environment("staging").strip().lower()
     filename = (
         "shioaji_tw50_2026_09_21.v2.json"
         if target == "production"
@@ -250,7 +250,7 @@ def default_state_path() -> Path:
         if configured
         else (
             DEFAULT_PRODUCTION_STATE_PATH
-            if os.getenv("DEPLOYMENT_TARGET", "staging") == "production"
+            if app_environment("staging") == "production"
             else Path("/var/lib/findb-shioaji-fetcher/staging-pilot-v3/state.sqlite3")
         )
     )

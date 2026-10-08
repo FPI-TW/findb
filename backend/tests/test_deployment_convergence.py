@@ -539,6 +539,7 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
 def test_reusable_deployments_forward_complete_staging_runtime_variable_contract() -> None:
     contracts = {
         "findb": (
+            "FULL_MARKET_ENABLED",
             "APP_NAME",
             "APP_VERSION",
             "DEBUG",
@@ -558,6 +559,7 @@ def test_reusable_deployments_forward_complete_staging_runtime_variable_contract
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
         ),
         "fetcher": (
+            "FULL_MARKET_ENABLED",
             "FETCHER_RUNTIME_PROFILE",
             "FETCHER_SOURCE_API_URL",
             "FINDB_SERVE_BASE_URL",
@@ -595,7 +597,12 @@ def test_reusable_deployments_forward_complete_staging_runtime_variable_contract
                 if name == "FETCHER_RUNTIME_PROFILE":
                     # Scope is bound to the reviewed caller input, not a secret
                     # or mutable runtime variable loaded on the host.
-                    assert effective_env[name] == "${{ inputs.runtime_profile }}"
+                    assert (
+                        effective_env[name]
+                        == "${{ inputs.runtime_profile || (vars.FULL_MARKET_ENABLED == 'true' && 'full-market' || 'bounded') }}"
+                    )
+                elif name == "FULL_MARKET_ENABLED":
+                    assert effective_env[name] == "${{ vars.FULL_MARKET_ENABLED || 'false' }}"
                 else:
                     assert "inputs.deployment_target == 'staging'" in effective_env[name]
                     assert f"vars.{name}" in effective_env[name]

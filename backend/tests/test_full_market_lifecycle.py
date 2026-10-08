@@ -11,19 +11,15 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select, text
 
-from app.models.registry import DailyDeliveryMember, DatasetRegistry, IngestionRun, SchedulerControl
+from app.models.registry import DatasetRegistry, IngestionRun, SchedulerControl
 from app.schemas.full_market import (
-    DeliveryOutcomeRequest,
-    DeliveryPlanCreateRequest,
     FeedActivateRequest,
 )
 from app.schemas.ingress import MarketMinuteIngressRequest
 from app.services.full_market import (
     FullMarketError,
     activate_feed,
-    create_plan,
     get_plan,
-    record_outcome,
 )
 from app.services.normalize.contracts import (
     FuturesEODContractNormalizer,
@@ -31,7 +27,7 @@ from app.services.normalize.contracts import (
 )
 from scripts.seed_data import seed_datasets
 from tests.test_canonical_ingest_api import _execute_run
-from tests.test_full_market import DAY, EVIDENCE, _activated_plan, _ingress, _quote, _source_headers
+from tests.test_full_market import DAY, _activated_plan, _ingress, _quote, _source_headers
 from tests.test_minute_normalize import _minute_request
 
 
@@ -200,77 +196,27 @@ async def test_minute_available_before_closed_group_but_plan_remains_missing(tes
 
 @pytest.mark.asyncio
 async def test_acceptance_requires_five_distinct_consecutive_open_days_on_time(test_session):
-    days = [DAY + timedelta(days=offset) for offset in (0, 1, 3, 7, 8, 9)]
-    dataset, body, first = await _activated_plan(test_session, count=1, open_dates=days)
-    plans = [first]
-    for day in days[1:]:
-        plans.append(
-            await create_plan(
-                test_session,
-                DeliveryPlanCreateRequest(
-                    version=1,
-                    dataset_key=dataset.dataset_key,
-                    provider=body.provider,
-                    trade_date=day,
-                    release_id=first.release_id,
-                ),
-                allowed_datasets=[dataset.dataset_key],
-            )
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    # A valid scheduler admission needs no completed observation days.
+    assert plan.summary.missing == 2
+    control = await test_session.get(SchedulerControl, "full_market_taifex_v1")
+    assert control.desired_state == "running"
+    with pytest.raises(FullMarketError) as failure:
+        await activate_feed(
+            test_session,
+            dataset.dataset_key,
+            FeedActivateRequest(
+                activation_date=DAY,
+                mode="active",
+                readiness_evidence_note="Retired feed promotion.",
+            ),
         )
-    active = FeedActivateRequest(
-        activation_date=DAY,
-        readiness_evidence_note="Five day complete official audit reviewed.",
-        mode="active",
-    )
-    with pytest.raises(FullMarketError, match="incomplete"):
-        await activate_feed(test_session, dataset.dataset_key, active)
-    for plan in plans:
-        members = (
-            await test_session.scalars(
-                select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == plan.plan_id)
-            )
-        ).all()
-        for member in members:
-            evidence = {
-                **EVIDENCE,
-                "observed_at": plan.deadline_at - timedelta(minutes=2),
-                "source_symbol": member.provider_symbol,
-                "trade_date": plan.trade_date,
-                "session": member.session,
-                "source_status": "no_trade",
-                "source_excerpt": "Official report confirms no trades for this contract/session.",
-            }
-            await record_outcome(
-                test_session,
-                plan.plan_id,
-                DeliveryOutcomeRequest(
-                    version=1,
-                    work_item_id=plan.parts[0].work_item_id,
-                    member_key=member.member_key,
-                    outcome="no_data",
-                    reason="no_trade",
-                    evidence=evidence,
-                ),
-                provider=body.provider,
-                allowed_datasets=[dataset.dataset_key],
-            )
-            member.outcome_at = plan.deadline_at - timedelta(minutes=1)
-        await test_session.commit()
-    removed = plans[-3]
-    await test_session.execute(
-        text("UPDATE daily_delivery_member SET outcome=NULL WHERE plan_id=:id"),
-        {"id": removed.plan_id},
-    )
-    await test_session.commit()
-    with pytest.raises(FullMarketError, match="incomplete"):
-        await activate_feed(test_session, dataset.dataset_key, active)
-    await test_session.execute(
-        text("UPDATE daily_delivery_member SET outcome='no_data' WHERE plan_id=:id"),
-        {"id": removed.plan_id},
-    )
-    await test_session.commit()
-    response = await activate_feed(test_session, dataset.dataset_key, active)
-    assert response["mode"] == "active"
+    assert failure.value.status_code == 410
+    assert (
+        await get_plan(
+            test_session, plan.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
+        )
+    ).summary.missing == 2
 
 
 @pytest.mark.asyncio
@@ -279,7 +225,7 @@ async def test_reseed_preserves_approved_feed_and_running_scheduler(test_session
     previous = deepcopy(dataset.config["full_market"])
     await seed_datasets(test_session)
     control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
-    assert control.desired_state == "stopped"
+    assert control.desired_state == "running"
     control.desired_state = "running"
     await test_session.commit()
     await seed_datasets(test_session)
@@ -291,58 +237,55 @@ async def test_reseed_preserves_approved_feed_and_running_scheduler(test_session
 async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(
     client, test_session, admin_headers
 ):
-    from app.models.registry import DailyDeliveryPlan, UniverseRelease
-    from app.services.full_market import deactivate_feed
+    from app.config import get_settings
+    from app.models.registry import AdminAuditEvent, DailyDeliveryPlan, UniverseRelease
+    from app.services.full_market_admission import reconcile_environment
 
     staged, _, plan = await _activated_plan(test_session, "hk_equity_eod", count=1)
     await seed_datasets(test_session)
     control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
-    control.desired_state = "running"
-    await test_session.commit()
     response = await client.post(
-        "/api/v1/admin/feeds/hk_equity_eod/deactivate",
-        headers=admin_headers,
-        json={"evidence_note": "Operator reviewed rollback without deleting history."},
+        "/api/v1/admin/feeds/hk_equity_eod/deactivate", headers=admin_headers
     )
-    assert response.status_code == 200, response.text
-    assert not staged.is_active and not staged.config["full_market"]["enabled"]
-    assert control.desired_state == "stopped"
+    assert response.status_code == 410
+    get_settings().FULL_MARKET_ENABLED = False
+    await reconcile_environment(test_session, actor="test-flag-transition")
+    await test_session.commit()
+    assert control.desired_state == "stopped" and staged.is_active
     assert await test_session.get(DailyDeliveryPlan, plan.plan_id) is not None
     assert await test_session.get(UniverseRelease, plan.release_id) is not None
-    bounded = await test_session.get(DatasetRegistry, "us_equity_eod")
-    config = deepcopy(bounded.config)
-    config["full_market"]["enabled"] = True
-    bounded.config = config
-    await deactivate_feed(test_session, "us_equity_eod")
-    assert bounded.is_active and not bounded.config["full_market"]["enabled"]
+    assert (await test_session.get(DatasetRegistry, "us_equity_eod")).is_active
+    assert await test_session.scalar(
+        select(AdminAuditEvent).where(
+            AdminAuditEvent.resource_id == control.scheduler_key, AdminAuditEvent.action == "stop"
+        )
+    )
 
 
 @pytest.mark.asyncio
 async def test_acceptance_cannot_skip_an_actual_exchange_open_day(test_session):
-    days = [DAY + timedelta(days=offset) for offset in (0, 1, 3, 7, 8, 9)]
-    dataset, body, first = await _activated_plan(test_session, count=1, open_dates=days)
-    for day in (days[1], days[2], days[4], days[5]):
-        await create_plan(
-            test_session,
-            DeliveryPlanCreateRequest(
-                version=1,
-                dataset_key=dataset.dataset_key,
-                provider=body.provider,
-                trade_date=day,
-                release_id=first.release_id,
-            ),
-            allowed_datasets=[dataset.dataset_key],
-        )
-    with pytest.raises(FullMarketError, match="consecutive"):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    from app.models.registry import FullMarketDatasetState
+
+    state = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    assert state.first_start_date == DAY
+    with pytest.raises(FullMarketError) as failure:
         await activate_feed(
             test_session,
             dataset.dataset_key,
             FeedActivateRequest(
-                activation_date=DAY,
+                activation_date=DAY + timedelta(days=8),
                 mode="active",
-                readiness_evidence_note="Five scheduled days reviewed by owner.",
+                readiness_evidence_note="Retired date reset.",
             ),
         )
+    assert failure.value.status_code == 410
+    assert state.first_start_date == DAY
+    assert (
+        await get_plan(
+            test_session, plan.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
+        )
+    ).summary.missing == 2
 
 
 @pytest.mark.asyncio
@@ -365,3 +308,72 @@ async def test_monitor_only_emits_post_activation_real_exchange_gaps(test_sessio
     alerts = (await test_session.scalars(select(MissingDeliveryAlert))).all()
     assert [alert.expected_data_date for alert in alerts] == [DAY]
     assert alerts[0].details["expected"] == 2 and alerts[0].details["missing"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dataset_key,provider",
+    [("hk_equity_eod", "twelve_data"), ("tw_etf_eod", "finlab"), ("tw_futures_eod", "taifex")],
+)
+async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
+    client, test_session, dataset_key, provider
+):
+    import hashlib
+
+    from app.config import get_settings
+    from app.models.registry import SourceClient
+    from app.services.full_market_admission import reconcile_environment
+    from scripts.reconcile_fetcher_credentials import (
+        CALENDAR_HASH_ENV,
+        FULL_MARKET_SOURCE_SPECS,
+        reconcile_fetcher_credentials_in_session,
+    )
+
+    dataset, _, plan = await _activated_plan(test_session, dataset_key, count=1)
+    keys = {spec.env_name: "first-" + spec.source_name for spec in FULL_MARKET_SOURCE_SPECS}
+    keys[CALENDAR_HASH_ENV] = "calendar-key"
+    hashes = {name: hashlib.sha256(key.encode()).hexdigest() for name, key in keys.items()}
+    await reconcile_fetcher_credentials_in_session(
+        test_session, hashes, runtime_profile="full-market"
+    )
+    keys = {name: "rotated-" + key for name, key in keys.items()}
+    hashes = {name: hashlib.sha256(key.encode()).hexdigest() for name, key in keys.items()}
+    get_settings().FULL_MARKET_ENABLED = False
+    await reconcile_environment(test_session, actor="bounded-deployment")
+    await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="bounded")
+    credential = await test_session.scalar(
+        select(SourceClient).where(
+            SourceClient.name == "fetcher-" + provider.replace("_", "-"),
+            SourceClient.revoked_at.is_(None),
+        )
+    )
+    assert dataset_key in credential.allowed_datasets
+    source_env = next(
+        spec.env_name for spec in FULL_MARKET_SOURCE_SPECS if spec.source_name == provider
+    )
+    headers = {"X-API-Key": keys[source_env]}
+    request = _ingress(plan, [_quote()])
+    if provider != "taifex":
+        request.update(schema_id="market_eod", source=provider)
+        request["payload"]["data"] = [
+            {
+                "symbol": "00001" if provider == "twelve_data" else "0001",
+                "currency": "HKD" if provider == "twelve_data" else "TWD",
+                "trade_date": str(plan.trade_date),
+                "open": "100",
+                "high": "110",
+                "low": "90",
+                "close": "105",
+                "volume": 5,
+            }
+        ]
+    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    assert response.status_code == 202, response.text
+    run = await test_session.get(IngestionRun, UUID(response.json()["run_id"]))
+    assert run.delivery_part_id == plan.parts[0].part_id and dataset.is_active
+    ordinary = deepcopy(request)
+    ordinary.pop("delivery")
+    ordinary["idempotency_key"] = "ordinary-full-only"
+    assert (
+        await client.post("/api/v1/source/ingest", headers=headers, json=ordinary)
+    ).status_code == 409

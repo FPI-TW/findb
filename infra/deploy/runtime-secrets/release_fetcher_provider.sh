@@ -1,7 +1,33 @@
 #!/usr/bin/env bash
+# findb_environment_contract=app-environment-v1
 # Release one Fetcher provider using credentials loaded by the caller.
 
 set -euo pipefail
+# A failed inspect is not proof of absence: Docker uses rc=1 for daemon and
+# permission errors too. Only a successful exact-name inventory can prove absence.
+runtime_inventory_recovery=none
+runtime_inventory_failure() {
+  echo "fetcher_runtime_inventory=failed reason=query_unknown" >&2
+  case "$runtime_inventory_recovery" in
+    transaction) abort_transaction 1 ;;
+    helper) recover 1 ;;
+    transaction_recovery) echo "fetcher_aws_deploy=failed reason=rollback_inventory_unverified" >&2; exit 1 ;;
+    helper_recovery) echo "release_fetcher_provider=failed reason=recovery_failed" >&2; exit 1 ;;
+    *) exit 1 ;;
+  esac
+}
+runtime_exists() {
+  local requested="$1" inventory name
+  inventory="$(docker container ls --all --format '{{.Names}}' 2>/dev/null)" || runtime_inventory_failure
+  while IFS= read -r name; do
+    if [ "$name" = "$requested" ]; then
+      docker container inspect "$requested" >/dev/null 2>&1 || runtime_inventory_failure
+      return 0
+    fi
+  done <<< "$inventory"
+  return 1
+}
+
 set +x
 
 : "${AWS_REGION:?AWS_REGION is required}"
@@ -44,7 +70,7 @@ fi
 
 case "$provider" in
   taifex)
-    if ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ] && [ "${DEPLOYMENT_TARGET:-}" = production ]; } && ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "${DEPLOYMENT_TARGET:-}" = staging ]; }; then
+    if ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "${APP_ENVIRONMENT:-}" = staging ]; }; then
       echo "release_fetcher_provider=failed reason=taifex_profile_invalid" >&2
       exit 1
     fi
@@ -91,12 +117,18 @@ case "$provider" in
     ;;
 esac
 
+: "${APP_ENVIRONMENT:?APP_ENVIRONMENT is required}"
+if [ "${DEPLOYMENT_TARGET+x}" = x ] && [ "$DEPLOYMENT_TARGET" != "$APP_ENVIRONMENT" ]; then
+  echo "application_environment=failed reason=legacy_environment_conflict" >&2
+  exit 1
+fi
+
 if [ "${ECR_REGISTRY:-}" != "${AWS_ACCOUNT_ID:-}.dkr.ecr.ap-southeast-1.amazonaws.com" ] \
-  || [[ ! "${DEPLOYMENT_TARGET:-}" =~ ^(staging|production)$ ]]; then
+  || [[ ! "${APP_ENVIRONMENT:-}" =~ ^(staging|production)$ ]]; then
   echo "release_fetcher_provider=failed reason=aws_route_invalid" >&2
   exit 1
 fi
-expected_image_repository="$ECR_REGISTRY/findb/$DEPLOYMENT_TARGET/fetcher/$image_repository_suffix"
+expected_image_repository="$ECR_REGISTRY/findb/$APP_ENVIRONMENT/fetcher/$image_repository_suffix"
 
 if ! printf '%s' "$image" | grep -Eq "^${expected_image_repository}@sha256:[0-9a-f]{64}$"; then
   echo "release_fetcher_provider=failed reason=ecr_image_contract" >&2
@@ -142,7 +174,11 @@ export FETCHER_STATE_PATH="$state_path"
 export FETCHER_SHIOAJI_STATE_PATH="$state_path"
 
 runtime_env_args=(
-  --env DEPLOYMENT_TARGET
+  --env FULL_MARKET_ENABLED
+  --env FETCHER_CONSUMER_PROFILE
+  --env FETCHER_ACCOUNT_STATE_PATH
+  --env "FETCHER_ACCOUNT_READINESS_FILE=/var/lib/findb-account/readiness/${provider//-/_}.json"
+  --env APP_ENVIRONMENT
   --env SOURCE_API_URL
   --env SOURCE_CLIENT_KEY
   --env FINDB_SERVE_BASE_URL
@@ -165,6 +201,16 @@ runtime_env_args=(
 if [ "$provider" = "shioaji" ]; then
   runtime_env_args+=(--env FETCHER_SHIOAJI_STATE_PATH)
 fi
+# Only retained compatible Full images in an accepted bounded replay need the
+# old input. Ordinary current images receive APP_ENVIRONMENT exclusively.
+if [ "${FETCHER_LEGACY_ENV_BRIDGE:-false}" = true ]; then
+  if [ "${FETCHER_ACCEPTED_REPLAY:-false}" != true ] || [ "${FETCHER_CONSUMER_PROFILE:-pilot}" != full_market ] || [ "${FETCHER_DEPLOY_MODE:-candidate}" != activate ]; then
+    echo "application_environment=failed reason=legacy_bridge_not_accepted_replay" >&2
+    exit 1
+  fi
+  runtime_env_args+=(--env "DEPLOYMENT_TARGET=$APP_ENVIRONMENT")
+fi
+
 
 sudo mkdir -p "$state_dir"
 sudo chown 10001:10001 "$state_dir"
@@ -188,7 +234,15 @@ if [ "$cache_dir" != "-" ]; then
 fi
 
 readiness_mount=()
-if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+account_mount=()
+account_dir="/var/lib/findb-account/$APP_ENVIRONMENT"
+if [ "${FULL_MARKET_ENABLED:-false}" = true ] || [ -d "$account_dir" ]; then
+  sudo mkdir -p "$account_dir" /etc/findb-full-market/readiness
+  sudo chown 10001:10001 "$account_dir"
+  sudo chmod 0700 "$account_dir"
+  account_mount=(--mount "type=bind,src=$account_dir,dst=$account_dir" --mount "type=bind,src=/etc/findb-full-market/readiness,dst=/var/lib/findb-account/readiness,readonly")
+fi
+if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
   # The official TW ISIN full universe exceeds the bounded 8 MiB default.
   # Keep the expanded raw/response ceiling explicit and profile-scoped.
   export CLOUDFLARE_R2_MAX_OBJECT_BYTES=16777216
@@ -208,7 +262,7 @@ if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
 fi
 
 raw_marker="$state_dir/raw-bucket.sha256"
-if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
   # All four providers share only the quota/checkpoint DB, never credentials.
   marker_identity="full-market"
 fi
@@ -237,22 +291,54 @@ else
   write_marker
 fi
 
-if docker container inspect "$candidate" >/dev/null 2>&1; then
+# Resolve all entry identities before interrupted-candidate cleanup. Unknown
+# inventory must not mutate even an unaccepted runtime before failing closed.
+for entry_name in "$stable" "$previous" "$candidate"; do
+  if runtime_exists "$entry_name"; then :; fi
+done
+recovery_original_id=-
+remove_recovery_runtime() {
+  local name="$1" id running exit_code oom error
+  if ! runtime_exists "$name"; then return 0; fi
+  id="$(docker inspect --format '{{.Id}}' "$name")" || return 1
+  if [ -z "$id" ] || [ "$id" = "$recovery_original_id" ]; then return 1; fi
+  running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
+  case "$running" in true|false) ;; *) return 1 ;; esac
+  if [ "$running" = true ]; then docker stop --time 30 "$name" >/dev/null || return 1; fi
+  running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
+  exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$name")" || return 1
+  oom="$(docker inspect --format '{{.State.OOMKilled}}' "$name")" || return 1
+  error="$(docker inspect --format '{{.State.Error}}' "$name")" || return 1
+  if [ "$running" != false ] || [ "$exit_code" != 0 ] || [ "$oom" != false ] || [ -n "$error" ]; then
+    echo "release_fetcher_provider=failed reason=runtime_retirement_failed runtime=$name" >&2
+    return 1
+  fi
+  [ "$(docker inspect --format '{{.Id}}' "$name")" = "$id" ] || return 1
+  docker rm "$name" >/dev/null || return 1
+}
+
+if runtime_exists "$candidate"; then
   # A candidate is never accepted state. A prior interrupted command may have
-  # left it running before health validation, so every retry removes it.
-  docker rm -f "$candidate"
+  # left it running before health validation. Retire it without killing work.
+  remove_recovery_runtime "$candidate"
 fi
-if docker container inspect "$stable" >/dev/null 2>&1; then
+if runtime_exists "$stable"; then
   stable_accepted="$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")"
   if [ "$stable_accepted" = false ]; then
     # A hard interruption may occur after candidate -> stable but before the
     # coordinator rolls candidate mode back. It is never an accepted release.
-    docker rm -f "$stable"
+    remove_recovery_runtime "$stable"
   fi
 fi
-if docker container inspect "$previous" >/dev/null 2>&1; then
-  if docker container inspect "$stable" >/dev/null 2>&1; then
-    docker rm -f "$previous"
+if runtime_exists "$previous"; then
+  if runtime_exists "$stable"; then
+    previous_accepted="$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$previous")" || exit 1
+    case "$previous_accepted" in true|false|''|'<no value>') ;; *) exit 1 ;; esac
+    if [ "$previous_accepted" != false ]; then
+      echo "release_fetcher_provider=failed reason=accepted_previous_unjournaled" >&2
+      exit 1
+    fi
+    remove_recovery_runtime "$previous"
   else
     docker rename "$previous" "$stable"
     docker start "$stable" >/dev/null
@@ -266,10 +352,23 @@ if [ "$cache_dir" != "-" ]; then
   cache_mount=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
 
-if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then
+state_bootstrap=false
+case "${FETCHER_CONSUMER_PROFILE:-pilot}:$1" in
+  full_market:findb-fetch-full-market)
+    if [ "${FETCHER_RECORDED_RELEASE_PROFILE:-${FETCHER_RUNTIME_PROFILE:-bounded}}" = full-market ]; then state_bootstrap=true; fi
+    ;;
+  pilot:findb-fetch-shioaji-scheduler)
+    if [ "$provider" = shioaji ]; then state_bootstrap=true; fi
+    ;;
+  full_market:*|*:findb-fetch-full-market)
+    echo "release_fetcher_provider=failed reason=consumer_command_mismatch" >&2
+    exit 2
+    ;;
+esac
+if [ "$state_bootstrap" = true ] && ! sudo test -e "$state_path"; then
   versioned_cutover=false
-  if [ "${DEPLOYMENT_TARGET:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ]; then
-    if ! docker container inspect "$stable" >/dev/null 2>&1; then
+  if [ "${APP_ENVIRONMENT:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ]; then
+    if ! runtime_exists "$stable"; then
       versioned_cutover=true
     else
       stable_mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$stable")" || exit 1
@@ -278,26 +377,28 @@ if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full
       fi
     fi
   fi
-  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && docker container inspect "$stable" >/dev/null 2>&1; then
+  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"; then
     echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
     exit 1
   fi
   state_bootstrap_name="${preflight_name}-state"
-  if docker container inspect "$state_bootstrap_name" >/dev/null 2>&1; then
-    docker rm -f "$state_bootstrap_name"
+  if runtime_exists "$state_bootstrap_name"; then
+    remove_recovery_runtime "$state_bootstrap_name"
   fi
   # A fresh host has no SQLite file yet, while --require-stopped is
   # intentionally read-only and requires one. Create only the reviewed schema
   # before the stopped-state probe; this mode never constructs network clients.
   docker run --rm \
     --name "$state_bootstrap_name" \
+    --env "APP_ENVIRONMENT=$APP_ENVIRONMENT" \
     --user 10001:10001 \
     --read-only \
     --cap-drop ALL \
     --security-opt no-new-privileges \
     --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    ${account_mount[@]+"${account_mount[@]}"} \
     --mount "type=bind,src=$state_dir,dst=$state_dir" \
-    "${cache_mount[@]}" \
+    ${cache_mount[@]+"${cache_mount[@]}"} \
     ${readiness_mount[@]+"${readiness_mount[@]}"} \
     "$image" "$@" --state-path "$state_path" --initialize-state
   if [ ! -f "$state_path" ] \
@@ -315,29 +416,61 @@ docker run --rm \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --mount "type=bind,src=$state_dir,dst=$state_dir" \
-  "${cache_mount[@]}" \
+  ${cache_mount[@]+"${cache_mount[@]}"} \
   ${readiness_mount[@]+"${readiness_mount[@]}"} \
   "${runtime_env_args[@]}" \
   "$image" "$@" --check
+
+recovery_original_id=-
+recovery_original_running=false
+if runtime_exists "$stable"; then
+  recovery_original_id="$(docker inspect --format '{{.Id}}' "$stable")" || exit 1
+  recovery_original_running="$(docker inspect --format '{{.State.Running}}' "$stable")" || exit 1
+  [ -n "$recovery_original_id" ] || exit 1
+  case "$recovery_original_running" in true|false) ;; *) exit 1 ;; esac
+fi
 
 recover() {
   status="${1:-$?}"
   [ "$status" -ne 0 ] || status=1
   set +e
   trap - ERR INT TERM HUP
+  runtime_inventory_recovery=helper_recovery
   recovery_failed=0
-  docker rm -f "${stable}-historical" >/dev/null 2>&1 || true
-  docker container inspect "$candidate" >/dev/null 2>&1 && docker rm -f "$candidate" >/dev/null 2>&1 || true
-  if docker container inspect "$previous" >/dev/null 2>&1; then
-    if docker container inspect "$stable" >/dev/null 2>&1; then
-      docker rm -f "$stable" >/dev/null 2>&1 || recovery_failed=1
+  remove_recovery_runtime "${stable}-historical" || recovery_failed=1
+  remove_recovery_runtime "$candidate" || recovery_failed=1
+  if runtime_exists "$previous"; then
+    previous_id="$(docker inspect --format '{{.Id}}' "$previous")" || recovery_failed=1
+    if [ "$previous_id" != "$recovery_original_id" ] || [ "$recovery_original_id" = - ]; then
+      recovery_failed=1
+    elif [ "$recovery_failed" -eq 0 ]; then
+      remove_recovery_runtime "$stable" || recovery_failed=1
+      if [ "$recovery_failed" -eq 0 ]; then docker rename "$previous" "$stable" >/dev/null || recovery_failed=1; fi
     fi
-    if [ "$recovery_failed" -eq 0 ]; then
-      docker rename "$previous" "$stable" >/dev/null 2>&1 || recovery_failed=1
-    fi
+  elif [ "$recovery_original_id" = - ]; then
+    remove_recovery_runtime "$stable" || recovery_failed=1
   fi
-  if [ "$recovery_failed" -eq 0 ] && docker container inspect "$stable" >/dev/null 2>&1; then
-    docker start "$stable" >/dev/null 2>&1 || recovery_failed=1
+  if [ "$recovery_failed" -eq 0 ] && [ "$recovery_original_id" != - ]; then
+    if ! runtime_exists "$stable" \
+      || [ "$(docker inspect --format '{{.Id}}' "$stable")" != "$recovery_original_id" ]; then
+      recovery_failed=1
+    else
+      recovery_current="$(docker inspect --format '{{.State.Running}}' "$stable")" || recovery_failed=1
+      case "$recovery_current" in true|false) ;; *) recovery_failed=1 ;; esac
+      if [ "$recovery_failed" -eq 0 ]; then
+        if [ "$recovery_original_running" = true ] && [ "$recovery_current" = false ]; then
+          docker start "$stable" >/dev/null || recovery_failed=1
+        elif [ "$recovery_original_running" = false ] && [ "$recovery_current" = true ]; then
+          docker stop --time 30 "$stable" >/dev/null || recovery_failed=1
+          recovery_current="$(docker inspect --format '{{.State.Running}}' "$stable")" || recovery_failed=1
+          recovery_exit="$(docker inspect --format '{{.State.ExitCode}}' "$stable")" || recovery_failed=1
+          recovery_oom="$(docker inspect --format '{{.State.OOMKilled}}' "$stable")" || recovery_failed=1
+          recovery_error="$(docker inspect --format '{{.State.Error}}' "$stable")" || recovery_failed=1
+          if [ "$recovery_current" != false ] || [ "$recovery_exit" != 0 ] \
+            || [ "$recovery_oom" != false ] || [ -n "$recovery_error" ]; then recovery_failed=1; fi
+        fi
+      fi
+    fi
   fi
   [ "$recovery_failed" -eq 0 ] || echo "release_fetcher_provider=failed reason=recovery_failed" >&2
   exit "$status"
@@ -346,16 +479,24 @@ trap 'recover "$?"' ERR
 trap 'recover 130' INT
 trap 'recover 143' TERM
 trap 'recover 129' HUP
+runtime_inventory_recovery=helper
 
 had_previous=0
-if docker container inspect "$stable" >/dev/null 2>&1; then
+if runtime_exists "$stable"; then
   had_previous=1
-  docker stop --time 30 "$stable" >/dev/null
-  stable_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")"
-  if [ "$stable_exit_code" -ne 0 ]; then
+  stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")" || false
+  case "$stable_running" in true|false) ;; *) false ;; esac
+  if [ "$stable_running" = true ]; then docker stop --time 30 "$stable" >/dev/null; fi
+  stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")" || false
+  stable_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")" || false
+  stable_oom="$(docker inspect --format '{{.State.OOMKilled}}' "$stable")" || false
+  stable_error="$(docker inspect --format '{{.State.Error}}' "$stable")" || false
+  if [ "$stable_running" != false ] || [ "$stable_exit_code" != 0 ] \
+    || [ "$stable_oom" != false ] || [ -n "$stable_error" ]; then
     echo "release_fetcher_provider=failed reason=graceful_stop" >&2
     false
   fi
+  [ "$(docker inspect --format '{{.Id}}' "$stable")" = "$recovery_original_id" ] || false
   docker rename "$stable" "$previous"
 fi
 
@@ -370,7 +511,7 @@ docker run --rm \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --mount "type=bind,src=$state_dir,dst=$state_dir" \
-  "${cache_mount[@]}" \
+  ${cache_mount[@]+"${cache_mount[@]}"} \
   ${readiness_mount[@]+"${readiness_mount[@]}"} \
   "${runtime_env_args[@]}" \
   "$image" "$@" --require-stopped
@@ -384,11 +525,12 @@ common_args=(
   --log-opt max-file=3
   --tmpfs /tmp:rw,noexec,nosuid,size=16m
   --mount "type=bind,src=$state_dir,dst=$state_dir"
+  ${account_mount[@]+"${account_mount[@]}"}
 )
 if [ "$cache_dir" != "-" ]; then
   common_args+=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
-if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; then
+if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
   common_args+=("${readiness_mount[@]}")
 fi
 if [ "$accepted_release" = false ]; then
@@ -443,7 +585,7 @@ fi
 # provider consumer's secret set has been loaded.  Reuse only that already
 # allowlisted ``runtime_env_args`` array; the outer deployment shell never
 # receives SOURCE_CLIENT_KEY/provider/R2 credentials.
-if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ] || [ "$DEPLOYMENT_TARGET" = staging ]; then
+if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ] || [ "$APP_ENVIRONMENT" = staging ]; then
   trap - ERR INT TERM HUP
   echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"
   exit 0
@@ -458,10 +600,11 @@ historical_state_dir="$state_dir/historical"
 sudo mkdir -p "$historical_state_dir"
 sudo chown 10001:10001 "$historical_state_dir"
 sudo chmod 0700 "$historical_state_dir"
-docker rm -f "$historical_name" >/dev/null 2>&1 || true
+remove_recovery_runtime "$historical_name"
 docker run -d --name "$historical_name" --label "com.findb.fetcher.accepted=$accepted_release" \
   --label com.findb.fetcher.historical-shutdown=date-boundary-v1 \
   --restart unless-stopped "${common_args[@]}" "${runtime_env_args[@]}" \
+  --env FETCHER_CONSUMER_PROFILE=historical \
   --env "FETCHER_HISTORICAL_STATE_DIR=$historical_state_dir" \
   "$image" findb-fetch-historical-backfill --provider "$historical_provider" --run-forever >/dev/null
 if [ "$(docker inspect --format '{{.State.Running}}' "$historical_name")" != "true" ]; then

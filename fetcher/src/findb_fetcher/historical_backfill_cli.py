@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 from typing import cast
 
@@ -18,6 +19,7 @@ from findb_fetcher.shioaji_historical import ExecutableShioajiHistoricalRunner
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.environ["FETCHER_CONSUMER_PROFILE"] = "historical"
     parser = argparse.ArgumentParser(
         description="Run one provider's historical backfill control worker."
     )
