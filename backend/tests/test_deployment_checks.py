@@ -618,6 +618,27 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
         _load_workflow(path)
 
 
+def test_backend_ci_installs_isolated_fetcher_runtime_before_cross_unit_tests() -> None:
+    workflow = _load_workflow(FINDB_CI_WORKFLOW)
+    backend = workflow["jobs"]["backend"]
+    assert backend["defaults"]["run"]["working-directory"] == "backend"
+    steps = backend["steps"]
+    setup_uv = next(step for step in steps if step.get("name") == "Install uv")
+    assert setup_uv["with"]["cache-dependency-glob"].splitlines() == [
+        "backend/uv.lock",
+        "fetcher/uv.lock",
+    ]
+    backend_install = next(step for step in steps if step.get("name") == "Install dependencies")
+    fetcher_install = next(
+        step for step in steps if step.get("name") == "Install Fetcher runtime dependencies"
+    )
+    assert backend_install["run"] == "uv sync --frozen"
+    assert fetcher_install["working-directory"] == "fetcher"
+    assert fetcher_install["run"] == "uv sync --frozen --no-dev"
+    tests = next(step for step in steps if step.get("name") == "Run tests")
+    assert steps.index(backend_install) < steps.index(fetcher_install) < steps.index(tests)
+
+
 def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     workflow_path = WORKFLOWS_ROOT / "staging-infra-plan.yml"
     workflow = _load_workflow(workflow_path)

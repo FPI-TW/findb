@@ -62,10 +62,16 @@ jobs:
         with:
           version: "0.9.9"
           enable-cache: true
-          cache-dependency-glob: "backend/uv.lock"
+          cache-dependency-glob: |
+            backend/uv.lock
+            fetcher/uv.lock
 
       - name: Install dependencies
         run: uv sync --frozen
+
+      - name: Install Fetcher runtime dependencies
+        working-directory: fetcher
+        run: uv sync --frozen --no-dev
 
       - name: Lint and format check
         run: |

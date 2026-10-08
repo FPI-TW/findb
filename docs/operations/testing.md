@@ -5,6 +5,12 @@
 只驗證 Backend 可用 `pnpm test:backend`／`make test-backend`，runner 會先確保 DB container 啟動。
 Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `--no-verify`。
 
+Backend 的跨 application 回歸測試會直接呼叫 `fetcher/.venv/bin/python`，驗證實際 Fetcher
+CLI 與部署 checkpoint 邊界。執行前須先完成 `pnpm setup`，或以
+`uv --directory fetcher sync --frozen --no-dev` 建立獨立 Fetcher runtime；不需 provider extras、
+AWS 或 provider credentials。FinDB CI 的 Backend job 同樣先安裝 Backend 與 Fetcher frozen
+dependencies，uv cache 同時追蹤兩份 `uv.lock`，再執行跨 application 測試。
+
 Backend 預設 `TEST_DATABASE_URL` 為
 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`。
 Fixture 只取此 URL 的 server、credentials 與其他連線選項，透過同 server 的 `postgres`

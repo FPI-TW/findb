@@ -1,5 +1,7 @@
 """Canonical environment identity and narrow immutable replay bridges."""
 
+import base64
+import hashlib
 import os
 import re
 import subprocess
@@ -73,6 +75,16 @@ def test_verified_workflow_bridge_executes_old_helpers_only_for_accepted_replay(
         "q_target": "staging",
         "runtime_exports": "",
     }
+    if unit == "fetcher":
+        # Exercise the real gate's transport/checksum/subshell with a local guard;
+        # a placeholder word here is not a valid command prefix before the bridge.
+        guard = b'set -euo pipefail\n[ "$APP_ENVIRONMENT" = staging ]\n'
+        env["q_guard_b64"] = base64.b64encode(guard).decode("ascii")
+        env["q_guard_sha"] = hashlib.sha256(guard).hexdigest()
+        gate = next(
+            line for line in script.splitlines() if line.startswith('checkpoint_entry_gate="')
+        )
+        block = gate + "\n" + block
     built = subprocess.run(
         ["/bin/bash", "-c", "set -euo pipefail\n" + block + line + '\nprintf "%s" "$host_command"'],
         env=env,
