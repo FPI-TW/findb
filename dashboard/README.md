@@ -1,22 +1,23 @@
 # FinDB Dashboard
 
-TanStack Start 前端，整合公開的標的查詢，以及需登入的唯讀營運台。
+TanStack Start 前端，整合公開的標的查詢，以及需登入且依角色授權操作的營運台。
 
 ## Routes
 
-| Route                                | 權限   | 用途                           |
-| ------------------------------------ | ------ | ------------------------------ |
-| `/dashboard/`                        | 公開   | 首頁與功能入口                 |
-| `/dashboard/lookup`                  | 公開   | Active金融商品查詢             |
-| `/dashboard/login`                   | 公開   | 操作人員登入                   |
-| `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼             |
-| `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況         |
-| `/dashboard/operations/deliveries`   | 需登入 | 全市場交付計畫、缺漏交付與回補 |
-| `/dashboard/operations/quality`      | 需登入 | 未解決 DQ 問題                 |
-| `/dashboard/operations/corrections`  | 需登入 | 修正稽核紀錄                   |
-| `/dashboard/operations/raw-payloads` | 需登入 | Raw payload 稽核查詢           |
-| `/dashboard/operations/credentials`  | 需登入 | API credential 治理            |
-| `/dashboard/operations/users`        | Owner  | 管理者帳號與角色               |
+| Route                                | 權限   | 用途                                     |
+| ------------------------------------ | ------ | ---------------------------------------- |
+| `/dashboard/`                        | 公開   | 首頁與功能入口                           |
+| `/dashboard/lookup`                  | 公開   | Active金融商品查詢                       |
+| `/dashboard/login`                   | 公開   | 操作人員登入                             |
+| `/dashboard/change-password`         | 需登入 | 首次登入強制改密碼                       |
+| `/dashboard/operations`              | 需登入 | 佇列與 Worker 健康概況                   |
+| `/dashboard/operations/deliveries`   | 需登入 | 交付監控：全市場計畫／缺漏告警／歷史回補 |
+| `/dashboard/operations/quality`      | 需登入 | 未解決 DQ 問題                           |
+| `/dashboard/operations/corrections`  | 需登入 | 修正稽核紀錄                             |
+| `/dashboard/operations/raw-payloads` | 需登入 | Raw payload 稽核查詢                     |
+| `/dashboard/operations/calendars`    | 需登入 | 交易日曆查詢、修訂、匯入與發布           |
+| `/dashboard/operations/credentials`  | 需登入 | API credential 治理                      |
+| `/dashboard/operations/users`        | Owner  | 管理者帳號與角色                         |
 
 ## Local development
 
@@ -80,3 +81,5 @@ Chromium browser component 與 e2e；需要分開執行時，使用
 [e2e/README.md](e2e/README.md)。
 
 目前後端沒有歷史 ingestion run 趨勢端點，因此 dashboard 只呈現即時 queue/worker health。Raw payload 搜尋結果也受後端 retention policy 限制。
+
+營運台操作、分頁 URL 及共用非同步元件規範見 [Dashboard 維運說明](../docs/operations/dashboard.md)。

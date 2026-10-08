@@ -152,6 +152,14 @@ Pilot 與 Full，確認 desired/observed stopped，再依既有 rollback 流程�
 凍結 scope 與 first dates。Overlap confirmation 使用所有 controls（包含另一個隱藏 tab 的 desired
 或 observed running）；Owner、CAS、skip/error UI 與部署前停止兩邊提醒維持。
 
+「營運監控 → 交付監控」預設開啟「全市場計畫」。資料集下拉選單由全部既有計畫去重產生，
+可查近期沒有計畫的歷史資料集；交易日為選填，每頁 25／50／100 筆。表格顯示完整性、截止時間、
+預期／有資料／正常無資料／缺漏／受阻；展開可查看 universe release 與缺口原因。
+缺口最多顯示 1,000 筆，已列出筆數與總缺口數分開標示。正常無資料須有持久化證據，不視為錯誤。
+此區塊為唯讀核對，不啟動抓取或自動建立回補；「缺漏告警」追蹤資料集／日期層級異常，
+「歷史回補」保留 operator／owner 的預覽與確認操作。
+分頁深連結、刷新與錯誤處理見 [dashboard.md](dashboard.md)。
+
 ## 容量違規與可信復原
 
 Provider response 或官方 universe snapshot 超出 installed `max_response_bytes` 時，共用 governor

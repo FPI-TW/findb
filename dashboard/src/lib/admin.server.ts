@@ -19,12 +19,16 @@ import {
   historicalBackfillScopesSchema,
   historicalBackfillPreviewResponseSchema,
   deliveryPlansSchema,
+  deliveryPlanDatasetsSchema,
+  deliveryResourceResponseSchema,
+  type DeliveryResourceRequest,
   type DeliveryPlansRequest,
   type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
 import {
   DashboardAuthenticationError,
+  assertDashboardAuthentication,
   isDashboardAuthenticationError,
 } from "./auth-errors"
 import type { AdminRole } from "./admin-governance-api"
@@ -38,7 +42,10 @@ export async function fetchDeliveryPlansData(
   baseUrlValue: string | undefined,
   fetchImplementation: FetchImplementation = fetch
 ) {
-  const params = new URLSearchParams({ limit: String(request.limit) })
+  const params = new URLSearchParams({
+    page: String(request.page),
+    page_size: String(request.pageSize),
+  })
   if (request.datasetKey) params.set("dataset_key", request.datasetKey)
   if (request.tradeDate) params.set("trade_date", request.tradeDate)
   return fetchTarget(
@@ -94,9 +101,7 @@ async function fetchTarget<T extends z.ZodType>(
     throw new Error("Unable to reach FinDB API")
   }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new DashboardAuthenticationError()
-    }
+    await assertDashboardAuthentication(response)
     throw new Error(`FinDB API request failed (${response.status})`)
   }
   try {
@@ -191,7 +196,7 @@ export async function fetchDashboardData(
             fetchImplementation
           ),
     ])
-    assertNoAuthenticationFailure([deliveries])
+    assertNoAuthenticationFailure([deliveries, backfills, backfillScopes])
     return dashboardResponseSchema.parse({
       view: data.view,
       fetchedAt,
@@ -322,9 +327,7 @@ export async function patchSchedulerData(
     throw new Error("Unable to reach FinDB API")
   }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new DashboardAuthenticationError()
-    }
+    await assertDashboardAuthentication(response)
     if (response.status === 409) {
       const payload: unknown = await response.json().catch(() => null)
       if (
@@ -373,8 +376,10 @@ async function mutateBackfill<T extends z.ZodType>(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     }
   )
-  if (!response.ok)
+  if (!response.ok) {
+    await assertDashboardAuthentication(response)
     throw new Error(`FinDB API request failed (${response.status})`)
+  }
   return schema.parse(await response.json())
 }
 
@@ -446,4 +451,60 @@ export function previewHistoricalBackfillData(
     baseUrlValue,
     fetchImplementation
   )
+}
+
+export async function fetchDeliveryPlanDatasetsData(
+  sessionToken: string,
+  baseUrl: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrl),
+    sessionToken,
+    "/api/v1/admin/delivery-plans/datasets",
+    deliveryPlanDatasetsSchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchDeliveryResourceData(
+  request: DeliveryResourceRequest,
+  sessionToken: string,
+  baseUrl: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  const { resource, page, pageSize } = request
+  const base = safeBaseUrl(baseUrl)
+  if (resource === "alerts")
+    return deliveryResourceResponseSchema.parse({
+      resource,
+      result: await fetchTarget(
+        base,
+        sessionToken,
+        `/api/v1/admin/missing-deliveries?status=open&page=${page}&page_size=${pageSize}`,
+        missingDeliveriesSchema,
+        fetchImplementation
+      ),
+    })
+  if (resource === "backfills")
+    return deliveryResourceResponseSchema.parse({
+      resource,
+      result: await fetchTarget(
+        base,
+        sessionToken,
+        `/api/v1/admin/historical-backfills?page=${page}&page_size=${pageSize}`,
+        historicalBackfillsSchema,
+        fetchImplementation
+      ),
+    })
+  return deliveryResourceResponseSchema.parse({
+    resource,
+    result: await fetchTarget(
+      base,
+      sessionToken,
+      "/api/v1/admin/historical-backfills/scopes",
+      historicalBackfillScopesSchema,
+      fetchImplementation
+    ),
+  })
 }

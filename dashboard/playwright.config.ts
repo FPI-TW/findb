@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: "./e2e",
   outputDir: ".playwright-results",
   fullyParallel: false,
+  workers: 1,
   retries: 0,
   reporter: "line",
   use: {

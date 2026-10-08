@@ -28,6 +28,11 @@ describe("operations route search", () => {
     expect(deliveriesSearchSchema.parse({})).toEqual({
       p: 1,
       ps: 100,
+      tab: "plans",
+      dataset: "",
+      date: "",
+      pp: 1,
+      pps: 25,
       bp: 1,
       bps: 25,
     })
@@ -75,7 +80,9 @@ describe("operations route search", () => {
 
   it("maps deliveries pagination separately from missing-delivery pagination", () => {
     expect(
-      deliveriesAuditFromSearch({ p: 4, ps: 100, bp: 2, bps: 50 })
+      deliveriesAuditFromSearch(
+        deliveriesSearchSchema.parse({ p: 4, ps: 100, bp: 2, bps: 50 })
+      )
     ).toEqual({
       datasetKey: "",
       runId: "",

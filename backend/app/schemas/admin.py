@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import PaginatedResponse, PaginationInfo
+from app.schemas.full_market import DeliveryPlanResponse
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc, utc_now
 
@@ -908,3 +909,15 @@ class CredentialOverviewResponse(BaseModel):
     counts: dict[str, int]
     auth_failure_counts: dict[str, int] = Field(default_factory=dict)
     usage_updated_at: Optional[datetime] = None
+
+
+class DeliveryPlanDatasetsResponse(BaseModel):
+    data: list[str]
+
+
+class DeliveryPlanListResponse(BaseModel):
+    data: list[DeliveryPlanResponse]
+
+
+class PaginatedDeliveryPlanListResponse(DeliveryPlanListResponse):
+    pagination: PaginationInfo

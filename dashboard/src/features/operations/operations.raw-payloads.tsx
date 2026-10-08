@@ -1,3 +1,4 @@
+import { ContentSkeleton, QueryStatus } from "../../components/AsyncState"
 import type {
   ColumnDef,
   ExpandedState,
@@ -103,9 +104,9 @@ function RawPayloadDetailRow({
 }) {
   const query = useRawPayloadDetailQuery(scope, rawPayloadId, true)
   if (query.isPending) {
-    return <span role="status">正在載入完整 JSON…</span>
+    return <ContentSkeleton label="正在載入完整 JSON…" />
   }
-  if (query.error) {
+  if (query.error && !query.data) {
     return (
       <Alert variant="destructive">
         <TriangleAlert />
@@ -116,9 +117,19 @@ function RawPayloadDetailRow({
   const payload: RawPayload | undefined = query.data
   if (!payload) return <span>原始資料已不存在</span>
   return (
-    <pre className="m-0 w-full rounded-lg border border-line bg-surface p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink wrap-anywhere">
-      {JSON.stringify(payload.payload, null, 2)}
-    </pre>
+    <>
+      <QueryStatus
+        hasData={query.data !== undefined}
+        pending={query.isFetching}
+        error={query.error}
+        updatedAt={query.dataUpdatedAt}
+        onRetry={() => void query.refetch({ cancelRefetch: false })}
+        label="完整 JSON"
+      />
+      <pre className="m-0 w-full rounded-lg border border-line bg-surface p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink wrap-anywhere">
+        {JSON.stringify(payload.payload, null, 2)}
+      </pre>
+    </>
   )
 }
 
@@ -146,7 +157,7 @@ export function RawPayloadsPage({
   )
   useEffect(() => {
     if (!rawPayloads) return
-    const totalPages = Math.max(rawPayloads.pagination.total_pages, 1)
+    const totalPages = Math.max(rawPayloads?.pagination.total_pages ?? 1, 1)
     const page = Math.min(Math.max(search.p, 1), totalPages)
     if (page !== search.p) updateSearch({ ...search, p: page })
   }, [rawPayloads, search, updateSearch])
@@ -241,7 +252,7 @@ export function RawPayloadsPage({
                     ps: Number(event.target.value) as RawPayloadsSearch["ps"],
                   })
                 }
-                disabled={state.pending}
+                disabled={state.initialLoading}
               >
                 <option value={25}>25</option>
                 <option value={50}>50</option>
@@ -251,7 +262,7 @@ export function RawPayloadsPage({
             <Button
               className="col-span-2 xl:col-span-1"
               type="submit"
-              disabled={state.pending}
+              disabled={state.initialLoading}
             >
               <Search size={16} /> 查詢
             </Button>
@@ -260,52 +271,54 @@ export function RawPayloadsPage({
             pending={state.pending}
             label="正在更新原始資料…目前資料仍可使用。"
           />
-          {state.initialLoading ? null : !rawResult ? (
-            <Alert variant="destructive">
-              <TriangleAlert />
-              <AlertDescription>暫時無法查詢 raw payload</AlertDescription>
-            </Alert>
-          ) : rawPayloads ? (
-            <DataTable
-              ariaLabel="原始資料稽核"
-              caption="原始資料稽核"
-              columns={tableColumns}
-              data={rawPayloads.data}
-              emptyState="查無符合條件的原始資料。"
-              expanded={expanded}
-              fillAvailableWidth
-              getRowCanExpand={() => true}
-              getRowId={row => row.raw_payload_id}
-              isRefreshing={state.pending && !state.initialLoading}
-              manualPagination
-              pageCount={Math.max(rawPayloads.pagination.total_pages, 1)}
-              pagination={pagination}
-              pageSizeOptions={[25, 50, 100]}
-              renderExpandedRow={row => (
-                <RawPayloadDetailRow
-                  rawPayloadId={row.original.raw_payload_id}
-                  scope={search}
-                />
-              )}
-              rowCount={rawPayloads.pagination.total_records}
-              onExpandedChange={setExpanded}
-              onPaginationChange={next => {
-                const nextState =
-                  typeof next === "function" ? next(pagination) : next
-                if (nextState.pageSize !== search.ps) {
-                  updateSearch({
-                    ...search,
-                    p: 1,
-                    ps: nextState.pageSize as RawPayloadsSearch["ps"],
-                  })
-                  return
-                }
-                if (nextState.pageIndex !== pagination.pageIndex) {
-                  updateSearch({ ...search, p: nextState.pageIndex + 1 })
-                }
-              }}
-            />
-          ) : null}
+          <DataTable
+            ariaLabel="原始資料稽核"
+            caption="原始資料稽核"
+            columns={tableColumns}
+            data={rawPayloads?.data ?? []}
+            isLoading={state.initialLoading}
+            error={
+              rawPayloads
+                ? undefined
+                : state.fatalError ||
+                  (rawResult && !rawResult.ok ? rawResult.error : undefined)
+            }
+            errorState={null}
+            emptyState="查無符合條件的原始資料。"
+            expanded={expanded}
+            fillAvailableWidth
+            getRowCanExpand={() => true}
+            getRowId={row => row.raw_payload_id}
+            isRefreshing={state.pending && !state.initialLoading}
+            refreshingState={null}
+            manualPagination
+            pageCount={Math.max(rawPayloads?.pagination.total_pages ?? 1, 1)}
+            pagination={pagination}
+            pageSizeOptions={[25, 50, 100]}
+            renderExpandedRow={row => (
+              <RawPayloadDetailRow
+                rawPayloadId={row.original.raw_payload_id}
+                scope={search}
+              />
+            )}
+            rowCount={rawPayloads?.pagination.total_records ?? 0}
+            onExpandedChange={setExpanded}
+            onPaginationChange={next => {
+              const nextState =
+                typeof next === "function" ? next(pagination) : next
+              if (nextState.pageSize !== search.ps) {
+                updateSearch({
+                  ...search,
+                  p: 1,
+                  ps: nextState.pageSize as RawPayloadsSearch["ps"],
+                })
+                return
+              }
+              if (nextState.pageIndex !== pagination.pageIndex) {
+                updateSearch({ ...search, p: nextState.pageIndex + 1 })
+              }
+            }}
+          />
         </CardContent>
       </Card>
       <Alert className="mt-5" variant="subtle" role="note">

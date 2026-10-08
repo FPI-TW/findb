@@ -1,17 +1,17 @@
 import {
-  useIsFetching,
   useQuery,
   useQueryClient,
   type QueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { useServerFn } from "@tanstack/react-start"
-import { useEffect } from "react"
 
 import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
 import {
   mergeDashboardRefresh,
+  dashboardPanels,
+  type DashboardPanelName,
+  type DashboardPanelErrors,
   type DashboardRequest,
   type DashboardResponse,
   type OperationsView,
@@ -20,13 +20,17 @@ import {
   type SchedulerMutationResponse,
 } from "../../lib/admin-api"
 import { loadDashboard, loadRawPayloadDetail } from "../../lib/admin.functions"
-import { isDashboardAuthenticationError } from "../../lib/auth-errors"
 import {
   OPERATIONS_OVERVIEW_AUDIT,
   type RawPayloadsSearch,
 } from "./operations.search"
 
-const POLLING_INTERVAL_MS = 60_000
+import {
+  liveQueryOptions,
+  manualQueryOptions,
+  useOperationsRefresh,
+  useRegisterOperationsQuery,
+} from "../../components/OperationsRefresh"
 
 type OperationsDashboardKey = readonly [
   "operations",
@@ -46,7 +50,8 @@ type RawPayloadDetailKey = readonly [
 
 export type OperationsQueryData = DashboardResponse & {
   /** Errors from individual settled panels, while their last-good value is retained. */
-  refreshErrors: string[]
+  refreshErrors: DashboardPanelErrors
+  sourceUpdatedAt: Partial<Record<DashboardPanelName, number>>
 }
 
 export const operationsKeys = {
@@ -87,6 +92,12 @@ function dashboardQueryData(
   return {
     ...merged.data,
     refreshErrors: merged.errors,
+    sourceUpdatedAt: Object.fromEntries(
+      dashboardPanels(response).map(([name, result]) => [
+        name,
+        result.ok ? Date.now() : (previous?.sourceUpdatedAt?.[name] ?? 0),
+      ])
+    ),
   }
 }
 
@@ -107,11 +118,13 @@ export function useOperationsDashboardQuery(
   audit: DashboardRequest["audit"]
 ): OperationsDashboardQuery {
   const load = useServerFn(loadDashboard)
-  const navigate = useOperationsNavigate()
   const queryClient = useQueryClient()
   const sessionScope = useProtectedQueryScope()
   const queryKey = operationsKeys.dashboard(view, audit, sessionScope)
 
+  useRegisterOperationsQuery(queryKey)
+  const live =
+    view === "overview" || view === "deliveries" || view === "quality"
   const query = useQuery<OperationsQueryData, Error>({
     queryKey,
     queryFn: async () => {
@@ -119,72 +132,41 @@ export function useOperationsDashboardQuery(
       const previous = queryClient.getQueryData<OperationsQueryData>(queryKey)
       return dashboardQueryData(previous, response)
     },
-    retry: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    refetchInterval:
-      view === "overview" || view === "deliveries" || view === "quality"
-        ? POLLING_INTERVAL_MS
-        : false,
-    refetchIntervalInBackground: true,
+    ...(live ? liveQueryOptions : manualQueryOptions),
   })
-
-  useEffect(() => {
-    if (query.error && isDashboardAuthenticationError(query.error)) {
-      void Promise.resolve(navigate({ to: "/login", replace: true })).finally(
-        () => {
-          queryClient.removeQueries({ queryKey: operationsKeys.root })
-        }
-      )
-    }
-  }, [navigate, query.error, queryClient])
 
   return { ...query, queryKey }
 }
 
-/** A route-independent refresh button can revalidate only active Operations queries. */
 export function useOperationsIsFetching() {
-  return useIsFetching({ queryKey: operationsKeys.dashboardRoot }) > 0
+  return useOperationsRefresh().pending
 }
 
 export function useOperationsDashboardRefresh() {
-  const queryClient = useQueryClient()
-  return () =>
-    queryClient.refetchQueries({
-      queryKey: operationsKeys.dashboardRoot,
-      type: "active",
-    })
+  return useOperationsRefresh().refresh
 }
 
 export function useOperationsDashboardState(query: OperationsDashboardQuery) {
   const response = query.data ?? null
-  const errors = query.data?.refreshErrors ?? []
+  const errors = query.data?.refreshErrors ?? {}
   const fatalError = query.error
     ? queryMessage(query.error, "無法連線至 FinDB API。")
     : ""
   const initialLoading = query.isPending && response === null
   const pending = query.isFetching
-  const panelResults = response
-    ? response.view === "overview"
-      ? [response.freshness, response.queue, response.schedulers]
-      : response.view === "deliveries"
-        ? [response.deliveries]
-        : response.view === "quality"
-          ? [response.issues]
-          : response.view === "corrections"
-            ? [response.corrections]
-            : [response.rawPayloads]
-    : []
+  const entries = response ? dashboardPanels(response) : []
+  const panelResults = entries.map(([, result]) => result)
   const retainedSuccessfulPanels = panelResults.filter(
     result => result.ok
   ).length
   const successfulPanels = fatalError
     ? 0
-    : panelResults.reduce(
-        (count, result, index) => count + (result.ok && !errors[index] ? 1 : 0),
+    : entries.reduce(
+        (count, [name, result]) => count + (result.ok && !errors[name] ? 1 : 0),
         0
       )
-  const hasRefreshError = fatalError !== "" || errors.some(Boolean)
+  const hasRefreshError =
+    fatalError !== "" || Object.values(errors).some(Boolean)
   const connectionState: "loading" | "healthy" | "degraded" | "failed" =
     response === null
       ? pending
@@ -205,6 +187,10 @@ export function useOperationsDashboardState(query: OperationsDashboardQuery) {
     panelResults,
     successfulPanels,
     connectionState,
+    retry: () => {
+      void query.refetch({ cancelRefetch: false })
+    },
+    sourceUpdatedAt: query.data?.sourceUpdatedAt ?? {},
     connectionLabel: {
       loading: "載入中",
       healthy: "連線正常",
@@ -218,24 +204,12 @@ export type OperationsDashboardState = ReturnType<
   typeof useOperationsDashboardState
 >
 
-type NavigateForOperations = (options: {
-  to: string
-  replace?: boolean
-}) => Promise<unknown>
-
-/** Kept in one small adapter so query hooks remain easy to mock in tests. */
-function useOperationsNavigate(): NavigateForOperations {
-  return useNavigate() as NavigateForOperations
-}
-
 export function useRawPayloadDetailQuery(
   scope: RawPayloadsSearch,
   rawPayloadId: string,
   enabled: boolean
 ): UseQueryResult<RawPayload, Error> & { queryKey: RawPayloadDetailKey } {
   const loadDetail = useServerFn(loadRawPayloadDetail)
-  const navigate = useOperationsNavigate()
-  const queryClient = useQueryClient()
   const sessionScope = useProtectedQueryScope()
   const queryKey = operationsKeys.rawPayloadDetail(
     {
@@ -249,6 +223,7 @@ export function useRawPayloadDetailQuery(
     rawPayloadId,
     sessionScope
   )
+  useRegisterOperationsQuery(queryKey, enabled)
   const query = useQuery<RawPayload, Error>({
     queryKey,
     queryFn: () =>
@@ -256,20 +231,8 @@ export function useRawPayloadDetailQuery(
         data: { rawPayloadId } satisfies RawPayloadDetailRequest,
       }),
     enabled,
-    retry: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    ...manualQueryOptions,
   })
-
-  useEffect(() => {
-    if (query.error && isDashboardAuthenticationError(query.error)) {
-      void Promise.resolve(navigate({ to: "/login", replace: true })).finally(
-        () => {
-          queryClient.removeQueries({ queryKey: operationsKeys.root })
-        }
-      )
-    }
-  }, [navigate, query.error, queryClient])
 
   return { ...query, queryKey }
 }

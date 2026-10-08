@@ -1,5 +1,14 @@
+import { DashboardAuthenticationError } from "../../lib/auth-errors"
+import { OperationsRefreshProvider } from "../../components/OperationsRefresh"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
@@ -132,4 +141,78 @@ describe("CalendarManagementPage", () => {
     )
     expect(screen.queryByRole("table", { name: "全年交易日曆" })).toBeNull()
   })
+
+  it("loads history only when visible and distinguishes a failed source from an empty source", async () => {
+    mocks.loadCalendarImports.mockRejectedValue(
+      new Error("imports unavailable")
+    )
+    renderPage()
+    await screen.findByText("2026-01-02")
+    expect(mocks.loadCalendarImports).not.toHaveBeenCalled()
+    expect(mocks.loadCalendarRevisions).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "修訂／匯入紀錄" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "imports unavailable"
+    )
+    expect(screen.getByText("此市場年度尚無修訂紀錄。")).toBeInTheDocument()
+    expect(screen.queryByText("此市場年度尚無匯入紀錄。")).toBeNull()
+  })
+
+  it("keeps a successful empty history visible while refreshing and after a refresh failure", async () => {
+    const { queryClient } = renderPage()
+    await screen.findByText("2026-01-02")
+    fireEvent.click(screen.getByRole("button", { name: "修訂／匯入紀錄" }))
+    await screen.findByText("此市場年度尚無匯入紀錄。")
+    let rejectRefresh!: (error: Error) => void
+    mocks.loadCalendarImports.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectRefresh = reject
+        })
+    )
+    let refresh!: Promise<void>
+    act(() => {
+      refresh = queryClient.refetchQueries({ type: "active" })
+    })
+    await waitFor(() => expect(rejectRefresh).toBeDefined())
+    expect(screen.getByText("此市場年度尚無匯入紀錄。")).toBeInTheDocument()
+    await act(async () => {
+      rejectRefresh(new Error("imports refresh failed"))
+      await refresh
+    })
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "保留最後成功資料"
+    )
+    expect(screen.getByText("此市場年度尚無匯入紀錄。")).toBeInTheDocument()
+  })
+})
+
+it("calendar direct edit expiry hides the editor and removes its protected data", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const navigate = vi.fn()
+  mocks.editCalendarDay.mockRejectedValue(new DashboardAuthenticationError())
+  render(
+    <QueryClientProvider client={client}>
+      <OperationsRefreshProvider onAuthenticationFailure={navigate}>
+        <CalendarManagementPage
+          role="operator"
+          search={search}
+          updateSearch={() => {}}
+        />
+      </OperationsRefreshProvider>
+    </QueryClientProvider>
+  )
+  fireEvent.click(
+    await screen.findByRole("button", { name: "編輯 2026-01-02" })
+  )
+  fireEvent.change(screen.getByLabelText("修改理由"), {
+    target: { value: "fixture edit" },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }))
+  await screen.findByText("登入已失效，正在返回登入頁…")
+  expect(screen.queryByText("2026-01-02")).toBeNull()
+  expect(client.getQueryCache().findAll()).toHaveLength(0)
+  expect(navigate).toHaveBeenCalledTimes(1)
 })

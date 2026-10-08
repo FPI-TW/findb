@@ -9,6 +9,7 @@ import {
   historicalBackfillCreateSchema,
   historicalBackfillPreviewSchema,
   deliveryPlansRequestSchema,
+  deliveryResourceRequestSchema,
 } from "./admin-api"
 import {
   fetchDashboardData,
@@ -18,12 +19,15 @@ import {
   createHistoricalBackfillData,
   previewHistoricalBackfillData,
   fetchDeliveryPlansData,
+  fetchDeliveryPlanDatasetsData,
+  fetchDeliveryResourceData,
 } from "./admin.server"
 import {
   assertSameOrigin,
   getDashboardConfig,
   markPrivateResponse,
   requireDashboardSession,
+  withDashboardAuthentication,
 } from "./auth.server"
 
 export const loadDashboard = createServerFn({ method: "POST" })
@@ -33,12 +37,14 @@ export const loadDashboard = createServerFn({ method: "POST" })
     const session = await requireDashboardSession()
     setResponseHeader("Cache-Control", "no-store")
     setResponseHeader("Vary", "Cookie")
-    return fetchDashboardData(
-      data,
-      session.token,
-      config.apiBaseUrl,
-      fetch,
-      session.user.role
+    return withDashboardAuthentication(() =>
+      fetchDashboardData(
+        data,
+        session.token,
+        config.apiBaseUrl,
+        fetch,
+        session.user.role
+      )
     )
   })
 
@@ -49,7 +55,9 @@ export const loadDeliveryPlans = createServerFn({ method: "POST" })
     const session = await requireDashboardSession()
     setResponseHeader("Cache-Control", "no-store")
     setResponseHeader("Vary", "Cookie")
-    return fetchDeliveryPlansData(data, session.token, config.apiBaseUrl)
+    return withDashboardAuthentication(() =>
+      fetchDeliveryPlansData(data, session.token, config.apiBaseUrl)
+    )
   })
 
 export const loadRawPayloadDetail = createServerFn({ method: "POST" })
@@ -59,7 +67,9 @@ export const loadRawPayloadDetail = createServerFn({ method: "POST" })
     const session = await requireDashboardSession()
     setResponseHeader("Cache-Control", "no-store")
     setResponseHeader("Vary", "Cookie")
-    return fetchRawPayloadDetailData(data, session.token, config.apiBaseUrl)
+    return withDashboardAuthentication(() =>
+      fetchRawPayloadDetailData(data, session.token, config.apiBaseUrl)
+    )
   })
 
 export const updateScheduler = createServerFn({ method: "POST" })
@@ -72,7 +82,9 @@ export const updateScheduler = createServerFn({ method: "POST" })
     }
     const config = getDashboardConfig()
     markPrivateResponse()
-    return patchSchedulerData(data, session.token, config.apiBaseUrl)
+    return withDashboardAuthentication(() =>
+      patchSchedulerData(data, session.token, config.apiBaseUrl)
+    )
   })
 
 export const createHistoricalBackfill = createServerFn({ method: "POST" })
@@ -84,7 +96,9 @@ export const createHistoricalBackfill = createServerFn({ method: "POST" })
       throw new Error("沒有執行此操作的權限。")
     const config = getDashboardConfig()
     markPrivateResponse()
-    return createHistoricalBackfillData(data, session.token, config.apiBaseUrl)
+    return withDashboardAuthentication(() =>
+      createHistoricalBackfillData(data, session.token, config.apiBaseUrl)
+    )
   })
 
 export const cancelHistoricalBackfill = createServerFn({ method: "POST" })
@@ -96,10 +110,12 @@ export const cancelHistoricalBackfill = createServerFn({ method: "POST" })
       throw new Error("沒有執行此操作的權限。")
     const config = getDashboardConfig()
     markPrivateResponse()
-    return cancelHistoricalBackfillData(
-      data.requestId,
-      session.token,
-      config.apiBaseUrl
+    return withDashboardAuthentication(() =>
+      cancelHistoricalBackfillData(
+        data.requestId,
+        session.token,
+        config.apiBaseUrl
+      )
     )
   })
 
@@ -112,5 +128,31 @@ export const previewHistoricalBackfill = createServerFn({ method: "POST" })
       throw new Error("沒有執行此操作的權限。")
     const config = getDashboardConfig()
     markPrivateResponse()
-    return previewHistoricalBackfillData(data, session.token, config.apiBaseUrl)
+    return withDashboardAuthentication(() =>
+      previewHistoricalBackfillData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadDeliveryPlanDatasets = createServerFn({
+  method: "POST",
+}).handler(async () => {
+  const config = getDashboardConfig()
+  const session = await requireDashboardSession()
+  markPrivateResponse()
+  return withDashboardAuthentication(() =>
+    fetchDeliveryPlanDatasetsData(session.token, config.apiBaseUrl)
+  )
+})
+
+export const loadDeliveryResource = createServerFn({ method: "POST" })
+  .validator(deliveryResourceRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    if (data.resource !== "alerts" && session.user.role === "viewer")
+      throw new Error("沒有執行此操作的權限。")
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      fetchDeliveryResourceData(data, session.token, config.apiBaseUrl)
+    )
   })

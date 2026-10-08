@@ -1,8 +1,10 @@
+import { assertDashboardAuthentication } from "./auth-errors"
 import type { AdminRole } from "./admin-governance-api"
 import {
   getDashboardConfig,
   markPrivateResponse,
   requireDashboardSession,
+  withDashboardAuthentication,
 } from "./auth.server"
 
 type Method = "GET" | "POST" | "PATCH"
@@ -33,7 +35,9 @@ async function request(
     throw new Error("無法連線至 FinDB API。")
   }
   if (!response.ok) {
-    if (response.status === 401) throw new Error("登入已失效，請重新登入。")
+    await withDashboardAuthentication(() =>
+      assertDashboardAuthentication(response)
+    )
     if (response.status === 403) throw new Error("沒有執行此操作的權限。")
     if (response.status === 409)
       throw new Error("交易日曆已被其他管理者更新，請重新載入後再確認。")

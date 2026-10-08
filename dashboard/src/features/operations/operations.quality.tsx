@@ -240,7 +240,7 @@ export function QualityPage({
   useEffect(() => setExpanded({}), [search.p, search.ps])
   useEffect(() => {
     if (!issues) return
-    const totalPages = Math.max(issues.pagination.total_pages, 1)
+    const totalPages = Math.max(issues?.pagination.total_pages ?? 1, 1)
     const page = Math.min(Math.max(search.p, 1), totalPages)
     if (page !== search.p) updateSearch({ ...search, p: page })
   }, [issues, search, updateSearch])
@@ -268,77 +268,83 @@ export function QualityPage({
         eyebrow="Unresolved issues"
         title="未解決 DQ 問題"
         icon={<ShieldCheck size={19} />}
-        result={issuesResult}
-        loading={state.initialLoading}
+        result={{ ok: true, data: null }}
       >
-        {issues ? (
-          <>
-            <form
-              className="mb-4 flex flex-wrap items-end justify-end gap-2.5"
-              onSubmit={submitIssues}
-            >
-              <div className="grid w-full gap-1.5 sm:w-36">
-                <Label htmlFor="quality-page-size">每頁筆數</Label>
-                <select
-                  id="quality-page-size"
-                  className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
-                  value={pageSizeDraft}
-                  onChange={event =>
-                    setPageSizeDraft(Number(event.target.value))
-                  }
-                  disabled={state.pending}
-                >
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
-              </div>
-              <Button type="submit" disabled={state.pending}>
-                查詢
-              </Button>
-            </form>
-            <RefreshStatus
-              pending={state.pending}
-              label="正在更新資料品質…目前資料仍可使用。"
-            />
-            <DataTable
-              ariaLabel="未解決 DQ 問題"
-              caption="未解決 DQ 問題"
-              columns={tableColumns}
-              data={issues.data}
-              emptyState="目前沒有未解決的資料品質問題。"
-              expanded={expanded}
-              fillAvailableWidth
-              getRowCanExpand={() => true}
-              getRowId={row => row.id}
-              isRefreshing={state.pending && !state.initialLoading}
-              manualPagination
-              pageCount={Math.max(issues.pagination.total_pages, 1)}
-              pagination={pagination}
-              pageSizeOptions={[25, 50, 100]}
-              renderExpandedRow={row => (
-                <DQProvenanceDetail issue={row.original} />
-              )}
-              rowCount={issues.pagination.total_records}
-              onExpandedChange={setExpanded}
-              onPaginationChange={next => {
-                const nextState =
-                  typeof next === "function" ? next(pagination) : next
-                if (nextState.pageSize !== search.ps) {
-                  updateSearch({
-                    ...search,
-                    p: 1,
-                    ps: nextState.pageSize as OperationsPageSearch["ps"],
-                  })
-                  return
-                }
-                if (nextState.pageIndex !== pagination.pageIndex) {
-                  updateSearch({ ...search, p: nextState.pageIndex + 1 })
-                }
-              }}
-            />
-          </>
-        ) : null}
+        <>
+          <form
+            className="mb-4 flex flex-wrap items-end justify-end gap-2.5"
+            onSubmit={submitIssues}
+          >
+            <div className="grid w-full gap-1.5 sm:w-36">
+              <Label htmlFor="quality-page-size">每頁筆數</Label>
+              <select
+                id="quality-page-size"
+                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
+                value={pageSizeDraft}
+                onChange={event => setPageSizeDraft(Number(event.target.value))}
+                disabled={state.initialLoading}
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+            <Button type="submit" disabled={state.initialLoading}>
+              查詢
+            </Button>
+          </form>
+          <RefreshStatus
+            pending={state.pending}
+            label="正在更新資料品質…目前資料仍可使用。"
+          />
+          <DataTable
+            ariaLabel="未解決 DQ 問題"
+            caption="未解決 DQ 問題"
+            columns={tableColumns}
+            data={issues?.data ?? []}
+            isLoading={state.initialLoading}
+            error={
+              issues
+                ? undefined
+                : state.fatalError ||
+                  (issuesResult && !issuesResult.ok
+                    ? issuesResult.error
+                    : undefined)
+            }
+            errorState={null}
+            emptyState="目前沒有未解決的資料品質問題。"
+            expanded={expanded}
+            fillAvailableWidth
+            getRowCanExpand={() => true}
+            getRowId={row => row.id}
+            isRefreshing={state.pending && !state.initialLoading}
+            refreshingState={null}
+            manualPagination
+            pageCount={Math.max(issues?.pagination.total_pages ?? 1, 1)}
+            pagination={pagination}
+            pageSizeOptions={[25, 50, 100]}
+            renderExpandedRow={row => (
+              <DQProvenanceDetail issue={row.original} />
+            )}
+            rowCount={issues?.pagination.total_records ?? 0}
+            onExpandedChange={setExpanded}
+            onPaginationChange={next => {
+              const nextState =
+                typeof next === "function" ? next(pagination) : next
+              if (nextState.pageSize !== search.ps) {
+                updateSearch({
+                  ...search,
+                  p: 1,
+                  ps: nextState.pageSize as OperationsPageSearch["ps"],
+                })
+                return
+              }
+              if (nextState.pageIndex !== pagination.pageIndex) {
+                updateSearch({ ...search, p: nextState.pageIndex + 1 })
+              }
+            }}
+          />
+        </>
       </Panel>
     </>
   )

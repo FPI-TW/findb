@@ -28,20 +28,34 @@ const plan = {
 
 describe("delivery plan session proxy", () => {
   it("uses the session bearer token and bounded filters while preserving no_data and gaps", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ data: [plan] }), { status: 200 })
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [plan],
+          pagination: {
+            page: 1,
+            page_size: 25,
+            total_records: 1,
+            total_pages: 1,
+          },
+        }),
+        { status: 200 }
       )
+    )
     const payload = await fetchDeliveryPlansData(
-      { datasetKey: "tw_futures_eod", tradeDate: "2026-10-01", limit: 25 },
+      {
+        datasetKey: "tw_futures_eod",
+        tradeDate: "2026-10-01",
+        page: 1,
+        pageSize: 25,
+      },
       "session-token",
       "https://api.example.test",
       fetchMock
     )
     const [url, init] = fetchMock.mock.calls[0] ?? []
     expect(String(url)).toBe(
-      "https://api.example.test/api/v1/admin/delivery-plans?limit=25&dataset_key=tw_futures_eod&trade_date=2026-10-01"
+      "https://api.example.test/api/v1/admin/delivery-plans?page=1&page_size=25&dataset_key=tw_futures_eod&trade_date=2026-10-01"
     )
     expect(init.headers).toEqual({
       Authorization: "Bearer session-token",
@@ -62,7 +76,7 @@ describe("delivery plan session proxy", () => {
       .mockResolvedValue(new Response("error", { status: 503 }))
     await expect(
       fetchDeliveryPlansData(
-        { datasetKey: "", tradeDate: "", limit: 25 },
+        { datasetKey: "", tradeDate: "", page: 1, pageSize: 25 },
         "session-token",
         "https://api.example.test",
         fetchMock

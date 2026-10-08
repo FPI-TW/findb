@@ -701,3 +701,150 @@ async def test_as_of_uses_published_baseline_even_after_fifty_candidates(test_se
         as_of=DAY,
     )
     assert historical.published_release_id == baseline.release_id and len(historical.data) == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_plan_discovery_pagination_and_legacy_limit(
+    client, test_session, admin_headers
+):
+    from app.models.registry import DailyDeliveryPlan
+    from app.utils import uuid7
+
+    # A historical dataset is deliberately older than the latest 100 plans.
+    _, _, initial = await _activated_plan(test_session)
+    original = await test_session.get(DailyDeliveryPlan, initial.plan_id)
+    assert original is not None
+    created = utc_now()
+    original.created_at = created
+    recent_ids = []
+    for index in range(102):
+        plan_id = uuid7()
+        recent_ids.append(plan_id)
+        test_session.add(
+            DailyDeliveryPlan(
+                plan_id=plan_id,
+                dataset_key=original.dataset_key,
+                provider=original.provider,
+                trade_date=DAY + timedelta(days=index + 1),
+                release_id=original.release_id,
+                activation_cutoff=original.activation_cutoff,
+                deadline_at=original.deadline_at,
+                member_sha256=original.member_sha256,
+                expected_count=0,
+                created_at=created,
+            )
+        )
+    await _dataset(test_session, "tw_equity_eod")
+    _, release = await _baseline(test_session, "tw_equity_eod")
+    test_session.add(
+        DailyDeliveryPlan(
+            dataset_key="tw_equity_eod",
+            provider="finlab",
+            trade_date=DAY - timedelta(days=10),
+            release_id=release.release_id,
+            activation_cutoff=DAY - timedelta(days=10),
+            deadline_at=original.deadline_at,
+            member_sha256="a" * 64,
+            expected_count=0,
+        )
+    )
+    tied = DailyDeliveryPlan(
+        dataset_key="tw_equity_eod",
+        provider="finlab",
+        trade_date=DAY,
+        release_id=release.release_id,
+        activation_cutoff=DAY,
+        deadline_at=original.deadline_at,
+        member_sha256="b" * 64,
+        expected_count=0,
+        created_at=created,
+    )
+    test_session.add(tied)
+    await test_session.flush()
+    count_before = await test_session.scalar(select(func.count()).select_from(DailyDeliveryPlan))
+    base = "/api/v1/admin/delivery-plans"
+    datasets = await client.get(f"{base}/datasets", headers=admin_headers)
+    assert datasets.status_code == 200
+    assert datasets.json() == {"data": ["tw_equity_eod", "tw_futures_eod"]}
+    response = await client.get(base, params={"page": 2, "page_size": 25}, headers=admin_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pagination"]["total_records"] == 105
+    assert payload["pagination"]["total_pages"] == 5
+    assert len(payload["data"]) == 25
+    expected = list(reversed(recent_ids))[25:50]
+    assert [item["plan_id"] for item in payload["data"]] == [str(value) for value in expected]
+    ties = await client.get(base, params={"page": 52, "page_size": 2}, headers=admin_headers)
+    assert [item["plan_id"] for item in ties.json()["data"]] == [
+        str(value) for value in sorted([original.plan_id, tied.plan_id], reverse=True)
+    ]
+    repeat = await client.get(base, params={"page": 2, "page_size": 25}, headers=admin_headers)
+    assert repeat.json() == payload
+    for params, length in [({}, 20), ({"limit": 3}, 3)]:
+        legacy = await client.get(base, params=params, headers=admin_headers)
+        assert legacy.status_code == 200
+        assert set(legacy.json()) == {"data"}
+        assert len(legacy.json()["data"]) == length
+    filtered = await client.get(
+        base,
+        params={
+            "dataset_key": "tw_equity_eod",
+            "trade_date": str(DAY - timedelta(days=10)),
+            "page_size": 25,
+        },
+        headers=admin_headers,
+    )
+    assert filtered.json()["pagination"]["total_records"] == 1
+    empty = await client.get(
+        base, params={"trade_date": "2000-01-01", "page": 1}, headers=admin_headers
+    )
+    assert empty.json()["data"] == []
+    assert empty.json()["pagination"]["total_pages"] == 0
+    assert (
+        await test_session.scalar(select(func.count()).select_from(DailyDeliveryPlan))
+        == count_before
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": 2, "page": 1},
+        {"limit": 2, "page_size": 25},
+        {"page": 0},
+        {"page_size": 101},
+        {"page_size": 0},
+        {"trade_date": "invalid"},
+    ],
+)
+async def test_admin_plan_query_rejects_invalid_parameters(client, admin_headers, params):
+    response = await client.get(
+        "/api/v1/admin/delivery-plans", params=params, headers=admin_headers
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_admin_plan_queries_require_auth_and_allow_viewer(client, test_session):
+    from app.config import get_settings
+    from app.services.api_keys import create_api_key
+
+    _, key = await create_api_key(
+        test_session,
+        owner="plan-viewer",
+        tier="standard",
+        scopes=["admin"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        page_size_limit=100,
+        kind="admin",
+        name="plan-viewer",
+        role="viewer",
+        commit=False,
+    )
+    for path in ["/api/v1/admin/delivery-plans?page=1", "/api/v1/admin/delivery-plans/datasets"]:
+        assert (await client.get(path)).status_code == 401
+        response = await client.get(path, headers={get_settings().API_KEY_HEADER: key})
+        assert response.status_code == 200
+        assert response.json()["data"] == []

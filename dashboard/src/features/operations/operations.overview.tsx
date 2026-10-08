@@ -1,5 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { useServerFn } from "@tanstack/react-start"
 import {
   AlertTriangle,
@@ -38,7 +37,7 @@ import type {
 } from "../../lib/admin-api"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { updateScheduler } from "../../lib/admin.functions"
-import { isDashboardAuthenticationError } from "../../lib/auth-errors"
+import { useOperationsRefresh } from "../../components/OperationsRefresh"
 import {
   FeedDetails,
   formatAge,
@@ -59,7 +58,6 @@ import {
   OperationsDashboardStatus,
 } from "./operations.shared"
 import {
-  operationsKeys,
   updateOverviewSchedulerCache,
   useOperationsDashboardQuery,
   useOperationsDashboardState,
@@ -478,7 +476,7 @@ function useSchedulerActions(
   applyScheduler?: (response: SchedulerMutationResponse) => void
 ) {
   const update = useServerFn(updateScheduler)
-  const navigate = useNavigate()
+  const { reportError } = useOperationsRefresh()
   const queryClient = useQueryClient()
   const sessionScope = useProtectedQueryScope()
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set())
@@ -521,11 +519,7 @@ function useSchedulerActions(
         `${control.provider} 排程已${desiredState === "running" ? "啟用" : "停止"}`
       )
     } catch (reason) {
-      if (isDashboardAuthenticationError(reason)) {
-        await navigate({ to: "/login", replace: true })
-        queryClient.removeQueries({ queryKey: operationsKeys.root })
-        return
-      }
+      if (reportError(reason)) return
       const message = schedulerErrorMessage(reason)
       setActionErrors(current => ({
         ...current,
@@ -567,10 +561,8 @@ function useSchedulerActions(
           await applyDesiredState(target, desiredState)
           succeeded += 1
         } catch (reason) {
-          if (isDashboardAuthenticationError(reason)) {
+          if (reportError(reason)) {
             authenticationFailed = true
-            await navigate({ to: "/login", replace: true })
-            queryClient.removeQueries({ queryKey: operationsKeys.root })
             break
           }
           failed += 1
@@ -1051,9 +1043,6 @@ export function IngestionOverviewPanel({
   freshnessResult,
   schedulersResult,
   loading,
-  pending,
-  freshnessError,
-  schedulersError,
   role,
   applyScheduler,
   audit = OPERATIONS_OVERVIEW_AUDIT,
@@ -1102,22 +1091,6 @@ export function IngestionOverviewPanel({
       result={result}
       loading={loading}
     >
-      {(freshnessError || schedulersError) && result?.ok && (
-        <Alert className="mb-4" variant="warning" role="status">
-          <AlertTriangle size={18} />
-          <AlertTitle>部分導入狀態暫時無法重新取得</AlertTitle>
-          <AlertDescription>
-            目前保留上次成功資料：
-            {[freshnessError, schedulersError].filter(Boolean).join("；")}
-          </AlertDescription>
-        </Alert>
-      )}
-      {!loading && (
-        <RefreshStatus
-          pending={pending}
-          label="正在更新導入狀態…目前資料仍可操作。"
-        />
-      )}
       {result?.ok && (
         <div className="grid gap-6">
           <p className="m-0 text-xs text-muted">
@@ -1501,8 +1474,8 @@ export function OperationsOverviewPage({
   const query = useOperationsDashboardQuery("overview", audit)
   const state = useOperationsDashboardState(query)
   const overview = state.response?.view === "overview" ? state.response : null
-  const freshnessError = state.errors[0] ?? ""
-  const schedulersError = state.errors[2] ?? ""
+  const freshnessError = state.errors.freshness ?? ""
+  const schedulersError = state.errors.schedulers ?? ""
   return (
     <>
       <PageIntro

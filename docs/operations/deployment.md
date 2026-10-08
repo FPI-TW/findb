@@ -781,6 +781,15 @@ Deploy後至少完成：
 
 失敗時：
 
+Fetcher 的所有 Pilot／Full controls 必須在候選驗收、immutable acceptance record 寫入及
+activation 全程維持 `desired=stopped`，直到整個 deploy job 成功後才由 Owner 重新啟用。
+候選驗收或 acceptance record 成功不代表新版本已啟用；activation 會再次執行
+`--require-stopped`，期間切回 `running` 會阻擋部署並觸發 transaction rollback。
+TAIFEX 的 `taifex_pilot_configuration_failed` 是彙總錯誤，應交叉核對 SSM／CloudWatch
+輸出與 scheduler control audit 時間，不能僅憑此訊息認定 checkpoint 或 provider 設定損壞。
+重試前須確認 current pointer 與原容器已回復、所需 controls 仍為 stopped，再使用正式
+candidate／accepted replay 流程；不可跳過 stopped gate。
+
 1. 暫停provider並停止所有writers，保留raw、run、job、outbox、volumes與logs。
 2. 收集bounded diagnostics，不輸出secret。
 3. 只有schema相容時才能恢復previous image。

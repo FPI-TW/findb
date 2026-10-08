@@ -2,6 +2,9 @@
 // still uses its normal login, session validation, server functions and CAS.
 import { createServer } from "node:http"
 import {
+  historicalBackfillSchema,
+  historicalBackfillPreviewResponseSchema,
+  type HistoricalBackfill,
   marketFreshnessSchema,
   queueHealthSchema,
   schedulerSchema,
@@ -62,6 +65,51 @@ function scheduler(key: string, provider: string, running = false) {
 let rows: Scheduler[] = []
 let mutations: unknown[] = []
 let role = "owner"
+let reads: Record<string, number> = {}
+let plansError = false
+let plansDelay = 0
+let backfills: HistoricalBackfill[] = []
+let previews: unknown[] = []
+let previewDelay = 0
+let authenticationFailurePaths: string[] = []
+let overviewFailurePath = ""
+
+const plans = Array.from({ length: 31 }, (_, index) => ({
+  plan_id: `plan-${index}`,
+  dataset_key: index === 30 ? "old_dataset" : "tw_futures_eod",
+  provider: "taifex",
+  trade_date: `2026-09-${String(30 - Math.min(index, 29)).padStart(2, "0")}`,
+  release_id: `release-${index}`,
+  deadline_at: timestamp,
+  status: "incomplete",
+  parts: [],
+  summary: {
+    expected: 5,
+    data: 2,
+    no_data: 1,
+    missing: 1,
+    blocked: 1,
+    deadline_at: timestamp,
+    is_late: true,
+    gaps: [
+      { member_key: "TX", status: "missing", reason: "pending" },
+      { member_key: "MTX", status: "blocked", reason: "quota" },
+    ],
+  },
+}))
+function paginated<T>(items: T[], params: URLSearchParams) {
+  const page = Number(params.get("page") ?? 1),
+    size = Number(params.get("page_size") ?? 25)
+  return {
+    data: items.slice((page - 1) * size, page * size),
+    pagination: {
+      page,
+      page_size: size,
+      total_records: items.length,
+      total_pages: Math.ceil(items.length / size),
+    },
+  }
+}
 const queue = queueHealthSchema.parse({
   counts: {},
   oldest_queued_at: null,
@@ -79,7 +127,8 @@ const queue = queueHealthSchema.parse({
 })
 
 createServer(async (request, response) => {
-  const path = new URL(request.url!, "http://127.0.0.1").pathname
+  const url = new URL(request.url!, "http://127.0.0.1")
+  const path = url.pathname
   let body = ""
   for await (const chunk of request) body += String(chunk)
   const data = body ? JSON.parse(body) : {}
@@ -92,6 +141,14 @@ createServer(async (request, response) => {
   if (path === "/fixture/reset") {
     role = data.role ?? "owner"
     mutations = []
+    reads = {}
+    plansError = false
+    plansDelay = 0
+    backfills = []
+    previews = []
+    previewDelay = 0
+    authenticationFailurePaths = []
+    overviewFailurePath = ""
     rows = [
       scheduler("pilot_finlab", "finlab"),
       scheduler("pilot_shioaji", "shioaji", true),
@@ -113,7 +170,26 @@ createServer(async (request, response) => {
       }))
     return send({ ok: true })
   }
-  if (path === "/fixture/state") return send({ rows, mutations })
+  if (path === "/fixture/state")
+    return send({ rows, mutations, reads, previews, backfills })
+  if (path === "/fixture/session") {
+    if (data.role) role = data.role
+    authenticationFailurePaths = data.failurePaths ?? []
+    return send({ ok: true })
+  }
+  if (path === "/fixture/backfill-config") {
+    previewDelay = data.previewDelay ?? 0
+    return send({ ok: true })
+  }
+  if (path === "/fixture/overview-config") {
+    overviewFailurePath = data.failurePath ?? ""
+    return send({ ok: true })
+  }
+  if (path === "/fixture/delivery-config") {
+    plansError = data.error ?? false
+    plansDelay = data.delay ?? 0
+    return send({ ok: true })
+  }
   if (path === "/api/v1/admin/auth/login") {
     if (data.username !== role || data.password !== "fixture-password")
       return send({ detail: "Invalid credentials" }, 401)
@@ -128,6 +204,134 @@ createServer(async (request, response) => {
     return send({ detail: "Unauthorized" }, 401)
   if (path === "/api/v1/admin/auth/me")
     return send({ ...user, username: role, role })
+  reads[path] = (reads[path] ?? 0) + 1
+  if (authenticationFailurePaths.includes(path))
+    return send({ detail: "Session expired upstream" }, 401)
+  if (overviewFailurePath === path) return send({ detail: "Unavailable" }, 503)
+  if (path === "/api/v1/admin/delivery-plans/datasets")
+    return send({ data: ["old_dataset", "tw_futures_eod"] })
+  if (path === "/api/v1/admin/delivery-plans") {
+    if (plansDelay)
+      await new Promise(resolve => setTimeout(resolve, plansDelay))
+    if (plansError) return send({ detail: "Unavailable" }, 503)
+    return send(
+      paginated(
+        plans.filter(
+          plan =>
+            (!url.searchParams.get("dataset_key") ||
+              plan.dataset_key === url.searchParams.get("dataset_key")) &&
+            (!url.searchParams.get("trade_date") ||
+              plan.trade_date === url.searchParams.get("trade_date"))
+        ),
+        url.searchParams
+      )
+    )
+  }
+  if (path === "/api/v1/admin/missing-deliveries")
+    return send(
+      paginated(
+        [
+          {
+            alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+            dataset_key: "tw_equity_minute",
+            source: "shioaji",
+            schema_id: "market_minute",
+            schema_version: 1,
+            expected_data_date: "2026-10-07",
+            status: "open",
+            first_detected_at: timestamp,
+            last_detected_at: timestamp,
+            resolved_at: null,
+          },
+        ].flatMap(alert => [
+          alert,
+          {
+            ...alert,
+            alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe98",
+            expected_data_date: "2026-10-06",
+          },
+        ]),
+        url.searchParams
+      )
+    )
+  if (
+    path === "/api/v1/admin/historical-backfills/preview" &&
+    request.method === "POST"
+  ) {
+    if (role === "viewer")
+      return send({ detail: "Insufficient admin role" }, 403)
+    previews.push(data)
+    const days = []
+    for (
+      let date = new Date(`${data.start_date}T00:00:00Z`);
+      date.toISOString().slice(0, 10) <= data.end_date;
+      date.setUTCDate(date.getUTCDate() + 1)
+    ) {
+      days.push({
+        trade_date: date.toISOString().slice(0, 10),
+        valid: true,
+        reason: null,
+      })
+    }
+    const result = historicalBackfillPreviewResponseSchema.parse({
+      provider: data.provider,
+      dataset_key: data.dataset_key,
+      market: "TW",
+      scope_valid: true,
+      scope_reason: null,
+      days,
+    })
+    if (previewDelay)
+      await new Promise(resolve => setTimeout(resolve, previewDelay))
+    return send(result)
+  }
+  if (path === "/api/v1/admin/historical-backfills") {
+    if (request.method === "GET")
+      return send(paginated(backfills, url.searchParams))
+    if (request.method !== "POST")
+      return send({ detail: "Method not allowed" }, 405)
+    if (role === "viewer")
+      return send({ detail: "Insufficient admin role" }, 403)
+    const row = historicalBackfillSchema.parse({
+      ...data,
+      request_id: "019565d2-f838-7c91-85c1-72d4d7bbbea0",
+      market: "TW",
+      status: "queued",
+      created_by: role,
+      cancelled_by: null,
+      cancelled_at: null,
+      started_at: null,
+      completed_at: null,
+      failure_code: null,
+      failure_message: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+      items: [
+        {
+          item_id: "019565d2-f838-7c91-85c1-72d4d7bbbea1",
+          trade_date: data.start_date,
+          status: "queued",
+          run_id: null,
+          failure_code: null,
+          failure_message: null,
+        },
+      ],
+    })
+    mutations.push({ path, ...data })
+    backfills.unshift(row)
+    return send(row)
+  }
+  if (path === "/api/v1/admin/historical-backfills/scopes")
+    return send({
+      data: [
+        {
+          provider: "shioaji",
+          dataset_key: "tw_equity_minute",
+          market: "TW",
+          executable: true,
+        },
+      ],
+    })
   if (path === "/api/v1/admin/schedulers")
     return send({ success: true, data: rows })
   if (path === "/api/v1/admin/market-freshness")

@@ -1,3 +1,8 @@
+import { QueryStatus } from "../../components/AsyncState"
+import {
+  manualQueryOptions,
+  useRegisterOperationsQuery,
+} from "../../components/OperationsRefresh"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 import { KeyRound, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react"
@@ -6,7 +11,6 @@ import type { ColumnDef } from "@tanstack/react-table"
 
 import { DataTable } from "../../components/data-table"
 import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
-import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import {
@@ -119,11 +123,15 @@ export function CredentialsPage({
     setDraftFilters(filters)
   }, [filters.kind, filters.owner, filters.status])
 
+  useRegisterOperationsQuery([...credentialsRootKey, filters])
+  useRegisterOperationsQuery(overviewKey)
   const credentialsQuery = useQuery({
+    ...manualQueryOptions,
     queryKey: [...credentialsRootKey, filters],
     queryFn: () => load({ data: filters }),
   })
   const overviewQuery = useQuery({
+    ...manualQueryOptions,
     queryKey: overviewKey,
     queryFn: () => loadOverview(),
   })
@@ -391,7 +399,6 @@ export function CredentialsPage({
     ]
   )
   const credentialsError = credentialsQuery.error
-  const overviewError = overviewQuery.error
 
   return (
     <div className="grid gap-5">
@@ -407,38 +414,14 @@ export function CredentialsPage({
         </p>
       </header>
 
-      {overviewError && (
-        <Alert variant="destructive">
-          <AlertTitle>無法載入 Credential 狀態</AlertTitle>
-          <AlertDescription>
-            {overviewError instanceof Error
-              ? overviewError.message
-              : "無法載入 credential 狀態。"}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {credentialsQuery.error && credentials.length > 0 && (
-        <Alert variant="destructive">
-          <AlertTitle>更新 Credential 失敗</AlertTitle>
-          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-            <span>
-              {credentialsQuery.error instanceof Error
-                ? credentialsQuery.error.message
-                : "無法載入 credential。"}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void credentialsQuery.refetch()}
-            >
-              <RefreshCw />
-              重新載入
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-
+      <QueryStatus
+        hasData={overviewQuery.data !== undefined}
+        pending={overviewQuery.isFetching}
+        error={overviewQuery.error}
+        updatedAt={overviewQuery.dataUpdatedAt}
+        onRetry={() => void overviewQuery.refetch({ cancelRefetch: false })}
+        label="憑證統計"
+      />
       {overviewQuery.isPending ? (
         <div className="grid gap-3 sm:grid-cols-5" role="status">
           <span className="sr-only">正在載入 credential 狀態</span>
@@ -697,40 +680,41 @@ export function CredentialsPage({
                 setDraftFilters({ ...draftFilters, owner: event.target.value })
               }
             />
-            <Button type="submit" disabled={credentialsQuery.isFetching}>
+            <Button type="submit">
               <RefreshCw
                 className={credentialsQuery.isFetching ? "animate-spin" : ""}
                 size={17}
               />
-              更新
+              查詢
             </Button>
           </form>
+          <QueryStatus
+            hasData={credentialsQuery.data !== undefined}
+            pending={credentialsQuery.isFetching}
+            error={credentialsQuery.error}
+            updatedAt={credentialsQuery.dataUpdatedAt}
+            onRetry={() =>
+              void credentialsQuery.refetch({ cancelRefetch: false })
+            }
+            label="憑證"
+          />
           <DataTable
             ariaLabel="目前 Credentials"
             caption="目前 Credentials"
             columns={credentialColumns}
             data={credentials}
             emptyState="沒有符合條件的 credential。"
-            error={credentials.length === 0 ? credentialsError : undefined}
-            errorState={
-              credentialsError instanceof Error
-                ? credentialsError.message
-                : "無法載入 credential。"
+            error={
+              credentialsQuery.data === undefined ? credentialsError : undefined
             }
+            errorState={null}
             fillAvailableWidth
             getRowId={item => item.credential_ref}
             isLoading={credentialsQuery.isPending}
             isRefreshing={
               credentialsQuery.isFetching && !credentialsQuery.isPending
             }
-            loadingState={
-              <div className="grid gap-2">
-                <span className="sr-only">正在載入 credential</span>
-                <Skeleton className="h-10" />
-                <Skeleton className="h-10" />
-                <Skeleton className="h-10" />
-              </div>
-            }
+            refreshingState={null}
             tableClassName="min-w-[980px]"
           />
           {overview && (

@@ -14,7 +14,10 @@ import {
   adminSessionUserSchema,
   type AdminSessionUser,
 } from "./admin-governance-api"
-import { DashboardAuthenticationError } from "./auth-errors"
+import {
+  DashboardAuthenticationError,
+  isDashboardAuthenticationError,
+} from "./auth-errors"
 
 const SESSION_COOKIE = "findb_dashboard_session"
 const SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -213,6 +216,7 @@ export async function changeDashboardPassword(
 }
 
 export async function requireDashboardSession() {
+  markPrivateResponse()
   const token = getDashboardSessionToken()
   if (!token) throw new DashboardAuthenticationError()
   const user = await fetchDashboardSession(token)
@@ -238,4 +242,16 @@ export function assertSameOrigin() {
 export function markPrivateResponse() {
   setResponseHeader("Cache-Control", "no-store")
   setResponseHeader("Vary", "Cookie")
+}
+
+/** Clear a rejected upstream session before the login guard checks its cookie. */
+export async function withDashboardAuthentication<T>(
+  action: () => Promise<T>
+): Promise<T> {
+  try {
+    return await action()
+  } catch (error) {
+    if (isDashboardAuthenticationError(error)) clearDashboardSession()
+    throw error
+  }
 }

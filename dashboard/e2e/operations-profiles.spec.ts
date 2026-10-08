@@ -214,3 +214,44 @@ test("all blocked starts and non-Owner sessions cannot mutate controls", async (
   ).toHaveCount(0)
   expect((await state(request)).mutations).toEqual([])
 })
+
+test("partial overview failure and recovery preserve controls, cards and queue positions", async ({
+  page,
+  request,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await login(page)
+  const controls = page.getByRole("button", {
+    name: "Pilot 全部啟動",
+    exact: true,
+  })
+  const card = page.getByRole("button", {
+    name: "Pilot finlab pilot_finlab 設為執行中",
+  })
+  const queue = page.getByRole("heading", {
+    name: "Source ingest 後的佇列與 Worker",
+    exact: true,
+  })
+  const targets = [controls, card, queue]
+  const original = await Promise.all(
+    targets.map(target => target.boundingBox())
+  )
+  await request.post(`${backend}/fixture/overview-config`, {
+    data: { failurePath: "/api/v1/admin/schedulers" },
+  })
+  await page.getByRole("button", { name: "重新整理", exact: true }).click()
+  await expect(page.getByRole("alert")).toContainText("保留最後成功資料")
+  await expect(controls).toBeEnabled()
+  for (const [index, target] of targets.entries())
+    expect(
+      Math.abs((await target.boundingBox())!.y - original[index]!.y)
+    ).toBeLessThanOrEqual(1)
+  await request.post(`${backend}/fixture/overview-config`, { data: {} })
+  await page.getByRole("button", { name: "重試", exact: true }).click()
+  await expect(page.getByRole("alert")).toHaveCount(0)
+  for (const [index, target] of targets.entries())
+    expect(
+      Math.abs((await target.boundingBox())!.y - original[index]!.y)
+    ).toBeLessThanOrEqual(1)
+  expect((await state(request)).mutations).toEqual([])
+})

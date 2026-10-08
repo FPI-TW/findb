@@ -78,7 +78,7 @@ export function CorrectionsPage({
 
   useEffect(() => {
     if (!corrections) return
-    const totalPages = Math.max(corrections.pagination.total_pages, 1)
+    const totalPages = Math.max(corrections?.pagination.total_pages ?? 1, 1)
     const page = Math.min(Math.max(search.p, 1), totalPages)
     if (page !== search.p) updateSearch({ ...search, p: page })
   }, [corrections, search, updateSearch])
@@ -100,47 +100,55 @@ export function CorrectionsPage({
         eyebrow="Recent corrections"
         title="近期修正"
         icon={<Archive size={19} />}
-        result={correctionsResult}
-        loading={state.initialLoading}
+        result={{ ok: true, data: null }}
       >
-        {corrections ? (
-          <>
-            <RefreshStatus
-              pending={state.pending}
-              label="正在更新修正稽核…目前資料仍可使用。"
-            />
-            <DataTable
-              ariaLabel="近期修正"
-              caption="近期修正"
-              columns={tableColumns}
-              data={corrections.data}
-              emptyState="目前沒有修正紀錄。"
-              fillAvailableWidth
-              getRowId={row => row.id}
-              isRefreshing={state.pending && !state.initialLoading}
-              manualPagination
-              pageCount={Math.max(corrections.pagination.total_pages, 1)}
-              pagination={pagination}
-              pageSizeOptions={[25, 50, 100]}
-              rowCount={corrections.pagination.total_records}
-              onPaginationChange={next => {
-                const nextState =
-                  typeof next === "function" ? next(pagination) : next
-                if (nextState.pageSize !== search.ps) {
-                  updateSearch({
-                    ...search,
-                    p: 1,
-                    ps: nextState.pageSize as OperationsPageSearch["ps"],
-                  })
-                  return
-                }
-                if (nextState.pageIndex !== pagination.pageIndex) {
-                  updateSearch({ ...search, p: nextState.pageIndex + 1 })
-                }
-              }}
-            />
-          </>
-        ) : null}
+        <>
+          <RefreshStatus
+            pending={state.pending}
+            label="正在更新修正稽核…目前資料仍可使用。"
+          />
+          <DataTable
+            ariaLabel="近期修正"
+            caption="近期修正"
+            columns={tableColumns}
+            data={corrections?.data ?? []}
+            isLoading={state.initialLoading}
+            error={
+              corrections
+                ? undefined
+                : state.fatalError ||
+                  (correctionsResult && !correctionsResult.ok
+                    ? correctionsResult.error
+                    : undefined)
+            }
+            errorState={null}
+            emptyState="目前沒有修正紀錄。"
+            fillAvailableWidth
+            getRowId={row => row.id}
+            isRefreshing={state.pending && !state.initialLoading}
+            refreshingState={null}
+            manualPagination
+            pageCount={Math.max(corrections?.pagination.total_pages ?? 1, 1)}
+            pagination={pagination}
+            pageSizeOptions={[25, 50, 100]}
+            rowCount={corrections?.pagination.total_records ?? 0}
+            onPaginationChange={next => {
+              const nextState =
+                typeof next === "function" ? next(pagination) : next
+              if (nextState.pageSize !== search.ps) {
+                updateSearch({
+                  ...search,
+                  p: 1,
+                  ps: nextState.pageSize as OperationsPageSearch["ps"],
+                })
+                return
+              }
+              if (nextState.pageIndex !== pagination.pageIndex) {
+                updateSearch({ ...search, p: nextState.pageIndex + 1 })
+              }
+            }}
+          />
+        </>
       </Panel>
     </>
   )

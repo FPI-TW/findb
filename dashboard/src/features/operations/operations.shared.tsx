@@ -2,7 +2,6 @@ import { useQueryClient } from "@tanstack/react-query"
 import { Link, Outlet, useNavigate } from "@tanstack/react-router"
 import { useServerFn } from "@tanstack/react-start"
 import {
-  AlertTriangle,
   Archive,
   CalendarClock,
   CheckCircle2,
@@ -17,10 +16,12 @@ import {
   TriangleAlert,
   Users,
 } from "lucide-react"
-import type { ReactNode } from "react"
+import { useCallback, type ReactNode } from "react"
+import { ContentSkeleton, QueryStatus } from "../../components/AsyncState"
+import { OperationsRefreshProvider } from "../../components/OperationsRefresh"
 
 import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScope"
-import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
+import { Alert, AlertDescription } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import {
@@ -29,7 +30,6 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card"
-import { Skeleton } from "../../components/ui/skeleton"
 import type {
   FreshnessStatus,
   MarketFreshness,
@@ -43,7 +43,6 @@ import {
   operationsKeys,
   useOperationsDashboardRefresh,
   useOperationsIsFetching,
-  type OperationsDashboardQuery,
 } from "./operations.queries"
 import { type OperationsDashboardState } from "./operations.queries"
 
@@ -191,18 +190,7 @@ export function PageIntro({
 }
 
 export function LoadingState({ label = "正在載入資料" }: { label?: string }) {
-  return (
-    <div
-      className="flex min-h-18 flex-col items-stretch justify-center gap-2 rounded-lg bg-surface-soft p-3.5"
-      role="status"
-      aria-live="polite"
-    >
-      <span className="sr-only">{label}</span>
-      <Skeleton className="h-3 w-2/5 rounded-full" />
-      <Skeleton className="h-3 w-full rounded-full" />
-      <Skeleton className="h-3 w-3/4 rounded-full" />
-    </div>
-  )
+  return <ContentSkeleton label={label} />
 }
 
 export function RefreshStatus({
@@ -213,13 +201,9 @@ export function RefreshStatus({
   label: string
 }) {
   return (
-    <div className="mb-4 min-h-4" aria-live="polite">
-      {pending && (
-        <p className="m-0 text-xs text-muted" role="status">
-          {label}
-        </p>
-      )}
-    </div>
+    <span className="sr-only" role="status">
+      {pending ? label : ""}
+    </span>
   )
 }
 
@@ -286,89 +270,34 @@ export function Panel({
   )
 }
 
-function ConnectionIndicator({
-  state,
-}: {
-  state: "loading" | "healthy" | "degraded" | "failed"
-}) {
-  if (state === "loading") {
-    return (
-      <span
-        className="size-2 shrink-0 animate-pulse rounded-full bg-muted"
-        aria-hidden="true"
-      />
-    )
-  }
-  if (state === "healthy") {
-    return (
-      <span
-        className="size-2 shrink-0 rounded-full bg-accent ring-4 ring-accent/15"
-        aria-hidden="true"
-      />
-    )
-  }
-  if (state === "degraded") {
-    return (
-      <span
-        className="size-2 shrink-0 rounded-full bg-warning ring-4 ring-warning/15"
-        aria-hidden="true"
-      />
-    )
-  }
-  return (
-    <span
-      className="size-2 shrink-0 rounded-full bg-danger ring-4 ring-danger/15"
-      aria-hidden="true"
-    />
-  )
-}
-
 export function OperationsDashboardStatus({
   state,
 }: {
   state: OperationsDashboardState
 }) {
+  const error =
+    state.fatalError || Object.values(state.errors).filter(Boolean).join("；")
+  const timestamps = Object.values(state.sourceUpdatedAt).filter(
+    value => value > 0
+  )
   return (
-    <>
-      {state.fatalError && (
-        <Alert className="mb-3" variant="destructive">
-          <AlertTriangle size={18} />
-          <AlertTitle>無法更新營運資料</AlertTitle>
-          <AlertDescription>{state.fatalError}</AlertDescription>
-        </Alert>
-      )}
-      <Alert
-        className="mb-5 flex items-center gap-2.5 text-xs text-muted"
-        role={state.initialLoading ? "status" : undefined}
-        aria-live="polite"
-      >
-        <ConnectionIndicator state={state.connectionState} />
-        <strong className="text-ink">{state.connectionLabel}</strong>
-        <span>
-          {state.response
-            ? `${state.successfulPanels}/${state.panelResults.length} 個資料來源成功 · 最後更新 ${formatDate(state.response.fetchedAt)}`
-            : "正在載入營運資料"}
-        </span>
-      </Alert>
-      {state.connectionState === "failed" && !state.initialLoading && (
-        <Alert className="mb-5" variant="destructive">
-          <AlertTriangle size={18} />
-          <AlertTitle>Admin API 連線失敗</AlertTitle>
-          <AlertDescription>
-            所有 Admin API 查詢均失敗，請確認後端服務與 Dashboard server 設定。
-          </AlertDescription>
-        </Alert>
-      )}
-      {state.connectionState === "degraded" && (
-        <Alert className="mb-5" variant="warning" role="status">
-          <AlertTriangle size={18} />
-          <AlertTitle>部分服務異常</AlertTitle>
-          <AlertDescription>
-            部分資料來源暫時無法取得；其餘成功頁面仍為有效結果。
-          </AlertDescription>
-        </Alert>
-      )}
-    </>
+    <div
+      title={Object.entries(state.sourceUpdatedAt)
+        .map(
+          ([name, value]) =>
+            `${name}: ${value ? formatDate(new Date(value).toISOString()) : "尚未成功載入"}`
+        )
+        .join("\n")}
+    >
+      <QueryStatus
+        hasData={state.panelResults.some(result => result.ok)}
+        pending={state.pending}
+        error={error || undefined}
+        updatedAt={timestamps.length ? Math.min(...timestamps) : 0}
+        onRetry={state.retry}
+        label="營運資料"
+      />
+    </div>
   )
 }
 
@@ -376,7 +305,7 @@ const navigation = [
   { to: "/operations", label: "導入概況", icon: Gauge, exact: true },
   {
     to: "/operations/deliveries",
-    label: "缺漏交付",
+    label: "交付監控",
     icon: Clock3,
     exact: false,
   },
@@ -406,7 +335,7 @@ const navigation = [
   },
   {
     to: "/operations/credentials",
-    label: "API Credentials",
+    label: "API 憑證",
     icon: KeyRound,
     exact: false,
   },
@@ -419,7 +348,7 @@ const navigation = [
   },
 ] as const
 
-export default function OperationsLayout({
+function OperationsLayoutContent({
   username,
   role,
 }: {
@@ -492,33 +421,63 @@ export default function OperationsLayout({
                   !item.ownerOnly ||
                   canViewUsers(role)
               )
-              .map(item => {
+              .map((item, index) => {
                 const Icon = item.icon
                 return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    activeOptions={{ exact: item.exact }}
-                    activeProps={{
-                      className:
-                        "bg-accent-soft text-accent ring-1 ring-accent/20",
-                    }}
-                    className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-bold whitespace-nowrap text-muted transition-colors hover:bg-surface-soft hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20 focus-visible:outline-none"
-                  >
-                    <Icon className="size-4" aria-hidden="true" />
-                    {item.label}
-                  </Link>
+                  <div key={item.to} className="shrink-0">
+                    {[0, 3, 5].includes(index) && (
+                      <p className="hidden px-3 pt-3 pb-1 text-xs font-medium text-muted lg:block">
+                        {index === 0
+                          ? "營運監控"
+                          : index === 3
+                            ? "資料稽核"
+                            : "系統管理"}
+                      </p>
+                    )}
+                    <Link
+                      to={item.to}
+                      activeOptions={{ exact: item.exact }}
+                      activeProps={{
+                        className:
+                          "bg-accent-soft text-accent ring-1 ring-accent/20",
+                      }}
+                      className="inline-flex w-full min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-bold whitespace-nowrap text-muted transition-colors hover:bg-surface-soft hover:text-ink focus-visible:ring-3 focus-visible:ring-accent/20 focus-visible:outline-none"
+                    >
+                      <Icon className="size-4" aria-hidden="true" />
+                      {item.label}
+                    </Link>
+                  </div>
                 )
               })}
           </nav>
         </aside>
         <div className="min-w-0">
-          <ProtectedQueryScopeProvider value={`${username}:${role}`}>
-            <Outlet />
-          </ProtectedQueryScopeProvider>
+          <Outlet />
         </div>
       </div>
     </main>
+  )
+}
+
+export default function OperationsLayout({
+  username,
+  role,
+}: {
+  username: string
+  role: AdminRole
+}) {
+  const navigate = useNavigate()
+  const onAuthenticationFailure = useCallback(() => {
+    void navigate({ to: "/login", replace: true })
+  }, [navigate])
+  return (
+    <ProtectedQueryScopeProvider value={`${username}:${role}`}>
+      <OperationsRefreshProvider
+        onAuthenticationFailure={onAuthenticationFailure}
+      >
+        <OperationsLayoutContent username={username} role={role} />
+      </OperationsRefreshProvider>
+    </ProtectedQueryScopeProvider>
   )
 }
 
@@ -615,18 +574,6 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
       ))}
     </div>
   )
-}
-
-export function panelErrorAt(query: OperationsDashboardQuery, index: number) {
-  return query.data?.refreshErrors[index] ?? ""
-}
-
-export function panelResultWithError<T>(
-  result: PanelResult<T> | null,
-  refreshError: string
-) {
-  if (!result || !refreshError || !result.ok) return result
-  return result
 }
 
 export function operationPanelIcon(name: "alert" | "database") {
