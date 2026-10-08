@@ -39,7 +39,12 @@ const RefreshContext = createContext({
     () => {},
   refresh: async () => {},
   pending: false,
+  reportError: (_error: unknown): boolean => false,
 })
+
+function isProtectedQuery(query: { queryKey: QueryKey }) {
+  return ["operations", "calendar", "admin"].includes(String(query.queryKey[0]))
+}
 
 /** Exact, visible query registrations keep page refresh independent of feature key prefixes. */
 export function OperationsRefreshProvider({
@@ -75,34 +80,47 @@ export function OperationsRefreshProvider({
     )
   }, [client, hashes])
 
-  useEffect(() => {
-    const check = () => {
-      if (handlingAuthenticationFailure.current) return
-      const expired = client
-        .getQueryCache()
-        .findAll()
-        .some(
-          query =>
-            hashes.has(query.queryHash) &&
-            isDashboardAuthenticationError(query.state.error)
-        )
-      if (!expired) return
+  const reportError = useCallback(
+    (error: unknown) => {
+      if (!isDashboardAuthenticationError(error)) return false
+      if (handlingAuthenticationFailure.current) return true
       handlingAuthenticationFailure.current = true
       setAuthenticationFailed(true)
-      client.removeQueries({
-        predicate: query =>
-          ["operations", "calendar", "admin"].includes(
-            String(query.queryKey[0])
-          ),
-      })
+      const protectedQueries = {
+        predicate: isProtectedQuery,
+      }
+      // Cancel before removal: an unresolved request must never restore private data.
+      void client.cancelQueries(protectedQueries)
+      client.removeQueries(protectedQueries)
+      client.getMutationCache().clear()
       onAuthenticationFailure()
+      return true
+    },
+    [client, onAuthenticationFailure]
+  )
+
+  useEffect(() => {
+    const check = () => {
+      for (const query of client.getQueryCache().findAll()) {
+        // A hidden query may still finish after its visible registration is removed.
+        if (isProtectedQuery(query)) reportError(query.state.error)
+      }
     }
     check()
-    return client.getQueryCache().subscribe(check)
-  }, [client, hashes, onAuthenticationFailure])
+    const unsubscribeQueries = client.getQueryCache().subscribe(check)
+    const unsubscribeMutations = client.getMutationCache().subscribe(event => {
+      if (event.type === "updated") reportError(event.mutation.state.error)
+    })
+    return () => {
+      unsubscribeQueries()
+      unsubscribeMutations()
+    }
+  }, [client, reportError])
 
   return (
-    <RefreshContext.Provider value={{ register, refresh, pending }}>
+    <RefreshContext.Provider
+      value={{ register, refresh, pending, reportError }}
+    >
       {authenticationFailed ? (
         <p role="status">登入已失效，正在返回登入頁…</p>
       ) : (

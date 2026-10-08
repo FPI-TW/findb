@@ -196,3 +196,199 @@ test("viewer deep links cannot expose historical backfill and tab keyboard navig
     state.reads["/api/v1/admin/historical-backfills/scopes"]
   ).toBeUndefined()
 })
+
+for (const role of ["operator", "owner"]) {
+  test(`${role} completes alert → preview → confirmed backfill exactly once while refreshes preserve its draft`, async ({
+    page,
+    request,
+  }) => {
+    await request.post(`${backend}/fixture/reset`, { data: { role } })
+    await page.clock.install()
+    await login(page, role)
+    await page.getByRole("tab", { name: "缺漏告警" }).click()
+    await page
+      .getByRole("button", {
+        name: "帶入 tw_equity_minute 2026-10-07 回補參數",
+      })
+      .click()
+    await expect(page.locator("#backfill-provider")).toHaveValue("shioaji")
+    await expect(page.locator("#backfill-dataset")).toHaveValue(
+      "tw_equity_minute"
+    )
+    await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
+    await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
+    const create = page.getByRole("button", { name: "建立回補", exact: true })
+    const confirmation = page.getByRole("checkbox")
+    await expect(create).toBeDisabled()
+    await expect(confirmation).toBeDisabled()
+    expect(
+      (await (await request.get(`${backend}/fixture/state`)).json()).mutations
+    ).toEqual([])
+    await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
+    const preview = page.getByText("範圍有效；所有日期都會建立工作項目。", {
+      exact: true,
+    })
+    await expect(preview).toBeVisible()
+    await expect(create).toBeDisabled()
+    expect(
+      (await (await request.get(`${backend}/fixture/state`)).json()).mutations
+    ).toEqual([])
+    await confirmation.check()
+    await expect(create).toBeEnabled()
+    await page.getByRole("tab", { name: "全市場計畫" }).click()
+    await page.getByRole("button", { name: "重新整理", exact: true }).click()
+    await page.getByRole("tab", { name: "歷史回補" }).click()
+    await expect(preview).toBeVisible()
+    await expect(confirmation).toBeChecked()
+    await page.getByRole("button", { name: "重新整理", exact: true }).click()
+    const count = (await (await request.get(`${backend}/fixture/state`)).json())
+      .reads["/api/v1/admin/historical-backfills"]
+    await page.clock.fastForward(60_000)
+    await expect
+      .poll(
+        async () =>
+          (await (await request.get(`${backend}/fixture/state`)).json()).reads[
+            "/api/v1/admin/historical-backfills"
+          ]
+      )
+      .toBeGreaterThan(count)
+    await expect(page.locator("#backfill-provider")).toHaveValue("shioaji")
+    await expect(page.locator("#backfill-dataset")).toHaveValue(
+      "tw_equity_minute"
+    )
+    await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
+    await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
+    await expect(preview).toBeVisible()
+    await expect(confirmation).toBeChecked()
+    await expect(create).toBeEnabled()
+    await create.click()
+    await expect(
+      page.locator("details").filter({ hasText: "shioaji/tw_equity_minute" })
+    ).toContainText("2026-10-07 – 2026-10-07")
+    await page.getByRole("button", { name: "重新整理", exact: true }).click()
+    await expect(
+      page.locator("details").filter({ hasText: "shioaji/tw_equity_minute" })
+    ).toHaveCount(1)
+    const state = await (await request.get(`${backend}/fixture/state`)).json()
+    expect(state.previews).toEqual([
+      {
+        provider: "shioaji",
+        dataset_key: "tw_equity_minute",
+        start_date: "2026-10-07",
+        end_date: "2026-10-07",
+      },
+    ])
+    expect(state.mutations).toEqual([
+      {
+        path: "/api/v1/admin/historical-backfills",
+        provider: "shioaji",
+        dataset_key: "tw_equity_minute",
+        start_date: "2026-10-07",
+        end_date: "2026-10-07",
+        request_key: expect.any(String),
+      },
+    ])
+    expect(state.mutations[0].request_key).toMatch(/^[0-9a-f-]{36}$/)
+  })
+}
+
+test("changed parameters and a new alert invalidate preview and confirmation; a late preview cannot authorize another draft", async ({
+  page,
+  request,
+}) => {
+  await login(page)
+  await page.getByRole("tab", { name: "缺漏告警" }).click()
+  await page
+    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-07 回補參數" })
+    .click()
+  await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
+  await expect(page.getByRole("checkbox")).toBeEnabled()
+  await page.getByRole("checkbox").check()
+  await page.getByLabel("回補結束日期").fill("2026-10-08")
+  await expect(page.getByRole("checkbox")).not.toBeChecked()
+  await expect(page.getByRole("checkbox")).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "建立回補", exact: true })
+  ).toBeDisabled()
+  await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
+  await expect(page.getByRole("checkbox")).toBeEnabled()
+  await page.getByRole("checkbox").check()
+  await page.getByRole("tab", { name: "缺漏告警" }).click()
+  await page
+    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-07 回補參數" })
+    .click()
+  await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
+  await expect(page.getByRole("checkbox")).not.toBeChecked()
+  await expect(page.getByRole("checkbox")).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "建立回補", exact: true })
+  ).toBeDisabled()
+  await request.post(`${backend}/fixture/backfill-config`, {
+    data: { previewDelay: 2000 },
+  })
+  const lateResponse = page.waitForResponse(
+    async response =>
+      response.url().includes("_serverFn") &&
+      (await response.text()).includes("scope_valid")
+  )
+  await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
+  await expect(page.getByRole("button", { name: "驗證中…" })).toBeVisible()
+  await page.getByRole("tab", { name: "缺漏告警" }).click()
+  await page
+    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-06 回補參數" })
+    .click()
+  await lateResponse
+  await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-06")
+  await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-06")
+  await expect(page.getByRole("checkbox")).not.toBeChecked()
+  await expect(page.getByRole("checkbox")).toBeDisabled()
+  await expect(
+    page.getByText("範圍有效；所有日期都會建立工作項目。", { exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "建立回補", exact: true })
+  ).toBeDisabled()
+  expect(
+    (await (await request.get(`${backend}/fixture/state`)).json()).mutations
+  ).toEqual([])
+})
+
+for (const expiry of ["local", "upstream"] as const) {
+  test(`direct backfill preview ${expiry} session expiry removes the editor and returns to login`, async ({
+    page,
+    request,
+  }) => {
+    await login(page)
+    await page.getByRole("tab", { name: "缺漏告警" }).click()
+    await page
+      .getByRole("button", {
+        name: "帶入 tw_equity_minute 2026-10-07 回補參數",
+      })
+      .click()
+    await expect(
+      page.getByRole("button", { name: "驗證交易日", exact: true })
+    ).toBeEnabled()
+    await expect(
+      page.locator("#historical-provider-scopes option")
+    ).toHaveCount(1)
+    await page.waitForLoadState("networkidle")
+    await request.post(`${backend}/fixture/session`, {
+      data:
+        expiry === "local"
+          ? { role: "viewer" }
+          : { failurePaths: ["/api/v1/admin/historical-backfills/preview"] },
+    })
+    await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
+    await expect(page).toHaveURL(/\/login/)
+    await expect(page.locator("#backfill-provider")).toHaveCount(0)
+    await expect(
+      page.locator("#historical-provider-scopes option")
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: "建立回補", exact: true })
+    ).toHaveCount(0)
+    expect(
+      (await (await request.get(`${backend}/fixture/state`)).json()).mutations
+    ).toEqual([])
+  })
+}

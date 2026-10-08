@@ -1,10 +1,27 @@
-import { describe, expect, it } from "vitest"
+const server = vi.hoisted(() => ({
+  deleteCookie: vi.fn(),
+  setResponseHeader: vi.fn(),
+}))
+vi.mock("@tanstack/react-start/server", () => ({
+  deleteCookie: server.deleteCookie,
+  setResponseHeader: server.setResponseHeader,
+  getRequest: () => ({
+    url: "http://localhost/dashboard",
+    headers: new Headers(),
+  }),
+  getRequestHeader: () => "http",
+  getCookie: () => undefined,
+  setCookie: vi.fn(),
+}))
+import { DashboardAuthenticationError } from "./auth-errors"
+import { describe, expect, it, vi } from "vitest"
 
 import {
   authenticateDashboardUser,
   configFromEnvironment,
   dashboardCookieOptions,
   fetchDashboardSession,
+  withDashboardAuthentication,
 } from "./auth.server"
 
 const user = {
@@ -94,4 +111,25 @@ describe("dashboard backend authentication boundary", () => {
     )
     expect(result).toBeNull()
   })
+})
+
+it("clears the HttpOnly cookie on normalized upstream expiry before login navigation, preserving other errors", async () => {
+  server.deleteCookie.mockClear()
+  await expect(
+    withDashboardAuthentication(() =>
+      Promise.reject(new DashboardAuthenticationError())
+    )
+  ).rejects.toThrow("Dashboard authentication required")
+  expect(server.deleteCookie).toHaveBeenCalledTimes(1)
+  expect(server.deleteCookie.mock.calls[0]?.[1]).toMatchObject({
+    httpOnly: true,
+    sameSite: "strict",
+    path: "/dashboard",
+  })
+  await expect(
+    withDashboardAuthentication(() =>
+      Promise.reject(new Error("permission denied"))
+    )
+  ).rejects.toThrow("permission denied")
+  expect(server.deleteCookie).toHaveBeenCalledTimes(1)
 })

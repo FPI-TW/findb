@@ -4,9 +4,7 @@ import {
   type QueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { useServerFn } from "@tanstack/react-start"
-import { useEffect } from "react"
 
 import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
 import {
@@ -22,7 +20,6 @@ import {
   type SchedulerMutationResponse,
 } from "../../lib/admin-api"
 import { loadDashboard, loadRawPayloadDetail } from "../../lib/admin.functions"
-import { isDashboardAuthenticationError } from "../../lib/auth-errors"
 import {
   OPERATIONS_OVERVIEW_AUDIT,
   type RawPayloadsSearch,
@@ -121,7 +118,6 @@ export function useOperationsDashboardQuery(
   audit: DashboardRequest["audit"]
 ): OperationsDashboardQuery {
   const load = useServerFn(loadDashboard)
-  const navigate = useOperationsNavigate()
   const queryClient = useQueryClient()
   const sessionScope = useProtectedQueryScope()
   const queryKey = operationsKeys.dashboard(view, audit, sessionScope)
@@ -138,16 +134,6 @@ export function useOperationsDashboardQuery(
     },
     ...(live ? liveQueryOptions : manualQueryOptions),
   })
-
-  useEffect(() => {
-    if (query.error && isDashboardAuthenticationError(query.error)) {
-      void Promise.resolve(navigate({ to: "/login", replace: true })).finally(
-        () => {
-          queryClient.removeQueries({ queryKey: operationsKeys.root })
-        }
-      )
-    }
-  }, [navigate, query.error, queryClient])
 
   return { ...query, queryKey }
 }
@@ -218,24 +204,12 @@ export type OperationsDashboardState = ReturnType<
   typeof useOperationsDashboardState
 >
 
-type NavigateForOperations = (options: {
-  to: string
-  replace?: boolean
-}) => Promise<unknown>
-
-/** Kept in one small adapter so query hooks remain easy to mock in tests. */
-function useOperationsNavigate(): NavigateForOperations {
-  return useNavigate() as NavigateForOperations
-}
-
 export function useRawPayloadDetailQuery(
   scope: RawPayloadsSearch,
   rawPayloadId: string,
   enabled: boolean
 ): UseQueryResult<RawPayload, Error> & { queryKey: RawPayloadDetailKey } {
   const loadDetail = useServerFn(loadRawPayloadDetail)
-  const navigate = useOperationsNavigate()
-  const queryClient = useQueryClient()
   const sessionScope = useProtectedQueryScope()
   const queryKey = operationsKeys.rawPayloadDetail(
     {
@@ -259,16 +233,6 @@ export function useRawPayloadDetailQuery(
     enabled,
     ...manualQueryOptions,
   })
-
-  useEffect(() => {
-    if (query.error && isDashboardAuthenticationError(query.error)) {
-      void Promise.resolve(navigate({ to: "/login", replace: true })).finally(
-        () => {
-          queryClient.removeQueries({ queryKey: operationsKeys.root })
-        }
-      )
-    }
-  }, [navigate, query.error, queryClient])
 
   return { ...query, queryKey }
 }

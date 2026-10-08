@@ -28,6 +28,7 @@ import {
 } from "./admin-api"
 import {
   DashboardAuthenticationError,
+  assertDashboardAuthentication,
   isDashboardAuthenticationError,
 } from "./auth-errors"
 import type { AdminRole } from "./admin-governance-api"
@@ -100,9 +101,7 @@ async function fetchTarget<T extends z.ZodType>(
     throw new Error("Unable to reach FinDB API")
   }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new DashboardAuthenticationError()
-    }
+    await assertDashboardAuthentication(response)
     throw new Error(`FinDB API request failed (${response.status})`)
   }
   try {
@@ -197,7 +196,7 @@ export async function fetchDashboardData(
             fetchImplementation
           ),
     ])
-    assertNoAuthenticationFailure([deliveries])
+    assertNoAuthenticationFailure([deliveries, backfills, backfillScopes])
     return dashboardResponseSchema.parse({
       view: data.view,
       fetchedAt,
@@ -328,9 +327,7 @@ export async function patchSchedulerData(
     throw new Error("Unable to reach FinDB API")
   }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new DashboardAuthenticationError()
-    }
+    await assertDashboardAuthentication(response)
     if (response.status === 409) {
       const payload: unknown = await response.json().catch(() => null)
       if (
@@ -379,8 +376,10 @@ async function mutateBackfill<T extends z.ZodType>(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     }
   )
-  if (!response.ok)
+  if (!response.ok) {
+    await assertDashboardAuthentication(response)
     throw new Error(`FinDB API request failed (${response.status})`)
+  }
   return schema.parse(await response.json())
 }
 

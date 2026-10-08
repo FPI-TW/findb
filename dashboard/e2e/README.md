@@ -13,3 +13,12 @@ Fixture 使用 Node.js 原生 TypeScript 執行，需要支援 type stripping �
 交付監控案例另涵蓋三分頁 URL／瀏覽器歷史、完整資料集選項、分頁與草稿隔離、viewer 限制，
 以及三次輪詢與手動刷新時表格／篩選列位移不超過 1 CSS pixel、焦點／展開／捲動保留、失敗恢復與窄螢幕。
 `/fixture/delivery-config` 僅在本機 fixture 提供延遲／失敗注入，不屬於正式 API。
+
+回補驗收對 operator 與 owner 各自使用正常登入，檢查告警帶入的 provider／dataset／起訖日期、
+預覽無寫入、確認 gating、建立的完整 payload 只送出一次，以及刷新後紀錄可見。
+切換分頁、手動刷新與 60 秒背景更新均須保留草稿／預覽／確認；修改參數或改帶另一告警必須
+取消授權，延遲的舊預覽不能恢復授權。另涵蓋本地 session 失效與 upstream 401，確認編輯器與
+scope 選項消失並返回登入頁。概況部分來源失敗／恢復時，卡片、操作列與佇列位移不得超過 1 CSS pixel。
+`/fixture/backfill-config`、`/fixture/session` 與 `/fixture/overview-config` 僅供 loopback fixture
+注入延遲、失效與部分服務故障。Fixture 的預覽與建立回應套用正式 Zod schemas，
+`/fixture/state` 分別記錄預覽及寫入 payload，GET 回補紀錄回傳已建立請求；不執行真實回補。

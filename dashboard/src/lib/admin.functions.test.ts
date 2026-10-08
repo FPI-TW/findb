@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { mergeDashboardRefresh, type DashboardRequest } from "./admin-api"
-import { fetchDashboardData, patchSchedulerData } from "./admin.server"
+import {
+  createHistoricalBackfillData,
+  cancelHistoricalBackfillData,
+  previewHistoricalBackfillData,
+  fetchDashboardData,
+  patchSchedulerData,
+} from "./admin.server"
 
 const timestamp = "2026-07-23T02:00:00Z"
 const pagination = {
@@ -524,7 +530,62 @@ describe("FinDB Admin server boundary", () => {
         },
         "owner-secret",
         undefined,
-        async () => new Response("sensitive auth body", { status: 403 })
+        async () => new Response("sensitive auth body", { status: 401 })
+      )
+    ).rejects.toThrow("Dashboard authentication required")
+  })
+})
+
+describe("direct backfill authentication boundary", () => {
+  const input = {
+    provider: "shioaji",
+    datasetKey: "tw_equity_minute",
+    startDate: "2026-10-07",
+    endDate: "2026-10-07",
+    requestKey: "fixture-request",
+  }
+  it.each(["preview", "create", "cancel"])(
+    "normalizes upstream 401 for %s and preserves permission errors",
+    async action => {
+      const invoke = (status: number) => {
+        const transport: typeof fetch = async () =>
+          Response.json({ detail: "Insufficient admin role" }, { status })
+        if (action === "preview")
+          return previewHistoricalBackfillData(
+            input,
+            "session",
+            undefined,
+            transport
+          )
+        if (action === "create")
+          return createHistoricalBackfillData(
+            input,
+            "session",
+            undefined,
+            transport
+          )
+        return cancelHistoricalBackfillData(
+          "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+          "session",
+          undefined,
+          transport
+        )
+      }
+      await expect(invoke(401)).rejects.toThrow(
+        "Dashboard authentication required"
+      )
+      await expect(invoke(403)).rejects.toThrow(
+        "FinDB API request failed (403)"
+      )
+      await expect(invoke(409)).rejects.toThrow(
+        "FinDB API request failed (409)"
+      )
+    }
+  )
+  it("recognizes only the existing invalid-credential 403 contract as expiry", async () => {
+    await expect(
+      previewHistoricalBackfillData(input, "session", undefined, async () =>
+        Response.json({ detail: "Invalid admin credential" }, { status: 403 })
       )
     ).rejects.toThrow("Dashboard authentication required")
   })

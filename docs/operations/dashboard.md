@@ -3,13 +3,13 @@
 Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不直接連線資料庫。
 既有頁面 URL 保持相容，營運台依下列責任分組：
 
-| 分組 | 頁面 | 用途 |
-| --- | --- | --- |
-| 營運監控 | 導入概況 | Pilot／Full market 排程、readiness、Owner 啟停、佇列與 Worker 健康 |
-| 營運監控 | 交付監控 | 全市場逐成員核對、資料集日期層級告警、授權歷史回補 |
-| 營運監控 | 資料品質 | 未解決 DQ 問題及政策資訊 |
-| 資料稽核 | 修正稽核、原始資料 | 修正 lineage 與保留中的 raw payload |
-| 系統管理 | 交易日曆、API 憑證、管理者使用者 | 日曆治理及身份／憑證管理，依原有角色限制操作 |
+| 分組     | 頁面                             | 用途                                                               |
+| -------- | -------------------------------- | ------------------------------------------------------------------ |
+| 營運監控 | 導入概況                         | Pilot／Full market 排程、readiness、Owner 啟停、佇列與 Worker 健康 |
+| 營運監控 | 交付監控                         | 全市場逐成員核對、資料集日期層級告警、授權歷史回補                 |
+| 營運監控 | 資料品質                         | 未解決 DQ 問題及政策資訊                                           |
+| 資料稽核 | 修正稽核、原始資料               | 修正 lineage 與保留中的 raw payload                                |
+| 系統管理 | 交易日曆、API 憑證、管理者使用者 | 日曆治理及身份／憑證管理，依原有角色限制操作                       |
 
 ## 交付監控
 
@@ -24,7 +24,8 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 - 缺漏告警追蹤資料集／日期層級的交付；「帶入回補」僅切換分頁並填入條件。
   operator／owner 仍需預覽交易日、確認與送出，才會建立回補。
 - 切換分頁會保留本次進入頁面後的回補草稿；重新載入頁面不保留未提交草稿。
-  定期更新不改寫草稿、預覽或確認狀態。
+  手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
+  較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
 URL 的 `tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
@@ -40,14 +41,21 @@ URL 的 `tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/
 回補紀錄每 60 秒更新；隱藏分頁及瀏覽器背景停止輪詢，重新可見時只有超過 60 秒的資料才補刷新。
 稽核、交易日曆、使用者與憑證不定時輪詢，使用手動刷新及操作後失效重取。
 
-更新保留排序、頁碼、展開狀態與捲動；實際資料增減仍會改變列內容。認證失效會清除受保護的快取並
-返回登入頁。排程、日曆及回補的後端授權、revision／CAS、預覽與確認機制保持有效。
+更新保留排序、頁碼、展開狀態與捲動；實際資料增減仍會改變列內容。概況部分來源失敗由既有
+固定高度狀態列公告，不另插入提示推動卡片、操作列或佇列。查詢、mutation 或直接操作偵測到
+認證失效時，立即隱藏受保護內容、取消未完成查詢並清除 operations／calendar／admin 快取，
+只導向登入頁一次。後端 401 與既有 `Invalid admin credential` 403 契約會使 session cookie 失效；
+一般角色不足、密碼更新要求及業務錯誤仍維持原處理。排程、日曆及回補的後端授權、revision／CAS、預覽與確認機制保持有效。
 
 ## 前端維護契約
 
 - `OperationsRefreshProvider` 管理可見查詢的 exact keys；資料元件透過
   `useRegisterOperationsQuery(key, enabled)` 註冊，隱藏分頁同時停用查詢及註冊。
-  頁首刷新使用 `cancelRefetch: false`，與既有 in-flight 請求合併。
+  可見性註冊只限制頁首刷新；認證監看涵蓋所有 operations／calendar／admin 查詢，
+  已停用或取消註冊的請求晚到認證失效仍立即清除受保護內容，公開及其他查詢不觸發此處理。
+  頁首刷新使用 `cancelRefetch: false`，與既有 in-flight 請求合併。直接操作的 catch 必須透過
+  `useOperationsRefresh().reportError(error)` 回報認證錯誤；mutation 由共用 MutationCache 監看。
+  Server Functions 使用 `withDashboardAuthentication` 清除 upstream 拒絕的 cookie，避免登入守衛反向導回。
 - `liveQueryOptions` 統一定時更新與可見性策略；其餘查詢維持手動更新。
 - `QueryStatus` 使用固定高度呈現首次載入、背景更新、錯誤及最後成功時間；
   `hasData` 根據是否有成功 response，不能以資料列數判斷。

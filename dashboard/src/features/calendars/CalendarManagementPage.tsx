@@ -1,3 +1,4 @@
+import { useOperationsRefresh } from "../../components/OperationsRefresh"
 import { QueryStatus, type AsyncState } from "../../components/AsyncState"
 import {
   manualQueryOptions,
@@ -712,6 +713,7 @@ function EditDayDialog({
   onSaved: () => void
   inline?: boolean
 }) {
+  const { reportError } = useOperationsRefresh()
   const edit = useServerFn(editCalendarDay)
   const [status, setStatus] = useState(day.status)
   const [name, setName] = useState(
@@ -746,6 +748,7 @@ function EditDayDialog({
         description: `${day.date} 已建立新修訂版。`,
       })
     } catch (cause) {
+      if (reportError(cause)) return
       setError(cause instanceof Error ? cause.message : "無法儲存修改。")
     } finally {
       setPending(false)
@@ -864,6 +867,7 @@ function JsonImport({
   canEdit: boolean
   onApplied: () => void
 }) {
+  const { reportError } = useOperationsRefresh()
   const previewFn = useServerFn(previewCalendarJson)
   const apply = useServerFn(applyCalendarPreview)
   const [content, setContent] = useState(
@@ -890,6 +894,7 @@ function JsonImport({
         )
       )
     } catch (cause) {
+      if (reportError(cause)) return
       setError(cause instanceof Error ? cause.message : "JSON 預覽失敗。")
     } finally {
       setPending(false)
@@ -916,6 +921,7 @@ function JsonImport({
           onApplied()
           toast.success("草稿已套用")
         } catch (cause) {
+          if (reportError(cause)) return
           setError(cause instanceof Error ? cause.message : "無法套用草稿。")
         } finally {
           setPending(false)
@@ -954,6 +960,7 @@ function CsvImport({
   canEdit: boolean
   onApplied: () => void
 }) {
+  const { reportError } = useOperationsRefresh()
   const previewFn = useServerFn(previewCalendarCsv)
   const apply = useServerFn(applyCalendarPreview)
   const [file, setFile] = useState<File | null>(null)
@@ -976,6 +983,7 @@ function CsvImport({
       form.set("file", file)
       setPreview(withPreviewDiff(await previewFn({ data: form }), calendar))
     } catch (cause) {
+      if (reportError(cause)) return
       setError(cause instanceof Error ? cause.message : "CSV 預覽失敗。")
     } finally {
       setPending(false)
@@ -1002,6 +1010,7 @@ function CsvImport({
           onApplied()
           toast.success("草稿已套用")
         } catch (cause) {
+          if (reportError(cause)) return
           setError(cause instanceof Error ? cause.message : "無法套用草稿。")
         } finally {
           setPending(false)
@@ -1167,6 +1176,7 @@ function CalendarHistory({
   canRollback: boolean
   onRolledBack: () => void
 }) {
+  const { reportError } = useOperationsRefresh()
   const rollback = useServerFn(rollbackCalendarYear)
   const [rollingBack, setRollingBack] = useState<number | null>(null)
   const [error, setError] = useState("")
@@ -1192,6 +1202,7 @@ function CalendarHistory({
       onRolledBack()
       toast.success(`已回滾至 r${targetRevision} 的內容`)
     } catch (cause) {
+      if (reportError(cause)) return
       setError(cause instanceof Error ? cause.message : "回滾失敗。")
     } finally {
       setRollingBack(null)
@@ -1391,6 +1402,7 @@ function PublishButton({
   calendar: CalendarYear
   onPublished: () => void
 }) {
+  const { reportError } = useOperationsRefresh()
   const publish = useServerFn(publishCalendarYear)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
@@ -1414,6 +1426,7 @@ function PublishButton({
       onPublished()
       toast.success("年度日曆已發布")
     } catch (cause) {
+      if (reportError(cause)) return
       setError(cause instanceof Error ? cause.message : "發布失敗。")
     } finally {
       setPending(false)

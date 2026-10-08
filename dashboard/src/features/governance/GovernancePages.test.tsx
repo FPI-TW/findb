@@ -1,3 +1,5 @@
+import { DashboardAuthenticationError } from "../../lib/auth-errors"
+import { OperationsRefreshProvider } from "../../components/OperationsRefresh"
 import "@testing-library/jest-dom/vitest"
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -407,4 +409,26 @@ describe("governance pages", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("角色不可變更。")
     expect(screen.queryByText("操作失敗")).not.toBeInTheDocument()
   })
+})
+
+it("governance mutation expiry hides credentials and removes protected caches immediately", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const navigate = vi.fn()
+  mocks.rotateCredential.mockRejectedValue(new DashboardAuthenticationError())
+  rtlRender(
+    <QueryClientProvider client={client}>
+      <OperationsRefreshProvider onAuthenticationFailure={navigate}>
+        <CredentialsPage role="owner" />
+      </OperationsRefreshProvider>
+    </QueryClientProvider>
+  )
+  await screen.findByText("lookup")
+  client.setQueryData(["calendar", "cached"], "private")
+  fireEvent.click(screen.getByLabelText("輪替 lookup"))
+  await screen.findByText("登入已失效，正在返回登入頁…")
+  expect(screen.queryByText("lookup")).toBeNull()
+  expect(client.getQueryCache().findAll()).toHaveLength(0)
+  expect(navigate).toHaveBeenCalledTimes(1)
 })

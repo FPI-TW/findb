@@ -1,3 +1,4 @@
+import { assertDashboardAuthentication } from "./auth-errors"
 import { createServerFn } from "@tanstack/react-start"
 
 import {
@@ -20,6 +21,7 @@ import {
   getDashboardConfig,
   markPrivateResponse,
   requireDashboardSession,
+  withDashboardAuthentication,
 } from "./auth.server"
 
 type JsonRequest = {
@@ -61,7 +63,9 @@ async function adminRequest(
     throw new Error("無法連線至 FinDB API。")
   }
   if (!response.ok) {
-    if (response.status === 401) throw new Error("登入已失效，請重新登入。")
+    await withDashboardAuthentication(() =>
+      assertDashboardAuthentication(response)
+    )
     if (response.status === 403) throw new Error("沒有執行此操作的權限。")
     try {
       const payload = (await response.json()) as {

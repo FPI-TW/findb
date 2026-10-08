@@ -2,6 +2,9 @@
 // still uses its normal login, session validation, server functions and CAS.
 import { createServer } from "node:http"
 import {
+  historicalBackfillSchema,
+  historicalBackfillPreviewResponseSchema,
+  type HistoricalBackfill,
   marketFreshnessSchema,
   queueHealthSchema,
   schedulerSchema,
@@ -65,6 +68,12 @@ let role = "owner"
 let reads: Record<string, number> = {}
 let plansError = false
 let plansDelay = 0
+let backfills: HistoricalBackfill[] = []
+let previews: unknown[] = []
+let previewDelay = 0
+let authenticationFailurePaths: string[] = []
+let overviewFailurePath = ""
+
 const plans = Array.from({ length: 31 }, (_, index) => ({
   plan_id: `plan-${index}`,
   dataset_key: index === 30 ? "old_dataset" : "tw_futures_eod",
@@ -135,6 +144,11 @@ createServer(async (request, response) => {
     reads = {}
     plansError = false
     plansDelay = 0
+    backfills = []
+    previews = []
+    previewDelay = 0
+    authenticationFailurePaths = []
+    overviewFailurePath = ""
     rows = [
       scheduler("pilot_finlab", "finlab"),
       scheduler("pilot_shioaji", "shioaji", true),
@@ -156,7 +170,21 @@ createServer(async (request, response) => {
       }))
     return send({ ok: true })
   }
-  if (path === "/fixture/state") return send({ rows, mutations, reads })
+  if (path === "/fixture/state")
+    return send({ rows, mutations, reads, previews, backfills })
+  if (path === "/fixture/session") {
+    if (data.role) role = data.role
+    authenticationFailurePaths = data.failurePaths ?? []
+    return send({ ok: true })
+  }
+  if (path === "/fixture/backfill-config") {
+    previewDelay = data.previewDelay ?? 0
+    return send({ ok: true })
+  }
+  if (path === "/fixture/overview-config") {
+    overviewFailurePath = data.failurePath ?? ""
+    return send({ ok: true })
+  }
   if (path === "/fixture/delivery-config") {
     plansError = data.error ?? false
     plansDelay = data.delay ?? 0
@@ -177,6 +205,9 @@ createServer(async (request, response) => {
   if (path === "/api/v1/admin/auth/me")
     return send({ ...user, username: role, role })
   reads[path] = (reads[path] ?? 0) + 1
+  if (authenticationFailurePaths.includes(path))
+    return send({ detail: "Session expired upstream" }, 401)
+  if (overviewFailurePath === path) return send({ detail: "Unavailable" }, 503)
   if (path === "/api/v1/admin/delivery-plans/datasets")
     return send({ data: ["old_dataset", "tw_futures_eod"] })
   if (path === "/api/v1/admin/delivery-plans") {
@@ -212,12 +243,84 @@ createServer(async (request, response) => {
             last_detected_at: timestamp,
             resolved_at: null,
           },
-        ],
+        ].flatMap(alert => [
+          alert,
+          {
+            ...alert,
+            alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe98",
+            expected_data_date: "2026-10-06",
+          },
+        ]),
         url.searchParams
       )
     )
-  if (path === "/api/v1/admin/historical-backfills")
-    return send(paginated([], url.searchParams))
+  if (
+    path === "/api/v1/admin/historical-backfills/preview" &&
+    request.method === "POST"
+  ) {
+    if (role === "viewer")
+      return send({ detail: "Insufficient admin role" }, 403)
+    previews.push(data)
+    const days = []
+    for (
+      let date = new Date(`${data.start_date}T00:00:00Z`);
+      date.toISOString().slice(0, 10) <= data.end_date;
+      date.setUTCDate(date.getUTCDate() + 1)
+    ) {
+      days.push({
+        trade_date: date.toISOString().slice(0, 10),
+        valid: true,
+        reason: null,
+      })
+    }
+    const result = historicalBackfillPreviewResponseSchema.parse({
+      provider: data.provider,
+      dataset_key: data.dataset_key,
+      market: "TW",
+      scope_valid: true,
+      scope_reason: null,
+      days,
+    })
+    if (previewDelay)
+      await new Promise(resolve => setTimeout(resolve, previewDelay))
+    return send(result)
+  }
+  if (path === "/api/v1/admin/historical-backfills") {
+    if (request.method === "GET")
+      return send(paginated(backfills, url.searchParams))
+    if (request.method !== "POST")
+      return send({ detail: "Method not allowed" }, 405)
+    if (role === "viewer")
+      return send({ detail: "Insufficient admin role" }, 403)
+    const row = historicalBackfillSchema.parse({
+      ...data,
+      request_id: "019565d2-f838-7c91-85c1-72d4d7bbbea0",
+      market: "TW",
+      status: "queued",
+      created_by: role,
+      cancelled_by: null,
+      cancelled_at: null,
+      started_at: null,
+      completed_at: null,
+      failure_code: null,
+      failure_message: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+      items: [
+        {
+          item_id: "019565d2-f838-7c91-85c1-72d4d7bbbea1",
+          trade_date: data.start_date,
+          status: "queued",
+          run_id: null,
+          failure_code: null,
+          failure_message: null,
+        },
+      ],
+    })
+    mutations.push({ path, ...data })
+    backfills.unshift(row)
+    return send(row)
+  }
   if (path === "/api/v1/admin/historical-backfills/scopes")
     return send({
       data: [

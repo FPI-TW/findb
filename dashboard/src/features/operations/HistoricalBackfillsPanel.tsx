@@ -22,6 +22,7 @@ import {
   type DeliveriesPageSearch,
 } from "./operations.search"
 import { useDeliveryResource } from "./delivery.queries"
+import { useOperationsRefresh } from "../../components/OperationsRefresh"
 import { QueryStatus } from "../../components/AsyncState"
 
 export type DeliveriesSearchUpdate =
@@ -110,6 +111,7 @@ export function HistoricalBackfillsPanel({
   const cancel = useServerFn(cancelHistoricalBackfill)
   const preview = useServerFn(previewHistoricalBackfill)
   const queryClient = useQueryClient()
+  const { reportError } = useOperationsRefresh()
   const [actionError, setActionError] = useState("")
   const [creating, setCreating] = useState(false)
   const [previewing, setPreviewing] = useState(false)
@@ -211,6 +213,7 @@ export function HistoricalBackfillsPanel({
             className="mb-6 overflow-hidden rounded-xl border border-line bg-surface"
             onSubmit={event => {
               event.preventDefault()
+              if (creating) return
               if (!confirmed) {
                 setActionError("請先確認同一 provider 會依日期順序執行。")
                 return
@@ -245,7 +248,9 @@ export function HistoricalBackfillsPanel({
                   updateSearch(current => ({ ...current, bp: 1 }))
                   return refresh()
                 })
-                .catch(() => setActionError("建立回補請求失敗。"))
+                .catch(error => {
+                  if (!reportError(error)) setActionError("建立回補請求失敗。")
+                })
                 .finally(() => setCreating(false))
             }}
           >
@@ -383,7 +388,8 @@ export function HistoricalBackfillsPanel({
                         setPreviewResult(value)
                         setPreviewKey(key)
                       })
-                      .catch(() => {
+                      .catch(error => {
+                        if (reportError(error)) return
                         if (previewRevision.current !== revision) return
                         setActionError("交易日驗證失敗。")
                       })
@@ -567,7 +573,10 @@ export function HistoricalBackfillsPanel({
                           onClick={() =>
                             void cancel({ data: { requestId: row.request_id } })
                               .then(refresh)
-                              .catch(() => setActionError("取消回補請求失敗。"))
+                              .catch(error => {
+                                if (!reportError(error))
+                                  setActionError("取消回補請求失敗。")
+                              })
                           }
                         >
                           取消

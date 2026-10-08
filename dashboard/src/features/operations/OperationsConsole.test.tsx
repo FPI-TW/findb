@@ -25,6 +25,7 @@ import type {
 } from "../../lib/admin-api"
 import { deliveriesSearchSchema } from "./operations.search"
 import { marketFreshnessSchema } from "../../lib/admin-api"
+import { OperationsRefreshProvider } from "../../components/OperationsRefresh"
 import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScope"
 
 const mocks = vi.hoisted(() => ({
@@ -89,7 +90,13 @@ function queryWrapper(queryClient: QueryClient, scope = "protected") {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <ProtectedQueryScopeProvider value={scope}>
-        {children}
+        <OperationsRefreshProvider
+          onAuthenticationFailure={() =>
+            mocks.navigate({ to: "/login", replace: true })
+          }
+        >
+          {children}
+        </OperationsRefreshProvider>
       </ProtectedQueryScopeProvider>
     </QueryClientProvider>
   )
