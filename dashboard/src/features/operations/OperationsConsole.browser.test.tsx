@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@tanstack/react-router", () => ({
+  // These component tests mount on the client; real hydration is covered in E2E.
+  useHydrated: () => true,
   Link: ({ children }: { children: ReactNode }) => <>{children}</>,
   Outlet: () => null,
   useNavigate: () => mocks.navigate,

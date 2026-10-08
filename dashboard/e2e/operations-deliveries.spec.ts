@@ -12,6 +12,53 @@ async function login(page: Page, role = "owner") {
     page.getByRole("button", { name: "展開詳細資料" }).first()
   ).toBeVisible()
 }
+// Hold the real tab module so SSR is observable before any tab handlers attach.
+async function withDelayedTabs(
+  page: Page,
+  navigate: () => Promise<unknown>,
+  checkServerContent: () => Promise<void>
+) {
+  const modulePath = "**/src/components/OperationsTabs.tsx*"
+  let release!: () => void
+  let requested!: () => void
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const moduleRequested = new Promise<void>(resolve => {
+    requested = resolve
+  })
+  const hydrationErrors: string[] = []
+  page.on("console", message => {
+    if (/hydration|hydrated|server rendered HTML/i.test(message.text())) {
+      hydrationErrors.push(message.text())
+    }
+  })
+  page.on("pageerror", error => hydrationErrors.push(error.message))
+  await page.route(modulePath, async route => {
+    const response = await route.fetch()
+    requested()
+    await gate
+    await route.fulfill({ response })
+  })
+  try {
+    await navigate()
+    await moduleRequested
+    await checkServerContent()
+    const tabs = page.getByRole("tab")
+    for (const tab of await tabs.all()) {
+      await expect(tab).toBeDisabled()
+      await expect(tab).toHaveAttribute("tabindex", "-1")
+    }
+  } finally {
+    release()
+  }
+  for (const tab of await page.getByRole("tab").all()) {
+    await expect(tab).toBeEnabled()
+  }
+  await page.unroute(modulePath)
+  expect(hydrationErrors).toEqual([])
+}
+
 test.beforeEach(async ({ request }) => {
   await request.post(`${backend}/fixture/reset`, { data: {} })
 })
@@ -34,12 +81,25 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
   await expect(
     page.getByRole("table", { name: "全市場交付計畫" })
   ).toContainText("old_dataset")
-  await page.reload()
-  await expect(
-    page.getByRole("combobox", { name: "資料集", exact: true })
-  ).toHaveValue("old_dataset")
+  await withDelayedTabs(
+    page,
+    () => page.reload({ waitUntil: "commit" }),
+    async () => {
+      await expect(
+        page.getByRole("combobox", { name: "資料集", exact: true })
+      ).toHaveValue("old_dataset")
+      await expect(
+        page.getByRole("tab", { name: "全市場計畫" })
+      ).toHaveAttribute("aria-selected", "true")
+    }
+  )
   await page.getByRole("tab", { name: "缺漏告警" }).click()
   await expect(page).toHaveURL(/tab=alerts/)
+  await expect(page.getByRole("tab", { name: "缺漏告警" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  )
+  await expect(page.getByRole("tab", { name: "缺漏告警" })).toBeFocused()
   await page
     .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-07 回補參數" })
     .click()
@@ -175,15 +235,27 @@ test("viewer deep links cannot expose historical backfill and tab keyboard navig
 }) => {
   await request.post(`${backend}/fixture/reset`, { data: { role: "viewer" } })
   await login(page, "viewer")
-  await page.goto("/dashboard/operations/deliveries?tab=backfills")
-  await expect(page.getByRole("tab", { name: "全市場計畫" })).toHaveAttribute(
-    "aria-selected",
-    "true"
+  await withDelayedTabs(
+    page,
+    () =>
+      page.goto("/dashboard/operations/deliveries?tab=backfills", {
+        waitUntil: "commit",
+      }),
+    async () => {
+      await expect(
+        page.getByRole("tab", { name: "全市場計畫" })
+      ).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("tab", { name: "歷史回補" })).toHaveCount(0)
+    }
   )
-  await expect(page.getByRole("tab", { name: "歷史回補" })).toHaveCount(0)
   await page.getByRole("tab", { name: "全市場計畫" }).focus()
   await page.keyboard.press("ArrowRight")
   await expect(page.getByRole("tab", { name: "缺漏告警" })).toBeFocused()
+  await expect(page).toHaveURL(/tab=alerts/)
+  await expect(page.getByRole("tab", { name: "缺漏告警" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  )
   await expect(
     page.getByRole("table", { name: "未解決的交付缺漏" })
   ).toContainText("tw_equity_minute")
@@ -191,6 +263,7 @@ test("viewer deep links cannot expose historical backfill and tab keyboard navig
     page.getByRole("button", { name: /帶入.*回補參數/ })
   ).toHaveCount(0)
   const state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([])
   expect(state.reads["/api/v1/admin/historical-backfills"]).toBeUndefined()
   expect(
     state.reads["/api/v1/admin/historical-backfills/scopes"]

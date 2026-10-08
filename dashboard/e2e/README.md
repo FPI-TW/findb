@@ -22,3 +22,11 @@ scope 選項消失並返回登入頁。概況部分來源失敗／恢復時，�
 `/fixture/backfill-config`、`/fixture/session` 與 `/fixture/overview-config` 僅供 loopback fixture
 注入延遲、失效與部分服務故障。Fixture 的預覽與建立回應套用正式 Zod schemas，
 `/fixture/state` 分別記錄預覽及寫入 payload，GET 回補紀錄回傳已建立請求；不執行真實回補。
+
+SSR 分頁互動契約：`OperationsTabs` 在 SSR 與初次 hydration render 保留選取狀態、
+ARIA tab／panel 關係與內容，但按鈕 disabled 且 tabindex=-1；hydration 後才恢復互動與 roving focus。
+交付監控的 owner reload／viewer 深連結案例由 Playwright 暫停真實分頁模組回應，
+先驗證 SSR 尚不可互動，再釋放回應並等待按鈕 enabled。第一個點擊或 ArrowRight 必須
+立即切換告警分頁、更新 URL 與鍵盤焦點，不以 SSR 資料可見、load 完成、固定 sleep 或重複操作
+判定就緒；同時檢查無 hydration 錯誤、viewer 無回補讀取／寫入，以及既有歷史與草稿行為。
+延遲控制僅存在於測試側 resource routing，正式程式不提供測試 hook。

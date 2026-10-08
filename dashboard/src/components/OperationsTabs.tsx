@@ -1,3 +1,4 @@
+import { useHydrated } from "@tanstack/react-router"
 import { useId, type ReactNode } from "react"
 import { Button } from "./ui/button"
 
@@ -15,6 +16,7 @@ export function OperationsTabs<T extends string>({
   children: (value: T) => ReactNode
 }) {
   const id = useId()
+  const hydrated = useHydrated()
   return (
     <>
       <div
@@ -30,7 +32,8 @@ export function OperationsTabs<T extends string>({
             id={`${id}-tab-${tab.value}`}
             aria-controls={`${id}-panel-${tab.value}`}
             aria-selected={selected === tab.value}
-            tabIndex={selected === tab.value ? 0 : -1}
+            disabled={!hydrated}
+            tabIndex={hydrated && selected === tab.value ? 0 : -1}
             variant={selected === tab.value ? "default" : "outline"}
             onClick={() => onChange(tab.value)}
             onKeyDown={event => {
