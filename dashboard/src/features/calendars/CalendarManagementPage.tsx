@@ -1,3 +1,8 @@
+import { QueryStatus, type AsyncState } from "../../components/AsyncState"
+import {
+  manualQueryOptions,
+  useRegisterOperationsQuery,
+} from "../../components/OperationsRefresh"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 import type { ColumnDef } from "@tanstack/react-table"
@@ -6,7 +11,6 @@ import {
   FileJson2,
   FileUp,
   Pencil,
-  RefreshCw,
   Send,
   Upload,
 } from "lucide-react"
@@ -20,7 +24,7 @@ import {
 
 import { DataTable } from "../../components/data-table"
 import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
-import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
+import { Alert, AlertDescription } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import {
@@ -129,8 +133,7 @@ export function CalendarManagementPage({
   const marketsQuery = useQuery({
     queryKey: calendarKeys.markets(sessionScope),
     queryFn: () => getMarkets(),
-    retry: false,
-    refetchOnWindowFocus: false,
+    ...manualQueryOptions,
   })
   const markets = marketsQuery.data ?? []
   const preferredMarket =
@@ -148,48 +151,42 @@ export function CalendarManagementPage({
   }, [market, search, updateSearch])
 
   const selection = { market, year }
+  useRegisterOperationsQuery(calendarKeys.markets(sessionScope))
+  useRegisterOperationsQuery(
+    calendarKeys.year(sessionScope, market, year),
+    market !== ""
+  )
+  useRegisterOperationsQuery(
+    calendarKeys.imports(sessionScope, market, year),
+    market !== "" && tab === "history"
+  )
+  useRegisterOperationsQuery(
+    calendarKeys.revisions(sessionScope, market, year),
+    market !== "" && tab === "history"
+  )
   const yearQuery = useQuery({
     queryKey: calendarKeys.year(sessionScope, market, year),
     queryFn: () => getYear({ data: selection }),
     enabled: market !== "",
-    retry: false,
-    refetchOnWindowFocus: false,
+    ...manualQueryOptions,
   })
   const importsQuery = useQuery({
     queryKey: calendarKeys.imports(sessionScope, market, year),
     queryFn: () => getImports({ data: selection }),
-    enabled: market !== "",
-    retry: false,
-    refetchOnWindowFocus: false,
+    enabled: market !== "" && tab === "history",
+    ...manualQueryOptions,
   })
   const revisionsQuery = useQuery({
     queryKey: calendarKeys.revisions(sessionScope, market, year),
     queryFn: () => getRevisions({ data: selection }),
-    enabled: market !== "",
-    retry: false,
-    refetchOnWindowFocus: false,
+    enabled: market !== "" && tab === "history",
+    ...manualQueryOptions,
   })
   const calendar = yearQuery.data ?? null
   const imports = importsQuery.data ?? []
   const revisions = revisionsQuery.data ?? []
   const initialLoading =
     marketsQuery.isPending || (market !== "" && yearQuery.isPending)
-  const pending =
-    marketsQuery.isFetching ||
-    yearQuery.isFetching ||
-    importsQuery.isFetching ||
-    revisionsQuery.isFetching
-  const queryError =
-    marketsQuery.error ??
-    yearQuery.error ??
-    importsQuery.error ??
-    revisionsQuery.error
-  const error =
-    queryError instanceof Error
-      ? queryError.message
-      : queryError
-        ? "無法載入交易日曆。"
-        : ""
 
   async function refresh() {
     await queryClient.invalidateQueries({
@@ -222,14 +219,6 @@ export function CalendarManagementPage({
             各市場與年度分開管理；所有匯入均先由後端解析與預覽，再儲存草稿。
           </p>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={pending || !market}
-          onClick={() => void refresh()}
-        >
-          <RefreshCw className={pending ? "animate-spin" : ""} /> 重新整理
-        </Button>
       </header>
 
       <Card className="gap-4 p-4">
@@ -241,7 +230,7 @@ export function CalendarManagementPage({
               className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
               value={market}
               onChange={event => selectMarket(event.target.value)}
-              disabled={initialLoading || pending}
+              disabled={initialLoading}
             >
               {markets.map(item => (
                 <option key={item.market} value={item.market}>
@@ -259,7 +248,7 @@ export function CalendarManagementPage({
               max="2200"
               value={year}
               onChange={event => selectYear(Number(event.target.value))}
-              disabled={initialLoading || pending}
+              disabled={initialLoading}
             />
           </div>
         </div>
@@ -280,12 +269,22 @@ export function CalendarManagementPage({
         )}
       </Card>
 
-      {error && (
-        <Alert variant="destructive" role="alert">
-          <AlertTitle>無法更新交易日曆</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      <QueryStatus
+        hasData={marketsQuery.data !== undefined}
+        pending={marketsQuery.isFetching}
+        error={marketsQuery.error}
+        updatedAt={marketsQuery.dataUpdatedAt}
+        onRetry={() => void marketsQuery.refetch({ cancelRefetch: false })}
+        label="市場選項"
+      />
+      <QueryStatus
+        hasData={yearQuery.data !== undefined}
+        pending={yearQuery.isFetching}
+        error={yearQuery.error}
+        updatedAt={yearQuery.dataUpdatedAt}
+        onRetry={() => void yearQuery.refetch({ cancelRefetch: false })}
+        label="年度日曆"
+      />
       {initialLoading ? (
         <CalendarSkeleton />
       ) : calendar ? (
@@ -342,14 +341,45 @@ export function CalendarManagementPage({
             />
           )}
           {tab === "history" && (
-            <CalendarHistory
-              calendar={calendar}
-              imports={imports}
-              revisions={revisions}
-              loading={pending}
-              canRollback={canPublish}
-              onRolledBack={() => void refresh()}
-            />
+            <>
+              <QueryStatus
+                hasData={importsQuery.data !== undefined}
+                pending={importsQuery.isFetching}
+                error={importsQuery.error}
+                updatedAt={importsQuery.dataUpdatedAt}
+                onRetry={() =>
+                  void importsQuery.refetch({ cancelRefetch: false })
+                }
+                label="匯入紀錄"
+              />
+              <QueryStatus
+                hasData={revisionsQuery.data !== undefined}
+                pending={revisionsQuery.isFetching}
+                error={revisionsQuery.error}
+                updatedAt={revisionsQuery.dataUpdatedAt}
+                onRetry={() =>
+                  void revisionsQuery.refetch({ cancelRefetch: false })
+                }
+                label="版本紀錄"
+              />
+              <CalendarHistory
+                calendar={calendar}
+                imports={imports}
+                revisions={revisions}
+                revisionsState={{
+                  hasData: revisionsQuery.data !== undefined,
+                  pending: revisionsQuery.isFetching,
+                  error: revisionsQuery.error,
+                }}
+                importsState={{
+                  hasData: importsQuery.data !== undefined,
+                  pending: importsQuery.isFetching,
+                  error: importsQuery.error,
+                }}
+                canRollback={canPublish}
+                onRolledBack={() => void refresh()}
+              />
+            </>
           )}
           {canPublish && (
             <PublishButton
@@ -359,7 +389,8 @@ export function CalendarManagementPage({
           )}
         </>
       ) : (
-        !error && (
+        !marketsQuery.error &&
+        !yearQuery.error && (
           <Alert role="status">
             <AlertDescription>
               此市場年度尚無可檢視的交易日曆。
@@ -1123,14 +1154,16 @@ function CalendarHistory({
   calendar,
   imports,
   revisions,
-  loading,
+  revisionsState,
+  importsState,
   canRollback,
   onRolledBack,
 }: {
   calendar: CalendarYear
   imports: CalendarImport[]
   revisions: CalendarRevision[]
-  loading: boolean
+  revisionsState: AsyncState
+  importsState: AsyncState
   canRollback: boolean
   onRolledBack: () => void
 }) {
@@ -1265,23 +1298,26 @@ function CalendarHistory({
             data={revisions}
             emptyState="此市場年度尚無修訂紀錄。"
             getRowId={item => String(item.revision)}
-            isLoading={loading && revisions.length === 0}
-            isRefreshing={loading && revisions.length > 0}
+            isLoading={!revisionsState.hasData && !revisionsState.error}
+            isRefreshing={revisionsState.pending && revisionsState.hasData}
+            error={revisionsState.hasData ? undefined : revisionsState.error}
+            errorState={null}
+            refreshingState={null}
             viewportClassName="max-h-96"
           />
         </CardContent>
       </Card>
-      <ImportHistory imports={imports} loading={loading} />
+      <ImportHistory imports={imports} state={importsState} />
     </div>
   )
 }
 
 function ImportHistory({
   imports,
-  loading,
+  state,
 }: {
   imports: CalendarImport[]
-  loading: boolean
+  state: AsyncState
 }) {
   const columns = useMemo<ColumnDef<CalendarImport, unknown>[]>(
     () => [
@@ -1336,8 +1372,11 @@ function ImportHistory({
           data={imports}
           emptyState="此市場年度尚無匯入紀錄。"
           getRowId={item => item.id}
-          isLoading={loading && imports.length === 0}
-          isRefreshing={loading && imports.length > 0}
+          isLoading={!state.hasData && !state.error}
+          isRefreshing={state.pending && state.hasData}
+          error={state.hasData ? undefined : state.error}
+          errorState={null}
+          refreshingState={null}
           viewportClassName="max-h-96"
         />
       </CardContent>

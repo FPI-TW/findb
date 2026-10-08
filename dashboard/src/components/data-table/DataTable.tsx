@@ -17,6 +17,7 @@ import {
 } from "@tanstack/react-table"
 
 import { cn } from "#/lib/utils"
+import { Skeleton } from "../ui/skeleton"
 import { DataTablePagination } from "./DataTablePagination"
 import type {
   DataTableCellStyle,
@@ -352,6 +353,8 @@ export function DataTable<TData extends RowData>({
       (getRowCanExpand?.(row.original) ?? true),
     manualPagination: isManualPagination,
     manualSorting,
+    autoResetPageIndex: false,
+    autoResetExpanded: false,
     getCoreRowModel: getCoreRowModel(),
     ...(paginationEnabled
       ? { getPaginationRowModel: getPaginationRowModel() }
@@ -373,20 +376,20 @@ export function DataTable<TData extends RowData>({
 
   return (
     <div className={cn("w-full", className)} data-slot="data-table">
-      {isRefreshing ? (
+      {refreshingState !== null ? (
         <p
           aria-live="polite"
-          className="mb-2 text-xs font-medium text-muted"
-          role="status"
+          className="mb-2 h-7 truncate text-xs font-medium leading-7 text-muted"
+          role={isRefreshing ? "status" : undefined}
         >
-          {refreshingState ?? "正在更新資料…"}
+          {isRefreshing ? (refreshingState ?? "正在更新資料…") : null}
         </p>
       ) : null}
 
       <div
         aria-busy={(ariaBusy ?? isLoading) || isRefreshing}
         className={cn(
-          "relative max-h-128 w-full overflow-auto rounded-lg border border-line",
+          "@container relative max-h-128 w-full overflow-auto rounded-lg border border-line",
           viewportClassName
         )}
         data-slot="data-table-viewport"
@@ -432,12 +435,34 @@ export function DataTable<TData extends RowData>({
           </thead>
           <tbody>
             {isLoading ? (
-              <DataTableStateRow colSpan={totalColumnCount} role="status">
-                {loadingState ?? "正在載入資料…"}
-              </DataTableStateRow>
+              loadingState ? (
+                <DataTableStateRow colSpan={totalColumnCount} role="status">
+                  {loadingState}
+                </DataTableStateRow>
+              ) : (
+                Array.from({ length: 5 }, (_, index) => (
+                  <tr key={index}>
+                    {Array.from({ length: totalColumnCount }, (_, column) => (
+                      <td key={column} className="h-10 px-3 py-2">
+                        {index === 0 && column === 0 && (
+                          <span role="status" className="sr-only">
+                            正在載入資料…
+                          </span>
+                        )}
+                        <Skeleton className="h-4 w-full min-w-12" />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )
             ) : error ? (
-              <DataTableStateRow colSpan={totalColumnCount} role="alert">
-                {errorState ?? errorMessage(error)}
+              <DataTableStateRow
+                colSpan={totalColumnCount}
+                {...(errorState === null ? {} : { role: "alert" as const })}
+              >
+                {errorState === null
+                  ? "資料尚未載入。"
+                  : (errorState ?? errorMessage(error))}
               </DataTableStateRow>
             ) : rows.length === 0 ? (
               <DataTableStateRow colSpan={totalColumnCount}>
@@ -501,7 +526,9 @@ export function DataTable<TData extends RowData>({
                         className="px-4 py-3 text-sm text-ink"
                         colSpan={totalColumnCount}
                       >
-                        {renderExpandedRow?.(row)}
+                        <div className="sticky left-4 w-[calc(100cqw-2rem)]">
+                          {renderExpandedRow?.(row)}
+                        </div>
                       </td>
                     </tr>
                   ) : null}

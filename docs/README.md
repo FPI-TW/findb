@@ -13,6 +13,7 @@
 | 部署、migration、credential設定、release或rollback | [operations/deployment.md](operations/deployment.md) |
 | 啟用 Full market、管理 runtime/account enrollment、操作 Pilot/Full tabs與 drain | [operations/full_market.md](operations/full_market.md) |
 | 執行檢查與測試、了解 PostgreSQL fixture 隔離及並行驗證 | [operations/testing.md](operations/testing.md) |
+| 使用營運台、交付分頁與統一重整／載入規範 | [operations/dashboard.md](operations/dashboard.md) |
 | 管理staging原生／custom告警、SNS確認、collector與synthetic通知測試 | [operations/monitoring.md](operations/monitoring.md) |
 | 驗證ingestion、監控queue、診斷delivery或重建RabbitMQ | [operations/ingestion.md](operations/ingestion.md) |
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |

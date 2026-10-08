@@ -1,12 +1,16 @@
+import { QueryStatus } from "../../components/AsyncState"
+import {
+  manualQueryOptions,
+  useRegisterOperationsQuery,
+} from "../../components/OperationsRefresh"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
-import { KeyRound, Plus, RefreshCw, UserCheck, UserX } from "lucide-react"
+import { KeyRound, Plus, UserCheck, UserX } from "lucide-react"
 import { type FormEvent, useMemo, useState } from "react"
 import type { ColumnDef } from "@tanstack/react-table"
 
 import { DataTable } from "../../components/data-table"
 import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
-import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import {
@@ -17,7 +21,6 @@ import {
 } from "../../components/ui/card"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
-import { Skeleton } from "../../components/ui/skeleton"
 import { toast } from "../../components/ui/toast"
 import type { AdminRole, AdminUser } from "../../lib/admin-governance-api"
 import {
@@ -44,7 +47,9 @@ export function UsersPage() {
   const queryClient = useQueryClient()
   const sessionScope = useProtectedQueryScope()
   const usersKey = ["admin", sessionScope, "users"] as const
+  useRegisterOperationsQuery(usersKey)
   const usersQuery = useQuery({
+    ...manualQueryOptions,
     queryKey: usersKey,
     queryFn: () => load(),
   })
@@ -304,37 +309,14 @@ export function UsersPage() {
         </p>
       </header>
 
-      {usersQuery.error && users.length === 0 && (
-        <Alert variant="destructive">
-          <AlertTitle>無法載入使用者</AlertTitle>
-          <AlertDescription>
-            {usersQuery.error instanceof Error
-              ? usersQuery.error.message
-              : "無法載入使用者。"}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {usersQuery.error && users.length > 0 && (
-        <Alert variant="destructive">
-          <AlertTitle>更新使用者失敗</AlertTitle>
-          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-            <span>
-              {usersQuery.error instanceof Error
-                ? usersQuery.error.message
-                : "無法載入使用者。"}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void usersQuery.refetch()}
-            >
-              <RefreshCw />
-              重新載入
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
+      <QueryStatus
+        hasData={usersQuery.data !== undefined}
+        pending={usersQuery.isFetching}
+        error={usersQuery.error}
+        updatedAt={usersQuery.dataUpdatedAt}
+        onRetry={() => void usersQuery.refetch({ cancelRefetch: false })}
+        label="使用者"
+      />
 
       <Card className="gap-0 p-5">
         <CardHeader className="mb-4 px-0">
@@ -407,20 +389,6 @@ export function UsersPage() {
       <Card className="gap-0 p-5">
         <CardHeader className="mb-4 flex grid-cols-none flex-row items-center justify-between px-0">
           <CardTitle className="text-lg">目前使用者</CardTitle>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={usersQuery.isFetching}
-            onClick={() => {
-              void usersQuery.refetch()
-            }}
-          >
-            <RefreshCw
-              className={usersQuery.isFetching ? "animate-spin" : ""}
-              size={16}
-            />
-            更新
-          </Button>
         </CardHeader>
         <CardContent className="px-0">
           <DataTable
@@ -429,24 +397,13 @@ export function UsersPage() {
             columns={userColumns}
             data={users}
             emptyState="目前沒有管理者使用者。"
-            error={users.length === 0 ? usersQuery.error : undefined}
-            errorState={
-              usersQuery.error instanceof Error
-                ? usersQuery.error.message
-                : "無法載入使用者。"
-            }
+            error={usersQuery.data === undefined ? usersQuery.error : undefined}
+            errorState={null}
             fillAvailableWidth
             getRowId={user => user.user_id}
             isLoading={usersQuery.isPending}
             isRefreshing={usersQuery.isFetching && !usersQuery.isPending}
-            loadingState={
-              <div className="grid gap-2">
-                <span className="sr-only">正在載入使用者</span>
-                <Skeleton className="h-10" />
-                <Skeleton className="h-10" />
-                <Skeleton className="h-10" />
-              </div>
-            }
+            refreshingState={null}
             tableClassName="min-w-[720px]"
           />
         </CardContent>

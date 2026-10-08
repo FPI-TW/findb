@@ -127,7 +127,7 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Credential owner"), {
       target: { value: "  web  " },
     })
-    fireEvent.click(screen.getByRole("button", { name: "更新" }))
+    fireEvent.click(screen.getByRole("button", { name: "查詢" }))
 
     expect(updateSearch).toHaveBeenCalledWith({
       kind: "serve",

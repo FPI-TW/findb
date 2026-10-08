@@ -11,7 +11,7 @@ import {
   within,
 } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
@@ -23,6 +23,7 @@ import type {
   Scheduler,
   SchedulerMutationResponse,
 } from "../../lib/admin-api"
+import { deliveriesSearchSchema } from "./operations.search"
 import { marketFreshnessSchema } from "../../lib/admin-api"
 import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScope"
 
@@ -30,6 +31,8 @@ const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
   loadRawPayloadDetail: vi.fn(),
   loadDeliveryPlans: vi.fn(),
+  loadDeliveryPlanDatasets: vi.fn(),
+  loadDeliveryResource: vi.fn(),
   updateScheduler: vi.fn(),
   createHistoricalBackfill: vi.fn(),
   cancelHistoricalBackfill: vi.fn(),
@@ -282,7 +285,29 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.loadDashboard.mockResolvedValue(qualityResponse())
   mocks.loadRawPayloadDetail.mockResolvedValue(makeRawPayload())
-  mocks.loadDeliveryPlans.mockResolvedValue({ data: [] })
+  mocks.loadDeliveryPlans.mockResolvedValue({
+    data: [],
+    pagination: { page: 1, page_size: 25, total_records: 0, total_pages: 0 },
+  })
+  mocks.loadDeliveryPlanDatasets.mockResolvedValue({ data: [] })
+  mocks.loadDeliveryResource.mockImplementation(async ({ data }) => {
+    const response = await mocks.loadDashboard({
+      data: {
+        view: "deliveries",
+        audit: { page: data.page, pageSize: data.pageSize },
+      },
+    })
+    const result =
+      response[
+        data.resource === "alerts"
+          ? "deliveries"
+          : data.resource === "backfills"
+            ? "backfills"
+            : "backfillScopes"
+      ]
+    if (!result?.ok) throw new Error(result?.error ?? "Unavailable")
+    return { resource: data.resource, result: result.data }
+  })
   mocks.previewHistoricalBackfill.mockResolvedValue({
     provider: "shioaji",
     dataset_key: "tw_equity_minute",
@@ -299,6 +324,38 @@ afterEach(() => {
 })
 
 describe("Operations query hooks", () => {
+  it("retains source success timestamps and empty snapshots across partial failures", async () => {
+    const client = new QueryClient()
+    const initial = overviewResponse()
+    mocks.loadDashboard.mockResolvedValue(initial)
+    const hook = renderHook(
+      () => useOperationsDashboardQuery("overview", audit),
+      { wrapper: queryWrapper(client) }
+    )
+    await waitFor(() => expect(hook.result.current.data).toBeDefined())
+    const original = hook.result.current.data!
+    const failed = {
+      ...initial,
+      schedulers: { ok: false as const, error: "scheduler offline" },
+    }
+    mocks.loadDashboard.mockResolvedValue(failed)
+    await act(() => hook.result.current.refetch())
+    await waitFor(() =>
+      expect(hook.result.current.data?.refreshErrors.schedulers).toBe(
+        "scheduler offline"
+      )
+    )
+    expect(original.sourceUpdatedAt.schedulers).toBeGreaterThan(0)
+    expect(hook.result.current.data?.sourceUpdatedAt.schedulers).toBe(
+      original.sourceUpdatedAt.schedulers
+    )
+    const next = hook.result.current.data
+    expect(next?.view === "overview" && next.schedulers).toEqual(
+      initial.view === "overview" && initial.schedulers
+    )
+    expect(next?.sourceUpdatedAt.freshness).toBe(0)
+  })
+
   it("isolates protected query caches by authenticated session scope", async () => {
     const queryClient = new QueryClient()
     const first = renderHook(
@@ -630,7 +687,8 @@ describe("Operations presentation", () => {
     const queryClient = new QueryClient()
     const current = {
       ...overviewResponse([makeScheduler()]),
-      refreshErrors: ["", "", ""],
+      refreshErrors: {},
+      sourceUpdatedAt: {},
     }
     const key = operationsKeys.overview(audit)
     queryClient.setQueryData(key, current)
@@ -1346,7 +1404,10 @@ describe("Operations presentation", () => {
     })
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <DeliveriesPage role="operator" />
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
       </QueryClientProvider>
     )
     await waitFor(() =>
@@ -1391,7 +1452,10 @@ describe("Operations presentation", () => {
     })
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <DeliveriesPage role="operator" />
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
       </QueryClientProvider>
     )
     await screen.findByPlaceholderText("provider")
@@ -1433,7 +1497,10 @@ describe("Operations presentation", () => {
     })
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <DeliveriesPage role="operator" />
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
       </QueryClientProvider>
     )
     await screen.findByPlaceholderText("provider")
@@ -1473,7 +1540,10 @@ describe("Operations presentation", () => {
     })
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <DeliveriesPage role="operator" />
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
       </QueryClientProvider>
     )
     await screen.findByPlaceholderText("provider")
@@ -1515,7 +1585,10 @@ describe("Operations presentation", () => {
     })
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <DeliveriesPage role="operator" />
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
       </QueryClientProvider>
     )
     await screen.findByPlaceholderText("provider")
@@ -1540,7 +1613,7 @@ describe("Operations presentation", () => {
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
   })
 
-  it("keeps delivery and historical backfill pagination independent", async () => {
+  it("keeps delivery and historical backfill pagination independent and only queries the visible tab", async () => {
     const response = deliveriesResponse()
     response.deliveries.data.pagination = {
       page: 2,
@@ -1555,45 +1628,68 @@ describe("Operations presentation", () => {
       total_pages: 3,
     }
     mocks.loadDashboard.mockResolvedValue(response)
-    const updateSearch = vi.fn()
-    render(
-      <QueryClientProvider client={new QueryClient()}>
+    const update = vi.fn()
+    function Harness() {
+      const [search, setSearch] = useState(() =>
+        deliveriesSearchSchema.parse({
+          tab: "alerts",
+          p: 2,
+          ps: 25,
+          bp: 2,
+          bps: 25,
+        })
+      )
+      return (
         <DeliveriesPage
           role="operator"
-          search={{ p: 2, ps: 25, bp: 2, bps: 25 }}
-          updateSearch={updateSearch}
+          search={search}
+          updateSearch={value => {
+            setSearch(current => {
+              const next = typeof value === "function" ? value(current) : value
+              update(next)
+              return next
+            })
+          }}
         />
+      )
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Harness />
       </QueryClientProvider>
     )
-
-    await screen.findByRole("navigation", { name: "交付缺漏分頁" })
+    await screen.findByRole("button", { name: "交付缺漏分頁下一頁" })
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "交付缺漏分頁下一頁" })
+      ).not.toBeDisabled()
+    )
+    expect(
+      mocks.loadDeliveryResource.mock.calls.every(
+        ([input]) => input.data.resource === "alerts"
+      )
+    ).toBe(true)
     fireEvent.click(screen.getByRole("button", { name: "交付缺漏分頁下一頁" }))
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ p: 3, bp: 2 })
+    )
+    fireEvent.click(screen.getByRole("tab", { name: "歷史回補" }))
+    await screen.findByRole("button", { name: "歷史回補請求分頁下一頁" })
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "歷史回補請求分頁下一頁" })
+      ).not.toBeDisabled()
+    )
     fireEvent.click(
       screen.getByRole("button", { name: "歷史回補請求分頁下一頁" })
     )
-
-    expect(updateSearch).toHaveBeenCalledWith({
-      p: 3,
-      ps: 25,
-      bp: 2,
-      bps: 25,
-    })
-    expect(updateSearch).toHaveBeenCalledWith({
-      p: 2,
-      ps: 25,
-      bp: 3,
-      bps: 25,
-    })
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ p: 3, bp: 3 })
+    )
   })
 
-  it("clamps both out-of-range paginators together in one search update", async () => {
+  it("clamps only the visible out-of-range paginator without changing hidden tab state", async () => {
     const response = deliveriesResponse()
-    response.deliveries.data.pagination = {
-      page: 3,
-      page_size: 25,
-      total_records: 75,
-      total_pages: 3,
-    }
     response.backfills.data.pagination = {
       page: 2,
       page_size: 25,
@@ -1606,20 +1702,27 @@ describe("Operations presentation", () => {
       <QueryClientProvider client={new QueryClient()}>
         <DeliveriesPage
           role="operator"
-          search={{ p: 9, ps: 25, bp: 8, bps: 25 }}
+          search={deliveriesSearchSchema.parse({
+            tab: "backfills",
+            p: 9,
+            ps: 25,
+            bp: 8,
+            bps: 25,
+          })}
           updateSearch={updateSearch}
         />
       </QueryClientProvider>
     )
     await waitFor(() =>
-      expect(updateSearch).toHaveBeenCalledWith({
-        p: 3,
-        ps: 25,
-        bp: 2,
-        bps: 25,
-      })
+      expect(updateSearch).toHaveBeenCalledWith(
+        expect.objectContaining({ p: 9, bp: 2 })
+      )
     )
-    expect(updateSearch).toHaveBeenCalledTimes(1)
+    expect(
+      mocks.loadDeliveryResource.mock.calls.some(
+        ([input]) => input.data.resource === "alerts"
+      )
+    ).toBe(false)
   })
 
   it("resets historical pagination against the latest search after a delayed successful create", async () => {
@@ -1656,7 +1759,13 @@ describe("Operations presentation", () => {
       <QueryClientProvider client={new QueryClient()}>
         <DeliveriesPage
           role="operator"
-          search={{ p: 2, ps: 50, bp: 2, bps: 100 }}
+          search={deliveriesSearchSchema.parse({
+            p: 2,
+            ps: 50,
+            bp: 2,
+            bps: 100,
+            tab: "backfills",
+          })}
           updateSearch={updateSearch}
         />
       </QueryClientProvider>
@@ -1693,7 +1802,13 @@ describe("Operations presentation", () => {
       <QueryClientProvider client={new QueryClient()}>
         <DeliveriesPage
           role="operator"
-          search={{ p: 3, ps: 100, bp: 2, bps: 50 }}
+          search={deliveriesSearchSchema.parse({
+            p: 3,
+            ps: 100,
+            bp: 2,
+            bps: 50,
+            tab: "backfills",
+          })}
           updateSearch={updateSearch}
         />
       </QueryClientProvider>
@@ -1726,54 +1841,39 @@ describe("Operations presentation", () => {
     })
   })
 
-  it("spaces delivery sections and prefills backfill inputs from an alert", async () => {
+  it("switches from alerts to backfill without submitting, and keeps the draft across tabs", async () => {
     mocks.loadDashboard.mockResolvedValue(
       deliveriesResponse([makeMissingDelivery()])
     )
-
     render(
       <QueryClientProvider client={new QueryClient()}>
         <DeliveriesPage role="operator" />
       </QueryClientProvider>
     )
-
-    const openAlertsPanel = (
-      await screen.findByRole("heading", {
-        name: "未解決的交付缺漏",
-      })
-    ).closest('[data-slot="card"]')
-    const backfillPanel = screen
-      .getByRole("heading", { name: "供應商歷史回補" })
-      .closest('[data-slot="card"]')
-    expect(openAlertsPanel).not.toBeNull()
-    expect(backfillPanel).toHaveClass("mt-5")
-
-    const prefillButton = await screen.findByRole("button", {
-      name: "帶入 tw_equity_minute 2026-08-31 回補參數",
-    })
-
-    expect(
-      screen.getByRole("heading", { name: "選擇回補範圍" })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole("heading", { name: "驗證交易日" })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole("heading", { name: "確認並建立" })
-    ).toBeInTheDocument()
-    const createButton = screen.getByRole("button", { name: "建立回補" })
-    expect(createButton).toHaveAttribute("data-variant", "default")
-    expect(createButton).toHaveAttribute("data-size", "lg")
-
-    expect(prefillButton).toHaveAttribute("data-variant", "outline")
-    fireEvent.click(prefillButton)
-
-    expect(screen.getByPlaceholderText("provider")).toHaveValue("shioaji")
-    expect(screen.getByPlaceholderText("dataset_key")).toHaveValue(
-      "tw_equity_minute"
+    expect(screen.getByRole("tab", { name: "全市場計畫" })).toHaveAttribute(
+      "aria-selected",
+      "true"
     )
+    fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+      })
+    )
+    expect(screen.getByRole("tab", { name: "歷史回補" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+    expect(screen.getByPlaceholderText("provider")).toHaveValue("shioaji")
     expect(screen.getByLabelText("回補起始日期")).toHaveValue("2026-08-31")
-    expect(screen.getByLabelText("回補結束日期")).toHaveValue("2026-08-31")
+    fireEvent.change(screen.getByLabelText("回補結束日期"), {
+      target: { value: "2026-09-01" },
+    })
+    fireEvent.click(screen.getByRole("tab", { name: "全市場計畫" }))
+    fireEvent.click(screen.getByRole("tab", { name: "歷史回補" }))
+    expect(screen.getByLabelText("回補結束日期")).toHaveValue("2026-09-01")
+    expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
   })
 
   it("ignores an old preview response after prefilling a different alert", async () => {
@@ -1805,6 +1905,7 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
 
+    fireEvent.click(screen.getByRole("tab", { name: "歷史回補" }))
     const provider = await screen.findByPlaceholderText("provider")
     fireEvent.change(provider, { target: { value: "finlab" } })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
@@ -1821,8 +1922,9 @@ describe("Operations presentation", () => {
       expect(mocks.previewHistoricalBackfill).toHaveBeenCalledTimes(1)
     )
 
+    fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
     fireEvent.click(
-      screen.getByRole("button", {
+      await screen.findByRole("button", {
         name: "帶入 tw_equity_minute 2026-08-31 回補參數",
       })
     )
@@ -1856,6 +1958,7 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
 
+    fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
     expect(await screen.findByText("tw_equity_minute")).toBeInTheDocument()
     expect(
       screen.queryByRole("button", {

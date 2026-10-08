@@ -62,6 +62,45 @@ function scheduler(key: string, provider: string, running = false) {
 let rows: Scheduler[] = []
 let mutations: unknown[] = []
 let role = "owner"
+let reads: Record<string, number> = {}
+let plansError = false
+let plansDelay = 0
+const plans = Array.from({ length: 31 }, (_, index) => ({
+  plan_id: `plan-${index}`,
+  dataset_key: index === 30 ? "old_dataset" : "tw_futures_eod",
+  provider: "taifex",
+  trade_date: `2026-09-${String(30 - Math.min(index, 29)).padStart(2, "0")}`,
+  release_id: `release-${index}`,
+  deadline_at: timestamp,
+  status: "incomplete",
+  parts: [],
+  summary: {
+    expected: 5,
+    data: 2,
+    no_data: 1,
+    missing: 1,
+    blocked: 1,
+    deadline_at: timestamp,
+    is_late: true,
+    gaps: [
+      { member_key: "TX", status: "missing", reason: "pending" },
+      { member_key: "MTX", status: "blocked", reason: "quota" },
+    ],
+  },
+}))
+function paginated<T>(items: T[], params: URLSearchParams) {
+  const page = Number(params.get("page") ?? 1),
+    size = Number(params.get("page_size") ?? 25)
+  return {
+    data: items.slice((page - 1) * size, page * size),
+    pagination: {
+      page,
+      page_size: size,
+      total_records: items.length,
+      total_pages: Math.ceil(items.length / size),
+    },
+  }
+}
 const queue = queueHealthSchema.parse({
   counts: {},
   oldest_queued_at: null,
@@ -79,7 +118,8 @@ const queue = queueHealthSchema.parse({
 })
 
 createServer(async (request, response) => {
-  const path = new URL(request.url!, "http://127.0.0.1").pathname
+  const url = new URL(request.url!, "http://127.0.0.1")
+  const path = url.pathname
   let body = ""
   for await (const chunk of request) body += String(chunk)
   const data = body ? JSON.parse(body) : {}
@@ -92,6 +132,9 @@ createServer(async (request, response) => {
   if (path === "/fixture/reset") {
     role = data.role ?? "owner"
     mutations = []
+    reads = {}
+    plansError = false
+    plansDelay = 0
     rows = [
       scheduler("pilot_finlab", "finlab"),
       scheduler("pilot_shioaji", "shioaji", true),
@@ -113,7 +156,12 @@ createServer(async (request, response) => {
       }))
     return send({ ok: true })
   }
-  if (path === "/fixture/state") return send({ rows, mutations })
+  if (path === "/fixture/state") return send({ rows, mutations, reads })
+  if (path === "/fixture/delivery-config") {
+    plansError = data.error ?? false
+    plansDelay = data.delay ?? 0
+    return send({ ok: true })
+  }
   if (path === "/api/v1/admin/auth/login") {
     if (data.username !== role || data.password !== "fixture-password")
       return send({ detail: "Invalid credentials" }, 401)
@@ -128,6 +176,59 @@ createServer(async (request, response) => {
     return send({ detail: "Unauthorized" }, 401)
   if (path === "/api/v1/admin/auth/me")
     return send({ ...user, username: role, role })
+  reads[path] = (reads[path] ?? 0) + 1
+  if (path === "/api/v1/admin/delivery-plans/datasets")
+    return send({ data: ["old_dataset", "tw_futures_eod"] })
+  if (path === "/api/v1/admin/delivery-plans") {
+    if (plansDelay)
+      await new Promise(resolve => setTimeout(resolve, plansDelay))
+    if (plansError) return send({ detail: "Unavailable" }, 503)
+    return send(
+      paginated(
+        plans.filter(
+          plan =>
+            (!url.searchParams.get("dataset_key") ||
+              plan.dataset_key === url.searchParams.get("dataset_key")) &&
+            (!url.searchParams.get("trade_date") ||
+              plan.trade_date === url.searchParams.get("trade_date"))
+        ),
+        url.searchParams
+      )
+    )
+  }
+  if (path === "/api/v1/admin/missing-deliveries")
+    return send(
+      paginated(
+        [
+          {
+            alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
+            dataset_key: "tw_equity_minute",
+            source: "shioaji",
+            schema_id: "market_minute",
+            schema_version: 1,
+            expected_data_date: "2026-10-07",
+            status: "open",
+            first_detected_at: timestamp,
+            last_detected_at: timestamp,
+            resolved_at: null,
+          },
+        ],
+        url.searchParams
+      )
+    )
+  if (path === "/api/v1/admin/historical-backfills")
+    return send(paginated([], url.searchParams))
+  if (path === "/api/v1/admin/historical-backfills/scopes")
+    return send({
+      data: [
+        {
+          provider: "shioaji",
+          dataset_key: "tw_equity_minute",
+          market: "TW",
+          executable: true,
+        },
+      ],
+    })
   if (path === "/api/v1/admin/schedulers")
     return send({ success: true, data: rows })
   if (path === "/api/v1/admin/market-freshness")

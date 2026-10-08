@@ -186,6 +186,13 @@ Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/diges
 `GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
 deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
 
+Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/page_size` 即啟用分頁（缺省值 1／25，
+每頁上限 100）；回傳 `data` 及標準 `pagination`。依交易日、建立時間、plan ID 降冪穩定排序。
+只使用舊 `limit` 時保持原 `{data}` 回應與預設 20 筆；`limit` 與任一分頁參數混用回傳 422。
+`GET /admin/delivery-plans/datasets` 回傳 `{"data":["dataset_key", ...]}`，由全部計畫去重並排序，
+不受日期或最近筆數限制。以上端點須具 viewer 以上 Admin 權限，皆為唯讀，不改交付狀態。
+缺口總數使用 `missing + blocked`；`summary.gaps` 明細最多 1,000 筆。
+
 ## Admin API
 
 Admin只供Dashboard與維運，主要能力包括：

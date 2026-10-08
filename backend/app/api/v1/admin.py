@@ -70,6 +70,8 @@ from app.schemas.admin import (
     CredentialListResponse,
     CredentialOverviewResponse,
     CredentialResponse,
+    DeliveryPlanDatasetsResponse,
+    DeliveryPlanListResponse,
     DQIssueListResponse,
     DQIssueResponse,
     HistoricalBackfillCreateRequest,
@@ -91,6 +93,7 @@ from app.schemas.admin import (
     MarketFreshnessResponse,
     MissingDeliveryAlertListResponse,
     MissingDeliveryAlertResponse,
+    PaginatedDeliveryPlanListResponse,
     PasswordResetRequest,
     PatchEODRequest,
     PatchEODResponse,
@@ -112,7 +115,6 @@ from app.schemas.admin import (
 )
 from app.schemas.common import PaginationInfo
 from app.schemas.full_market import (
-    DeliveryPlanResponse,
     DeliverySummaryResponse,
     UniversePublishRequest,
     UniverseReleaseResponse,
@@ -167,9 +169,9 @@ from app.services.credentials import (
     present_source,
 )
 from app.services.delivery_monitor import list_missing_delivery_alerts
+from app.services.delivery_plan_queries import list_delivery_plans, list_plan_datasets
 from app.services.full_market import (
     FullMarketError,
-    get_plan,
     publish_universe,
     reconcile_plan,
 )
@@ -267,34 +269,36 @@ async def retired_full_market_feed_action(
     )
 
 
-@router.get("/delivery-plans", response_model=dict)
+@router.get("/delivery-plans/datasets", response_model=DeliveryPlanDatasetsResponse)
+async def list_full_market_plan_datasets(
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> DeliveryPlanDatasetsResponse:
+    return DeliveryPlanDatasetsResponse(data=await list_plan_datasets(db))
+
+
+@router.get(
+    "/delivery-plans", response_model=PaginatedDeliveryPlanListResponse | DeliveryPlanListResponse
+)
 async def list_full_market_delivery_plans(
     dataset_key: str | None = None,
     trade_date: date | None = None,
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
     _: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
-) -> dict:
-    stmt = select(DailyDeliveryPlan)
-    if dataset_key is not None:
-        stmt = stmt.where(DailyDeliveryPlan.dataset_key == dataset_key)
-    if trade_date is not None:
-        stmt = stmt.where(DailyDeliveryPlan.trade_date == trade_date)
-    plans = (
-        await db.scalars(
-            stmt.order_by(
-                DailyDeliveryPlan.trade_date.desc(), DailyDeliveryPlan.created_at.desc()
-            ).limit(limit)
-        )
-    ).all()
-    data: list[DeliveryPlanResponse] = []
-    for plan in plans:
-        data.append(
-            await get_plan(
-                db, plan.plan_id, provider=plan.provider, allowed_datasets=[plan.dataset_key]
-            )
-        )
-    return {"data": [item.model_dump(mode="json") for item in data]}
+) -> DeliveryPlanListResponse | PaginatedDeliveryPlanListResponse:
+    if limit is not None and (page is not None or page_size is not None):
+        raise HTTPException(status_code=422, detail="limit cannot be combined with page/page_size")
+    return await list_delivery_plans(
+        db,
+        dataset_key=dataset_key,
+        trade_date=trade_date,
+        limit=limit,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/delivery-plans/{plan_id}/summary", response_model=DeliverySummaryResponse)

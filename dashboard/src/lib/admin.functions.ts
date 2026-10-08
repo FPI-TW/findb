@@ -9,6 +9,7 @@ import {
   historicalBackfillCreateSchema,
   historicalBackfillPreviewSchema,
   deliveryPlansRequestSchema,
+  deliveryResourceRequestSchema,
 } from "./admin-api"
 import {
   fetchDashboardData,
@@ -18,6 +19,8 @@ import {
   createHistoricalBackfillData,
   previewHistoricalBackfillData,
   fetchDeliveryPlansData,
+  fetchDeliveryPlanDatasetsData,
+  fetchDeliveryResourceData,
 } from "./admin.server"
 import {
   assertSameOrigin,
@@ -113,4 +116,24 @@ export const previewHistoricalBackfill = createServerFn({ method: "POST" })
     const config = getDashboardConfig()
     markPrivateResponse()
     return previewHistoricalBackfillData(data, session.token, config.apiBaseUrl)
+  })
+
+export const loadDeliveryPlanDatasets = createServerFn({
+  method: "POST",
+}).handler(async () => {
+  const config = getDashboardConfig()
+  const session = await requireDashboardSession()
+  markPrivateResponse()
+  return fetchDeliveryPlanDatasetsData(session.token, config.apiBaseUrl)
+})
+
+export const loadDeliveryResource = createServerFn({ method: "POST" })
+  .validator(deliveryResourceRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    if (data.resource !== "alerts" && session.user.role === "viewer")
+      throw new Error("沒有執行此操作的權限。")
+    markPrivateResponse()
+    return fetchDeliveryResourceData(data, session.token, config.apiBaseUrl)
   })

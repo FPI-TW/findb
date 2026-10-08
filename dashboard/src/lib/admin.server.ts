@@ -19,6 +19,9 @@ import {
   historicalBackfillScopesSchema,
   historicalBackfillPreviewResponseSchema,
   deliveryPlansSchema,
+  deliveryPlanDatasetsSchema,
+  deliveryResourceResponseSchema,
+  type DeliveryResourceRequest,
   type DeliveryPlansRequest,
   type SchedulerMutationRequest,
   type PanelResult,
@@ -38,7 +41,10 @@ export async function fetchDeliveryPlansData(
   baseUrlValue: string | undefined,
   fetchImplementation: FetchImplementation = fetch
 ) {
-  const params = new URLSearchParams({ limit: String(request.limit) })
+  const params = new URLSearchParams({
+    page: String(request.page),
+    page_size: String(request.pageSize),
+  })
   if (request.datasetKey) params.set("dataset_key", request.datasetKey)
   if (request.tradeDate) params.set("trade_date", request.tradeDate)
   return fetchTarget(
@@ -446,4 +452,60 @@ export function previewHistoricalBackfillData(
     baseUrlValue,
     fetchImplementation
   )
+}
+
+export async function fetchDeliveryPlanDatasetsData(
+  sessionToken: string,
+  baseUrl: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrl),
+    sessionToken,
+    "/api/v1/admin/delivery-plans/datasets",
+    deliveryPlanDatasetsSchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchDeliveryResourceData(
+  request: DeliveryResourceRequest,
+  sessionToken: string,
+  baseUrl: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  const { resource, page, pageSize } = request
+  const base = safeBaseUrl(baseUrl)
+  if (resource === "alerts")
+    return deliveryResourceResponseSchema.parse({
+      resource,
+      result: await fetchTarget(
+        base,
+        sessionToken,
+        `/api/v1/admin/missing-deliveries?status=open&page=${page}&page_size=${pageSize}`,
+        missingDeliveriesSchema,
+        fetchImplementation
+      ),
+    })
+  if (resource === "backfills")
+    return deliveryResourceResponseSchema.parse({
+      resource,
+      result: await fetchTarget(
+        base,
+        sessionToken,
+        `/api/v1/admin/historical-backfills?page=${page}&page_size=${pageSize}`,
+        historicalBackfillsSchema,
+        fetchImplementation
+      ),
+    })
+  return deliveryResourceResponseSchema.parse({
+    resource,
+    result: await fetchTarget(
+      base,
+      sessionToken,
+      "/api/v1/admin/historical-backfills/scopes",
+      historicalBackfillScopesSchema,
+      fetchImplementation
+    ),
+  })
 }

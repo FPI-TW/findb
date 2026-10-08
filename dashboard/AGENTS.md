@@ -111,3 +111,8 @@ tanstackIntent:
 - 沿用 CSS variables 作為明暗主題的 design tokens，再由 Tailwind utilities 引用；不得在元件內複製 light/dark 色碼。
 - 所有非同步資料頁面必須有明確的初次 loading UI（建議 skeleton 並搭配 `role="status"` / `aria-live`）；第一次請求完成前，不得顯示錯誤占位或「無資料」狀態。
 - 後續重新整理可保留既有資料並顯示局部 pending 狀態，避免畫面閃爍。
+
+- 營運頁的可見 query 必須透過 `useRegisterOperationsQuery` 註冊頁首刷新；隱藏分頁同步停用 query 與註冊。
+- 使用 `QueryStatus` 的固定高度狀態列；已有區塊狀態列時，DataTable 傳 `refreshingState={null}`，避免重複更新提示。
+- 依成功 response 是否存在判斷初次載入，不能用空陣列長度判斷；最後成功時間不得因失敗刷新而更新。
+- 表格使用穩定業務 ID，mutation 草稿獨立於查詢生命週期；詳見 `docs/operations/dashboard.md`。

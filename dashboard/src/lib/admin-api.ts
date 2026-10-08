@@ -3,14 +3,23 @@ import { z } from "zod"
 const isoDateTime = z.string().datetime({ offset: true })
 const nullableDateTime = isoDateTime.nullable()
 
+const paginationSchema = z.object({
+  page: z.number().int().positive(),
+  page_size: z.number().int().positive(),
+  total_records: z.number().int().nonnegative(),
+  total_pages: z.number().int().nonnegative(),
+})
+
 export const deliveryPlansRequestSchema = z.object({
   datasetKey: z.string().trim().max(100).default(""),
   tradeDate: z.union([z.iso.date(), z.literal("")]).default(""),
-  limit: z.number().int().min(1).max(100).default(25),
+  page: z.number().int().positive().default(1),
+  pageSize: z.number().int().min(1).max(100).default(25),
 })
 export type DeliveryPlansRequest = z.infer<typeof deliveryPlansRequestSchema>
 
 export const deliveryPlansSchema = z.object({
+  pagination: paginationSchema,
   data: z.array(
     z.object({
       plan_id: z.string(),
@@ -79,13 +88,6 @@ export const dashboardRequestSchema = z.object({
 
 export type DashboardRequest = z.infer<typeof dashboardRequestSchema>
 export type OperationsView = DashboardRequest["view"]
-
-const paginationSchema = z.object({
-  page: z.number().int().positive(),
-  page_size: z.number().int().positive(),
-  total_records: z.number().int().nonnegative(),
-  total_pages: z.number().int().nonnegative(),
-})
 
 export const queueHealthSchema = z.object({
   counts: z.record(z.string(), z.number().int().nonnegative()),
@@ -505,10 +507,47 @@ function mergePanel<T>(
   }
 }
 
+export type DashboardPanelName =
+  | "freshness"
+  | "queue"
+  | "schedulers"
+  | "deliveries"
+  | "backfills"
+  | "backfillScopes"
+  | "issues"
+  | "corrections"
+  | "rawPayloads"
+export type DashboardPanelErrors = Partial<Record<DashboardPanelName, string>>
+
+export function dashboardPanels(
+  response: DashboardResponse
+): [DashboardPanelName, PanelResult<unknown>][] {
+  switch (response.view) {
+    case "overview":
+      return [
+        ["freshness", response.freshness],
+        ["queue", response.queue],
+        ["schedulers", response.schedulers],
+      ]
+    case "deliveries":
+      return [
+        ["deliveries", response.deliveries],
+        ["backfills", response.backfills],
+        ["backfillScopes", response.backfillScopes],
+      ]
+    case "quality":
+      return [["issues", response.issues]]
+    case "corrections":
+      return [["corrections", response.corrections]]
+    case "rawPayloads":
+      return [["rawPayloads", response.rawPayloads]]
+  }
+}
+
 export function mergeDashboardRefresh(
   current: DashboardResponse | null,
   next: DashboardResponse
-): { data: DashboardResponse; errors: string[] } {
+): { data: DashboardResponse; errors: DashboardPanelErrors } {
   if (next.view === "overview") {
     const previous = current?.view === "overview" ? current : undefined
     const freshness = mergePanel(previous?.freshness, next.freshness)
@@ -521,35 +560,57 @@ export function mergeDashboardRefresh(
         queue: queue.panel,
         schedulers: schedulers.panel,
       },
-      errors: [freshness.error, queue.error, schedulers.error],
+      errors: {
+        freshness: freshness.error,
+        queue: queue.error,
+        schedulers: schedulers.error,
+      },
     }
   }
   if (next.view === "deliveries") {
     const previous = current?.view === next.view ? current : undefined
     const result = mergePanel(previous?.deliveries, next.deliveries)
     return {
-      data: { ...next, deliveries: result.panel },
-      errors: [result.error],
+      data: {
+        ...next,
+        deliveries: result.panel,
+        backfills: mergePanel(previous?.backfills, next.backfills).panel,
+        backfillScopes: mergePanel(
+          previous?.backfillScopes,
+          next.backfillScopes
+        ).panel,
+      },
+      errors: {
+        deliveries: result.error,
+        backfills: mergePanel(previous?.backfills, next.backfills).error,
+        backfillScopes: mergePanel(
+          previous?.backfillScopes,
+          next.backfillScopes
+        ).error,
+      },
     }
   }
   if (next.view === "quality") {
     const previous = current?.view === next.view ? current : undefined
     const result = mergePanel(previous?.issues, next.issues)
-    return { data: { ...next, issues: result.panel }, errors: [result.error] }
+    return {
+      data: { ...next, issues: result.panel },
+      errors: { issues: result.error },
+    }
   }
   if (next.view === "corrections") {
     const previous = current?.view === next.view ? current : undefined
     const result = mergePanel(previous?.corrections, next.corrections)
     return {
       data: { ...next, corrections: result.panel },
-      errors: [result.error],
+      errors: { corrections: result.error },
     }
   }
   const previous = current?.view === next.view ? current : undefined
   const result = mergePanel(previous?.rawPayloads, next.rawPayloads)
   return {
     data: { ...next, rawPayloads: result.panel },
-    errors: [result.error],
+    errors: { rawPayloads: result.error },
   }
 }
 
@@ -564,3 +625,29 @@ export function buildAuditSearch(filters: DashboardRequest["audit"]) {
   if (filters.dateTo) params.set("date_to", filters.dateTo)
   return params
 }
+
+export const deliveryPlanDatasetsSchema = z.object({
+  data: z.array(z.string()),
+})
+export const deliveryResourceRequestSchema = z.object({
+  resource: z.enum(["alerts", "backfills", "scopes"]),
+  page: z.number().int().positive().default(1),
+  pageSize: z.number().int().min(1).max(100).default(25),
+})
+export type DeliveryResourceRequest = z.infer<
+  typeof deliveryResourceRequestSchema
+>
+export const deliveryResourceResponseSchema = z.discriminatedUnion("resource", [
+  z.object({ resource: z.literal("alerts"), result: missingDeliveriesSchema }),
+  z.object({
+    resource: z.literal("backfills"),
+    result: historicalBackfillsSchema,
+  }),
+  z.object({
+    resource: z.literal("scopes"),
+    result: historicalBackfillScopesSchema,
+  }),
+])
+export type DeliveryResourceResponse = z.infer<
+  typeof deliveryResourceResponseSchema
+>

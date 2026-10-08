@@ -1501,8 +1501,8 @@ export function OperationsOverviewPage({
   const query = useOperationsDashboardQuery("overview", audit)
   const state = useOperationsDashboardState(query)
   const overview = state.response?.view === "overview" ? state.response : null
-  const freshnessError = state.errors[0] ?? ""
-  const schedulersError = state.errors[2] ?? ""
+  const freshnessError = state.errors.freshness ?? ""
+  const schedulersError = state.errors.schedulers ?? ""
   return (
     <>
       <PageIntro

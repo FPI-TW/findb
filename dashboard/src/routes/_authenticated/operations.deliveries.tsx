@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import {
   DeliveriesPage,
@@ -11,6 +11,14 @@ import {
 
 export const Route = createFileRoute("/_authenticated/operations/deliveries")({
   validateSearch: deliveriesSearchSchema,
+  beforeLoad: ({ context, search }) => {
+    if (context.role === "viewer" && search.tab === "backfills")
+      throw redirect({
+        to: "/operations/deliveries",
+        search: { ...search, tab: "plans" },
+        replace: true,
+      })
+  },
   component: DeliveriesRoute,
 })
 
@@ -28,7 +36,7 @@ function DeliveriesRoute() {
             typeof next === "function"
               ? next(current as DeliveriesPageSearch)
               : next,
-          replace: true,
+          resetScroll: false,
         })
       }
     />

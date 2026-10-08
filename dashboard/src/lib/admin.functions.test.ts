@@ -385,7 +385,11 @@ describe("FinDB Admin server boundary", () => {
       expect(merged.data.queue).toEqual(current.queue)
       expect(merged.data.schedulers).toEqual(next.schedulers)
     }
-    expect(merged.errors).toEqual(["", "FinDB API request failed (503)", ""])
+    expect(merged.errors).toEqual({
+      freshness: "",
+      queue: "FinDB API request failed (503)",
+      schedulers: "",
+    })
   })
 
   it("sanitizes authentication and upstream response bodies", async () => {
