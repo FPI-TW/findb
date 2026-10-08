@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from app.models.canonical import (
     CalendarRevisionDay,
@@ -36,8 +36,6 @@ from app.services.normalize.contracts import FuturesEODContractNormalizer
 from app.services.source_clients import create_source_client
 from app.utils import utc_now
 from scripts.seed_data import DATASETS
-from tests.migration_database import get_active_migration_database_factory
-from tests.test_tw_minute_migration import _run_alembic
 
 DAY = date(2026, 7, 21)
 EVIDENCE = {"url": "https://www.taifex.com.tw/cht/3/futDailyMarketReport", "sha256": "a" * 64}
@@ -676,37 +674,6 @@ async def test_full_scale_frozen_plan_and_pre_activation_boundary(test_session):
             ),
             allowed_datasets=[dataset.dataset_key],
         )
-
-
-@pytest.mark.asyncio
-async def test_migration_upgrade_downgrade_upgrade_isolated():
-    async with get_active_migration_database_factory().clone(
-        "a8b9c0d1e2f3", "full_market_roundtrip"
-    ) as (url, engine):
-        await _run_alembic(url, "b9c0d1e2f3a4")
-        await _run_alembic(url, "1331cb73adad")
-
-        async with engine.connect() as connection:
-            assert await connection.scalar(
-                text("SELECT to_regclass('futures_contract_eod') IS NOT NULL")
-            )
-            assert (
-                await connection.scalar(
-                    text(
-                        "SELECT count(*) FROM information_schema.columns WHERE table_name='daily_delivery_member' AND column_name='outcome_history'"
-                    )
-                )
-                == 1
-            )
-        await _run_alembic(url, "b9c0d1e2f3a4", "downgrade")
-        async with engine.connect() as connection:
-            assert await connection.scalar(
-                text("SELECT to_regclass('futures_contract_eod') IS NULL")
-            )
-            assert await connection.scalar(
-                text("SELECT to_regclass('market_data_minute') IS NOT NULL")
-            )
-        await _run_alembic(url, "1331cb73adad")
 
 
 @pytest.mark.asyncio

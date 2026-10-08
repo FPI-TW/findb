@@ -170,6 +170,9 @@ findb/
 - Repo-wide preferred test runner 是 `pnpm test` 或 `make test`，會涵蓋 contracts、Backend、
   Fetcher、Infra 與 Dashboard 的 unit／browser／e2e 測試；只跑 Backend 時使用
   `pnpm test:backend` 或 `make test-backend`，會先確保 DB container 已啟動。
+- Backend runner 的非 migration tests 預設使用兩個 xdist workers 與 worksteal，migration
+  tests 另以序列 session 執行；`test-db --workers 0` 可切回序列。`pnpm test:infra` 同樣使用
+  Backend pytest 的兩個 workers，無 PostgreSQL dependency。直接 pytest 不隱含平行 flags。
 - `pnpm check`／`make check` 僅執行全 repo 的 lint、type check 與 format check；改動完成後及
   commit 前必須執行。Git pre-commit 執行 `check`，pre-push 依序執行 `check` 與 `test`。
 
@@ -215,6 +218,7 @@ uv --directory backend run mypy app
 pnpm test
 pnpm test:backend
 pnpm test:fetcher
+pnpm test:infra
 pnpm test:dashboard
 uv --directory backend run pytest
 uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
@@ -222,6 +226,7 @@ uv --directory backend run pytest tests/test_canonical_ingest_api.py::test_contr
 uv --directory backend run pytest -k "market_eod or market_minute"
 uv --directory backend run pytest --cov=app
 uv --directory backend run python scripts/dev.py test-db
+uv --directory backend run python scripts/dev.py test-db --workers 0
 
 # dashboard
 pnpm dev:dashboard

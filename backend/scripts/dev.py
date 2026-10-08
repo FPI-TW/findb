@@ -245,7 +245,7 @@ def cmd_queue_logs(args: argparse.Namespace) -> int:
     return _run(cmd, env=_local_env())
 
 
-def cmd_test_db(_args: argparse.Namespace) -> int:
+def cmd_test_db(args: argparse.Namespace) -> int:
     compose = _docker_compose_cmd()
     up_code = _run([*compose, "up", "-d", "db"])
     if up_code != 0:
@@ -254,16 +254,32 @@ def cmd_test_db(_args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.setdefault("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     env["DEBUG"] = "true"
-    return _run(
+    pytest = [
+        "uv",
+        "run",
+        "pytest",
+        "--tb=short",
+        "-q",
+        "--durations=20",
+        "--durations-min=0.5",
+    ]
+    test_code = _run(
         [
-            "uv",
-            "run",
-            "pytest",
-            "--tb=short",
-            "-q",
-            "--durations=20",
-            "--durations-min=0.5",
+            *pytest,
+            "-n",
+            str(args.workers),
+            "--dist",
+            "worksteal",
+            "--ignore-glob=tests/test_*migration*.py",
         ],
+        env=env,
+    )
+    if test_code != 0:
+        return test_code
+    # Migration templates are reused in one serial session, matching CI.
+    migration_paths = sorted((BACKEND_ROOT / "tests").glob("test_*migration*.py"))
+    return _run(
+        [*pytest, *(str(path.relative_to(BACKEND_ROOT)) for path in migration_paths)],
         env=env,
     )
 
@@ -302,6 +318,13 @@ def cmd_seed_upsert(args: argparse.Namespace) -> int:
     if args.truncate:
         cmd.append("--truncate")
     return _run(cmd)
+
+
+def _test_worker_count(value: str) -> int:
+    workers = int(value)
+    if workers < 0:
+        raise argparse.ArgumentTypeError("workers must be 0 or greater")
+    return workers
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -350,7 +373,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     queue_logs.add_argument("--tail", type=int, default=200, help="Number of log lines")
     queue_logs.add_argument("--follow", action="store_true", help="Follow log output")
-    subparsers.add_parser("test-db", help="Run pytest after ensuring db container is up")
+    test_db = subparsers.add_parser(
+        "test-db", help="Run Backend tests after ensuring db container is up"
+    )
+    test_db.add_argument(
+        "--workers",
+        type=_test_worker_count,
+        default=2,
+        help="Number of workers for non-migration tests (0 for serial; default: 2)",
+    )
     subparsers.add_parser("down", help="Stop development containers")
 
     partial_dump_validate = subparsers.add_parser(

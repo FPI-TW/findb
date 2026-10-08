@@ -4076,3 +4076,96 @@ def test_env_sync_publishes_exact_full_market_flag_or_rejects_invalid_mock_only(
         ]
     else:
         assert calls == []
+
+
+def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None:
+    workflow = _load_workflow(FINDB_CI_WORKFLOW)
+    jobs = workflow["jobs"]
+    assert set(jobs) == {
+        "backend",
+        "backend-migrations",
+        "infra-tests",
+        "dashboard",
+        "dashboard-browser",
+    }
+    backend_steps = jobs["backend"]["steps"]
+    backend_commands = "\n".join(step.get("run", "") for step in backend_steps)
+    assert "ruff check app tests scripts migrations" in backend_commands
+    assert "ruff format --check app tests scripts migrations" in backend_commands
+    assert "uv run mypy app" in backend_commands
+    assert "export_ingress_contracts.py --check" in backend_commands
+    assert "export_archive_contracts.py --check" in backend_commands
+    assert "../infra/tests" not in backend_commands
+    assert "pytest -n 2 --dist worksteal" in backend_commands
+    assert "--ignore-glob='tests/test_*migration*.py'" in backend_commands
+
+    infra = jobs["infra-tests"]
+    assert "services" not in infra
+    assert "env" not in infra
+    assert infra["defaults"]["run"]["working-directory"] == "backend"
+    infra_commands = "\n".join(step.get("run", "") for step in infra["steps"])
+    assert "uv sync --frozen" in infra_commands
+    assert "pytest ../infra/tests -n 2 --dist worksteal" in infra_commands
+    assert "unittest discover" not in infra_commands
+
+    migration_steps = jobs["backend-migrations"]["steps"]
+    smoke = next(step for step in migration_steps if step.get("name") == "Run migration smoke test")
+    assert smoke["run"].splitlines() == ["uv run alembic upgrade head", "uv run alembic current"]
+    migration = next(step for step in migration_steps if step.get("name") == "Run migration tests")
+    assert "pytest --tb=short -q tests/test_*migration*.py" in migration["run"]
+    assert "-n " not in migration["run"]
+    assert "--dist" not in migration["run"]
+
+
+@pytest.mark.parametrize("job_name", ["backend", "backend-migrations", "infra-tests"])
+def test_findb_ci_reports_are_retained_even_after_failure(job_name: str) -> None:
+    job = _load_workflow(FINDB_CI_WORKFLOW)["jobs"][job_name]
+    steps = job["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == "${{ inputs.revision || github.sha }}"
+    verify = next(step for step in steps if step.get("name") == "Verify exact requested revision")
+    assert verify["env"]["EXPECTED_SHA"] == "${{ inputs.revision || github.sha }}"
+    assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in verify["run"]
+    test = next(step for step in steps if "--junitxml=" in step.get("run", ""))
+    assert test["shell"] == "bash"
+    assert "set -o pipefail" in test["run"]
+    assert "--durations=20 --durations-min=0.5" in test["run"]
+    assert "/usr/bin/time -p -o" in test["run"]
+    assert f'--junitxml="$RUNNER_TEMP/findb-ci-{job_name}/junit.xml"' in test["run"]
+    assert "continue-on-error" not in test
+    timing = next(step for step in steps if step.get("name") == "Record total job timing")
+    assert timing["if"] == "always()"
+    assert "FINDB_CI_JOB_STARTED_AT" in timing["run"]
+    upload = next(step for step in steps if step.get("name") == "Upload test reports")
+    assert upload["if"] == "always()"
+    assert re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", upload["uses"])
+    assert upload["with"]["retention-days"] == "14"
+    assert upload["with"]["path"] == f"${{{{ runner.temp }}}}/findb-ci-{job_name}/"
+
+
+@pytest.mark.parametrize("job_name", ["backend", "backend-migrations", "infra-tests"])
+def test_findb_ci_pytest_failure_propagates_through_report_capture(job_name, tmp_path) -> None:
+    job = _load_workflow(FINDB_CI_WORKFLOW)["jobs"][job_name]
+    step = next(step for step in job["steps"] if "--junitxml=" in step.get("run", ""))
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\nprintf 'deliberate pytest failure\\n'\nexit 23\n")
+    fake_uv.chmod(0o700)
+    # /usr/bin/time is GNU in CI; this portable shim forwards the timed command.
+    fake_time = tmp_path / "time"
+    fake_time.write_text('#!/bin/sh\nwhile [ "$1" != uv ]; do shift; done\n"$@"\n')
+    fake_time.chmod(0o700)
+    script = step["run"].replace("/usr/bin/time", str(fake_time))
+    result = subprocess.run(
+        ["bash", "-e", "-c", script],
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(tmp_path),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 23
+    assert "deliberate pytest failure" in result.stdout
+    assert (tmp_path / f"findb-ci-{job_name}" / "pytest.log").read_text() == result.stdout

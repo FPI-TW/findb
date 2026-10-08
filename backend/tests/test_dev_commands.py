@@ -2,6 +2,8 @@
 
 import argparse
 
+import pytest
+
 from scripts import dev
 
 
@@ -236,3 +238,58 @@ def test_queue_logs_supports_tail_and_follow(monkeypatch):
             "worker",
         ]
     ]
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_test_db_partitions_parallel_backend_and_serial_migrations(monkeypatch, tmp_path, workers):
+    backend_root = tmp_path / "backend"
+    tests = backend_root / "tests"
+    tests.mkdir(parents=True)
+    for name in (
+        "test_full_market_migration.py",
+        "test_migration_upgrade.py",
+        "test_full_market.py",
+    ):
+        (tests / name).touch()
+    monkeypatch.setattr(dev, "BACKEND_ROOT", backend_root)
+    monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
+    calls = []
+    monkeypatch.setattr(dev, "_run", lambda cmd, env=None: calls.append((cmd, env)) or 0)
+
+    assert dev.cmd_test_db(argparse.Namespace(workers=workers)) == 0
+    assert len(calls) == 3
+    assert calls[0][0] == ["docker", "compose", "up", "-d", "db"]
+    backend, env = calls[1]
+    assert backend[backend.index("-n") + 1] == str(workers)
+    assert backend[backend.index("--dist") + 1] == "worksteal"
+    assert "--ignore-glob=tests/test_*migration*.py" in backend
+    assert env["DEBUG"] == "true"
+    migrations, migration_env = calls[2]
+    assert migration_env == env
+    assert "-n" not in migrations
+    assert migrations[-2:] == [
+        "tests/test_full_market_migration.py",
+        "tests/test_migration_upgrade.py",
+    ]
+
+
+@pytest.mark.parametrize("failed_call", [1, 2, 3])
+def test_test_db_propagates_database_backend_and_migration_failures(monkeypatch, failed_call):
+    calls = []
+    monkeypatch.setattr(dev, "_docker_compose_cmd", lambda: ["docker", "compose"])
+
+    def fake_run(cmd, env=None):
+        calls.append(cmd)
+        return 17 if len(calls) == failed_call else 0
+
+    monkeypatch.setattr(dev, "_run", fake_run)
+    assert dev.cmd_test_db(argparse.Namespace(workers=2)) == 17
+    assert len(calls) == failed_call
+
+
+def test_test_db_workers_default_and_serial_override():
+    parser = dev._build_parser()
+    assert parser.parse_args(["test-db"]).workers == 2
+    assert parser.parse_args(["test-db", "--workers", "0"]).workers == 0
+    with pytest.raises(SystemExit):
+        parser.parse_args(["test-db", "--workers", "-1"])
