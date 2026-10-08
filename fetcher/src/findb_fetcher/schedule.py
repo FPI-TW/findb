@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from findb_fetcher.config import app_environment
 
 _MAX_CONFIG_BYTES = 64 * 1024
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -187,7 +188,7 @@ def load_schedule_manifest(path: Path) -> ScheduleManifest:
     if not isinstance(value, dict):
         raise ScheduleError("schedule config must be an object")
     version = value.get("schedule_version")
-    target = os.getenv("DEPLOYMENT_TARGET", "").strip().lower()
+    target = app_environment("").strip().lower()
     if version == 2:
         if target == "production":
             raise ScheduleError("production target cannot load a staging v2 schedule")

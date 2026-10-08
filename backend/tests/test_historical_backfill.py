@@ -46,7 +46,7 @@ def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
 def test_production_allows_one_year_eod_and_disables_shioaji_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
 
     assert historical_backfill._max_backfill_days() == 366
     assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True

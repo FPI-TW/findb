@@ -29,7 +29,7 @@ def _args(provider: str = "twelve_data", dataset: str = "us_equity_eod") -> list
 def test_dry_run_is_default_and_estimates_calls_without_creating(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
     monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
     monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
     requests: list[httpx.Request] = []
@@ -62,7 +62,7 @@ def test_dry_run_is_default_and_estimates_calls_without_creating(
 def test_deliver_creates_only_after_successful_preview(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
     monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
     monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
 
@@ -94,7 +94,7 @@ def test_deliver_creates_only_after_successful_preview(
 def test_shioaji_history_and_wait_without_deliver_fail_closed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
     assert production_backfill_cli.main([*_args(), "--wait"]) == 2
     assert production_backfill_cli.main(_args("shioaji", "tw_equity_minute")) == 2
     assert "production_backfill_failed" in capsys.readouterr().err

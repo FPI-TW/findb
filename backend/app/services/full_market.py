@@ -8,7 +8,7 @@ from typing import Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
@@ -26,8 +26,6 @@ from app.models.registry import (
     DailyDeliveryPlan,
     DatasetRegistry,
     IngestionRun,
-    SchedulerControl,
-    SchedulerDataset,
     UniverseMember,
     UniverseRelease,
 )
@@ -37,7 +35,6 @@ from app.schemas.full_market import (
     DeliveryPlanCreateRequest,
     DeliveryPlanResponse,
     DeliverySummaryResponse,
-    FeedActivateRequest,
     UniverseListResponse,
     UniverseMemberInput,
     UniversePublishRequest,
@@ -249,9 +246,7 @@ async def list_universes(
     allowed_datasets: list[str] | None,
     as_of: date | None = None,
 ) -> UniverseListResponse:
-    dataset = await _scope(
-        db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets
-    )
+    await _scope(db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets)
     filters = [UniverseRelease.dataset_key == dataset_key, UniverseRelease.provider == provider]
     if as_of is not None:
         filters.append(UniverseRelease.effective_date <= as_of)
@@ -265,13 +260,17 @@ async def list_universes(
         .order_by(*order)
         .limit(1)
     )
-    full_market = (dataset.config or {})["full_market"]
+    from app.services.full_market_admission import admission_projection
+
+    projection = await admission_projection(db, provider, source=True)
     return UniverseListResponse(
         data=[_release_response(release) for release in releases],
         published_release_id=published,
         activation={
-            "enabled": bool(full_market.get("enabled")),
-            "activation_date": full_market.get("activation_date"),
+            "enabled": projection["acquisition_allowed"]
+            and dataset_key in projection["admitted_dataset_keys"],
+            "activation_date": projection["first_start_dates"].get(dataset_key),
+            **projection,
         },
     )
 
@@ -431,25 +430,51 @@ async def create_plan(
     *,
     allowed_datasets: list[str] | None,
 ) -> DeliveryPlanResponse:
+    from app.services.full_market_admission import lock_calendars, lock_environment
+
+    await lock_environment(db)
+    from app.models.registry import FullMarketEnrollment, SchedulerControl, SourceClient
+    from app.services.full_market_admission import admission_projection, current_enrollment
+    from app.services.scheduler_start import scheduler_start_datasets
+
+    datasets = await scheduler_start_datasets(db, f"full_market_{body.provider}_v1", lock=True)
     dataset = await _scope(
         db,
         dataset_key=body.dataset_key,
         provider=body.provider,
         allowed_datasets=allowed_datasets,
-        lock=True,
+        lock=False,
     )
-    governance = (dataset.config or {})["full_market"]
-    activation_value = governance.get("activation_date")
+    await lock_calendars(db, datasets)
+    enrollment = await current_enrollment(db, body.provider)
+    if enrollment:
+        await db.get(
+            FullMarketEnrollment,
+            enrollment.enrollment_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        await db.get(
+            SourceClient, enrollment.source_client_id, with_for_update=True, populate_existing=True
+        )
+    await db.get(
+        SchedulerControl,
+        f"full_market_{body.provider}_v1",
+        with_for_update=True,
+        populate_existing=True,
+    )
+    projection = await admission_projection(db, body.provider, source=True)
+    activation_value = projection["first_start_dates"].get(body.dataset_key)
+    # Existing frozen plans can always be read and completed through their scoped endpoints.
     if (
-        not dataset.is_active
-        or not governance.get("enabled")
-        or not governance.get("readiness_approved")
+        not projection["acquisition_allowed"]
+        or body.dataset_key not in projection["admitted_dataset_keys"]
         or not activation_value
     ):
-        raise FullMarketError("Feed has not been activated for full-market delivery", 409)
+        raise FullMarketError("Full-market acquisition is not admitted", 409)
     activation_date = date.fromisoformat(activation_value)
     if body.trade_date < activation_date:
-        raise FullMarketError("Pre-activation delivery plans are forbidden", 409)
+        raise FullMarketError("Pre-first-start delivery plans are forbidden", 409)
     await _require_exchange_open(db, dataset, body.trade_date)
     existing = (
         await db.scalars(
@@ -817,12 +842,12 @@ async def validate_ingest_part(
 ) -> UUID | None:
     """Bind a full-market request to one frozen part before raw persistence."""
     governance = (dataset.config or {}).get("full_market") or {}
-    if not governance.get("enabled"):
-        return None
     delivery = getattr(request, "delivery", None)
     work_item_id = getattr(delivery, "work_item_id", None)
-    if work_item_id is None:
-        raise FullMarketError("Full-market ingress requires delivery.work_item_id", 409)
+    if not isinstance(work_item_id, str) or not work_item_id.startswith("fp1:"):
+        if governance.get("required"):
+            raise FullMarketError("This feed requires a frozen full-market work item", 409)
+        return None
     part = (
         await db.scalars(
             select(DailyDeliveryPart).where(DailyDeliveryPart.work_item_id == work_item_id)
@@ -909,10 +934,19 @@ async def publish_universe(
     *,
     actor: str,
 ) -> UniverseReleaseResponse:
+    identity = await db.get(UniverseRelease, release_id)
+    if identity is None:
+        raise FullMarketError("Universe release not found", 404)
+    await db.execute(
+        select(DatasetRegistry)
+        .where(DatasetRegistry.dataset_key == identity.dataset_key)
+        .with_for_update()
+    )
     release = (
         await db.scalars(
             select(UniverseRelease)
             .where(UniverseRelease.release_id == release_id)
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
     ).one_or_none()
@@ -973,205 +1007,11 @@ async def publish_universe(
     return _release_response(release)
 
 
-async def activate_feed(
-    db: AsyncSession,
-    dataset_key: str,
-    body: FeedActivateRequest,
-) -> dict:
-    dataset = (
-        await db.scalars(
-            select(DatasetRegistry)
-            .where(DatasetRegistry.dataset_key == dataset_key)
-            .with_for_update()
-        )
-    ).one_or_none()
-    if dataset is None:
-        raise FullMarketError("Dataset not found", 404)
-    config = dict(dataset.config or {})
-    governance = dict(config.get("full_market") or {})
-    if not governance:
-        raise FullMarketError("Full-market governance is not configured", 409)
-    original_activation = governance.get("activation_date")
-    if original_activation is not None:
-        if body.activation_date.isoformat() != original_activation:
-            raise FullMarketError("Original activation date must be preserved", 409)
-    elif body.activation_date < utc_now().astimezone(_exchange_timezone(dataset)).date():
-        raise FullMarketError("First activation date cannot precede the current exchange date", 409)
-    published = (
-        await db.scalars(
-            select(UniverseRelease)
-            .where(
-                UniverseRelease.dataset_key == dataset_key,
-                UniverseRelease.status == "published",
-                UniverseRelease.effective_date <= body.activation_date,
-            )
-            .order_by(UniverseRelease.effective_date.desc())
-            .limit(1)
-        )
-    ).one_or_none()
-    if published is None:
-        raise FullMarketError("Activation requires an applicable published baseline", 409)
-    # The market calendar is a separate published exchange authority. Require
-    # a complete annual revision before switching on acceptance/production.
-    revision = (
-        await db.scalars(
-            select(CalendarYearRevision).where(
-                CalendarYearRevision.market == _calendar_market(dataset),
-                CalendarYearRevision.year == body.activation_date.year,
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
-            )
-        )
-    ).first()
-    if revision is None:
-        raise FullMarketError("Activation requires a complete published exchange calendar", 409)
-    if body.mode == "active":
-        if governance.get("mode") != "acceptance":
-            raise FullMarketError("Five-day acceptance mode must precede active rollout", 409)
-        plans = list(
-            (
-                await db.scalars(
-                    select(DailyDeliveryPlan)
-                    .where(
-                        DailyDeliveryPlan.dataset_key == dataset_key,
-                        DailyDeliveryPlan.trade_date
-                        >= date.fromisoformat(governance["activation_date"]),
-                    )
-                    .order_by(DailyDeliveryPlan.trade_date.desc())
-                    .limit(5)
-                )
-            ).all()
-        )
-        if len(plans) < 5:
-            raise FullMarketError("Five complete acceptance trading days are required", 409)
-        await _require_closed_acceptance_day(db, dataset, plans[0].trade_date, now=utc_now())
-        expected_dates = list(
-            (
-                await db.scalars(
-                    select(CalendarRevisionDay.trade_date)
-                    .join(
-                        CalendarYearRevision,
-                        CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
-                    )
-                    .where(
-                        CalendarYearRevision.market == _calendar_market(dataset),
-                        CalendarYearRevision.id.in_(complete_published_revision_ids()),
-                        CalendarRevisionDay.is_open.is_(True),
-                        CalendarRevisionDay.trade_date
-                        >= date.fromisoformat(governance["activation_date"]),
-                        CalendarRevisionDay.trade_date <= plans[0].trade_date,
-                    )
-                    .order_by(CalendarRevisionDay.trade_date.desc())
-                    .limit(5)
-                )
-            ).all()
-        )
-        if len(expected_dates) != 5 or [plan.trade_date for plan in plans] != expected_dates:
-            raise FullMarketError(
-                "Acceptance plans must cover five consecutive exchange trading days", 409
-            )
-        for plan in plans:
-            summary = await reconcile_plan(db, plan)
-            if summary.data + summary.no_data != summary.expected:
-                raise FullMarketError("Acceptance evidence contains an incomplete day", 409)
-            late_outcome = await db.scalar(
-                select(func.count(DailyDeliveryMember.member_id)).where(
-                    DailyDeliveryMember.plan_id == plan.plan_id,
-                    DailyDeliveryMember.outcome == "no_data",
-                    DailyDeliveryMember.outcome_at > plan.deadline_at,
-                )
-            )
-            if late_outcome:
-                raise FullMarketError("Acceptance evidence includes late no-data outcomes", 409)
-            quote_table: type[FuturesContractEOD] | type[MarketDataEOD] | type[MarketDataMinute]
-            if dataset_key == "tw_futures_eod":
-                quote_table = FuturesContractEOD
-            elif dataset_key in {"tw_equity_minute", "tw_etf_minute"}:
-                quote_table = MarketDataMinute
-            else:
-                quote_table = MarketDataEOD
-            late_runs = await db.scalar(
-                select(func.count(IngestionRun.run_id))
-                .join(quote_table, quote_table.run_id == IngestionRun.run_id)
-                .where(
-                    IngestionRun.delivery_part_id.in_(
-                        select(DailyDeliveryPart.part_id).where(
-                            DailyDeliveryPart.plan_id == plan.plan_id
-                        )
-                    ),
-                    IngestionRun.completed_at > plan.deadline_at,
-                    quote_table.trade_date == plan.trade_date,
-                )
-            )
-            if late_runs:
-                raise FullMarketError("Acceptance evidence includes late canonical deliveries", 409)
-        governance["mode"] = "active"
-    else:
-        if governance.get("enabled"):
-            raise FullMarketError("Feed acceptance already activated", 409)
-        governance.update(
-            {
-                "enabled": True,
-                "readiness_approved": True,
-                "activation_date": body.activation_date.isoformat(),
-                "mode": "acceptance",
-            }
-        )
-    governance["readiness_evidence_note"] = body.readiness_evidence_note
-    config["full_market"] = governance
-    dataset.config = config
-    dataset.is_active = True
-    dataset.updated_at = utc_now()
-    await db.flush()
-    return {
-        "dataset_key": dataset_key,
-        "mode": governance["mode"],
-        "activation_date": governance["activation_date"],
-        "readiness_approved": governance["readiness_approved"],
-    }
+async def activate_feed(db: AsyncSession, dataset_key: str, body: object) -> dict:
+    """Retired service entrypoint; callers must use Owner scheduler admission."""
+    raise FullMarketError("Feed activation retired; use Owner scheduler PATCH", 410)
 
 
 async def deactivate_feed(db: AsyncSession, dataset_key: str) -> dict:
-    """Stop the governed runtime while retaining every frozen plan and quote."""
-    dataset = (
-        await db.scalars(
-            select(DatasetRegistry)
-            .where(DatasetRegistry.dataset_key == dataset_key)
-            .execution_options(populate_existing=True)
-            .with_for_update()
-        )
-    ).one_or_none()
-    if dataset is None:
-        raise FullMarketError("Dataset not found", 404)
-    config = dict(dataset.config or {})
-    governance = dict(config.get("full_market") or {})
-    if not governance:
-        raise FullMarketError("Full-market governance is not configured", 409)
-    governance.update(enabled=False, readiness_approved=False, mode="off")
-    config["full_market"] = governance
-    dataset.config = config
-    dataset.updated_at = utc_now()
-    if governance.get("required"):
-        dataset.is_active = False
-    controls = (
-        await db.scalars(
-            select(SchedulerControl)
-            .join(SchedulerDataset)
-            .where(
-                SchedulerDataset.dataset_key == dataset_key,
-                SchedulerControl.scheduler_key.startswith("full_market_", autoescape=True),
-            )
-            .execution_options(populate_existing=True)
-            .with_for_update(of=SchedulerControl)
-        )
-    ).all()
-    for control in controls:
-        control.desired_state = "stopped"
-        control.revision += 1
-        control.updated_at = utc_now()
-    await db.flush()
-    return {
-        "dataset_key": dataset_key,
-        "mode": "off",
-        "is_active": dataset.is_active,
-        "stopped_schedulers": [control.scheduler_key for control in controls],
-    }
+    """Retired service entrypoint; callers must use Owner scheduler stop."""
+    raise FullMarketError("Feed deactivation retired; use Owner scheduler PATCH", 410)

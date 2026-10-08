@@ -63,10 +63,15 @@ Reset可移除mutable canonical、workflow與PostgreSQL raw，建立bounded pilo
 3. 以同一target connection執行唯讀盤點，保存counts與connection fingerprint。
 4. 核對範圍後使用script要求的staging confirmation及writer-stopped assertion執行apply。
 5. 驗證mutable targets為零、protected tables不變且lineage無orphan。
-6. 同步重置provider SQLite checkpoint，重生cache並執行bounded acceptance。
+6. 同步重置provider ingestion SQLite checkpoint（含 Full frozen/prepared plan state），重生cache並執行bounded acceptance；保留獨立 provider-account governor 的 quota／usage，不能退款或歸零。
 
 `dataset_registry`、source／API credentials及`alembic_version`屬設定／schema state，必須
-保留。`market_data_eod.run_id`、raw run ID與DQ run ID沒有完整DB FK／cascade，不能假設
+保留。Full 的 `full_market_environment`、`full_market_enrollment` 安裝 authority 與
+`full_market_dataset_state` 永久首次日期同樣保留；`full_market_admission`／`full_market_admission_feed`
+和被引用的 baseline、calendar、plan 一起清除。重建 published baseline／完整 calendar、取得有效
+installed runtime ACK 後，Owner 才能重新手動啟動並建立新 admission；first date 不重設。
+所有 mutable targets 在同一個 explicit `TRUNCATE` 清除，禁止 `CASCADE`；新增未列出的 FK 時 fail closed。
+`market_data_eod.run_id`、raw run ID與DQ run ID沒有完整DB FK／cascade，不能假設
 只刪run即可清乾淨。
 
 R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite或prepared raw refs

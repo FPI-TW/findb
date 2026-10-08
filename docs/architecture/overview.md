@@ -46,7 +46,7 @@ target-aware registry provisioning及`fetcher/configs/staging_provider_pilots.v1
 | `taifex` | `tw_futures_eod` | `TX`、`MTX` 各一個實際近月合約、兩個 sessions |
 
 五個 feed 只驗證最新已完成交易日，不建立 historical backfill。TAIFEX staging override 使用
-`full_market.required=false`、`enabled=false`；production opt-in governance 維持原規則。
+`full_market.required=false`、`enabled=false`；Full market 由環境旗標與 admission 獨立授權。
 Serve catalog由active `dataset_registry`動態解析，公開US/TW equity EOD、TW
 equity/ETF minute及實際 futures EOD。只有至少符合一個active scope的商品會出現在Serve instruments。Canonical
 tables可保留inactive歷史資料，但不因此產生公開route或catalog項目。新增資料域必須另案完成
@@ -54,10 +54,12 @@ contract、registry、normalizer、DQ與Serve驗收。
 
 ## Full-market governance
 
-Full-market 是 production 明確選用的 runtime profile；既有 bounded staging 與固定 production
-universe 預設維持不變。Backend 先發布 schema／migration／registry；新增
-`hk_equity_eod`、`tw_etf_eod`、`tw_futures_eod` 預設 inactive，完成 readiness 與 Owner
-activation 前不構成已啟用或已驗證的全市場 coverage。
+Full market 在 local/staging/production 皆為 opt-in，預設 false。Registry acceptance 與 acquisition
+admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Full-only feeds 普通 ingress
+不接受，需 `fp1` frozen plan。Owner 手動 scheduler start 凍結當時 ready feeds，首日為 exchange-local
+今天且永不重設；合法 legacy cutoff 保留。Trusted enrollment 綁定實際 runtime、artifact/config/account
+quota、Source identity、evidence digest 與 expiry，Source report 只能 acknowledgement。
+操作與部署/rollback contracts 見 [runbook](../operations/full_market.md)。
 
 | Provider | 目標範圍 | Contract |
 | --- | --- | --- |
@@ -82,8 +84,9 @@ interest 保留 null。Published exchange calendar 是開市日權威，TAIFEX �
 
 帳號 entitlement、完整 universe mapping、provider quota 與 deadline capacity 必須有實際
 readiness 證據。受限時標示 blocked，不自動升級付費方案，也不以縮小 subset 宣稱全市場完成。
-分 TW、HK、US、futures 各驗證連續五個實際交易所開市日，TW／HK／TAIFEX 截止當日台北
-23:00，US 截止次日台北 09:00；live acceptance 尚待部署後執行。
+所有 opt-in consumers 共用 durable account governor；Pilot/historical 的 installed allocation 與 Full
+readiness expiry 分離。Capacity 合計全部 ready feeds 與 retry/byte/deadline/Source-check overhead，
+拒絕不足的 provider。停止或失效只阻擋新 acquisition，已有 prepared frozen delivery 可完成。
 
 ## 資料責任
 

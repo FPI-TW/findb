@@ -291,7 +291,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--deployment-target",
-        default=os.getenv("DEPLOYMENT_TARGET"),
+        default=os.getenv("APP_ENVIRONMENT"),
         choices=("staging", "production"),
         help="target used to constrain legacy identity adoption",
     )

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -46,8 +47,10 @@ class TwelveDataResponseError(TwelveDataError):
         status_code: int | None = None,
         provider_code: int | None = None,
         observed_bytes: int = 0,
+        declared_bytes: int = 0,
     ) -> None:
         self.observed_bytes = observed_bytes
+        self.declared_bytes = declared_bytes
         self.status_code = status_code
         self.provider_code = provider_code
         super().__init__(message)
@@ -191,6 +194,11 @@ class TwelveDataClient:
                 raise ValueError("exchange must contain 1 to 100 supported ASCII characters")
             params["exchange"] = normalized_exchange
 
+        from findb_fetcher.account_governor import provider_permit
+
+        permit = provider_permit("twelve_data")
+        if permit:
+            bound = min(bound, permit.bound)
         response_status_code = None
         try:
             with self._client.stream(
@@ -200,21 +208,36 @@ class TwelveDataClient:
                 headers={"Accept-Encoding": "identity"},
             ) as response:
                 response_status_code = response.status_code
-                if response_status_code == 429 and on_http_rate_limited is not None:
-                    on_http_rate_limited()
+                if response_status_code == 429:
+                    if permit:
+                        permit.state.rate_limited(
+                            account=permit.account, window=permit.window, until=time.time() + 60
+                        )
+                    if on_http_rate_limited is not None:
+                        on_http_rate_limited()
                 try:
                     raw_bytes = read_identity_response(response, bound=bound)
                 except BoundedResponseError as exc:
+                    if permit:
+                        permit.observe(exc.observed_bytes, declared=exc.declared_bytes)
                     raise TwelveDataResponseError(
                         f"Twelve Data {exc}",
                         status_code=response_status_code,
                         observed_bytes=exc.observed_bytes,
+                        declared_bytes=exc.declared_bytes,
                     ) from exc
         except httpx.TransportError as exc:
+            observed = getattr(exc, "observed_bytes", 0)
+            if permit:
+                permit.observe(observed)
             raise TwelveDataResponseError(
-                "Twelve Data transport request failed", status_code=response_status_code
+                "Twelve Data transport request failed",
+                status_code=response_status_code,
+                observed_bytes=observed,
             ) from exc
 
+        if permit:
+            permit.observe(len(raw_bytes))
         try:
             payload = json.loads(raw_bytes)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -222,13 +245,25 @@ class TwelveDataClient:
                 f"Twelve Data returned non-JSON HTTP {response_status_code}",
                 status_code=response_status_code,
             ) from exc
+        if response_status_code != 200:
+            # Error JSON is used only for redacted diagnostics; even an 'ok'
+            # body on a partial/created response cannot become an ingress body.
+            details = payload if isinstance(payload, dict) else {}
+            provider_code = _provider_code(details.get("code", response_status_code))
+            provider_message = _redacted_message(details.get("message"), self._config.api_key)
+            raise TwelveDataResponseError(
+                f"Twelve Data request failed (HTTP {response_status_code}): {provider_message}",
+                status_code=response_status_code,
+                provider_code=provider_code,
+                observed_bytes=len(raw_bytes),
+            )
         if not isinstance(payload, dict):
             raise TwelveDataResponseError(
                 "Twelve Data response must be a JSON object", status_code=response_status_code
             )
 
         provider_status = payload.get("status")
-        if response_status_code >= 400 or provider_status == "error":
+        if provider_status == "error":
             raw_provider_code = payload.get("code", response_status_code)
             provider_code = _provider_code(raw_provider_code)
             provider_message = _redacted_message(payload.get("message"), self._config.api_key)

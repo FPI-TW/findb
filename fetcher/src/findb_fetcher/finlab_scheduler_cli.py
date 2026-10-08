@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig
+from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig, app_environment
 from findb_fetcher.contracts import ContractError, ContractRegistry
 from findb_fetcher.finlab_scheduler import FinLabSchedulerService
 from findb_fetcher.finlab_universe import (
@@ -405,7 +405,7 @@ def _default_schedule_file() -> Path:
         return Path(configured)
     filename = (
         "daily_scheduler.production.v3.json"
-        if os.getenv("DEPLOYMENT_TARGET", "staging").strip().lower() == "production"
+        if app_environment("staging").strip().lower() == "production"
         else "daily_scheduler.staging.v3.json"
     )
     container_path = Path("/app/configs") / filename

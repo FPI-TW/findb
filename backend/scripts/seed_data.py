@@ -306,7 +306,6 @@ for _dataset in DATASETS:
         _dataset["config"]["full_market"] = {
             "enabled": False,
             "required": False,
-            "readiness_approved": False,
             "activation_date": None,
         }
 
@@ -350,7 +349,6 @@ def _staged_eod_dataset(
     config["full_market"] = {
         "enabled": False,
         "required": True,
-        "readiness_approved": False,
         "activation_date": None,
         "calendar_market": calendar_market,
     }
@@ -362,7 +360,7 @@ def _staged_eod_dataset(
         "asset_class": asset_class,
         "market": market,
         "frequency": "daily",
-        "is_active": False,
+        "is_active": True,
         "config": config,
     }
 

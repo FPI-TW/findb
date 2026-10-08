@@ -14,6 +14,7 @@ from uuid import UUID
 
 import httpx
 
+from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry, ContractValidationError
 
@@ -312,6 +313,7 @@ class SourceAPIClient:
             content = delivery.body
 
         for attempt in range(1, self._config.max_attempts + 1):
+            source_permit(self._config.source_client_key)
             timeout = self._request_timeout(deadline, monotonic)
             request = self._client.build_request(
                 method,

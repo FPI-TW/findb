@@ -525,6 +525,18 @@ async def _build_scheduler_freshness(
     except (TypeError, ZoneInfoNotFoundError, ValueError):
         configuration_errors.append("scheduler_timezone_invalid")
 
+    from app.services.full_market_admission import admission_projection, eligibility
+
+    projection = await admission_projection(db, definition.provider) if full_market else None
+    readiness = (
+        await eligibility(
+            db,
+            definition.provider,
+            [datasets[key] for key in definition.dataset_keys if key in datasets],
+        )
+        if full_market
+        else None
+    )
     feed_configs: list[_ConfiguredFeed] = []
     active_keys: list[str] = []
     previously_activated = False
@@ -541,8 +553,23 @@ async def _build_scheduler_freshness(
                 dataset, definition.provider
             )
             previously_activated = previously_activated or previous
+            enabled = bool(
+                projection
+                and definition.desired_state == "running"
+                and dataset_key in projection["admitted_dataset_keys"]
+            )
             if enabled:
                 active_keys.append(dataset_key)
+            if readiness:
+                blockers = next(
+                    (
+                        feed["blockers"]
+                        for feed in readiness["feeds"]
+                        if feed["dataset_key"] == dataset_key
+                    ),
+                    [],
+                )
+                blockers = [*blockers, *readiness["blockers"]]
             activation_blockers[dataset_key] = blockers
             configuration_errors.extend(f"{dataset_key}:{error}" for error in errors)
         elif not dataset.is_active:

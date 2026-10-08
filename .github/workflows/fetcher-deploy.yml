@@ -8,7 +8,7 @@ on:
       mode: {required: true, type: string}
       bundle_key: {required: true, type: string}
       release_tag: {required: false, type: string, default: ''}
-      runtime_profile: {required: false, type: string, default: bounded}
+      runtime_profile: {required: false, type: string, default: ''}
     outputs:
       accepted_bundle_key: {value: '${{ jobs.deploy.outputs.accepted_bundle_key }}'}
       target_id: {value: '${{ jobs.deploy.outputs.target_id }}'}
@@ -22,7 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      FETCHER_RUNTIME_PROFILE: ${{ inputs.runtime_profile }}
+      FULL_MARKET_ENABLED: ${{ vars.FULL_MARKET_ENABLED || 'false' }}
+      FETCHER_RUNTIME_PROFILE: ${{ inputs.runtime_profile || (vars.FULL_MARKET_ENABLED == 'true' && 'full-market' || 'bounded') }}
     environment: ${{ inputs.deployment_target }}-fetcher
     concurrency: {group: '${{ inputs.deployment_target }}-fetcher-deploy', cancel-in-progress: false}
     outputs:
@@ -33,6 +34,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {ref: '${{ inputs.revision }}', persist-credentials: false}
+      - name: Checkout trusted checkpoint safety gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.workflow_sha }}
+          path: .trusted-checkpoint-safety
+          persist-credentials: false
+          sparse-checkout: infra/deploy/check_full_market_checkpoint.sh
+          sparse-checkout-cone-mode: false
+      - name: Verify trusted checkpoint safety provenance
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$(git -C .trusted-checkpoint-safety rev-parse HEAD)" = "$WORKFLOW_SHA" ]
+          guard=.trusted-checkpoint-safety/infra/deploy/check_full_market_checkpoint.sh
+          [ -f "$guard" ] && [ ! -L "$guard" ]
+          bash -n "$guard"
       - name: Verify immutable target contract
         env:
           EXPECTED_SHA: ${{ inputs.revision }}
@@ -48,7 +68,7 @@ jobs:
           [[ "$TARGET" =~ ^(staging|production)$ ]]
           [[ "$MODE" =~ ^(candidate|replay)$ ]]
           [[ "$FETCHER_RUNTIME_PROFILE" =~ ^(bounded|full-market)$ ]]
-          [ "$FETCHER_RUNTIME_PROFILE" = bounded ] || [ "$TARGET" = production ]
+          [[ "$FULL_MARKET_ENABLED" =~ ^(true|false)$ ]]
           if [ "$TARGET" = production ]; then
             [ "$PRODUCTION_ENABLED" = true ]
             [[ "$RELEASE_TAG" =~ ^fetcher-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
@@ -123,6 +143,11 @@ jobs:
           tar -xOf "$RUNNER_TEMP/release-bundle.tar" release-manifest.json > "$RUNNER_TEMP/release-manifest.json"
           [ "$(jq -r .deployment_target "$RUNNER_TEMP/release-manifest.json")" = "$TARGET" ]
           [ "$(jq -r .release_tag "$RUNNER_TEMP/release-manifest.json")" = "$RELEASE_TAG" ]
+          if [ "$MODE" = replay ]; then
+            record_key="${BUNDLE_KEY%.tar}.acceptance.json"
+            [ -f "$RUNNER_TEMP/acceptance.json" ] || aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/acceptance.json" >/dev/null
+            FETCHER_RUNTIME_PROFILE="$(jq -r '.runtime_profile // "bounded"' "$RUNNER_TEMP/acceptance.json")"
+          fi
           [ "$(jq -r '.runtime_profile // "bounded"' "$RUNNER_TEMP/release-manifest.json")" = "$FETCHER_RUNTIME_PROFILE" ]
           if [ "$TARGET" = production ]; then
             [ "$(jq -r .promotion_source.staging_registry "$RUNNER_TEMP/release-manifest.json")" = "$STAGING_ECR_REGISTRY" ]
@@ -146,7 +171,8 @@ jobs:
             fi
           fi
           if [ "$MODE" = replay ]; then
-            [ "$(jq -r '.runtime_profile // "bounded"' "$RUNNER_TEMP/acceptance.json")" = "$FETCHER_RUNTIME_PROFILE" ]
+            FETCHER_RUNTIME_PROFILE="$(jq -r '.runtime_profile // "bounded"' "$RUNNER_TEMP/acceptance.json")"
+            echo "FETCHER_RUNTIME_PROFILE=$FETCHER_RUNTIME_PROFILE" >> "$GITHUB_ENV"
           fi
           validator_sha256="$(sha256sum infra/deploy/release_manifest.py | cut -d ' ' -f1)"
           printf 'bundle_sha256=%s\ntwelve_data=%s\nfinlab=%s\nshioaji=%s\ntarget_id=%s\nvalidator_sha256=%s\n' "$bundle_sha256" "$twelve_data" "$finlab" "$shioaji" "$target_id" "$validator_sha256" >> "$GITHUB_OUTPUT"
@@ -215,7 +241,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
-          runtime_variable_names="FETCHER_RUNTIME_PROFILE FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          runtime_variable_names="FULL_MARKET_ENABLED FETCHER_RUNTIME_PROFILE FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
           runtime_exports=""
           for name in $runtime_variable_names; do
             if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi
@@ -230,8 +256,24 @@ jobs:
           printf -v q_dns '%q' "$DNS_CHECK_NAME"
           printf -v q_validator_sha '%q' "$VALIDATOR_SHA256"
           host_mode=candidate; [ "$MODE" = replay ] && host_mode=activate
+          [ "$MODE" != replay ] || runtime_exports="$runtime_exports FETCHER_ACCEPTED_REPLAY=true"
           printf -v q_host_mode '%q' "$host_mode"
-          host_command="set -euo pipefail; trap 'printf \"fetcher_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/fetcher-$BUNDLE_SHA256.tar; validator=/tmp/fetcher-release-manifest-$BUNDLE_SHA256.py; root=/opt/fetcher/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$root\" --commit-sha $REVISION --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image shioaji=$q_shioaji; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=$q_host_mode; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_deploy_marker=%s status=success\\n\" $q_marker"
+          # Safety policy comes from the current workflow commit, never from
+          # inputs.revision or the immutable bundle being replayed.
+          guard=.trusted-checkpoint-safety/infra/deploy/check_full_market_checkpoint.sh
+          [ -f "$guard" ] && [ ! -L "$guard" ]
+          guard_b64="$(base64 -w0 "$guard")"
+          guard_sha="$(sha256sum "$guard" | cut -d ' ' -f1)"
+          printf -v q_guard_b64 '%q' "$guard_b64"
+          printf -v q_guard_sha '%q' "$guard_sha"
+          checkpoint_entry_gate="(guard=\$(mktemp /tmp/fetcher-checkpoint-guard.XXXXXX); trap 'rm -f \"\$guard\"' EXIT; printf '%s' $q_guard_b64 | base64 --decode > \"\$guard\"; [ \"\$(sha256sum \"\$guard\" | cut -d ' ' -f1)\" = $q_guard_sha ]; bash \"\$guard\");"
+          # The downloaded immutable bundle and accepted record are verified above.
+          # Only accepted replay can execute a pre-APP_ENVIRONMENT helper.
+          legacy_environment_bridge='grep -qx '\''# findb_environment_contract=app-environment-v1'\'' "$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh";'
+          if [ "$MODE" = replay ]; then
+            legacy_environment_bridge='if ! grep -qx '\''# findb_environment_contract=app-environment-v1'\'' "$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"; then export DEPLOYMENT_TARGET="$APP_ENVIRONMENT"; fi;'
+          fi
+          host_command="set -euo pipefail; trap 'printf \"fetcher_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/fetcher-$BUNDLE_SHA256.tar; validator=/tmp/fetcher-release-manifest-$BUNDLE_SHA256.py; root=/opt/fetcher/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$root\" --commit-sha $REVISION --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image shioaji=$q_shioaji; [ \"\${APP_ENVIRONMENT+x}\" != x ] || [ \"\$APP_ENVIRONMENT\" = $q_target ]; [ \"\${DEPLOYMENT_TARGET+x}\" != x ] || [ \"\$DEPLOYMENT_TARGET\" = $q_target ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account APP_ENVIRONMENT=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=$q_host_mode; $checkpoint_entry_gate $legacy_environment_bridge \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_deploy_marker=%s status=success\\n\" $q_marker"
           host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ vars.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
           source infra/deploy/ssm_command_marker_gate.sh
@@ -307,7 +349,7 @@ jobs:
           TARGET: ${{ inputs.deployment_target }}
         run: |
           set -euo pipefail
-          runtime_variable_names="FETCHER_RUNTIME_PROFILE FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          runtime_variable_names="FULL_MARKET_ENABLED FETCHER_RUNTIME_PROFILE FETCHER_SOURCE_API_URL FINDB_SERVE_BASE_URL FETCHER_CALENDAR_TIMEOUT_SECONDS FETCHER_CALENDAR_CACHE_TTL_SECONDS FETCHER_REQUEST_TIMEOUT_SECONDS FETCHER_SCHEDULER_CONTROL_POLL_SECONDS FETCHER_MAX_ATTEMPTS FETCHER_MAX_RETRY_AFTER_SECONDS TWELVE_DATA_BASE_URL TWELVE_DATA_TIMEOUT_SECONDS TWELVE_DATA_MAX_RESPONSE_BYTES SHIOAJI_SIMULATION CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET CLOUDFLARE_R2_MAX_OBJECT_BYTES"
           runtime_exports=""
           for name in $runtime_variable_names; do
             if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi
@@ -317,7 +359,7 @@ jobs:
           marker="fetcher-activate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           root="/opt/fetcher/releases/${BUNDLE_SHA256}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           printf -v q_root '%q' "$root"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"; printf -v q_twelve '%q' "$TWELVE_IMAGE"; printf -v q_finlab '%q' "$FINLAB_IMAGE"; printf -v q_shioaji '%q' "$SHIOAJI_IMAGE"; printf -v q_target '%q' "$TARGET"; printf -v q_marker '%q' "$marker"
-          host_command="set -euo pipefail; trap 'printf \"fetcher_activate_marker=%s status=failed\\n\" $q_marker' ERR; root=$q_root; [ -d \"\$root\" ] && [ ! -L \"\$root\" ]; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account DEPLOYMENT_TARGET=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=activate; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_activate_marker=%s status=success\\n\" $q_marker"
+          host_command="set -euo pipefail; trap 'printf \"fetcher_activate_marker=%s status=failed\\n\" $q_marker' ERR; root=$q_root; [ -d \"\$root\" ] && [ ! -L \"\$root\" ]; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; [ \"\${APP_ENVIRONMENT+x}\" != x ] || [ \"\$APP_ENVIRONMENT\" = $q_target ]; [ \"\${DEPLOYMENT_TARGET+x}\" != x ] || [ \"\$DEPLOYMENT_TARGET\" = $q_target ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account APP_ENVIRONMENT=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=activate; grep -qx \"# findb_environment_contract=app-environment-v1\" \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_activate_marker=%s status=success\\n\" $q_marker"
           host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
           command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ vars.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
           source infra/deploy/ssm_command_marker_gate.sh

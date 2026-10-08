@@ -182,3 +182,10 @@ async def admin_headers(test_session: AsyncSession) -> AsyncGenerator[dict, None
         commit=False,
     )
     yield {settings.API_KEY_HEADER: api_key}
+
+
+@pytest.fixture(autouse=True)
+def isolate_full_market_settings(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "FULL_MARKET_ENABLED", False)
+    monkeypatch.setattr(settings, "APP_ENVIRONMENT", "local")

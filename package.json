@@ -38,8 +38,8 @@
     "check:backend": "uv --directory backend run ruff check app tests scripts migrations && uv --directory backend run ruff format --check app tests scripts migrations && uv --directory backend run mypy app",
     "check:fetcher": "uv --directory fetcher run ruff check . && uv --directory fetcher run ruff format --check . && uv --directory fetcher run mypy src",
     "hook:pre-commit": "pnpm check",
-    "hook:pre-push": "pnpm check && pnpm test",
-    "test:infra": "uv --directory backend run python -m unittest discover -s ../infra/tests -v",
-    "check:infra": "uv --directory backend run ruff check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py && uv --directory backend run ruff format --check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py"
+    "hook:pre-push": "pnpm check",
+    "test:infra": "uv --directory backend run pytest ../infra/tests -n 2 --dist worksteal --tb=short -q --durations=20 --durations-min=0.5",
+    "check:infra": "uv --directory backend run ruff check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py ../infra/deploy/inspect_full_market_installation.py ../infra/env/sync_github_environment.py && uv --directory backend run ruff format --check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py ../infra/deploy/inspect_full_market_installation.py ../infra/env/sync_github_environment.py"
   }
 }

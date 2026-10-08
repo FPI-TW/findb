@@ -673,6 +673,10 @@ def test_bundle_allowlists_are_unit_scoped() -> None:
         "infra/deploy/runtime-secrets/render_serve_key.py",
     )
     assert release_manifest.FETCHER_RUNTIME_SECRET_FILES == (
+        "infra/deploy/inspect_full_market_installation.py",
+        "fetcher/configs/full_market.local.v1.json",
+        "fetcher/configs/full_market.staging.v1.json",
+        "fetcher/configs/full_market.production.v1.json",
         "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",

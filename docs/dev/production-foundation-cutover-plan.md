@@ -19,7 +19,7 @@ Workflow存在不代表production target已存在或可部署；目前仍由缺�
 
 - 建立獨立 production AWS account（`ap-southeast-1`）、每 unit 一台 EC2、獨立 ECR repositories、SSM target tags、CloudWatch log group 與 deploy bundle bucket prefix。
 - Instance role 只能讀取 `findb/production/<unit>/`，deploy OIDC role 只能寫入 bundle、呼叫本 unit SSM 與複製 ECR manifest；它不得讀取 Secrets Manager value。promotion role 另需限於自身 `<unit>/production/release-tags/*` metadata prefix 的 `s3:GetObject`／條件式 `s3:PutObject` 與 deploy-bundle KMS encrypt/decrypt，讓 semver tag 可原子綁定 tag object OID、peeled commit與staging accepted key。
-- 建立 production runtime secret catalog values（包含 `runtime/configuration`）及 host bootstrap，確認 catalog 以 `DEPLOYMENT_TARGET=production` 推導 prefix，而不是接受外來 prefix。
+- 建立 production runtime secret catalog values（包含 `runtime/configuration`）及 host bootstrap，確認 catalog 以 `APP_ENVIRONMENT=production` 推導 prefix，而不是接受外來 prefix。
 - foundation 與 live acceptance 完成前不得建立 `PRODUCTION_DEPLOY_ENABLED`；完成授權後才由 operator 設為精確的 `true`。
 
 `runtime/configuration` 的 allowlist 以

@@ -73,7 +73,10 @@ pnpm build:dashboard
 Chromium browser component 與 e2e；需要分開執行時，使用
 `pnpm test:dashboard:unit`、`pnpm test:dashboard:browser` 或
 `pnpm test:dashboard:e2e`。browser component 會驗證 DataTable 的 overflow、sticky header
-與 pinned columns；e2e 會啟動目前 checkout 的本機 Dashboard，檢查公開 Lookup route 的
-SSR hydration 與 canonical URL，且不會重用已在 port 3000 執行的 server。
+與 pinned columns、導入排程分頁鍵盤操作與窄螢幕確認對話框；e2e 會啟動目前 checkout 的
+本機 Dashboard，檢查公開 Lookup route 的 SSR hydration、canonical URL，以及透過正常
+登入驗證的 Operations 分頁與批次控制。E2E 使用 loopback fixture backend，不修改真實
+排程，且不會重用已在 port 3000 執行的 server；fixture 與案例說明見
+[e2e/README.md](e2e/README.md)。
 
 目前後端沒有歷史 ingestion run 趨勢端點，因此 dashboard 只呈現即時 queue/worker health。Raw payload 搜尋結果也受後端 retention policy 限制。

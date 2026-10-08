@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { page } from "vitest/browser"
+import { page, userEvent } from "vitest/browser"
 import { cleanup, render } from "vitest-browser-react"
 
 import "../../styles.css"
@@ -25,7 +25,10 @@ vi.mock("@tanstack/react-start", () => ({
 vi.mock("../../lib/admin.functions", () => mocks)
 vi.mock("../../lib/auth.functions", () => ({ logout: vi.fn() }))
 
-import { IngestionOverviewPanel } from "./operations.overview"
+import {
+  IngestionOverviewPanel,
+  type SchedulerProfile,
+} from "./operations.overview"
 
 const providers = ["finlab", "shioaji", "taifex", "twelve_data"]
 const timestamp = "2026-08-04T02:00:00Z"
@@ -103,6 +106,57 @@ afterEach(async () => {
 })
 
 describe("scheduler confirmation mobile layout", () => {
+  it("supports roving keyboard tabs without mutating scheduler state", async () => {
+    function Overview() {
+      const [profile, setProfile] = useState<SchedulerProfile>("pilot")
+      return (
+        <IngestionOverviewPanel
+          profile={profile}
+          updateProfile={setProfile}
+          freshnessResult={null}
+          schedulersResult={{
+            ok: true,
+            data: {
+              success: true,
+              data: [scheduler("finlab", false), scheduler("finlab", true)],
+            },
+          }}
+          loading={false}
+          pending={false}
+          freshnessError=""
+          schedulersError=""
+          role="owner"
+        />
+      )
+    }
+    const screen = await render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Overview />
+      </QueryClientProvider>
+    )
+    const pilot = screen.getByRole("tab", { name: "Pilot（0 執行中）" })
+    const full = screen.getByRole("tab", { name: "Full market（1 執行中）" })
+    await pilot.click()
+    await userEvent.keyboard("{ArrowRight}")
+    await expect.element(full).toHaveFocus()
+    await expect.element(full).toHaveAttribute("aria-selected", "true")
+    await expect.element(pilot).toHaveAttribute("tabindex", "-1")
+    await expect
+      .element(
+        screen.getByRole("tabpanel", { name: "Full market（1 執行中）" })
+      )
+      .toBeVisible()
+    await userEvent.keyboard("{ArrowRight}")
+    await expect.element(pilot).toHaveFocus()
+    await expect.element(pilot).toHaveAttribute("aria-selected", "true")
+    await userEvent.keyboard("{End}")
+    await expect.element(full).toHaveFocus()
+    await userEvent.keyboard("{Home}")
+    await expect.element(pilot).toHaveFocus()
+    await userEvent.keyboard("{ArrowLeft}")
+    await expect.element(full).toHaveFocus()
+    expect(mocks.updateScheduler).not.toHaveBeenCalled()
+  })
   it.each(["single", "bulk"] as const)(
     "keeps the %s warning, targets, cancel and confirm usable at 360x640",
     async mode => {

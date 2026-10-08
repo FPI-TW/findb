@@ -5,6 +5,42 @@
 只驗證 Backend 可用 `pnpm test:backend`／`make test-backend`，runner 會先確保 DB container 啟動。
 Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `--no-verify`。
 
+`pnpm test:backend` 的非 migration tests 預設使用兩個 pytest-xdist workers 與
+`--dist worksteal`，接著在同一 runner 的獨立序列 session 執行全部 `test_*migration*.py`。
+`uv --directory backend run python scripts/dev.py test-db --workers 0` 可將非 migration tests
+切回序列執行；migration tests 一律序列執行以重用 immutable templates。
+`pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal`，不需要 PostgreSQL。
+直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
+因此測試中的 nested pytest subprocess 不會意外再建立 workers。
+Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
+workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
+
+FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type checks、published contracts
+與非 migration tests；`backend-migrations` 保留 Alembic smoke 與全部 migration tests；
+`infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service。Backend 與 Infra 固定兩個
+workers；migration job 維持序列執行。Full-market schema roundtrip 位於
+`backend/tests/test_full_market_migration.py`，只由 migration job 收集。
+Shutdown transaction 的獨立情境由 pytest parameters 分配給 workers；每個情境使用自己的
+暫存目錄與 Docker state，交易內的操作／assertions 仍在同一 case 依序執行。
+
+三個 jobs 均產生 JUnit、含慢測試清單的 `pytest.log`、pytest `real/user/sys` 計時與
+`job-time.txt`，成功或失敗都以上傳 artifact 保留 14 天。`job_elapsed_seconds` 計算第一個
+step 至報告建立的時間，包含 dependencies、checks／smoke 與 tests；不含 runner／service
+初始化或 artifact upload。測試輸出以 `pipefail` 捕捉，pytest 失敗仍使 reusable workflow
+及 Required CI 失敗。
+
+CI 效能驗收仍需外部實測：同 runner 規格至少三次成功執行，Backend 與 Infra 各自 job
+時間中位數低於 8 分鐘，全部 jobs 的總 runner-time 相較有效基準增加不超過 20%。
+比較時須使用 GitHub job 的完整 started／completed 時間，計入新增 job 的 setup、service
+與 upload 成本，不能只用 pytest 或 artifact 中的 elapsed 值。失敗或缺少 runtime dependencies
+的舊執行不構成有效基準；本機通過不能代替這項 CI benchmark。目前尚待遠端成功執行的證據。
+
+Backend 的跨 application 回歸測試會直接呼叫 `fetcher/.venv/bin/python`，驗證實際 Fetcher
+CLI 與部署 checkpoint 邊界。執行前須先完成 `pnpm setup`，或以
+`uv --directory fetcher sync --frozen --no-dev` 建立獨立 Fetcher runtime；不需 provider extras、
+AWS 或 provider credentials。FinDB CI 的 Backend job 同樣先安裝 Backend 與 Fetcher frozen
+dependencies，uv cache 同時追蹤兩份 `uv.lock`，再執行跨 application 測試。
+
 Backend 預設 `TEST_DATABASE_URL` 為
 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`。
 Fixture 只取此 URL 的 server、credentials 與其他連線選項，透過同 server 的 `postgres`
@@ -56,7 +92,7 @@ runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 
 Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible 已完成
 交易日的 exact pilot instrument coverage（TAIFEX 兩 actual monthly contracts／四 session rows）、同 run lineage
 的 Source 202、raw、completed queue/canonical 與 Serve proof。兩日期觀測不要求歷史 backfill，也不套用
-production 五交易日全市場 activation gate。
+Full market enrollment/admission 與各環境實際 coverage 驗證。
 
 Staging evidence 使用 backend unit-local `published_year` 驗證完整已發布官方年度日曆，輸出
 `target_calendar_evidence` v1 的 UTC 觀測時刻、revision metadata 與最多 16 日的日期／收盤窗口；

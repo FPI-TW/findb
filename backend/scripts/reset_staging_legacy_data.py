@@ -13,6 +13,9 @@ The reset deliberately preserves only schema/configuration/authentication data:
 * ``public.admin_audit_event``
 * ``public.calendar_market``
 * ``public.credential_usage_rollup``
+* ``public.full_market_environment``
+* ``public.full_market_enrollment``
+* ``public.full_market_dataset_state``
 
 Every other current application data table is cleared, including canonical,
 raw, workflow, audit, alert, calendar, roll-rule, and worker-heartbeat data.
@@ -62,6 +65,10 @@ PROTECTED_TABLES = (
     "public.calendar_market",
     "public.credential_usage_rollup",
     "public.dataset_registry",
+    # Installed authority and permanent first dates survive a mutable-data reset.
+    "public.full_market_environment",
+    "public.full_market_enrollment",
+    "public.full_market_dataset_state",
     "public.scheduler_control",
     # Normalized scheduler-to-dataset authority.  This is configuration, not
     # mutable delivery state, and must remain aligned with scheduler_control.
@@ -83,6 +90,9 @@ TARGET_TABLES = (
     "public.daily_delivery_member",
     "public.daily_delivery_part",
     "public.daily_delivery_plan",
+    # Associations reference mutable baseline/calendar rows; clear the full FK graph.
+    "public.full_market_admission",
+    "public.full_market_admission_feed",
     "public.universe_member",
     "public.universe_release",
     "public.futures_contract_eod",

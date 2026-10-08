@@ -101,3 +101,7 @@ export function rawPayloadAuditFromSearch(
     pageSize: search.ps,
   }
 }
+
+export const overviewSearchSchema = z.object({
+  profile: z.enum(["pilot", "full_market"]).catch("pilot").default("pilot"),
+})

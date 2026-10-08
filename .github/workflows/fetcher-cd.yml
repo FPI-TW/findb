@@ -209,7 +209,9 @@ jobs:
           set -euo pipefail
           [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
           [[ "$TWELVE_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]]; [[ "$FINLAB_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; [[ "$SHIOAJI_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/shioaji@sha256:[0-9a-f]{64}$ ]]
-          python3 infra/deploy/release_manifest.py generate --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "shioaji=$SHIOAJI_IMAGE" --output "$RUNNER_TEMP/manifest.json"
+          profile=bounded
+          [ "${{ vars.FULL_MARKET_ENABLED || 'false' }}" != true ] || profile=full-market
+          python3 infra/deploy/release_manifest.py generate --runtime-profile "$profile" --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "shioaji=$SHIOAJI_IMAGE" --output "$RUNNER_TEMP/manifest.json"
           python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
           sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="fetcher/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
           aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null

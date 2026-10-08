@@ -46,6 +46,10 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
 
     steps:
+      - name: Record job start
+        working-directory: ${{ runner.temp }}
+        run: echo "FINDB_CI_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
       - name: Verify exact requested revision
@@ -62,17 +66,21 @@ jobs:
         with:
           version: "0.9.9"
           enable-cache: true
-          cache-dependency-glob: "backend/uv.lock"
+          cache-dependency-glob: |
+            backend/uv.lock
+            fetcher/uv.lock
 
       - name: Install dependencies
         run: uv sync --frozen
+
+      - name: Install Fetcher runtime dependencies
+        working-directory: fetcher
+        run: uv sync --frozen --no-dev
 
       - name: Lint and format check
         run: |
           uv run ruff check app tests scripts migrations
           uv run ruff format --check app tests scripts migrations
-          uv run ruff check ../infra/tests/test_full_market_deployment.py
-          uv run ruff format --check ../infra/tests/test_full_market_deployment.py
 
       - name: Type check
         run: uv run mypy app
@@ -82,11 +90,34 @@ jobs:
           uv run python scripts/export_ingress_contracts.py --check
           uv run python scripts/export_archive_contracts.py --check
 
-      - name: Test full-market deployment boundaries
-        run: uv run python -m unittest discover -s ../infra/tests -v
-
       - name: Run tests
-        run: uv run pytest --tb=short -q --durations=20 --durations-min=0.5 --ignore-glob='tests/test_*migration*.py'
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/findb-ci-backend"
+          /usr/bin/time -p -o "$RUNNER_TEMP/findb-ci-backend/pytest-time.txt" \
+            uv run pytest -n 2 --dist worksteal --tb=short -q \
+            --durations=20 --durations-min=0.5 \
+            --junitxml="$RUNNER_TEMP/findb-ci-backend/junit.xml" \
+            --ignore-glob='tests/test_*migration*.py' \
+            2>&1 | tee "$RUNNER_TEMP/findb-ci-backend/pytest.log"
+
+      - name: Record total job timing
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/findb-ci-backend"
+          elapsed=$(( $(date +%s) - FINDB_CI_JOB_STARTED_AT ))
+          echo "job_elapsed_seconds=$elapsed" | tee "$RUNNER_TEMP/findb-ci-backend/job-time.txt"
+          echo "backend elapsed: ${elapsed}s (first step through report creation)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findb-ci-backend-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/findb-ci-backend/
+          retention-days: 14
 
   backend-migrations:
     runs-on: ubuntu-latest
@@ -116,6 +147,10 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://findb:findb@localhost:5435/findb_test
 
     steps:
+      - name: Record job start
+        working-directory: ${{ runner.temp }}
+        run: echo "FINDB_CI_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
       - name: Verify exact requested revision
@@ -143,7 +178,99 @@ jobs:
           uv run alembic current
 
       - name: Run migration tests
-        run: uv run pytest --tb=short -q tests/test_*migration*.py --durations=20 --durations-min=0.5
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/findb-ci-backend-migrations"
+          /usr/bin/time -p -o "$RUNNER_TEMP/findb-ci-backend-migrations/pytest-time.txt" \
+            uv run pytest --tb=short -q tests/test_*migration*.py \
+            --durations=20 --durations-min=0.5 \
+            --junitxml="$RUNNER_TEMP/findb-ci-backend-migrations/junit.xml" \
+            2>&1 | tee "$RUNNER_TEMP/findb-ci-backend-migrations/pytest.log"
+
+      - name: Record total job timing
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/findb-ci-backend-migrations"
+          elapsed=$(( $(date +%s) - FINDB_CI_JOB_STARTED_AT ))
+          echo "job_elapsed_seconds=$elapsed" | tee "$RUNNER_TEMP/findb-ci-backend-migrations/job-time.txt"
+          echo "backend-migrations elapsed: ${elapsed}s (first step through report creation)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findb-ci-backend-migrations-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/findb-ci-backend-migrations/
+          retention-days: 14
+
+  infra-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Record job start
+        working-directory: ${{ runner.temp }}
+        run: echo "FINDB_CI_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ inputs.revision || github.sha }}', persist-credentials: false}
+      - name: Verify exact requested revision
+        env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}'}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.9.9"
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint and format check
+        run: |
+          uv run ruff check ../infra/tests
+          uv run ruff format --check ../infra/tests
+
+      - name: Run infra tests
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/findb-ci-infra-tests"
+          /usr/bin/time -p -o "$RUNNER_TEMP/findb-ci-infra-tests/pytest-time.txt" \
+            uv run pytest ../infra/tests -n 2 --dist worksteal --tb=short -q \
+            --durations=20 --durations-min=0.5 \
+            --junitxml="$RUNNER_TEMP/findb-ci-infra-tests/junit.xml" \
+            2>&1 | tee "$RUNNER_TEMP/findb-ci-infra-tests/pytest.log"
+
+      - name: Record total job timing
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/findb-ci-infra-tests"
+          elapsed=$(( $(date +%s) - FINDB_CI_JOB_STARTED_AT ))
+          echo "job_elapsed_seconds=$elapsed" | tee "$RUNNER_TEMP/findb-ci-infra-tests/job-time.txt"
+          echo "infra-tests elapsed: ${elapsed}s (first step through report creation)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findb-ci-infra-tests-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/findb-ci-infra-tests/
+          retention-days: 14
 
   dashboard:
     runs-on: ubuntu-latest

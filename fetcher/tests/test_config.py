@@ -77,3 +77,24 @@ def test_source_api_url_accepts_and_normalizes_https_origins(
     _set_required(monkeypatch, url)
 
     assert FetcherConfig.from_env().source_api_url == expected
+
+
+@pytest.mark.parametrize("environment", ["local", "staging", "production"])
+def test_app_environment_rejects_conflicting_legacy_metadata(monkeypatch, environment):
+    from findb_fetcher.config import app_environment
+
+    _set_required(monkeypatch, "https://source.example.test")
+    monkeypatch.setenv("APP_ENVIRONMENT", environment)
+    monkeypatch.delenv("DEPLOYMENT_TARGET", raising=False)
+    assert app_environment() == environment
+    FetcherConfig.from_env()
+    monkeypatch.setenv("DEPLOYMENT_TARGET", environment)
+    FetcherConfig.from_env()
+    monkeypatch.setenv(
+        "DEPLOYMENT_TARGET", "production" if environment != "production" else "staging"
+    )
+    with pytest.raises(ConfigError, match="conflicts"):
+        FetcherConfig.from_env()
+    monkeypatch.delenv("APP_ENVIRONMENT")
+    with pytest.raises(ConfigError, match="conflicts"):
+        app_environment()

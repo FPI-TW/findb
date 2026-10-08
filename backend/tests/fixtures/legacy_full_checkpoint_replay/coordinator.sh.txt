@@ -1,0 +1,26 @@
+# Frozen accepted coordinator excerpt from 9f0779326f80f9f5f319a6cac9852203cefa6a4e.
+provider_count=3
+if [ "$FETCHER_RUNTIME_PROFILE" = full-market ]; then
+  full_market_state=/var/lib/findb-full-market
+  for provider in twelve-data finlab shioaji taifex; do
+    case "$provider" in
+      twelve-data) identity=twelve_data; image="$TWELVE_IMAGE_REF"; stable=findb-fetcher-scheduler ;;
+      finlab) identity=finlab; image="$FINLAB_IMAGE_REF"; stable=findb-fetcher-finlab-scheduler ;;
+      shioaji) identity=shioaji; image="$SHIOAJI_IMAGE_REF"; stable=findb-fetcher-shioaji-scheduler ;;
+      taifex) identity=taifex; image="$TWELVE_IMAGE_REF"; stable=findb-fetcher-taifex-scheduler ;;
+    esac
+    cache_dir=-
+    case "$provider" in
+      finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
+      shioaji) cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
+    esac
+    register_provider "$stable" "${stable}-previous"
+    run_runtime --consumer "$provider" --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+      "$provider_helper" "$provider" "$image" \
+      "$full_market_state" "$full_market_state/state.sqlite3" \
+      "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
+      findb-fetch-full-market --config /app/configs/full_market.production.v1.json \
+      --provider "$identity" --readiness-file "$full_market_state/readiness/$identity.json"
+  done
+  provider_count=4
+fi

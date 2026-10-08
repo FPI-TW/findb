@@ -41,7 +41,7 @@ def test_repository_schedule_is_strict_and_bounded() -> None:
 def test_production_schedule_is_target_bound_and_uses_reviewed_universes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DEPLOYMENT_TARGET", "production")
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
     manifest = load_schedule_manifest(V3_CONFIG_PATH)
 
     assert manifest.schedule_version == 3
@@ -66,7 +66,7 @@ def test_production_schedule_is_target_bound_and_uses_reviewed_universes(
 
 
 def test_staging_target_rejects_production_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DEPLOYMENT_TARGET", "staging")
+    monkeypatch.setenv("APP_ENVIRONMENT", "staging")
     with pytest.raises(ScheduleError, match="does not match"):
         load_schedule_manifest(V3_CONFIG_PATH)
 

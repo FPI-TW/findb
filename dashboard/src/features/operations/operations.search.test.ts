@@ -5,12 +5,25 @@ import {
   deliveriesAuditFromSearch,
   deliveriesSearchSchema,
   operationsAuditFromSearch,
+  overviewSearchSchema,
   qualitySearchSchema,
   rawPayloadAuditFromSearch,
   rawPayloadsSearchSchema,
 } from "./operations.search"
 
 describe("operations route search", () => {
+  it.each([undefined, "unknown", "FULL_MARKET", null, ["full_market"]])(
+    "defaults invalid overview profile %j to Pilot",
+    profile => {
+      expect(overviewSearchSchema.parse({ profile })).toEqual({
+        profile: "pilot",
+      })
+    }
+  )
+
+  it.each(["pilot", "full_market"])("accepts the %s deep link", profile => {
+    expect(overviewSearchSchema.parse({ profile, p: 9 })).toEqual({ profile })
+  })
   it("uses each route's existing page-size default", () => {
     expect(deliveriesSearchSchema.parse({})).toEqual({
       p: 1,

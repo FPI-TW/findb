@@ -280,7 +280,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     )
     await provision_registry(database_url, deployment_target="production")
     await test_session.refresh(dataset)
-    assert dataset.is_active is False and dataset.config["full_market"]["required"] is True
+    assert dataset.is_active is True and dataset.config["full_market"]["required"] is True
 
 
 @pytest.mark.parametrize("schema", ["market_eod", "market_minute"])
@@ -383,3 +383,16 @@ async def test_actual_market_pipeline_serve_provenance(
         )
         rejected = exporter._serve_probe(schema, sample)
         assert rejected["success"] is False and rejected["run_id"] is None
+
+
+def test_provision_preserves_first_start_and_registry_migration_marker():
+    config = deepcopy(
+        next(item["config"] for item in DATASETS if item["dataset_key"] == "tw_futures_eod")
+    )
+    config["full_market"].update(
+        activation_date="2026-10-01", _registry_active_before_2442dc84beae=False
+    )
+    staged = provision_taifex_pilot_config(config, deployment_target="staging")
+    restored = provision_taifex_pilot_config(staged, deployment_target="production")
+    assert restored == config
+    assert "readiness_approved" not in restored["full_market"]

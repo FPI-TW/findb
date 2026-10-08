@@ -305,11 +305,9 @@ def provision_taifex_pilot_config(
     if marker == TAIFEX_PILOT_MARKER:
         if working.get("delivery_expectation") != stage_expectation:
             raise RegistryProvisioningError("TAIFEX staging monitoring policy changed")
-        if governance != {
+        if {key: governance.get(key) for key in ("enabled", "required", "calendar_market")} != {
             "enabled": False,
             "required": False,
-            "readiness_approved": False,
-            "activation_date": None,
             "calendar_market": "TAIFEX",
         }:
             raise RegistryProvisioningError(
@@ -325,11 +323,9 @@ def provision_taifex_pilot_config(
             raise RegistryProvisioningError(
                 "TAIFEX staging cannot overwrite operator monitoring policy"
             )
-        if governance != {
+        if {key: governance.get(key) for key in ("enabled", "required", "calendar_market")} != {
             "enabled": False,
             "required": True,
-            "readiness_approved": False,
-            "activation_date": None,
             "calendar_market": "TAIFEX",
         }:
             raise RegistryProvisioningError("TAIFEX staging cannot overwrite operator governance")
@@ -394,15 +390,12 @@ async def provision_registry(
                         ),
                     },
                 )
-            previous = (
-                next(row["config"] for row in rows if row["dataset_key"] == "tw_futures_eod") or {}
-            )
-            if target == "staging" or previous.get("staging_pilot") == TAIFEX_PILOT_MARKER:
+            if target == "staging":
                 await connection.execute(
                     text(
                         "UPDATE dataset_registry SET is_active=:active, updated_at=now() WHERE dataset_key='tw_futures_eod'"
                     ),
-                    {"active": target == "staging"},
+                    {"active": True},
                 )
             if target == "staging":
                 await connection.execute(

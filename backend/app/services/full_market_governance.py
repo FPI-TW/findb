@@ -77,37 +77,16 @@ def full_market_configuration(
     governance = config.get("full_market")
     if not isinstance(governance, dict):
         return False, False, [*errors, "full_market_governance_invalid"], blockers
-    enabled = governance.get("enabled") is True
-    if type(governance.get("enabled")) is not bool:
-        errors.append("full_market_enabled_invalid")
-    if type(governance.get("readiness_approved")) is not bool:
-        errors.append("full_market_readiness_invalid")
-    mode = governance.get("mode")
-    if mode is not None and (
-        not isinstance(mode, str) or mode not in {"off", "acceptance", "active"}
-    ):
-        errors.append("full_market_mode_invalid")
+    # Registry scope remains mandatory; enrollment/admission supplies runtime authority.
     activation = governance.get("activation_date")
-    activated_before = False
+    previous = False
     if activation is not None:
         try:
             if not isinstance(activation, str):
-                raise ValueError("Invalid date")
-            date.fromisoformat(activation)
-            activated_before = True
+                raise ValueError("activation date must be a date string")
+            previous = date.fromisoformat(activation) is not None
         except ValueError:
             errors.append("full_market_activation_date_invalid")
-    prerequisites: list[str] = []
     if not dataset.is_active:
-        prerequisites.append("dataset_inactive")
-    if not governance.get("readiness_approved"):
-        prerequisites.append("readiness_not_approved")
-    if enabled:
-        errors.extend(prerequisites)
-        if not activated_before:
-            errors.append("activation_date_missing")
-        if not isinstance(mode, str) or mode not in {"acceptance", "active"}:
-            errors.append("full_market_mode_invalid")
-    else:
-        blockers.extend(["activation_disabled", *prerequisites])
-    return enabled, activated_before, errors, blockers
+        errors.append("dataset_inactive")
+    return False, previous, errors, blockers

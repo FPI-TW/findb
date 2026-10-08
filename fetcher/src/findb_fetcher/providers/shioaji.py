@@ -131,6 +131,9 @@ class IsolatedShioajiGateway:
         )
 
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
+        from findb_fetcher.account_governor import provider_permit
+
+        permit = provider_permit("shioaji")
         _validate_symbol(symbol)
         parent, child = multiprocessing.Pipe(duplex=False)
         proc = multiprocessing.Process(
@@ -156,6 +159,8 @@ class IsolatedShioajiGateway:
                     proc.join(2)
                 raise ShioajiSdkError("shioaji acquisition timed out")
             raw = parent.recv_bytes(MAX_ISOLATED_IPC_BYTES)
+            if permit:
+                permit.observe(len(raw))
         except (EOFError, OSError, ValueError):
             # A child that cannot produce one bounded reviewed message is an
             # invalid IPC payload, not a retryable provider acquisition.
@@ -179,6 +184,14 @@ class IsolatedShioajiGateway:
                 code=str(message["code"]),
                 reason=message.get("reason"),
             )
+        if permit:
+            if (
+                message["before"] is None
+                or message["after"] is None
+                or message["after"] < message["before"]
+            ):
+                raise ShioajiSdkError("SDK account usage measurement unavailable")
+            permit.observe(max(len(raw), message["after"] - message["before"]))
         kbars = message["kbars"]
         return ShioajiKbarsSnapshot(
             {key: tuple(value) for key, value in kbars.items()},

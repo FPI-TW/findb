@@ -89,6 +89,10 @@ FINDB_RUNTIME_SECRET_FILES = (
     "infra/deploy/runtime-secrets/render_serve_key.py",
 )
 FETCHER_RUNTIME_SECRET_FILES = (
+    "infra/deploy/inspect_full_market_installation.py",
+    "fetcher/configs/full_market.local.v1.json",
+    "fetcher/configs/full_market.staging.v1.json",
+    "fetcher/configs/full_market.production.v1.json",
     "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
     "infra/deploy/runtime-secrets/fetcher.json",
     "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
@@ -514,8 +518,8 @@ def validate_runtime_profile(profile: object, *, unit: str, target: str) -> str:
     """Bind expanded provider scope to an explicit production Fetcher release."""
     if not isinstance(profile, str) or profile not in {"bounded", "full-market"}:
         raise ManifestError("runtime_profile invalid")
-    if profile == "full-market" and (unit != "fetcher" or target != "production"):
-        raise ManifestError("full-market profile is production Fetcher only")
+    if profile == "full-market" and unit != "fetcher":
+        raise ManifestError("full-market profile requires Fetcher unit")
     return profile
 
 

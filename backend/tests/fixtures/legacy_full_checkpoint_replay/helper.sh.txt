@@ -1,0 +1,41 @@
+# Frozen accepted bootstrap excerpt from 9f0779326f80f9f5f319a6cac9852203cefa6a4e.
+if { [ "$provider" = shioaji ] || [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! sudo test -e "$state_path"; then
+  versioned_cutover=false
+  if [ "${DEPLOYMENT_TARGET:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ]; then
+    if ! docker container inspect "$stable" >/dev/null 2>&1; then
+      versioned_cutover=true
+    else
+      stable_mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$stable")" || exit 1
+      if ! grep -Fxq "$state_dir" <<< "$stable_mounts"; then
+        versioned_cutover=true
+      fi
+    fi
+  fi
+  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && docker container inspect "$stable" >/dev/null 2>&1; then
+    echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
+    exit 1
+  fi
+  state_bootstrap_name="${preflight_name}-state"
+  if docker container inspect "$state_bootstrap_name" >/dev/null 2>&1; then
+    docker rm -f "$state_bootstrap_name"
+  fi
+  # A fresh host has no SQLite file yet, while --require-stopped is
+  # intentionally read-only and requires one. Create only the reviewed schema
+  # before the stopped-state probe; this mode never constructs network clients.
+  docker run --rm \
+    --name "$state_bootstrap_name" \
+    --user 10001:10001 \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --mount "type=bind,src=$state_dir,dst=$state_dir" \
+    "${cache_mount[@]}" \
+    ${readiness_mount[@]+"${readiness_mount[@]}"} \
+    "$image" "$@" --state-path "$state_path" --initialize-state
+  if [ ! -f "$state_path" ] \
+    || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; then
+    echo "release_fetcher_provider=failed reason=shioaji_state_bootstrap" >&2
+    exit 1
+  fi
+fi

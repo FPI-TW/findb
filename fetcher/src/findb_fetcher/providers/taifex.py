@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import re
+import time
 from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -147,10 +148,18 @@ def fetch_report(
     product: str = "TX",
     max_response_bytes: int = 16 * 1024 * 1024,
     on_observed_bytes: Callable[[int], None] | None = None,
+    on_declared_bytes: Callable[[int], None] | None = None,
+    on_http_rate_limited: Callable[[], None] | None = None,
+    on_bounded_response: Callable[[int, int], None] | None = None,
 ) -> bytes:
     if type(max_response_bytes) is not int or max_response_bytes < 1:
         raise ValueError("TAIFEX response byte bound invalid")
-    bound = min(max_response_bytes, 16 * 1024 * 1024)
+    from findb_fetcher.account_governor import provider_permit
+
+    permit = provider_permit("taifex")
+    bound = min(
+        max_response_bytes, 16 * 1024 * 1024, permit.bound if permit else max_response_bytes
+    )
     method, url = ("GET", TAIFEX_URL) if latest else ("POST", TAIFEX_HISTORY_URL)
     data = (
         None
@@ -164,11 +173,39 @@ def fetch_report(
         }
     )
     with client.stream(method, url, data=data, headers={"Accept-Encoding": "identity"}) as response:
-        if response.status_code != 200:
-            raise UniverseSnapshotError("TAIFEX report request failed")
+        if response.status_code == 429:
+            if permit:
+                permit.state.rate_limited(
+                    account=permit.account,
+                    window=permit.window,
+                    until=time.time() + 60,
+                )
+            if on_http_rate_limited is not None:
+                on_http_rate_limited()
         try:
-            return read_identity_response(response, bound=bound)
+            raw = read_identity_response(response, bound=bound)
+            if permit:
+                permit.observe(len(raw))
+            if on_observed_bytes is not None:
+                on_observed_bytes(len(raw))
+            if response.status_code != 200:
+                raise UniverseSnapshotError("TAIFEX report request failed")
+            return raw
         except BoundedResponseError as exc:
-            if on_observed_bytes is not None and exc.observed_bytes:
-                on_observed_bytes(exc.observed_bytes)
+            if permit:
+                permit.observe(exc.observed_bytes, declared=exc.declared_bytes)
+            if on_bounded_response is not None:
+                on_bounded_response(exc.observed_bytes, exc.declared_bytes)
+            else:
+                if on_declared_bytes is not None and exc.declared_bytes:
+                    on_declared_bytes(exc.declared_bytes)
+                if on_observed_bytes is not None and exc.observed_bytes:
+                    on_observed_bytes(exc.observed_bytes)
             raise UniverseSnapshotError(f"TAIFEX report {exc}") from exc
+        except httpx.HTTPError as exc:
+            observed = getattr(exc, "observed_bytes", 0)
+            if permit:
+                permit.observe(observed)
+            if on_observed_bytes is not None and observed:
+                on_observed_bytes(observed)
+            raise

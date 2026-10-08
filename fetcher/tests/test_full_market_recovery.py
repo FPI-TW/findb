@@ -64,6 +64,10 @@ class _Governance:
         self.created: list[dict[str, Any]] = []
         self.outcomes: list[dict[str, Any]] = []
 
+    def request(self, method: str, path: str) -> dict[str, Any]:
+        assert method == "GET" and path == "full-market/authorization"
+        return {"acquisition_allowed": True, "admitted_dataset_keys": list(self.current)}
+
     def universes(self, dataset: str, provider: str, as_of: str | None = None) -> dict[str, Any]:
         return {
             "activation": {"enabled": True, "activation_date": str(self.activation)},
@@ -236,6 +240,7 @@ def test_latest_manual_gap_does_not_starve_older_shared_us_hk_work(
     hk = _release("hk", "hk_equity_eod", [{**_member(), "symbol": "00700", "member_key": "00700"}])
     runtime, source = _cycle_runtime(tmp_path, [us, hk], [older, today])
     runtime.feeds.append({**runtime.feeds[0], "dataset_key": "hk_equity_eod", "market": "HK"})
+    runtime.installed_feeds = list(runtime.feeds)
     latest = _frozen_plan("us_equity_eod", today, us)
     # A manual-only latest plan near its deadline needs zero new provider calls.
     latest["deadline_at"] = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()
@@ -398,3 +403,41 @@ def test_persistent_gateway_transport_failure_closes_boundary(failure: str) -> N
     assert gateway.parent.closed
     assert not gateway.process.is_alive()
     assert not gateway.is_alive()
+
+
+@pytest.mark.parametrize("blocker", ["stopped", "flag_off", "expired", "calendar_incomplete"])
+def test_prepared_delivery_drains_without_new_acquisition_authority(tmp_path, monkeypatch, blocker):
+    from findb_fetcher.full_market_runtime import ReadinessBlockedError
+
+    day = datetime.now(timezone.utc).date()
+    members = [{**_member(), "symbol": f"S{i}", "member_key": f"S{i}"} for i in range(2)]
+    release = _release("frozen", "us_equity_eod", members)
+    runtime, source = _cycle_runtime(tmp_path, [release], [day])
+    plan = _frozen_plan("us_equity_eod", day, release)
+    source.plans[("us_equity_eod", str(day))] = plan
+    runtime.state.record_plan(plan, "twelve_data")
+    key = plan["parts"][0]["work_item_id"] + ":S0"
+    payload = canonical_bytes([{"symbol": "S0"}])
+    runtime.state.prepare(key, payload)
+    runtime.can_acquire = lambda: False
+    runtime._acquire = lambda *args: pytest.fail("new provider acquisition while ineligible")
+    source.request = lambda *args: {"acquisition_allowed": False, "admitted_dataset_keys": []}
+    runtime.calendar.get_year = lambda *args: pytest.fail(
+        "new plan/calendar discovery while ineligible"
+    )
+    if blocker == "flag_off":
+        monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
+    if blocker == "expired":
+
+        def expired():
+            raise ReadinessBlockedError("expired readiness")
+
+        runtime._ensure_proof = expired
+        with pytest.raises(ReadinessBlockedError, match="expired"):
+            runtime.cycle()
+    else:
+        runtime.cycle()
+    assert runtime.state.prepared(key) == payload
+    assert plan["summary"]["data"] == 1 and plan["summary"]["missing"] == 1
+    assert source.created == []
+    runtime.http.close()

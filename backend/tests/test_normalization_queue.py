@@ -74,6 +74,7 @@ def test_worker_internal_value_and_type_errors_use_delayed_retry(failure):
 @pytest.mark.parametrize(
     ("run_id", "delivery_id"),
     [("invalid", str(uuid7())), (str(uuid7()), None)],
+    ids=("invalid-run-id", "missing-delivery-id"),
 )
 def test_worker_rejects_invalid_uuid_without_executing(run_id, delivery_id):
     with (

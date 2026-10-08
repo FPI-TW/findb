@@ -110,6 +110,11 @@ async def _verify_required_objects(conn) -> None:
         "public.daily_delivery_plan",
         "public.daily_delivery_part",
         "public.daily_delivery_member",
+        "public.full_market_environment",
+        "public.full_market_enrollment",
+        "public.full_market_admission",
+        "public.full_market_admission_feed",
+        "public.full_market_dataset_state",
     )
     for relation in required_objects:
         exists = await conn.scalar(

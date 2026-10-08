@@ -43,11 +43,19 @@ class FullMarketState:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS full_quota (account TEXT, window TEXT, requests INTEGER NOT NULL, bytes INTEGER NOT NULL, blocked_until REAL NOT NULL DEFAULT 0, PRIMARY KEY(account,window));
                 CREATE TABLE IF NOT EXISTS full_pacing (account TEXT PRIMARY KEY, next_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_capacity_violation (account TEXT PRIMARY KEY, violation_id TEXT NOT NULL, observed_bytes INTEGER NOT NULL, allocation_sha256 TEXT NOT NULL, recorded_at REAL NOT NULL, received_bytes INTEGER NOT NULL DEFAULT 0, declared_bytes INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS full_capacity_repair (violation_id TEXT PRIMARY KEY, account TEXT NOT NULL, observed_bytes INTEGER NOT NULL, previous_allocation_sha256 TEXT NOT NULL, corrected_allocation_sha256 TEXT NOT NULL, declaration_sha256 TEXT NOT NULL, repaired_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_work (key TEXT PRIMARY KEY, provider TEXT NOT NULL, plan_id TEXT NOT NULL, member_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0, body BLOB, body_sha256 TEXT, receipt TEXT, reason TEXT, next_at REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_plan (plan_id TEXT PRIMARY KEY, provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, body BLOB NOT NULL, complete INTEGER NOT NULL DEFAULT 0, late INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(full_capacity_violation)")}
+            for column in ("received_bytes", "declared_bytes"):
+                if column not in columns:
+                    db.execute(
+                        f"ALTER TABLE full_capacity_violation ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                    )
             # Promote cooldowns written by older runtimes out of dated quota rows.
             db.execute(
                 "INSERT INTO full_pacing(account,next_at) SELECT account,MAX(blocked_until) FROM full_quota WHERE blocked_until>0 GROUP BY account ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)"
@@ -90,6 +98,7 @@ class FullMarketState:
             raise QuotaBlockedError("account limits are unknown or invalid")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._assert_capacity(db, account)
             db.execute(
                 "INSERT OR IGNORE INTO full_quota(account,window,requests,bytes) VALUES(?,?,0,0)",
                 (account, window),
@@ -110,6 +119,20 @@ class FullMarketState:
             )
             return before, before + requests
 
+    def usage_floor(self, *, account: str, window: str, requests: int, byte_count: int) -> None:
+        """Retain verified pre-install usage without resetting already recorded debt."""
+        if (
+            type(requests) is not int
+            or type(byte_count) is not int
+            or min(requests, byte_count) < 0
+        ):
+            raise QuotaBlockedError("verified prior usage invalid")
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO full_quota(account,window,requests,bytes) VALUES(?,?,?,?) ON CONFLICT(account,window) DO UPDATE SET requests=MAX(requests,excluded.requests),bytes=MAX(bytes,excluded.bytes)",
+                (account, window, requests, byte_count),
+            )
+
     def reserve_acquisition(
         self,
         *,
@@ -120,6 +143,9 @@ class FullMarketState:
         request_limit: int,
         byte_limit: int,
         minute_limit: int,
+        allocation: str | None = None,
+        allocation_request_limit: int = 0,
+        allocation_byte_limit: int = 0,
     ) -> tuple[float, int, int, str]:
         """Atomically take an account pacing permit and daily/minute quota.
 
@@ -139,6 +165,7 @@ class FullMarketState:
         rejected = False
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._assert_capacity(db, account)
             # BEGIN IMMEDIATE may wait for another process. Sample the grant clock
             # only after owning the lock, for both pacing and quota boundaries.
             now = self.clock()
@@ -169,6 +196,25 @@ class FullMarketState:
                 or day["bytes"] + byte_count > byte_limit
             ):
                 raise QuotaBlockedError("durable account quota is exhausted")
+            if allocation is not None:
+                allocation_account = account + ":allocation:" + allocation
+                db.execute(
+                    "INSERT OR IGNORE INTO full_quota(account,window,requests,bytes) VALUES(?,?,0,0)",
+                    (allocation_account, daily),
+                )
+                allocated = db.execute(
+                    "SELECT requests,bytes FROM full_quota WHERE account=? AND window=?",
+                    (allocation_account, daily),
+                ).fetchone()
+                if (
+                    allocated["requests"] + requests > allocation_request_limit
+                    or allocated["bytes"] + byte_count > allocation_byte_limit
+                ):
+                    raise QuotaBlockedError("installed consumer allocation is exhausted")
+                db.execute(
+                    "UPDATE full_quota SET requests=requests+?,bytes=bytes+? WHERE account=? AND window=?",
+                    (requests, byte_count, allocation_account, daily),
+                )
             before = day["requests"]
             db.execute(
                 "UPDATE full_quota SET requests=requests+?,bytes=bytes+? WHERE account=? AND window=?",
@@ -210,6 +256,97 @@ class FullMarketState:
                 "UPDATE full_quota SET bytes=bytes+? WHERE account=? AND window=?",
                 (byte_count, account, window),
             )
+
+    @staticmethod
+    def _assert_capacity(db: Any, account: str) -> None:
+        if db.execute(
+            "SELECT 1 FROM full_capacity_violation WHERE account=?", (account,)
+        ).fetchone():
+            raise QuotaBlockedError(
+                "persistent account capacity violation; trusted correction required"
+            )
+
+    def assert_capacity(self, account: str) -> None:
+        with self.connection() as db:
+            self._assert_capacity(db, account)
+
+    def observe_capacity(
+        self,
+        *,
+        account: str,
+        window: str,
+        bound: int,
+        observed: int,
+        allocation_sha256: str,
+        allocation: str | None = None,
+        declared: int = 0,
+    ) -> None:
+        """Commit received-byte debt and account-wide blocking in one transaction."""
+        import secrets
+
+        if type(observed) is not int or observed < 0 or type(declared) is not int or declared < 0:
+            raise QuotaBlockedError("observed account bytes are invalid")
+        if max(observed, declared) <= bound:
+            return
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for identity in (
+                [account, account + ":allocation:" + allocation] if allocation else [account]
+            ):
+                db.execute(
+                    "UPDATE full_quota SET bytes=bytes+? WHERE account=? AND window=?",
+                    (max(0, observed - bound), identity, window),
+                )
+            db.execute(
+                "INSERT INTO full_capacity_violation VALUES(?,?,?,?,?,?,?) ON CONFLICT(account) DO UPDATE SET observed_bytes=MAX(observed_bytes,excluded.observed_bytes),received_bytes=MAX(received_bytes,excluded.received_bytes),declared_bytes=MAX(declared_bytes,excluded.declared_bytes),violation_id=excluded.violation_id,recorded_at=excluded.recorded_at",
+                (
+                    account,
+                    secrets.token_hex(16),
+                    max(observed, declared),
+                    allocation_sha256,
+                    self.clock(),
+                    observed,
+                    declared,
+                ),
+            )
+
+    def repair_capacity(
+        self,
+        *,
+        account: str,
+        violation_id: str,
+        corrected_bound: int,
+        allocation_sha256: str,
+        declaration_sha256: str,
+    ) -> None:
+        """Trusted command CAS; daily usage and pacing remain untouched."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM full_capacity_violation WHERE account=?", (account,)
+            ).fetchone()
+            if row is None or row["violation_id"] != violation_id:
+                raise QuotaBlockedError("capacity violation changed; inspect current violation")
+            if (
+                corrected_bound < row["observed_bytes"]
+                or allocation_sha256 == row["allocation_sha256"]
+            ):
+                raise QuotaBlockedError(
+                    "corrected installed allocation does not cover observed capacity"
+                )
+            db.execute(
+                "INSERT INTO full_capacity_repair VALUES(?,?,?,?,?,?,?)",
+                (
+                    violation_id,
+                    account,
+                    row["observed_bytes"],
+                    row["allocation_sha256"],
+                    allocation_sha256,
+                    declaration_sha256,
+                    self.clock(),
+                ),
+            )
+            db.execute("DELETE FROM full_capacity_violation WHERE account=?", (account,))
 
     def rate_limited(self, *, account: str, window: str, until: float) -> None:
         with self.connection() as db:

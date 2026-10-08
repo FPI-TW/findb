@@ -22,6 +22,10 @@ infra/env/
 ```
 
 `remote.env.example` is committed and documents the deployment contract.
+All four unit/environment sources publish `FULL_MARKET_ENABLED` as a non-secret variable.
+Only the exact values `true` and `false` are accepted; an omitted value defaults to `false`.
+Backend and Fetcher must use the same value in each environment. Publishing this flag
+selects the deployment profile and never starts a scheduler.
 `.env.remote` contains real values, must remain ignored with mode `0600`, and
 must never be copied to EC2 or committed.
 
@@ -122,12 +126,23 @@ and all three provider Source credentials must be pairwise distinct. Removing a
 local value does not delete an already-published GitHub Environment value:
 delete retired remote values explicitly before redeploying.
 
-Production full-market is selected through the reviewed workflow `runtime_profile`
-input, never by provider secrets or a GitHub application variable. The default
-is `bounded`; staging rejects `full-market`. The bundle manifest and acceptance
-record bind the selection, and replay must use the same profile (legacy missing
-values mean `bounded`). Provider entitlement and Owner activation are separate
-readiness gates. TAIFEX has an independent `api/source/taifex` credential and
-loads no provider API key. `enable_full_market_runtime=false` leaves its
-OpenTofu secret metadata absent by default; declaration and secret population
-require their normal review and do not establish live data acceptance.
+The ordinary deployment workflows use the non-secret `FULL_MARKET_ENABLED`
+GitHub Environment variable to select the `bounded` or `full-market` profile
+for staging and production. Local runs set the flag in their application `.env`
+files. Backend and Fetcher values must match in every environment, and the
+default is `false`. Publishing `true` selects a profile but does not start its
+scheduler. Immutable accepted replay retains the profile recorded at acceptance.
+Full market still requires provider entitlement, installed runtime and account
+enrollment, a published Owner baseline, a complete calendar, and an explicit
+Owner start. TAIFEX has an independent `api/source/taifex` credential and loads
+no provider API key. `enable_full_market_runtime=false` leaves its OpenTofu
+secret metadata absent by default; declaration and secret population require
+their normal review and do not establish live data acceptance.
+
+The deployment workflow injects canonical `APP_ENVIRONMENT` from the verified
+deployment target, so `.env.remote` and GitHub Environments do not need to set
+it manually. The immutable manifest, accepted record, and config JSON
+`deployment_target` field and CLI `--deployment-target` contract remain
+unchanged. A reviewed legacy bridge maps the canonical value for verified
+accepted replay when an older helper still requires `DEPLOYMENT_TARGET`; it
+does not change immutable bundle or acceptance metadata.

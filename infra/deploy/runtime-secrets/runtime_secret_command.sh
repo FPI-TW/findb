@@ -83,6 +83,11 @@ if [ "$region" != "ap-southeast-1" ]; then
   exit 1
 fi
 case "$deployment_target" in staging|production) ;; *) echo "runtime_secret_command=failed reason=deployment_target_invalid" >&2; exit 1 ;; esac
+if { [ "${APP_ENVIRONMENT+x}" = x ] && [ "$APP_ENVIRONMENT" != "$deployment_target" ]; } \
+  || { [ "${DEPLOYMENT_TARGET+x}" = x ] && [ "$DEPLOYMENT_TARGET" != "$deployment_target" ]; }; then
+  echo "runtime_secret_command=failed reason=environment_identity_conflict" >&2
+  exit 1
+fi
 [[ "$aws_account_id" =~ ^[0-9]{12}$ ]] || { echo "runtime_secret_command=failed reason=aws_account_invalid" >&2; exit 1; }
 
 case "$catalog" in

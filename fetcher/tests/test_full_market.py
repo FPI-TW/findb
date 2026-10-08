@@ -320,8 +320,9 @@ def test_unknown_or_insufficient_readiness_blocks_no_false_subset(tmp_path: Path
     proof = _proof(now)
     path.write_text(json.dumps(proof))
     assert load_readiness(path, "twelve_data", proof["datasets"], now=now) == proof
+    assert load_readiness(path, "twelve_data", ["us_equity_eod"], now=now) == proof
     with pytest.raises(ReadinessBlockedError):
-        load_readiness(path, "twelve_data", ["us_equity_eod"], now=now)
+        load_readiness(path, "twelve_data", ["tw_equity_eod"], now=now)
     validate_capacity(proof, 5000, seconds_available=1000)
     with pytest.raises(ReadinessBlockedError, match="full coverage"):
         validate_capacity(proof, 10000, seconds_available=1000)
@@ -551,7 +552,10 @@ def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
     runtime.http.close()
 
 
-def test_provider_not_recalled_after_prepared_body_and_receipt_restart(tmp_path: Path) -> None:
+@pytest.mark.parametrize("capacity_violated", [False, True])
+def test_provider_not_recalled_after_prepared_body_and_receipt_restart(
+    tmp_path: Path, capacity_violated: bool
+) -> None:
     from uuid import UUID
 
     runtime, source, _ = _runtime(tmp_path)
@@ -561,6 +565,17 @@ def test_provider_not_recalled_after_prepared_body_and_receipt_restart(tmp_path:
     key = "fp1:123:AAPL"
     request = {"identity": "stable", "fetched_at": "persisted"}
     runtime.state.prepare(key, canonical_bytes([request]))
+    if capacity_violated:
+        runtime.state.observe_capacity(
+            account="twelve_data",
+            window=date.today().isoformat(),
+            bound=100,
+            observed=250,
+            allocation_sha256="a" * 64,
+        )
+        runtime.can_acquire = lambda: False
+        with pytest.raises(QuotaBlockedError, match="capacity violation"):
+            runtime.state.assert_capacity("twelve_data")
     counts = {"delivered": 0, "status": 0}
 
     class Delivery:
@@ -632,7 +647,11 @@ def test_empty_provider_values_are_blocked_source_error_not_no_trade(tmp_path: P
     plan = _plan()
     plan["parts"][0]["member_keys"] = ["AAPL"]
     runtime.state.record_plan(plan, "twelve_data")
-    runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+    runtime._deliver_plan(
+        plan,
+        {"members": [_member(), {**_member(), "member_key": "MSFT", "symbol": "MSFT"}]},
+        runtime.feeds[0],
+    )
     assert source.outcomes[0]["reason"] == "source_error"
     assert runtime.state.health("twelve_data")["unresolved"]
     runtime.http.close()
@@ -902,6 +921,187 @@ def test_operator_stop_guard_prevents_new_provider_calls(tmp_path: Path) -> None
     plan = _plan()
     runtime.state.record_plan(plan, "twelve_data")
     runtime._acquire = lambda *args: pytest.fail("operator stop must prevent acquisition")
-    runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+    runtime._deliver_plan(
+        plan,
+        {"members": [_member(), {**_member(), "member_key": "MSFT", "symbol": "MSFT"}]},
+        runtime.feeds[0],
+    )
     assert source.outcomes == [] and raw.calls == []
     runtime.http.close()
+
+
+@pytest.mark.parametrize("target", ["local", "staging", "production"])
+@pytest.mark.parametrize("kind", ["missing", "empty", "malformed", "symlink"])
+def test_require_stopped_never_recreates_unavailable_checkpoint(
+    tmp_path, monkeypatch, target, kind
+):
+    from findb_fetcher import full_market_cli
+
+    state_path = tmp_path / "checkpoint" / "state.sqlite3"
+    if kind != "missing":
+        state_path.parent.mkdir()
+        if kind == "symlink":
+            state_path.symlink_to(tmp_path / "absent-target")
+        else:
+            state_path.write_bytes(b"" if kind == "empty" else b"invalid SQLite")
+    monkeypatch.setenv("APP_ENVIRONMENT", target)
+    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
+    monkeypatch.setattr(
+        full_market_cli, "FullMarketState", lambda *_: pytest.fail("state constructor must not run")
+    )
+    monkeypatch.setattr(
+        full_market_cli.FetcherConfig, "from_env", lambda: pytest.fail("credentials must not load")
+    )
+    monkeypatch.setattr(
+        full_market_cli, "SchedulerControlClient", lambda *_: pytest.fail("Source must not run")
+    )
+    result = full_market_cli.main(
+        [
+            "--config",
+            str(Path(__file__).resolve().parents[1] / f"configs/full_market.{target}.v1.json"),
+            "--provider",
+            "twelve_data",
+            "--state-path",
+            str(state_path),
+            "--require-stopped",
+        ]
+    )
+    assert result == 2
+    if kind == "missing":
+        assert not state_path.parent.exists()
+    elif kind == "symlink":
+        assert not (tmp_path / "absent-target").exists()
+    else:
+        assert state_path.read_bytes() == (b"" if kind == "empty" else b"invalid SQLite")
+
+
+@pytest.mark.parametrize("desired", ["stopped", "running"])
+def test_require_stopped_checks_existing_control_without_mutating_prepared_checkpoint(
+    tmp_path, monkeypatch, desired
+):
+    from findb_fetcher import full_market_cli
+
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    state.record_plan(_plan(), "twelve_data")
+    state.prepare("fp1:123:AAPL", b"prepared delivery")
+    with state.connection() as db:
+        db.execute("INSERT INTO full_cursor VALUES('twelve_data','us_equity_eod','2026-10-01')")
+        db.execute("INSERT INTO full_quota VALUES('real-account','2026-10-01',10,250,0)")
+    before = state.path.read_bytes()
+    calls = []
+
+    class Control:
+        def __init__(self, _config, key):
+            assert key == "full_market_twelve_data_v1"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def poll(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                provider="twelve_data",
+                dataset_keys=["us_equity_eod", "hk_equity_eod"],
+                desired_state=desired,
+            )
+
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
+    monkeypatch.setattr(
+        full_market_cli,
+        "FullMarketState",
+        lambda *_: pytest.fail("read-only control cannot migrate state"),
+    )
+    monkeypatch.setattr(full_market_cli.FetcherConfig, "from_env", lambda: object())
+    monkeypatch.setattr(full_market_cli, "SchedulerControlClient", Control)
+    result = full_market_cli.main(
+        [
+            "--config",
+            str(Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"),
+            "--provider",
+            "twelve_data",
+            "--state-path",
+            str(state.path),
+            "--require-stopped",
+        ]
+    )
+    assert result == (0 if desired == "stopped" else 2)
+    assert calls == [{"observed_state": "stopped"}]
+    assert state.path.read_bytes() == before
+    assert state.prepared("fp1:123:AAPL") == b"prepared delivery"
+    with state.connection() as db:
+        assert tuple(db.execute("SELECT requests,bytes FROM full_quota").fetchone()) == (10, 250)
+        assert db.execute("SELECT trade_date FROM full_cursor").fetchone()[0] == "2026-10-01"
+
+
+@pytest.mark.parametrize("target", ["local", "staging", "production"])
+@pytest.mark.parametrize("kind", ["legacy", "corrupt", "unusable"])
+def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
+    tmp_path, monkeypatch, target, kind
+):
+    import sqlite3
+
+    from findb_fetcher import full_market_cli
+
+    checkpoint = tmp_path / "state.sqlite3"
+    with sqlite3.connect(checkpoint) as db:
+        db.executescript(
+            (Path(__file__).parent / "fixtures/full_market_legacy_core.sql").read_text()
+        )
+        if kind == "unusable":
+            db.execute("ALTER TABLE full_work RENAME COLUMN body TO unusable")
+        page = db.execute("SELECT rootpage FROM sqlite_master WHERE name='full_work'").fetchone()[0]
+        size = db.execute("PRAGMA page_size").fetchone()[0]
+    if kind == "corrupt":
+        with checkpoint.open("r+b") as raw:
+            raw.seek((page - 1) * size)
+            raw.write(b"\0")
+    before = checkpoint.read_bytes()
+    events = []
+
+    class Control:
+        def __init__(self, *_):
+            events.append("Source")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def poll(self, **_):
+            return SimpleNamespace(
+                provider="finlab",
+                dataset_keys=sorted(full_market_cli._SCOPES["finlab"]),
+                desired_state="stopped",
+            )
+
+    monkeypatch.setenv("APP_ENVIRONMENT", target)
+    monkeypatch.setattr(
+        full_market_cli,
+        "FullMarketState",
+        lambda *_: pytest.fail("read-only gate cannot migrate schema"),
+    )
+    monkeypatch.setattr(
+        full_market_cli.FetcherConfig, "from_env", lambda: events.append("credentials")
+    )
+    monkeypatch.setattr(full_market_cli, "SchedulerControlClient", Control)
+    result = full_market_cli.main(
+        [
+            "--config",
+            str(Path(__file__).resolve().parents[1] / f"configs/full_market.{target}.v1.json"),
+            "--provider",
+            "finlab",
+            "--state-path",
+            str(checkpoint),
+            "--require-stopped",
+        ]
+    )
+    assert result == (0 if kind == "legacy" else 2)
+    assert events == (["credentials", "Source"] if kind == "legacy" else [])
+    assert checkpoint.read_bytes() == before
+    assert not (tmp_path / "state.sqlite3-wal").exists()
+    assert not (tmp_path / "state.sqlite3-shm").exists()

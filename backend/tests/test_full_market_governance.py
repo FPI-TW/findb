@@ -26,7 +26,7 @@ def runtime_dataset(dataset_key, enabled):
     dataset = DatasetRegistry(
         **deepcopy(next(item for item in DATASETS if item["dataset_key"] == dataset_key))
     )
-    dataset.is_active = enabled
+    dataset.is_active = True
     dataset.config["full_market"].update(
         enabled=enabled,
         readiness_approved=enabled,
@@ -70,10 +70,8 @@ def test_runtime_v1_feed_declarations_are_accepted(
     assert (declaration.schema_id, declaration.accepted_schema_versions) == (schema, [1])
     assert (dataset.market, dataset.asset_class, dataset.frequency) == (market, asset, frequency)
     opted_in, activated, errors, blockers = full_market_configuration(dataset, provider)
-    assert (opted_in, activated, errors) == (enabled, enabled, [])
-    assert blockers == (
-        [] if enabled else ["activation_disabled", "dataset_inactive", "readiness_not_approved"]
-    )
+    assert (opted_in, activated, errors) == (False, enabled, [])
+    assert blockers == []
 
 
 @pytest.mark.parametrize("provider,key,schema,market,asset,frequency", RUNTIME_FEEDS)

@@ -115,6 +115,28 @@ export const canonicalSlotIdSchema = z.enum([
 export type CanonicalSlotId = z.infer<typeof canonicalSlotIdSchema>
 
 export const schedulerSchema = z.object({
+  full_market_enabled: z.boolean().nullable().optional(),
+  environment: z.string().nullable().optional(),
+  admission_id: z.string().nullable().optional(),
+  admitted_dataset_keys: z.array(z.string()).optional(),
+  first_start_dates: z.record(z.string(), z.string().nullable()).optional(),
+  feed_readiness: z
+    .array(
+      z.object({
+        dataset_key: z.string(),
+        ready: z.boolean(),
+        blockers: z.array(z.string()),
+        first_start_date: z.string().nullable(),
+      })
+    )
+    .optional(),
+  capacity: z
+    .object({
+      required_requests: z.number().optional(),
+      required_bytes: z.number().optional(),
+      required_seconds: z.number().optional(),
+    })
+    .optional(),
   start_allowed: z.boolean().optional(),
   start_blockers: z.array(z.string()).optional(),
   scheduler_key: z.string().trim().min(1).max(200),

@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig, MarketCalendarConfig
+from findb_fetcher.config import FetcherConfig, MarketCalendarConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.market_calendar import PublishedCalendarClient
 from findb_fetcher.pilot_catalog import validate_staging_pilots
@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--run-forever", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if os.getenv("DEPLOYMENT_TARGET") != "staging":
+        if app_environment("") != "staging":
             raise ValueError("TAIFEX pilot requires the explicit staging deployment target")
         validate_staging_pilots(args.config.parent)
         config = json.loads(args.config.read_bytes())

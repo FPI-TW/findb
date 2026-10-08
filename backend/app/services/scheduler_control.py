@@ -80,9 +80,36 @@ async def update_scheduler_desired_state(
     commit: bool = True,
 ) -> SchedulerControl:
     """Atomically update desired state and append its Admin audit event."""
+    from app.models.registry import FullMarketEnrollment, SourceClient
+    from app.services.full_market_admission import (
+        current_enrollment,
+        eligibility,
+        freeze_admission,
+        lock_calendars,
+        lock_environment,
+    )
+
     datasets = None
+    if scheduler_key.startswith("full_market_"):
+        await lock_environment(db)
     if desired_state == "running" and scheduler_key.startswith("full_market_"):
         datasets = await scheduler_start_datasets(db, scheduler_key, lock=True)
+        await lock_calendars(db, datasets)
+        provider = scheduler_key.removeprefix("full_market_").removesuffix("_v1")
+        enrollment = await current_enrollment(db, provider)
+        if enrollment:
+            await db.get(
+                FullMarketEnrollment,
+                enrollment.enrollment_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
+            await db.get(
+                SourceClient,
+                enrollment.source_client_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
     result = await db.execute(
         select(SchedulerControl)
         .options(selectinload(SchedulerControl.scheduler_datasets))
@@ -98,10 +125,15 @@ async def update_scheduler_desired_state(
             f"scheduler revision is {row.revision}, expected {expected_revision}"
         )
 
+    if row.desired_state == desired_state:
+        return row
+
     if desired_state == "running":
         blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row), datasets)
         if blockers:
             raise SchedulerControlStartBlockedError(blockers)
+        if datasets is not None:
+            await freeze_admission(db, row, await eligibility(db, row.provider, datasets))
 
     row.desired_state = desired_state
     row.revision += 1
@@ -173,7 +205,11 @@ def _check_source_scope(db: AsyncSession, row: SchedulerControl) -> None:
     normalized_datasets = scheduler_dataset_keys(row)
     datasets_match = bool(normalized_datasets) and (
         allowed_datasets is None
-        or all(dataset_key in allowed_datasets for dataset_key in normalized_datasets)
+        or (
+            bool(set(normalized_datasets) & set(allowed_datasets))
+            if row.scheduler_key.startswith("full_market_")
+            else all(dataset_key in allowed_datasets for dataset_key in normalized_datasets)
+        )
     )
     if not provider_matches or not datasets_match:
         raise SchedulerControlScopeError("Source credential is not authorized for this scheduler")
@@ -248,8 +284,21 @@ async def present_admin_scheduler_control(
 ) -> dict[str, Any]:
     """Add current authoritative start eligibility without changing Source poll shape."""
     blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row))
+    from app.services.full_market_admission import admission_projection, eligibility
+
+    projection = {}
+    if row.scheduler_key.startswith("full_market_"):
+        result = await eligibility(
+            db, row.provider, await scheduler_start_datasets(db, row.scheduler_key)
+        )
+        projection = {
+            **await admission_projection(db, row.provider),
+            "feed_readiness": result["feeds"],
+            "capacity": result["capacity"],
+        }
     return {
         **present_scheduler_control(row),
+        **projection,
         "start_allowed": not blockers,
         "start_blockers": blockers,
     }

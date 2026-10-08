@@ -231,7 +231,17 @@ secret or environment secret for this identity.
 
 The first creation of the plan role requires a separately authorized operator
 apply because a role cannot bootstrap its own OIDC credentials. A pull-request
-plan never authorizes an apply. For the two transitional metadata resources,
+plan never authorizes an apply. When the active runtime-secret catalog expands,
+an existing secret may need refresh before OpenTofu can plan the corresponding
+`ReadExactSecretMetadata` policy update. A separately authorized operator must
+first converge the deployed plan role's metadata-only coverage to the reviewed
+exact secret ARNs; the plan role cannot bootstrap its own permissions. Preserve
+the existing metadata actions, trust, and other statements without adding secret
+value access, runtime-secret KMS decrypt, wildcards, or apply authority. Rerun
+the refresh-enabled CI plan only after that bounded repair; access failures and
+the default zero-delete guard must continue to fail closed.
+
+For the two transitional metadata resources,
 the destructive retirement runbook is stricter: after the reviewed retirement
 PR is merged, a trusted operator must use a clean checkout whose `HEAD` exactly
 matches the merged `origin/main` SHA, live-verify that both exact Secret IDs

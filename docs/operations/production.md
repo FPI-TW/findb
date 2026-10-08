@@ -131,12 +131,10 @@ Calendar Serve key與四個 Source keys須分離，且 Fetcher不取得 Admin或
 population需依原 foundation review 執行。Secrets或image已存在不等同provider entitlement、
 quota／capacity、official baseline或live coverage已通過。
 
-Migration／seed先加入 inactive HK equity、TW ETF EOD、TAIFEX registry與 stopped
-`full_market_{twelve_data,finlab,shioaji,taifex}_v1` controls。Owner發布 baseline與完整
-HK／TW／US／TAIFEX exchange calendar，指定activation date後才進 acceptance；TW、HK、US、
-futures各五個連續實際開市日準時 complete才能切active。全市場權限與五日實際執行結果仍是
-[未完成 external acceptance](../dev/backlog.md#full-market-external-acceptance)，不是本次程式或
-IaC驗證的完成宣稱。
+Migration/seed 加入 registry 與 stopped Full controls。`FULL_MARKET_ENABLED` 決定 installed profile，
+新 admission 須 trusted post-install receipt/enrollment、Owner baseline approval、完整 calendar 與容量證據。
+開旗標不自動 start，沒有五日/per-feed gate；[runbook](full_market.md) 包含 receipt 與 rollback/drain。
+實際帳號 capability 與 live coverage 驗證仍列 [backlog](../dev/backlog.md#full-market-external-acceptance)。
 
 ## DB bootstrap 與 Environment gate
 
@@ -173,10 +171,10 @@ After-hours 仍保留交易所 attributed trade_date，不能轉成民曆日期�
 一般 seed 保留 revision 並回報 `action=pending_reviewed_update, upgrade_required=true`，
 不阻塞一般部署，也不宣稱新 session 已套用。Owner 審核後才以 `--apply --upgrade-reviewed-2026`
 發布 successor，透過 expected revision 的 CAS 防止競爭，原 revision 保留為 superseded。
-HK／CN／TAIFEX 初次套用與 US successor 均不改動 feed activation、首次 activation date、
-readiness、scheduler desired state 或五日 live acceptance；本 repo fixture 的更新不等於 live DB 已調整。
+HK／CN／TAIFEX 初次套用與 US successor 均不改動 scheduler admission、首次日期、
+readiness 或 scheduler desired state；本 repo fixture 的更新不等於 live DB 已調整。
 
-首次部署的 predeploy gate 只在`DEPLOYMENT_TARGET=production`接受完全沒有任何使用者 relation 的
+首次部署的 predeploy gate 只在`APP_ENVIRONMENT=production`接受完全沒有任何使用者 relation 的
 乾淨資料庫；candidate acceptance落盤後，activation才可執行唯一一次`alembic upgrade head`。
 正式`findb-production-cd`／reusable deploy workflow會提供validated release root並走上述
 candidate／accepted-record／activation序列；helper在沒有release root時保留的legacy direct-invocation分支

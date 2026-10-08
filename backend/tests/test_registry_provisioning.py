@@ -287,7 +287,7 @@ def test_neutralizing_migration_is_linear_and_exactly_scoped(
 def test_cd_passes_target_explicitly_after_migration() -> None:
     workflow = DEPLOY_HELPER_PATH.read_text(encoding="utf-8")
     migration_marker = "uv run alembic upgrade head"
-    provisioning_marker = '--deployment-target "$DEPLOYMENT_TARGET"'
+    provisioning_marker = '--deployment-target "$APP_ENVIRONMENT"'
     assert migration_marker in workflow
     assert provisioning_marker in workflow
     assert "python /app/scripts/provision_registry.py" in workflow
