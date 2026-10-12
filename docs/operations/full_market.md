@@ -13,65 +13,66 @@ maintenance bootstrap 也必須通過有效 provider／dataset scope 與 credent
 universe、plan 與新資料抓取仍僅使用當次凍結的 admitted feeds。正常 credential create／rotate
 會將省略的 scope 展開成 provider 的明確清單；本規則不放寬既有 API 邊界。
 
-2026-10-12 staging 已明確 opt-in：`staging-findb`／`staging-fetcher` GitHub Environment 與兩組
-本機 `.env.remote` 的 `FULL_MARKET_ENABLED` 均已同步為 `true`。同一 protected-main revision
-`5ef7540e340331a3afd502efca75bcd7b5199c20` 依序完成
-[FinDB CD](https://github.com/FPI-TW/findb/actions/runs/38194939788) 與
-[Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/38195805655)，包含各自 CI、candidate acceptance
-與 activation。Fetcher accepted manifest 的 `runtime_profile=full-market`。
+## Staging baseline 與 calendar 現況（2026-10-12）
 
-獨立 SSM commands `78381ba8-a11f-4542-ad3f-3b41f8938660`（FinDB）與
-`281a02ec-0325-4af0-a108-864567688dd0`（Fetcher）均成功（exit 0），確認 FinDB
-Serve／Ingest／Worker／Dispatcher／Raw cleanup、四個 Pilot scheduler 與四個 Full workers 的容器
-環境皆為 `APP_ENVIRONMENT=staging`、`FULL_MARKET_ENABLED=true`，全部 running、restart count 0；
-Fetcher 容器皆為 accepted。公開 `/health` 回傳 healthy。八個 scheduler 的 desired／observed state
-皆為 stopped，且都有新 heartbeat；部署前後 control revisions 未變。Full readiness／account 文件
-尚未安裝，部署版本仍有舊 enrollment gate；本分支移除該 gate，發布新版後只需 baseline／calendar 與 Owner 手動啟動。
-此紀錄為查核當時的狀態；後續部署後須重新確認實際值。
+17:02（Asia/Taipei）以唯讀 DB 查核，七個 feeds 的首次 official baseline 均已 `published`。
+每個 release 的實際成員數與 Python canonical ordering SHA256 均與提交值吻合；官方名單、
+provider catalogue 與 checksum 證據已保存至 staging R2 `findb-staging-raw`。所有成員完整保留，
+未縮小名單掩蓋 classification／mapping gaps；gap 成員繼續依既有 blocked 規則處理。
 
-## Staging readiness 查核（2026-10-12）
+| Provider / dataset | 成員 | mapped | gap | Effective date | Published release ID |
+| --- | ---: | ---: | ---: | --- | --- |
+| `twelve_data/us_equity_eod` | 6023 | 5081 | 942 | 2026-10-12 | `01a12f4f-310b-78e2-ac44-3ff6cf3bed60` |
+| `twelve_data/hk_equity_eod` | 2826 | 2778 | 48 | 2026-10-12 | `01a12f4f-396e-795d-bac0-c0a3c81debc1` |
+| `finlab/tw_equity_eod` | 1947 | 1947 | 0 | 2026-10-12 | `01a12f48-721b-7902-a6d5-d9cef496ed4a` |
+| `finlab/tw_etf_eod` | 360 | 359 | 1 | 2026-10-12 | `01a12f48-793e-7993-8bc6-d14c85cfe578` |
+| `shioaji/tw_equity_minute` | 1947 | 1945 | 2 | 2026-10-12 | `01a12f48-899c-726e-824a-fe89a2da126e` |
+| `shioaji/tw_etf_minute` | 360 | 358 | 2 | 2026-10-12 | `01a12f48-90e5-7b8c-980b-7022074ef795` |
+| `taifex/tw_futures_eod` | 62 | 62 | 0 | 2026-10-08 | `01a12f48-7c7b-7d37-b07b-393421c885c4` |
 
-11:03（Asia/Taipei）以現行 Backend eligibility 查核四個 `full_market_*_v1` controls，
-皆為 `start_allowed=false`、desired／observed stopped、revision 5 且 heartbeat fresh。
-共同 start blockers 為 `full_market_runtime_missing`、`full_market_no_ready_feeds`；前者表示
-DB 尚無 trusted enrollment，不代表 Docker worker 未安裝。七個 feeds 皆缺 published baseline，
-DB 無 candidate 或 published universe。US／HK／TW／TAIFEX 2026 calendar 各有完整
-published revision（365／365），現行 eligibility 未回報 calendar 或 registry configuration blocker。
+TAIFEX 官方最新報表日期為 2026-10-08，含 30 個月契約與 1 個週契約，展開實際 regular／after_hours
+共 62 個成員。US 的 942 個 gap 包含 424 個 classification gap；HK 的 48 個 gap 包含 30 個
+classification gap。FinLab mapping 使用認證 SDK `price:收盤價` 欄位清單；Shioaji 使用既有
+simulation SDK contract catalogue。此 baseline 不宣稱 gap 商品可抓取，也不代表行情已完成導入。
 
-已完成以下可獨立處理的設定：
-
-- 以實際 installed Source key hashes 綁定既有四個 Source clients，執行 credential reconciler 的
-  `full-market` profile。Twelve Data scope 包含 US／HK EOD；FinLab 包含 TW equity／ETF EOD；
-  Shioaji 包含 TW equity／ETF minute；TAIFEX 為 TW futures EOD。四個 internal Source limits
-  均為 2400 RPM，既有 client UUID／key hash 保留；calendar Serve credential unchanged，
-  reconciler 寫入治理 audit。
-- 首次建立 `/var/lib/findb-account/staging/governor.sqlite3`，owner 10001、mode 0600，
-  integrity check 為 ok；quota／work／plan／capacity violation／repair tables 初始皆空。
-  空 governor 不表示 provider 當日用量為零，SDK API 的帳號累計用量仍為平台配額權威。
-- 從 immutable accepted S3 object 複製原始 acceptance record，連同 installed manifest／config、
-  有上限的 quota probe plan 與去敏觀察結果保存至 Fetcher host 的
-  `/etc/findb-full-market/evidence/staging/c035a87dda0f261142860b451ac645263982fc75d3a2ec8ff184f1e95216afb2/`。
-  目錄 0700、檔案 0600；此處的 `readiness-constraints.json` 為 incomplete observation，
-  不可當作 verified readiness／account declaration 安裝。
-
-11:01（Asia/Taipei）的 bounded quota observation 結果：
-
-| Provider | 已取得的額度／用量證據 | 尚缺的治理資料 |
+| Market | 2026 published calendar revision | 完整性 |
 | --- | --- | --- |
-| Twelve Data | `/api_usage`：`plan_limit=1597`、`current_usage=1`，單位為 credits／minute；一次 probe 消耗 1 credit | US／HK official universe、provider symbol mapping、Owner published baseline |
-| FinLab | SDK 1.5.7 quota metadata：`limit_size=5000`、`quota=33.292991638183594` MB；未下載 table | TW equity／ETF official universe、provider symbol mapping、Owner published baseline |
-| Shioaji | SDK 1.7.1 simulation `usage()`：`bytes=0`、`limit_bytes=remaining_bytes=524288000`（500 MiB）；50 calls／10 秒 | TW equity／ETF official universe、catalogue mapping、Owner published baseline |
-| TAIFEX | 公開 OpenAPI，不需 provider 帳號；scoped Source client 與 worker 已安裝 | 實際月／週合約與日盤／盤後 official baseline、Owner publish |
+| US | `019fc6e3-4d25-78ff-94d2-70975d5e6b9d` | 365 / 365，2026-01-01 至 2026-12-31 |
+| HK | `019fc6e8-cf14-7f68-aaf8-b9bb76bd788f` | 365 / 365，2026-01-01 至 2026-12-31 |
+| TW | `019fb28f-2561-72b8-a96c-1d45f00da3e5` | 365 / 365，2026-01-01 至 2026-12-31 |
+| TAIFEX | `01a10ad2-8804-70e3-b48d-bb108225369a` | 365 / 365，2026-01-01 至 2026-12-31 |
 
-七個 feeds 尚無 published baseline；具體交付資料見
-下方「治理資料明確需求」。此查核記錄來自當時 staging 的舊部署；本工作分支已將啟動資格
-與新抓取均只依 baseline／calendar 及既有操作控制、API 認證；本分支尚未部署。
+Source submission 使用四個既有 scoped credentials，沒有變更 Source 權限。Twelve Data 的完整
+US／HK 請求以 compact JSON 與頂層 immutable evidence 提交（931338／502379 bytes），符合
+現行 nginx Source 1 MiB 上限；未重複每個 member 的 optional raw reference，所有原始檔仍有
+R2 object URL 與 SHA256。TW ISIN 原始快照超過 8 MiB，此次一次性保存上限為 16 MiB，
+沒有修改部署中的 raw storage 設定。
 
-驗證 SSM commands：Source 校準 `707a9976-8a48-4ef4-9416-bb9bad8e535d`、quota observation
-`f0bb370e-cc21-4f91-9e0e-ebc2a5c6fcf7`、Backend 最終 eligibility
-`71617f8e-f60f-451e-8408-4439dc70dd8d`、Fetcher 最終容器／governor
-`0fd99533-bedf-495d-9d7a-bebad9f23d03` 均為 Success／exit 0。八個 Fetcher containers
-均 running、flag true、restart count 0。
+發布 checksum 必須使用與 submission 相同的 Python `member_key` 排序，不能依 DB collation：
+US 含標點／大小寫 symbol，TAIFEX session 名稱會產生不同順序。此次在單次 management process
+載入已測試的排序修正，再經原有受保護 Admin ASGI HTTP route 的 Owner 認證、checksum 驗證、
+transaction 與 audit 發布；未修改 installed files 或重啟服務。Owner 機器憑證由使用者明確授權、
+有效一小時，明文只在程序記憶體；`01a12f57-abdf-78c1-a2c4-df2d9ed27977` 已於
+17:00:37 撤銷。七筆 `publish` 與 credential create／revoke audit 已持久化。
+
+Nasdaq catalogue 的 `XNCM`／`XNGS`／`XNMS` 依 [ISO 10383 MIC](https://www.iso20022.org/market-identifier-codes)
+對應 operating MIC `XNAS`，只用於 identity matching；仍核對 symbol、currency、asset type 並拒絕
+duplicate mappings。MIC 修正與穩定排序修正留在本機未提交變更，須隨後續正常部署發布，
+本次沒有 commit、push 或部署。
+
+最後查核 DB revision 為 `3553ed95cfbf`。四個 Full controls 均 desired／observed `stopped`、revision 5；
+本次沒有變更任何 scheduler。Pilot controls 的 desired state 已由其他操作設為 running，
+不能沿用先前「八個 controls 均 stopped」的查核結果。Baseline 與 calendar 的啟動資料已備齊，
+Owner 手動 start 仍是獨立操作。
+
+SSM 證據：Twelve Data candidate `5e8433d3-c112-4071-b952-d2ba73ef9a58`、FinLab candidate
+`3238db7b-d8bc-4b2a-a721-c8c3e59e5e39`、Shioaji candidate `d7a76023-37c0-42e8-9cb5-a306d79de97e`、
+TAIFEX candidate `2bb03a64-515b-422a-a01d-e12f603c6273`、發布
+`8549a650-c0ed-4160-bb16-15aeb80d0402`、最後唯讀校驗
+`a2ae53d0-e4ce-4927-93dc-692504ceff09`、四個 provider 既有 Source credential 的公開 API
+回讀 `eaf5ba97-b196-434f-aef8-ed726bb63390` 均為 Success／exit 0。
+本機驗證：全 repo `pnpm check`、Backend Full market／time gate suites（137 passed）、
+Fetcher Full market／recovery／governor suites（334 passed）。
 
 ## 啟動契約
 
@@ -124,7 +125,8 @@ Payload／R2 object／解壓縮／IPC bounds 屬於傳輸與資料處理保護�
 `3553ed95cfbf` 允許 admission 的 legacy enrollment reference 為 null，保留既有歷史綁定。
 所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依
 published baseline 與完整 published calendar；新抓取另遵守 running control、有效旗標、Source
-及 provider API 認證與資料驗證。此分支尚未部署；live staging 的既有查核不能代表新版已生效。
+及 provider API 認證與資料驗證。每次部署仍須確認 installed revision、環境與有效旗標；最新 staging 資料查核見上方現況。
+本次新增的 Nasdaq MIC 與 publication 排序修正尚未部署。
 
 ## 治理資料明確需求
 
@@ -132,7 +134,7 @@ published baseline 與完整 published calendar；新抓取另遵守 running con
 
 | 資料 | 必備內容 | 驗收方式／目前 staging 狀態 |
 | --- | --- | --- |
-| Published baseline | 每 provider／dataset 的 release ID、effective date、完整官方成員／provider mapping、來源 URL／SHA256 與不可變原始資料參考、member count／SHA256、Owner publication timestamp／audit | 同 provider／dataset、status=`published`、effective date 不晚於當地今天；七個 feeds 目前皆缺。首份發布提供 `evidence_note` 與 `first_baseline_approved=true`；重大成員異動仍遵循既有 publish 規則 |
+| Published baseline | 每 provider／dataset 的 release ID、effective date、完整官方成員／provider mapping、來源 URL／SHA256 與不可變原始資料參考、member count／SHA256、Owner publication timestamp／audit | 同 provider／dataset、status=`published`、effective date 不晚於當地今天；staging 七個 feeds 已發布，release IDs 見上表。首份發布提供 `evidence_note` 與 `first_baseline_approved=true`；重大成員異動仍遵循既有 publish 規則 |
 | Published calendar | 對應交易市場／當年度的 revision ID、timezone、完整日期與開休市／session times | status=`published` 且年度完整；US／HK／TW／TAIFEX 2026 皆已具備 365／365 published revision |
 
 TAIFEX baseline 成員保留 TX／MTX／TMF／TE／TF、實際月／週到期 contract code／month 與
