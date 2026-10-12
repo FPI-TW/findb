@@ -84,11 +84,8 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
     second.proof = first.proof.copy()
     second.feeds[0]["dataset_key"] = "hk_equity_eod"
     second.proof["expires_at"] = (clock.now() + timedelta(seconds=2)).isoformat()
-    with pytest.raises(ReadinessBlockedError, match="expired"):
-        second._reserve()
-    with second.state.connection() as db:
-        assert db.execute("SELECT * FROM full_quota WHERE window='2026-10-02'").fetchone() is None
-        assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == cooldown_until
+    second._reserve()  # Expired legacy evidence cannot bypass or shorten cooldown.
+    assert clock.now().timestamp() >= cooldown_until
     second.proof = _proof(clock.now())
 
     def acquired(request: httpx.Request) -> httpx.Response:
@@ -102,12 +99,12 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
             second._acquire(
                 _member(), hk_plan, hk_plan["parts"][0], {"release_id": "r"}, second.feeds[0]
             )
-    assert len(calls) == 2 and calls[-1][1].timestamp() == cooldown_until
+    assert len(calls) == 2 and calls[-1][1].timestamp() == pytest.approx(cooldown_until + 0.1)
     assert all(wait <= 1 for wait in clock.waits)
     with second.state.connection() as db:
         assert db.execute(
             "SELECT requests,bytes FROM full_quota WHERE window='2026-10-02'"
-        ).fetchone()[:] == (1, 1000)
+        ).fetchone()[:] == (2, 2000)
     first.http.close()
     second.http.close()
 
@@ -195,7 +192,19 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
         _sdk=SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get)),
     )
     runtime._finlab_gateway = lambda: gateway
+    authorizations = []
+
+    def authorize(method, path):
+        assert method == "GET" and path == "full-market/authorization?consumer=maintenance"
+        authorizations.append(path)
+        return {
+            "acquisition_allowed": True,
+            "authorized_dataset_keys": ["tw_equity_eod", "tw_etf_eod"],
+        }
+
+    source.request = authorize
     runtime.sync_universes()
+    assert len(authorizations) == 1
     assert [call[1] for call in calls] == ([100] if fail_at == 1 else [100, 103])
     assert len(submitted) == 2 and runtime.bundles == {}
     assert _quota(runtime, "2026-10-01") == (len(calls), len(calls) * 1000)
@@ -307,17 +316,10 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
     second, _, _ = _runtime(tmp_path)
     second.proof = first.proof.copy()
     second.feeds[0]["dataset_key"] = "hk_equity_eod"
-    if boundary in {"declared", "wire"}:
-        with pytest.raises(QuotaBlockedError, match="capacity violation"):
-            second._reserve()
-        assert clock.now().timestamp() == started_at + 1
-        assert clock.waits == []
-        assert _daily(second) == (1, 1200 if boundary == "wire" else 1000)
-    else:
-        second._reserve()
-        assert clock.now().timestamp() == started_at + (60 if status == 429 else 1)
-        assert clock.waits == ([1] * 59 if status == 429 else [])
-        assert _daily(second) == (2, 2000)
+    second._reserve()
+    assert clock.now().timestamp() == started_at + (60 if status == 429 else 1)
+    assert clock.waits == ([1] * 59 if status == 429 else [])
+    assert _daily(second) == (2, 2200 if boundary == "wire" else 2000)
     first.http.close()
     second.http.close()
 
@@ -365,11 +367,12 @@ def test_http_429_cooldown_commits_before_secondary_byte_ledger_failure(
     clock.elapsed += 1
     fresh, _, _ = _runtime(tmp_path)
     fresh.proof = runtime.proof.copy()
-    with pytest.raises(QuotaBlockedError, match="capacity violation"):
-        fresh._reserve()
-    assert clock.now().timestamp() == until - 59 and clock.waits == []
+    fresh._reserve()
+    assert clock.now().timestamp() == until and clock.waits == [1] * 59
     with fresh.state.connection() as db:
-        assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == until
+        assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == pytest.approx(
+            until + 0.1
+        )
     runtime.http.close()
     fresh.http.close()
 
@@ -605,10 +608,18 @@ def test_other_provider_acquisition_paths_enforce_verified_byte_bound(
                 _member(), _plan(), _plan()["parts"][0], {"release_id": "r"}, runtime.feeds[0]
             )
 
-    with pytest.raises(ReadinessBlockedError, match="size bound"):
-        acquire()
-    assert _daily(runtime)[1] > 1000
-    assert raw.calls == []
+    if path == "sdk_usage":
+        from findb_fetcher.providers.shioaji import ShioajiPayloadError
+
+        # Usage delta is not an enrolled response bound; malformed Kbars still fails validation.
+        with pytest.raises(ShioajiPayloadError):
+            acquire()
+        assert _daily(runtime)[1] == 2266
+    else:
+        with pytest.raises(ReadinessBlockedError, match="size bound"):
+            acquire()
+        assert _daily(runtime)[1] > 1000
+        assert raw.calls == []
     runtime.http.close()
 
 
@@ -661,7 +672,7 @@ def test_shared_instances_take_one_transactional_permit(tmp_path: Path) -> None:
         assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == 1790856120
 
 
-def test_clock_rollback_preserves_pacing_and_expiry_stops_wait(
+def test_clock_rollback_preserves_pacing_without_expiry_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, _, _ = _runtime(tmp_path)
@@ -673,9 +684,8 @@ def test_clock_rollback_preserves_pacing_and_expiry_stops_wait(
     runtime._reserve()
     assert clock.elapsed == 220 and clock.waits == [1] * 130
     runtime.proof["expires_at"] = (clock.now() + timedelta(seconds=2)).isoformat()
-    with pytest.raises(ReadinessBlockedError, match="expired"):
-        runtime._reserve()
-    assert _daily(runtime)[0] == 2
+    runtime._reserve()
+    assert _daily(runtime)[0] == 3
     runtime.http.close()
 
 
@@ -725,7 +735,10 @@ def test_control_or_expiry_during_transaction_keeps_reservation_without_acquisit
         runtime.can_acquire = lambda: clock.elapsed < 101
     else:
         runtime.proof["expires_at"] = (clock.now() + timedelta(seconds=1)).isoformat()
-    with pytest.raises(ReadinessBlockedError, match="stopped" if guard == "stop" else "expired"):
+    if guard == "stop":
+        with pytest.raises(ReadinessBlockedError, match="stopped"):
+            runtime._reserve()
+    else:
         runtime._reserve()
     assert _daily(runtime) == (1, 1000)
     runtime.http.close()

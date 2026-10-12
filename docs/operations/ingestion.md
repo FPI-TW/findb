@@ -46,12 +46,13 @@ Dashboard 導入概況與 Scheduler 面板依 `full_market_` key 前綴區分 Fu
 Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「Full market 全部啟動」或
 「Pilot 全部啟動」只更新該區符合資格且
 尚未 running 的 controls，確認視窗顯示實際更新數量與跳過原因；單筆啟動套用相同資格。
-全市場啟動須至少一個 ready feed，並通過有效環境旗標、trusted installed enrollment、scoped provider
-readiness、Owner baseline approval、完整 published calendar 與 aggregate capacity。stopped→running
+全市場啟動須至少一個 feed 同時具備 published baseline 與完整 published calendar；其餘
+readiness／enrollment／expiry／capacity 條件不再列為啟動 gate。stopped→running
 凍結 ready scope；新 ready sibling 須停止再啟動，running 重複 start 不改 scope。首次日期由交易所
 當地今天決定並永久保留。停止不受 start blockers 限制；旗標關閉由 trusted lifecycle/management
 流程停止 Full controls/audit，重新開旗標仍需 Owner 手動 start，GET 不寫 control。
-詳見 [Full market runbook](full_market.md)。Pilot tab 預設，URL `profile=full_market` 選 Full tab；
+平台限制與治理資料清單見
+[Full market runbook](full_market.md)。Pilot tab 預設，URL `profile=full_market` 選 Full tab；
 切換不寫 state，各 tab 的 bulk 僅處理本 profile。
 
 啟動單筆或批次前，若同 provider 另一區期望或實際狀態仍為 running（包含停止中），
@@ -167,8 +168,8 @@ reference、run／job 與 canonical lineage。
 `data + no_data = expected` 且 missing／blocked 均為零才 complete。
 
 TW、HK 與 TAIFEX 當日台北 23:00，US 次日台北 09:00 為 deadline；Source 202、provider fetch
-成功、container running 都不能取代 canonical completion。未完成 entitlement/mapping/quota/byte/deadline
-proof 時 provider blocked；不使用五日 admission 門檻，也不以縮小 universe 通過 capacity。
+成功、container running 都不能取代 canonical completion。API 權限、mapping、平台 quota 或資料驗證
+失敗仍保留缺口；不以 readiness、expiry 或 capacity proof 阻擋新抓取，也不縮小 universe。
 
 故障後沿 activation-forward plan 查缺口：prepared raw 先保存於 R2 與 durable checkpoint，
 重啟只重送穩定 request／idempotency identity，不再耗 provider quota 重新下載已準備的 response。
@@ -188,7 +189,7 @@ proof 時 provider blocked；不使用五日 admission 門檻，也不以縮小 
 Market freshness必須分開呈現provider fetch、normalization completion與feed policy。
 Raw存在但canonical未完成時沿run／job／outbox／queue診斷，不要誤判為provider未送達。
 
-Full market Scheduler 卡片呈現 environment flag、readiness blockers、frozen admitted scope 與 first dates。
+Full market Scheduler 卡片呈現 environment flag、baseline／calendar blockers、frozen admitted scope 與 first dates。
 Freshness 只 aggregate running admission 的 feeds，pending sibling 保留 blocker 明細。Registry/contract
 market、asset、frequency 與 schema v1 必須符合實際 runtime；malformed scope 仍回報 configuration error。
 Feed raw/canonical 更新可能來自 Pilot，不能證明 Full runtime 已部署、被授權或回報自己的 heartbeat。

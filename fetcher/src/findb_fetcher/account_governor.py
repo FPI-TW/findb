@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from findb_fetcher.config import app_environment
-from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
+from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError, QuotaBlockedError
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
 
@@ -39,8 +39,20 @@ class Permit:
     bound: int
     allocation: str | None = None
     allocation_sha256: str = ""
+    platform_limits: bool = False
+    byte_limit: int | None = None
+    requests_before: int = 0
+    requests_after: int = 0
 
     def observe(self, byte_count: int, *, declared: int = 0) -> None:
+        if self.platform_limits:
+            if self.byte_limit is not None:
+                self.state.record_byte_overage(
+                    account=self.account, window=self.window, byte_count=byte_count
+                )
+            if max(byte_count, declared) > self.bound:
+                raise FullMarketStateError("provider response exceeds transport bound")
+            return
         if max(byte_count, declared) > self.bound:
             self.state.observe_capacity(
                 account=self.account,
@@ -135,8 +147,6 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
         return {"acquisition_allowed": True}  # Each bounded runtime retains its own control/auth.
     if not enabled():
         raise QuotaBlockedError("local full-market flag is disabled")
-    if not runtime_identity_matches(value["runtime_id"]):
-        raise QuotaBlockedError("enrollment belongs to another installed runtime")
     with FullMarketSourceClient(FetcherConfig.from_env()) as source:
         result = source.request(
             "GET",
@@ -144,8 +154,6 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
             + urlencode(
                 {
                     "consumer": consumer(),
-                    "declaration_sha256": checksum(canonical_bytes(value)),
-                    "runtime_id": value["runtime_id"],
                 }
             ),
         )
@@ -155,77 +163,52 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def reserve(provider: str, *, force: bool = False) -> Permit | None:
-    if not enabled() and not force and consumer() not in {"pilot", "historical"}:
-        return None
-    try:
-        value = load_declaration(provider)
-    except FileNotFoundError:
-        if consumer() in {"pilot", "historical"} and not force:
-            return None
-        raise QuotaBlockedError("shared account allocation not installed") from None
-    authorization = authorize(value)
-    interval = max(
-        1 / value["requests_per_second"],
-        60 / value["requests_per_minute"],
-        60 * 8 / (0.8 * value.get("source_requests_per_minute", 120)),
-    )
-    reported = authorization.get("effective_acquisition_interval_seconds")
+    from findb_fetcher.platform_limits import account_identity, interval, limits
+
+    if (
+        consumer() in {"pilot", "historical"}
+        and not force
+        and not os.getenv("FETCHER_ACCOUNT_STATE_PATH")
+    ):
+        return None  # Existing bounded installations retain their provider enforcement.
+    value = limits(provider)
     if consumer() not in {"pilot", "historical"}:
-        if not isinstance(reported, (int, float)) or not math.isfinite(reported) or reported <= 0:
-            raise QuotaBlockedError("Source acquisition pacing budget unavailable")
-        interval = max(interval, reported)
+        authorize({})
     path = Path(os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"))
     state = FullMarketState(path)
-    account = value["account"]["account_id"]
-    if "usage_day" in value["account"]:
-        state.usage_floor(
-            account=account,
-            window=value["account"]["usage_day"],
-            requests=value["account"]["used_requests"],
-            byte_count=value["account"]["used_bytes"],
-        )
+    account = account_identity(provider, state)
     while True:
-        # Waiting must not spend the Source budget on repeated remote probes.
         if consumer() not in {"pilot", "historical"} and not enabled():
             raise QuotaBlockedError("local full-market flag is disabled")
-        if consumer() not in {"pilot", "historical"} and datetime.fromisoformat(
-            value["expires_at"]
-        ) <= datetime.now(timezone.utc):
-            raise QuotaBlockedError("readiness expired")
-        wait, _, _, window = state.reserve_acquisition(
+        wait, before, after, window = state.reserve_acquisition(
             account=account,
-            interval=interval,
+            interval=interval(value),
             requests=1,
-            byte_count=value["max_response_bytes"],
-            request_limit=value["requests_per_day"],
+            byte_count=0,
+            request_limit=None,
             byte_limit=value["bytes_per_day"],
             minute_limit=value["requests_per_minute"],
-            allocation="other" if consumer() in {"pilot", "historical"} else None,
-            allocation_request_limit=value["account"]["other_requests_per_day"],
-            allocation_byte_limit=value["account"]["other_bytes_per_day"],
+            enforce_capacity=False,
         )
         if wait <= 0:
-            latest = authorize(value)  # Fresh authorization immediately before acquisition.
-            if (
-                consumer() not in {"pilot", "historical"}
-                and latest.get("effective_acquisition_interval_seconds", interval) > interval
-            ):
-                raise QuotaBlockedError("Source pacing allocation changed; reenrollment required")
-            state.assert_capacity(account)
+            if consumer() not in {"pilot", "historical"}:
+                authorize({})
             return Permit(
                 state,
                 account,
                 window,
                 value["max_response_bytes"],
-                "other" if consumer() in {"pilot", "historical"} else None,
-                value.get("account_allocation_sha256") or checksum(canonical_bytes(value)),
+                platform_limits=True,
+                byte_limit=value["bytes_per_day"],
+                requests_before=before,
+                requests_after=after,
             )
         time.sleep(min(wait, 1))
 
 
 def provider_permit(provider: str) -> Permit | None:
     # Full-market runtime already reserves before every concrete operation.
-    return None if consumer() == "full_market" else reserve(provider)
+    return None if consumer() in {"full_market", "maintenance"} else reserve(provider)
 
 
 def source_permit(source_key: str) -> None:
@@ -234,41 +217,10 @@ def source_permit(source_key: str) -> None:
     Installed allocation is configuration, not Full acquisition authorization.
     Missing allocation keeps ordinary bounded installations unchanged.
     """
-    import hashlib
-
-    allocation = os.getenv("FETCHER_ACCOUNT_ALLOCATION_FILE")
-    if allocation is None:
-        readiness = os.getenv("FETCHER_ACCOUNT_READINESS_FILE")
-        if not readiness:
-            return
-        allocation = str(Path(readiness).with_suffix(".account.json"))
-    path = Path(allocation)
-    if not path.is_file():
-        return
-    try:
-        value = json.loads(path.read_bytes())
-        rpm = value.get("source_requests_per_minute", 120)
-        if type(rpm) is not int or rpm < 1:
-            rpm = 120
-    except (ValueError, OSError):
-        rpm = 120  # Malformed readiness must still permit conservatively paced frozen delivery.
-    state = FullMarketState(
-        Path(os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"))
-    )
-    account = "source:" + hashlib.sha256(source_key.encode()).hexdigest()
-    while True:
-        wait, _, _, _ = state.reserve_acquisition(
-            account=account,
-            interval=60 / (0.8 * rpm),
-            requests=1,
-            byte_count=0,
-            request_limit=10**15,
-            byte_limit=1,
-            minute_limit=rpm,
-        )
-        if wait <= 0:
-            return
-        time.sleep(min(wait, 1))
+    # The authenticated Source API enforces its DB-backed client rate limit.
+    # Its HTTP 429 / Retry-After handling remains in the delivery clients.
+    # Obsolete account allocation budgets must not override that authority.
+    return
 
 
 def repair_capacity(

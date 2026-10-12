@@ -77,17 +77,17 @@ EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查�
 `expected = data + no_data + missing + blocked` 只依 canonical
 provenance 與持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
 
-Full market 使用環境 opt-in flag、trusted installation/account enrollment 與 Owner scheduler admission；
+Full market 使用環境 opt-in flag 與 Owner scheduler admission；啟動只要求 published baseline 與完整 calendar，
+新抓取不要求 readiness/enrollment/expiry/capacity proof，保留 API 認證、平台配額與資料驗證。
 registry `is_active` 保持普通 dataset acceptance，不能代替 Full flag。部分 ready feeds 可 start，
-stopped→running transaction 以 environment→sorted datasets→calendar markets→enrollment→Source
-client→control lock order 重查並凍結 scope/first dates/revision/audit。Baseline publish 先鎖 dataset 再 release。
+stopped→running transaction 以 environment→sorted datasets→calendar markets→control lock order 重查並凍結 scope/first dates/revision/audit。Baseline publish 先鎖 dataset 再 release。
 容量 repair 必須經 Source-authenticated 唯讀 current enrollment verification 與 fresh installed ACK，
 不能信任任意檔案的 UUID/hash；此 proof check 獨立於 acquisition/Owner stopped/flag，且 GET 不寫 audit/control。
 旗標关闭由 ingest/all lifecycle 或 trusted management stop/audit，Serve/GET 不寫狀態。既有 prepared
 `fp1` delivery/normalization 繼續完成；新 acquisition 不得用 cached desired-state 授權。
 Source 實際交付仍拒絕未来 trade date、超過五分鐘 fetched_at skew，並要求已過市場收盤；
 TAIFEX after_hours 採 attributed trade_date 當地05:00，regular 採 published close 或13:45。
-Migration 保留合法 legacy activation_date，malformed 日期阻擋該 feed；啟動後只补首日後 gaps。
+Migration 保留合法 legacy activation_date，malformed legacy 日期在首次 start 時以 immutable first date 修正；啟動後只补首日後 gaps。
 詳細 current contracts 與 local/deployed 操作見 `docs/operations/full_market.md`。
 
 `app/services/ingestion.py`的`CONTRACT_NORMALIZER_MAP`是唯一dispatch來源，只能依明確

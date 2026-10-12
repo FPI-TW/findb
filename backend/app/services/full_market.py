@@ -98,7 +98,12 @@ async def _scope(
     allowed_datasets: list[str] | None,
     lock: bool = False,
 ) -> DatasetRegistry:
-    if not allowed_datasets or dataset_key not in allowed_datasets:
+    if (
+        not isinstance(allowed_datasets, list)
+        or not allowed_datasets
+        or any(not isinstance(key, str) or not key.strip() for key in allowed_datasets)
+        or dataset_key not in allowed_datasets
+    ):
         raise FullMarketError("Source dataset scope denied", 403)
     stmt = select(DatasetRegistry).where(DatasetRegistry.dataset_key == dataset_key)
     if lock:
@@ -433,8 +438,8 @@ async def create_plan(
     from app.services.full_market_admission import lock_calendars, lock_environment
 
     await lock_environment(db)
-    from app.models.registry import FullMarketEnrollment, SchedulerControl, SourceClient
-    from app.services.full_market_admission import admission_projection, current_enrollment
+    from app.models.registry import SchedulerControl, SourceClient
+    from app.services.full_market_admission import admission_projection
     from app.services.scheduler_start import scheduler_start_datasets
 
     datasets = await scheduler_start_datasets(db, f"full_market_{body.provider}_v1", lock=True)
@@ -446,16 +451,9 @@ async def create_plan(
         lock=False,
     )
     await lock_calendars(db, datasets)
-    enrollment = await current_enrollment(db, body.provider)
-    if enrollment:
+    if db.info.get("source_client_id"):
         await db.get(
-            FullMarketEnrollment,
-            enrollment.enrollment_id,
-            with_for_update=True,
-            populate_existing=True,
-        )
-        await db.get(
-            SourceClient, enrollment.source_client_id, with_for_update=True, populate_existing=True
+            SourceClient, db.info["source_client_id"], with_for_update=True, populate_existing=True
         )
     await db.get(
         SchedulerControl,

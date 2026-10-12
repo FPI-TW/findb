@@ -41,6 +41,7 @@ class FullMarketState:
         os.chmod(path, 0o600)
         with self.connection() as db:
             db.executescript("""
+                CREATE TABLE IF NOT EXISTS full_account_identity (provider TEXT NOT NULL, credential_sha256 TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(provider,credential_sha256));
                 CREATE TABLE IF NOT EXISTS full_quota (account TEXT, window TEXT, requests INTEGER NOT NULL, bytes INTEGER NOT NULL, blocked_until REAL NOT NULL DEFAULT 0, PRIMARY KEY(account,window));
                 CREATE TABLE IF NOT EXISTS full_pacing (account TEXT PRIMARY KEY, next_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_capacity_violation (account TEXT PRIMARY KEY, violation_id TEXT NOT NULL, observed_bytes INTEGER NOT NULL, allocation_sha256 TEXT NOT NULL, recorded_at REAL NOT NULL, received_bytes INTEGER NOT NULL DEFAULT 0, declared_bytes INTEGER NOT NULL DEFAULT 0);
@@ -75,6 +76,37 @@ class FullMarketState:
             raise
         finally:
             db.close()
+
+    def account_identity(
+        self,
+        provider: str,
+        credential_sha256: str,
+        initial: str,
+        *,
+        legacy_credential_sha256: str | None = None,
+    ) -> str:
+        """Pin an account ledger across optional evidence changes and restarts."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            # Retain a known pin created with the pre-normalization raw digest.
+            # This associates an exact known credential, never anonymous ledger debt.
+            if legacy_credential_sha256 is not None:
+                legacy = db.execute(
+                    "SELECT account FROM full_account_identity WHERE provider=? AND credential_sha256=?",
+                    (provider, legacy_credential_sha256),
+                ).fetchone()
+                if legacy is not None:
+                    initial = legacy[0]
+            db.execute(
+                "INSERT OR IGNORE INTO full_account_identity VALUES(?,?,?)",
+                (provider, credential_sha256, initial),
+            )
+            return str(
+                db.execute(
+                    "SELECT account FROM full_account_identity WHERE provider=? AND credential_sha256=?",
+                    (provider, credential_sha256),
+                ).fetchone()[0]
+            )
 
     def reserve(
         self,
@@ -140,9 +172,10 @@ class FullMarketState:
         interval: float,
         requests: int,
         byte_count: int,
-        request_limit: int,
-        byte_limit: int,
-        minute_limit: int,
+        request_limit: int | None,
+        byte_limit: int | None,
+        minute_limit: int | None,
+        enforce_capacity: bool = True,
         allocation: str | None = None,
         allocation_request_limit: int = 0,
         allocation_byte_limit: int = 0,
@@ -154,18 +187,19 @@ class FullMarketState:
         """
         if (
             not math.isfinite(interval)
-            or interval <= 0
+            or interval < 0
+            or any(type(value) is not int or value < 0 for value in (requests, byte_count))
             or any(
-                type(value) is not int or value < 0
-                for value in (requests, byte_count, request_limit, byte_limit, minute_limit)
+                value is not None and (type(value) is not int or value < 1)
+                for value in (request_limit, byte_limit, minute_limit)
             )
-            or min(request_limit, byte_limit, minute_limit) < 1
         ):
             raise QuotaBlockedError("account limits are unknown or invalid")
         rejected = False
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._assert_capacity(db, account)
+            if enforce_capacity:
+                self._assert_capacity(db, account)
             # BEGIN IMMEDIATE may wait for another process. Sample the grant clock
             # only after owning the lock, for both pacing and quota boundaries.
             now = self.clock()
@@ -192,8 +226,11 @@ class FullMarketState:
             ).fetchone()
             if (
                 day["blocked_until"] > now
-                or day["requests"] + requests > request_limit
-                or day["bytes"] + byte_count > byte_limit
+                or (request_limit is not None and day["requests"] + requests > request_limit)
+                or (
+                    byte_limit is not None
+                    and (day["bytes"] >= byte_limit or day["bytes"] + byte_count > byte_limit)
+                )
             ):
                 raise QuotaBlockedError("durable account quota is exhausted")
             if allocation is not None:
@@ -223,7 +260,9 @@ class FullMarketState:
             row = db.execute(
                 "SELECT * FROM full_quota WHERE account=? AND window=?", (account, minute)
             ).fetchone()
-            if row["blocked_until"] > now or row["requests"] + requests > minute_limit:
+            if row["blocked_until"] > now or (
+                minute_limit is not None and row["requests"] + requests > minute_limit
+            ):
                 rejected = True
             else:
                 db.execute(

@@ -274,7 +274,7 @@ def test_slow_verified_rate_is_fully_waited_and_stop_rechecked(
     runtime.http.close()
 
 
-def test_readiness_expiring_during_pacing_does_not_reserve_or_acquire(
+def test_readiness_expiring_during_pacing_does_not_gate_acquisition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, _, _ = _runtime(tmp_path)
@@ -285,9 +285,8 @@ def test_readiness_expiring_during_pacing_does_not_reserve_or_acquire(
         expires_at=(clock.now() + timedelta(seconds=2)).isoformat(),
     )
     runtime._reserve()
-    with pytest.raises(runtime_module.ReadinessBlockedError, match="expired"):
-        runtime._reserve()
-    assert clock.elapsed == 102
+    runtime._reserve()
+    assert clock.elapsed == 110
     with runtime.state.connection() as db:
-        assert db.execute("SELECT SUM(requests) FROM full_quota").fetchone()[0] == 2
+        assert db.execute("SELECT SUM(requests) FROM full_quota").fetchone()[0] == 4
     runtime.http.close()

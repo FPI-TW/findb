@@ -238,7 +238,13 @@ def _run(
 async def test_dormant_full_market_reports_prerequisites_without_runtime_failure(
     test_session, provider
 ):
+    from app.services.full_market_admission import admission_projection
+
     await _setup_full_market(test_session, provider)
+    get_settings().FULL_MARKET_ENABLED = False
+    projection = await admission_projection(test_session, provider)
+    assert projection["acquisition_allowed"] is False
+    assert "full_market_flag_disabled" in projection["acquisition_blockers"]
     row = (await list_market_freshness(test_session, now=NOW))[0]
     assert row.monitor_kind == "full_market"
     assert row.activation_state == "not_activated"
@@ -248,7 +254,8 @@ async def test_dormant_full_market_reports_prerequisites_without_runtime_failure
     assert row.status == "not_due"
     assert row.feed_count == row.fresh_feed_count == row.late_feed_count == 0
     assert len(row.pending_feeds) == len(FULL_MARKET_SCOPES[provider])
-    assert all("full_market_flag_disabled" in feed.blockers for feed in row.pending_feeds)
+    assert all("full_market_baseline_missing" in feed.blockers for feed in row.pending_feeds)
+    assert all("full_market_flag_disabled" not in feed.blockers for feed in row.pending_feeds)
     assert all(not feed.runtime_eligible for feed in row.feeds)
     if provider in {"taifex", "twelve_data"}:
         unavailable = next(
@@ -305,7 +312,12 @@ async def test_full_market_registry_contract_scope_conflicts_remain_configuratio
     assert "tw_equity_eod:contract_scope_mismatch" in row.configuration_errors
     assert row.activation_state == ("activated" if enabled else "not_activated")
     pending_etf = next(feed for feed in row.pending_feeds if feed.dataset_key == "tw_etf_eod")
-    assert "full_market_feed_not_enrolled" in pending_etf.blockers
+    expected_blockers = ("full_market_baseline_missing",)
+    if field == "market":
+        # No feed is ready: the CN conflict also contributes its missing calendar
+        # to scheduler prerequisites, while the ETF's own baseline is absent.
+        expected_blockers += ("full_market_calendar_missing",)
+    assert pending_etf.blockers == expected_blockers
 
     response = await client.get("/api/v1/admin/market-freshness", headers=admin_headers)
     assert response.status_code == 200

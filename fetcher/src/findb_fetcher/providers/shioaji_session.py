@@ -66,6 +66,12 @@ class ShioajiSession:
             raise ShioajiSdkError("shioaji contract missing", code="CONTRACT")
         try:
             before = _usage_bytes(self.api)
+            from findb_fetcher.platform_limits import SHIOAJI_DAILY_BYTES
+
+            if before is not None and before >= SHIOAJI_DAILY_BYTES:
+                raise ShioajiSdkError(
+                    "shioaji daily API byte quota exhausted or unavailable", code="QUOTA"
+                )
             raw = self.api.kbars(
                 self.contracts[symbol], start=target.isoformat(), end=target.isoformat()
             )

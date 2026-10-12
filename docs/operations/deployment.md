@@ -50,12 +50,12 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 Local、staging、production 均以 `FULL_MARKET_ENABLED=false` 預設停用。一般 deployment 依 GitHub
 Environment 旗標選 bounded/full-market；rollback 讀 accepted record 原 profile。Full profile 保留
 獨立 Pilot 與 historical consumers，安裝四個独立 Full workers、共用 durable provider-account governor。
-Fresh post-install inspection receipt、trusted enrollment、Owner baseline publish 與完整 calendar 是手動
-start 前提；不使用 per-feed activation 或五日門檻。旗標關閉的 bounded rollout 保留既有 Full worker
+Owner published baseline 與完整 published calendar 是手動 start 的兩項資料前提；
+不使用 per-feed activation 或五日門檻。旗標關閉的 bounded rollout 保留既有 Full worker
 與 checkpoint 供 prepared backlog drain；不能刪除 payload state 或重用 Pilot container names。
 
-操作步驟、local/deployed receipt generators、嚴格 quota/account evidence 與管理命令見
-[Full market runbook](full_market.md)。Backend migration 先於 enrollment/Fetcher rollout；所有 controls
+操作步驟、local/deployed receipt generators、各平台已公布限制、治理資料清單與管理命令見
+[Full market runbook](full_market.md)。Backend migration 先於 Fetcher rollout；所有 controls
 初始 stopped，開旗標不會自動啟動。新 full-market-only datasets 的 registry 可 active，但普通 Source
 ingest 仍需 `fp1` frozen-plan identity；dataset existence/provider/dataset scope 檢查維持。
 
@@ -153,15 +153,17 @@ registry/calendar bootstrap 與其餘 rollout 前置條件。PR #284 已合入
 reconciler 重跑均 unchanged。獨立唯讀驗證結果保存在
 `/private/tmp/findb-staging-bridge-validator.json`。TAIFEX secret read 由實際 Fetcher instance 驗證成功；
 FinDB role 對 Fetcher TAIFEX secret／KMS 的 cross-unit read simulation 為 implicit deny，只證明 FinDB
-role 無法讀取 Fetcher secret。FinDB Backend registry/calendar bootstrap 已成功。遠端四個 bounded pilot
-startup 仍待執行，因此不得視為 rollout 或五個 feed 驗收完成。
+role 無法讀取 Fetcher secret。FinDB Backend registry/calendar bootstrap 已成功。現行遠端 runtime
+部署狀態見 [Full market runbook](full_market.md)；runtime 安裝不等同各 feed 的資料流驗收。
 Deploy checksum 綁定 catalog、configs 與 runtime entrypoints。Provider desired state 由 Owner 控制，不偽造 heartbeat。
 
-目前 staging rollout 範圍限於 catalog 中的四個 provider、五個 feed 與四個 bounded CLI runtime，分別使用每 provider 1–2 商品與最新
-已完成交易日。四個 CLI 的 transitive call graph 均不 import 或呼叫 full-market runtime；full-market 程式碼
+Staging bounded pilot catalog 包含四個 provider、五個 feed 與四個 bounded CLI runtime，分別使用每 provider 1–2 商品與最新
+已完成交易日。2026-10-12 staging 已同步 Backend／Fetcher `FULL_MARKET_ENABLED=true` 並完成
+`full-market` profile 部署，另安裝四個獨立 Full workers；部署與實際容器驗證見
+[Full market runbook](full_market.md)。Pilot 與 Full controls 皆維持 stopped，Full readiness／account
+文件尚未安裝，尚未啟動 Full 抓取。四個 Pilot CLI 的 transitive call graph 均不 import 或呼叫 full-market runtime；full-market 程式碼
 的實際類別為 `FullMarketRuntime` 與 `FullMarketState`，reservation 方法為
-`FullMarketState.reserve_acquisition`。四個 full-market controls 在遠端實際保持 stopped；staging 僅執行
-bounded pilots。該 reservation 在 request 實際開始前取樣 grant clock 並先提交時，可能令 `next_at` 與
+`FullMarketState.reserve_acquisition`。該 reservation 在 request 實際開始前取樣 grant clock 並先提交時，可能令 `next_at` 與
 quota window 早於 commit 後才發生的實際 acquisition，壓縮 acquisition 間隔並將分鐘 quota 歸入錯誤
 window。這是 production full-market activation blocker。啟用前須有 controlled delay 與 window rollover
 regression，檢查間隔與 quota 分類，並以實際 acquisition 時間作斷言，不能只檢查 DB grant clock。
@@ -327,7 +329,7 @@ Shioaji control同時涵蓋`tw_equity_minute`與`tw_etf_minute`。「Pilot 全�
 controls，確認視窗列出更新數量與跳過原因；再逐筆確認observed state恢復`running`。
 同provider另一區仍為desired或observed running時，單筆與批次啟動確認視窗提示重疊風險；
 Owner可確認繼續，這不是後端互斥保證。應先停止另一區並等候實際停止。
-Local/staging/production 的 `full_market_*_v1` controls 安裝後保持 `stopped`。有效 opt-in flag、installed runtime/account readiness、Owner published 官方 baseline 與完整 calendar 後，Owner 手動啟動並凍結 ready scope；操作見 [Full market runbook](full_market.md)。批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
+Local/staging/production 的 `full_market_*_v1` controls 安裝後保持 `stopped`。Owner published 官方 baseline 與完整 calendar 後，Owner 手動啟動並凍結 ready scope；操作見 [Full market runbook](full_market.md)。批次操作若部分失敗會保留每張卡片的錯誤，不會繞過人工判斷或自動重試。
 Fetcher candidate只以`docker create --restart no`驗證最終container config，並以
 `com.findb.fetcher.accepted=false`標示；未accepted scheduler從不啟動，因此untrappable command／host
 interruption不會留下未授權writer。Accepted activation先以atomic symlink replacement將`/opt/fetcher/current`寫成

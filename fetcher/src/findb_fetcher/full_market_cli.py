@@ -7,7 +7,6 @@ import json
 import os
 import sqlite3
 import sys
-import time
 from contextlib import closing
 from datetime import datetime, timezone
 from datetime import time as clock_time
@@ -18,9 +17,9 @@ from zoneinfo import ZoneInfo
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import FetcherConfig, MarketCalendarConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
-from findb_fetcher.full_market_runtime import FullMarketRuntime, ReadinessBlockedError
-from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
+from findb_fetcher.full_market_client import FullMarketSourceClient
+from findb_fetcher.full_market_runtime import FullMarketRuntime
+from findb_fetcher.full_market_state import FullMarketState
 from findb_fetcher.market_calendar import PublishedCalendarClient
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 from findb_fetcher.scheduler_control import SchedulerControlClient, scheduler_stop_event
@@ -192,10 +191,12 @@ def main(argv: list[str] | None = None) -> int:
             def can_acquire() -> bool:
                 if os.getenv("FULL_MARKET_ENABLED", "false").lower() != "true":
                     return False
-                report()
                 if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance":
                     return (
-                        True  # The shared permit immediately checks enrolled account authorization.
+                        source.request("GET", "full-market/authorization?consumer=maintenance").get(
+                            "acquisition_allowed"
+                        )
+                        is True
                     )
                 current = control.poll(observed_state="running")
                 authorization = source.request("GET", "full-market/authorization")
@@ -215,53 +216,6 @@ def main(argv: list[str] | None = None) -> int:
                 can_acquire=can_acquire,
                 readiness_file=Path(os.environ["FETCHER_ACCOUNT_READINESS_FILE"]),
             )
-            # A stopped worker can report enrolled capability and drain prepared payloads.
-            enrollment_file = Path(
-                os.getenv(
-                    "FETCHER_ENROLLMENT_FILE",
-                    str(
-                        Path(os.environ["FETCHER_ACCOUNT_READINESS_FILE"]).with_suffix(
-                            ".enrollment.json"
-                        )
-                    ),
-                )
-            )
-
-            last_report = [0.0]
-
-            def report() -> None:
-                if time.monotonic() - last_report[0] < 30:
-                    return
-                last_report[0] = time.monotonic()
-                if enrollment_file.is_file():
-                    try:
-                        from findb_fetcher.account_governor import (
-                            load_declaration,
-                            runtime_identity_matches,
-                        )
-
-                        report_body = json.loads(enrollment_file.read_bytes())
-                        report_body["full_market_enabled"] = False
-                        if os.getenv(
-                            "FULL_MARKET_ENABLED", "false"
-                        ).lower() == "true" and runtime_identity_matches(report_body["runtime_id"]):
-                            try:
-                                load_declaration(args.provider)
-                                report_body["full_market_enabled"] = True
-                            except (QuotaBlockedError, ReadinessBlockedError, OSError, ValueError):
-                                pass
-                        source.request("POST", "full-market/readiness", report_body)
-                    except (
-                        FullMarketProtocolError,
-                        QuotaBlockedError,
-                        ReadinessBlockedError,
-                        OSError,
-                        ValueError,
-                    ):
-                        # An expired enrollment blocks acquisition but cannot strand prepared data.
-                        pass
-
-            report()
             if args.sync_universes:
                 os.environ["FETCHER_CONSUMER_PROFILE"] = "maintenance"
                 # Publishing remains an Admin-only action.
@@ -270,7 +224,6 @@ def main(argv: list[str] | None = None) -> int:
             with scheduler_stop_event() as stopped:
                 while not stopped.is_set():
                     runtime.drain()
-                    report()
                     observed = control.poll(observed_state="stopped")
                     if observed.desired_state == "running" and can_acquire():
                         try:
@@ -310,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception:
         print(
-            "full-market startup or operation blocked; inspect approved readiness and durable state",
+            "full-market startup or operation blocked; inspect baseline, calendar, authentication and durable state",
             file=sys.stderr,
         )
         return 2

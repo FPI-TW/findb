@@ -1,144 +1,189 @@
-# Full market 手動啟動與 runtime enrollment
+# Full market 啟動、平台配額與治理資料
 
 `FULL_MARKET_ENABLED=false` 是 local、staging、production 的預設值。Backend 與 Fetcher 必須使用
 相同 `APP_ENVIRONMENT=local|staging|production` 與旗標。既有 JSON `deployment_target` 仍是環境匹配契約；legacy replay/inspection 窄 bridge 見 deployment runbook。GitHub Environment 的 `FULL_MARKET_ENABLED` 決定一般 deploy 的
 `bounded`／`full-market` profile；rollback 從 immutable accepted record 讀取原 profile，不修改 bundle。
-旗標為 true 不會啟動排程。缺 runtime、evidence、baseline 或 calendar 時，只阻擋 Full market；
-Pilot 保留自身 control 與 Source credential 權限。
+旗標為 true 不會啟動排程。Full market 的啟動資料條件只包含已發布 baseline 與完整已發布 calendar。
+Owner 權限、revision CAS 與 Source 認證屬於既有操作／資料存取規則。
+Full API 的 Source credential 必須有明確、非空的 dataset list，且涵蓋 admitted feeds；
+NULL、空值或 malformed scope 一律拒絕授權與 universe／plan 存取。
+maintenance bootstrap 也必須通過有效 provider／dataset scope 與 credential 期限檢查，
+但無須先建立 admission 或發布 baseline；授權回應的 blockers 僅反映 maintenance 條件，
+並以 `authorized_dataset_keys` 限制官方名單刷新。Running cycle 刷新成功或失敗後，
+universe、plan 與新資料抓取仍僅使用當次凍結的 admitted feeds。正常 credential create／rotate
+會將省略的 scope 展開成 provider 的明確清單；本規則不放寬既有 API 邊界。
+
+2026-10-12 staging 已明確 opt-in：`staging-findb`／`staging-fetcher` GitHub Environment 與兩組
+本機 `.env.remote` 的 `FULL_MARKET_ENABLED` 均已同步為 `true`。同一 protected-main revision
+`5ef7540e340331a3afd502efca75bcd7b5199c20` 依序完成
+[FinDB CD](https://github.com/FPI-TW/findb/actions/runs/38194939788) 與
+[Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/38195805655)，包含各自 CI、candidate acceptance
+與 activation。Fetcher accepted manifest 的 `runtime_profile=full-market`。
+
+獨立 SSM commands `78381ba8-a11f-4542-ad3f-3b41f8938660`（FinDB）與
+`281a02ec-0325-4af0-a108-864567688dd0`（Fetcher）均成功（exit 0），確認 FinDB
+Serve／Ingest／Worker／Dispatcher／Raw cleanup、四個 Pilot scheduler 與四個 Full workers 的容器
+環境皆為 `APP_ENVIRONMENT=staging`、`FULL_MARKET_ENABLED=true`，全部 running、restart count 0；
+Fetcher 容器皆為 accepted。公開 `/health` 回傳 healthy。八個 scheduler 的 desired／observed state
+皆為 stopped，且都有新 heartbeat；部署前後 control revisions 未變。Full readiness／account 文件
+尚未安裝，部署版本仍有舊 enrollment gate；本分支移除該 gate，發布新版後只需 baseline／calendar 與 Owner 手動啟動。
+此紀錄為查核當時的狀態；後續部署後須重新確認實際值。
+
+## Staging readiness 查核（2026-10-12）
+
+11:03（Asia/Taipei）以現行 Backend eligibility 查核四個 `full_market_*_v1` controls，
+皆為 `start_allowed=false`、desired／observed stopped、revision 5 且 heartbeat fresh。
+共同 start blockers 為 `full_market_runtime_missing`、`full_market_no_ready_feeds`；前者表示
+DB 尚無 trusted enrollment，不代表 Docker worker 未安裝。七個 feeds 皆缺 published baseline，
+DB 無 candidate 或 published universe。US／HK／TW／TAIFEX 2026 calendar 各有完整
+published revision（365／365），現行 eligibility 未回報 calendar 或 registry configuration blocker。
+
+已完成以下可獨立處理的設定：
+
+- 以實際 installed Source key hashes 綁定既有四個 Source clients，執行 credential reconciler 的
+  `full-market` profile。Twelve Data scope 包含 US／HK EOD；FinLab 包含 TW equity／ETF EOD；
+  Shioaji 包含 TW equity／ETF minute；TAIFEX 為 TW futures EOD。四個 internal Source limits
+  均為 2400 RPM，既有 client UUID／key hash 保留；calendar Serve credential unchanged，
+  reconciler 寫入治理 audit。
+- 首次建立 `/var/lib/findb-account/staging/governor.sqlite3`，owner 10001、mode 0600，
+  integrity check 為 ok；quota／work／plan／capacity violation／repair tables 初始皆空。
+  空 governor 不表示 provider 當日用量為零，SDK API 的帳號累計用量仍為平台配額權威。
+- 從 immutable accepted S3 object 複製原始 acceptance record，連同 installed manifest／config、
+  有上限的 quota probe plan 與去敏觀察結果保存至 Fetcher host 的
+  `/etc/findb-full-market/evidence/staging/c035a87dda0f261142860b451ac645263982fc75d3a2ec8ff184f1e95216afb2/`。
+  目錄 0700、檔案 0600；此處的 `readiness-constraints.json` 為 incomplete observation，
+  不可當作 verified readiness／account declaration 安裝。
+
+11:01（Asia/Taipei）的 bounded quota observation 結果：
+
+| Provider | 已取得的額度／用量證據 | 尚缺的治理資料 |
+| --- | --- | --- |
+| Twelve Data | `/api_usage`：`plan_limit=1597`、`current_usage=1`，單位為 credits／minute；一次 probe 消耗 1 credit | US／HK official universe、provider symbol mapping、Owner published baseline |
+| FinLab | SDK 1.5.7 quota metadata：`limit_size=5000`、`quota=33.292991638183594` MB；未下載 table | TW equity／ETF official universe、provider symbol mapping、Owner published baseline |
+| Shioaji | SDK 1.7.1 simulation `usage()`：`bytes=0`、`limit_bytes=remaining_bytes=524288000`（500 MiB）；50 calls／10 秒 | TW equity／ETF official universe、catalogue mapping、Owner published baseline |
+| TAIFEX | 公開 OpenAPI，不需 provider 帳號；scoped Source client 與 worker 已安裝 | 實際月／週合約與日盤／盤後 official baseline、Owner publish |
+
+七個 feeds 尚無 published baseline；具體交付資料見
+下方「治理資料明確需求」。此查核記錄來自當時 staging 的舊部署；本工作分支已將啟動資格
+與新抓取均只依 baseline／calendar 及既有操作控制、API 認證；本分支尚未部署。
+
+驗證 SSM commands：Source 校準 `707a9976-8a48-4ef4-9416-bb9bad8e535d`、quota observation
+`f0bb370e-cc21-4f91-9e0e-ebc2a5c6fcf7`、Backend 最終 eligibility
+`71617f8e-f60f-451e-8408-4439dc70dd8d`、Fetcher 最終容器／governor
+`0fd99533-bedf-495d-9d7a-bebad9f23d03` 均為 Success／exit 0。八個 Fetcher containers
+均 running、flag true、restart count 0。
 
 ## 啟動契約
 
-Owner 先審核並發布 official baseline，再發布完整年度 exchange calendar。管理流程將實際安裝
-runtime、Source client UUID、environment、artifact／config、provider evidence、quota、帳號配置與
-有效期限綁定。Fetcher 即使停止也可 POST `/api/v1/source/full-market/readiness`，只回報 enrollment
-ID、digest、runtime ID 與已登錄 feeds；heartbeat 不能授權或延長 evidence。
+Full market 每個 feed 僅檢查兩項啟動條件：
 
-Owner 透過既有 `PATCH /api/v1/admin/schedulers/{scheduler_key}`，傳入 `desired_state=running`
-與 `expected_revision`。Backend 在 transaction 中重查全部資格，凍結當時 ready feeds 與 capacity
-proof。部分 feeds ready 即可啟動；新的 ready feed 須停止後重新啟動，重複 running PATCH 不改 scope。
+1. 同 provider／dataset 有 `published` official baseline，且 effective date 不晚於交易所當地今天。
+2. 對應交易市場當年度有完整 `published` calendar revision。
+
+至少一個 feed 同時具備這兩項資料即可啟動，並只凍結符合條件的 feeds。
+Enrollment、installation receipt、readiness ACK／expiry、account／capacity proof、環境旗標與
+registry 額外 metadata 不列為啟動資格 gate。舊 `full_market` metadata 若為字串或 list，
+start 視為缺少 optional governance，重新建立 activation date；有效 contract declaration 與
+既有 immutable first date 仍保留。未知 scheduler／scope 仍依 API definition validation
+處理，Owner 操作權限與 CAS 保留。
+
+Owner 透過 `PATCH /api/v1/admin/schedulers/{scheduler_key}`，傳入 `desired_state=running`
+與 `expected_revision`。Backend 在同一 transaction 重查 baseline／calendar，凍結 ready datasets、
+baseline IDs、calendar revision IDs 與首次日期，並寫入操作 audit；admission 不必綁定 enrollment。
+新的 ready sibling 須停止後再啟動，重複 running PATCH 不改凍結範圍。
 每 dataset 首次日期由交易所當地今天決定；migration 保留合法 legacy activation_date，malformed
-日期阻擋該 feed。停止、重啟與重新 enrollment 均不重設日期。舊 `/admin/feeds/{dataset}/activate`
+legacy 日期在首次 start 時以 immutable first date 修正。停止、重啟與重新 enrollment 均不重設日期。舊 `/admin/feeds/{dataset}/activate`
 與 `/deactivate` 在 Owner 認證後回傳 410；沒有 per-feed activation、manual readiness_approved 或五日門檻。
 
-每次 provider call 前立即查 effective Source authorization。旗標關閉、evidence 到期、runtime
-替換或 calendar 不完整時，禁止新抓取與 plan。已保存 prepared payload／frozen plan 的 delivery、
+每次 provider call 前立即查 effective Source authorization。旗標關閉、Owner 停止、Source credential 撤銷／到期或 calendar 不完整時，禁止新抓取與 plan。已保存 prepared payload／frozen plan 的 delivery、
 normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。關閉旗標由 ingest/all lifespan 或
 下述管理命令停止 Full controls 並寫 audit；GET 投影永遠唯讀。重新開旗標後仍需 Owner 手動啟動。
 
-## 共用 account allocation
+## 平台限制與用量
+
+平台配額只採用以下已確認限制；未公布的維度不新增數值配額、預算或啟動門檻。
+
+| Provider | 適用限制 | 用量核對與超限處理 |
+| --- | --- | --- |
+| Twelve Data | 1597 API credits／分鐘 | 以 `/api_usage` 與 response credit headers 核對實際 credits；依 endpoint weight 計算，收到 429 時等待／重試 |
+| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置 |
+| Shioaji | 500 MB／日、行情查詢 50 次／10 秒 | 以 `api.usage()` 的 bytes／limit_bytes／remaining_bytes 核對；API 回報的 524288000 bytes 為 500 MiB；依 10 秒視窗控制查詢速率 |
+| TAIFEX | OpenAPI 不需帳號，未公布明確 requests／bytes 數值上限 | 以 HTTP 429 作為觸及平台上限的訊號，依 `Retry-After` 或既有 backoff 等待／重試，不自行設定 provider 配額數值 |
+
+Twelve Data credits 計算見[官方說明](https://support.twelvedata.com/en/articles/5615854-credits)；
+Shioaji 限制見[官方使用限制](https://sinotrade.github.io/zh/tutor/limit/)；TAIFEX 平台與 endpoint
+定義見[官方 OpenAPI](https://openapi.taifex.com.tw/)及[Swagger schema](https://openapi.taifex.com.tw/swagger.json)。
+TAIFEX 429 的等待策略採用現行 runtime 的 rate-limit handling。
 
 安裝 Full profile 時，保留 Pilot 與已有 historical workers，使用獨立 container／checkpoint names。
-所有 installed consumers 共用 `/var/lib/findb-account/<environment>/governor.sqlite3`；provider account
-requests、minute quota、daily bytes 與 conservative reservation 跨 process/restart 保留。Pilot／historical
-使用 `.account.json` 的 installed allocation，與 Full readiness TTL 分開；已有安裝即使旗標關閉仍記帳。
-普通 bounded/local Pilot 沒安裝 allocation 時維持既有行為。啟用 Full 前 operator 必須將當日其它
-consumer 當日既有用量以 `account.usage_day`／`used_requests`／`used_bytes` 登錄（不能高估剩餘額度）；另將可能用量納入 `other_requests_per_day`／`other_bytes_per_day`；此 allowance 由 governor
-實際限制。實際 response 超過保守 bound 時保留 overage debt 並停止新 acquisition。
+Installed consumers 的用量與 cooldown 由 durable governor 保存，process restart 不清除帳號已用量。
+FinDB internal Source API 的 2400 RPM 為內部服務設定，與 provider 的平台配額分開。
+Payload／R2 object／解壓縮／IPC bounds 屬於傳輸與資料處理保護，不列為額外 provider 配額證據。
 
-Account 可 exclusive，或有明確 local/staging/production allocation，四個 quota 欄位的 allocation
-合計不得超過 verified provider totals。Unknown/unbounded SDK bytes 或無法證明跨 environment
-allocation 時不得登錄 Full readiness。Capacity 使用全部 ready feed 成員、report fallback、20% retry
-headroom、daily calls/bytes 與 deadline，以及每 provider call 八次 Source checks 的 roundtrip/RPM
-成本，保留 20% Source headroom；每個 provider/dataset 另依全 universe 成員計入至少四次 control／authorization／delivery或outcome／terminal Source requests，含 cached FinLab table 與 TAIFEX shared report。所有 opt-in consumers 的每次 Source HTTP request 共用 durable Source-key pacing，含 retries 與 stopped drain；Source authorization 回報 effective interval，由共用 permit 實際限速，等待不重複探測 Source。Declared Source RPM 不得超過 DB client limit；Full profile provision 為 2400 RPM，普通 bounded 為 120，既有 Full scope/budget 在 bounded key rotation 保留供 frozen delivery。Admission deadline 取 declaration 與已支援 feed window 的較小值（US 10800、HK/TW 14400、TAIFEX 18000 秒）；不能截斷 universe。Provider pacing commit-delay race 另列 backlog，並非本功能修復範圍。
+啟動資格的程式修改位於 `refactor/full-market-baseline-calendar-start`；migration
+`3553ed95cfbf` 允許 admission 的 legacy enrollment reference 為 null，保留既有歷史綁定。
+所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依
+published baseline 與完整 published calendar；新抓取另遵守 running control、有效旗標、Source
+及 provider API 認證與資料驗證。此分支尚未部署；live staging 的既有查核不能代表新版已生效。
 
-## 管理輸入與輸出
+## 治理資料明確需求
 
-Declaration 的嚴格型別是 `backend/app/schemas/full_market_readiness.py`。使用 UTC-aware
-`verified_at`／`expires_at`，安全 HTTPS evidence URL 與 SHA256。`datasets` 可為 provider 的部分 scope。
-`requests_per_day`、`requests_per_minute`、`requests_per_second`、`bytes_per_day`、`max_response_bytes`
-、`source_requests_per_minute` 以及 `account` 必須反映真實帳號配置。FinLab bound 必須涵蓋 SDK 原始整張 table（上限 2GiB）；HTTP providers 上限 16MiB。`account.consumers` 列出所有實際安裝 consumer，包含
-`full_market`、`maintenance`，以及存在的 `pilot`／`historical`。
+啟動必要治理資料只包含以下兩類，其餘診斷／部署資料不列為啟動前提：
 
-先將 declaration 的 `provider`、`environment`、上述 provider quota、`source_requests_per_minute` 與 `account` 存成
-`<provider>.account.json`，`requests_per_second` 用 JSON float。它是 operator 管理的 installed config，
-不含 credential；部署前放到 root-owned `/etc/findb-full-market/readiness/`（檔案 0644、目錄0755）。
-Receipt generator 比對實際安裝，不能手工捏造 receipt。Declaration 的 runtime/artifact/config/account
-identity 取自該 receipt，verified_at 在 receipt installed_at 之後；account digest 由管理 schema 算出並驗證。
+| 資料 | 必備內容 | 驗收方式／目前 staging 狀態 |
+| --- | --- | --- |
+| Published baseline | 每 provider／dataset 的 release ID、effective date、完整官方成員／provider mapping、來源 URL／SHA256 與不可變原始資料參考、member count／SHA256、Owner publication timestamp／audit | 同 provider／dataset、status=`published`、effective date 不晚於當地今天；七個 feeds 目前皆缺。首份發布提供 `evidence_note` 與 `first_baseline_approved=true`；重大成員異動仍遵循既有 publish 規則 |
+| Published calendar | 對應交易市場／當年度的 revision ID、timezone、完整日期與開休市／session times | status=`published` 且年度完整；US／HK／TW／TAIFEX 2026 皆已具備 365／365 published revision |
 
-管理命令必須在 Backend management DB scope 執行，不能向 Fetcher 提供 DB 或 Admin credential：
+TAIFEX baseline 成員保留 TX／MTX／TMF／TE／TF、實際月／週到期 contract code／month 與
+regular／after_hours sessions，排除價差與 continuous futures。官方成員與 mapping gaps 保留，
+不能刪除缺口來宣稱完整。Owner 發布與 start audit 是既有操作紀錄，不新增 receipt／enrollment
+等外部啟動核准步驟。
+
+七個 feed 的 baseline 對應如下，每個 dataset 都需要自己的 immutable release：
+
+| Provider | Dataset | Calendar market |
+| --- | --- | --- |
+| Twelve Data | `us_equity_eod`、`hk_equity_eod` | US、HK |
+| FinLab | `tw_equity_eod`、`tw_etf_eod` | TW |
+| Shioaji | `tw_equity_minute`、`tw_etf_minute` | TW |
+| TAIFEX | `tw_futures_eod` | TAIFEX |
+
+## 設定與啟動
+
+1. Backend 先執行 migration 與 registry seed；設定對應的 `APP_ENVIRONMENT`、Source provider/dataset
+   scopes、provider credentials、calendar Serve credential 與 Raw R2 設定。
+2. Backend／Fetcher 設定 `FULL_MARKET_ENABLED=true`，選用相同環境的 Full config。部署仍初始 stopped。
+3. Fetcher 的 checkpoint 與共用 `FETCHER_ACCOUNT_STATE_PATH` 使用 durable storage；所有已安裝
+   Pilot／Full consumers 使用同一帳號 governor。不要刪除或重建既有用量、cooldown 或 checkpoint。
+4. 使用 `--sync-universes` 提交官方名單與 provider mapping 的 candidate；它以 authenticated Source
+   maintenance 授權執行，無須 enrollment。Owner 發布 baseline，補齊完整 calendar，再手動 start。
+
+Local 範例（正常 Source、provider、calendar 與 R2 env 須已設定）：
 
 ```bash
-uv --directory backend run python scripts/enroll_full_market_runtime.py \
-  --declaration /secure/finlab.declaration.json --receipt /secure/finlab.receipt.json \
-  --artifact /secure/artifact --output-dir /secure/enrolled
+export APP_ENVIRONMENT=local FULL_MARKET_ENABLED=true FETCHER_CONSUMER_PROFILE=full_market
+export FETCHER_ACCOUNT_STATE_PATH=/private/tmp/findb-local-account/governor.sqlite3
+fetcher/.venv/bin/findb-fetch-full-market --provider finlab \
+  --config "$PWD/fetcher/configs/full_market.local.v1.json" \
+  --state-path /private/tmp/findb-local-full/state.sqlite3 --sync-universes
+fetcher/.venv/bin/findb-fetch-full-market --provider finlab \
+  --config "$PWD/fetcher/configs/full_market.local.v1.json" \
+  --state-path /private/tmp/findb-local-full/state.sqlite3 --run-forever
 ```
 
-Deployed 另加 `--manifest /secure/release-manifest.json --accepted /secure/accepted.json`。
-命令寫入 enrollment/audit，並輸出 canonical `<provider>.json`、`.account.json` 與 `.enrollment.json`。
-將三個檔案複製到 operator-owned readonly readiness directory。Runtime 直接讀 canonical JSON；
-不要加 envelope metadata 或自行修改 timestamp/數字型別，否則 digest 不一致。更新 scope、quota、
-artifact/config、runtime 或 expiry 要重新管理 enrollment；Source report 不可改它們。Revoked digest
-不能透過 idempotent 呼叫復活。
+staging／production 使用各自 config 與 durable paths。四個 Full workers 為
+`findb-full-market-{twelve-data,finlab,shioaji,taifex}`；Pilot 保留原 names，production Full
+checkpoint 保留既有 `/var/lib/findb-full-market/state.sqlite3`。升級只需既有部署驗證，
+不需要重新 enrollment、receipt 或 ACK。CLI 保留 `--readiness-file` 相容參數，正常抓取不讀該檔。
 
-僅同步旗標並停止 Full controls：
+舊 enrollment/report/verification 與 repair 工具僅保留歷史診斷用途，仍要求其既有可信檢查；
+不是 start 或新抓取前提，正常 worker 不再定期上報 readiness。`ReadinessDeclaration` 舊 schema
+不可填造數值，但亦無須為啟動建立 declaration。關閉旗標並 audit stop 可用：
 
 ```bash
 FULL_MARKET_ENABLED=false uv --directory backend run python scripts/enroll_full_market_runtime.py
 ```
-
-## Local 可執行流程
-
-1. 設定 Backend/Fetcher `APP_ENVIRONMENT=local`、`FULL_MARKET_ENABLED=true`，完成 migration、seed
-   與 scoped Source credential。Source/Serve 可以使用 loopback HTTP origin；遠端仍須 HTTPS。
-2. 選用 `fetcher/configs/full_market.local.v1.json`。在 repo root 建立 durable governor 並明確設定 runtime env：
-
-```bash
-mkdir -p /private/tmp/findb-local-account /private/tmp/findb-local-full /private/tmp/readiness
-uv --directory fetcher run python -c 'from pathlib import Path; from findb_fetcher.full_market_state import FullMarketState; FullMarketState(Path("/private/tmp/findb-local-account/governor.sqlite3"))'
-export APP_ENVIRONMENT=local FULL_MARKET_ENABLED=true FETCHER_CONSUMER_PROFILE=full_market
-export FETCHER_ACCOUNT_STATE_PATH=/private/tmp/findb-local-account/governor.sqlite3
-export FETCHER_ACCOUNT_READINESS_FILE=/private/tmp/readiness/finlab.json
-export FETCHER_ACCOUNT_ALLOCATION_FILE=/private/tmp/readiness/finlab.account.json
-```
-
-   安裝上述 account file；設定 Fetcher 正常的 provider、calendar Serve、Source client key 與 Raw R2 env（見 Fetcher README）。額外 Pilot/historical workers 要使用相同 governor/allocation，並 export 各自 consumer profile。
-3. 啟動停止狀態 worker，記下 PID；此時缺 enrollment 不抓 provider：
-
-```bash
-fetcher/.venv/bin/findb-fetch-full-market --provider finlab \
-  --config "$PWD/fetcher/configs/full_market.local.v1.json" \
-  --state-path /private/tmp/findb-local-full/state.sqlite3 \
-  --readiness-file /private/tmp/readiness/finlab.json --run-forever &
-FULL_PID=$!
-```
-
-4. 另個 terminal 執行實際 process inspection；額外已安裝 Pilot/historical process 以
-   `--consumer-pid pilot=<PID>`／`--consumer-pid historical=<PID>` 登錄：
-
-```bash
-uv --directory fetcher run python -m findb_fetcher.installation_receipt \
-  --pid "$FULL_PID" --config "$PWD/fetcher/configs/full_market.local.v1.json" \
-  --governor /private/tmp/findb-local-account/governor.sqlite3 \
-  --allocation /private/tmp/readiness/finlab.account.json --output /private/tmp/finlab.receipt.json
-```
-
-5. 用 receipt 填好 declaration，`--artifact` 指向安裝的
-   `fetcher/src/findb_fetcher/`（整個已安裝 Python package），執行 management enrollment 並複製 canonical outputs。
-   Worker 停止狀態 report 後，必要時用 `--sync-universes` 提交候選 baseline，再由 Owner publish。
-   完成完整 calendar 後在 Full market tab 手動啟動。Local runtime identity 由 artifact/config/governor
-   hash 決定，普通 restart 穩定；generator 比對 PID 的實際 env/allocation 路徑與啟動時間，source/config 修改後需先 restart 再 inspection。實際配置變更使舊 evidence 失效。
-
-## Deployed 可執行流程與 drain
-
-一般部署先完成 verified candidate、immutable acceptance 與 activation。從 release coordinator 的
-accepted object 複製完整 `accepted.json` 至 Fetcher host，與已驗證 release root `release-manifest.json` 一起保存。
-**完成 activation 後**在 host 執行 bundle 內 generator；它實際讀 Docker container ID、image、
-environment、running state、RW governor mount、每個容器的 actual allocation digest 與 Full config digest：
-
-```bash
-python3 <release-root>/infra/deploy/inspect_full_market_installation.py \
-  --manifest <release-root>/release-manifest.json --accepted /secure/accepted.json \
-  --config <release-root>/fetcher/configs/full_market.staging.v1.json \
-  --provider finlab --governor /var/lib/findb-account/staging/governor.sqlite3 \
-  --allocation /etc/findb-full-market/readiness/finlab.account.json \
-  --output /secure/finlab.receipt.json
-```
-
-Production 使用 `full_market.production.v1.json` 與 production governor path。Receipt 連同 immutable
-manifest/accepted record 複製至 management host，artifact 為同一 manifest，再執行 enrollment。
-單有 accepted bundle 不代表已安裝。停止 worker 仍每 30 秒 ACK 已登錄 installation；ACK 超過 90 秒或 runtime flag off／identity/config/account 不符即阻擋新 admission/acquisition。此 ACK 不能延長 evidence TTL 或創造 quota authority。Backend/Fetcher flag mismatch 是 blocker；prepared drain 仍可完成。Docker ordinary restart 保留 ID；recreate/upgrade 的新 ID 要 fresh
-inspection/enrollment。四個 Full workers 為 `findb-full-market-{twelve-data,finlab,shioaji,taifex}`，
-Pilot 保留原 names；production Full checkpoint 保留既有 `/var/lib/findb-full-market/state.sqlite3`。
 
 關閉旗標的一般 bounded deployment 保留已安裝 Full workers/checkpoint，讓 prepared backlog drain，
 新 false install 不新增它們。不要刪除 state、container 或改用 Pilot names。待 durable pending plans
@@ -148,7 +193,7 @@ Pilot 與 Full，確認 desired/observed stopped，再依既有 rollback 流程�
 ## Dashboard
 
 導入／排程預設 Pilot，`?profile=full_market` 選 Full market；切換只導覽，不寫 control。每 tab
-只呈現該 profile 與各自 bulk controls，標籤顯示 running 數量。Full 顯示有效旗標、readiness blockers、
+只呈現該 profile 與各自 bulk controls，標籤顯示 running 數量。Full 顯示有效旗標、baseline／calendar blockers、
 凍結 scope 與 first dates。Overlap confirmation 使用所有 controls（包含另一個隱藏 tab 的 desired
 或 observed running）；Owner、CAS、skip/error UI 與部署前停止兩邊提醒維持。
 
@@ -160,15 +205,29 @@ Pilot 與 Full，確認 desired/observed stopped，再依既有 rollback 流程�
 「歷史回補」保留 operator／owner 的預覽與確認操作。
 分頁深連結、刷新與錯誤處理見 [dashboard.md](dashboard.md)。
 
-## 容量違規與可信復原
+## 用量與傳輸保護
 
-Provider response 或官方 universe snapshot 超出 installed `max_response_bytes` 時，共用 governor
-會原子保存實際接收的額外 bytes 與 account-level capacity violation；所有 Full、Pilot、historical
-provider acquisition 都停止。Content-Length 超限即使尚未接收 body 也保存 declared witness；不把
-未接收 bytes 當 actual usage。SQLite `full_capacity_violation` 的 `received_bytes`／`declared_bytes`
-分別顯示證據，`observed_bytes` 是修復時新 bound 必須涵蓋的最大 witness。每日 quota 保留 conservative
-reservation 與 actual overage debt。普通 restart、隔日、TTL 更新或 heartbeat 都不解除違規；Source
-pacing 與 prepared delivery/normalization 可繼續。不要刪除 governor 或手改 usage/violation table。
+正常抓取使用 `platform_limits.py` 中的已確認限制。Twelve Data 按 1597 credits／分鐘 pacing；
+Shioaji 按 50 行情請求／10 秒 pacing，並在 Kbars 前查 `api.usage()`，每日達 500 MiB 就拒絕抓取。
+FinLab 由 authenticated SDK API 執行每日 5000 MB 配額；detached dataframe bytes 只用於傳輸
+驗證，不當作 API network usage。TAIFEX 不填造數值配額，429 保留 account cooldown。
+Source API 依 DB-backed credential 的實際 rate limit 執行 429，舊 allocation 不另加 Source 預算。
+Full governance client 遇到 429 時依 `Retry-After` 秒數或 HTTP 日期等待；無效值使用既有指數
+backoff，等待受 `FETCHER_MAX_RETRY_AFTER_SECONDS` 限制，嘗試次數受 `FETCHER_MAX_ATTEMPTS` 限制。
+
+已安裝的 account ID 可沿用以保留 ledger，provider／credential fingerprint 與 ledger ID 對應
+會以 SQLite transaction 持久化；完成首次 pin 後，舊證據檔移除或修改不改用新 ledger，
+既有 debt/cooldown 不重設，也不輸出 credential。Twelve Data 與 FinLab 的 fingerprint
+使用 provider config 去除前後空白後的有效 credential；同一有效 credential 的空白格式變動
+不另建 ledger。Full Shioaji 使用 persistent session 實際傳入 SDK 的原值，不套用額外正規化。
+首次升級尚未建立對照時，若舊 allocation 遺失、損壞或沒有可用 account ID，舊 schema 沒有
+provider／credential 關聯可供還原。此例外以 credential fingerprint 建立新 ledger，只依平台
+實際配額；原 ledger 用量與 cooldown 保留供稽核，不猜測、改標籤或合併匿名債務。
+此操作接受舊用量與 cooldown 無法接續的風險；應在首次升級前保留可辨識的 allocation 與
+governor 以維持完整接續。不同環境不設分配或預算，平台累計用量與服務端限流仍包含外部用量。
+Governor 保留用量、pacing、cooldown；舊 capacity violation/repair 資料保留稽核，正常抓取不再
+以它們作前提，也不刪除既有 debt。HTTP／SDK／IPC／R2 大小、格式與 provenance 驗證仍保留；
+過大或不合法 response 不得變成成功 payload，但不新增永久 account capacity 封鎖。
 
 首次 Full checkpoint bootstrap 僅傳入與 config 一致的 `APP_ENVIRONMENT`，在 local／staging／production
 以離線 `--initialize-state` 建立 SQLite；不載入 Source/provider secrets。已有 checkpoint 跳過初始化。
@@ -263,45 +322,10 @@ report 的非 200 回應與中途 transport failure；error body 不解析為 pr
 client 使用自己的 shared Permit，即使未提供 Full callback 也遵守同一帳號 cooldown。所有非 200
 （包含成功形狀的 201／206）一律拒絕；錯誤 JSON 只供遮蔽 secrets 的診斷，不成為成功 payload。
 中途 transport error 保留實際已讀 bytes，不能把未接收 body 當 debt。其他 consumers 與重啟程序遵守同一帳號 cooldown；
-未安裝共用 allocation 的既有 runtime 保留自身 provider checkpoint fallback。保留 conservative
-reservation，僅計入實際已接收的 overage，宣告長度不冒充 actual debt；prepared Source drain 不受影響。
+普通 bounded runtime 保留原 provider 行為；實際 SDK 用量與 cooldown 不退款；prepared Source drain 不受影響。
 已知超限 Content-Length witness 先於 unsupported encoding 拒絕保存；buffered 非 identity content
 可能已解碼，其 decoded 長度不作為 actual wire debt；只有可取得的 raw-byte counter 才計 actual，
-無可觀測 wire counter 時保留未知為 0 與 conservative reservation。
-
-先停止兩個 profiles，調查完整 response 大小、重試與 deadline/capacity，設定足夠的 finite bound、
-daily budget 及各環境 allocation，更新實際安裝的 `.account.json`。依上方流程 restart、fresh
-installation inspection、trusted management reenrollment，將新的 canonical `.json`、`.account.json`、
-`.enrollment.json` 安裝至同一 governor 的 consumers。從該 SQLite 唯讀查得目前 account 的
-`violation_id`，再由可信 host operator 明確執行（deployed 可在既有 Full container 內執行，local 使用 uv）：
-
-```bash
-python -m findb_fetcher.account_governor repair-capacity \
-  --provider finlab --environment staging \
-  --governor /var/lib/findb-account/staging/governor.sqlite3 \
-  --readiness /var/lib/findb-account/readiness/finlab.json \
-  --allocation /var/lib/findb-account/readiness/finlab.account.json \
-  --enrollment /var/lib/findb-account/readiness/finlab.enrollment.json \
-  --violation-id <current-violation-id>
-```
-
-命令必須使用支援 `GET /source/full-market/enrollment-verification` 的目前 Backend 與有效 Source key；
-不能靠檔案中的 UUID/hash 自行解除違規。該唯讀接口核對目前管理 enrollment、Source client/scope、
-canonical declaration digest/runtime/artifact/config/account allocation/expiry，以及 90 秒內的 matching
-installation ACK；即使 Owner stopped、flag=false 或容量違規仍可驗證，且不回傳 acquisition 授權。
-Worker 必須先持續上報新的 enrollment；CLI 本身不代替 worker 上報，也不延長 TTL。
-
-CLI 在 Full worker 的環境執行，核對 configured readiness/allocation/governor 路徑與實際 config digest/runtime。
-Local 在 repo root 另設 `export FETCHER_FULL_MARKET_CONFIG="$PWD/fetcher/configs/full_market.local.v1.json"`，
-沿用前述安裝 env。Deployed 使用實際 Full container 的 config 路徑，例如
-`docker exec -e FETCHER_FULL_MARKET_CONFIG=/app/configs/full_market.staging.v1.json findb-full-market-finlab python -m findb_fetcher.account_governor repair-capacity ...`
-（後方使用上例的完整參數；production 換成實際 production config/path）。Readiness/allocation/governor
-必須是該 container 已安裝的同一組檔案；新 config/allocation 必須先經 fresh inspection/management enrollment，
-再由 worker matching ACK 確認。Source 驗證有 bounded timeout，失敗一律保留 violation。
-
-全部 authoritative/installed bindings、新 allocation digest 與足夠的 bound 符合，才以 violation ID CAS 復原。結果保存至
-`full_capacity_repair`；先前 usage/debt、pacing 與 prepared bodies 不重設。若新增 witness 與復原同時
-發生，CAS 拒絕，須重新讀取最新違規。復原後 Full 仍需有效 readiness 與 Owner 手動 start。
+無可觀測 wire counter 時保留未知為 0 與 持久化用量。
 
 舊 production Full runtime 曾使用 Pilot 的 `findb-fetcher-*-scheduler` names。升級或 flag-off bounded
 部署會先 graceful stop，嚴格驗證非 OOM、無 Docker error 與合法 retirement exit，再搬至獨立 Full
