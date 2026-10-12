@@ -171,8 +171,8 @@ OpenAPI 為準。Universe first baseline 或異動超過 20 個成員／2% 的 c
 `first_baseline_approved`／`threshold_exception_approved`，並留下 audit。
 
 Owner 使用既有 `PATCH /admin/schedulers/{scheduler_key}`，傳 `desired_state` 與
-`expected_revision`。Flag、installed enrollment、有效 scoped readiness、Owner published baseline、
-完整 calendar 與 provider aggregate capacity 通過後，凍結 ready feeds；部分 scope 可 start，重複
+`expected_revision`。啟動資格只檢查 Owner published baseline 與完整 published calendar；兩者通過後，
+凍結 ready feeds；部分 scope 可 start，重複
 running PATCH 不重凍結。首次日期為交易所當地今天，合法 legacy date 保留，停止／重新啟動不重設。
 舊 `/admin/feeds/{dataset_key}/activate|deactivate` 需 Owner 認證並回傳 410。
 Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/digest/runtime/scope acknowledgement；
@@ -181,8 +181,12 @@ Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/diges
 `declaration_sha256`、`runtime_id` query；只驗證目前有效管理 enrollment 和 90 秒內 installed ACK，
 回傳 typed canonical declaration、installation digest、UUID 與 ACK timestamp。Owner stopped/flag-off
 仍可核對容量修復證據；它不授權抓取，也不寫 control/audit。
-旗標關閉／證據失效阻擋新 acquisition/plan，既有 frozen prepared delivery 與 normalization 可完成。
-詳細管理 enrollment 與 flags 見 [runbook](../operations/full_market.md)。
+旗標關閉、Owner 停止或 Source key 撤銷／到期阻擋新 acquisition/plan，既有 frozen prepared delivery 與 normalization 可完成。
+詳細管理 enrollment、平台限制與治理資料見 [runbook](../operations/full_market.md)。
+所有環境的 startup 只依 baseline/calendar；新抓取不要求 enrollment、readiness、expiry 或 capacity proof。
+`GET /source/full-market/authorization` 仍驗證 Source key/provider/scope、flag 與 running control；
+`consumer=maintenance` 允許已認證、flag 開啟的 candidate 蒐集，無須先 start 或 enrollment。
+未知 consumer 拒絕；舊 digest/runtime query 不再影響新抓取資格。此分支尚未部署。
 `GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
 deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
 

@@ -57,8 +57,9 @@ contract、registry、normalizer、DQ與Serve驗收。
 Full market 在 local/staging/production 皆為 opt-in，預設 false。Registry acceptance 與 acquisition
 admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Full-only feeds 普通 ingress
 不接受，需 `fp1` frozen plan。Owner 手動 scheduler start 凍結當時 ready feeds，首日為 exchange-local
-今天且永不重設；合法 legacy cutoff 保留。Trusted enrollment 綁定實際 runtime、artifact/config/account
-quota、Source identity、evidence digest 與 expiry，Source report 只能 acknowledgement。
+今天且永不重設；合法 legacy cutoff 保留。啟動 eligibility 只檢查 published baseline 與完整
+published calendar。所有環境的新抓取不依賴 enrollment、readiness ACK／expiry 或 capacity proof；API 認證、
+平台配額、running control 與資料驗證保留。
 操作與部署/rollback contracts 見 [runbook](../operations/full_market.md)。
 
 | Provider | 目標範圍 | Contract |
@@ -82,11 +83,12 @@ coverage 不等同全日 complete；mapping、quota、permission 或 source erro
 TAIFEX trade date 使用交易所歸屬日，盤後不由 timestamp 推算成隔日；無 settlement／open
 interest 保留 null。Published exchange calendar 是開市日權威，TAIFEX 使用獨立市場日曆。
 
-帳號 entitlement、完整 universe mapping、provider quota 與 deadline capacity 必須有實際
-readiness 證據。受限時標示 blocked，不自動升級付費方案，也不以縮小 subset 宣稱全市場完成。
-所有 opt-in consumers 共用 durable account governor；Pilot/historical 的 installed allocation 與 Full
-readiness expiry 分離。Capacity 合計全部 ready feeds 與 retry/byte/deadline/Source-check overhead，
-拒絕不足的 provider。停止或失效只阻擋新 acquisition，已有 prepared frozen delivery 可完成。
+治理資料只要求 Owner published official baseline 與完整 published calendar。平台限制為 Twelve Data
+1597 credits／分鐘、FinLab API 5000 MB／日、Shioaji 500 MiB／日與 50 行情查詢／10 秒；
+TAIFEX OpenAPI 無帳號及明確數值配額，收到 429 時等待／重試。帳號 ledger 保留用量與 cooldown，
+不設跨環境分配或额外 capacity 前提；API 權限、payload 與資料驗證仍保留。
+操作與治理交付資料見 [runbook](../operations/full_market.md#治理資料明確需求)。
+停止或失效只阻擋新 acquisition，已有 prepared frozen delivery 可完成。
 
 ## 資料責任
 

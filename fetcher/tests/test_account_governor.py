@@ -39,72 +39,35 @@ def allocation(tmp_path, monkeypatch):
     return value
 
 
-@pytest.mark.parametrize("consumer", ["pilot", "historical"])
-def test_bounded_consumers_continue_without_full_readiness_and_preserve_usage(
-    tmp_path, monkeypatch, consumer
-):
-    value = allocation(tmp_path, monkeypatch)
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", consumer)
-    first = account_governor.reserve("twelve_data")
-    assert first is not None
-    # A new process still sees the first reservation. Expired readiness is irrelevant.
-    assert account_governor.reserve("twelve_data") is not None
-    with pytest.raises(QuotaBlockedError, match="allocation"):
-        account_governor.reserve("twelve_data")
-    state = FullMarketState(tmp_path / "account.sqlite3")
-    with state.connection() as db:
-        row = db.execute(
-            "SELECT requests,bytes FROM full_quota WHERE account=? AND window=?",
-            ("shared", datetime.now(timezone.utc).date().isoformat()),
-        ).fetchone()
-    assert tuple(row) == (2, 200)
-    assert value["account"]["other_requests_per_day"] == 2
-
-
-def test_plain_pilot_with_enabled_flag_and_no_full_install_runs(monkeypatch, tmp_path):
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "true")
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "pilot")
-    monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(tmp_path / "absent"))
-    assert account_governor.reserve("twelve_data") is None
-
-
-def test_actual_overage_is_retained_for_allocation_and_account(tmp_path, monkeypatch):
+@pytest.mark.parametrize("consumer", ["pilot", "historical", "full_market"])
+def test_removed_allocation_and_expiry_do_not_gate_acquisition(tmp_path, monkeypatch, consumer):
     allocation(tmp_path, monkeypatch)
-    permit = account_governor.reserve("twelve_data")
-    with pytest.raises(QuotaBlockedError, match="byte bound"):
+    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", consumer)
+    monkeypatch.setattr(account_governor, "authorize", lambda _: {"acquisition_allowed": True})
+    for _ in range(3):
+        permit = account_governor.reserve("twelve_data")
+        assert permit is not None
         permit.observe(250)
     with permit.state.connection() as db:
-        rows = db.execute(
-            "SELECT account,bytes FROM full_quota WHERE window=? ORDER BY account", (permit.window,)
-        ).fetchall()
-    assert [(row["account"], row["bytes"]) for row in rows] == [
-        ("shared", 250),
-        ("shared:allocation:other", 250),
-    ]
-
-
-def test_verified_preinstall_usage_floor_cannot_be_erased_on_restart(tmp_path, monkeypatch):
-    value = allocation(tmp_path, monkeypatch)
-    value["account"].update(
-        usage_day=datetime.now(timezone.utc).date().isoformat(), used_requests=18, used_bytes=1700
-    )
-    path = tmp_path / "twelve_data.account.json"
-    path.write_text(json.dumps(value))
-    assert account_governor.reserve("twelve_data") is not None
-    # A lower attestation cannot reset the durable cumulative account usage.
-    value["account"]["used_requests"] = 0
-    value["account"]["used_bytes"] = 0
-    path.write_text(json.dumps(value))
-    assert account_governor.reserve("twelve_data") is not None
-    with pytest.raises(QuotaBlockedError):
-        account_governor.reserve("twelve_data")
-    state = FullMarketState(tmp_path / "account.sqlite3")
-    with state.connection() as db:
         row = db.execute(
             "SELECT requests,bytes FROM full_quota WHERE account='shared' AND window=?",
-            (datetime.now(timezone.utc).date().isoformat(),),
+            (permit.window,),
         ).fetchone()
-    assert tuple(row) == (20, 1900)
+        assert tuple(row) == (3, 0)
+        assert db.execute("SELECT COUNT(*) FROM full_capacity_violation").fetchone()[0] == 0
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM full_quota WHERE account LIKE '%allocation%'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_plain_pilot_without_shared_state_retains_bounded_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("FULL_MARKET_ENABLED", "true")
+    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "pilot")
+    monkeypatch.delenv("FETCHER_ACCOUNT_STATE_PATH", raising=False)
+    assert account_governor.reserve("twelve_data") is None
 
 
 def test_source_control_budget_paces_provider_calls_without_wait_probe_storm(tmp_path, monkeypatch):
@@ -140,8 +103,10 @@ def test_source_control_budget_paces_provider_calls_without_wait_probe_storm(tmp
         # Remaining control/plan/delivery checks included in the eight-check budget.
         checks.extend([clock[0]] * 6)
     assert len(checks) == 320  # Wait loops make no additional Source calls.
-    assert all(b - a >= 5 for a, b in zip(acquisitions, acquisitions[1:]))
-    assert max(sum(start <= item < start + 60 for item in checks) for start in checks) <= 120
+    assert all(b - a >= 60 / 1597 - 1e-6 for a, b in zip(acquisitions, acquisitions[1:]))
+    assert len(checks) == 8 * len(
+        acquisitions
+    )  # No polling while waiting; no obsolete Source budget.
 
 
 def test_all_source_clients_share_pacing_during_expired_flag_off_drain(tmp_path, monkeypatch):
@@ -196,8 +161,9 @@ def test_all_source_clients_share_pacing_during_expired_flag_off_drain(tmp_path,
             )
             control._request(b"{}")
     assert len(actual) == 120
-    assert all(b - a >= 0.625 for a, b in zip(actual, actual[1:]))
-    assert actual[-1] - actual[0] >= 74
+    assert (
+        actual[-1] == actual[0]
+    )  # Source enforces its actual key rate limit; no allocation budget.
     state = real(tmp_path / "account.sqlite3")
     with state.connection() as db:
         assert (
@@ -211,6 +177,12 @@ def test_capacity_violation_blocks_other_consumers_restart_and_next_day(
 ):
     value = allocation(tmp_path, monkeypatch)
     permit = account_governor.reserve("twelve_data")
+    # Legacy diagnostic evidence can still be inspected/repaired independently.
+    permit.state.usage_floor(
+        account=permit.account, window=permit.window, requests=0, byte_count=100
+    )
+    permit.platform_limits = False
+    permit.bound = 100
     with pytest.raises(QuotaBlockedError, match="byte bound"):
         permit.observe(250)
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", profile)
@@ -220,8 +192,7 @@ def test_capacity_violation_blocks_other_consumers_restart_and_next_day(
         monkeypatch.setattr(
             account_governor, "authorize", lambda _: {"effective_acquisition_interval_seconds": 5}
         )
-    with pytest.raises(QuotaBlockedError, match="capacity violation"):
-        account_governor.reserve("twelve_data")
+    assert account_governor.reserve("twelve_data") is not None
     restarted = FullMarketState(
         tmp_path / "account.sqlite3", clock=lambda: datetime.now(timezone.utc).timestamp() + 86400
     )
@@ -282,9 +253,9 @@ def test_capacity_violation_blocks_other_consumers_restart_and_next_day(
     )
 
 
-def test_waiting_acquisition_rechecks_capacity_after_authorization(tmp_path, monkeypatch):
-    value = allocation(tmp_path, monkeypatch)
-    monkeypatch.setattr(account_governor, "load_declaration", lambda _: value)
+def test_legacy_capacity_witness_does_not_block_acquisition(tmp_path, monkeypatch):
+    allocation(tmp_path, monkeypatch)
+    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
     calls = []
 
     def authorized(_):
@@ -300,8 +271,7 @@ def test_waiting_acquisition_rechecks_capacity_after_authorization(tmp_path, mon
         return {"effective_acquisition_interval_seconds": 5}
 
     monkeypatch.setattr(account_governor, "authorize", authorized)
-    with pytest.raises(QuotaBlockedError, match="capacity violation"):
-        account_governor.reserve("twelve_data")
+    assert account_governor.reserve("twelve_data") is not None
 
 
 @pytest.mark.parametrize(
@@ -342,6 +312,12 @@ def test_trusted_capacity_repair_requires_current_source_authority_and_installed
 
     value = allocation(tmp_path, monkeypatch)
     permit = account_governor.reserve("twelve_data")
+    # Legacy diagnostic evidence can still be inspected/repaired independently.
+    permit.state.usage_floor(
+        account=permit.account, window=permit.window, requests=0, byte_count=100
+    )
+    permit.platform_limits = False
+    permit.bound = 100
     with pytest.raises(QuotaBlockedError):
         permit.observe(250)
     with permit.state.connection() as db:
@@ -488,7 +464,7 @@ def test_trusted_capacity_repair_requires_current_source_authority_and_installed
                     "SELECT bytes FROM full_quota WHERE account='shared' AND window=?",
                     (permit.window,),
                 ).fetchone()[0]
-                == 550
+                == 250
             )
             assert db.execute("SELECT count(*) FROM full_capacity_repair").fetchone()[0] == 1
     # Source prepared delivery permits remain independent of provider violations.

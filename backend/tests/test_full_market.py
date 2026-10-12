@@ -114,7 +114,7 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
                 "provider_symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
                 "exchange": "HKEX" if key == "hk_equity_eod" else "TWSE",
                 "currency": "HKD" if key == "hk_equity_eod" else "TWD",
-                "asset_class": "etf" if key == "tw_etf_eod" else "equity",
+                "asset_class": "etf" if key in {"tw_etf_eod", "tw_etf_minute"} else "equity",
             }
             for i in range(count)
         ]
@@ -229,6 +229,78 @@ async def _source_headers(db, provider="taifex", datasets=None):
         commit=False,
     )
     return {"X-API-Key": key}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope",
+    [
+        None,
+        [],
+        "tw_futures_eod",
+        {"tw_futures_eod": True},
+        [None],
+        ["tw_equity_eod"],
+        ["tw_futures_eod", None],
+        ["tw_futures_eod", ""],
+        ["tw_futures_eod", " "],
+        [["tw_futures_eod"]],
+    ],
+)
+@pytest.mark.parametrize("consumer", ["full_market", "maintenance"])
+async def test_full_source_scope_fails_closed_for_authorization_universe_and_plan(
+    test_session, client, scope, consumer
+):
+    from app.models.registry import SourceClient
+    from app.services.full_market_admission import admission_projection
+
+    dataset, body, plan = await _activated_plan(test_session, count=1)
+    headers = await _source_headers(test_session)
+    credential = await test_session.scalar(
+        select(SourceClient).where(SourceClient.name == "full-market-source-taifex")
+    )
+    await test_session.commit()
+    authorized = await client.get(
+        "/api/v1/source/full-market/authorization", params={"consumer": consumer}, headers=headers
+    )
+    assert authorized.status_code == 200
+    assert authorized.json()["acquisition_allowed"] is True
+    credential.allowed_datasets = scope
+    await test_session.commit()
+    test_session.info["source_client_id"] = credential.client_id
+    projection = await admission_projection(test_session, "taifex", source=True)
+    assert projection["acquisition_allowed"] is False
+    assert "full_market_source_binding_invalid" in projection["acquisition_blockers"]
+    authorization = await client.get(
+        "/api/v1/source/full-market/authorization", params={"consumer": consumer}, headers=headers
+    )
+    if scope is not None and not isinstance(scope, list):
+        assert authorization.status_code == 403
+    else:
+        assert authorization.status_code == 200
+        assert authorization.json()["acquisition_allowed"] is False
+        assert "full_market_source_binding_invalid" in authorization.json()["acquisition_blockers"]
+    requests = [
+        ("GET", "/api/v1/source/universes", {"params": {"dataset_key": dataset.dataset_key}}),
+        ("POST", "/api/v1/source/universes", {"json": body.model_dump(mode="json")}),
+        ("GET", f"/api/v1/source/delivery-plans/{plan.plan_id}", {}),
+        (
+            "POST",
+            "/api/v1/source/delivery-plans",
+            {
+                "json": {
+                    "version": 1,
+                    "dataset_key": dataset.dataset_key,
+                    "provider": body.provider,
+                    "trade_date": str(DAY),
+                    "release_id": str(plan.release_id),
+                }
+            },
+        ),
+    ]
+    for method, path, kwargs in requests:
+        response = await client.request(method, path, headers=headers, **kwargs)
+        assert response.status_code == 403, response.text
 
 
 @pytest.mark.parametrize(

@@ -113,8 +113,8 @@ class FullMarketAdmission(Base):
         ForeignKey("scheduler_control.scheduler_key"), nullable=False
     )
     control_revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    enrollment_id: Mapped[UUID] = mapped_column(
-        ForeignKey("full_market_enrollment.enrollment_id"), nullable=False
+    enrollment_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("full_market_enrollment.enrollment_id"), nullable=True
     )
     capacity: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

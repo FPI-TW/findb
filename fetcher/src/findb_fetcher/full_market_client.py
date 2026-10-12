@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Any
 from urllib.parse import urlencode
 
@@ -64,7 +67,7 @@ class FullMarketSourceClient:
                         response.status_code in {429, 502, 503, 504}
                         and attempt + 1 < self.config.max_attempts
                     ):
-                        time.sleep(min(2**attempt, self.config.max_retry_after_seconds))
+                        time.sleep(self._retry_delay(response, attempt))
                         continue
                     if not 200 <= response.status_code < 300:
                         raise FullMarketProtocolError(
@@ -79,6 +82,28 @@ class FullMarketSourceClient:
                 if attempt + 1 == self.config.max_attempts:
                     raise FullMarketProtocolError("Source governance transport failed") from None
         raise FullMarketProtocolError("Source governance retries exhausted")
+
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        fallback = min(float(2**attempt), self.config.max_retry_after_seconds)
+        value = response.headers.get("Retry-After")
+        if value is None:
+            return fallback
+        try:
+            seconds = float(value)
+        except ValueError:
+            seconds = -1.0
+        if isfinite(seconds) and seconds >= 0:
+            return min(seconds, self.config.max_retry_after_seconds)
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return min(
+            max(0.0, retry_at.timestamp() - time.time()),
+            self.config.max_retry_after_seconds,
+        )
 
     def universes(self, dataset: str, provider: str, as_of: str | None = None) -> dict[str, Any]:
         return self.request(

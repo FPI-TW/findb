@@ -138,12 +138,8 @@ async def full_market_authorization(
 ) -> dict:
     provider, _ = _full_market_source_scope(db)
     projection = await admission_projection(db, provider, source=True)
-    if declaration_sha256:
-        account = await account_authorization(
-            db, provider, consumer, declaration_sha256, runtime_id
-        )
-        return {**projection, **account}
-    return projection
+    account = await account_authorization(db, provider, consumer, declaration_sha256, runtime_id)
+    return {**projection, **account}
 
 
 @router.get("/full-market/enrollment-verification", response_model=EnrollmentVerification)

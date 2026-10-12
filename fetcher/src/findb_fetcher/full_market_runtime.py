@@ -175,7 +175,7 @@ class FullMarketRuntime:
         delivery: SourceAPIClient,
         calendar: PublishedCalendarClient,
         raw_store: RawPayloadStore,
-        readiness_file: Path | None,
+        readiness_file: Path | None = None,
         client: httpx.Client | None = None,
         can_acquire: Callable[[], bool] | None = None,
     ) -> None:
@@ -233,15 +233,11 @@ class FullMarketRuntime:
             raise
 
     def _acquisition_allowed(self) -> bool:
-        permit = getattr(self, "account_permit", None)
-        if permit is not None:
-            permit.state.assert_capacity(permit.account)
-        else:
-            self.state.assert_capacity(self.provider)
         return self.can_acquire()
 
     def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
         from findb_fetcher.account_governor import enabled, reserve
+        from findb_fetcher.platform_limits import interval
 
         if enabled():
             permit = reserve(self.provider)
@@ -249,56 +245,60 @@ class FullMarketRuntime:
                 raise ReadinessBlockedError("scheduler acquisition stopped")
             self.reservation_window = permit.window
             self.account_permit = permit
-            return 0, 1
+            return permit.requests_before, permit.requests_after
         while True:
             if not self._acquisition_allowed():
                 raise ReadinessBlockedError("scheduler was stopped by Source control")
-            now = datetime.now(timezone.utc)
-            if datetime.fromisoformat(self.proof["expires_at"]) <= now:
-                raise ReadinessBlockedError("current account readiness evidence expired")
-            size = int(self.proof["max_response_bytes"]) if byte_count is None else byte_count
             wait, before, after, window = self.state.reserve_acquisition(
                 account=self.provider,
-                interval=1 / self.proof["requests_per_second"],
+                interval=interval(self.proof),
                 requests=requests,
-                byte_count=size,
-                request_limit=int(self.proof["requests_per_day"]),
-                byte_limit=int(self.proof["bytes_per_day"]),
-                minute_limit=int(self.proof["requests_per_minute"]),
+                byte_count=(
+                    0 if self.proof.get("platform_limits") else self.proof["max_response_bytes"]
+                )
+                if byte_count is None
+                else byte_count,
+                request_limit=self.proof["requests_per_day"],
+                byte_limit=self.proof["bytes_per_day"],
+                minute_limit=self.proof["requests_per_minute"],
+                enforce_capacity=False,
             )
             if wait <= 0:
                 self.reservation_window = window
-                # A contended SQLite transaction may outlive the pre-permit guard.
-                # Retain its conservative reservation when control/expiry changes.
                 if not self._acquisition_allowed():
                     raise ReadinessBlockedError("scheduler was stopped by Source control")
-                if datetime.fromisoformat(self.proof["expires_at"]) <= datetime.now(timezone.utc):
-                    raise ReadinessBlockedError("current account readiness evidence expired")
                 return before, after
-            # Recheck control and expiry, including clock rollback and very low rates.
             time.sleep(min(wait, 1))
 
     def _observed_response(
         self, size: int, *, usage_bytes: int | None = None, declared: int = 0
     ) -> None:
-        """Detached SDK bytes are an observable lower bound, not network measurement."""
         bound = int(self.proof["max_response_bytes"])
-        observed = max(size, usage_bytes or 0)
+        # SDK account usage is authoritative; detached JSON is only a transport bound.
+        counted = usage_bytes if self.provider == "shioaji" else size
         permit = getattr(self, "account_permit", None)
         if permit is not None:
-            permit.observe(observed, declared=declared)
-        if max(observed, declared) > bound:
-            self.state.observe_capacity(
-                account=self.provider,
-                window=self.reservation_window,
-                bound=bound,
-                observed=observed,
-                declared=declared,
-                allocation_sha256=self.proof.get(
-                    "account_allocation_sha256", checksum(canonical_bytes(self.proof))
-                ),
-            )
-            raise ReadinessBlockedError("provider response exceeds verified size bound")
+            if counted is not None:
+                permit.observe(counted, declared=declared)
+        elif self.proof.get("bytes_per_day") is not None and counted is not None:
+            reserved = 0 if self.proof.get("platform_limits") else bound
+            if counted > reserved and max(size, declared) <= bound:
+                self.state.record_byte_overage(
+                    account=self.provider,
+                    window=self.reservation_window,
+                    byte_count=counted - reserved,
+                )
+        if max(size, declared) > bound:
+            if permit is None:
+                self.state.observe_capacity(
+                    account=self.provider,
+                    window=self.reservation_window,
+                    bound=(0 if self.proof.get("platform_limits") else bound),
+                    observed=size,
+                    declared=declared,
+                    allocation_sha256="",
+                )
+            raise ReadinessBlockedError("provider response exceeds transport size bound")
 
     def _rate_limited(self) -> None:
         permit = getattr(self, "account_permit", None)
@@ -362,19 +362,9 @@ class FullMarketRuntime:
             return body
 
     def _ensure_proof(self) -> None:
-        declared_scope = (
-            json.loads(self.readiness_file.read_bytes()).get("datasets", [])
-            if self.readiness_file
-            else []
-        )
-        if not set(declared_scope) <= {feed["dataset_key"] for feed in self.installed_feeds}:
-            raise ReadinessBlockedError("readiness exceeds installed feed scope")
-        self.proof = load_readiness(
-            self.readiness_file,
-            self.provider,
-            declared_scope,
-            now=datetime.now(timezone.utc),
-        )
+        from findb_fetcher.platform_limits import limits
+
+        self.proof = limits(self.provider, [feed["dataset_key"] for feed in self.installed_feeds])
 
     def _finlab_gateway(self) -> FinLabSdkGateway:
         try:
@@ -431,45 +421,63 @@ class FullMarketRuntime:
             self.catalogue_evidence = {config.base_url + "/stocks": catalogue_raw}
             return value["data"]
 
-    def sync_universes(self) -> list[dict[str, Any]]:
+    def sync_universes(self, *, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
         self._ensure_proof()
-        self.feeds = [
-            feed for feed in self.installed_feeds if feed["dataset_key"] in self.proof["datasets"]
-        ]
+        if dataset_keys is None:
+            authorization = self.source.request(
+                "GET", "full-market/authorization?consumer=maintenance"
+            )
+            if authorization.get("acquisition_allowed") is not True:
+                raise ReadinessBlockedError("Source maintenance authorization denied")
+            dataset_keys = authorization.get("authorized_dataset_keys")
+        if (
+            not isinstance(dataset_keys, list)
+            or not dataset_keys
+            or any(not isinstance(key, str) or not key.strip() for key in dataset_keys)
+        ):
+            raise ReadinessBlockedError("Source universe scope invalid")
+        # Local refresh scope must never overwrite the cycle's admitted feeds,
+        # including when snapshot fetching or submission fails partway through.
+        feeds = [feed for feed in self.installed_feeds if feed["dataset_key"] in dataset_keys]
+        if not feeds:
+            return []
         now = datetime.now(timezone.utc)
         snapshots: dict[str, bytes] = {}
         if self.provider == "twelve_data":
-            snapshots = {url: self._snapshot(url) for url in (*NASDAQ_URLS, HKEX_URL)}
-            us = parse_nasdaq(snapshots[NASDAQ_URLS[0]]) + parse_nasdaq(
-                snapshots[NASDAQ_URLS[1]], other=True
-            )
-            hk_date, hk = parse_hkex(
-                snapshots[HKEX_URL], observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-            )
+            groups = {}
             catalogue = self._catalogue()
-            us_dates = {
-                nasdaq_effective_date(
-                    snapshots[url],
-                    observed_date=now.astimezone(ZoneInfo("America/New_York")).date(),
+            if "us_equity_eod" in dataset_keys:
+                snapshots.update({url: self._snapshot(url) for url in NASDAQ_URLS})
+                us = parse_nasdaq(snapshots[NASDAQ_URLS[0]]) + parse_nasdaq(
+                    snapshots[NASDAQ_URLS[1]], other=True
                 )
-                for url in NASDAQ_URLS
-            }
-            if len(us_dates) != 1:
-                raise ReadinessBlockedError(
-                    "Nasdaq official directories have different effective dates"
-                )
-            groups = {
-                "us_equity_eod": (
+                us_dates = {
+                    nasdaq_effective_date(
+                        snapshots[url],
+                        observed_date=now.astimezone(ZoneInfo("America/New_York")).date(),
+                    )
+                    for url in NASDAQ_URLS
+                }
+                if len(us_dates) != 1:
+                    raise ReadinessBlockedError(
+                        "Nasdaq official directories have different effective dates"
+                    )
+                groups["us_equity_eod"] = (
                     next(iter(us_dates)),
                     map_catalogue(us, catalogue),
                     {**{url: snapshots[url] for url in NASDAQ_URLS}, **self.catalogue_evidence},
-                ),
-                "hk_equity_eod": (
+                )
+            if "hk_equity_eod" in dataset_keys:
+                snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
+                hk_date, hk = parse_hkex(
+                    snapshots[HKEX_URL],
+                    observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date(),
+                )
+                groups["hk_equity_eod"] = (
                     hk_date,
                     map_catalogue(hk, catalogue),
                     {HKEX_URL: snapshots[HKEX_URL], **self.catalogue_evidence},
-                ),
-            }
+                )
         elif self.provider in {"finlab", "shioaji"}:
             snapshots = {url: self._snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
             companies = {
@@ -501,7 +509,9 @@ class FullMarketRuntime:
                 try:
                     self._ensure_proof()
                     gateway = self._finlab_gateway()
-                    for members in (equity, etfs):
+                    for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
+                        if dataset not in dataset_keys:
+                            continue
                         self._reserve()
                         try:
                             table = gateway.fetch_dataset(
@@ -513,7 +523,11 @@ class FullMarketRuntime:
                             self.state.pace_from_completion(
                                 account=self.provider,
                                 now=datetime.now(timezone.utc).timestamp(),
-                                interval=1 / self.proof["requests_per_second"],
+                                interval=(
+                                    1 / self.proof["requests_per_second"]
+                                    if self.proof["requests_per_second"]
+                                    else 0
+                                ),
                             )
                         detached = self._finlab_table_bytes(table)
                         self._observed_response(len(detached))
@@ -556,7 +570,7 @@ class FullMarketRuntime:
             rows = parse_report(raw, target_date=day)
             groups = {"tw_futures_eod": (day, report_members(rows), {TAIFEX_URL: raw})}
         result = []
-        for feed in self.feeds:
+        for feed in feeds:
             dataset = feed["dataset_key"]
             effective, members, evidence = groups[dataset]
             for url, raw in evidence.items():
@@ -610,7 +624,9 @@ class FullMarketRuntime:
         now = datetime.now(timezone.utc)
         if self.state.refresh_due(self.provider, now.timestamp()):
             try:
-                refreshed = self.sync_universes()
+                refreshed = self.sync_universes(
+                    dataset_keys=[feed["dataset_key"] for feed in self.feeds]
+                )
                 next_refresh = []
                 for feed in self.feeds:
                     local_now = now.astimezone(ZoneInfo(feed["source_timezone"]))
@@ -632,7 +648,6 @@ class FullMarketRuntime:
                     result=[{"status": "blocked", "reason": "official_universe_refresh_failed"}],
                 )
         releases = []
-        total_calls = 0
         for feed in self.feeds:
             listed = self.source.universes(feed["dataset_key"], self.provider)
             if listed.get("activation", {}).get("enabled") is not True or not listed.get(
@@ -646,15 +661,9 @@ class FullMarketRuntime:
                 or release["status"] != "published"
             ):
                 raise ReadinessBlockedError("published universe identity invalid")
-            total_calls += 5 if self.provider == "finlab" else len(release["members"])
             releases.append((feed, listed, release))
         if not releases:
             return self.state.health(self.provider)
-        validate_capacity(
-            self.proof,
-            total_calls,
-            seconds_available=min(feed["completion_window_seconds"] for feed, _, _ in releases),
-        )
         due_work: list[tuple[date, dict[str, Any]]] = []
         for feed, listed, release in releases:
             activation = date.fromisoformat(listed["activation"]["activation_date"])
@@ -684,20 +693,6 @@ class FullMarketRuntime:
             can_continue = True
             if plan["status"] != "complete":
                 pinned = self.source.release(plan["release_id"])
-                remaining = (
-                    datetime.fromisoformat(plan["deadline_at"].replace("Z", "+00:00"))
-                    - datetime.now(timezone.utc)
-                ).total_seconds()
-                if remaining > 0:
-                    eligible = self.state.acquisition_members(plan["plan_id"], now=time.time())
-                    pending_calls = sum(
-                        member["member_key"] in eligible and member["mapping_status"] == "mapped"
-                        for member in pinned["members"]
-                    )
-                    calls = (
-                        (5 if pending_calls else 0) if self.provider == "finlab" else pending_calls
-                    )
-                    validate_capacity(self.proof, calls, seconds_available=remaining)
                 can_continue = self._deliver_plan(plan, pinned, feed)
             evaluated = self.source.evaluate(plan["plan_id"])
             self.state.evaluate(evaluated)
@@ -981,7 +976,11 @@ class FullMarketRuntime:
                         self.state.pace_from_completion(
                             account=self.provider,
                             now=datetime.now(timezone.utc).timestamp(),
-                            interval=1 / self.proof["requests_per_second"],
+                            interval=(
+                                1 / self.proof["requests_per_second"]
+                                if self.proof["requests_per_second"]
+                                else 0
+                            ),
                         )
                     self._observed_response(len(self._finlab_table_bytes(tables[field])))
                 table_raw = canonical_bytes(
@@ -1039,7 +1038,17 @@ class FullMarketRuntime:
                     "bytes_after": snapshot.usage_bytes_after,
                 }
             )
-            self._observed_response(len(raw), usage_bytes=snapshot.usage_bytes_delta)
+            permit = getattr(self, "account_permit", None)
+            if permit is not None and snapshot.usage_bytes_after is not None:
+                permit.state.usage_floor(
+                    account=permit.account,
+                    window=permit.window,
+                    requests=0,
+                    byte_count=snapshot.usage_bytes_after,
+                )
+                self._observed_response(len(raw), usage_bytes=0)
+            else:
+                self._observed_response(len(raw), usage_bytes=snapshot.usage_bytes_delta)
             stored = self._persist(raw, dataset, member["provider_symbol"])
             if snapshot.usage_bytes_delta is None:
                 raise ReadinessBlockedError(
@@ -1061,12 +1070,12 @@ class FullMarketRuntime:
                 universe_id=release["release_id"],
             )
             request["delivery"] = delivery
-            request["payload"]["batch"]["provider_usage_before"]["requests_limit"] = int(
-                self.proof["requests_per_day"]
-            )
-            request["payload"]["batch"]["provider_usage_after"]["requests_limit"] = int(
-                self.proof["requests_per_day"]
-            )
+            request["payload"]["batch"]["provider_usage_before"]["requests_limit"] = self.proof[
+                "requests_per_day"
+            ]
+            request["payload"]["batch"]["provider_usage_after"]["requests_limit"] = self.proof[
+                "requests_per_day"
+            ]
             raw = canonical_bytes(
                 {
                     "kbars": dict(snapshot.kbars),

@@ -1,13 +1,14 @@
-"""Trust-bound capability, read-only eligibility, and transactional admission.
+"""Baseline/calendar admission and authenticated acquisition authorization.
 
-Mutation lock order: environment, sorted datasets, sorted CalendarMarket,
-enrollment/credential, control, releases/admission. Source reports may only
-acknowledge an enrolled declaration; they never create capability.
+Owner start locks environment, sorted datasets, calendar markets, then control.
+Acquisition locks the authenticated Source credential before control. Legacy
+capability enrollment/report/repair tools remain independent diagnostics.
 """
 
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from datetime import date
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -36,7 +37,7 @@ from app.schemas.full_market_readiness import (
     ReadinessReport,
 )
 from app.services.calendar_management import complete_published_revision_ids
-from app.services.full_market_governance import full_market_configuration
+from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.utils import ensure_utc, utc_now, uuid7
 
 
@@ -357,51 +358,13 @@ def capacity_proof(
 async def eligibility(db: AsyncSession, provider: str, datasets: list[DatasetRegistry]) -> dict:
     settings = get_settings()
     blockers = []
-    lifecycle = await db.get(FullMarketEnvironment, settings.APP_ENVIRONMENT)
-    if not settings.FULL_MARKET_ENABLED or lifecycle is None or not lifecycle.enabled:
-        blockers.append("full_market_flag_disabled")
-    enrollment = await current_enrollment(db, provider)
-    proof = None
-    if enrollment is None:
-        blockers.append("full_market_runtime_missing")
-    elif enrollment.reported_at is None:
-        blockers.append("full_market_readiness_not_reported")
-    elif not enrollment.reported_enabled:
-        blockers.append("full_market_runtime_flag_mismatch")
-    elif (utc_now() - ensure_utc(enrollment.reported_at)).total_seconds() > 90:
-        blockers.append("full_market_installed_runtime_unavailable")
-    elif ensure_utc(enrollment.expires_at) <= utc_now():
-        blockers.append("full_market_readiness_expired")
-    else:
-        try:
-            proof = ReadinessDeclaration.model_validate(enrollment.declaration)
-        except ValueError:
-            blockers.append("full_market_readiness_invalid")
-        client = await db.get(SourceClient, enrollment.source_client_id)
-        if (
-            proof is None
-            or client is None
-            or client.revoked_at
-            or (client.expires_at and ensure_utc(client.expires_at) <= utc_now())
-            or client.source_name != provider
-            or not set(proof.datasets) <= set(client.allowed_datasets or [])
-        ):
-            blockers.append("full_market_source_binding_invalid")
-        elif (
-            proof.source_requests_per_minute
-            > client.rate_limit_requests * 60 / client.rate_limit_window
-        ):
-            blockers.append("full_market_source_rate_binding_invalid")
     ready = []
     feeds = []
-    counts = {}
+    feed_blockers: set[str] = set()
     for dataset in datasets:
-        _, _, errors, _ = full_market_configuration(dataset, provider)
-        reasons = list(errors)
+        reasons: list[str] = []
         today = local_today(dataset)
         state = await db.get(FullMarketDatasetState, dataset.dataset_key)
-        if proof is None or dataset.dataset_key not in proof.datasets:
-            reasons.append("full_market_feed_not_enrolled")
         baseline = await db.scalar(
             select(UniverseRelease)
             .where(
@@ -426,12 +389,7 @@ async def eligibility(db: AsyncSession, provider: str, datasets: list[DatasetReg
         )
         if calendar is None:
             reasons.append("full_market_calendar_missing")
-        governance = (dataset.config or {}).get("full_market")
-        legacy_present = (
-            isinstance(governance, dict) and governance.get("activation_date") is not None
-        )
-        if legacy_present and state is None:
-            reasons.append("full_market_legacy_date_invalid")
+        feed_blockers.update(reasons)
         info = {
             "dataset_key": dataset.dataset_key,
             "ready": not reasons,
@@ -441,22 +399,30 @@ async def eligibility(db: AsyncSession, provider: str, datasets: list[DatasetReg
         feeds.append(info)
         if not reasons and baseline and calendar:
             ready.append((dataset, baseline, calendar))
-            counts[dataset.dataset_key] = baseline.member_count
     if not ready:
-        blockers.append("full_market_no_ready_feeds")
+        blockers.extend(sorted(feed_blockers))
+        if not feeds:
+            blockers.extend(["full_market_baseline_missing", "full_market_calendar_missing"])
     capacity: dict = {}
-    if proof and ready:
-        capacity, errors = capacity_proof(proof, provider, counts)
-        blockers.extend(errors)
     return {
         "enabled": settings.FULL_MARKET_ENABLED,
         "environment": settings.APP_ENVIRONMENT,
         "blockers": blockers,
         "feeds": feeds,
         "ready": ready,
-        "enrollment": enrollment,
+        "enrollment": None,
         "capacity": capacity,
     }
+
+
+async def acquisition_eligibility(
+    db: AsyncSession, provider: str, datasets: list[DatasetRegistry]
+) -> dict:
+    result = await eligibility(db, provider, datasets)
+    lifecycle = await db.get(FullMarketEnvironment, get_settings().APP_ENVIRONMENT)
+    if not result["enabled"] or lifecycle is None or not lifecycle.enabled:
+        result["blockers"].append("full_market_flag_disabled")
+    return result
 
 
 async def lock_calendars(db: AsyncSession, datasets: list[DatasetRegistry]) -> None:
@@ -471,13 +437,12 @@ async def lock_calendars(db: AsyncSession, datasets: list[DatasetRegistry]) -> N
 async def freeze_admission(
     db: AsyncSession, row: SchedulerControl, result: dict
 ) -> FullMarketAdmission:
-    enrollment = result["enrollment"]
     admission = FullMarketAdmission(
         admission_id=uuid7(),
         scheduler_key=row.scheduler_key,
         control_revision=row.revision + 1,
-        enrollment_id=enrollment.enrollment_id,
-        capacity=result["capacity"],
+        enrollment_id=None,
+        capacity={},
         created_at=utc_now(),
     )
     db.add(admission)
@@ -498,11 +463,26 @@ async def freeze_admission(
             )
             db.add(state)
         config = dict(dataset.config or {})
-        governance = dict(config.get("full_market") or {})
+        legacy_governance = config.get("full_market")
+        governance = dict(legacy_governance) if isinstance(legacy_governance, Mapping) else {}
         governance["activation_date"] = state.first_start_date.isoformat()
         config["full_market"] = governance
         dataset.config = config
     return admission
+
+
+def _valid_source_binding(client: SourceClient | None, provider: str) -> bool:
+    if (
+        client is None
+        or client.revoked_at
+        or (client.expires_at and ensure_utc(client.expires_at) <= utc_now())
+        or client.source_name != provider
+        or not isinstance(client.allowed_datasets, list)
+        or not client.allowed_datasets
+        or any(not isinstance(key, str) or not key.strip() for key in client.allowed_datasets)
+    ):
+        return False
+    return set(client.allowed_datasets) <= set(PROVIDER_DATASET_SCOPE.get(provider, ()))
 
 
 async def admission_projection(db: AsyncSession, provider: str, *, source: bool = False) -> dict:
@@ -514,7 +494,6 @@ async def admission_projection(db: AsyncSession, provider: str, *, source: bool 
         .order_by(FullMarketAdmission.control_revision.desc())
         .limit(1)
     )
-    enrolled = await current_enrollment(db, provider)
     scope = []
     first_dates = {}
     if admission:
@@ -535,20 +514,22 @@ async def admission_projection(db: AsyncSession, provider: str, *, source: bool 
             await db.scalars(select(DatasetRegistry).where(DatasetRegistry.dataset_key.in_(scope)))
         ).all()
     )
-    result = await eligibility(db, provider, datasets)
+    result = await acquisition_eligibility(db, provider, datasets)
     allowed = bool(
         control
         and control.desired_state == "running"
         and admission
-        and enrolled
-        and admission.enrollment_id == enrolled.enrollment_id
         and not result["blockers"]
         and len(result["ready"]) == len(scope)
     )
-    if source and (
-        enrolled is None or enrolled.source_client_id != db.info.get("source_client_id")
-    ):
-        allowed = False
+    if source:
+        client_id = db.info.get("source_client_id")
+        client = await db.get(SourceClient, client_id) if client_id else None
+        if not _valid_source_binding(client, provider) or not set(scope) <= set(
+            (client.allowed_datasets or []) if client else []
+        ):
+            allowed = False
+            result["blockers"].append("full_market_source_binding_invalid")
     return {
         "full_market_enabled": result["enabled"],
         "environment": result["environment"],
@@ -557,7 +538,7 @@ async def admission_projection(db: AsyncSession, provider: str, *, source: bool 
         "first_start_dates": first_dates,
         "acquisition_allowed": allowed,
         "acquisition_blockers": result["blockers"],
-        "declaration_sha256": enrolled.declaration_sha256 if enrolled else None,
+        "declaration_sha256": None,
     }
 
 
@@ -575,46 +556,23 @@ async def account_authorization(
             .limit(1)
         )
         return {"acquisition_allowed": running is not None, "declaration_sha256": None}
-    row = await current_enrollment(db, provider)
-    lifecycle = await db.get(FullMarketEnvironment, get_settings().APP_ENVIRONMENT)
-    allowed = bool(
-        get_settings().FULL_MARKET_ENABLED
-        and lifecycle
-        and lifecycle.enabled
-        and row
-        and row.reported_at
-        and row.reported_enabled
-        and (utc_now() - ensure_utc(row.reported_at)).total_seconds() <= 90
-        and not row.revoked_at
-        and ensure_utc(row.expires_at) > utc_now()
-        and row.source_client_id == db.info.get("source_client_id")
-        and row.runtime_id == runtime_id
-        and row.declaration_sha256 == digest
-        and consumer in row.declaration["account"]["consumers"]
-    )
-    interval = None
-    if allowed and row:
-        client = await db.get(SourceClient, row.source_client_id)
-        if (
-            client is None
-            or client.revoked_at
-            or (client.expires_at and ensure_utc(client.expires_at) <= utc_now())
-        ):
-            allowed = False
-        else:
-            proof = row.declaration
-            actual_rpm = client.rate_limit_requests * 60 / client.rate_limit_window
-            allowed = allowed and proof["source_requests_per_minute"] <= actual_rpm
-            interval = max(
-                1 / proof["requests_per_second"],
-                60 / proof["requests_per_minute"],
-                60 * 8 / (0.8 * min(actual_rpm, proof["source_requests_per_minute"])),
-            )
     if consumer == "full_market":
-        projection = await admission_projection(db, provider, source=True)
-        allowed = allowed and projection["acquisition_allowed"]
+        return await admission_projection(db, provider, source=True)
+    if consumer != "maintenance":
+        return {"acquisition_allowed": False, "declaration_sha256": None}
+    client_id = db.info.get("source_client_id")
+    client = await db.get(SourceClient, client_id) if client_id else None
+    lifecycle = await db.get(FullMarketEnvironment, get_settings().APP_ENVIRONMENT)
+    blockers = []
+    if not get_settings().FULL_MARKET_ENABLED or lifecycle is None or not lifecycle.enabled:
+        blockers.append("full_market_flag_disabled")
+    if not _valid_source_binding(client, provider):
+        blockers.append("full_market_source_binding_invalid")
     return {
-        "acquisition_allowed": allowed,
-        "declaration_sha256": row.declaration_sha256 if row else None,
-        "effective_acquisition_interval_seconds": interval,
+        "acquisition_allowed": not blockers,
+        "acquisition_blockers": blockers,
+        "authorized_dataset_keys": list(client.allowed_datasets or [])
+        if not blockers and client
+        else [],
+        "declaration_sha256": None,
     }

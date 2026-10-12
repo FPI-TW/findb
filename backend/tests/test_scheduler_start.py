@@ -136,9 +136,7 @@ async def test_manual_start_partial_scope_freeze_repeat_and_restart(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "block", ["flag", "runtime", "expiry", "calendar", "baseline", "capacity", "credential"]
-)
+@pytest.mark.parametrize("block", ["calendar", "baseline"])
 async def test_start_blocks_without_freezing_or_auditing(test_session, monkeypatch, block):
     row, proof = await ready(test_session, monkeypatch)
     if block == "flag":
@@ -178,6 +176,55 @@ async def test_start_blocks_without_freezing_or_auditing(test_session, monkeypat
     assert await test_session.scalar(select(func.count()).select_from(AdminAuditEvent)) == before
     control = await test_session.get(SchedulerControl, KEY)
     assert (control.desired_state, control.revision) == ("stopped", 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("former_gate", ["flag", "runtime", "expiry", "capacity", "credential"])
+async def test_only_baseline_calendar_gate_manual_start(test_session, monkeypatch, former_gate):
+    row, _ = await ready(test_session, monkeypatch)
+    if former_gate == "flag":
+        monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
+    elif former_gate == "runtime":
+        row.revoked_at = utc_now()
+    elif former_gate == "expiry":
+        row.expires_at = utc_now() - timedelta(seconds=1)
+    elif former_gate == "capacity":
+        row.declaration = {**row.declaration, "requests_per_day": 1}
+    else:
+        from app.models.registry import SourceClient
+
+        source = await test_session.get(SourceClient, row.source_client_id)
+        source.revoked_at = utc_now()
+    await test_session.flush()
+    control = await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
+    )
+    assert control.desired_state == "running"
+    admission = await test_session.scalar(select(FullMarketAdmission))
+    assert admission.enrollment_id is None and admission.capacity == {}
+    assert (await admission_projection(test_session, "finlab", source=True))[
+        "acquisition_allowed"
+    ] == (former_gate not in {"flag", "credential"})
+
+
+@pytest.mark.asyncio
+async def test_baseline_calendar_start_requires_no_enrollment(test_session, monkeypatch):
+    await seed_datasets(test_session)
+    await _calendar(test_session, "TW")
+    await _baseline(test_session, "tw_equity_eod")
+    control = await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
+    )
+    assert control.desired_state == "running"
+    assert (await test_session.scalar(select(FullMarketAdmission))).enrollment_id is None
 
 
 @pytest.mark.asyncio
@@ -239,17 +286,22 @@ async def test_source_report_cannot_change_digest_scope_or_identity(test_session
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider,key,schema,market,asset,frequency", RUNTIME_FEEDS)
 @pytest.mark.parametrize("invalid", ["contract", "market", "asset_class", "frequency"])
-async def test_runtime_identity_mismatch_blocks_that_feed(
+async def test_registry_metadata_is_not_an_additional_start_gate(
     test_session, monkeypatch, provider, key, schema, market, asset, frequency, invalid
 ):
     from app.services.full_market_admission import eligibility
 
     await seed_datasets(test_session)
     dataset = await test_session.get(DatasetRegistry, key)
+    await _calendar(test_session, "TAIFEX" if key == "tw_futures_eod" else market)
+    await _baseline(test_session, key)
     change_runtime_identity(dataset, invalid)
     result = await eligibility(test_session, provider, [dataset])
-    assert not result["ready"]
-    assert any(reason.startswith("runtime_") for reason in result["feeds"][0]["blockers"])
+    if invalid == "market" and key != "tw_futures_eod":
+        assert result["feeds"][0]["blockers"] == ["full_market_calendar_missing"]
+    else:
+        assert result["ready"]
+        assert result["feeds"][0]["blockers"] == []
 
 
 @pytest.mark.asyncio
@@ -465,7 +517,7 @@ async def test_source_budget_is_bound_to_actual_client_and_reported_for_permits(
     test_session, monkeypatch
 ):
     from app.models.registry import SourceClient
-    from app.services.full_market_admission import account_authorization, eligibility
+    from app.services.full_market_admission import account_authorization, acquisition_eligibility
 
     row, proof = await ready(test_session, monkeypatch, scope=["tw_equity_eod"])
     control = await update_scheduler_desired_state(
@@ -481,14 +533,13 @@ async def test_source_budget_is_bound_to_actual_client_and_reported_for_permits(
         test_session, "finlab", "full_market", original_digest, row.runtime_id
     )
     assert result["acquisition_allowed"]
-    assert result["effective_acquisition_interval_seconds"] == 0.006
     client = await test_session.get(SourceClient, row.source_client_id)
     client.rate_limit_requests = 60
     await test_session.flush()
     result = await account_authorization(
         test_session, "finlab", "full_market", original_digest, row.runtime_id
     )
-    assert not result["acquisition_allowed"]
+    assert result["acquisition_allowed"]
     datasets = list(
         (
             await test_session.scalars(
@@ -496,17 +547,14 @@ async def test_source_budget_is_bound_to_actual_client_and_reported_for_permits(
             )
         ).all()
     )
-    assert (
-        "full_market_source_rate_binding_invalid"
-        in (await eligibility(test_session, "finlab", datasets))["blockers"]
-    )
+    assert not (await acquisition_eligibility(test_session, "finlab", datasets))["blockers"]
     assert row.declaration_sha256 == original_digest
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
 @pytest.mark.parametrize("backend_enabled,runtime_enabled", [(True, False), (False, True)])
-async def test_environment_flag_mismatch_blocks_manual_start_without_get_mutation(
+async def test_environment_flag_mismatch_only_blocks_acquisition(
     test_session, monkeypatch, environment, backend_enabled, runtime_enabled
 ):
     row, proof = await ready(
@@ -524,25 +572,25 @@ async def test_environment_flag_mismatch_blocks_manual_start_without_get_mutatio
     )
     monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", backend_enabled)
     result = await admission_projection(test_session, "finlab", source=True)
-    expected = (
-        "full_market_runtime_flag_mismatch" if backend_enabled else "full_market_flag_disabled"
+    assert "full_market_runtime_flag_mismatch" not in result["acquisition_blockers"]
+    assert not result["acquisition_allowed"]  # stopped before the Owner start
+    await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
     )
-    assert expected in result["acquisition_blockers"] and not result["acquisition_allowed"]
-    with pytest.raises(SchedulerControlStartBlockedError):
-        await update_scheduler_desired_state(
-            test_session,
-            scheduler_key=KEY,
-            desired_state="running",
-            expected_revision=1,
-            principal=PRINCIPAL,
-        )
     control = await test_session.get(SchedulerControl, KEY)
-    assert control.desired_state == "stopped" and control.revision == 1
+    assert control.desired_state == "running" and control.revision == 2
+    assert (await admission_projection(test_session, "finlab", source=True))[
+        "acquisition_allowed"
+    ] == backend_enabled
     assert row.expires_at == proof.expires_at
 
 
 @pytest.mark.asyncio
-async def test_stale_installed_ack_cannot_admit_until_exact_stopped_runtime_reports(
+async def test_stale_installed_ack_only_blocks_acquisition_until_runtime_reports(
     test_session, monkeypatch
 ):
     row, proof = await ready(test_session, monkeypatch, scope=["tw_equity_eod"])
@@ -550,16 +598,18 @@ async def test_stale_installed_ack_cannot_admit_until_exact_stopped_runtime_repo
     await test_session.flush()
     assert (
         "full_market_installed_runtime_unavailable"
-        in (await admission_projection(test_session, "finlab", source=True))["acquisition_blockers"]
+        not in (await admission_projection(test_session, "finlab", source=True))[
+            "acquisition_blockers"
+        ]
     )
-    with pytest.raises(SchedulerControlStartBlockedError):
-        await update_scheduler_desired_state(
-            test_session,
-            scheduler_key=KEY,
-            desired_state="running",
-            expected_revision=1,
-            principal=PRINCIPAL,
-        )
+    control = await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
+    )
+    assert (await admission_projection(test_session, "finlab", source=True))["acquisition_allowed"]
     expires = row.expires_at
     await report_readiness(
         test_session,
@@ -575,10 +625,12 @@ async def test_stale_installed_ack_cannot_admit_until_exact_stopped_runtime_repo
         test_session,
         scheduler_key=KEY,
         desired_state="running",
-        expected_revision=1,
+        expected_revision=control.revision,
         principal=PRINCIPAL,
     )
     assert control.desired_state == "running" and row.expires_at == expires
+
+    assert (await admission_projection(test_session, "finlab", source=True))["acquisition_allowed"]
 
 
 def test_finlab_capacity_includes_cached_table_member_source_work():
@@ -597,9 +649,7 @@ def test_finlab_capacity_includes_cached_table_member_source_work():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [0, False, [], {}, "invalid", "2026-02-30"])
-async def test_malformed_legacy_date_blocks_eligibility_start_without_overwrite(
-    test_session, monkeypatch, legacy
-):
+async def test_malformed_legacy_date_is_replaced_by_first_start(test_session, monkeypatch, legacy):
     from copy import deepcopy
 
     from app.services.full_market_admission import eligibility
@@ -611,18 +661,17 @@ async def test_malformed_legacy_date_blocks_eligibility_start_without_overwrite(
     dataset.config = config
     await test_session.flush()
     result = await eligibility(test_session, "finlab", [dataset])
-    assert not result["feeds"][0]["ready"]
-    assert "full_market_activation_date_invalid" in result["feeds"][0]["blockers"]
-    with pytest.raises(SchedulerControlStartBlockedError):
-        await update_scheduler_desired_state(
-            test_session,
-            scheduler_key=KEY,
-            desired_state="running",
-            expected_revision=1,
-            principal=PRINCIPAL,
-        )
-    assert dataset.config["full_market"]["activation_date"] == legacy
-    assert await test_session.get(FullMarketDatasetState, dataset.dataset_key) is None
+    assert result["feeds"][0]["ready"]
+    await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
+    )
+    first = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    assert first.first_start_date == local_today(dataset)
+    assert dataset.config["full_market"]["activation_date"] == first.first_start_date.isoformat()
 
 
 @pytest.mark.asyncio
@@ -823,3 +872,157 @@ async def test_source_current_enrollment_verification_is_readonly_and_independen
     assert await test_session.scalar(
         select(func.count()).select_from(AdminAuditEvent)
     ) == audit_count + (1 if failure == "replaced" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["local", "staging", "production"])
+async def test_acquisition_without_enrollment_preserves_source_scope_and_expiry(
+    test_session, monkeypatch, environment
+):
+    from app.models.registry import SourceClient
+    from app.services.full_market_admission import account_authorization
+
+    row, _ = await ready(
+        test_session, monkeypatch, environment=environment, scope=["tw_equity_eod"]
+    )
+    source_id = row.source_client_id
+    await test_session.delete(row)
+    await test_session.flush()
+    assert (await account_authorization(test_session, "finlab", "maintenance", "", ""))[
+        "acquisition_allowed"
+    ]
+    assert not (await account_authorization(test_session, "finlab", "unknown", "", ""))[
+        "acquisition_allowed"
+    ]
+    await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
+    )
+    assert (await admission_projection(test_session, "finlab", source=True))["acquisition_allowed"]
+    client = await test_session.get(SourceClient, source_id)
+    client.allowed_datasets = ["tw_etf_eod"]
+    await test_session.flush()
+    assert not (await admission_projection(test_session, "finlab", source=True))[
+        "acquisition_allowed"
+    ]
+    client.allowed_datasets = None
+    await test_session.flush()
+    denied = await admission_projection(test_session, "finlab", source=True)
+    assert denied["acquisition_allowed"] is False
+    assert "full_market_source_binding_invalid" in denied["acquisition_blockers"]
+    client.allowed_datasets = ["tw_equity_eod"]
+    client.expires_at = utc_now() - timedelta(seconds=1)
+    await test_session.flush()
+    assert not (await admission_projection(test_session, "finlab", source=True))[
+        "acquisition_allowed"
+    ]
+    assert not (await account_authorization(test_session, "finlab", "maintenance", "", ""))[
+        "acquisition_allowed"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", ["invalid", ["bad"]])
+@pytest.mark.parametrize("restart", [False, True])
+async def test_owner_api_start_ignores_malformed_optional_governance(
+    client, admin_headers, test_session, monkeypatch, legacy, restart
+):
+    from copy import deepcopy
+
+    from app.services.ingress_contracts import parse_dataset_contract_declaration
+
+    row, _ = await ready(test_session, monkeypatch, scope=["tw_equity_eod"])
+    await test_session.delete(row)
+    await test_session.flush()
+    revision = 1
+    if restart:
+        control = await update_scheduler_desired_state(
+            test_session,
+            scheduler_key=KEY,
+            desired_state="running",
+            expected_revision=revision,
+            principal=PRINCIPAL,
+        )
+        control = await update_scheduler_desired_state(
+            test_session,
+            scheduler_key=KEY,
+            desired_state="stopped",
+            expected_revision=control.revision,
+            principal=PRINCIPAL,
+        )
+        revision = control.revision
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    contract = parse_dataset_contract_declaration(dataset.config)
+    config = deepcopy(dataset.config)
+    config["full_market"] = legacy
+    dataset.config = config
+    first = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    cutoff = first.first_start_date if first else local_today(dataset)
+    before = await test_session.scalar(select(func.count()).select_from(AdminAuditEvent))
+    await test_session.commit()
+    response = await client.patch(
+        f"/api/v1/admin/schedulers/{KEY}",
+        headers=admin_headers,
+        json={"desired_state": "running", "expected_revision": revision},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["desired_state"] == "running"
+    assert response.json()["data"]["revision"] == revision + 1
+    await test_session.refresh(dataset)
+    assert parse_dataset_contract_declaration(dataset.config) == contract
+    first = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    assert first.first_start_date == cutoff
+    assert dataset.config["full_market"] == {"activation_date": cutoff.isoformat()}
+    projection = await admission_projection(test_session, "finlab", source=True)
+    assert projection["acquisition_allowed"] is True
+    assert projection["admitted_dataset_keys"] == [dataset.dataset_key]
+    assert (
+        await test_session.scalar(select(func.count()).select_from(AdminAuditEvent)) == before + 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_maintenance_bootstrap_uses_source_scope_without_baseline_or_admission(
+    client, test_session, monkeypatch
+):
+    from app.models.registry import FullMarketEnvironment
+
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
+    monkeypatch.setattr(get_settings(), "APP_ENVIRONMENT", "local")
+    await seed_datasets(test_session)
+    await reconcile_environment(test_session, actor="test-management")
+    credential, key = await create_source_client(
+        test_session,
+        name="maintenance-only",
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
+        rate_limit_requests=1000,
+        rate_limit_window=60,
+    )
+    assert await test_session.scalar(select(FullMarketAdmission)) is None
+    assert await test_session.scalar(select(UniverseRelease)) is None
+    headers = {"X-API-Key": key}
+    response = await client.get(
+        "/api/v1/source/full-market/authorization",
+        params={"consumer": "maintenance"},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["acquisition_allowed"] is True
+    assert response.json()["acquisition_blockers"] == []
+    assert response.json()["authorized_dataset_keys"] == ["tw_equity_eod"]
+    lifecycle = await test_session.get(FullMarketEnvironment, "local")
+    lifecycle.enabled = False
+    await test_session.commit()
+    response = await client.get(
+        "/api/v1/source/full-market/authorization",
+        params={"consumer": "maintenance"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["acquisition_allowed"] is False
+    assert response.json()["acquisition_blockers"] == ["full_market_flag_disabled"]
+    assert response.json()["authorized_dataset_keys"] == []

@@ -80,9 +80,7 @@ async def update_scheduler_desired_state(
     commit: bool = True,
 ) -> SchedulerControl:
     """Atomically update desired state and append its Admin audit event."""
-    from app.models.registry import FullMarketEnrollment, SourceClient
     from app.services.full_market_admission import (
-        current_enrollment,
         eligibility,
         freeze_admission,
         lock_calendars,
@@ -95,21 +93,6 @@ async def update_scheduler_desired_state(
     if desired_state == "running" and scheduler_key.startswith("full_market_"):
         datasets = await scheduler_start_datasets(db, scheduler_key, lock=True)
         await lock_calendars(db, datasets)
-        provider = scheduler_key.removeprefix("full_market_").removesuffix("_v1")
-        enrollment = await current_enrollment(db, provider)
-        if enrollment:
-            await db.get(
-                FullMarketEnrollment,
-                enrollment.enrollment_id,
-                with_for_update=True,
-                populate_existing=True,
-            )
-            await db.get(
-                SourceClient,
-                enrollment.source_client_id,
-                with_for_update=True,
-                populate_existing=True,
-            )
     result = await db.execute(
         select(SchedulerControl)
         .options(selectinload(SchedulerControl.scheduler_datasets))

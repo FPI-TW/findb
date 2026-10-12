@@ -441,3 +441,100 @@ def test_prepared_delivery_drains_without_new_acquisition_authority(tmp_path, mo
     assert plan["summary"]["data"] == 1 and plan["summary"]["missing"] == 1
     assert source.created == []
     runtime.http.close()
+
+
+@pytest.mark.parametrize("refresh_failure", [False, True])
+@pytest.mark.parametrize("mode", ["cycle", "maintenance"])
+def test_real_universe_refresh_preserves_partial_authorized_scope(
+    tmp_path, monkeypatch, refresh_failure, mode
+):
+    from zoneinfo import ZoneInfo
+
+    from findb_fetcher.full_market_runtime import FullMarketRuntime, ReadinessBlockedError
+    from findb_fetcher.full_market_universe import HKEX_URL, NASDAQ_URLS
+
+    today = datetime.now(timezone.utc).date()
+    us = _release("us-only", "us_equity_eod", [_member()])
+    runtime, source = _cycle_runtime(tmp_path, [us], [today])
+    # Two feeds really are installed, but this key and frozen admission cover only US.
+    hk = {**runtime.feeds[0], "dataset_key": "hk_equity_eod", "market": "HK"}
+    runtime.installed_feeds.append(hk)
+    if mode == "maintenance":
+        runtime.feeds = list(runtime.installed_feeds)
+    runtime._ensure_proof = FullMarketRuntime._ensure_proof.__get__(runtime)
+    runtime.state.refresh("twelve_data", now=0, result=[], next_at=0)
+    requests = []
+    submissions = []
+    universe_reads = []
+    acquired = []
+    original_universes = source.universes
+
+    def authorization(method, path):
+        requests.append(path)
+        assert method == "GET"
+        if path.endswith("consumer=maintenance"):
+            return {"acquisition_allowed": True, "authorized_dataset_keys": ["us_equity_eod"]}
+        assert path == "full-market/authorization"
+        return {"acquisition_allowed": True, "admitted_dataset_keys": ["us_equity_eod"]}
+
+    def universes(dataset, provider, as_of=None):
+        universe_reads.append(dataset)
+        if dataset != "us_equity_eod":
+            raise FullMarketProtocolError("Source key denied dataset", status_code=403)
+        return original_universes(dataset, provider, as_of)
+
+    def submit(body):
+        assert body["dataset_key"] == "us_equity_eod"
+        submissions.append(body)
+        return {"status": "candidate", "dataset_key": body["dataset_key"]}
+
+    snapshots = []
+    directory_day = (
+        datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).strftime("%m%d%Y")
+    )
+
+    def snapshot(url):
+        snapshots.append(url)
+        assert url != HKEX_URL, "unadmitted HK must not be refreshed"
+        if refresh_failure:
+            raise ReadinessBlockedError("official snapshot unavailable")
+        if url == NASDAQ_URLS[0]:
+            return (
+                "Symbol|Security Name|Test Issue|ETF\nAAPL|Common Stock|N|N\n"
+                f"File Creation Time: {directory_day}||\n"
+            ).encode()
+        assert url == NASDAQ_URLS[1]
+        return (
+            "ACT Symbol|Security Name|Test Issue|ETF|Exchange\nIBM|Common Stock|N|N|N\n"
+            f"File Creation Time: {directory_day}||||\n"
+        ).encode()
+
+    source.request = authorization
+    source.universes = universes
+    source.submit = submit
+    runtime._snapshot = snapshot
+    runtime._catalogue = lambda: [
+        {"symbol": "AAPL", "mic_code": "XNAS", "currency": "USD", "type": "Common Stock"}
+    ]
+    runtime._acquire = lambda member, plan, *args: (
+        acquired.append(plan["dataset_key"]) or [{"symbol": member["symbol"]}]
+    )
+    if mode == "cycle":
+        runtime.cycle()
+        assert [feed["dataset_key"] for feed in runtime.feeds] == ["us_equity_eod"]
+        assert acquired == ["us_equity_eod"]
+        assert universe_reads and set(universe_reads) == {"us_equity_eod"}
+        assert source.created and {plan["dataset"] for plan in source.created} == {"us_equity_eod"}
+        assert requests == ["full-market/authorization"]
+    else:
+        if refresh_failure:
+            with pytest.raises(ReadinessBlockedError, match="snapshot unavailable"):
+                runtime.sync_universes()
+        else:
+            runtime.sync_universes()
+        assert requests == ["full-market/authorization?consumer=maintenance"]
+        assert acquired == universe_reads == []
+    assert len(submissions) == (0 if refresh_failure else 1)
+    assert snapshots and HKEX_URL not in snapshots
+    assert len(runtime.installed_feeds) == 2
+    runtime.close()

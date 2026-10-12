@@ -1038,7 +1038,7 @@ describe("Operations presentation", () => {
     })
     mocks.updateScheduler.mockRejectedValue(
       new Error(
-        "全市場啟動條件已變更或尚未完成，請重新整理並確認 feed 啟用、readiness、baseline 與日曆。"
+        "全市場啟動條件已變更或尚未完成，請重新整理並確認已發布 baseline 與完整日曆。"
       )
     )
     render(

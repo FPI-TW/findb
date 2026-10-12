@@ -159,8 +159,6 @@ class IsolatedShioajiGateway:
                     proc.join(2)
                 raise ShioajiSdkError("shioaji acquisition timed out")
             raw = parent.recv_bytes(MAX_ISOLATED_IPC_BYTES)
-            if permit:
-                permit.observe(len(raw))
         except (EOFError, OSError, ValueError):
             # A child that cannot produce one bounded reviewed message is an
             # invalid IPC payload, not a retryable provider acquisition.
@@ -191,7 +189,13 @@ class IsolatedShioajiGateway:
                 or message["after"] < message["before"]
             ):
                 raise ShioajiSdkError("SDK account usage measurement unavailable")
-            permit.observe(max(len(raw), message["after"] - message["before"]))
+            permit.state.usage_floor(
+                account=permit.account,
+                window=permit.window,
+                requests=0,
+                byte_count=message["after"],
+            )
+            permit.observe(0, declared=len(raw))
         kbars = message["kbars"]
         return ShioajiKbarsSnapshot(
             {key: tuple(value) for key, value in kbars.items()},
@@ -394,6 +398,12 @@ class ShioajiSdkGateway:
             except Exception:
                 raise ShioajiSdkError("shioaji login failed", code="LOGIN") from None
             usage_before = _usage_bytes(api)
+            from findb_fetcher.platform_limits import SHIOAJI_DAILY_BYTES
+
+            if usage_before is not None and usage_before >= SHIOAJI_DAILY_BYTES:
+                raise ShioajiSdkError(
+                    "shioaji daily API byte quota exhausted or unavailable", code="QUOTA"
+                )
             contract = _reviewed_base_contract(sdk, symbol)
             if contract is None:
                 contract = _stock_contract(api, symbol)

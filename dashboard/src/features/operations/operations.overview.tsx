@@ -987,7 +987,7 @@ function IngestionCardView({
           )}
           {freshness.pending_feeds.length > 0 && (
             <div>
-              <strong>待啟用 Feed／readiness 前提：</strong>
+              <strong>待準備 Baseline／Calendar：</strong>
               <ul className="mt-1 mb-0 list-disc pl-5">
                 {freshness.pending_feeds.map(feed => (
                   <li key={feed.dataset_key}>

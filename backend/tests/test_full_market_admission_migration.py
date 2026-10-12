@@ -1,4 +1,4 @@
-"""Admission migration preserves safe cutoffs and keeps malformed legacy dates blocked."""
+"""Admission migrations preserve valid cutoffs and support baseline/calendar-only starts."""
 
 import json
 
@@ -7,6 +7,54 @@ from sqlalchemy import text
 
 from tests.migration_database import get_active_migration_database_factory
 from tests.test_migration_upgrade import _run_alembic
+
+
+@pytest.mark.asyncio
+async def test_baseline_calendar_admission_upgrade_and_guarded_downgrade(monkeypatch):
+    import subprocess
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.services.scheduler_control import update_scheduler_desired_state
+    from tests.test_scheduler_start import KEY, PRINCIPAL, ready
+
+    async with get_active_migration_database_factory().clone(
+        "1331cb73adad", "findb_baseline_calendar"
+    ) as (url, engine):
+        await _run_alembic(url, "head")
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            await ready(db, monkeypatch)
+            await update_scheduler_desired_state(
+                db,
+                scheduler_key=KEY,
+                desired_state="running",
+                expected_revision=1,
+                principal=PRINCIPAL,
+            )
+        with pytest.raises(subprocess.CalledProcessError) as failed:
+            await _run_alembic(url, "2442dc84beae", command="downgrade")
+        assert "baseline/calendar admissions require the current schema" in failed.value.stderr
+        async with engine.begin() as db:
+            assert await db.scalar(text("SELECT count(*) FROM full_market_enrollment")) == 1
+            assert (
+                await db.scalar(
+                    text("SELECT count(*) FROM full_market_admission WHERE enrollment_id IS NULL")
+                )
+                == 1
+            )
+            await db.execute(text("DELETE FROM full_market_admission_feed"))
+            await db.execute(text("DELETE FROM full_market_admission"))
+        await _run_alembic(url, "2442dc84beae", command="downgrade")
+        async with engine.connect() as db:
+            assert await db.scalar(text("SELECT count(*) FROM full_market_enrollment")) == 1
+            assert (
+                await db.scalar(
+                    text(
+                        "SELECT is_nullable FROM information_schema.columns WHERE table_name='full_market_admission' AND column_name='enrollment_id'"
+                    )
+                )
+                == "NO"
+            )
 
 
 @pytest.mark.asyncio
@@ -86,17 +134,14 @@ async def test_admission_migration_preserves_valid_dates_without_invalid_cast_fa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [0, False, [], {}, "invalid", "2026-02-30"])
-async def test_migrated_malformed_metadata_blocks_seeded_eligibility_and_start(monkeypatch, legacy):
+async def test_migrated_malformed_metadata_does_not_add_start_gate(monkeypatch, legacy):
     from copy import deepcopy
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.models.registry import DatasetRegistry, FullMarketDatasetState
     from app.services.full_market_admission import eligibility
-    from app.services.scheduler_control import (
-        SchedulerControlStartBlockedError,
-        update_scheduler_desired_state,
-    )
+    from app.services.scheduler_control import update_scheduler_desired_state
     from scripts.seed_data import DATASETS
     from tests.test_scheduler_start import KEY, PRINCIPAL, ready
 
@@ -112,20 +157,20 @@ async def test_migrated_malformed_metadata_blocks_seeded_eligibility_and_start(m
                 ON CONFLICT(dataset_key) DO UPDATE SET config=excluded.config"""),
                 {"config": json.dumps(seed["config"])},
             )
-        await _run_alembic(url, "2442dc84beae")
+        await _run_alembic(url, "head")
         async with AsyncSession(engine, expire_on_commit=False) as db:
             await ready(db, monkeypatch, scope=["tw_equity_eod"])
             dataset = await db.get(DatasetRegistry, "tw_equity_eod")
             assert dataset.config["full_market"]["activation_date"] == legacy
             assert await db.get(FullMarketDatasetState, "tw_equity_eod") is None
             result = await eligibility(db, "finlab", [dataset])
-            assert not result["feeds"][0]["ready"]
-            with pytest.raises(SchedulerControlStartBlockedError):
-                await update_scheduler_desired_state(
-                    db,
-                    scheduler_key=KEY,
-                    desired_state="running",
-                    expected_revision=1,
-                    principal=PRINCIPAL,
-                )
-            assert dataset.config["full_market"]["activation_date"] == legacy
+            assert result["feeds"][0]["ready"]
+            control = await update_scheduler_desired_state(
+                db,
+                scheduler_key=KEY,
+                desired_state="running",
+                expected_revision=1,
+                principal=PRINCIPAL,
+            )
+            assert control.desired_state == "running"
+            assert await db.get(FullMarketDatasetState, "tw_equity_eod") is not None

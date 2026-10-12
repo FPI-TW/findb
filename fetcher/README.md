@@ -22,7 +22,7 @@ staging 的四個 providers 以五個 provider/dataset 配對進行 functional p
 
 Canonical/Serve read model 仍可保留歷史或預留資料域，但不代表那些資料域目前有
 active provider feed。HK、TW ETF EOD 不為 provider coverage 擴張；環境 opt-in Full market
-須有效的 installed runtime/account readiness、Owner baseline publish 與完整 calendar，之後 Owner 在 Full market tab 手動啟動。
+須 Owner baseline publish 與完整 calendar，之後 Owner 在 Full market tab 手動啟動。
 
 目前提供：
 
@@ -212,18 +212,27 @@ Dashboard client bundle。
 ## 全市場手動排程
 
 `findb-fetch-full-market` 支援 local/staging/production 對應的 `configs/full_market.<target>.v1.json`，
-一律初始 stopped，`FULL_MARKET_ENABLED=false` 預設。Installed readiness/account allocation 與 Source
-credential、runtime/artifact/config identity 必須由 trusted management enrollment 綁定，缺少時只阻擋
-Full market 新 acquisition。Owner published official baseline、完整 calendar、aggregate quota/bytes/retry/
-deadline capacity 通過後，既有 scheduler PATCH 手動啟動並凍結 ready feed scope，首次日期 immutable。
-沒有 per-feed activation/readiness_approved/五日門檻。操作、proof 格式、local/deployed actual installation
-receipt generator 與完整命令見 [Full market runbook](../docs/operations/full_market.md)。
+一律初始 stopped，`FULL_MARKET_ENABLED=false` 預設。Owner published official baseline 與完整
+published calendar 通過後，手動啟動既有 scheduler，凍結 ready scope 與首次日期。
+Cycle 官方名單刷新成功或失敗後仍使用原 admitted scope；standalone maintenance refresh
+依 Source 回傳的 `authorized_dataset_keys` 執行，可在尚無 baseline／admission 時 bootstrap，
+但不可省略有效且非空的 provider／dataset scope 或 credential 期限驗證。
+所有環境的新抓取均移除 readiness／enrollment／expiry／capacity 前提。Source／provider API
+認證、running control、flag stop 與資料驗證保留。詳見 [Full market runbook](../docs/operations/full_market.md)。
 
-Pilot/Full checkpoint 分離，所有 opt-in installed consumers 共用 durable account governor。Pilot 與
-historical 以 installed `.account.json` 配置記帳，不依賴 Full readiness TTL；ordinary bounded 未安裝
-allocation 時保留既有行為。每個 provider call 保守預留 full response bytes；FinLab SDK 以完整 frame
-serialization 記錄 bytes，Shioaji 使用 SDK usage delta 與 detached bytes 的較大值。新 provider call
-立即 Source authorization，停止/flag-off/expiry 後只 drain 已 prepared frozen delivery。
+Pilot／Full checkpoint 分離。已設定 account state 的 consumers 共用 durable governor，沿用既有
+account ID 或使用 credential fingerprint；不用跨環境分配、日請求數、deadline capacity proof 或
+enrolled response bounds。只套用 Twelve Data 1597 credits／分鐘、FinLab API 每日 5000 MB、
+Shioaji 每日 500 MiB 與 50 行情查詢／10 秒；TAIFEX 為公開 OpenAPI，以 429 cooldown 處理。
+首次升級以可用的舊 allocation account ID 建立持久化對照；完成 pin 後，證據檔變動不重設
+ledger。Twelve Data／FinLab fingerprint 跟隨 provider config 去除 credential 前後空白，
+同一有效 credential 的格式變動沿用已 pin 的用量、配額與 cooldown；Full Shioaji 保持
+persistent session 傳入 SDK 的原值。若首次 pin 前 allocation 遺失、損壞或缺少可用 account ID，無法辨識舊 ledger，
+則使用 credential fingerprint 與平台實際配額，保留原匿名用量／cooldown 供稽核。
+此例外接受舊用量與 cooldown 無法接續的風險，不猜測合併舊債務；升級前保留 allocation
+與 governor 可維持接續。並行首次 pin 在同一 SQLite transaction 下只建立一個對照。
+FinLab 用量以平台 SDK API 為權威，detached bytes 不代表 network usage；Shioaji 在抓取前查
+實際 SDK 累計 bytes。Source API 自行執行 DB-backed key rate limit 與 429。
 
 官方名單來源為 Nasdaq Trader 的兩份 symbol directories、HKEX `ListOfSecurities.xlsx`、
 TWSE／TPEx 公司資料及 ISIN 的精確 ETF sections，以及 TAIFEX `DailyMarketReportFut`。
@@ -239,48 +248,14 @@ Universe 的 official/provider 原始來源會先存入 R2，以 SHA-256 與不�
 失敗時保存阻擋原因並隔一小時重試。TW ISIN 原始檔可超過 8 MiB，因此全市場 process 必須設定
 `CLOUDFLARE_R2_MAX_OBJECT_BYTES=16777216`；取得與 ZIP 解壓縮皆有明確上限。
 
-Readiness 預設位於 `/var/lib/findb-full-market/readiness/<provider>.json`，可用
-`--readiness-file` 指定。`configs/full_market.readiness.example.json` 刻意使用 unknown/null，
-不能用它啟動擷取。核准檔必須有有效期限、完整 dataset scope、來源 evidence URL/checksum，
-以及已驗證的每日／每分鐘 request、每日 bytes、單次 response bytes 與可達到的 request rate。
-容量檢查納入 20% retry headroom；無法在 completion window 內處理完整範圍時，整個 provider
-保持阻擋，不升級方案、不改成 subset。來源 API 的 activation/readiness 審核也必須通過。
-`python -m findb_fetcher.readiness_probe` 可執行唯讀帳號觀察：最多三個 Twelve Data 請求，
-僅輸出安全的 limits／permissions 或 unknown 原因，並寫入 0600 sanitized report。
-
-Twelve Data 的 US／HK 共用同一個 durable account quota ledger；呼叫前交易式預留 daily/minute
-requests 與 bytes；SQLite 同一 transaction 同時核發 account pacing permit，使用 UTC epoch
-保存下次允許時間，跨 runtime、重啟與 US／HK 共用帳號生效，時鐘回退不會提早放行。
-UTC 時間在取得 SQLite 寫入鎖後才讀取；pacing、daily/minute windows 與後續超額 bytes
-使用同一個 reservation window，等待鎖跨分鐘或跨日不會使用舊時間核發 permit。
-等待最多每次一秒重查停止控制與證據期限，沒有 60 秒截斷；FinLab SDK 完成或失敗後亦會
-延後持久化 permit（包含 catalogue 呼叫）；429 cooldown 以 account scope 跨 UTC 日、runtime
-與重啟保留，不預扣未來日期的 quota。已知 HTTP 429 在 body 驗證與超額 bytes 記帳前
-先保存 cooldown；即使 body 過大、非 identity encoding、非 JSON 或記帳另有錯誤仍保留。
-Catalogue 在已知 HTTP 429 的 body 驗證或讀取失敗時仍回報 typed rate-limited error，
-HTTP 200 的 malformed body 保持原本的 source error 分類。
-Twelve Data 的 time-series／catalogue
-與 TAIFEX report 以 identity encoding 的原始 HTTP bytes 檢查 readiness 單次上限；
-拒絕非 identity Content-Encoding、無效或超額 Content-Length，缺少 Content-Length 時
-仍串流檢查 raw bytes。Twelve Data 另取環境設定上限較小值；已讀到的超額 bytes
-保留在 daily ledger，拒絕回應不建立 catalogue evidence 或成功 raw object。
-Shioaji 1.7.1 使用常駐、靜默隔離 child process，
-每個 child 只登入一次、以 TSE／OTC catalogue 查找實際合約，IPC 僅接受有大小上限的 detached
-JSON；detached catalogue／Kbars 及可觀察的 SDK usage delta 都必須符合單次上限，
-SDK usage bytes 無法確認時拒絕交付。SDK 取得後才可觀察的超額 bytes 會加回 daily ledger，
-即使已超過 budget 仍保存超額，不建立成功 prepared body，也不退款。FinLab 1.5.7 每個 dataset/date 首次取得五個 OHLCV
-欄位，每個 SDK 呼叫分別預留 daily/minute requests 與 bytes，並依 readiness 的每秒速率等待；
-每欄 detached table 各自檢查單次 response 上限，五欄 derived bundle 檢查五次預留的
-aggregate 上限（加上固定 JSON wrapper），亦受既有 R2 object 上限限制。
-FinLab detached table／bundle bytes 僅是可觀察的資料量下限，不能代表 SDK 實際 network bytes；
-readiness 的 verified evidence 必須另行涵蓋 SDK 完整 response、login 與 cache 行為的網路用量，
-未知或未驗證時維持 readiness 阻擋，runtime 不製造 network usage measurement。
-成功 bundle 供各商品共用，不增加逐商品 provider 呼叫。
-分鐘 quota 拒絕時保留已預留的 daily quota；部分欄位失敗不建立成功 bundle 或 no_data。
-各商品獨立驗證，成功商品以 incremental EOD 交付。Provider 原始資料先存 R2，再保存
-完整 prepared request bytes/checksum；重啟後重用原本文與已接受的 run receipt，不重新擷取。
-Shioaji timeout、child 結束或 IPC 失敗時會清除並關閉失效 session，下一個可重試工作
-重建同版本隔離 child；正常流程仍共用一次登入，停止控制會關閉 child。
+正常抓取不讀 readiness／account allocation 的配額、expiry 或 proof；`--readiness-file` 與
+舊 enrollment/repair 工具保留相容診斷用途。治理資料只要求 published baseline 與完整 calendar。
+已有 identity 對照的 account usage、pacing、429 cooldown、prepared payload 與 checkpoint
+不因重啟或升級重設；首次 pin 無法辨識舊 ledger 的例外與風險見上文。
+舊 capacity violation 不再封鎖新抓取；HTTP identity encoding、Content-Length、串流大小、
+SDK／IPC／R2 bounds、schema 與 provenance 驗證保留。不合法 response 不建立成功 raw 或 prepared body。
+FinLab 1.5.7 對 dataset/date 取得五個 OHLCV 欄位，再投影成各商品 bundle，成功 cache 供商品共用。
+Shioaji 1.7.1 由靜默常駐 child process 執行 data API，SDK usage 無法確認時拒絕交付。
 
 TAIFEX 保留 `TX/MTX/TMF/TE/TF` 實際月／週代碼，排除含 `/` 的價差合約，保留一般／盤後及
 官方 attribution date、各時段 volume；不推算 expiry date、不產生 continuous series，也不以
