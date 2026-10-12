@@ -427,6 +427,72 @@ async def test_nullable_futures_ingest_serve_and_rerun_preserve_session_metrics(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["us_equity_eod", "tw_futures_eod"])
+@pytest.mark.parametrize("tamper", [False, True])
+async def test_publish_checksum_uses_submission_order_across_database_collations(
+    test_session, monkeypatch, key, tamper
+):
+    from app.models.registry import UniverseRelease
+
+    await _dataset(test_session, key)
+    body = _universe(key)
+    if key == "us_equity_eod":
+        body.members[0].symbol = "BRK.B"
+        body.members[0].provider_symbol = "BRK.B"
+        body.members[1].symbol = "BRKB"
+        body.members[1].provider_symbol = "BRKB"
+        for member in body.members:
+            member.exchange = "XNYS"
+            member.currency = "USD"
+    release = await submit_universe(test_session, body, allowed_datasets=[key])
+    original_scalars = test_session.scalars
+
+    async def alternate_collation(statement, *args, **kwargs):
+        result = await original_scalars(statement, *args, **kwargs)
+        if statement.column_descriptions[0].get("entity") is UniverseMember:
+            # Simulate a different valid database collation, independent of the
+            # test database's locale, while retaining exactly the same members.
+            rows = list(result.all())
+            return type("MemberResult", (), {"all": lambda self: list(reversed(rows))})()
+        return result
+
+    monkeypatch.setattr(test_session, "scalars", alternate_collation)
+    if tamper:
+        member = await test_session.scalar(
+            select(UniverseMember).where(UniverseMember.release_id == release.release_id).limit(1)
+        )
+        member.provider_symbol += ":tampered"
+        await test_session.flush()
+        with pytest.raises(FullMarketError, match="digest mismatch"):
+            await publish_universe(
+                test_session,
+                release.release_id,
+                UniversePublishRequest(
+                    evidence_note="Tampered membership must remain unpublishable.",
+                    first_baseline_approved=True,
+                ),
+                actor="test-owner",
+            )
+        stored = await test_session.get(UniverseRelease, release.release_id)
+        assert stored.status == "candidate" and stored.published_at is None
+        return
+
+    published = await publish_universe(
+        test_session,
+        release.release_id,
+        UniversePublishRequest(
+            evidence_note="Official members verified across database collations.",
+            first_baseline_approved=True,
+        ),
+        actor="test-owner",
+    )
+    assert published.status == "published"
+    assert published.member_sha256 == release.member_sha256
+    stored = await test_session.get(UniverseRelease, release.release_id)
+    assert stored.published_by == "test-owner"
+
+
+@pytest.mark.asyncio
 async def test_universe_threshold_retains_previous_and_counts_mapping_changes(test_session):
     await _dataset(test_session, "hk_equity_eod")
     body, baseline = await _baseline(test_session, "hk_equity_eod", 1000)

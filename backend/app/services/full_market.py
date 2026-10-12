@@ -995,6 +995,9 @@ async def publish_universe(
         }
         for member in members
     ]
+    # Submission uses Python string ordering; database collation can differ for
+    # punctuation, case and futures session names.
+    canonical.sort(key=lambda member: member["member_key"])
     if _digest(canonical) != release.member_sha256:
         raise FullMarketError("Universe membership digest mismatch", 409)
     release.status = "published"

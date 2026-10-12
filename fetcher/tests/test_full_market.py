@@ -144,6 +144,34 @@ def test_symbol_mapping_never_drops_gap_or_guesses_exchange() -> None:
     )
 
 
+@pytest.mark.parametrize("segment", ["XNCM", "XNGS", "XNMS"])
+def test_nasdaq_listing_segment_maps_to_operating_market(segment: str) -> None:
+    member = {
+        "symbol": "AAPL",
+        "exchange": "XNAS",
+        "currency": "USD",
+        "classification": "ordinary",
+        "mapping_status": "gap",
+        "provider_symbol": "AAPL",
+    }
+    catalogue = {
+        "symbol": "AAPL",
+        "mic_code": segment,
+        "currency": "USD",
+        "type": "Common Stock",
+    }
+    assert map_catalogue([member], [catalogue])[0]["mapping_status"] == "mapped"
+    assert catalogue["mic_code"] == segment
+    assert (
+        map_catalogue([{**member, "exchange": "XNYS"}], [catalogue])[0]["mapping_status"] == "gap"
+    )
+    assert map_catalogue([{**member, "currency": "HKD"}], [catalogue])[0]["mapping_status"] == "gap"
+    assert (
+        map_catalogue([member], [catalogue, {**catalogue, "mic_code": "XNAS"}])[0]["mapping_status"]
+        == "gap"
+    )
+
+
 def _taifex(product: str = "TX", month: str = "202610W1", session: str = "盤後") -> dict[str, str]:
     return {
         "Date": "20261001",

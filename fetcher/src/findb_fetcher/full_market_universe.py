@@ -31,6 +31,8 @@ TW_ISIN_URLS = tuple(
 TAIFEX_URL = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
 TAIFEX_HISTORY_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+# ISO 10383 links these Nasdaq listing segments to operating MIC XNAS.
+NASDAQ_LISTING_SEGMENTS = frozenset({"XNCM", "XNGS", "XNMS"})
 
 
 class UniverseSnapshotError(ValueError):
@@ -329,6 +331,8 @@ def map_catalogue(
         symbol = str(row.get("symbol", ""))
         exchange = str(row.get("mic_code", row.get("exchange", "")))
         currency = str(row.get("currency", ""))
+        if not shioaji and exchange in NASDAQ_LISTING_SEGMENTS:
+            exchange = "XNAS"
         if shioaji:
             exchange = {"TSE": "XTAI", "OTC": "ROCO"}.get(exchange, exchange)
             currency = currency or "TWD"
