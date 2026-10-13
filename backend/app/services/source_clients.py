@@ -74,10 +74,9 @@ def hash_source_key(api_key: str) -> str:
 async def find_active_source_client(db: AsyncSession, api_key: str) -> SourceClient | None:
     key_hash = hash_source_key(api_key)
     result = await db.execute(
-        select(SourceClient).where(
-            SourceClient.key_hash == key_hash,
-            SourceClient.revoked_at.is_(None),
-        )
+        select(SourceClient)
+        .where(SourceClient.key_hash == key_hash, SourceClient.revoked_at.is_(None))
+        .execution_options(populate_existing=True)
     )
     row = result.scalar_one_or_none()
     if row is not None and row.expires_at is not None and row.expires_at <= utc_now():

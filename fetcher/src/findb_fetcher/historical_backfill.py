@@ -83,6 +83,22 @@ class HistoricalControlClient:
             },
         )
 
+    def authorize(self, item: HistoricalWorkItem):
+        from findb_fetcher.full_market_client import FullMarketSourceClient
+
+        with FullMarketSourceClient(self._config, client=self._client) as source:
+            return source.authorization(
+                "POST",
+                f"historical-backfills/{item.item_id}/authorization",
+                {"lease_token": str(item.lease_token)},
+                expected={
+                    "item_id": str(item.item_id),
+                    "request_id": str(item.request_id),
+                    "provider": item.provider,
+                    "dataset_key": item.dataset_key,
+                },
+            )
+
     def fail(self, item: HistoricalWorkItem, code: str) -> None:
         # Never transmit provider diagnostics: the control plane needs only a safe code.
         self._request(
@@ -125,7 +141,10 @@ def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner)
     if item is None:
         return False
     try:
-        run_id = runner.run(item)
+        from findb_fetcher.acquisition import authorization_scope
+
+        with authorization_scope(lambda: control.authorize(item)):
+            run_id = runner.run(item)
         if not isinstance(run_id, UUID):
             raise HistoricalControlError("historical runner did not return a Source run")
     except Exception:  # Provider diagnostics must not escape into FinDB.

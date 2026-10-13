@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from math import isfinite
 from typing import Any
@@ -39,14 +39,52 @@ class FullMarketSourceClient:
         if self.owns_client:
             self.client.close()
 
-    def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def authorization(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
+        required_dataset: str | None = None,
+    ) -> Any:
+        result = self.request(method, path, body, _authorization=True)
+        if any(result.get(key) != value for key, value in (expected or {}).items()):
+            raise FullMarketProtocolError("acquisition authorization identity mismatch")
+        if required_dataset is not None and required_dataset not in result.get(
+            "authorized_dataset_keys", result.get("admitted_dataset_keys", [])
+        ):
+            raise FullMarketProtocolError("acquisition dataset is not authorized")
+        return result["_authorization"]
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        _authorization: bool = False,
+    ) -> dict[str, Any]:
         encoded = canonical_bytes(body) if body is not None else None
         for attempt in range(self.config.max_attempts):
             source_permit(self.config.source_client_key)
+            from findb_fetcher.http_boundary import extensions, prepare_transport
+
+            url = self.config.source_api_url + "/api/v1/source/" + path
+            origin_samples: list[tuple[float, float]] = []
+            if _authorization:
+                prepare_transport(self.client, url)
+
+            def received(_status: int, _headers: httpx.Headers) -> None:
+                if not origin_samples:
+                    origin_samples.append((time.monotonic(), time.time()))
+
+            sent_monotonic = time.monotonic()
             try:
                 with self.client.stream(
                     method,
-                    self.config.source_api_url + "/api/v1/source/" + path,
+                    url,
+                    extensions=extensions(headers=received) if _authorization else None,
                     content=encoded,
                     headers={
                         "X-API-Key": self.config.source_client_key,
@@ -54,6 +92,13 @@ class FullMarketSourceClient:
                         "Accept-Encoding": "identity",
                     },
                 ) as response:
+                    if _authorization and not origin_samples:
+                        raise FullMarketProtocolError(
+                            "Source transport lacks header origin evidence"
+                        )
+                    origin, receipt_utc = (
+                        origin_samples[0] if origin_samples else (time.monotonic(), time.time())
+                    )
                     if response.headers.get("Content-Encoding", "identity") != "identity":
                         raise FullMarketProtocolError("Source governance encoding invalid")
                     raw = bytearray()
@@ -77,6 +122,37 @@ class FullMarketSourceClient:
                     result = json.loads(raw)
                     if not isinstance(result, dict):
                         raise FullMarketProtocolError("Source governance response shape invalid")
+                    if _authorization:
+                        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS, Authorization
+
+                        try:
+                            header_at = datetime.fromisoformat(
+                                response.headers["X-FinDB-Acquisition-Checked-At"]
+                            )
+                            body_at = datetime.fromisoformat(result["checked_at"])
+                            if header_at.tzinfo is None or body_at != header_at:
+                                raise ValueError
+                            checked_at = header_at.timestamp()
+                            expires = result.get("lease_expires_at")
+                            expires_at = (
+                                datetime.fromisoformat(expires).timestamp() if expires else None
+                            )
+                            provider = result["provider"]
+                            if (
+                                result.get("acquisition_allowed") is not True
+                                or result.get("max_age_seconds") != 5
+                                or not -0.250 <= receipt_utc - checked_at < REMOTE_AGE_SECONDS
+                                or origin - sent_monotonic >= REMOTE_AGE_SECONDS
+                                or provider not in {"twelve_data", "finlab", "shioaji", "taifex"}
+                            ):
+                                raise ValueError
+                        except (KeyError, TypeError, ValueError):
+                            raise FullMarketProtocolError(
+                                "current acquisition authorization denied or stale"
+                            ) from None
+                        result["_authorization"] = Authorization(
+                            origin, receipt_utc, checked_at, expires_at, provider
+                        )
                     return result
             except httpx.TransportError:
                 if attempt + 1 == self.config.max_attempts:

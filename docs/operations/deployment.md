@@ -30,8 +30,8 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 勝出的物件，絕不覆寫。rollback 不建立 binding，必須先用目前 tag OID 與 peeled SHA 驗證既有 binding，
 再由 reusable deploy 驗證 production accepted record／bundle；因此 moved、recreated 或跨 unit tag 都不會進入 CI 或部署。
 
-> 目前實際target是staging；production EC2與外部資源
-> 尚未完成。Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
+> Staging 與 production 均已有獨立 AWS 資源及 live deployment；最新 production rollout 見下方紀錄。
+> Staging runtime secrets已由instance role從Secrets Manager載入，application image已由
 > accepted bundle固定為exact digest；FinDB與Fetcher staging workflow均已改為OIDC＋SSM bounded
 > candidate／accepted-record／activation，並完成各自的live acceptance，Phase 4與Phase 5 exit gate均已完成。
 > Phase 6已完成完整native/custom alarm coverage、RDS PITR restore、encrypted root replacement、
@@ -44,6 +44,51 @@ SSE-KMS 與 `If-None-Match: *` 原子保存 unit、release tag、tag ref object 
 > staging security groups已無TCP/22 ingress，兩個EC2 key pair與host recovery key material亦已退役；
 > staging告警與復原證據見[monitoring runbook](monitoring.md)，尚未完成的production與平台強化只列於
 > [current backlog](../dev/backlog.md)。
+
+## Production v0.1.6 rollout（2026-10-13）
+
+兩個 unit 已從 protected `main` commit `c744a3672c8d794b1725c5a59e266f2752247865`
+依 FinDB → Fetcher 順序完成正式 promotion：
+
+| Unit | Annotated immutable tag | Production CD | Accepted bundle SHA256 |
+| --- | --- | --- | --- |
+| FinDB | `findb-v0.1.6` | [38332884712](https://github.com/FPI-TW/findb/actions/runs/38332884712) success | `a4b555f71263eb32fd2377bd72473cfcc568d568344867a8d45b095bec5b9625` |
+| Fetcher | `fetcher-v0.1.6` | [38334170610](https://github.com/FPI-TW/findb/actions/runs/38334170610) success | `6b142bc082c05c17a2965e09a2120b1d6acb85b0dadf2bd92c8156f18154c866` |
+
+Staging source bundles 分別為 `findb/accepted/c744a3672c8d794b1725c5a59e266f2752247865/930fec9941d5e93126b72031c17d7373f00f74f6f6b4f4bd932f278a04148465.tar`
+與 `fetcher/accepted/c744a3672c8d794b1725c5a59e266f2752247865/cc481eeaea8c1e63f51247cdd021564610eec5721f3a57926bd1790c716a4d80.tar`；
+release tag bindings 固定 exact annotated tag object、peeled SHA 與這兩個 staging accepted keys。
+兩個 production accepted records 均已用 SSE-KMS 保存，回讀的 unit、target、release tag、commit、
+workflow run ID 及 image refs 均與 installed manifest 相同。
+
+FinDB acceptance SSM 為 `d3fa97c3-6c25-4130-8611-acd73787313b`，Fetcher 為 `59aefae7-696b-45fb-b857-05da923a85bc`。
+獨立唯讀後驗 SSM `92afb72c-2943-4c21-adb6-c15bb132042f`（FinDB）與
+`209bd7c2-f3d6-4aff-b392-ec921373a600`（Fetcher）皆成功：
+
+- Live Alembic 為 `3553ed95cfbf`；五個 Backend roles 均為 production、running，符合 accepted backend digest。
+- Fetcher 三個 scheduler 與三個 historical consumers 均為 production、running、accepted label true、restart 0，符合 accepted 三枚 digests。
+- 兩個 unit 的 `FULL_MARKET_ENABLED=false`；Fetcher manifest 省略 `runtime_profile` 代表契約預設 `bounded`，不是 null profile。四個 Full controls 保持 stopped，沒有建立 Full admission 或複製 staging baseline。
+- Public health 為 healthy；Dashboard 與 lookup（跟隨正常 query redirect）皆 HTTP 200。
+- RDS 為 private／available，PITR retention 14 天；部署前最新 restorable time 已確認。兩台 EC2 SSM Online。
+
+使用者明確授權在 rollout 前暫停原先 running 的三個 Pilot。透過正常 Owner Admin API 與 revision CAS，
+FinLab、Shioaji、Twelve Data 各由 revision 6／running → 7／stopped；兩個 deploy jobs terminal success 後，
+於 10:05（Asia/Taipei）恢復為 revision 8／running。停止／恢復 SSM 分別為
+`e5bded9c-f82e-4e92-ae01-c74018571a7b`／`4f325e1d-9b3b-4e95-a8d0-dda65bef140b`。
+操作使用各一個使用者授權、有效一小時的 Owner 機器憑證，明文只留程序記憶體；兩個憑證都在
+操作後立即撤銷，create／revoke 與 scheduler update audit 已持久化。最後唯讀 audit SSM
+`ac62e2cc-b6ae-4359-9be5-a600bfd44026` 成功。
+
+10:10 的 cycle 後驗 `fa1600a2-2015-404c-9f17-8255b09cdda9` 確認三個 Pilot 均在恢復後完成
+無錯誤 cycle，heartbeat fresh。`observed=stopped` 是每次 cycle completion／idle report 的正常狀態，
+不能單憑它宣稱 desired=running 的 scheduler 未恢復，也不能把 desired state 當成即時抓取狀態。
+兩個 GitHub Environment 的 `PRODUCTION_DEPLOY_ENABLED` 都已回到 false，既有 promotion 來源設定
+與 Full flag 已完整分頁回讀核對。
+
+仍有既存監控缺口：`findb-production-deployment-failure` 自 2026-09-17 因
+`FinDB/Production / DeploymentFailure`（`DeploymentUnit=control-plane`、`Resource=all`）
+缺少 datapoints、`TreatMissingData=breaching` 而維持 ALARM；本次未變更告警策略，追蹤見 backlog。
+此 rollout 完成部署與排程恢復，production Full market 仍未 opt-in。後續 2026-10-13 已發布七個 production baseline，並補足 US reviewed calendar；完整資料與 credential 現況見 [Full market runbook](full_market.md#production-baseline-與-calendar-現況2026-10-13)。
 
 ## Opt-in Full market runtime
 
@@ -185,8 +230,8 @@ backfill。Deployment不改寫DB scheduler desired state；啟用或停止由Das
 
 ## Environment與設定
 
-Staging orchestrator 與 production promotion workflow 已分離；production workflow 是預留
-control plane，不代表 production Environment 或 AWS資源已建立。現況如下：
+Staging orchestrator 與 production promotion workflow 已分離。Production 已完成多次 OIDC＋SSM
+promotion；部署 gate 平時為 false，只在 operator 授權的 rollout 期間暫開。現況如下：
 
 | Target／resource | Current state |
 | --- | --- |
@@ -822,3 +867,43 @@ Installation generator 預設要求實際 process/container 的 `APP_ENVIRONMENT
 `FULL_MARKET_ENABLED`；只能使用精確 `true`／`false`，省略時同步為 `false`。各環境的兩個
 unit 必須一致。`sync_github_environment.py --apply` 發布該值供 workflow 選擇 profile，
 不改 scheduler desired state；現行 examples 均預設 `false`。
+
+
+## Account acquisition protocol v2 升級與 rollback
+
+此 pacing protocol 必須全 consumer 升級。先正式部署具有 current scheduler／historical item
+授權 probes 的 Backend，再由 protected Owner CAS 暫停 Pilot／Full controls、取消或等待 acquiring
+historical／maintenance 工作完成，停止並確認所有舊 acquiring processes 已 drain。只停止 Full
+不足；舊 Pilot／historical binaries 不讀 v2 OS lock／armed-unknown journal，混用仍可越過新 pacing。
+對 queued historical 先維持停止，不讓 restart 自動取 lease。升級全部 acquiring images／entrypoints
+並驗證同一 account governor host mount／lock identity 後，才可恢復 overlap。保留全部 governor、
+credential pins、用量、cooldown、alias audit、checkpoint paths／identities／immutable first dates。
+
+Current release helper 在 staging／production 的 bounded 與 Full 安裝一律建立並可寫掛載
+`/var/lib/findb-account/<environment>`，由 UID／GID 10001 使用同一 `governor.sqlite3`。
+`FULL_MARKET_ENABLED=false` 的首次 bounded 安裝也需要此 mount，讓 Pilot／historical 的
+acquisition journal、credential pins、request debt 與 cooldown 可持久化；既有 ledger 原樣保留。
+Readiness 目錄唯讀掛載以保留相容證據，不構成 current 新抓取的前提。
+
+Governor 有 current armed／unknown liability 時，不可直接 rollback 舊 protocol 並 resume。
+先維持所有 acquiring processes 停止，以新 image 唯讀查核每個 provider：
+
+```bash
+python -m findb_fetcher.account_governor inspect-acquisition \
+  --governor /var/lib/findb-account/production/governor.sqlite3 --provider shioaji
+```
+
+`legacy_rollback_safe=false` 表示 armed intent，或 unknown 的可能 quota window／保守 cooldown
+仍影響當前操作；Shioaji unknown login 還須檢查 rolling 86400 秒 liability，UTC 換日不會清除。
+該 rolling window 與 v2 login quota 使用相同嚴格下界，可能 login 的完成時間正好滿 86400 秒才
+不再計入該 window；其它 current quota／cooldown 或 armed intent 仍可阻止回退。
+缺檔／舊 schema／讀取失敗同樣 fail closed。單純 drain 不會讓未知 crash liability
+變成已知 debt。此 command 只檢查、不改 ledger；若必須提早回退，需另行 reviewed、bounded、
+conservative migration 將 liability materialize 到 legacy 可讀 tables。此版本未提供該 migration，
+不得宣稱舊 runtime 自動理解新 journal。任何回退都必須保留 shared mount 與既有 provider checkpoints，
+並重新確認所有同帳號 consumers 的版本；不能藉刪 governor／重建 quota 恢復抓取。
+
+Protocol v2 的 cooldown cap、freshness／SDK counter、process crash 與 throughput 取捨見
+[Full market 用量與傳輸保護](full_market.md#用量與傳輸保護)。2026-10-13 此次 production
+長期 scoped Source credentials／隔離已完成，但 Full workers 正式部署與七個 native provider feeds
+資料驗收仍待執行；controls 保持 stopped 的查核不代表容器已完成部署。

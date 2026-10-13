@@ -2559,6 +2559,8 @@ def _run_twelve_fetcher_release_with_marker(
     unaccepted_stable: bool = False,
     transactional_candidate: bool = False,
     preflight_fails: bool = False,
+    full_market_enabled: bool = False,
+    consumer_profile: str = "pilot",
 ) -> subprocess.CompletedProcess[str]:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
     state_dir = tmp_path / "state"
@@ -2566,6 +2568,17 @@ def _run_twelve_fetcher_release_with_marker(
     fake_bin = tmp_path / "bin"
     state_dir.mkdir(parents=True)
     fake_bin.mkdir()
+    # Execute the complete release helper with only host roots relocated. Keep
+    # governor setup, mount construction, metadata gates and rollback intact.
+    account_root = tmp_path / "host" / "account"
+    readiness_dir = tmp_path / "host" / "readiness"
+    isolated_helper = tmp_path / "release_fetcher_provider.sh"
+    isolated_helper.write_text(
+        helper.read_text(encoding="utf-8")
+        .replace('account_dir="/var/lib/findb-account/', f'account_dir="{account_root}/')
+        .replace("/etc/findb-full-market/readiness", str(readiness_dir)),
+        encoding="utf-8",
+    )
     state_path = state_dir / "state.sqlite3"
     state_path.write_text("durable-state\n", encoding="utf-8")
     if residual_candidate:
@@ -2580,7 +2593,12 @@ def _run_twelve_fetcher_release_with_marker(
     (state_dir / "raw-bucket.sha256").write_text(marker + "\n", encoding="utf-8")
 
     fake_docker = fake_bin / "docker"
-    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
+    fake_docker.write_text(
+        _FAKE_DOCKER.replace(
+            "set -eu\n", 'set -eu\nprintf "%s\\n" "$@" >> "$FAKE_DOCKER_ARGUMENTS"\n', 1
+        ),
+        encoding="utf-8",
+    )
     fake_docker.chmod(0o755)
     fake_sudo = fake_bin / "sudo"
     fake_sudo.write_text(_FAKE_SUDO, encoding="utf-8")
@@ -2611,17 +2629,21 @@ def _run_twelve_fetcher_release_with_marker(
         PATH=f"{fake_bin}:{environment['PATH']}",
         FAKE_DOCKER_STATE=str(state_dir),
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
+        FAKE_DOCKER_ARGUMENTS=str(tmp_path / "docker-arguments.log"),
+        FAKE_SUDO_ROOT=str(tmp_path),
         FAKE_IMAGE=image,
         FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
         FAKE_UNACCEPTED_NAMES="stable" if unaccepted_stable else "",
         FAKE_SIGNAL_SENT=str(tmp_path / "signal-sent"),
         FETCHER_PROVIDER_RELEASE_MODE="transactional" if transactional_candidate else "legacy",
         FETCHER_DEPLOY_MODE="candidate" if transactional_candidate else "activate",
+        FULL_MARKET_ENABLED="true" if full_market_enabled else "false",
+        FETCHER_CONSUMER_PROFILE=consumer_profile,
     )
     return subprocess.run(
         [
             "bash",
-            str(helper),
+            str(isolated_helper),
             "twelve-data",
             image,
             str(state_dir),
@@ -2631,7 +2653,7 @@ def _run_twelve_fetcher_release_with_marker(
             "previous",
             "preflight",
             str(cache_dir),
-            "scheduler",
+            "findb-fetch-full-market" if consumer_profile == "full_market" else "scheduler",
         ],
         check=False,
         capture_output=True,
@@ -2711,13 +2733,19 @@ def test_aws_fetcher_release_rejects_unaccepted_stable_after_hard_interruption(
     assert operations.index("rm") < operations.index("pull")
 
 
+@pytest.mark.parametrize("full_market_enabled", (False, True))
+@pytest.mark.parametrize("consumer_profile", ("pilot", "full_market"))
 def test_aws_fetcher_candidate_validates_created_container_without_starting_it(
     tmp_path: Path,
+    full_market_enabled: bool,
+    consumer_profile: str,
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="twelve",
+        marker_identity="full-market" if consumer_profile == "full_market" else "twelve",
         transactional_candidate=True,
+        full_market_enabled=full_market_enabled,
+        consumer_profile=consumer_profile,
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -2727,6 +2755,17 @@ def test_aws_fetcher_candidate_validates_created_container_without_starting_it(
     operations = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
     assert "create" in operations
     assert operations.index("create") < operations.index("rm")
+    account_dir = tmp_path / "host" / "account" / "staging"
+    readiness_dir = tmp_path / "host" / "readiness"
+    assert account_dir.is_dir()
+    assert readiness_dir.is_dir()
+    arguments = (tmp_path / "docker-arguments.log").read_text(encoding="utf-8").splitlines()
+    assert f"type=bind,src={account_dir},dst={account_dir}" in arguments
+    assert (
+        f"type=bind,src={readiness_dir},dst=/var/lib/findb-account/readiness,readonly" in arguments
+    )
+    if consumer_profile == "full_market":
+        assert f"type=bind,src={readiness_dir},dst={state_dir}/readiness,readonly" in arguments
 
 
 @pytest.mark.parametrize("had_old", (False, True))
@@ -3384,6 +3423,14 @@ esac
 
 _FAKE_SUDO = """#!/bin/sh
 set -eu
+if [ -n "${FAKE_SUDO_ROOT:-}" ]; then
+  for argument in "$@"; do
+    case "$argument" in
+      "$FAKE_SUDO_ROOT"|"$FAKE_SUDO_ROOT"/*) ;;
+      /*) echo "fake_sudo=failed reason=path_outside_test_root" >&2; exit 1 ;;
+    esac
+  done
+fi
 case "$1" in
   chown|chmod)
     exit 0
@@ -3391,6 +3438,7 @@ case "$1" in
   stat)
     path="${4:?}"
     case "$path" in
+      */host/readiness) printf '0:0:755\\n' ;;
       *.sqlite3|*.sha256|*.sha256.*) printf '10001:10001:600\\n' ;;
       *) printf '10001:10001:700\\n' ;;
     esac

@@ -464,6 +464,57 @@ async def claim_next_item(
     return None
 
 
+async def authorize_item(
+    db: AsyncSession,
+    item_id: UUID,
+    *,
+    provider: str,
+    allowed_datasets: list[str] | None,
+    lease_token: UUID,
+) -> tuple[bool, datetime, datetime | None, UUID, str]:
+    """Read the current lease without renewing it or changing work state."""
+    row = (
+        await db.execute(
+            select(HistoricalBackfillItem, HistoricalBackfillRequest)
+            .join(HistoricalBackfillRequest)
+            .where(
+                HistoricalBackfillItem.item_id == item_id,
+                HistoricalBackfillRequest.provider == provider,
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).first()
+    checked_at = utc_now()
+    if row is None:
+        raise HistoricalBackfillError("backfill item not found")
+    item, request = row
+    from app.services.source_clients import PROVIDER_DATASET_SCOPE
+
+    expected = PROVIDER_DATASET_SCOPE.get(provider, ())
+    if (
+        not isinstance(allowed_datasets, list)
+        or not allowed_datasets
+        or any(not isinstance(key, str) or key not in expected for key in allowed_datasets)
+        or len(allowed_datasets) != len(set(allowed_datasets))
+        or request.dataset_key not in allowed_datasets
+    ):
+        raise HistoricalBackfillError("backfill item not found")
+    allowed = bool(
+        request.status not in {"cancelled", "completed", "failed"}
+        and item.status == "running"
+        and item.lease_token == lease_token
+        and item.lease_expires_at is not None
+        and item.lease_expires_at > checked_at
+    )
+    return (
+        allowed,
+        checked_at,
+        item.lease_expires_at if allowed else None,
+        request.request_id,
+        request.dataset_key,
+    )
+
+
 async def complete_item(
     db: AsyncSession,
     item_id: UUID,

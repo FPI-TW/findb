@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CalendarMarket
+from app.schemas.admin import CalendarJsonPreviewRequest
 from app.services.calendar_management import (
     RevisionConflictError,
+    _apply_rows,
+    apply_preview,
+    create_preview,
     latest_revision,
+    publish_revision,
     revision_days,
 )
 from scripts import seed_production_calendars as calendar_seed
@@ -123,8 +128,10 @@ async def test_seed_reviewed_calendars_is_published_and_idempotent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_sha256", [None, "", "0" * 64])
 async def test_seed_reviewed_calendars_rejects_existing_different_revision(
     test_session: AsyncSession,
+    source_sha256: str | None,
 ) -> None:
     reviewed = load_reviewed_calendars()
     await seed_reviewed_calendars(
@@ -134,7 +141,7 @@ async def test_seed_reviewed_calendars_rejects_existing_different_revision(
     )
     revision = await latest_revision(test_session, "TW", 2025)
     assert revision is not None
-    revision.source_sha256 = "0" * 64
+    revision.source_sha256 = source_sha256
     await test_session.commit()
 
     with pytest.raises(
@@ -212,6 +219,178 @@ async def _seed_known_legacy_us_2026(session):
     ]
     await seed_reviewed_calendars(session, reviewed=old_reviewed, actor="legacy-bootstrap-test")
     return reviewed
+
+
+async def _publish_reviewed_us_2026_via_owner_json(session):
+    reviewed = await _seed_known_legacy_us_2026(session)
+    item = next(item for item in reviewed if item.market == "US" and item.year == 2026)
+    body = CalendarJsonPreviewRequest(
+        market=item.market,
+        year=item.year,
+        coverage_mode="full_year",
+        days=item.rows,
+        source_filename=item.filename,
+    )
+    market = await session.get(CalendarMarket, body.market)
+    rows = _apply_rows(
+        year=body.year,
+        market=market,
+        rows=[day.model_dump(mode="json") for day in body.days],
+        coverage_mode=body.coverage_mode,
+    )
+    # Match the normal Admin JSON preview transport, which has no file bytes.
+    batch = await create_preview(
+        session,
+        market=market,
+        year=body.year,
+        input_format="json",
+        rows=rows,
+        source_bytes=None,
+        source_filename=body.source_filename,
+        detected_encoding=None,
+        created_by="owner-json-test",
+    )
+    revision = await apply_preview(
+        session, batch_id=batch.id, expected_revision=1, actor="owner-json-test"
+    )
+    await publish_revision(
+        session,
+        market=body.market,
+        year=body.year,
+        expected_revision=revision.revision,
+        published_by="owner-json-test",
+    )
+    return reviewed, revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upgrade_reviewed_2026", [False, True])
+async def test_owner_json_reviewed_calendar_seed_preserves_published_revision(
+    test_session, upgrade_reviewed_2026
+) -> None:
+    reviewed, revision = await _publish_reviewed_us_2026_via_owner_json(test_session)
+    original_id = revision.id
+    original_published_at = revision.published_at
+    original_days = [day.id for day in await revision_days(test_session, revision.id)]
+    assert revision.revision == 2
+    assert revision.source_kind == "json"
+    assert revision.source_sha256 is None
+    assert revision.source_filename == "us_equity_2026.v2.json"
+
+    report = await seed_reviewed_calendars(
+        test_session,
+        reviewed=reviewed,
+        actor="deployment-test",
+        upgrade_reviewed_2026=upgrade_reviewed_2026,
+    )
+
+    assert all(item["action"] == "unchanged" for item in report["results"])
+    current = await latest_revision(test_session, "US", 2026)
+    assert current.id == original_id
+    assert current.revision == 2
+    assert current.source_kind == "json"
+    assert current.source_sha256 is None
+    assert current.published_at == original_published_at
+    assert current.published_by == "owner-json-test"
+    assert [day.id for day in await revision_days(test_session, current.id)] == original_days
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "session",
+        "holiday",
+        "description",
+        "day_status",
+        "is_open",
+        "day_source",
+        "digest",
+        "file_digest",
+        "empty_digest",
+        "filename",
+        "source_kind",
+        "unknown_source_kind",
+        "timezone",
+        "count",
+        "missing_day",
+        "draft",
+    ],
+)
+async def test_owner_json_reviewed_calendar_seed_rejects_drift(test_session, invalid) -> None:
+    reviewed, revision = await _publish_reviewed_us_2026_via_owner_json(test_session)
+    days = await revision_days(test_session, revision.id)
+    if invalid == "session":
+        next(day for day in days if day.trade_date == date(2026, 11, 27)).session_close = time(16)
+    elif invalid == "holiday":
+        days[0].holiday_name = "Owner override"
+    elif invalid == "description":
+        days[0].description = "Owner override"
+    elif invalid == "day_status":
+        days[0].day_status = "settlement_only"
+    elif invalid == "is_open":
+        days[0].is_open = True
+    elif invalid == "day_source":
+        days[0].source_kind = "reviewed_exchange_json"
+    elif invalid == "digest":
+        revision.source_sha256 = "0" * 64
+    elif invalid == "file_digest":
+        revision.source_sha256 = next(
+            item.source_sha256 for item in reviewed if item.market == "US" and item.year == 2026
+        )
+    elif invalid == "empty_digest":
+        revision.source_sha256 = ""
+    elif invalid == "filename":
+        revision.source_filename = "unreviewed.json"
+    elif invalid == "source_kind":
+        revision.source_kind = "manual"
+    elif invalid == "unknown_source_kind":
+        revision.source_kind = "unknown_json"
+    elif invalid == "timezone":
+        revision.timezone = "UTC"
+    elif invalid == "count":
+        revision.actual_days = 364
+    elif invalid == "missing_day":
+        await test_session.delete(days[0])
+    else:
+        revision.status = "draft"
+    await test_session.commit()
+
+    with pytest.raises(ProductionCalendarSeedError, match="existing US 2026 calendar differs"):
+        await seed_reviewed_calendars(
+            test_session,
+            reviewed=reviewed,
+            actor="deployment-test",
+            upgrade_reviewed_2026=True,
+        )
+    assert (await latest_revision(test_session, "US", 2026)).id == revision.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["US", "HK", "CN", "TAIFEX"])
+async def test_owner_json_transport_is_not_accepted_for_other_reviewed_sources(
+    test_session, market
+) -> None:
+    reviewed = await _seed_known_legacy_us_2026(test_session)
+    revision = await latest_revision(test_session, market, 2026)
+    revision.source_kind = "json"
+    revision.source_sha256 = None
+    for day in await revision_days(test_session, revision.id):
+        day.source_kind = "json"
+    await test_session.commit()
+
+    # US still has the legacy filename/rows; other markets have exact reviewed
+    # content but are outside the supported Owner JSON successor transport.
+    with pytest.raises(
+        ProductionCalendarSeedError, match=f"existing {market} 2026 calendar differs"
+    ):
+        await seed_reviewed_calendars(
+            test_session,
+            reviewed=reviewed,
+            actor="deployment-test",
+            upgrade_reviewed_2026=True,
+        )
+    assert (await latest_revision(test_session, market, 2026)).id == revision.id
 
 
 @pytest.mark.asyncio

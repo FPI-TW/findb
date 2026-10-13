@@ -68,6 +68,13 @@ class _Governance:
         assert method == "GET" and path == "full-market/authorization"
         return {"acquisition_allowed": True, "admitted_dataset_keys": list(self.current)}
 
+    def authorization(self, *args: Any, **kwargs: Any):
+        import time
+
+        from findb_fetcher.acquisition import Authorization
+
+        return Authorization(time.monotonic(), time.time(), time.time())
+
     def universes(self, dataset: str, provider: str, as_of: str | None = None) -> dict[str, Any]:
         return {
             "activation": {"enabled": True, "activation_date": str(self.activation)},
@@ -368,9 +375,13 @@ def test_shioaji_failed_child_recreated_shared_feeds_and_stopped(
 
 
 @pytest.mark.parametrize("failure", ["timeout", "dead-child"])
-def test_persistent_gateway_transport_failure_closes_boundary(failure: str) -> None:
+def test_persistent_gateway_transport_failure_closes_boundary(failure: str, tmp_path) -> None:
     gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
     gateway.timeout_seconds = 0
+    gateway._credential = "test-key"
+    gateway._constructed = gateway._logged_in = gateway._contracts_loaded = False
+    gateway._path = tmp_path / "governor.sqlite3"
+    gateway._account = None
 
     class Connection:
         closed = False

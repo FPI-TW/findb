@@ -106,6 +106,35 @@ POST /api/v1/source/scheduler-controls/{scheduler_key}/poll
 回應包含provider、dataset mapping、slot、本地時間、timezone、desired state與revision。
 Scope或reviewed workload不一致時consumer必須fail closed。
 
+每次 acquisition 的最後授權使用 protected 唯讀 probes；poll／heartbeat 的 cached desired state
+不能替代最後檢查：
+
+```http
+GET  /api/v1/source/scheduler-controls/{scheduler_key}/authorization
+GET  /api/v1/source/full-market/authorization?consumer=full_market
+GET  /api/v1/source/full-market/authorization?consumer=maintenance
+POST /api/v1/source/historical-backfills/{item_id}/authorization
+Content-Type: application/json
+
+{"lease_token":"<current-item-lease-token>"}
+```
+
+Pilot probe 綁定精確 scheduler key、provider 與完整 dataset scope；Full probe 另遵守有效 flag／
+running admission，maintenance 遵守 flag／Source scopes。泛用 `consumer=pilot` 不授權抓取。
+Pilot／historical 的當次 acquisition probe 必須使用 DB-backed credential 的明確非空 dataset
+清單；SQL NULL、空清單、非清單、非字串成員、重複或跨 provider dataset 一律拒絕。
+每次認證重新讀取 DB scope，Pilot 也重新載入 scheduler associations，不能沿用先前允許的清單。
+Historical probe 綁定 request／item／provider／dataset、current lease token、expiry 與 cancellation；
+不續租、不更改 request／item/control、heartbeat、revision 或 audit。Scope 不符拒絕，item 不存在或
+不可見回 404；已取消、lease 過期或 token 已改的可見 item 回 `acquisition_allowed=false`。
+
+成功回應包含 `acquisition_allowed`、`provider`、UTC `checked_at`、`max_age_seconds=5`；
+Pilot 包含 `scheduler_key`／`dataset_keys`，historical 包含 `item_id`／`request_id`／`dataset_key`
+及允許時的 `lease_expires_at`。回應 header `X-FinDB-Acquisition-Checked-At` 與 body timestamp 相符，
+並使用 `Cache-Control: no-store`。Fetcher 要求 server check／RTT 小於 5 秒、header receipt 起
+最多 50ms 開始 provider invocation，且不能越過 current minute 或 lease expiry；過期須重新授權。
+此 freshness contract 不保證遠端 stop 與 provider invocation 原子執行。
+
 Admin `GET /api/v1/admin/schedulers` 與 Owner `PATCH /api/v1/admin/schedulers/{scheduler_key}`
 回應另包含 `start_allowed: boolean` 與 `start_blockers: string[]`。全市場啟動會在同一
 transaction 鎖定 registry／control 並重新驗證資格；資格不符回 `409`，detail 為

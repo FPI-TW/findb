@@ -207,8 +207,9 @@ def reserve(provider: str, *, force: bool = False) -> Permit | None:
 
 
 def provider_permit(provider: str) -> Permit | None:
-    # Full-market runtime already reserves before every concrete operation.
-    return None if consumer() in {"full_market", "maintenance"} else reserve(provider)
+    # Acquisition is governed at the actual invocation boundary. Detached
+    # reserve() remains a legacy ledger API, never a production provider gate.
+    return None
 
 
 def source_permit(source_key: str) -> None:
@@ -425,6 +426,11 @@ def main() -> None:
         description="Trusted account capacity correction; never resets usage"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    inspect = commands.add_parser("inspect-acquisition")
+    inspect.add_argument("--governor", type=Path, required=True)
+    inspect.add_argument(
+        "--provider", choices=("twelve_data", "finlab", "shioaji", "taifex"), required=True
+    )
     repair = commands.add_parser("repair-capacity")
     repair.add_argument(
         "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
@@ -434,6 +440,25 @@ def main() -> None:
         repair.add_argument("--" + name, type=Path, required=True)
     repair.add_argument("--violation-id", required=True)
     args = parser.parse_args()
+    if args.command == "inspect-acquisition":
+        import sqlite3
+
+        now = time.time()
+        with sqlite3.connect(args.governor.resolve().as_uri() + "?mode=ro", uri=True) as db:
+            active = db.execute(
+                "SELECT COUNT(*) FROM acquisition_intent WHERE provider=? AND (status='armed' OR (status='unknown' AND (completed_at>=? OR completed_at+cooldown_bound>=? OR (login_units=1 AND (actual_start>? OR (actual_start IS NULL AND armed_at<=? AND completed_at>?))))))",
+                (args.provider, now - now % 86400, now, now - 86400, now, now - 86400),
+            ).fetchone()[0]
+        print(
+            json.dumps(
+                {
+                    "acquisition_protocol_version": 2,
+                    "legacy_rollback_safe": active == 0,
+                    "current_unknown_or_armed": active,
+                }
+            )
+        )
+        return
     repair_capacity(**{key: value for key, value in vars(args).items() if key != "command"})
     print("account_capacity_repair=accepted usage_preserved=true")
 

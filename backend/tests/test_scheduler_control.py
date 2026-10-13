@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import delete, null, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -13,6 +13,7 @@ from app.models.registry import (
     DatasetRegistry,
     SchedulerControl,
     SchedulerDataset,
+    SourceClient,
 )
 from app.services.api_keys import create_api_key
 from app.services.scheduler_control import scheduler_dataset_keys
@@ -20,6 +21,88 @@ from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_cl
 from app.utils import utc_now
 
 SCHEDULER_KEY = "finlab_tw_equity_eod_v1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope",
+    [
+        None,
+        [],
+        "tw_equity_eod",
+        [None],
+        [1],
+        [""],
+        ["tw_etf_eod"],
+        ["us_equity_eod"],
+        ["tw_equity_eod", "tw_equity_eod"],
+    ],
+)
+async def test_running_pilot_acquisition_denies_invalid_db_credential_scope(
+    client, test_session, scope
+):
+    row = await _add_scheduler(test_session)
+    row.desired_state = "running"
+    source, key = await create_source_client(
+        test_session,
+        name="invalid-pilot-probe",
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        commit=False,
+    )
+    path = f"/api/v1/source/scheduler-controls/{SCHEDULER_KEY}/authorization"
+    headers = {"X-API-Key": key}
+    assert (await client.get(path, headers=headers)).json()["acquisition_allowed"] is True
+    # Bypass lifecycle validation to exercise persisted legacy/corrupt credentials.
+    # Keep the identity-map copy stale: auth must reload the current DB scope.
+    await test_session.execute(
+        update(SourceClient)
+        .where(SourceClient.client_id == source.client_id)
+        .values(allowed_datasets=null() if scope is None else scope)
+        .execution_options(synchronize_session=False)
+    )
+    denied = await client.get(path, headers=headers)
+    assert denied.status_code == 403
+    assert "acquisition_allowed" not in denied.json()
+    await test_session.refresh(row)
+    assert row.desired_state == "running"
+
+
+@pytest.mark.asyncio
+async def test_exact_scheduler_authorization_is_read_only_and_scoped(client, test_session):
+    row = await _add_scheduler(test_session)
+    _, key = await create_source_client(
+        test_session,
+        name="exact-probe",
+        owner="tests",
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        commit=False,
+    )
+    heartbeat = row.last_heartbeat_at
+    path = f"/api/v1/source/scheduler-controls/{SCHEDULER_KEY}/authorization"
+    stopped = await client.get(path, headers={"X-API-Key": key})
+    assert stopped.status_code == 200 and stopped.json()["acquisition_allowed"] is False
+    row.desired_state = "running"
+    await test_session.flush()
+    running = await client.get(path, headers={"X-API-Key": key})
+    assert running.status_code == 200 and running.json()["acquisition_allowed"] is True
+    assert running.json()["max_age_seconds"] == 5
+    assert datetime.fromisoformat(running.json()["checked_at"]) == datetime.fromisoformat(
+        running.headers["X-FinDB-Acquisition-Checked-At"]
+    )
+    await test_session.refresh(row)
+    assert row.last_heartbeat_at == heartbeat
+    assert (await client.get(path)).status_code == 401
+    assert (
+        await client.get(
+            "/api/v1/source/scheduler-controls/another/authorization", headers={"X-API-Key": key}
+        )
+    ).status_code == 404
 
 
 def test_scheduler_dataset_keys_uses_loaded_association_only() -> None:
@@ -319,3 +402,48 @@ async def test_scheduler_source_scope_denies_wrong_provider_or_dataset(
         json={"observed_state": "stopped"},
     )
     assert unknown.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_current_authorization_rejects_removed_associations_midcycle(client, test_session):
+    row = await _add_scheduler(test_session)
+    row.desired_state = "running"
+    headers = await _source_headers(
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
+    )
+    path = f"/api/v1/source/scheduler-controls/{SCHEDULER_KEY}"
+    assert (await client.get(path + "/authorization", headers=headers)).json()[
+        "acquisition_allowed"
+    ] is True
+    await test_session.execute(
+        delete(SchedulerDataset).where(SchedulerDataset.scheduler_key == SCHEDULER_KEY)
+    )
+    await test_session.flush()
+    assert (await client.get(path + "/authorization", headers=headers)).status_code == 403
+    assert (
+        await client.post(path + "/poll", headers=headers, json={"observed_state": "running"})
+    ).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,scope,status",
+    [
+        ("finlab", ["tw_equity_eod", "tw_etf_eod"], 200),
+        ("finlab", ["tw_equity_eod"], 403),
+        ("shioaji", ["tw_equity_minute"], 403),
+    ],
+)
+async def test_authorization_requires_exact_nonempty_complete_provider_scope(
+    client, test_session, provider, scope, status
+):
+    row = await _add_scheduler(test_session, dataset_keys=["tw_equity_eod", "tw_etf_eod"])
+    row.desired_state = "running"
+    headers = await _source_headers(test_session, provider=provider, allowed_datasets=scope)
+    result = await client.get(
+        f"/api/v1/source/scheduler-controls/{SCHEDULER_KEY}/authorization", headers=headers
+    )
+    assert result.status_code == status
+    if status == 200:
+        assert result.json()["acquisition_allowed"] is True
+        assert set(result.json()["dataset_keys"]) == {"tw_equity_eod", "tw_etf_eod"}

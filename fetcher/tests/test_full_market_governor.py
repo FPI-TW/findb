@@ -75,7 +75,7 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
         assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == cooldown_until
         assert db.execute(
             "SELECT requests,bytes FROM full_quota WHERE window='2026-10-01'"
-        ).fetchone()[:] == (1, 1000)
+        ).fetchone()[:] == (1, 0)
         assert db.execute("SELECT * FROM full_quota WHERE window='2026-10-02'").fetchone() is None
     assert raw.calls == [] and first.catalogue_evidence == {}
     # Cross midnight before a second HK runtime opens the same account state.
@@ -104,7 +104,7 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
     with second.state.connection() as db:
         assert db.execute(
             "SELECT requests,bytes FROM full_quota WHERE window='2026-10-02'"
-        ).fetchone()[:] == (2, 2000)
+        ).fetchone()[:] == (1, 1000)
     first.http.close()
     second.http.close()
 
@@ -207,13 +207,19 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
     assert len(authorizations) == 1
     assert [call[1] for call in calls] == ([100] if fail_at == 1 else [100, 103])
     assert len(submitted) == 2 and runtime.bundles == {}
-    assert _quota(runtime, "2026-10-01") == (len(calls), len(calls) * 1000)
+    assert _quota(runtime, "2026-10-01") == (len(calls), 0)
     completion = clock.elapsed
     fresh, _, _ = _runtime(tmp_path, provider="finlab")
     fresh.proof = runtime.proof.copy()
-    fresh._reserve()
+    from findb_fetcher.acquisition import Acquisition, authorization_scope
+
+    with (
+        authorization_scope(fresh.source.authorization, state_path=fresh.state.path),
+        Acquisition("finlab", credential=gateway._identity_credential) as operation,
+    ):
+        operation.start()
     assert clock.elapsed == completion + 1
-    assert _quota(fresh, "2026-10-01") == (len(calls) + 1, (len(calls) + 1) * 1000)
+    assert _quota(fresh, "2026-10-01") == (len(calls) + 1, 0)
     assert sum(b"dates" in body for body in raw.calls) == (
         0 if fail_at == 1 else 1 if fail_at == 2 else 2
     )
@@ -305,12 +311,12 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
                 1200 if boundary == "wire" else 2 if boundary == "shape" and status == 429 else 0
             )
     assert len(calls) == 1
-    assert _daily(first) == (1, 1200 if boundary == "wire" else 1000)
+    assert _daily(first) == (1, 0)
     assert raw.calls == [] and first.catalogue_evidence == {} and first.bundles == {}
     assert first.state.prepared("fp1:123:AAPL") is None
     with first.state.connection() as db:
         permit = db.execute("SELECT next_at FROM full_pacing").fetchone()[0]
-        assert permit == started_at + (60 if status == 429 else 0.1)
+        assert permit == pytest.approx(started_at + (60 if status == 429 else 60 / 1597))
     # A fresh HK runtime must respect the remaining account cooldown after restart.
     clock.elapsed += 1
     second, _, _ = _runtime(tmp_path)
@@ -319,7 +325,7 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
     second._reserve()
     assert clock.now().timestamp() == started_at + (60 if status == 429 else 1)
     assert clock.waits == ([1] * 59 if status == 429 else [])
-    assert _daily(second) == (2, 2200 if boundary == "wire" else 2000)
+    assert _daily(second) == (2, 1000)
     first.http.close()
     second.http.close()
 
@@ -362,7 +368,7 @@ def test_http_429_cooldown_commits_before_secondary_byte_ledger_failure(
 
         with pytest.raises(QuotaBlockedError, match="secondary ledger failure"):
             acquire()
-    assert _daily(runtime) == (1, 1200)
+    assert _daily(runtime) == (1, 0)
     assert raw.calls == [] and runtime.catalogue_evidence == {}
     clock.elapsed += 1
     fresh, _, _ = _runtime(tmp_path)
@@ -399,17 +405,17 @@ def test_daily_invalid_http_429_stops_delivery_without_preparation(
         )
     assert source.outcomes[-1]["reason"] == "rate_limited"
     assert runtime.state.prepared("fp1:123:AAPL") is None and raw.calls == []
-    assert _daily(runtime) == (1, max(1000, len(body)))
+    assert _daily(runtime) == (1, 0)
     runtime.http.close()
 
 
 def _daily(runtime: Any) -> tuple[int, int]:
     with runtime.state.connection() as db:
         row = db.execute(
-            "SELECT requests,bytes FROM full_quota WHERE account=? AND length(window)=10",
-            (runtime.provider,),
+            "SELECT SUM(requests) AS requests,SUM(bytes) AS bytes FROM full_quota WHERE (account=? OR account LIKE ?) AND window=(SELECT MAX(window) FROM full_quota WHERE (account=? OR account LIKE ?) AND length(window)=10)",
+            (runtime.provider, runtime.provider + ":%", runtime.provider, runtime.provider + ":%"),
         ).fetchone()
-        return row["requests"], row["bytes"]
+        return row["requests"] or 0, row["bytes"] or 0
 
 
 @pytest.mark.parametrize("declared_length", [False, True])
@@ -448,7 +454,7 @@ def test_actual_twelve_data_stream_uses_readiness_cap_before_preparation(
     assert raw.calls == []
     assert runtime.state.prepared("fp1:123:AAPL") is None
     # Declared length rejects before reading; a received oversized chunk is retained in ledger.
-    assert _daily(runtime) == (1, 1000 if declared_length else len(body))
+    assert _daily(runtime) == (1, 0)
     runtime.http.close()
 
 
@@ -525,7 +531,8 @@ def test_real_finlab_gateway_oversized_field_rejects_and_records_observable_over
         canonical_bytes({"dates": ["2026-10-01"], "symbols": symbols, "values": [["10"] * 200]})
     )
     assert observed == 2449
-    assert _quota(runtime, "2026-10-01") == (expected_calls, expected_bytes)
+    assert _quota(runtime, "2026-10-01")[0] == expected_calls
+    assert _quota(runtime, "2026-10-01")[1] == 0
     assert raw.calls == [] and runtime.bundles == {}
     assert runtime.state.prepared("tw_equity_eod:" + symbols[0]) is None
     assert source.outcomes[-1]["reason"] == "source_error"
@@ -548,7 +555,7 @@ def test_finlab_valid_five_field_bundle_can_exceed_single_response_cap(
     )
     assert len(calls) == 5 and len(requests) == 1
     assert 100 < len(raw.calls[0]) <= 5 * 100 + 64
-    assert _quota(runtime, "2026-10-01") == (5, 500)
+    assert _quota(runtime, "2026-10-01") == (5, 0)
     runtime.http.close()
 
 
@@ -614,11 +621,15 @@ def test_other_provider_acquisition_paths_enforce_verified_byte_bound(
         # Usage delta is not an enrolled response bound; malformed Kbars still fails validation.
         with pytest.raises(ShioajiPayloadError):
             acquire()
-        assert _daily(runtime)[1] == 2266
+        assert _daily(runtime)[1] == 0
     else:
         with pytest.raises(ReadinessBlockedError, match="size bound"):
             acquire()
-        assert _daily(runtime)[1] > 1000
+        assert (
+            _daily(runtime)[1] > 1000
+            if path in {"snapshot", "latest", "historical"}
+            else _daily(runtime)[1] == 0
+        )
         assert raw.calls == []
     runtime.http.close()
 
@@ -689,7 +700,7 @@ def test_clock_rollback_preserves_pacing_without_expiry_gate(
     runtime.http.close()
 
 
-def test_failed_minute_quota_preserves_daily_without_consuming_pacing_permit(
+def test_failed_minute_quota_changes_neither_daily_nor_pacing_permit(
     tmp_path: Path,
 ) -> None:
     now = 1790856000.0
@@ -709,7 +720,7 @@ def test_failed_minute_quota_preserves_daily_without_consuming_pacing_permit(
         state.reserve_acquisition(**kwargs)
     with state.connection() as db:
         assert (
-            db.execute("SELECT requests FROM full_quota WHERE length(window)=10").fetchone()[0] == 2
+            db.execute("SELECT requests FROM full_quota WHERE length(window)=10").fetchone()[0] == 1
         )
         assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == 1790856001
 
@@ -910,7 +921,13 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
             acquire()
         assert raw.calls == [] and runtime.catalogue_evidence == {} and runtime.bundles == {}
     assert len(calls) == 1
-    assert _daily(runtime) == (1, len(body) if boundary == "wire" else 20)
+    assert _daily(runtime) == (
+        (2, len(body) if boundary == "wire" else 20)
+        if path == "snapshot"
+        else (1, len(body) if boundary == "wire" else 20)
+        if path == "report"
+        else (1, 0)
+    )
     runtime.http.close()
 
     with runtime.state.connection() as db:
@@ -1035,7 +1052,7 @@ def test_official_snapshot_records_only_received_bytes_on_incomplete_body(tmp_pa
     runtime.close()
 
 
-def test_cached_taifex_report_still_requires_four_source_calls_per_member(tmp_path, monkeypatch):
+def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, monkeypatch):
     import ast
     from uuid import UUID
 
@@ -1104,7 +1121,14 @@ def test_cached_taifex_report_still_requires_four_source_calls_per_member(tmp_pa
     feed = {**runtime.feeds[0], "dataset_key": "tw_futures_eod", "slot_id": "taiwan_market_window"}
     try:
         assert runtime._deliver_plan(plan, {"release_id": "r", "members": members}, feed)
-        assert calls == ["control", "authorization", "ingest", "status"] * len(members)
+        assert calls == [
+            "control",
+            "authorization",
+            "control",
+            "authorization",
+            "ingest",
+            "status",
+        ] * len(members)
         assert len(members) == 2
         # A cached report needs no new provider permit/request for either member.
         with runtime.state.connection() as db:
@@ -1150,8 +1174,8 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
     shared = FullMarketState(shared_path)
     _, _, _, window = shared.reserve_acquisition(
         account="actual-provider-account",
-        interval=0.1,
-        requests=1,
+        interval=0,
+        requests=0,
         byte_count=10,
         request_limit=100,
         byte_limit=10000,
@@ -1166,6 +1190,19 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
     runtime._ensure_proof = lambda: None
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-fixture")
+    import hashlib
+
+    from findb_fetcher import acquisition
+
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(shared_path))
+    shared.account_identity(
+        "taifex" if path == "taifex-report" else "twelve_data",
+        hashlib.sha256(b"public" if path == "taifex-report" else b"offline-fixture").hexdigest(),
+        "actual-provider-account",
+    )
+    monkeypatch.setattr(
+        acquisition, "limits", lambda provider: {**runtime.proof, "requests_per_second": 10}
+    )
     headers = {"Content-Length": "100"} if boundary in {"header", "header-encoding"} else {}
     if boundary == "invalid-length":
         headers["Content-Length"] = "invalid"
@@ -1237,7 +1274,10 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
                 httpx.ReadError,
             )
         ):
-            acquire()
+            from findb_fetcher.acquisition import authorization_scope
+
+            with authorization_scope(runtime.source.authorization, state_path=shared_path):
+                acquire()
         assert runtime.snapshot_objects == {} and raw_store.calls == []
         assert runtime.catalogue_evidence == {}
         expected_actual = 25 if boundary == "wire" or (boundary == "header" and buffered) else 0
@@ -1608,7 +1648,7 @@ def test_full_twelve_data_non_200_never_persists_provider_payload(tmp_path, monk
                 )
             assert caught.value.status_code == status
             assert caught.value.observed_bytes > 0
-            assert _daily(runtime) == (1, 1000)
+            assert _daily(runtime) == (1, 0)
             assert raw_store.calls == []
             assert runtime.state.prepared("fp1:123:AAPL") is None
         finally:

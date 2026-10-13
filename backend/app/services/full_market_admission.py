@@ -546,16 +546,13 @@ async def account_authorization(
     db: AsyncSession, provider: str, consumer: str, digest: str, runtime_id: str
 ) -> dict:
     if consumer == "pilot":
-        running = await db.scalar(
-            select(SchedulerControl.scheduler_key)
-            .where(
-                SchedulerControl.provider == provider,
-                ~SchedulerControl.scheduler_key.startswith("full_market_", autoescape=True),
-                SchedulerControl.desired_state == "running",
-            )
-            .limit(1)
-        )
-        return {"acquisition_allowed": running is not None, "declaration_sha256": None}
+        # Pilot authorization must identify its exact scheduler; a different
+        # running scheduler for this provider cannot authorize acquisition.
+        return {
+            "acquisition_allowed": False,
+            "acquisition_blockers": ["pilot_requires_scheduler_authorization"],
+            "declaration_sha256": None,
+        }
     if consumer == "full_market":
         return await admission_projection(db, provider, source=True)
     if consumer != "maintenance":

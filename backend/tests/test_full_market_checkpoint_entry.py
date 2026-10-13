@@ -293,6 +293,9 @@ run_runtime() {
         )
         assert checkpoint.exists(), unsafe.stderr
         assert "legacy-initializer" in events.read_text()
+        # Only this fixture's offline initializer owns these closed schema sidecars.
+        for sidecar in checkpoint.parent.glob(checkpoint.name + ".*.lock"):
+            sidecar.unlink()
         checkpoint.unlink()
         checkpoint.parent.rmdir()
     assert (checkpoint.read_bytes() if checkpoint.exists() else None) == before

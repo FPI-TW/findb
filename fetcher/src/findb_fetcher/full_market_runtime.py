@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as clock_time
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from findb_fetcher.acquisition import authorization_scope, http_acquisition
 from findb_fetcher.client import SourceAPIClient, SourceAPIResponseError
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
@@ -162,6 +164,36 @@ def split_rows(
     if chunk:
         result.append(chunk)
     return result
+
+
+def _governed(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        if not self._acquisition_allowed():
+            raise ReadinessBlockedError("scheduler acquisition stopped")
+
+        def authorize():
+            if not self._acquisition_allowed():
+                raise ReadinessBlockedError("scheduler acquisition stopped")
+            consumer = os.getenv("FETCHER_CONSUMER_PROFILE", "full_market")
+            consumer = (
+                "maintenance"
+                if consumer == "maintenance" or method.__name__ == "sync_universes"
+                else "full_market"
+            )
+            plan = kwargs.get("plan") or (
+                args[1] if method.__name__ == "_acquire" and len(args) > 1 else None
+            )
+            return self.source.authorization(
+                "GET",
+                "full-market/authorization?consumer=" + consumer,
+                required_dataset=plan["dataset_key"] if plan else None,
+            )
+
+        with authorization_scope(authorize, state_path=self.state.path):
+            return method(self, *args, **kwargs)
+
+    return run
 
 
 class FullMarketRuntime:
@@ -332,16 +364,21 @@ class FullMarketRuntime:
                 self._observed_response(getattr(exc, "observed_bytes", 0))
             raise
 
+    @_governed
     def _snapshot(self, url: str, *, provider_response: bool = False) -> bytes:
-        if not provider_response:
-            self._reserve()  # Official universe refresh uses the same installed allocation.
         if not self._acquisition_allowed():
             raise ReadinessBlockedError("scheduler acquisition stopped")
         # Official listings consume the same enrolled response bound and account
         # bytes as provider data; the parser ceiling is an additional constraint.
         bound = min(int(self.proof["max_response_bytes"]), MAX_SNAPSHOT_BYTES)
-        with self.http.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
+        with (
+            http_acquisition(self.provider, self.http, url=url) as (operation, extensions),
+            self.http.stream(
+                "GET", url, headers={"Accept-Encoding": "identity"}, extensions=extensions
+            ) as response,
+        ):
             if response.status_code == 429:
+                operation.rate_limited(response.headers.get("Retry-After"))
                 # Status is known before a bounded read can reject its body.
                 self._rate_limited()
             body = self._read_response(response, bound=bound, provider_response=True)
@@ -374,10 +411,10 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("FinLab pinned SDK is unavailable") from None
         return FinLabSdkGateway.from_env(on_response_bytes=self._observed_response)
 
+    @_governed
     def _catalogue(self) -> list[dict[str, Any]]:
         self._ensure_proof()
         if self.provider == "shioaji":
-            self._reserve()
             catalogue = self._shioaji_request("catalogue")
             detached = canonical_bytes(
                 {"sdk_version": "1.7.1", "simulation": False, "catalogue": catalogue}
@@ -387,16 +424,23 @@ class FullMarketRuntime:
             return catalogue
         if self.provider == "finlab":
             return []
-        self._reserve()
         config = TwelveDataConfig.from_env()
         # Catalogue and daily acquisition use the exact same durable account ledger.
-        with self.http.stream(
-            "GET",
-            config.base_url + "/stocks",
-            params={"apikey": config.api_key},
-            headers={"Accept-Encoding": "identity"},
-        ) as response:
+        with (
+            http_acquisition(self.provider, self.http, url=config.base_url + "/stocks") as (
+                operation,
+                extensions,
+            ),
+            self.http.stream(
+                "GET",
+                config.base_url + "/stocks",
+                params={"apikey": config.api_key},
+                headers={"Accept-Encoding": "identity"},
+                extensions=extensions,
+            ) as response,
+        ):
             if response.status_code == 429:
+                operation.rate_limited(response.headers.get("Retry-After"))
                 # Commit known account cooldown before body validation/byte accounting.
                 self._rate_limited()
             try:
@@ -421,6 +465,7 @@ class FullMarketRuntime:
             self.catalogue_evidence = {config.base_url + "/stocks": catalogue_raw}
             return value["data"]
 
+    @_governed
     def sync_universes(self, *, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
         self._ensure_proof()
         if dataset_keys is None:
@@ -512,7 +557,6 @@ class FullMarketRuntime:
                     for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
                         if dataset not in dataset_keys:
                             continue
-                        self._reserve()
                         try:
                             table = gateway.fetch_dataset(
                                 "price:收盤價",
@@ -560,7 +604,6 @@ class FullMarketRuntime:
             }
         else:
             self._ensure_proof()
-            self._reserve()
             raw = self._snapshot(TAIFEX_URL, provider_response=True)
             values = json.loads(raw)
             report_date = str(values[0]["Date"]).replace("/", "").replace("-", "")
@@ -869,6 +912,7 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("R2 raw persistence identity differs from acquired bytes")
         return stored
 
+    @_governed
     def _acquire(
         self,
         member: dict[str, Any],
@@ -887,7 +931,6 @@ class FullMarketRuntime:
         }
         dataset = plan["dataset_key"]
         if self.provider == "twelve_data":
-            self._reserve()
             if self.td is None:
                 td_config = TwelveDataConfig.from_env()
                 self.td = TwelveDataClient(
@@ -964,24 +1007,11 @@ class FullMarketRuntime:
                 gateway = self._finlab_gateway()
                 tables = {}
                 for field, name in config.field_datasets.items():
-                    self._reserve()
-                    try:
-                        tables[field] = gateway.fetch_dataset(
-                            name,
-                            target_date=day,
-                            symbols=tuple(item.source_symbol for item in config.symbols),
-                        )
-                    finally:
-                        # Slow or failed SDK calls extend the durable account permit.
-                        self.state.pace_from_completion(
-                            account=self.provider,
-                            now=datetime.now(timezone.utc).timestamp(),
-                            interval=(
-                                1 / self.proof["requests_per_second"]
-                                if self.proof["requests_per_second"]
-                                else 0
-                            ),
-                        )
+                    tables[field] = gateway.fetch_dataset(
+                        name,
+                        target_date=day,
+                        symbols=tuple(item.source_symbol for item in config.symbols),
+                    )
                     self._observed_response(len(self._finlab_table_bytes(tables[field])))
                 table_raw = canonical_bytes(
                     {
@@ -1029,7 +1059,7 @@ class FullMarketRuntime:
             request["payload"]["batch"]["declared_record_count"] = 1
             request["payload"]["batch"]["delivery_mode"] = "incremental"
         elif self.provider == "shioaji":
-            before, after = self._reserve()
+            before, after = 0, 1
             snapshot = self._shioaji_request("fetch_kbars", member["provider_symbol"], day)
             raw = canonical_bytes(
                 {
@@ -1038,22 +1068,9 @@ class FullMarketRuntime:
                     "bytes_after": snapshot.usage_bytes_after,
                 }
             )
-            permit = getattr(self, "account_permit", None)
-            if permit is not None and snapshot.usage_bytes_after is not None:
-                permit.state.usage_floor(
-                    account=permit.account,
-                    window=permit.window,
-                    requests=0,
-                    byte_count=snapshot.usage_bytes_after,
-                )
-                self._observed_response(len(raw), usage_bytes=0)
-            else:
-                self._observed_response(len(raw), usage_bytes=snapshot.usage_bytes_delta)
+            self._observed_response(len(raw), usage_bytes=0)
+            before, after = snapshot.requests_before, snapshot.requests_after
             stored = self._persist(raw, dataset, member["provider_symbol"])
-            if snapshot.usage_bytes_delta is None:
-                raise ReadinessBlockedError(
-                    "SDK account bytes unavailable or exceed reserved bound"
-                )
             identity = checksum(
                 canonical_bytes({"plan": plan["plan_id"], "member": member["member_key"]})
             )
@@ -1085,18 +1102,15 @@ class FullMarketRuntime:
             )
         else:
             if day.isoformat() not in self.futures:
-                self._reserve()
                 latest_raw = self._snapshot(TAIFEX_URL, provider_response=True)
                 self._persist(latest_raw, dataset, "exchange_report")
                 try:
                     rows = parse_report(latest_raw, target_date=day)
                     raw, historical = latest_raw, False
                 except ValueError:
-                    self._reserve()
                     reports = {}
                     rows = []
                     for product in ("TX", "MTX", "TMF", "TE", "TF"):
-                        self._reserve()
                         product_raw = fetch_report(
                             self.http,
                             target_date=day,

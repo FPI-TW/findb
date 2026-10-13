@@ -64,6 +64,65 @@ class FullMarketDeploymentTests(unittest.TestCase):
         for target in ("staging", "production"):
             self.validate(self.manifest(target))
 
+    def test_every_runtime_mounts_writable_shared_governor_with_full_disabled(self):
+        source = (ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
+        start = source.index("readiness_mount=()")
+        end = source.index(
+            '\nif [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then', start
+        )
+        mount_setup = source[start:end]
+        for target in ("staging", "production"):
+            for enabled in ("false", "true"):
+                for retained in (False, True):
+                    with self.subTest(target=target, enabled=enabled, retained=retained):
+                        with tempfile.TemporaryDirectory() as directory:
+                            base = Path(directory)
+                            account_root = base / "account"
+                            account_dir = account_root / target
+                            readiness_dir = base / "readiness"
+                            ledger = account_dir / "governor.sqlite3"
+                            if retained:
+                                account_dir.mkdir(parents=True)
+                                ledger.write_bytes(b"retained pins, debt and cooldown")
+                            # Execute the actual shell setup on isolated host paths.
+                            # Only chown is recorded: this offline test is not root.
+                            setup = mount_setup.replace(
+                                "/var/lib/findb-account", str(account_root)
+                            ).replace("/etc/findb-full-market/readiness", str(readiness_dir))
+                            completed = subprocess.run(
+                                [
+                                    "bash",
+                                    "-c",
+                                    'set -euo pipefail\nsudo() { if [ "$1" = chown ]; then '
+                                    'printf "%s\\n" "$*" >&2; else "$@"; fi; }\n'
+                                    + setup
+                                    + '\nprintf "%s\\n" ${account_mount[@]+"${account_mount[@]}"}',
+                                ],
+                                env={
+                                    **os.environ,
+                                    "APP_ENVIRONMENT": target,
+                                    "FULL_MARKET_ENABLED": enabled,
+                                },
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                            )
+                            self.assertEqual(completed.returncode, 0, completed.stderr)
+                            args = completed.stdout.splitlines()
+                            self.assertIn(f"type=bind,src={account_dir},dst={account_dir}", args)
+                            self.assertIn(
+                                f"type=bind,src={readiness_dir},dst={account_root}/readiness,readonly",
+                                args,
+                            )
+                            self.assertEqual(account_dir.stat().st_mode & 0o777, 0o700)
+                            self.assertIn(f"chown 10001:10001 {account_dir}", completed.stderr)
+                            if retained:
+                                self.assertEqual(
+                                    ledger.read_bytes(), b"retained pins, debt and cooldown"
+                                )
+                            else:
+                                self.assertFalse(ledger.exists())
+
     def test_full_market_is_environment_bound_fetcher_only(self):
         good = self.manifest()
         good["runtime_profile"] = "full-market"

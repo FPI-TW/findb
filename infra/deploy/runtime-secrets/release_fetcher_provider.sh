@@ -236,12 +236,12 @@ fi
 readiness_mount=()
 account_mount=()
 account_dir="/var/lib/findb-account/$APP_ENVIRONMENT"
-if [ "${FULL_MARKET_ENABLED:-false}" = true ] || [ -d "$account_dir" ]; then
-  sudo mkdir -p "$account_dir" /etc/findb-full-market/readiness
-  sudo chown 10001:10001 "$account_dir"
-  sudo chmod 0700 "$account_dir"
-  account_mount=(--mount "type=bind,src=$account_dir,dst=$account_dir" --mount "type=bind,src=/etc/findb-full-market/readiness,dst=/var/lib/findb-account/readiness,readonly")
-fi
+# All current acquiring consumers use the durable governor, including bounded
+# Pilot/historical with Full disabled. Preserve any retained ledger and pins.
+sudo mkdir -p "$account_dir" /etc/findb-full-market/readiness
+sudo chown 10001:10001 "$account_dir"
+sudo chmod 0700 "$account_dir"
+account_mount=(--mount "type=bind,src=$account_dir,dst=$account_dir" --mount "type=bind,src=/etc/findb-full-market/readiness,dst=/var/lib/findb-account/readiness,readonly")
 if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
   # The official TW ISIN full universe exceeds the bounded 8 MiB default.
   # Keep the expanded raw/response ceiling explicit and profile-scoped.

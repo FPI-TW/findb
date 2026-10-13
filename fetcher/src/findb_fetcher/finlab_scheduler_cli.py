@@ -14,6 +14,7 @@ from typing import Any
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig, app_environment
 from findb_fetcher.contracts import ContractError, ContractRegistry
+from findb_fetcher.finlab_credentials import effective_token, installed_token
 from findb_fetcher.finlab_scheduler import FinLabSchedulerService
 from findb_fetcher.finlab_universe import (
     FinLabPilotUniverse,
@@ -114,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         fetcher_config = FetcherConfig.from_env()
         calendar_config = MarketCalendarConfig.from_env()
         registry = ContractRegistry(fetcher_config.contracts_dir)
-        if not os.getenv("FINLAB_API_TOKEN", "").strip():
+        if not effective_token(installed_token()):
             raise ConfigError("FINLAB_API_TOKEN is required for FinLab scheduler execution")
 
         if args.require_stopped:

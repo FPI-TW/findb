@@ -513,6 +513,13 @@ def _runtime(tmp_path: Path, *, provider: str = "twelve_data") -> tuple[Any, Any
             self.outcomes.append(kwargs)
             return {}
 
+        def authorization(self, *args: Any, **kwargs: Any):
+            import time
+
+            from findb_fetcher.acquisition import Authorization
+
+            return Authorization(time.monotonic(), time.time(), time.time())
+
     class Raw:
         def __init__(self) -> None:
             self.calls: list[bytes] = []

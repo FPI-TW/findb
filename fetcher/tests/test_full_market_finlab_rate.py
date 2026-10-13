@@ -90,8 +90,21 @@ def _finlab_runtime(
     }
     runtime.state.record_plan(plan, "finlab")
     gateway = SimpleNamespace(calls=[], fail_at=None)
+    from findb_fetcher import acquisition
+
+    platform_limits = acquisition.limits
+    monkeypatch.setattr(
+        acquisition,
+        "limits",
+        lambda provider: runtime.proof if provider == "finlab" else platform_limits(provider),
+    )
 
     def fetch_dataset(name: str, *, target_date: date, symbols: tuple[str, ...]) -> Any:
+        with acquisition.Acquisition("finlab") as operation:
+            operation.start()
+            return sdk_get(name, target_date=target_date, symbols=symbols)
+
+    def sdk_get(name: str, *, target_date: date, symbols: tuple[str, ...]) -> Any:
         gateway.calls.append((name, clock.elapsed, symbols))
         if len(gateway.calls) == gateway.fail_at:
             raise RuntimeError("offline SDK failure")
@@ -113,10 +126,10 @@ def _finlab_runtime(
 def _quota(runtime: Any, window: str) -> tuple[int, int]:
     with runtime.state.connection() as db:
         row = db.execute(
-            "SELECT requests, bytes FROM full_quota WHERE account='finlab' AND window=?",
+            "SELECT SUM(requests) AS requests, SUM(bytes) AS bytes FROM full_quota WHERE (account='finlab' OR account LIKE 'finlab:%') AND window=?",
             (window,),
         ).fetchone()
-        return (row["requests"], row["bytes"]) if row else (0, 0)
+        return (row["requests"] or 0, row["bytes"] or 0) if row else (0, 0)
 
 
 def test_finlab_two_feeds_share_pacing_and_ten_call_account_quota(
@@ -147,7 +160,7 @@ def test_finlab_two_feeds_share_pacing_and_ten_call_account_quota(
     calls = context.gateway.calls
     assert len(calls) == 10
     assert all(later[1] - earlier[1] >= 1 for earlier, later in zip(calls, calls[1:]))
-    assert _quota(runtime, "2026-10-01") == (10, 10000)
+    assert _quota(runtime, "2026-10-01") == (10, 0)
     assert _quota(runtime, "2026-10-01T12:01") == (10, 0)
     assert len(raw.calls) == 2
     assert [request[0]["dataset_key"] for request in requests] == datasets
@@ -188,7 +201,7 @@ def test_finlab_field_calls_paced_cached_and_prepared_identity_survives_restart(
     assert len(calls) == 5
     assert [later[1] - earlier[1] for earlier, later in zip(calls, calls[1:])] == [3, 1, 1, 1]
     assert all(call[2] == tuple(context.plan["parts"][0]["member_keys"]) for call in calls)
-    assert _quota(runtime, "2026-10-01") == (5, 5000)
+    assert _quota(runtime, "2026-10-01") == (5, 0)
     assert _quota(runtime, "2026-10-01T12:01") == (5, 0)
     assert len(delivered) == 2
     saved = {
@@ -242,8 +255,8 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
         assert row["reason"] == (
             "rate_limited" if boundary in {"daily", "minute"} else "source_error"
         )
-    # Minute rejection intentionally retains the conservative daily reservation.
-    assert _quota(runtime, "2026-10-01")[0] == (3 if boundary in {"minute", "failure"} else 2)
+    # Pre-start minute rejection creates no known request debt.
+    assert _quota(runtime, "2026-10-01")[0] == (3 if boundary == "failure" else 2)
     assert _quota(runtime, "2026-10-01T12:01")[0] == expected_calls
     assert source.outcomes[-1]["reason"] != "no_trade"
     assert all(wait <= 1 for wait in clock.waits)

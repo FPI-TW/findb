@@ -5,6 +5,11 @@
 `bounded`／`full-market` profile；rollback 從 immutable accepted record 讀取原 profile，不修改 bundle。
 旗標為 true 不會啟動排程。Full market 的啟動資料條件只包含已發布 baseline 與完整已發布 calendar。
 Owner 權限、revision CAS 與 Source 認證屬於既有操作／資料存取規則。
+TAIFEX 官方 OpenAPI 不需 provider 帳號、API key 或 provider secret。部署設定中的
+`FETCHER_TAIFEX_SOURCE_CLIENT_KEY` 是 **FinDB 自己簽發的 Source API key**，供 TAIFEX Fetcher
+存取 control／authorization／universe／plan、回報 heartbeat 並交付資料；它不是期交所的 API key。
+只有下載官方報表時無須此 key，走正常 FinDB Source API 時仍須認證。其 Secrets Manager 路徑為
+`findb/{staging|production}/fetcher/api/source/taifex`，不宣告 `provider/taifex` secret。
 Full API 的 Source credential 必須有明確、非空的 dataset list，且涵蓋 admitted feeds；
 NULL、空值或 malformed scope 一律拒絕授權與 universe／plan 存取。
 maintenance bootstrap 也必須通過有效 provider／dataset scope 與 credential 期限檢查，
@@ -57,8 +62,11 @@ transaction 與 audit 發布；未修改 installed files 或重啟服務。Owner
 
 Nasdaq catalogue 的 `XNCM`／`XNGS`／`XNMS` 依 [ISO 10383 MIC](https://www.iso20022.org/market-identifier-codes)
 對應 operating MIC `XNAS`，只用於 identity matching；仍核對 symbol、currency、asset type 並拒絕
-duplicate mappings。MIC 修正與穩定排序修正留在本機未提交變更，須隨後續正常部署發布，
-本次沒有 commit、push 或部署。
+duplicate mappings。MIC 與穩定排序修正已於 PR #290 合入 protected `main`
+`c744a3672c8d794b1725c5a59e266f2752247865`；[FinDB staging CD](https://github.com/FPI-TW/findb/actions/runs/38229909196)
+與 [Fetcher staging CD](https://github.com/FPI-TW/findb/actions/runs/38229909124) 均成功。
+Production rollout 紀錄見 [deployment runbook](deployment.md#production-v016-rollout2026-10-13)；
+staging baseline publication 紀錄不代表 production 已有相同資料。
 
 最後查核 DB revision 為 `3553ed95cfbf`。四個 Full controls 均 desired／observed `stopped`、revision 5；
 本次沒有變更任何 scheduler。Pilot controls 的 desired state 已由其他操作設為 running，
@@ -73,6 +81,110 @@ TAIFEX candidate `2bb03a64-515b-422a-a01d-e12f603c6273`、發布
 回讀 `eaf5ba97-b196-434f-aef8-ed726bb63390` 均為 Success／exit 0。
 本機驗證：全 repo `pnpm check`、Backend Full market／time gate suites（137 passed）、
 Fetcher Full market／recovery／governor suites（334 passed）。
+
+## Production baseline 與 calendar 現況（2026-10-13）
+
+11:02（Asia/Taipei）七個 feeds 的首次 official baseline 均已透過正常受保護 Source／Admin
+API 提交與 Owner 發布。官方快照與 production 帳號 catalogue 重新取得，原始證據、URL 與
+SHA256 保存至 production R2 `findb-production-raw`；沒有複製 staging release。
+後續獨立唯讀後驗逐一比對全部成員與提交 payload、member count、Python canonical ordering
+SHA256、effective date、evidence 及 publication audit，七個 feeds 皆 `ready=true`、blockers 空。
+這只確認 baseline／calendar 啟動資料齊備，不代表 runtime opt-in 或行情資料驗收完成。
+
+| Provider / dataset | 成員 | mapped | gap | Effective date | Published release ID |
+| --- | ---: | ---: | ---: | --- | --- |
+| `twelve_data/us_equity_eod` | 6024 | 5082 | 942 | 2026-10-12 | `01a13336-4cdb-7117-a66f-c7771e57adf2` |
+| `twelve_data/hk_equity_eod` | 2821 | 2774 | 47 | 2026-10-13 | `01a13336-51c9-7c6f-bca1-114e68e8204f` |
+| `finlab/tw_equity_eod` | 1947 | 1947 | 0 | 2026-10-13 | `01a13336-5431-701c-8e3c-dcb64b757f45` |
+| `finlab/tw_etf_eod` | 361 | 359 | 2 | 2026-10-13 | `01a13336-559d-71f0-bdc6-13acaefd8795` |
+| `shioaji/tw_equity_minute` | 1947 | 1945 | 2 | 2026-10-13 | `01a13336-564a-731d-8fec-1b6bde2d42bf` |
+| `shioaji/tw_etf_minute` | 361 | 359 | 2 | 2026-10-13 | `01a13336-5849-73a4-b18a-1958a7bb2507` |
+| `taifex/tw_futures_eod` | 62 | 62 | 0 | 2026-10-12 | `01a13336-58d9-7e19-bf84-ecb34ae33fe1` |
+
+TAIFEX 共 31 個實際月／週契約，regular／after_hours 展開為 62 個成員。
+所有 classification／mapping gaps 保留；gap 商品仍依既有 blocked 規則處理，沒有縮小官方名單。
+TW ISIN 原始快照超過 8 MiB，單次 R2 保存用 16 MiB 上限，沒有修改部署中的 raw storage 設定。
+US／HK 使用 compact JSON 與頂層 immutable evidence，分別為 931,508／501,508 bytes，
+符合 nginx Source 1 MiB 上限。Shioaji production 為 simulation、SDK 1.7.1；隔離 runtime
+catalogue 呼叫曾失敗，另以無輸出的隔離 child 成功取得原始 catalogue，再套用同一個
+exact exchange／currency mapping 與 duplicate rejection。此準備不代表 Full runtime 已通過驗收。
+
+| Market | 2026 published calendar revision | 完整性 |
+| --- | --- | --- |
+| US | `01a13336-596e-7025-be83-129ed0ad49bd`（revision 2） | 365 / 365，2026-01-01 至 2026-12-31 |
+| HK | `01a10eb8-521b-789b-a799-e86154323b67`（revision 1） | 365 / 365，2026-01-01 至 2026-12-31 |
+| TW | `01a0c213-665e-7e20-87f3-ed45ea0f976d`（revision 1） | 365 / 365，2026-01-01 至 2026-12-31 |
+| TAIFEX | `01a10eb8-52ba-772f-978d-ae31a6ce5544`（revision 1） | 365 / 365，2026-01-01 至 2026-12-31 |
+
+US 舊版已以正常 Admin JSON preview／apply／publish 與 revision CAS 更新至
+`us_equity_2026.v2.json`。全年所有日期、開休市、holiday／description 與每日 session 均與
+reviewed source 逐項一致；11-27、12-24 於 America/New_York 13:00 提前收盤，
+其餘 open sessions 為 09:30–16:00。已再次核對
+[NYSE 官方日曆](https://www.nyse.com/trade/hours-calendars)。
+Reviewed source file SHA256 為 `655c9b6e9c974ca0f6596f5f00fcfb8ac6dc3fc6dde11ed10a3863e02afb922b`，
+保存於 bootstrap credential create audit；此次 Owner JSON import 的 US revision 2 為
+`source_kind=json`、`source_sha256=NULL`，revision 沒有另外保存正規化 rows 摘要。
+完整 365 rows 的逐項比對與原始 reviewed file 摘要是分開的驗證證據。TW、HK、TAIFEX 沿用既有正確 revision。
+
+使用者明確授權有效一小時的 Owner machine key 及四個 dataset-scoped Source bootstrap keys。
+所有明文只留在 production management process 記憶體；每個 provider 的 Source key 使用後即撤銷，
+Owner key `01a13336-4bee-776c-8568-d73096ac25e2` 於 11:02:42 撤銷，五個 keys 均完成
+create／revoke audit。正常 Admin 無認證查核回傳 401；七筆 baseline publish 與 US calendar
+preview／apply／publish audit 均持久化，沒有依賴 auth override 或直接寫入 baseline／calendar tables。
+使用者授權暫存的本機完整 payload 及可重組傳輸片段已刪除；只保留 checksums、summary、
+command IDs、scripts 與非機密操作結果。
+
+實際 production HTTPS credential 驗證：Twelve Data US 200／HK 403，FinLab equity 200／ETF 403，
+Shioaji equity／ETF 皆 200；calendar Serve key 對四個市場皆 200／coverage complete。
+三個 provider API credentials 已完成實際 catalogue 操作。TAIFEX 沒有 active production Source
+client，也無 `findb/production/fetcher/api/source/taifex` secret；本次短期 TAIFEX key 已撤銷。
+HK、FinLab ETF scopes 與 TAIFEX 長期 credential 仍須正式配置，bootstrap 不改動既有 credentials。
+
+Backend／Fetcher Full flag 維持 false，仍為 bounded profile。四個 Full controls 保持 stopped／revision 1，
+首次日期與 admission 尚未建立；三個 Pilot controls 在本次操作前已由其他操作設為 stopped／revision 9，
+本次未變更任何 control。發布前後唯讀比對確認長期 Source scopes／expiry／revocation
+與全部 control revisions 相同；不可沿用 v0.1.6 部署完成時 Pilot running 的舊查核。
+
+SSM 證據：初始 inventory `f54f7f9c-9815-43ce-b4e2-6181021b1878`、reviewed calendar checksum
+`0fa0efb1-8d94-4a53-8c9f-c935239757f7`、初始 HTTPS credentials
+`a9f35ee4-1f99-4ed9-957e-d432ea92c284`；準備 Twelve Data
+`39f09bc9-b780-453b-9b95-7b7c54bae912`、FinLab `e3c00bc6-7360-4458-a919-de248f8f9e4f`、
+Shioaji `0eddf2cc-ab60-4a87-853c-2ed60d26ace7`、TAIFEX `0bdf8478-3c6d-46d6-ab43-761b043670c0`；
+正式發布 `785150c8-a14f-4880-bc16-4d7c5331bd84`、獨立唯讀後驗
+`c7e84b30-4bd5-44e1-84a7-9a7c62707e32`、公開 HTTPS 後驗
+`41f297da-50bf-4c94-9520-32da45bfd649` 均 Success／exit 0，US calendar revision 2 已可讀。
+本機非機密證據保存於 `/private/tmp/findb-production-baselines-20261013`。
+
+## Production Full scheduler 尚未回報查核（2026-10-13）
+
+11:13（Asia/Taipei）唯讀查核顯示，Owner 於 11:08:43–45 將四個 Full controls 從 revision 1／stopped
+設為 revision 2／running，admission 已凍結七個 ready feeds；11:10:02–04 又以 user actor 設為
+revision 3／stopped。四者 heartbeat／cycle timestamps 均為 null，沒有 runtime error report。
+Dashboard start 僅更新 desired state，不會部署或建立容器；沒有 heartbeat 時顯示尚未回報，
+不能把已接收 Owner start 當作 worker 已開始運行。
+
+實際 production Fetcher 仍為 `fetcher-v0.1.6` bounded profile（manifest 省略 runtime_profile
+代表 bounded），只有三個 Pilot scheduler 與三個 historical workers，沒有任何
+`findb-full-market-*` 容器。Backend 與 Fetcher 有效 `FULL_MARKET_ENABLED` 都是 false。
+這是未回報的直接原因，與七個已發布 baseline／calendar 是否齊備無關。
+正式運行仍須先修正已記錄的 pacing commit-delay race，完成 Full profile 正式部署、同步兩端
+flag，然後由 Owner start；長期 Source scopes／credentials 已完成後續配置，見下方更新。
+不新增 readiness／enrollment／capacity gates。
+
+本次 start 已保存 immutable first dates：US 為 2026-10-12，其他六個 feeds 為 2026-10-13。
+停止、後續部署與重啟均不重設日期；後續只補首次日期之後的 gaps。本次診斷只讀取狀態，
+沒有變更 flags、controls、credentials 或部署。
+
+Production SSM：Backend `beeddeca-30f7-460a-906b-49904a523e16`、Fetcher
+`57429b11-5816-45f9-9a6c-9233c5b35273`。Staging 即時對照：有效 Full flag true，
+`findb-full-market-taifex` 為 running，active `fetcher-taifex` Source client
+`01a10ada-89c5-7148-a02d-a8499e93f9c5` 限定 `tw_futures_eod`；
+`findb/staging/fetcher/api/source/taifex` 有 AWSCURRENT 版本
+`b6cda8e9-cc9e-4d14-9ebe-1e8d1d87b68c`。容器有 FinDB Source key、沒有 TAIFEX provider key，
+與兩層認證的設計一致；實際 authenticated Source HTTPS 回應 200，未輸出 key 明文。
+Staging SSM：Source client `14426af7-1330-41b8-9712-97121a79f507`、容器與 HTTPS
+`593021f1-3bfd-4cac-823f-d28956247e88`，皆 Success／exit 0。
+唯讀證據保存於 `/private/tmp/findb-full-market-diagnosis-20261013`。
 
 ## 啟動契約
 
@@ -126,7 +238,7 @@ Payload／R2 object／解壓縮／IPC bounds 屬於傳輸與資料處理保護�
 所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依
 published baseline 與完整 published calendar；新抓取另遵守 running control、有效旗標、Source
 及 provider API 認證與資料驗證。每次部署仍須確認 installed revision、環境與有效旗標；最新 staging 資料查核見上方現況。
-本次新增的 Nasdaq MIC 與 publication 排序修正尚未部署。
+Nasdaq MIC 與 publication 排序修正已隨上述 c744a36 staging release 部署；production 狀態見 deployment runbook。
 
 ## 治理資料明確需求
 
@@ -161,18 +273,30 @@ regular／after_hours sessions，排除價差與 continuous futures。官方成�
 4. 使用 `--sync-universes` 提交官方名單與 provider mapping 的 candidate；它以 authenticated Source
    maintenance 授權執行，無須 enrollment。Owner 發布 baseline，補齊完整 calendar，再手動 start。
 
-Local 範例（正常 Source、provider、calendar 與 R2 env 須已設定）：
+Local 範例（repository root 起始；`fetcher/.env` 的 Source、provider、calendar 與 R2
+設定須已填入，並與 bounded／historical 命令共用同一個 account ledger）：
 
 ```bash
+cd fetcher
 export APP_ENVIRONMENT=local FULL_MARKET_ENABLED=true FETCHER_CONSUMER_PROFILE=full_market
-export FETCHER_ACCOUNT_STATE_PATH=/private/tmp/findb-local-account/governor.sqlite3
-fetcher/.venv/bin/findb-fetch-full-market --provider finlab \
-  --config "$PWD/fetcher/configs/full_market.local.v1.json" \
-  --state-path /private/tmp/findb-local-full/state.sqlite3 --sync-universes
-fetcher/.venv/bin/findb-fetch-full-market --provider finlab \
-  --config "$PWD/fetcher/configs/full_market.local.v1.json" \
-  --state-path /private/tmp/findb-local-full/state.sqlite3 --run-forever
+uv run --env-file .env findb-fetch-full-market --provider finlab \
+  --config configs/full_market.local.v1.json \
+  --state-path .state/full-market/state.sqlite3 --sync-universes
+uv run --env-file .env findb-fetch-full-market --provider finlab \
+  --config configs/full_market.local.v1.json \
+  --state-path .state/full-market/state.sqlite3 --run-forever
 ```
+
+首次本機設定依 `fetcher/.env.example` 使用
+`FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3`，上述 cwd 與其他本機 CLI
+相同，皆解析到 `fetcher/.state/account/governor.sqlite3`，由執行者建立且重啟後保留。
+所有 providers 的 Pilot／Full／maintenance／historical 共用此檔案，checkpoint 另存；
+從其他 cwd 啟動須改用該既有檔案的絕對路徑，不能以不同 cwd 的同字串另建 ledger。
+既有 `.env` 須由操作者補上設定：先確認並沿用已存在 governor 的絕對路徑，包括舊範例的
+`/private/tmp/findb-local-account/governor.sqlite3`。不得清空或丟棄既有 pins、debt、unknown
+liability、cooldown 或 allocation。若要搬遷，停止所有 consumers、備份並完整移轉 SQLite
+狀態後一併切換，詳見 [Fetcher 本機設定](../../fetcher/README.md#開發)。本機範本只用於
+local；staging／production 路徑與 durable mounts 維持部署設定。
 
 staging／production 使用各自 config 與 durable paths。四個 Full workers 為
 `findb-full-market-{twelve-data,finlab,shioaji,taifex}`；Pilot 保留原 names，production Full
@@ -207,6 +331,27 @@ Pilot 與 Full，確認 desired/observed stopped，再依既有 rollback 流程�
 「歷史回補」保留 operator／owner 的預覽與確認操作。
 分頁深連結、刷新與錯誤處理見 [dashboard.md](dashboard.md)。
 
+## Production 啟用準備更新（2026-10-13 05:03 UTC）
+
+長期 Source credentials 已配置完成：Twelve Data US／HK、FinLab equity／ETF、Shioaji equity／ETF
+與 TAIFEX 七個 feed 的實際 Fetcher-role HTTPS 查核皆為 200；四個市場的 published calendar
+皆完整 365 日。TAIFEX Source client `01a13364-4387-7b9b-b5e0-411c745002e3` 為 active、無 expiry，
+secret AWSCURRENT 為 `6145ed3d-beb6-40bb-8516-2eb0d34ecee7`。三個既有 provider keys／IDs
+及 calendar credential 保持原身份，Source RPM 為 2400；跨 FinDB／Fetcher 的 secret read 均拒絕。
+查核證據為 SSM `1936dad3-82dc-4f44-a05a-314858301ca3` 與
+`1bccffe5-9f3e-4864-afb0-d56bab798a9f`。TAIFEX secret metadata apply 為 1 add、0 change、0 destroy。
+
+Production 全部 Pilot stopped／revision 9、四個 Full stopped／revision 3，沒有 active historical
+request／item／lease；六個舊 bounded acquiring processes 尚待正式 drain／upgrade。Staging 四個
+Pilot desired running，Full 皆 stopped，另有一筆 queued FinLab historical、未持有 lease。
+四個 Full workers 正式部署與七個 native provider feeds 的資料驗收仍未完成；不可把 credentials
+或 Owner start 通過視為 workers／實際資料已完成。
+
+舊 production 配置指向 `/var/lib/findb-account/production/governor.sqlite3`，但六個 containers
+沒有 host account mount。SSM `82ded678-03ae-4c3f-ad63-a61c18d8afa4` 唯讀確認 host 與六個
+container 的該 governor 路徑皆不存在，因此此次沒有該路徑的舊 governor debt 可搬移。
+已存在的 provider checkpoints 必須保留；這項結果不能推廣成其他環境可忽略舊 governor。
+
 ## 用量與傳輸保護
 
 正常抓取使用 `platform_limits.py` 中的已確認限制。Twelve Data 按 1597 credits／分鐘 pacing；
@@ -219,9 +364,13 @@ backoff，等待受 `FETCHER_MAX_RETRY_AFTER_SECONDS` 限制，嘗試次數受 `
 
 已安裝的 account ID 可沿用以保留 ledger，provider／credential fingerprint 與 ledger ID 對應
 會以 SQLite transaction 持久化；完成首次 pin 後，舊證據檔移除或修改不改用新 ledger，
-既有 debt/cooldown 不重設，也不輸出 credential。Twelve Data 與 FinLab 的 fingerprint
-使用 provider config 去除前後空白後的有效 credential；同一有效 credential 的空白格式變動
-不另建 ledger。Full Shioaji 使用 persistent session 實際傳入 SDK 的原值，不套用額外正規化。
+既有 debt/cooldown 不重設，也不輸出 credential。Twelve Data fingerprint 去除前後空白；
+FinLab 1.5.7 gateway、identity 與 installed allocation 比對均使用 `credential.strip()[:64]`，
+符合 native `LoginPanel.login`／`get_token` 的前 64 字元選取，長 token 的後綴不另建帳號 ledger。
+同一有效 credential 的空白格式變動不另建 ledger。Full／Pilot／historical Shioaji 的 key／secret 與 SDK 輸入一致去除前後空白；
+只合併可由同一有效 credential 證明關聯的 pins：FinLab 包含明確提供與 SDK 等值 installed
+token 的 raw、舊去空白與新 SDK 等值 fingerprints；未知或不同實際 key 不合併。Request debt
+加總、cooldown 取最大、alias merge 冪等，原 ledger 與 audit 保留；不合併不明身份的 orphan。
 首次升級尚未建立對照時，若舊 allocation 遺失、損壞或沒有可用 account ID，舊 schema 沒有
 provider／credential 關聯可供還原。此例外以 credential fingerprint 建立新 ledger，只依平台
 實際配額；原 ledger 用量與 cooldown 保留供稽核，不猜測、改標籤或合併匿名債務。
@@ -230,6 +379,57 @@ governor 以維持完整接續。不同環境不設分配或預算，平台累�
 Governor 保留用量、pacing、cooldown；舊 capacity violation/repair 資料保留稽核，正常抓取不再
 以它們作前提，也不刪除既有 debt。HTTP／SDK／IPC／R2 大小、格式與 provenance 驗證仍保留；
 過大或不合法 response 不得變成成功 payload，但不新增永久 account capacity 封鎖。
+
+Account acquisition protocol v2 對同一 governor 路徑／account 使用跨 process OS advisory lock
+及 process thread mutex，從 durable preparation 持有至 operation 完成／durable finalization。
+SQLite transaction 只做短暫 ledger 更新，不跨 network／SDK 等待；其他 account 可以同時執行。
+HTTP 在 transport send boundary、FinLab 在 `data.get`、Shioaji 在 child `api.kbars` 記錄 actual start。
+Twelve Data HTTP boundary 使用該 client 實際 config credential（保留 raw／normalized pin 合併），
+即使環境變數指向另一個 key，account lock、request debt 與 cooldown 都跟隨實際送出的 key。
+FinLab 1.5.7 的 headless `login(token)` 只選取 process-global token，不算上游 acquisition。
+所有 `FinLabSdkGateway` 以 process-wide SDK lock 保護 login、最後授權、`data.get` 與 finalization；
+SDK lock 先於 account lock，不同 explicit tokens 在同 process 依序使用，拒絕授權會釋放 lock。
+Account identity 在 login 前建立；SDK 修改的 token environment 在離開 scope 時還原，避免
+installed allocation 的環境身份被改寫，成功、拒絕或 SDK error 都遵守此規則。`from_env`
+及 central account identity 使用同一 SDK scope 的 installed environment 快照，跨 thread 等待
+還原完成；同 thread authorization／data／finalization callback 讀取 scope 前的 token，
+不會把暫時 SDK token 當作 installed allocation，也不重入 SDK 鎖。
+同 thread 的 recursive gateway dispatch 拒絕，避免授權 callback 改寫外層 token 或造成 deadlock。
+持有 account lock 的 callback 僅可唯讀取得全部相關 fingerprints 已 pin 至同一 target 的 identity；
+需要建立／合併 pins 時明確拒絕，保留債務，離開 operation 後可正常合併。唯讀路徑不再取得
+identity mutex，避免其他 process 正在等待該 account 的 merge 形成反向等待。外部 account lock
+內的巢狀 SDK dispatch 拒絕；installed snapshot 只嘗試立即取得 SDK lock，busy 時明確拒絕。
+Known requests 原子且冪等計入 actual UTC minute／day；正常拒絕或過期 grant 不增加 known request debt。
+下一次開始不得早於前次 completion 加平台 interval，可能比 grant-based pacing 慢。
+Cached FinLab bundle／SDK catalogue 不算行情 acquisition；TAIFEX cached report 不另預留 orphan quota。
+
+Durable armed intent 必須在最後 Source authorization 前保存。Current control／credential／scope
+授權回應的 `checked_at` 與 HTTP header 相符，server check age／整次 RTT 均小於 5 秒；
+immutable header reception origin 在 response hooks／body decode 前取得，local dispatch／child GO
+期限最多 50ms，並受 actual minute boundary 與 historical lease expiry 限制。等待、準備延遲、rollover
+或 token 過期須重新檢查 quota／Source，最多三次後 fail closed；不能把 child GO 發送時間當成新 origin。
+這是有界 fresh check，遠端 stop 與 provider invocation 不構成跨服務 atomic transaction。
+Historical 每 item 使用 protected lease／cancellation probe，不延長 lease。
+
+HTTP 429 的 headers 一到就 durable MAX 保存 cooldown，先於 body 讀取。Provider `Retry-After`
+秒數／日期採最少 60 秒，最多 `FETCHER_PROVIDER_MAX_RETRY_AFTER_SECONDS`（預設 300，允許 60–86400）；
+此 cap 在 armed intent 預先保存。Crash 尚無 actual-start 證據時，下一個 lock owner 將 armed 轉 unknown，
+從 recovery 起至少等待該 cap，並在 armed→recovered 可能區間重疊的 quota windows 各保留一筆 liability。
+不偽造精確 start，不重設歷史債務；已知 finalization 不重複計數。Persistence 失敗或無法終止的 SDK
+child 保留 lock，直到 process 結束與後續 recovery，避免其他 consumer 越過未確認操作。
+
+Shioaji SDK child 由明確 allowlisted environment 啟動，provider keys 僅由 private pipe 傳入；
+argv／environment／READY-GO 不包含 Source credential、cloud 或其他 provider keys。
+Parent 作 Source check，child 收到共享 lock FD、key-free GO 與最多 5 秒前的 `api.usage()` sample，
+在 actual `kbars` 前再檢查 freshness／lease／minute／500 MiB。Parent SIGKILL 後 child 仍持有相同 lock FD，
+SDK completion 的 quota／usage／cooldown 先 durable finalize，再交付結果。
+
+SDK scalar observations 保存 sample／observation timestamps、bytes／limit／remaining。官方 counter
+按交易日台北 08:00 reset，SDK 沒有可證明的 epoch 欄位；跨該可能 reset boundary 重新取樣，
+不推定 UTC quota day 為 counter epoch。當前 fresh authoritative counter 達 500 MiB 或 unavailable／
+inconsistent 時拒絕新 Kbars。Crash 後重新查 current counter；歷史 reset／unknown bytes 與 legacy
+cumulative floors 只保留稽核，不加上 counter delta 重複計費，也不用 response／IPC 大小捏造 API byte bound。
+部署與 rollback 的全 consumer 升級要求見 [deployment.md](deployment.md)。
 
 首次 Full checkpoint bootstrap 僅傳入與 config 一致的 `APP_ENVIRONMENT`，在 local／staging／production
 以離線 `--initialize-state` 建立 SQLite；不載入 Source/provider secrets。已有 checkpoint 跳過初始化。
@@ -317,17 +517,42 @@ Docker `--check`／`--require-stopped` probes 可使用 `cache_dir=-`，空 cach
 Source desired state；缺檔／不合法 state 會在載入 credential 與 Source 呼叫前拒絕，既有 prepared
 bodies、debt、cursor 不改寫。只有沒有既有 Full worker 的真正首次 Full 安裝可執行明確 initializer。
 
-所有 HTTP status 都先做 bounded read 與 byte/witness 記帳，包括 Twelve Data daily、官方 universe、TAIFEX fallback
-report 的非 200 回應與中途 transport failure；error body 不解析為 provider data/universe。
-已知 429 在讀取 body 前就將 60 秒 cooldown 持久化至 active Permit 的實際 shared account/governor，
-即使 body 超限、encoding／transport／observer 失敗也保留 cooldown。Twelve Data 的 Pilot／historical
-client 使用自己的 shared Permit，即使未提供 Full callback 也遵守同一帳號 cooldown。所有非 200
-（包含成功形狀的 201／206）一律拒絕；錯誤 JSON 只供遮蔽 secrets 的診斷，不成為成功 payload。
-中途 transport error 保留實際已讀 bytes，不能把未接收 body 當 debt。其他 consumers 與重啟程序遵守同一帳號 cooldown；
-普通 bounded runtime 保留原 provider 行為；實際 SDK 用量與 cooldown 不退款；prepared Source drain 不受影響。
-已知超限 Content-Length witness 先於 unsupported encoding 拒絕保存；buffered 非 identity content
-可能已解碼，其 decoded 長度不作為 actual wire debt；只有可取得的 raw-byte counter 才計 actual，
-無可觀測 wire counter 時保留未知為 0 與 持久化用量。
+所有 HTTP status 使用 bounded raw-body read 與 provenance／大小驗證；headers 的已知 429
+先 durable MAX 保存共享 account cooldown，再讀 body。實際 invocation journal 決定 request debt，
+不使用 detached Permit 預先預留行情請求；body／encoding／observer failure 仍保留已開始的 request
+及 cooldown。Twelve Data daily／catalogue、官方 universe、TAIFEX fallback report 的非 200 回應
+與中途 transport failure 都不得解析為成功 data／universe。201／206 同樣拒絕；錯誤 JSON 只供
+遮蔽 secrets 的診斷。HTTP／IPC body 長度是傳輸驗證 evidence，不能代替 Shioaji SDK network bytes，
+無 counter 時記 unknown／unavailable，不虛構 0 bytes 或退款。Prepared Source drain 保持可完成。
+
+SDK bootstrap 也屬受保護 operation：dormant child 在 account lock／armed intent／FD ownership
+與最後 current Source GO 之前，不建立 SDK instance、不 login、不查 lazy contracts。每次 construction、
+login、TSE／OTC group、Kbars 分開授權／finalize；cached detached catalogue 不新增抓取。
+Kbars 在首次 durable finalization 記錄實際 SDK 呼叫的成功／錯誤；已開始但失敗的 Kbars
+仍計一次 request，後續錯誤處理不覆寫已 finalized 的結果，logout cleanup 維持 zero-unit。
+所有入口的 account identity 取實際 SDK key 正規化後的 fingerprint，顯式 key B 不套用 environment
+key A 的 pins、allocation、cooldown 或 login budget。已知 raw／normalized pins 只按可證明關聯合併，
+含 `_`／`%`／backslash 的合法 account IDs 以 literal prefix 保留 allocation rows，不匹配其他 account。
+
+Shioaji 官方最多 1000 login／day；此 runtime 使用**本地保守 rolling 86400 秒最多 1000 actual login
+starts**，不假設官方 login reset epoch。`operation_kind=sdk_login` 的已知 start（包括 SDK 登入失敗）
+各占一筆；crashed armed login 以可能區間重疊保留一筆 unknown liability；cancel／stale GO 不算
+已知 login，其他 bootstrap／Kbars／cleanup 不占 login 次數。Operation ID 與 alias reassignment
+使 finalize／recovery 冪等；不可重設已知歷史或把它變成所有 Full new acquisition 的日預算。
+首次尚未登入時 api.usage 不可用，保存 `not_authenticated`，只允許 fresh Source 授權的 bootstrap；
+login 後必須取得 consistent、fresh current bytes／connections，才可查 contracts／Kbars。
+
+SDK official usage observations 保留 `connections`（舊資料為 null，不造 0）、sample timestamps、
+bytes／limit／remaining。Authenticated connections 須為 1–5；已知 fresh connections≥5 拒絕新的
+login／reconnect，既有有效 session=5 可沿用。首次／無 fresh observation 的平台拒絕仍記一筆
+known login 並 bounded cleanup；不建立 person_id admission ledger 或捏造不同 keys 的 person_id 關聯。
+Native 驗收須保存 official connections、登入拒絕與 cleanup evidence；目前仍待正式 deployment／native acceptance。
+
+Logout 是既有資源 cleanup，Source stopped／revoked 不阻止關閉；它不發起 login、contract 或 Kbars。
+Same-account lock／zero-unit cleanup intent 保護至 durable completion；crash 保留 cleanup unknown
+cooldown，不捏造行情 request 或 SDK bytes。Parent timeout／EOF／SIGKILL 期間 child 保留共享 FD，
+先 finalize／cleanup 再交 ACK／釋放；無法終止的 child 留 lock 供後續 recovery。
+
 
 舊 production Full runtime 曾使用 Pilot 的 `findb-fetcher-*-scheduler` names。升級或 flag-off bounded
 部署會先 graceful stop，嚴格驗證非 OOM、無 Docker error 與合法 retirement exit，再搬至獨立 Full
