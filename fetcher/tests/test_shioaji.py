@@ -548,39 +548,27 @@ def test_isolated_simulation_env_fails_closed_without_echoing_value(
 
 
 def test_isolated_gateway_passes_simulation_to_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
+    captured = {}
 
-    class Connection:
-        def poll(self, _timeout: float) -> bool:
-            return True
-
-        def recv_bytes(self, _max_length: int) -> bytes:
-            return shioaji._isolated_error_wire("LOGIN")
-
-        def close(self) -> None:
-            pass
-
-    class Process:
-        def __init__(self, **kwargs: object) -> None:
+    class Gateway:
+        def __init__(self, key, secret, **kwargs):
             captured.update(kwargs)
 
-        def start(self) -> None:
-            pass
+        def fetch_kbars(self, *args):
+            raise ShioajiSdkError("provider boundary", code="LOGIN")
 
-        def is_alive(self) -> bool:
-            return False
+        def close(self):
+            captured["closed"] = True
 
-        def join(self, _timeout: float | None = None) -> None:
-            pass
-
-    monkeypatch.setattr(shioaji.multiprocessing, "Pipe", lambda **_: (Connection(), Connection()))
-    monkeypatch.setattr(shioaji.multiprocessing, "Process", lambda **kwargs: Process(**kwargs))
+    monkeypatch.setattr(
+        "findb_fetcher.providers.shioaji_session.PersistentIsolatedShioajiGateway", Gateway
+    )
     with pytest.raises(ShioajiSdkError) as caught:
         IsolatedShioajiGateway("api-secret", "key-secret", simulation=False).fetch_kbars(
             "2330", date(2026, 7, 29)
         )
     assert caught.value.code == "LOGIN"
-    assert captured["args"][-3:] == (False, "2330", "2026-07-29")  # type: ignore[index]
+    assert captured["simulation"] is False and captured["closed"]
     assert "api-secret" not in repr(IsolatedShioajiGateway("api-secret", "key-secret"))
 
 
@@ -624,83 +612,60 @@ def test_isolated_gateway_transport_failure_is_terminal_payload(
     monkeypatch: pytest.MonkeyPatch,
     transport_error: Exception,
 ) -> None:
-    class Connection:
-        def poll(self, _timeout: float) -> bool:
-            return True
+    closed = []
 
-        def recv_bytes(self, _max_length: int) -> bytes:
-            raise transport_error
-
-        def close(self) -> None:
+    class Gateway:
+        def __init__(self, *args, **kwargs):
             pass
 
-    class Process:
-        def start(self) -> None:
-            pass
+        def fetch_kbars(self, *args):
+            raise ShioajiSdkError("isolated boundary", code="ACQUISITION") from transport_error
 
-        def is_alive(self) -> bool:
-            return False
-
-        def join(self, _timeout: float | None = None) -> None:
-            pass
+        def close(self):
+            closed.append(True)
 
     monkeypatch.setattr(
-        shioaji.multiprocessing,
-        "Pipe",
-        lambda **_: (Connection(), Connection()),
+        "findb_fetcher.providers.shioaji_session.PersistentIsolatedShioajiGateway", Gateway
     )
-    monkeypatch.setattr(shioaji.multiprocessing, "Process", lambda **_: Process())
     with pytest.raises(ShioajiSdkError) as caught:
-        IsolatedShioajiGateway("key", "secret").fetch_kbars(
-            "2330",
-            date(2026, 7, 29),
-        )
-    assert caught.value.code == "PAYLOAD"
-    assert caught.value.reason == "ipc_transport"
+        IsolatedShioajiGateway("key", "secret").fetch_kbars("2330", date(2026, 7, 29))
+    assert caught.value.code == "ACQUISITION" and closed == [True]
 
 
 def test_isolated_gateway_timeout_terminates_then_kills(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    events: list[str] = []
+    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+
+    events = []
 
     class Connection:
-        def poll(self, _timeout: float) -> bool:
-            return False
+        def send_bytes(self, value):
+            events.append("close-command")
 
-        def close(self) -> None:
+        def close(self):
             events.append("close")
 
     class Process:
         alive = True
 
-        def start(self) -> None:
-            events.append("start")
-
-        def is_alive(self) -> bool:
+        def is_alive(self):
             return self.alive
 
-        def terminate(self) -> None:
+        def terminate(self):
             events.append("terminate")
 
-        def kill(self) -> None:
+        def kill(self):
             events.append("kill")
             self.alive = False
 
-        def join(self, _timeout: float | None = None) -> None:
-            events.append("join")
+        def join(self, timeout):
+            events.append(f"join:{timeout}")
 
-    parent = Connection()
-    child = Connection()
-    process = Process()
-    monkeypatch.setattr(shioaji.multiprocessing, "Pipe", lambda **_: (parent, child))
-    monkeypatch.setattr(shioaji.multiprocessing, "Process", lambda **_: process)
-    with pytest.raises(ShioajiSdkError, match="timed out"):
-        IsolatedShioajiGateway("key", "secret", timeout_seconds=0.01).fetch_kbars(
-            "2330",
-            date(2026, 7, 29),
-        )
-    assert "terminate" in events and "kill" in events
+    gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
+    gateway.parent, gateway.process = Connection(), Process()
+    gateway._stop()
+    assert events == ["close-command", "join:2", "terminate", "join:2", "kill", "join:2", "close"]
 
 
 def test_normalizes_numpy_like_scalars_and_keeps_usage_bytes_separate(

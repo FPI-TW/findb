@@ -431,7 +431,25 @@ class SchedulerControlLoop:
             heartbeat.start()
             cycle_error: str | None = None
             try:
-                cycle()
+                from findb_fetcher.acquisition import authorization_scope
+                from findb_fetcher.full_market_client import FullMarketSourceClient
+
+                def acquisition_authorization():
+                    if stopper.is_set():
+                        raise SchedulerControlError("scheduler acquisition stopped")
+                    with FullMarketSourceClient(self.client._config) as source:
+                        return source.authorization(
+                            "GET",
+                            f"scheduler-controls/{self.client.scheduler_key}/authorization",
+                            expected={
+                                "scheduler_key": self.client.scheduler_key,
+                                "provider": preflight.provider,
+                                "dataset_keys": list(preflight.dataset_keys),
+                            },
+                        )
+
+                with authorization_scope(acquisition_authorization):
+                    cycle()
             except Exception as exc:  # provider failures must not kill the loop
                 cycle_error = _bound_error(f"{type(exc).__name__}: {exc}")
             finally:

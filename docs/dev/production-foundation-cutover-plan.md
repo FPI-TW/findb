@@ -7,13 +7,31 @@
 - [x] `findb-production-cd.yml`、`fetcher-production-cd.yml`與target-aware reusable deploy workflows已實作；
   annotated tag、immutable binding、staging v2 accepted bundle、digest copy、production accepted record與
   rollback fail-closed契約已完成dry-run驗證。
-- [ ] Production AWS account、IAM／OIDC、ECR、EC2、RDS、SSM／CloudWatch、deploy-bundle
-  S3／KMS、runtime secrets與GitHub Environments尚未建立或完成live驗證。
-- [ ] FinDB與Fetcher的production promote、bounded SSM activation及production accepted-record-only
-  rollback尚未執行live acceptance。
+- [x] Production AWS account、IAM／OIDC、ECR、EC2、RDS、SSM／CloudWatch、deploy-bundle
+  S3／KMS、runtime secrets與GitHub Environments已建立；production bounded runtime 已完成 live 驗證。
+- [x] FinDB 與 Fetcher production v0.1.6 promote、bounded SSM activation、accepted record 回讀與
+  原 Pilot state 恢復已完成；證據見 [deployment runbook](../operations/deployment.md#production-v016-rollout2026-10-13)。
+- [x] Full-market Source credentials 與 published calendars 已完成唯讀 live preparation 驗證；
+  此為明確授權且完成 review 的 credential preparation，可先於 Full runtime 安裝執行；不代表
+  runtime acceptance。詳見 [production operations](../operations/production.md#production-full-market-credential-preparation2026-10-13)。
+- [ ] Full-market pacing 修復、Fetcher runtime 部署與實際 provider acceptance 尚未完成。Production
+  仍使用 bounded profile，`FULL_MARKET_ENABLED=false`；四個 Full controls 均 stopped（revision 3），
+  四個 Full workers 尚未安裝。
+- [ ] Production accepted-record-only rollback 的獨立 live acceptance 仍須補齊可核對紀錄。
 
-Workflow存在不代表production target已存在或可部署；目前仍由缺少
-`PRODUCTION_DEPLOY_ENABLED=true`與production foundation而fail closed。
+Production 已有 live target；`PRODUCTION_DEPLOY_ENABLED` 平時為 false，在 operator 授權的 rollout
+期間暫開並於終態恢復。v0.1.6 完成的是 bounded deployment，不代表 Full-market activation；
+尚未完成的 pacing、Full runtime、provider acceptance 與 rollback 驗證繼續留在本計畫。
+
+2026-10-13 Full credential preparation 的 Fetcher-side Source API 與 calendar 檢查均成功，且
+Fetcher role 對 FinDB secrets 維持 `AccessDenied`；可核對的 SSM command IDs、scope 與限制見
+[production operations](../operations/production.md#production-full-market-credential-preparation2026-10-13)。
+這項明確授權的 preparation 以 `full-market` profile 校準 credentials，即使當時 accepted bundle
+與 production runtime 仍為 bounded；profile 與 Source keys 不作為 Full runtime 已安裝或已驗收的證據。
+Full runtime 的 OpenTofu plan 必須保留 `enable_full_market_runtime=true` 才會包含 TAIFEX secret
+metadata，並保留該 secret 的 `prevent_destroy`。先前唯讀 plan 發現與此任務無關的兩台 EC2 AMI
+replacement，均受 `prevent_destroy` 阻擋；該 plan 未 apply。S3 state backend 必須明確指定既有
+state KMS key ARN，避免 plan 使用錯誤 state encryption 設定。
 
 ## 前提
 

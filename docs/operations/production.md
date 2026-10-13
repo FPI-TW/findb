@@ -110,11 +110,14 @@ Full-market deployment 採 [opt-in runtime runbook](deployment.md#opt-in-full-ma
 published contract registry必須包含 `futures_eod.v1`；TAIFEX 使用 generic image，但自己的
 Source key與consumer隔離，不載入其他 provider credentials。
 
-Owner 經 readiness review 才簽發／調整下列 DB-backed Source dataset allowlists，並安全校準
-對應 production Secrets Manager 值；key 的 source identity 必須一致。
+Owner 依核准的 Full-market credential preparation 流程校準下列 DB-backed Source dataset
+allowlists 與 production Secrets Manager metadata；key 的 source identity 必須一致。
 `reconcile_fetcher_credentials.py --runtime-profile bounded|full-market` bridge 預設 bounded；
-operator 必須從已驗證的 Fetcher accepted bundle `release-manifest.json` 讀取 runtime_profile（舊
-manifest 缺值為 bounded），再傳同一 profile，不能由 provider secrets 或 mutable env 推測。
+一般部署時，operator 必須從已驗證的 Fetcher accepted bundle `release-manifest.json` 讀取
+`runtime_profile`（舊 manifest 缺值為 bounded），再傳入相同 profile；不得由 provider secrets
+或 mutable env 推測。另經明確授權且完成 review 的 Full-market credential preparation，可在
+Full runtime 尚未安裝前明確指定 `full-market`，只調整 allowlist／hash 並留下 audit 與 proof。
+Source keys 或 bridge profile 不代表 runtime 已安裝、feed 已啟用或 deployment acceptance 已通過。
 Full-market bridge要求三個 provider Source hashes、獨立 TAIFEX Source hash與calendar Serve
 hash的精確集合；只校準 allowlist/hash並留下 deployment audit，不啟用 feed或scheduler。
 Bridge跨unit只傳 lowercase SHA-256，兩邊 instance roles仍互相拒絕secret讀取。
@@ -127,13 +130,38 @@ Bridge跨unit只傳 lowercase SHA-256，兩邊 instance roles仍互相拒絕secr
 | `taifex` | `tw_futures_eod` |
 
 Calendar Serve key與四個 Source keys須分離，且 Fetcher不取得 Admin或FinDB DB credential。
-`enable_full_market_runtime=false` 預設不宣告 TAIFEX secret metadata；明確 opt-in 與 secret
-population需依原 foundation review 執行。Secrets或image已存在不等同provider entitlement、
-quota／capacity、official baseline或live coverage已通過。
+TAIFEX 官方公開 API 不需要 provider credential；Fetcher 仍須使用獨立的 FinDB Source key，
+Secrets Manager 中的 TAIFEX secret 是此內部 Source 認證。Production OpenTofu 必須明確設定
+`enable_full_market_runtime=true` 才會宣告 TAIFEX secret metadata；新增 secret resource 須保留
+`prevent_destroy`。使用 S3 state backend 時必須明確提供既有 state KMS key ARN
+`arn:aws:kms:ap-southeast-1:289112218471:key/be629e7b-7540-4f6f-9818-a0b8f2d7bddc`。
 
-Migration/seed 加入 registry 與 stopped Full controls。`FULL_MARKET_ENABLED` 決定 installed profile，
-新 admission 須 trusted post-install receipt/enrollment、Owner baseline approval、完整 calendar 與容量證據。
-開旗標不自動 start，沒有五日/per-feed gate；[runbook](full_market.md) 包含 receipt 與 rollback/drain。
+### Production Full-market credential preparation（2026-10-13）
+
+Production Full-market Source credential preparation 已完成：四個 DB-backed Source clients 均為
+active、無到期日，rate limit 為每分鐘 2,400 requests。既有 Twelve Data、FinLab、Shioaji
+client IDs 與 key values／hash associations 保持不變；reconcile 可正規化 fingerprint metadata，
+因此不以 fingerprint 欄位相同作為 key 未變的依據。Allowlists 已擴充至上表範圍。TAIFEX 新增獨立 Source
+client `01a13364-4387-7b9b-b5e0-411c745002e3`，只允許 `tw_futures_eod`。Calendar Serve
+identity 未變。Source credential hash reconciliation 的 SSM command ID 為
+`1936dad3-82dc-4f44-a05a-314858301ca3`；TAIFEX KMS-encrypted Secrets Manager secret 的
+`AWSCURRENT` version ID 為 `6145ed3d-beb6-40bb-8516-2eb0d34ecee7`。
+
+Fetcher production role 的唯讀檢查確認七個 Source/provider-dataset requests 與四個 market
+calendar requests 全部 HTTP 200；US calendar revision 2、HK/TW/TAIFEX revision 1 均有完整
+365 日 coverage。Fetcher role 讀取 FinDB secrets 得到 `AccessDenied`，且沒有保存 plaintext。
+檢查證據為 SSM command `1bccffe5-9f3e-4864-afb0-d56bab798a9f`。這些結果證明認證與公開
+calendar 查詢可用，不代表 Full workers 已部署或 provider 已完成實際抓取驗收。
+
+目前 production 仍安裝 bounded profile，`FULL_MARKET_ENABLED=false`，四個 Full controls 均為
+stopped、revision 3；US 首次日期 `2026-10-12`、其餘六個 feeds 為 `2026-10-13`，日期已凍結。
+四個 Full workers 尚未安裝。Pacing 修復、Fetcher Full runtime 部署與真實 provider acceptance
+仍待完成；不得將 credentials/calendar preparation 描述為 Full-market activation 完成。
+
+Migration/seed 加入 registry 與 stopped Full controls。`FULL_MARKET_ENABLED` 決定 installed profile；
+Owner start 只檢查 published baseline 與完整 published calendar，不要求 readiness、receipt/enrollment、
+expiry 或 capacity proof。開旗標不自動 start，Dashboard start 也不會部署 workers；
+操作與 rollback/drain 見 [runbook](full_market.md)。
 實際帳號 capability 與 live coverage 驗證仍列 [backlog](../dev/backlog.md#full-market-external-acceptance)。
 
 ## DB bootstrap 與 Environment gate

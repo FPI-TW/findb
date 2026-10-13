@@ -52,13 +52,34 @@ symbol、日期、record caps；例外須依[staging data policy](../docs/operat
 
 ## 開發
 
+以下本機命令皆從 `fetcher/` 執行。首次設定時，將 `.env.example` 複製為被 Git 忽略的
+`.env`，再填入當前 provider 的 credentials 與專用 Source key：
+
 ```bash
+cd fetcher
+cp .env.example .env
 uv sync --frozen
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
+
+本機 `.env` 的 `FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3` 解析為
+`fetcher/.state/account/governor.sqlite3`；一般使用者可建立此目錄。所有 providers 的
+Pilot、Full、maintenance 與 historical 命令均須載入同一份 `.env`、使用此共用 durable
+ledger，即使 `FULL_MARKET_ENABLED=false` 也相同。Checkpoint 可各自隔離；切換 profile、
+重啟或更新 credentials 不得清除 account pins、既有用量、unknown liability 或 cooldown。
+若從其他工作目錄啟動，將 `FETCHER_ACCOUNT_STATE_PATH` 設為該既有檔案的絕對路徑，
+並一併調整 contracts／schedule／checkpoint 的相對路徑；不要只沿用同一個相對路徑字串。
+
+既有 `.env` 不會因更新範本而自動新增此設定。升級前先停止所有使用該 ledger 的 consumers，
+確認曾使用的 governor 路徑（包括舊 `/private/tmp` 範例或 `/var/lib/findb-account/`）；
+若已存在 ledger，所有本機命令應明確沿用其絕對路徑。需要搬遷時，先備份並以 SQLite
+一致性備份完整移轉至使用者可寫的固定位置，再讓全部 consumers 同時切換；保留 pins、
+debt、cooldown 與相關 allocation，不能以空白新檔取代已知 ledger。首次且確定無既有
+ledger 時才使用範本的新路徑。本機 `.env` 僅供 local，staging／production 繼續使用各自
+部署設定與 durable mounts；未明確設定路徑的 deployed fallback 維持 `/var/lib/findb-account/governor.sqlite3`。
 
 從 repository root 建置：
 
@@ -196,6 +217,7 @@ Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管�
 | `FETCHER_STATE_PATH` | 否 | Twelve Data durable SQLite state |
 | `FETCHER_FINLAB_STATE_PATH` | 否 | FinLab durable SQLite state |
 | `FETCHER_SHIOAJI_STATE_PATH` | 否 | Shioaji durable SQLite state |
+| `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／Pilot／Full／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
 | `FINLAB_API_TOKEN` | FinLab 是 | FinLab headless SDK token |
 | `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji 是 | Staging Shioaji credentials |
 | `SHIOAJI_SIMULATION` | Shioaji 是 | 預設 `true`；明確 `false` fail closed |
@@ -220,19 +242,53 @@ Cycle 官方名單刷新成功或失敗後仍使用原 admitted scope；standalo
 所有環境的新抓取均移除 readiness／enrollment／expiry／capacity 前提。Source／provider API
 認證、running control、flag stop 與資料驗證保留。詳見 [Full market runbook](../docs/operations/full_market.md)。
 
-Pilot／Full checkpoint 分離。已設定 account state 的 consumers 共用 durable governor，沿用既有
-account ID 或使用 credential fingerprint；不用跨環境分配、日請求數、deadline capacity proof 或
-enrolled response bounds。只套用 Twelve Data 1597 credits／分鐘、FinLab API 每日 5000 MB、
+Pilot／Full checkpoint 分離。Current staging／production 部署的 bounded／Full／historical
+consumers 一律掛載環境內共享且可寫的 account state，包含 `FULL_MARKET_ENABLED=false`
+的首次 bounded 安裝；保留既有 ledger／credential pins，不要求 readiness 證據。
+已設定 account state 的 consumers 共用 durable governor，沿用既有
+account ID 或使用 credential fingerprint；不設跨環境分配、所有行情的日請求預算、deadline capacity proof
+或 enrolled response bounds。Shioaji login 另採本地保守 rolling 86400 秒最多 1000 次，非 UTC／provider reset epoch；
+僅計 actual login start／unknown login liability，SDK error 亦計，Kbars／其他 bootstrap／cleanup 不占 login 次數。只套用 Twelve Data 1597 credits／分鐘、FinLab API 每日 5000 MB、
 Shioaji 每日 500 MiB 與 50 行情查詢／10 秒；TAIFEX 為公開 OpenAPI，以 429 cooldown 處理。
 首次升級以可用的舊 allocation account ID 建立持久化對照；完成 pin 後，證據檔變動不重設
-ledger。Twelve Data／FinLab fingerprint 跟隨 provider config 去除 credential 前後空白，
-同一有效 credential 的格式變動沿用已 pin 的用量、配額與 cooldown；Full Shioaji 保持
-persistent session 傳入 SDK 的原值。若首次 pin 前 allocation 遺失、損壞或缺少可用 account ID，無法辨識舊 ledger，
+ledger。Twelve Data fingerprint 跟隨 provider config 去除 credential 前後空白；FinLab 1.5.7
+的 gateway、identity 與 allocation 比對一致使用 `credential.strip()[:64]`，符合 native
+`LoginPanel.login`／`get_token` 的前 64 字元選取。非空白長 token 的後綴不代表另一帳號，
+同一有效 credential 的格式變動沿用已 pin 的用量、配額與 cooldown；Full／Pilot／historical Shioaji
+也一致去除 key／secret 前後空白。所有 SDK 入口依實際傳入的 key 綁定 account，顯式 key 不受其他
+environment key 覆蓋；FinLab 保留明確提供與 SDK 等值 installed token 的 raw、舊去空白、
+新 SDK 等值 fingerprints，proven pins 以 literal allocation prefix 冪等合併已知 debt／cooldown。若首次 pin 前 allocation 遺失、損壞或缺少可用 account ID，無法辨識舊 ledger，
 則使用 credential fingerprint 與平台實際配額，保留原匿名用量／cooldown 供稽核。
 此例外接受舊用量與 cooldown 無法接續的風險，不猜測合併舊債務；升級前保留 allocation
-與 governor 可維持接續。並行首次 pin 在同一 SQLite transaction 下只建立一個對照。
+與 governor 可維持接續。並行 pin／merge 使用 identity mutex、排序 account locks 與短 SQLite transaction。
 FinLab 用量以平台 SDK API 為權威，detached bytes 不代表 network usage；Shioaji 在抓取前查
 實際 SDK 累計 bytes。Source API 自行執行 DB-backed key rate limit 與 429。
+Twelve Data HTTP transport boundary 同樣使用 client 的實際 config key，環境 key 不得改寫帳號
+lock／debt／cooldown。FinLab 1.5.7 的 `login` 只修改 process-global token，所有 gateways
+以 process-wide SDK lock 保護 token 選取至 `data.get` 完成與 durable finalization；SDK lock
+先於 account lock，拒絕授權釋放 lock，同 thread recursive dispatch 明確拒絕。
+Account identity 在 login 前建立，結束 scope 還原 SDK 修改的 token environment，避免污染
+installed allocation 身份；`from_env` 與 central identity 使用同一 SDK scope 的 installed
+environment 快照。其他 thread 等待還原完成，同 thread authorization／finalization callback
+讀取 scope 前的 installed token，避免重入鎖造成 deadlock；此還原不重設 governor 用量或 cooldown。
+已 pin 的 identity callback 僅在全部已知 fingerprints 都指向同一 target 時唯讀回傳；
+持有 account lock 時若仍需建立／合併 pins，明確拒絕，離開 operation 後才可執行 merge。
+外部 account lock 內不允許巢狀 SDK dispatch；snapshot 不等待 SDK lock，busy 時拒絕以維持鎖順序。
+Governor rollback inspection 也計入跨 UTC 換日仍有效的 unknown rolling login liability。
+
+Shioaji child 啟動為 dormant；SDK construction、login、lazy TSE／OTC contracts 與 Kbars 都先取得
+同帳號 lock、durable armed intent、child FD 與 current scoped Source GO，才開始該 SDK operation。
+Source header receipt 起最多 50ms，且受 actual minute／historical lease expiry 限制；不得由 dispatch
+時間更新 origin。Source 取消／停止／撤銷後不登入。首次 login 前 authenticated usage 不可用，只記錄
+`not_authenticated`；login 後 current SDK bytes／connections 必須有效，才可查 contracts／行情。
+已知 fresh connections=5 不重新登入；有效既有 session 可沿用。未知其他 key 的 person_id 不推定關聯，
+首次連線由平台拒絕／接受，native acceptance 另留 official connections 與 login/cleanup evidence。
+Parent SIGKILL 後 child 持有同一 lock FD 至 durable completion／cleanup；logout 只關閉既有資源，
+不登入或抓新資料，不要求 Source running，採 zero-unit cleanup intent 與同帳號 lock。已知 SDK login
+失敗、Kbars 實際成功／錯誤與 cleanup 結果在首次 durable finalization 保留 audit；
+Kbars 錯誤仍計一次 actual request，cleanup 為 zero-unit，原 request debt／cooldown 不退款。
+SDK child argv／env／GO 沒有
+Source、cloud 或其他 provider secrets，只有 private credential pipe 傳 provider keys。
 
 官方名單來源為 Nasdaq Trader 的兩份 symbol directories、HKEX `ListOfSecurities.xlsx`、
 TWSE／TPEx 公司資料及 ISIN 的精確 ETF sections，以及 TAIFEX `DailyMarketReportFut`。

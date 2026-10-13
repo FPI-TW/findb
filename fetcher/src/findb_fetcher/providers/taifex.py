@@ -155,6 +155,7 @@ def fetch_report(
     if type(max_response_bytes) is not int or max_response_bytes < 1:
         raise ValueError("TAIFEX response byte bound invalid")
     from findb_fetcher.account_governor import provider_permit
+    from findb_fetcher.acquisition import http_acquisition
 
     permit = provider_permit("taifex")
     bound = min(
@@ -172,8 +173,14 @@ def fetch_report(
             "queryEndDate": target_date.strftime("%Y/%m/%d"),
         }
     )
-    with client.stream(method, url, data=data, headers={"Accept-Encoding": "identity"}) as response:
+    with (
+        http_acquisition("taifex", client, url=url) as (operation, extensions),
+        client.stream(
+            method, url, data=data, headers={"Accept-Encoding": "identity"}, extensions=extensions
+        ) as response,
+    ):
         if response.status_code == 429:
+            operation.rate_limited(response.headers.get("Retry-After"))
             if permit:
                 permit.state.rate_limited(
                     account=permit.account,

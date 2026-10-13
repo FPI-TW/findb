@@ -361,12 +361,28 @@ async def _get_or_create_market(db: AsyncSession, market: str) -> CalendarMarket
 def _matches_reviewed_revision(
     current: CalendarYearRevision, days: list[CalendarRevisionDay], item: ReviewedCalendar
 ) -> bool:
+    source_matches = (
+        current.source_kind == item.source_kind and current.source_sha256 == item.source_sha256
+    )
+    # The normal Admin JSON preview carries normalized rows without source file
+    # bytes, so its published revision and days use "json" and have no digest.
+    # Support only the reviewed US 2026 successor through that existing transport;
+    # the filename and every persisted row still have to match the reviewed file.
+    owner_json_matches = (
+        item.market == "US"
+        and item.year == 2026
+        and item.source_kind == "reviewed_exchange_json"
+        and item.filename == REVIEWED_2026_FILES["US"]
+        and current.source_kind == "json"
+        and current.source_sha256 is None
+    )
     if not (
         current.status == "published"
+        and current.market == item.market
+        and current.year == item.year
         and current.timezone == REVIEWED_TIMEZONES.get(item.market, "Asia/Taipei")
-        and current.source_kind == item.source_kind
+        and (source_matches or owner_json_matches)
         and current.source_filename == item.filename
-        and current.source_sha256 == item.source_sha256
         and current.actual_days == current.expected_days == len(item.rows)
         and len(days) == len(item.rows)
     ):
@@ -375,7 +391,7 @@ def _matches_reviewed_revision(
         day.trade_date.isoformat() == row["trade_date"]
         and day.day_status == row["status"]
         and day.is_open == (row["status"] == "open")
-        and day.source_kind == item.source_kind
+        and day.source_kind == current.source_kind
         and day.holiday_name == row.get("holiday_name")
         and day.description == row.get("description")
         and (day.session_open.isoformat() if day.session_open else None) == row.get("session_open")

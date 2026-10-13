@@ -162,3 +162,20 @@ class HistoricalBackfillItemUpdateRequest(BaseModel):
     run_id: UUID | None = None
     failure_code: str | None = Field(default=None, max_length=50)
     failure_message: str | None = Field(default=None, max_length=1000)
+
+
+class HistoricalAcquisitionRequest(BaseModel):
+    lease_token: UUID
+
+
+class AcquisitionAuthorizationResponse(BaseModel):
+    acquisition_allowed: bool
+    provider: str
+    checked_at: datetime
+    max_age_seconds: Literal[5] = 5
+    lease_expires_at: datetime | None = None
+    item_id: UUID | None = None
+    request_id: UUID | None = None
+    dataset_key: str | None = None
+    scheduler_key: str | None = None
+    dataset_keys: list[str] = Field(default_factory=list)

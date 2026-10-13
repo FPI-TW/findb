@@ -245,7 +245,10 @@ def test_concurrent_first_pin_keeps_one_identity_without_relabeling_ledgers(tmp_
         )
     assert len(set(identities)) == 1
     with state.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM full_account_identity").fetchone()[0] == 1
+        assert (
+            db.execute("SELECT COUNT(DISTINCT account) FROM full_account_identity").fetchone()[0]
+            == 1
+        )
         assert tuple(db.execute("SELECT account,requests,bytes FROM full_quota").fetchone()) == (
             "legacy-account",
             7,
@@ -331,7 +334,12 @@ def test_effective_credential_whitespace_keeps_pinned_usage_and_cooldown(
                     (identity, "2026-10-01"),
                 ).fetchone()
             ) == (7, 100, now[0] + 60)
-            assert db.execute("SELECT COUNT(*) FROM full_account_identity").fetchone()[0] == 1
+            assert (
+                db.execute("SELECT COUNT(DISTINCT account) FROM full_account_identity").fetchone()[
+                    0
+                ]
+                == 1
+            )
     if provider == "twelve_data":
         now[0] += 60
         state.usage_floor(account=identity, window="2026-10-01T12:01", requests=1597, byte_count=0)
@@ -348,7 +356,9 @@ def test_effective_credential_whitespace_keeps_pinned_usage_and_cooldown(
             )
 
 
-def test_shioaji_full_session_effective_key_is_not_whitespace_normalized(tmp_path, monkeypatch):
+def test_shioaji_full_session_effective_key_and_account_are_whitespace_normalized(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr("importlib.metadata.version", lambda name: "1.7.1")
     login = []
     api = SimpleNamespace(
@@ -364,8 +374,8 @@ def test_shioaji_full_session_effective_key_is_not_whitespace_normalized(tmp_pat
     session = ShioajiSession(
         " key ", "secret", simulation=False, sdk=SimpleNamespace(Shioaji=lambda **kwargs: api)
     )
-    assert login == [" key "]
-    assert account_identity("shioaji", state) != first
+    assert login == ["key"]
+    assert account_identity("shioaji", state) == first
     session.close()
 
 

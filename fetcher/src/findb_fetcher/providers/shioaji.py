@@ -10,7 +10,6 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
-import multiprocessing
 import os
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -93,6 +92,8 @@ class ShioajiKbarsSnapshot:
     kbars: Mapping[str, tuple[object, ...]]
     usage_bytes_before: int | None
     usage_bytes_after: int | None
+    requests_before: int = 0
+    requests_after: int = 1
 
     @property
     def usage_bytes_delta(self) -> int | None:
@@ -118,9 +119,15 @@ class IsolatedShioajiGateway:
     """
 
     api_key: str = field(repr=False, compare=False)
+    _identity_credential: str = field(default="", init=False, repr=False, compare=False)
     secret_key: str = field(repr=False, compare=False)
     timeout_seconds: float = 30.0
     simulation: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_identity_credential", self.api_key)
+        object.__setattr__(self, "api_key", self.api_key.strip())
+        object.__setattr__(self, "secret_key", self.secret_key.strip())
 
     @classmethod
     def from_env(cls) -> "IsolatedShioajiGateway":
@@ -131,77 +138,18 @@ class IsolatedShioajiGateway:
         )
 
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
-        from findb_fetcher.account_governor import provider_permit
+        from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 
-        permit = provider_permit("shioaji")
-        _validate_symbol(symbol)
-        parent, child = multiprocessing.Pipe(duplex=False)
-        proc = multiprocessing.Process(
-            target=_isolated_fetch_child,
-            args=(
-                child,
-                self.api_key,
-                self.secret_key,
-                self.simulation,
-                symbol,
-                target_date.isoformat(),
-            ),
-            daemon=True,
+        gateway = PersistentIsolatedShioajiGateway(
+            self._identity_credential,
+            self.secret_key,
+            simulation=self.simulation,
+            timeout_seconds=self.timeout_seconds,
         )
-        proc.start()
-        child.close()
         try:
-            if not parent.poll(self.timeout_seconds):
-                proc.terminate()
-                proc.join(2)
-                if proc.is_alive():
-                    proc.kill()
-                    proc.join(2)
-                raise ShioajiSdkError("shioaji acquisition timed out")
-            raw = parent.recv_bytes(MAX_ISOLATED_IPC_BYTES)
-        except (EOFError, OSError, ValueError):
-            # A child that cannot produce one bounded reviewed message is an
-            # invalid IPC payload, not a retryable provider acquisition.
-            raise ShioajiSdkError(
-                "shioaji acquisition failed", code="PAYLOAD", reason="ipc_transport"
-            ) from None
+            return gateway.fetch_kbars(symbol, target_date)
         finally:
-            parent.close()
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(2)
-            if proc.is_alive():
-                proc.kill()
-                proc.join(2)
-            else:
-                proc.join()
-        message = _decode_isolated_message(raw)
-        if message["code"] != "OK":
-            raise ShioajiSdkError(
-                "shioaji acquisition failed",
-                code=str(message["code"]),
-                reason=message.get("reason"),
-            )
-        if permit:
-            if (
-                message["before"] is None
-                or message["after"] is None
-                or message["after"] < message["before"]
-            ):
-                raise ShioajiSdkError("SDK account usage measurement unavailable")
-            permit.state.usage_floor(
-                account=permit.account,
-                window=permit.window,
-                requests=0,
-                byte_count=message["after"],
-            )
-            permit.observe(0, declared=len(raw))
-        kbars = message["kbars"]
-        return ShioajiKbarsSnapshot(
-            {key: tuple(value) for key, value in kbars.items()},
-            message["before"],
-            message["after"],
-        )
+            gateway.close()
 
 
 def _decode_isolated_message(raw: bytes) -> dict[str, Any]:
@@ -355,6 +303,7 @@ class ShioajiSdkGateway:
     """Credential-safe production gateway for the exact reviewed SDK surface."""
 
     api_key: str = field(repr=False, compare=False)
+    _identity_credential: str = field(default="", init=False, repr=False, compare=False)
     secret_key: str = field(repr=False, compare=False)
     simulation: bool = True
     _sdk: object | None = field(default=None, repr=False, compare=False)
@@ -362,6 +311,7 @@ class ShioajiSdkGateway:
     def __post_init__(self) -> None:
         if not self.api_key.strip() or not self.secret_key.strip():
             raise ShioajiConfigError("Shioaji credentials are required")
+        object.__setattr__(self, "_identity_credential", self.api_key)
         object.__setattr__(self, "api_key", self.api_key.strip())
         object.__setattr__(self, "secret_key", self.secret_key.strip())
 
@@ -380,6 +330,16 @@ class ShioajiSdkGateway:
 
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
         _validate_symbol(symbol)
+        if self._sdk is None:
+            from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+
+            gateway = PersistentIsolatedShioajiGateway(
+                self._identity_credential, self.secret_key, simulation=self.simulation
+            )
+            try:
+                return gateway.fetch_kbars(symbol, target_date)
+            finally:
+                gateway.close()
         if not isinstance(target_date, date) or isinstance(target_date, datetime):
             raise ShioajiConfigError("target date is invalid")
         try:

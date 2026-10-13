@@ -11,7 +11,7 @@ from datetime import date
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -33,9 +33,11 @@ from app.schemas.full_market import (
 )
 from app.schemas.full_market_readiness import EnrollmentVerification, ReadinessReport
 from app.schemas.source import (
+    AcquisitionAuthorizationResponse,
     CanonicalIngestResponse,
     DatasetInfo,
     DatasetListResponse,
+    HistoricalAcquisitionRequest,
     HistoricalBackfillClaimResponse,
     HistoricalBackfillItemUpdateRequest,
     IngestionAttemptResponse,
@@ -70,6 +72,7 @@ from app.services.historical_backfill import (
     HistoricalBackfillConflictError,
     HistoricalBackfillError,
     HistoricalBackfillValidationError,
+    authorize_item,
     claim_next_item,
     complete_item,
 )
@@ -89,10 +92,12 @@ from app.services.ingress_contracts import (
 from app.services.scheduler_control import (
     SchedulerControlNotFoundError,
     SchedulerControlScopeError,
+    get_scheduler_control,
     poll_scheduler_control,
     scheduler_dataset_keys,
 )
 from app.services.slot_identity import CanonicalSlotId
+from app.utils import utc_now
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -116,6 +121,23 @@ def _full_market_http_error(exc: FullMarketError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
+def _acquisition_source_scope(db: AsyncSession) -> tuple[str, list[str]]:
+    """Current acquisition requires an explicit supported provider/dataset scope."""
+    from app.services.source_clients import PROVIDER_DATASET_SCOPE
+
+    provider, datasets = _full_market_source_scope(db)
+    expected = PROVIDER_DATASET_SCOPE.get(provider)
+    if (
+        expected is None
+        or not isinstance(datasets, list)
+        or not datasets
+        or any(not isinstance(key, str) or key not in expected for key in datasets)
+        or len(datasets) != len(set(datasets))
+    ):
+        raise HTTPException(status_code=403, detail="Source acquisition dataset scope denied")
+    return provider, datasets
+
+
 @router.post("/full-market/readiness")
 async def report_full_market_readiness(
     body: ReadinessReport,
@@ -130,6 +152,7 @@ async def report_full_market_readiness(
 
 @router.get("/full-market/authorization")
 async def full_market_authorization(
+    response: Response,
     consumer: str = "full_market",
     declaration_sha256: str = "",
     runtime_id: str = "",
@@ -139,7 +162,82 @@ async def full_market_authorization(
     provider, _ = _full_market_source_scope(db)
     projection = await admission_projection(db, provider, source=True)
     account = await account_authorization(db, provider, consumer, declaration_sha256, runtime_id)
-    return {**projection, **account}
+    checked_at = utc_now()
+    _authorization_headers(response, checked_at.isoformat())
+    return {
+        **projection,
+        **account,
+        "provider": provider,
+        "checked_at": checked_at,
+        "max_age_seconds": 5,
+    }
+
+
+def _authorization_headers(response: Response, checked_at: str) -> None:
+    response.headers["X-FinDB-Acquisition-Checked-At"] = checked_at
+    response.headers["Cache-Control"] = "no-store"
+
+
+@router.get(
+    "/scheduler-controls/{scheduler_key}/authorization",
+    response_model=AcquisitionAuthorizationResponse,
+)
+async def scheduler_acquisition_authorization(
+    scheduler_key: str,
+    response: Response,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> AcquisitionAuthorizationResponse:
+    row = await get_scheduler_control(db, scheduler_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="scheduler not found")
+    provider, allowed = _acquisition_source_scope(db)
+    datasets = scheduler_dataset_keys(row)
+    if not datasets or row.provider != provider or not set(datasets) <= set(allowed):
+        raise HTTPException(status_code=403, detail="Source scheduler scope denied")
+    acquisition_allowed = row.desired_state == "running"
+    if scheduler_key.startswith("full_market_"):
+        current = await account_authorization(db, provider, "full_market", "", "")
+        acquisition_allowed = acquisition_allowed and current["acquisition_allowed"]
+    checked_at = utc_now()
+    _authorization_headers(response, checked_at.isoformat())
+    return AcquisitionAuthorizationResponse(
+        acquisition_allowed=acquisition_allowed,
+        provider=provider,
+        checked_at=checked_at,
+        scheduler_key=scheduler_key,
+        dataset_keys=datasets,
+    )
+
+
+@router.post(
+    "/historical-backfills/{item_id}/authorization",
+    response_model=AcquisitionAuthorizationResponse,
+)
+async def historical_acquisition_authorization(
+    item_id: UUID,
+    body: HistoricalAcquisitionRequest,
+    response: Response,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> AcquisitionAuthorizationResponse:
+    provider, datasets = _acquisition_source_scope(db)
+    try:
+        allowed, checked_at, expires_at, request_id, dataset_key = await authorize_item(
+            db, item_id, provider=provider, allowed_datasets=datasets, lease_token=body.lease_token
+        )
+    except HistoricalBackfillError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _authorization_headers(response, checked_at.isoformat())
+    return AcquisitionAuthorizationResponse(
+        acquisition_allowed=allowed,
+        provider=provider,
+        checked_at=checked_at,
+        lease_expires_at=expires_at,
+        item_id=item_id,
+        request_id=request_id,
+        dataset_key=dataset_key,
+    )
 
 
 @router.get("/full-market/enrollment-verification", response_model=EnrollmentVerification)

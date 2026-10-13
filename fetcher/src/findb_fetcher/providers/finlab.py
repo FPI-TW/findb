@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from findb_fetcher.finlab_credentials import effective_token, installed_token, sdk_credential_scope
 from findb_fetcher.raw_storage import RawPayloadStore, attach_raw_object
 
 FINLAB_SOURCE = "finlab"
@@ -91,13 +91,15 @@ class FinLabSdkGateway:
     """
 
     api_token: str = dataclass_field(repr=False, compare=False)
+    _identity_credential: str = dataclass_field(default="", init=False, repr=False, compare=False)
     _sdk: object | None = None
     on_response_bytes: Callable[[int], None] | None = dataclass_field(
         default=None, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
-        token = self.api_token.strip()
+        object.__setattr__(self, "_identity_credential", self.api_token)
+        token = effective_token(self.api_token)
         if not token:
             raise FinLabConfigError("FINLAB_API_TOKEN is required for FinLab SDK access")
         object.__setattr__(self, "api_token", token)
@@ -106,7 +108,7 @@ class FinLabSdkGateway:
     def from_env(
         cls, *, on_response_bytes: Callable[[int], None] | None = None
     ) -> "FinLabSdkGateway":
-        return cls(api_token=os.getenv("FINLAB_API_TOKEN", ""), on_response_bytes=on_response_bytes)
+        return cls(api_token=installed_token(), on_response_bytes=on_response_bytes)
 
     def __repr__(self) -> str:
         return "FinLabSdkGateway(api_token=<redacted>)"
@@ -149,21 +151,27 @@ class FinLabSdkGateway:
         if not callable(login) or not callable(get):
             raise FinLabSdkError("FinLab SDK does not expose the required headless data API")
         from findb_fetcher.account_governor import provider_permit
+        from findb_fetcher.acquisition import Acquisition
 
         permit = provider_permit("finlab")
         try:
-            login(self.api_token)
-            frame = get(dataset.strip())
+            with sdk_credential_scope():
+                # Headless 1.5.7 login only selects the token; it is not an
+                # upstream acquisition. data.get remains the actual boundary.
+                with Acquisition("finlab", credential=self._identity_credential) as operation:
+                    login(self.api_token)
+                    operation.start()
+                    frame = get(dataset.strip())
         except Exception:
             # Never retain provider exceptions: some SDK errors include request context.
             raise FinLabSdkError("FinLab SDK dataset retrieval failed") from None
         try:
-            if permit or self.on_response_bytes:
+            if permit or self.on_response_bytes is not None:
                 # Account for the entire SDK frame before reviewed scope projection.
                 observed = len(frame.to_json().encode("utf-8"))
                 if permit:
                     permit.observe(observed)
-                if self.on_response_bytes:
+                if self.on_response_bytes is not None:
                     self.on_response_bytes(observed)
             table = _table_from_dataframe(
                 frame, target_date=target_date, reviewed_symbols=reviewed_symbols

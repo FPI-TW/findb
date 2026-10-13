@@ -66,6 +66,7 @@ async def get_scheduler_control(db: AsyncSession, scheduler_key: str) -> Schedul
         select(SchedulerControl)
         .options(selectinload(SchedulerControl.scheduler_datasets))
         .where(SchedulerControl.scheduler_key == scheduler_key)
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 

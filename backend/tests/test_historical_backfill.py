@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, null, select, update
 
 from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
@@ -12,6 +12,7 @@ from app.models.registry import (
     MissingDeliveryAlert,
     SchedulerControl,
     SchedulerDataset,
+    SourceClient,
 )
 from app.services import historical_backfill
 from app.services.historical_backfill import (
@@ -29,6 +30,145 @@ from app.services.historical_backfill import (
 from app.services.normalize.base import BaseNormalizer
 from app.services.source_clients import create_source_client
 from app.utils import uuid7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope",
+    [
+        None,
+        [],
+        "tw_equity_minute",
+        [None],
+        [1],
+        [""],
+        ["tw_etf_minute"],
+        ["us_equity_eod"],
+        ["tw_equity_minute", "tw_equity_minute"],
+    ],
+)
+async def test_live_historical_acquisition_denies_invalid_db_credential_scope(
+    client, test_session, historical_backfill_clock, scope
+):
+    today = historical_backfill_clock.date()
+    await _seed_scope(test_session, today)
+    await create_request(
+        test_session,
+        provider="shioaji",
+        dataset_key="tw_equity_minute",
+        start_date=today,
+        end_date=today,
+        request_key="invalid-historical-probe",
+        created_by="operator",
+        today=today,
+    )
+    source, key = await create_source_client(
+        test_session,
+        name="invalid-historical-probe",
+        source_name="shioaji",
+        allowed_datasets=["tw_equity_minute"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        commit=False,
+    )
+    item = await claim_next_item(
+        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+    )
+    assert item is not None
+    path = f"/api/v1/source/historical-backfills/{item.item_id}/authorization"
+    body, headers = {"lease_token": str(item.lease_token)}, {"X-API-Key": key}
+    token, expiry = item.lease_token, item.lease_expires_at
+    assert (await client.post(path, json=body, headers=headers)).json()[
+        "acquisition_allowed"
+    ] is True
+    await test_session.execute(
+        update(SourceClient)
+        .where(SourceClient.client_id == source.client_id)
+        .values(allowed_datasets=null() if scope is None else scope)
+        .execution_options(synchronize_session=False)
+    )
+    denied = await client.post(path, json=body, headers=headers)
+    assert denied.status_code in {403, 404}
+    assert "acquisition_allowed" not in denied.json()
+    with pytest.raises(HistoricalBackfillError):
+        await historical_backfill.authorize_item(
+            test_session,
+            item.item_id,
+            provider="shioaji",
+            allowed_datasets=scope,
+            lease_token=token,
+        )
+    await test_session.refresh(item)
+    assert (
+        item.status == "running" and item.lease_token == token and item.lease_expires_at == expiry
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deny", [None, "cancel", "expired", "token", "revoked", "scope"])
+async def test_historical_acquisition_probe_is_current_scoped_and_never_renews(
+    client, test_session, historical_backfill_clock, deny
+):
+    from app.services.source_clients import revoke_source_client
+
+    today = historical_backfill_clock.date()
+    await _seed_scope(test_session, today)
+    request, _ = await create_request(
+        test_session,
+        provider="shioaji",
+        dataset_key="tw_equity_minute",
+        start_date=today,
+        end_date=today,
+        request_key="current-acquisition-probe",
+        created_by="operator",
+        today=today,
+    )
+    source, key = await create_source_client(
+        test_session,
+        name="probe-worker",
+        owner="tests",
+        source_name="shioaji",
+        allowed_datasets=["tw_equity_minute"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        commit=False,
+    )
+    item = await claim_next_item(
+        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+    )
+    assert item is not None
+    expires, token = item.lease_expires_at, item.lease_token
+    if deny == "cancel":
+        await cancel_request(test_session, request.request_id, actor="operator")
+    elif deny == "expired":
+        item.lease_expires_at = historical_backfill_clock
+    elif deny == "token":
+        item.lease_token = uuid7()
+    elif deny == "revoked":
+        await revoke_source_client(test_session, source.client_id, commit=False)
+    elif deny == "scope":
+        source.allowed_datasets = ["tw_etf_minute"]
+    await test_session.flush()
+    actual_expiry, actual_token = item.lease_expires_at, item.lease_token
+    response = await client.post(
+        f"/api/v1/source/historical-backfills/{item.item_id}/authorization",
+        json={"lease_token": str(token)},
+        headers={"X-API-Key": key},
+    )
+    if deny in {"revoked", "scope"}:
+        assert response.status_code in {401, 403, 404}
+    else:
+        assert response.status_code == 200
+        assert response.json()["acquisition_allowed"] is (deny is None)
+        assert response.json()["max_age_seconds"] == 5
+        assert datetime.fromisoformat(response.json()["checked_at"]) == datetime.fromisoformat(
+            response.headers["X-FinDB-Acquisition-Checked-At"]
+        )
+        assert response.headers["Cache-Control"] == "no-store"
+    await test_session.refresh(item)
+    assert item.lease_expires_at == actual_expiry and item.lease_token == actual_token
+    if deny is None:
+        assert item.lease_expires_at == expires and item.lease_token == token
 
 
 class _StatusOnlyNormalizer(BaseNormalizer):

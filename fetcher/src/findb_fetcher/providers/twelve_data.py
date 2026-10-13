@@ -81,11 +81,13 @@ class TwelveDataConfig:
     """Provider-owned configuration that never enters FinDB backend settings."""
 
     api_key: str = field(repr=False)
+    _identity_credential: str = field(default="", init=False, repr=False, compare=False)
     base_url: str = TWELVE_DATA_DEFAULT_BASE_URL
     timeout_seconds: float = 30.0
     max_response_bytes: int = 8 * 1024 * 1024
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "_identity_credential", self.api_key)
         api_key = self.api_key.strip()
         if not api_key:
             raise TwelveDataConfigError("TWELVE_DATA_API_KEY is required")
@@ -195,20 +197,31 @@ class TwelveDataClient:
             params["exchange"] = normalized_exchange
 
         from findb_fetcher.account_governor import provider_permit
+        from findb_fetcher.acquisition import http_acquisition
 
         permit = provider_permit("twelve_data")
         if permit:
             bound = min(bound, permit.bound)
         response_status_code = None
         try:
-            with self._client.stream(
-                "GET",
-                f"{self._config.base_url}/time_series",
-                params=params,
-                headers={"Accept-Encoding": "identity"},
-            ) as response:
+            with (
+                http_acquisition(
+                    "twelve_data",
+                    self._client,
+                    url=f"{self._config.base_url}/time_series",
+                    credential=self._config._identity_credential,
+                ) as (operation, extensions),
+                self._client.stream(
+                    "GET",
+                    f"{self._config.base_url}/time_series",
+                    params=params,
+                    headers={"Accept-Encoding": "identity"},
+                    extensions=extensions,
+                ) as response,
+            ):
                 response_status_code = response.status_code
                 if response_status_code == 429:
+                    operation.rate_limited(response.headers.get("Retry-After"))
                     if permit:
                         permit.state.rate_limited(
                             account=permit.account, window=permit.window, until=time.time() + 60

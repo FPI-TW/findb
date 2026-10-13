@@ -39,7 +39,9 @@ class FullMarketState:
             except FileExistsError:
                 pass
         os.chmod(path, 0o600)
-        with self.connection() as db:
+        from findb_fetcher.acquisition import account_lock
+
+        with account_lock(path, "schema"), self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS full_account_identity (provider TEXT NOT NULL, credential_sha256 TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(provider,credential_sha256));
                 CREATE TABLE IF NOT EXISTS full_quota (account TEXT, window TEXT, requests INTEGER NOT NULL, bytes INTEGER NOT NULL, blocked_until REAL NOT NULL DEFAULT 0, PRIMARY KEY(account,window));
@@ -50,6 +52,9 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_plan (plan_id TEXT PRIMARY KEY, provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, body BLOB NOT NULL, complete INTEGER NOT NULL DEFAULT 0, late INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
+                CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
+                CREATE TABLE IF NOT EXISTS acquisition_usage(operation_id TEXT NOT NULL, observed_at REAL NOT NULL, bytes INTEGER NOT NULL, limit_bytes INTEGER NOT NULL, remaining_bytes INTEGER NOT NULL, PRIMARY KEY(operation_id,observed_at));
+                CREATE TABLE IF NOT EXISTS account_alias_audit(alias TEXT PRIMARY KEY, account TEXT NOT NULL, original_quota TEXT NOT NULL, original_pacing REAL NOT NULL);
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(full_capacity_violation)")}
             for column in ("received_bytes", "declared_bytes"):
@@ -57,6 +62,23 @@ class FullMarketState:
                     db.execute(
                         f"ALTER TABLE full_capacity_violation ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
                     )
+            for table, additions in {
+                "acquisition_intent": {
+                    "operation_kind": "TEXT NOT NULL DEFAULT 'acquisition'",
+                    "request_units": "INTEGER NOT NULL DEFAULT 1 CHECK(request_units>=0)",
+                    "login_units": "INTEGER NOT NULL DEFAULT 0 CHECK(login_units IN (0,1))",
+                    "usage_before_state": "TEXT NOT NULL DEFAULT 'unknown'",
+                    "outcome": "TEXT NOT NULL DEFAULT 'unknown'",
+                },
+                "acquisition_usage": {"connections": "INTEGER", "sample_started_at": "REAL"},
+            }.items():
+                current = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                for column, definition in additions.items():
+                    if column not in current:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS acquisition_login_window ON acquisition_intent(account,operation_kind,actual_start)"
+            )
             # Promote cooldowns written by older runtimes out of dated quota rows.
             db.execute(
                 "INSERT INTO full_pacing(account,next_at) SELECT account,MAX(blocked_until) FROM full_quota WHERE blocked_until>0 GROUP BY account ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)"
@@ -66,7 +88,9 @@ class FullMarketState:
     def connection(self) -> Any:
         db = sqlite3.connect(self.path, timeout=30)
         try:
-            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA busy_timeout=30000")
+            if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
             db.row_factory = sqlite3.Row
             yield db
@@ -84,29 +108,19 @@ class FullMarketState:
         initial: str,
         *,
         legacy_credential_sha256: str | None = None,
+        known_credential_sha256: tuple[str, ...] = (),
     ) -> str:
         """Pin an account ledger across optional evidence changes and restarts."""
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            # Retain a known pin created with the pre-normalization raw digest.
-            # This associates an exact known credential, never anonymous ledger debt.
-            if legacy_credential_sha256 is not None:
-                legacy = db.execute(
-                    "SELECT account FROM full_account_identity WHERE provider=? AND credential_sha256=?",
-                    (provider, legacy_credential_sha256),
-                ).fetchone()
-                if legacy is not None:
-                    initial = legacy[0]
-            db.execute(
-                "INSERT OR IGNORE INTO full_account_identity VALUES(?,?,?)",
-                (provider, credential_sha256, initial),
-            )
-            return str(
-                db.execute(
-                    "SELECT account FROM full_account_identity WHERE provider=? AND credential_sha256=?",
-                    (provider, credential_sha256),
-                ).fetchone()[0]
-            )
+        from findb_fetcher.platform_limits import merge_identity
+
+        return merge_identity(
+            self,
+            provider,
+            credential_sha256,
+            legacy_credential_sha256 or credential_sha256,
+            initial,
+            known_credential_sha256,
+        )
 
     def reserve(
         self,
@@ -182,8 +196,7 @@ class FullMarketState:
     ) -> tuple[float, int, int, str]:
         """Atomically take an account pacing permit and daily/minute quota.
 
-        A future UTC permit returns a wait without spending quota. Minute rejection
-        commits the conservative daily reservation, but never grants a permit.
+        A future UTC permit or rejected minute spends no quota.
         """
         if (
             not math.isfinite(interval)
@@ -231,6 +244,13 @@ class FullMarketState:
                     byte_limit is not None
                     and (day["bytes"] >= byte_limit or day["bytes"] + byte_count > byte_limit)
                 )
+            ):
+                raise QuotaBlockedError("durable account quota is exhausted")
+            minute_row = db.execute(
+                "SELECT * FROM full_quota WHERE account=? AND window=?", (account, minute)
+            ).fetchone()
+            if minute_row["blocked_until"] > now or (
+                minute_limit is not None and minute_row["requests"] + requests > minute_limit
             ):
                 raise QuotaBlockedError("durable account quota is exhausted")
             if allocation is not None:
@@ -585,6 +605,7 @@ class FullMarketState:
                 "SELECT result FROM full_refresh WHERE provider=?", (provider,)
             ).fetchone()
         return {
+            "acquisition_protocol_version": 2,
             "universe_refresh": json.loads(refresh["result"]) if refresh else [],
             "provider": provider,
             "unresolved": gaps,
