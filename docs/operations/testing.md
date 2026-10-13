@@ -23,6 +23,12 @@ workers；migration job 維持序列執行。Full-market schema roundtrip 位於
 Shutdown transaction 的獨立情境由 pytest parameters 分配給 workers；每個情境使用自己的
 暫存目錄與 Docker state，交易內的操作／assertions 仍在同一 case 依序執行。
 
+Fetcher release shell tests 執行完整 helper，僅將主機 account governor 與 readiness roots
+映射至各 case 的暫存目錄；fake sudo 拒絕操作該目錄以外的絕對路徑，模擬必要的 ownership／
+mode metadata，不建立或修改主機 `/var/lib/findb-account` 與 `/etc/findb-full-market`。
+Pilot／Full profile 與 flag 開關仍執行 governor 建目錄、bind mount、preflight 與 rollback
+分支，並驗證建立的 container arguments；測試不需要 root、真實 Docker release 或 provider 連線。
+
 三個 jobs 均產生 JUnit、含慢測試清單的 `pytest.log`、pytest `real/user/sys` 計時與
 `job-time.txt`，成功或失敗都以上傳 artifact 保留 14 天。`job_elapsed_seconds` 計算第一個
 step 至報告建立的時間，包含 dependencies、checks／smoke 與 tests；不含 runner／service
