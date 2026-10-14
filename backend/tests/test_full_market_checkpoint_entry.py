@@ -57,24 +57,55 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
         if step.get("name") == "Verify trusted checkpoint safety provenance"
     )
     assert "inputs.revision" not in verify
-    for wrong_sha, missing in [(False, False), (True, False), (False, True)]:
-        guard = tmp_path / ".trusted-checkpoint-safety/infra/deploy/check_full_market_checkpoint.sh"
-        guard.parent.mkdir(parents=True, exist_ok=True)
-        guard.write_bytes(GUARD.read_bytes())
+    # Freeze the workflow object's bytes separately from its mutable checkout.
+    # A tampered checkout must not become the fake git-show source of truth.
+    names = ("check_full_market_checkpoint.sh", "check_fetcher_host.py", "release_manifest.py")
+    pinned = tmp_path / "pinned-git-objects"
+    for name in names:
+        artifact = pinned / "infra/deploy" / name
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes((REPO_ROOT / "infra/deploy" / name).read_bytes())
+    git_stub = r"""git() {
+  [ "$1" = -C ] && [ "$2" = .trusted-checkpoint-safety ] || return 91
+  if [ "$3" = rev-parse ] && [ "$4" = HEAD ]; then
+    printf '%s\n' "$checkout_sha"
+  elif [ "$3" = show ]; then
+    case "$4" in
+      "$WORKFLOW_SHA":infra/deploy/check_fetcher_host.py|"$WORKFLOW_SHA":infra/deploy/release_manifest.py)
+        cat "$pinned_objects/${4#*:}" ;;
+      *) return 92 ;;
+    esac
+  else return 93; fi
+}
+"""
+    for wrong_sha, missing, tampered in (
+        (False, False, None),
+        (True, False, None),
+        (False, True, None),
+        (False, False, "check_fetcher_host.py"),
+        (False, False, "release_manifest.py"),
+    ):
+        trusted = tmp_path / ".trusted-checkpoint-safety/infra/deploy"
+        trusted.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (trusted / name).write_bytes((pinned / "infra/deploy" / name).read_bytes())
         if missing:
-            guard.unlink()
+            (trusted / "check_full_market_checkpoint.sh").unlink()
+        if tampered:
+            (trusted / tampered).write_text("raise RuntimeError('untrusted checkout')")
         result = subprocess.run(
-            ["/bin/bash", "-c", "git() { printf '%s\\n' \"$checkout_sha\"; }\n" + verify],
+            ["/bin/bash", "-c", git_stub + verify],
             cwd=tmp_path,
             env={
                 **os.environ,
                 "WORKFLOW_SHA": "a" * 40,
                 "checkout_sha": ("b" if wrong_sha else "a") * 40,
+                "pinned_objects": str(pinned),
             },
             capture_output=True,
             timeout=10,
         )
-        assert (result.returncode == 0) == (not wrong_sha and not missing)
+        assert (result.returncode == 0) == (not wrong_sha and not missing and not tampered)
     run = next(step["run"] for step in steps if "checkpoint_entry_gate=" in step.get("run", ""))
     remote = next(line for line in run.splitlines() if line.startswith('host_command="set '))
     assert (
