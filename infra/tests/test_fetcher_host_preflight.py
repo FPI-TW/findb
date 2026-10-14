@@ -620,7 +620,12 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     print(pathlib.Path(os.environ['ROWS']).read_text())
                 elif args[:2] == ['image', 'inspect']:
                     print(args[2])
-                elif args[0] != '--config' or args[2] not in ('login', 'pull'):
+                elif args[0] == '--config' and args[2] == 'login':
+                    assert '--password-stdin' in args
+                    # Real Docker drains the password pipe before returning.
+                    # An early fake exit races the AWS shim's stdout flush on Linux.
+                    assert sys.stdin.read() == 'offline-fixture-password\\n'
+                elif args[0] != '--config' or args[2] != 'pull':
                     raise SystemExit(94)
             elif name == 'getent':
                 pass
