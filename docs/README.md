@@ -29,7 +29,7 @@
 - Active datasets與policy：`backend/scripts/seed_data.py`及Fetcher的versioned configs。
 - DB schema：ORM與Alembic migrations。
 - Runtime topology：`docker-compose.prod.yml`。
-- Environment設定：`infra/env/`與`app.config.Settings`。
+- Environment設定：`infra/env/` control-plane JSON、`infra/deploy/runtime-secrets/` catalog與`app.config.Settings`。
 - CI/CD：`.github/workflows/`。
 
 ## 維護原則

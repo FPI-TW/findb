@@ -226,7 +226,7 @@ def run_entry(
         "ECR_REGISTRY": REGISTRY,
         "FETCHER_PROVIDER_RELEASE_MODE": "transactional",
         "FETCHER_DEPLOY_MODE": "activate",
-        "FETCHER_RUNTIME_PROFILE": "full-market",
+        "FETCHER_FULL_MARKET_STATE_DIR": "/var/lib/findb-full-market",
         "FETCHER_CONSUMER_PROFILE": "full_market"
         if kind == "full"
         else ("historical" if kind == "historical" else "pilot"),
@@ -763,60 +763,3 @@ docker() {
         assert not events.exists(), "Matching stdout with failed status cannot authorize mutation"
     elif operation in ["restore", "legacy-restore", "backup-cleanup", "cleanup"]:
         assert events.exists(), "Successful status control must execute real mutation branch"
-
-
-@pytest.mark.parametrize(
-    "field,rc",
-    [
-        (field, rc)
-        for field in [
-            "{{.Config.Image}}",
-            "{{.Path}}",
-            "{{json .Args}}",
-            '{{ join .Config.Cmd " " }}',
-            '{{ index .Config.Labels "com.findb.fetcher.accepted" }}',
-        ]
-        for rc in [1, 81]
-    ]
-    + [("{{.Config.Image}}", 0)],
-)
-def test_legacy_137_matching_identity_output_requires_query_success(field, rc):
-    import re
-
-    source = DEPLOY.read_text()
-    functions = "\n".join(
-        re.search(rf"{name}\(\) \{{\n.*?\n\}}", source, re.S).group()
-        for name in ["legacy_historical_shutdown", "require_retired_runtime"]
-    )
-    setup = r"""set -euo pipefail
-APP_ENVIRONMENT=staging; FETCHER_RUNTIME_PROFILE=bounded; AWS_ACCOUNT_ID=439622209937
-expected_registry=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-docker() {
-  case "$3" in
-    *Running*|*OOMKilled*) printf '%s\n' false ;;
-    *ExitCode*) printf '%s\n' 137 ;;
-    *Error*|*historical-shutdown*) printf '\n' ;;
-    *Config.Image*) printf '%s\n' "$expected_registry/findb/staging/fetcher/twelve-data@sha256:2f64ab8c40e082e6601a00839b2345c35c504afcf1d453026d779ac151f46d03" ;;
-    *Path*) printf '%s\n' findb-fetch-historical-backfill ;;
-    *Args*) printf '%s\n' '["--provider","twelve_data","--run-forever"]' ;;
-    *Config.Cmd*) printf '%s\n' 'findb-fetch-historical-backfill --provider twelve_data --run-forever' ;;
-    *accepted*) printf '%s\n' true ;;
-    *) return 92 ;;
-  esac
-  [ "$3" != "$failed_field" ] || return "$query_rc"
-}
-"""
-    result = subprocess.run(
-        [
-            "/bin/bash",
-            "-c",
-            setup
-            + functions
-            + '\nif require_retired_runtime findb-fetcher-scheduler-historical; then [ "$query_rc" = 0 ]; else [ "$query_rc" != 0 ]; fi\n',
-        ],
-        env={**os.environ, "failed_field": field, "query_rc": str(rc)},
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert ("legacy_historical_crash_recovery" in result.stderr) == (rc == 0)

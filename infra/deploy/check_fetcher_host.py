@@ -2,10 +2,12 @@
 
 The workflow supplies this guard from its own trusted SHA and an independently
 checksum-verified manifest validator. Container environment values stay in memory.
+The same rules apply to staging and production: an empty host may bootstrap, a
+running host is upgraded transactionally, and a drained host must prove its
+installed accepted release before anything executes.
 """
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import re
@@ -13,20 +15,13 @@ import stat
 import subprocess
 from pathlib import Path
 
-FULL_SOURCE_FILES = frozenset(
-    (
-        "infra/deploy/inspect_full_market_installation.py",
-        "fetcher/configs/full_market.local.v1.json",
-        "fetcher/configs/full_market.staging.v1.json",
-        "fetcher/configs/full_market.production.v1.json",
-    )
-)
-
 STABLES = {
     "twelve_data": ("findb-fetcher-scheduler", "findb-fetch-scheduler"),
     "finlab": ("findb-fetcher-finlab-scheduler", "findb-fetch-finlab-scheduler"),
     "shioaji": ("findb-fetcher-shioaji-scheduler", "findb-fetch-shioaji-scheduler"),
 }
+FULL_MARKET_PROVIDERS = ("twelve_data", "finlab", "shioaji", "taifex")
+FULL_MARKET_STATE_DIR_RE = re.compile(r"/var/lib/findb-full-market(/[a-z0-9-]+)?")
 
 
 def require_root_directory(path):
@@ -35,34 +30,6 @@ def require_root_directory(path):
         raise ValueError("release directory identity invalid")
     if info.st_mode & 0o022:
         raise ValueError("release directory is writable by others")
-
-
-def installed_source_reader(validator):
-    # Never execute the installed release's validator. The workflow-provenance
-    # validator supplies safe reads and strict schema/contract checks; only the
-    # two known source allowlists differ across these immutable releases.
-    class InstalledSourceReader(validator.SourceBundleReader):
-        def deployment_source_bundle_sha256(self, unit, *, pilot_format=True):
-            present = []
-            for relative in FULL_SOURCE_FILES:
-                try:
-                    (self.repo_root / relative).lstat()
-                except FileNotFoundError:
-                    continue
-                present.append(relative)
-            if present and len(present) != len(FULL_SOURCE_FILES):
-                raise ValueError("installed source layout is incomplete")
-            paths = validator.bundle_paths(unit, pilot_format=pilot_format)
-            if not present:
-                paths = tuple(path for path in paths if path not in FULL_SOURCE_FILES)
-            records = [
-                {"path": path, "sha256": hashlib.sha256(self.read(path)).hexdigest()}
-                for path in sorted(paths)
-            ]
-            canonical = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
-            return hashlib.sha256(canonical).hexdigest()
-
-    return InstalledSourceReader
 
 
 def installed_manifest(base, validator, target, registry):
@@ -81,11 +48,14 @@ def installed_manifest(base, validator, target, registry):
     require_root_directory(root)
     if stat.S_IMODE(root.lstat().st_mode) != 0o700:
         raise ValueError("release root mode invalid")
-    with installed_source_reader(validator)(root) as source:
+    # Never execute the installed release's validator. The workflow-provenance
+    # validator re-hashes the installed layout recorded by its own manifest, so
+    # every accepted bundle layout stays provable without running its code.
+    with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
         if (
             type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest["fetcher_bundle_version"] != 1
+            or manifest["fetcher_bundle_version"] not in validator.FETCHER_BUNDLE_LAYOUTS
         ):
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
@@ -99,23 +69,28 @@ def installed_manifest(base, validator, target, registry):
     return manifest
 
 
-def production_command(command, provider=None):
-    # Trusted helper argv contracts, also used by pre-Full v0.1.5.
+def production_command(command, provider=None, *, target, state_dir):
+    # Trusted helper argv contracts for every accepted release still in service.
     if command == "findb-fetch-historical-backfill":
         args = ["--provider", provider]
     elif command == "findb-fetch-full-market":
         args = [
             "--config",
-            "/app/configs/full_market.production.v1.json",
+            f"/app/configs/full_market.{target}.v1.json",
             "--state-path",
-            "/var/lib/findb-full-market/state.sqlite3",
+            f"{state_dir}/state.sqlite3",
             "--provider",
             provider,
             "--readiness-file",
             f"/var/lib/findb-account/readiness/{provider}.json",
         ]
     elif command == "findb-fetch-shioaji-scheduler":
-        args = ["--manifest", "/app/configs/shioaji_tw50_2026_09_21.v2.json"]
+        manifest = (
+            "/app/configs/shioaji_tw50_2026_09_21.v2.json"
+            if target == "production"
+            else "/app/configs/shioaji_tw_staging_pilot.v3.json"
+        )
+        args = ["--manifest", manifest]
     else:
         slot, dataset = {
             "findb-fetch-scheduler": ("western_markets_window", "us_equity_eod"),
@@ -123,7 +98,7 @@ def production_command(command, provider=None):
         }[command]
         args = [
             "--schedule-file",
-            "/app/configs/daily_scheduler.production.v3.json",
+            f"/app/configs/daily_scheduler.{target}.v3.json",
             "--slot-id",
             slot,
             "--dataset-key",
@@ -132,19 +107,18 @@ def production_command(command, provider=None):
     return [command, *args, "--run-forever"]
 
 
-def require_runtime(row, image, target, command, provider=None):
+def require_runtime(row, image, target, command, provider=None, *, state_dir):
     config, state = row["Config"], row["State"]
     fields = [item.split("=", 1) for item in config["Env"] if "=" in item]
     identity = [value for key, value in fields if key == "APP_ENVIRONMENT"]
-    legacy = [value for key, value in fields if key == "DEPLOYMENT_TARGET"]
-    if identity != [target] or any(value != target for value in legacy):
+    if identity != [target]:
         raise ValueError("installed runtime environment mismatch")
     args = config["Cmd"]
     if (
         config.get("Labels", {}).get("com.findb.fetcher.accepted") != "true"
         or config["Image"] != image
         or not isinstance(args, list)
-        or args != production_command(command, provider)
+        or args != production_command(command, provider, target=target, state_dir=state_dir)
         or "Entrypoint" not in config
         or config["Entrypoint"] not in (None, [])
         or row.get("Path") != command
@@ -159,26 +133,30 @@ def require_runtime(row, image, target, command, provider=None):
         raise ValueError("installed runtime is not an accepted gracefully drained consumer")
 
 
-def check_host(target, registry, validator, base=Path("/opt/fetcher")):
+def check_host(target, registry, validator, state_dir, base=Path("/opt/fetcher")):
+    if FULL_MARKET_STATE_DIR_RE.fullmatch(state_dir) is None:
+        raise ValueError("full-market state directory invalid")
     inventory = subprocess.check_output(
         ["docker", "container", "ls", "--all", "--format", "{{.ID}}"], text=True
     ).splitlines()
     if not inventory:
-        if target != "production" or (base / "current").exists() or (base / "current").is_symlink():
-            raise ValueError("first bootstrap requires an empty production host")
+        # A first bootstrap is proven by an empty inventory and no installed
+        # release pointer, in any target.
+        if (base / "current").exists() or (base / "current").is_symlink():
+            raise ValueError("first bootstrap requires an empty host")
         return "bootstrap"
     rows = json.loads(subprocess.check_output(["docker", "inspect", *inventory], text=True))
     if len(rows) != len(inventory):
         raise ValueError("container inventory incomplete")
     if any(row["State"]["Running"] and re.search("fetcher|rabbitmq", row["Name"]) for row in rows):
         return "running"
-    if target != "production" or any(row["State"]["Running"] for row in rows):
-        raise ValueError("host is not a drained production installation")
+    if any(row["State"]["Running"] for row in rows):
+        raise ValueError("host is not a drained installation")
     manifest = installed_manifest(base, validator, target, registry)
     names = {row["Name"].removeprefix("/"): row for row in rows}
     for provider, (name, command) in STABLES.items():
         image = manifest["images"][provider]
-        require_runtime(names[name], image, target, command)
+        require_runtime(names[name], image, target, command, state_dir=state_dir)
         if name + "-historical" in names:
             require_runtime(
                 names[name + "-historical"],
@@ -186,12 +164,14 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
                 target,
                 "findb-fetch-historical-backfill",
                 provider,
+                state_dir=state_dir,
             )
-    if manifest.get("runtime_profile", "bounded") == "full-market":
-        for provider in (*STABLES, "taifex"):
-            name = "findb-full-market-" + provider.replace("_", "-")
-            image = manifest["images"]["twelve_data" if provider == "taifex" else provider]
-            require_runtime(names[name], image, target, "findb-fetch-full-market", provider)
+    for provider in FULL_MARKET_PROVIDERS:
+        name = "findb-full-market-" + provider.replace("_", "-")
+        image = manifest["images"]["twelve_data" if provider == "taifex" else provider]
+        require_runtime(
+            names[name], image, target, "findb-fetch-full-market", provider, state_dir=state_dir
+        )
     return "drained"
 
 
@@ -200,6 +180,7 @@ def main():
     parser.add_argument("--target", choices=("staging", "production"), required=True)
     parser.add_argument("--registry", required=True)
     parser.add_argument("--installed-validator", type=Path, required=True)
+    parser.add_argument("--full-market-state-dir", required=True)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location(
         "verified_release_validator", args.installed_validator
@@ -207,7 +188,7 @@ def main():
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
     try:
-        mode = check_host(args.target, args.registry, validator)
+        mode = check_host(args.target, args.registry, validator, args.full_market_state_dir)
     except (ValueError, KeyError, OSError, subprocess.SubprocessError):
         raise SystemExit("fetcher_host_eligibility=failed") from None
     print("fetcher_host_eligibility=" + mode)

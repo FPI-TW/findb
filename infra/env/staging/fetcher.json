@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "deployment_target": "staging",
+  "unit": "fetcher",
+  "variables": {
+    "AWS_REGION": "ap-southeast-1",
+    "AWS_ACCOUNT_ID": "439622209937",
+    "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/fetcher-staging-deploy",
+    "AWS_PROMOTION_ROLE_ARN": "",
+    "AWS_PUBLISHER_ROLE_ARN": "arn:aws:iam::439622209937:role/fetcher-staging-ecr-publisher",
+    "AWS_INSTANCE_PROFILE_NAME": "fetcher-staging-instance",
+    "AWS_SSM_LOG_GROUP": "/findb/staging/fetcher/ssm",
+    "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
+    "DEPLOY_BUNDLE_BUCKET": "findb-staging-deploy-bundle-439622209937",
+    "DEPLOY_BUNDLE_KMS_KEY_ARN": "arn:aws:kms:ap-southeast-1:439622209937:key/07fdfcdb-4bb1-475f-8e31-ccd97551e9eb",
+    "FINDB_PUBLIC_HOST": "findb-staging.tingfong.com",
+    "FULL_MARKET_ENABLED": "true",
+    "FETCHER_FULL_MARKET_STATE_DIR": "/var/lib/findb-full-market/staging",
+    "STAGING_AWS_ACCOUNT_ID": "",
+    "STAGING_PROMOTION_READ_ROLE_ARN": "",
+    "STAGING_ECR_REGISTRY": "",
+    "STAGING_DEPLOY_BUNDLE_BUCKET": ""
+  }
+}

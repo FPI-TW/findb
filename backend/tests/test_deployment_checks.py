@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import runpy
 import subprocess
 import sys
 from io import BytesIO
@@ -41,13 +40,13 @@ REPO_ROOT = BACKEND_ROOT.parent
 WORKFLOWS_ROOT = REPO_ROOT / ".github" / "workflows"
 REQUIRED_CI_WORKFLOW = WORKFLOWS_ROOT / "required-ci.yml"
 FINDB_CI_WORKFLOW = WORKFLOWS_ROOT / "findb-ci.yml"
-FINDB_CD_WORKFLOW = WORKFLOWS_ROOT / "findb-cd.yml"
+CD_WORKFLOW = WORKFLOWS_ROOT / "cd.yml"
+FINDB_DEPLOY_WORKFLOW = WORKFLOWS_ROOT / "findb-deploy.yml"
 FETCHER_CI_WORKFLOW = WORKFLOWS_ROOT / "fetcher-ci.yml"
-FETCHER_CD_WORKFLOW = WORKFLOWS_ROOT / "fetcher-cd.yml"
-DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
+FETCHER_DEPLOY_WORKFLOW = WORKFLOWS_ROOT / "fetcher-deploy.yml"
+FINLAB_SMOKE_WORKFLOW = WORKFLOWS_ROOT / "fetcher-finlab-smoke.yml"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
-ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 SSM_COMMAND_MARKER_GATE = REPO_ROOT / "infra" / "deploy" / "ssm_command_marker_gate.sh"
 SSM_BASH_COMMAND = REPO_ROOT / "infra" / "deploy" / "ssm_bash_command.py"
@@ -132,6 +131,8 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "production",
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "target-revision",
+            "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.com",
             "DOCKER_CALLS": str(docker_calls),
         },
         timeout=10,
@@ -139,15 +140,17 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
 
     assert completed.returncode == 0, completed.stderr
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 5
+    assert len(calls) == 6
     assert "alembic upgrade head" in calls[0]
-    assert "reconcile_database_privileges.py" in calls[1]
-    assert "reconcile_deployment_credentials.py" in calls[2]
-    assert "provision_registry.py --deployment-target production" in calls[3]
-    assert "seed_production_calendars.py --deployment-target production --apply" in calls[4]
+    assert "predeploy_db_check.py" in calls[1]
+    assert "--require-exact-alembic-revision" in calls[1]
+    assert "reconcile_database_privileges.py" in calls[2]
+    assert "reconcile_deployment_credentials.py" in calls[3]
+    assert "provision_registry.py --deployment-target production" in calls[4]
+    assert "seed_production_calendars.py --deployment-target production --apply" in calls[5]
 
 
-def test_staging_migration_requires_exact_revision_before_reconciliation_or_service_start(
+def test_migration_requires_exact_revision_before_reconciliation_or_service_start(
     tmp_path: Path,
 ) -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
@@ -236,6 +239,8 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "staging",
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "target-revision",
+            "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.com",
             "DOCKER_CALLS": str(docker_calls),
         },
         timeout=10,
@@ -245,6 +250,7 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 2
     assert "predeploy_db_check.py" in calls[0]
+    assert "--allow-empty-database-bootstrap" in calls[0]
     assert (
         "reconcile_deployment_credentials.py --deployment-target staging --check-only" in calls[1]
     )
@@ -506,51 +512,6 @@ def _named_step(workflow: dict[str, Any], job_name: str, step_name: str) -> dict
     return next(step for step in steps if step.get("name") == step_name)
 
 
-def _legacy_rollback_runtime_paths(workflow_path: Path) -> set[str]:
-    workflow = _load_workflow(workflow_path)
-    script = _named_step(
-        workflow,
-        "build-push-staging-ecr",
-        "Validate staging ECR release selection",
-    )["run"]
-    marker = 'git diff --quiet "$ECR_IMAGE_TAG" HEAD -- \\\n'
-    assert marker in script
-    diff_paths = script.split(marker, 1)[1].split("; then", 1)[0]
-    return {
-        line.strip().removesuffix("\\").strip() for line in diff_paths.splitlines() if line.strip()
-    }
-
-
-def _host_runtime_contract_paths(workflow_path: Path) -> set[str]:
-    # The explicit pre-foundation rollback gate remains bound to the old host
-    # runtime contract.  Post-foundation staging instead uses the validated
-    # bundle, so this set must not be inferred from removed SCP steps.
-    if workflow_path == FINDB_CD_WORKFLOW:
-        return {
-            "docker-compose.prod.yml",
-            "infra/nginx/nginx.conf",
-            "infra/nginx/source-allowlist.conf",
-            "infra/nginx/cloudflare-real-ip.conf",
-            "backend/scripts/render_nginx_public_host.py",
-            "backend/scripts/render_nginx_source_allowlist.py",
-            "backend/scripts/render_nginx_cloudflare_real_ip.py",
-            "infra/deploy/runtime-secrets/load_runtime_secrets.py",
-            "infra/deploy/runtime-secrets/runtime_secret_command.sh",
-            "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
-            "infra/deploy/runtime-secrets/render_serve_key.py",
-            "infra/deploy/runtime-secrets/install_findb_bootstrap.sh",
-            "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
-            "infra/deploy/runtime-secrets/findb.json",
-        }
-    return {
-        "infra/deploy/runtime-secrets/load_runtime_secrets.py",
-        "infra/deploy/runtime-secrets/runtime_secret_command.sh",
-        "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
-        "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
-        "infra/deploy/runtime-secrets/fetcher.json",
-    }
-
-
 def _aggregate_ci_paths(unit: str) -> set[str]:
     workflow = _load_workflow(REQUIRED_CI_WORKFLOW)
     script = _named_step(workflow, "changes", "Classify changed paths")["run"]
@@ -594,14 +555,12 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
 
     expected_names = {
         "required-ci.yml",
+        "cd.yml",
         "findb-ci.yml",
-        "findb-cd.yml",
         "findb-deploy.yml",
-        "findb-production-cd.yml",
         "fetcher-ci.yml",
-        "fetcher-cd.yml",
         "fetcher-deploy.yml",
-        "fetcher-production-cd.yml",
+        "fetcher-finlab-smoke.yml",
         "staging-infra-plan.yml",
     }
     actual_paths = tuple(
@@ -1304,6 +1263,9 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         AWS_ACCOUNT_ID="439622209937",
         APP_ENVIRONMENT="staging",
         ECR_REGISTRY="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
+        FINDB_RELEASE_ROOT="/opt/findb/releases/demo",
+        FINDB_NGINX_CONFIG_DIR="/etc/findb/nginx",
+        FINDB_DEPLOY_MODE="candidate",
     )
 
     invalid_findb = subprocess.run(
@@ -1552,6 +1514,7 @@ esac
         "AWS_REGION": "ap-southeast-1",
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_SHA": "a" * 40,
+        "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
         "ECR_TEST_STATE": str(tmp_path / "ecr-present"),
     }
     image = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend"
@@ -1664,22 +1627,6 @@ esac
     docker_log.unlink()
     (tmp_path / "ecr-present").unlink()
 
-    rollback_absent = subprocess.run(
-        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            **base_environment,
-            "ECR_TEST_MODE": "absent",
-            "ECR_IMAGE_TAG": "b" * 40,
-            "ECR_REUSE_ONLY": "true",
-        },
-    )
-    assert rollback_absent.returncode != 0
-    assert "reason=rollback_tag_not_found" in rollback_absent.stderr
-    assert not docker_log.exists()
-
     (fake_bin / "jq").write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
     (fake_bin / "jq").chmod(0o755)
     jq_failure = subprocess.run(
@@ -1704,14 +1651,22 @@ esac
         capture_output=True,
         text=True,
         check=False,
-        env={
-            **base_environment,
-            "ECR_IMAGE_TAG": "b" * 40,
-            "ECR_REUSE_ONLY": "false",
-        },
+        env={**base_environment, "ECR_IMAGE_TAG": "b" * 40},
     )
     assert forward_tag_mismatch.returncode != 0
     assert "reason=publisher_identity_or_sha_contract" in forward_tag_mismatch.stderr
+    assert not unexpected_aws_log.exists()
+    assert not docker_log.exists()
+
+    foreign_registry = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "ECR_REGISTRY": "evil.example"},
+    )
+    assert foreign_registry.returncode != 0
+    assert "reason=ecr_registry_contract" in foreign_registry.stderr
     assert not unexpected_aws_log.exists()
     assert not docker_log.exists()
 
@@ -1836,13 +1791,12 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
         variable = (
             "FINDB_TLS_CERT_PATH" if tls_file == "server.crt" else "FINDB_TLS_PRIVATE_KEY_PATH"
         )
-        assert any(
-            volume.startswith(f"${{{variable}:-/home/ubuntu/etc/nginx/ssl/{tls_file}}}:")
-            for volume in nginx_volumes
-        )
+        # Both targets must supply the rendered TLS paths; nothing defaults to a home directory.
+        assert any(volume.startswith(f"${{{variable}:?") for volume in nginx_volumes)
+    assert not any("/home/ubuntu" in volume for volume in nginx_volumes)
     for config in ("nginx.conf", "cloudflare-real-ip.conf", "source-allowlist.conf"):
         assert any(
-            f"${{FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}}/{config}:" in volume
+            volume.startswith("${FINDB_NGINX_CONFIG_DIR:?") and f"/{config}:" in volume
             for volume in nginx_volumes
         )
 
@@ -1860,7 +1814,10 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     assert '"$AWS_ACCOUNT_ID" validate' in findb
     assert "candidate_nginx_runtime_validated" in findb
     assert "tls_file_missing_or_unsafe" in findb
-    assert 'nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"' in findb
+    assert (
+        'nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:?FINDB_NGINX_CONFIG_DIR is required}"' in findb
+    )
+    assert "/home/ubuntu" not in findb
     assert '[ "$nginx_config_dir" != /etc/findb/nginx ]' in findb
     assert "require_root_owned_nginx_directory /etc/findb" in findb
     assert "nginx_config_target_unsafe" in findb
@@ -1885,12 +1842,14 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
         "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb"
         in nginx_helper
     )
+    # The renderer is target-neutral: one release-root catalog contract, TLS in every target.
     assert (
         "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb"
-        in nginx_helper
+        not in nginx_helper
     )
-    assert '[ "$deployment_target" = staging ]' in nginx_helper
-    assert '[ "$catalog" = /opt/findb/runtime-secrets/findb.json ]' in nginx_helper
+    assert '[ "$deployment_target" = staging ]' not in nginx_helper
+    assert '[ "$deployment_target" = production ]' not in nginx_helper
+    assert "/opt/findb/runtime-secrets/findb.json" not in nginx_helper
     assert 'runtime_dir="${catalog%/findb.json}"' in nginx_helper
     assert 'renderer="$runtime_dir/render_serve_key.py"' in nginx_helper
     assert "renderer_metadata_invalid" in nginx_helper
@@ -1898,19 +1857,14 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     assert "/opt/findb/runtime-secrets/render_serve_key.py" not in nginx_helper
 
 
-def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> None:
+def test_nginx_runtime_catalog_path_gate_accepts_only_release_root_catalogs() -> None:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh"
     identity = f"{'a' * 64}-34025994515-1"
     current_catalog = f"/opt/findb/releases/{identity}/infra/deploy/runtime-secrets/findb.json"
     legacy_catalog = f"/opt/findb/releases/{identity}-findb/infra/deploy/runtime-secrets/findb.json"
 
-    for target, catalog in (
-        ("staging", current_catalog),
-        ("production", current_catalog),
-        ("staging", legacy_catalog),
-        ("production", "/opt/findb/runtime-secrets/findb.json"),
-    ):
-        result = subprocess.run(
+    def render(target: str, catalog: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             [
                 "bash",
                 str(helper),
@@ -1924,40 +1878,24 @@ def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> Non
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 1
-        assert "renderer_metadata_invalid" in result.stderr
-        assert "catalog_path_invalid" not in result.stderr
 
-    for target, catalog in (
-        ("production", legacy_catalog),
-        (
-            "staging",
+    for target in ("staging", "production"):
+        accepted = render(target, current_catalog)
+        assert accepted.returncode == 1
+        assert "renderer_metadata_invalid" in accepted.stderr
+        assert "catalog_path_invalid" not in accepted.stderr
+        for catalog in (
+            legacy_catalog,
+            "/opt/findb/runtime-secrets/findb.json",
             f"/opt/findb/releases/{identity}-fetcher/infra/deploy/runtime-secrets/findb.json",
-        ),
-        (
-            "staging",
             f"/opt/findb/releases/{'A' * 64}-34025994515-1/infra/deploy/runtime-secrets/findb.json",
-        ),
-    ):
-        result = subprocess.run(
-            [
-                "bash",
-                str(helper),
-                catalog,
-                "ap-southeast-1",
-                "findb.example.com",
-                target,
-                "439622209937",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 1
-        assert "catalog_path_invalid" in result.stderr
+        ):
+            rejected = render(target, catalog)
+            assert rejected.returncode == 1
+            assert "catalog_path_invalid" in rejected.stderr
 
 
-def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() -> None:
+def test_findb_deploy_helper_requires_a_release_root_and_pins_the_compose_project() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
@@ -1965,49 +1903,60 @@ def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() 
     preserve_start = helper.index("preserve_env=")
     preserve_end = helper.index("\n\nrun_runtime()", preserve_start)
     preserve_setup = helper[preserve_start:preserve_end]
-    for environment, expected in (
-        (
-            {
-                "FINDB_RELEASE_ROOT": "/opt/findb/releases/demo",
-                "COMPOSE_PROJECT_NAME": "unexpected",
-            },
-            "/opt/findb/releases/demo/infra/deploy/runtime-secrets|/opt/findb/releases/demo/docker-compose.prod.yml|findb",
-        ),
-        (
-            {"COMPOSE_PROJECT_NAME": "unexpected"},
-            "/opt/findb/runtime-secrets|/opt/findb/docker-compose.prod.yml|unexpected",
-        ),
-    ):
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'''{setup}
-{preserve_setup}
-case ",$preserve_env," in
-  *,COMPOSE_PROJECT_NAME,*)
-    effective_project="$(env -i "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" /bin/bash -c 'printf "%s" "${{COMPOSE_PROJECT_NAME-unset}}"')"
-    ;;
-  *) effective_project="$(env -i /bin/bash -c 'printf "%s" "${{COMPOSE_PROJECT_NAME-unset}}"')" ;;
-esac
-printf "%s|%s|%s|%s\\n" "$runtime_dir" "$compose_file" "${{COMPOSE_PROJECT_NAME-unset}}" "$effective_project"''',
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            env={**os.environ, **environment},
-        )
-        assert result.returncode == 0
-        expected_effective = "findb" if "FINDB_RELEASE_ROOT" in environment else "unset"
-        assert result.stdout == f"{expected}|{expected_effective}\n"
+    probe = (
+        setup + '\nprintf "%s|%s|%s\\n" "$runtime_dir" "$compose_file" "$COMPOSE_PROJECT_NAME"\n'
+    )
+    explicit = subprocess.run(
+        ["bash", "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "FINDB_RELEASE_ROOT": "/opt/findb/releases/demo",
+            "FINDB_NGINX_CONFIG_DIR": "/etc/findb/nginx",
+            "COMPOSE_PROJECT_NAME": "unexpected",
+        },
+    )
+    assert explicit.returncode == 0, explicit.stderr
+    assert explicit.stdout == (
+        "/opt/findb/releases/demo/infra/deploy/runtime-secrets"
+        "|/opt/findb/releases/demo/docker-compose.prod.yml|findb\n"
+    )
+    environment = {**os.environ, "FINDB_NGINX_CONFIG_DIR": "/etc/findb/nginx"}
+    environment.pop("FINDB_RELEASE_ROOT", None)
+    legacy = subprocess.run(
+        ["bash", "-c", probe], check=False, capture_output=True, text=True, env=environment
+    )
+    assert legacy.returncode != 0  # No legacy /opt/findb runtime path in any target.
+    assert "FINDB_RELEASE_ROOT is required" in legacy.stderr
+    assert "/opt/findb/runtime-secrets" not in helper
+    assert "/opt/findb/docker-compose.prod.yml" not in helper
+    assert "DEPLOYMENT_TARGET" not in helper
 
     assert "COMPOSE_PROJECT_NAME=findb" in setup
     assert "export COMPOSE_PROJECT_NAME" in setup
-    assert "COMPOSE_PROJECT_NAME" not in preserve_setup.split("\n", 1)[0].split(",")
-    assert (
-        'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"'
-        in preserve_setup
-    )
+    preserved = set(preserve_setup.removeprefix("preserve_env=").split(","))
+    assert {
+        "FULL_MARKET_ENABLED",
+        "AWS_REGION",
+        "AWS_ACCOUNT_ID",
+        "APP_ENVIRONMENT",
+        "ECR_REGISTRY",
+        "FINDB_IMAGE_REF",
+        "DASHBOARD_IMAGE_REF",
+        "FINDB_PUBLIC_HOST",
+        "FINDB_NGINX_CONFIG_DIR",
+        "COMPOSE_FILE",
+        "COMPOSE_PROJECT_NAME",
+        "FINDB_RELEASE_ROOT",
+        "FINDB_DEPLOY_MODE",
+        "PREDEPLOY_EXPECTED_ALEMBIC_REVISION",
+        "PREDEPLOY_EXPECTED_RDS_ENDPOINT",
+    } == preserved
+    # Application configuration never crosses the sudo boundary from the runner.
+    for name in ("SOURCE_ALLOWLIST_CIDRS", "PORT", "SERVE_REQUIRE_AUTH", "DATABASE_URL"):
+        assert name not in preserved
     assert 'sudo --preserve-env="$preserve_env" "$runtime_command"' in helper
 
 
@@ -2327,6 +2276,9 @@ esac
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
+    # The public dashboard acceptance probe runs in every target; keep it offline.
+    (fake_bin / "curl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "curl").chmod(0o755)
     completed = subprocess.run(
         ["bash", "-s", "--", "/tmp/compose.yml"],
         input=f'{up_script}\ntouch "$FAKE_AFTER_UP_SCRIPT"\n',
@@ -2391,13 +2343,14 @@ def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_off
         1,
     )[1].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
 
-    # A bounded stable may bootstrap only the reviewed versioned staging
+    # A pilot stable may bootstrap only the reviewed versioned staging
     # directory when its mounted state identity differs. Same-identity state
-    # loss still fails closed; full-market uses a separate state DB.
+    # loss still fails closed; Full workers use a separate checkpoint DB.
     assert (
-        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"'
+        '[ "${FETCHER_CONSUMER_PROFILE:-pilot}" = pilot ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"'
         in bootstrap
     )
+    assert "FETCHER_RUNTIME_PROFILE" not in helper
     assert '[ "${APP_ENVIRONMENT:-}" = staging ]' in bootstrap
     assert '[ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ]' in bootstrap
     assert 'grep -Fxq "$state_dir" <<< "$stable_mounts"' in bootstrap
@@ -2414,19 +2367,20 @@ def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_off
 @pytest.mark.parametrize(
     ("target", "profile", "versioned_directory", "stable_mount", "stable_present", "allowed"),
     [
-        ("staging", "bounded", True, "/var/lib/findb-shioaji-fetcher", True, True),
+        ("staging", "pilot", True, "/var/lib/findb-shioaji-fetcher", True, True),
         (
             "staging",
-            "bounded",
+            "pilot",
             True,
             "/var/lib/findb-shioaji-fetcher/staging-pilot-v3",
             True,
             False,
         ),
-        ("staging", "bounded", True, "", False, True),
-        ("staging", "bounded", False, "/legacy/state", True, False),
-        ("production", "bounded", True, "/legacy/state", True, False),
-        ("staging", "full-market", True, "/legacy/state", True, True),
+        ("staging", "pilot", True, "", False, True),
+        ("staging", "pilot", False, "/legacy/state", True, False),
+        ("production", "pilot", True, "/legacy/state", True, False),
+        ("staging", "full_market", True, "/legacy/state", True, True),
+        ("production", "full_market", True, "/legacy/state", True, True),
     ],
 )
 def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
@@ -2454,7 +2408,7 @@ preflight_name=preflight
 image=reviewed-exact-digest
 cache_mount=(--mount type=bind,src=/reviewed/cache,dst=/home/fetcher)
 runtime_env_args=(--env SOURCE_SECRET=must-not-be-injected)
-set -- findb-fetch-shioaji-scheduler
+set -- "$bootstrap_command"
 sudo() {
   if [ "$1" = stat ]; then printf '%s\\n' '10001:10001:600'; else "$@"; fi
 }
@@ -2489,7 +2443,10 @@ docker() {
         env={
             **os.environ,
             "APP_ENVIRONMENT": target,
-            "FETCHER_RUNTIME_PROFILE": profile,
+            "FETCHER_CONSUMER_PROFILE": profile,
+            "bootstrap_command": "findb-fetch-full-market"
+            if profile == "full_market"
+            else "findb-fetch-shioaji-scheduler",
             "state_dir": state_directory,
             "state_path": str(state_path),
             "stable_present": str(stable_present).lower(),
@@ -2967,185 +2924,60 @@ def test_findb_bootstrap_recreates_tmpfs_key_before_docker_and_fails_closed() ->
     assert "FINDB_LOOKUP_SERVE_API_KEY" not in helper
 
 
-def test_remote_env_examples_cover_the_sync_contract() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    service_configs = namespace["SERVICE_CONFIGS"]
-    deployment_targets = namespace["DEPLOYMENT_TARGETS"]
+def test_runtime_configuration_catalogs_are_target_neutral_and_raw_only() -> None:
+    findb = json.loads(
+        (REPO_ROOT / "infra/deploy/runtime-secrets/findb.json").read_text(encoding="utf-8")
+    )
+    fetcher = json.loads(
+        (REPO_ROOT / "infra/deploy/runtime-secrets/fetcher.json").read_text(encoding="utf-8")
+    )
 
-    for target in deployment_targets:
-        for service, config in service_configs.items():
-            example = ENV_CONFIG_ROOT / target / service / "remote.env.example"
-            configured_names = {
-                match.group(1)
-                for line in example.read_text(encoding="utf-8").splitlines()
-                if (
-                    match := re.fullmatch(
-                        r"(?:# )?([A-Z][A-Z0-9_]*)=.*",
-                        line,
-                    )
-                )
-            }
-            documented_names = set(
-                (
-                    *config.variables_for(target),
-                    *config.secrets_for(target),
-                    *(config.optional_secrets if target == "staging" else ()),
-                )
-            )
-            assert configured_names == documented_names
-
-
-def test_aws_control_plane_variables_are_isolated_and_match_examples() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    phase1_names = set(namespace["STAGING_AWS_VARIABLES"])
-    expected_values = {
-        "findb": {
-            "AWS_REGION": "ap-southeast-1",
-            "AWS_ACCOUNT_ID": "439622209937",
-            "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/findb-staging-deploy",
-            "AWS_INSTANCE_PROFILE_NAME": "findb-staging-instance",
-            "AWS_SSM_LOG_GROUP": "/findb/staging/findb/ssm",
-            "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
-            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
-        },
-        "fetcher": {
-            "AWS_REGION": "ap-southeast-1",
-            "AWS_ACCOUNT_ID": "439622209937",
-            "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/fetcher-staging-deploy",
-            "AWS_INSTANCE_PROFILE_NAME": "fetcher-staging-instance",
-            "AWS_SSM_LOG_GROUP": "/findb/staging/fetcher/ssm",
-            "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
-            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
-        },
-    }
-
-    for service, config in namespace["SERVICE_CONFIGS"].items():
-        assert phase1_names <= set(config.variables_for("staging"))
-        assert phase1_names <= set(config.variables_for("production"))
-
-        staging_example = ENV_CONFIG_ROOT / "staging" / service / "remote.env.example"
-        staging_values = {
-            key: value
-            for key, value in (
-                line.split("=", 1)
-                for line in staging_example.read_text(encoding="utf-8").splitlines()
-                if line and not line.startswith("#") and "=" in line
-            )
-        }
-        assert {name: staging_values[name] for name in phase1_names} == expected_values[service]
-        if service == "findb":
-            assert staging_values["RDS_DB_INSTANCE_IDENTIFIER"] == (
-                "replace-with-staging-rds-instance-identifier"
-            )
-        else:
-            assert "RDS_DB_INSTANCE_IDENTIFIER" not in staging_values
-
-        production_example = ENV_CONFIG_ROOT / "production" / service / "remote.env.example"
-        production_text = production_example.read_text(encoding="utf-8")
-        assert all(f"{name}=" in production_text for name in phase1_names)
-        assert "PRODUCTION_DEPLOY_ENABLED=" not in production_text
-
-
-def test_fetcher_r2_sync_contract_is_raw_only() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    fetcher = namespace["SERVICE_CONFIGS"]["fetcher"]
-
-    variables = set(fetcher.variables)
-
-    assert "CLOUDFLARE_R2_RAW_BUCKET" in variables
-    assert "CLOUDFLARE_R2_CANONICAL_BUCKET" not in variables
-
-
-@pytest.mark.parametrize("target", ("staging", "production"))
-def test_fetcher_sync_forces_shioaji_simulation(target: str) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    validate = namespace["_validate_fetcher_simulation_contract"]
-
-    assert validate(target, {"SHIOAJI_SIMULATION": "true"}) is None
-    for invalid in ("false", "TRUE", "true ", "1"):
-        assert validate(target, {"SHIOAJI_SIMULATION": invalid}) == (
-            f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
+    def configuration_keys(catalog: dict[str, Any], consumer: str) -> set[str]:
+        secret = next(
+            secret
+            for secret in catalog["consumers"][consumer]["secrets"]
+            if secret["name"] == "runtime/configuration"
         )
-    assert validate(target, {}) == f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
+        return set(secret["required_keys"]) | set(secret.get("optional_keys", []))
 
-
-@pytest.mark.parametrize("target", ("staging", "production"))
-def test_findb_sync_rejects_reused_canonical_credentials(target: str) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    validate = namespace["_validate_findb_canonical_contract"]
-
-    error = validate(
-        target,
-        {
-            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID": "same-key",
-            "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID": "same-key",
-        },
+    for consumer in ("twelve-data", "finlab", "shioaji", "taifex"):
+        keys = configuration_keys(fetcher, consumer)
+        assert "CLOUDFLARE_R2_RAW_BUCKET" in keys
+        assert "CLOUDFLARE_R2_CANONICAL_BUCKET" not in keys
+        assert "SHIOAJI_SIMULATION" in keys
+    assert (
+        "SHIOAJI_SIMULATION"
+        in next(
+            secret
+            for secret in fetcher["consumers"]["shioaji"]["secrets"]
+            if secret["name"] == "runtime/configuration"
+        )["required_keys"]
     )
-
-    assert error == f"{target}-findb canonical publisher and reader access key IDs must differ"
-
-
-@pytest.mark.parametrize("target", ("staging", "production"))
-def test_fetcher_sync_rejects_canonical_bucket(target: str) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    validate = namespace["_validate_fetcher_bucket_contract"]
-
-    error = validate(target, {"CLOUDFLARE_R2_CANONICAL_BUCKET": "canonical-bucket"})
-
-    assert error == f"{target}-fetcher must not configure CLOUDFLARE_R2_CANONICAL_BUCKET"
-
-
-def test_sync_rejects_unallowlisted_r2_names_even_when_empty() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    unexpected = namespace["_unexpected_r2_names"]
-
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": "present"}) == (
-        "CLOUDFLARE_R2_UNRELATED",
-    )
-    assert unexpected("findb", {"CLOUDFLARE_R2_RAW_BUCKET": "present"}) == (
-        "CLOUDFLARE_R2_RAW_BUCKET",
-    )
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_RAW_BUCKET": ""}) == ()
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": ""}) == ("CLOUDFLARE_R2_UNRELATED",)
-
-
-def test_remote_r2_name_audit_reads_names_without_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    calls: list[list[str]] = []
-
-    def fake_run(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(arguments)
-        if arguments[-1].endswith("/variables?per_page=100"):
-            output = '{"variables":[{"name":"CLOUDFLARE_R2_RAW_BUCKET"}]}'
-        else:
-            output = '{"secrets":[{"name":"CLOUDFLARE_R2_UNRELATED"}]}'
-        return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
-
-    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
-
-    assert namespace["_unexpected_remote_r2_names"]("fetcher", "staging-fetcher") == (
-        "CLOUDFLARE_R2_UNRELATED",
-    )
-    assert len(calls) == 2
-    assert all("CLOUDFLARE_R2_" not in " ".join(call) for call in calls)
-
-
-def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
+    deployment_keys = configuration_keys(findb, "deployment")
+    assert {
+        "SOURCE_ALLOWLIST_CIDRS",
+        "SERVE_REQUIRE_AUTH",
+        "PORT",
+        "HISTORICAL_BACKFILL_WINDOW_DAYS",
+        "FINDB_TLS_CERT_PATH",
+        "FINDB_TLS_PRIVATE_KEY_PATH",
+    } <= deployment_keys
+    assert "CLOUDFLARE_R2_RAW_BUCKET" not in deployment_keys
+    for catalog in (findb, fetcher):
+        for consumer in catalog["consumers"].values():
+            for secret in consumer["secrets"]:
+                assert "targets" not in secret
+    # The retired GitHub Environment sync and its per-target examples are gone.
+    assert not (ENV_CONFIG_ROOT / "sync_github_environment.py").exists()
+    assert not list(ENV_CONFIG_ROOT.glob("*/*/*.example"))
     for target in ("staging", "production"):
-        for service in ("findb", "fetcher"):
-            example = ENV_CONFIG_ROOT / target / service / "remote.env.example"
-            first_line = example.read_text(encoding="utf-8").splitlines()[0]
-            assert first_line == f"# GitHub Environment: {target}-{service}"
-
-    staging_findb = (ENV_CONFIG_ROOT / "staging" / "findb" / "remote.env.example").read_text(
-        encoding="utf-8"
-    )
-    production_findb = (ENV_CONFIG_ROOT / "production" / "findb" / "remote.env.example").read_text(
-        encoding="utf-8"
-    )
-    assert "\nSERVE_REQUIRE_AUTH=false\n" in staging_findb
-    assert "\nSERVE_REQUIRE_AUTH=" not in production_findb
-    assert "PRODUCTION_DEPLOY_ENABLED=" not in production_findb
+        for unit in ("findb", "fetcher"):
+            document = json.loads(
+                (ENV_CONFIG_ROOT / target / f"{unit}.json").read_text(encoding="utf-8")
+            )
+            assert document["deployment_target"] == target and document["unit"] == unit
+            assert "SHIOAJI_SIMULATION" not in document["variables"]
+            assert "SERVE_REQUIRE_AUTH" not in document["variables"]
 
 
 def test_fetcher_ci_retries_transient_container_build_failures() -> None:
@@ -3166,11 +2998,12 @@ def test_retired_shared_credential_identifiers_are_absent_from_runtime_contracts
         REPO_ROOT / "docker-compose.yml",
         PROD_COMPOSE,
         FINDB_CI_WORKFLOW,
-        FINDB_CD_WORKFLOW,
-        REPO_ROOT / "infra/env/sync_github_environment.py",
+        CD_WORKFLOW,
+        FINDB_DEPLOY_WORKFLOW,
         REPO_ROOT / ".env.example",
-        REPO_ROOT / "infra/env/staging/findb/remote.env.example",
-        REPO_ROOT / "infra/env/production/findb/remote.env.example",
+        REPO_ROOT / "infra/env/staging/findb.json",
+        REPO_ROOT / "infra/env/production/findb.json",
+        REPO_ROOT / "infra/deploy/runtime-secrets/findb.json",
     )
     content = "\n".join(path.read_text(encoding="utf-8") for path in paths)
     for identifier in retired:
@@ -3178,10 +3011,15 @@ def test_retired_shared_credential_identifiers_are_absent_from_runtime_contracts
 
 
 def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
-    findb_cd = FINDB_CD_WORKFLOW.read_text(encoding="utf-8")
-    fetcher_cd = FETCHER_CD_WORKFLOW.read_text(encoding="utf-8")
-
-    combined = findb_cd + fetcher_cd
+    combined = "\n".join(
+        workflow.read_text(encoding="utf-8")
+        for workflow in (
+            CD_WORKFLOW,
+            FINDB_DEPLOY_WORKFLOW,
+            FETCHER_DEPLOY_WORKFLOW,
+            FINLAB_SMOKE_WORKFLOW,
+        )
+    )
     for forbidden in (
         "FINDB_EC2_",
         "FETCHER_EC2_",
@@ -3195,12 +3033,13 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
     ):
         assert forbidden not in combined
 
-    assert "secrets: inherit" not in findb_cd
-    assert "secrets: inherit" not in fetcher_cd
+    assert "secrets: inherit" not in combined
+    assert "${{ vars." not in combined
+    assert "${{ secrets." not in combined
 
 
 def test_finlab_smoke_checks_out_marker_gate_before_sourcing_helper() -> None:
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
+    workflow = _load_workflow(FINLAB_SMOKE_WORKFLOW)
     steps = workflow["jobs"]["finlab-acquisition-smoke"]["steps"]
     smoke_step = _named_step(
         workflow, "finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"
@@ -3269,36 +3108,6 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
     assert "HOME=/home/fetcher" in shioaji_dockerfile
     assert 'VOLUME ["/home/fetcher", "/var/lib/findb-shioaji-fetcher"]' in (shioaji_dockerfile)
     assert str(test_job["timeout-minutes"]) == "15"
-
-
-def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
-    """Return provider-specific function arguments for the shell state machine."""
-    return (
-        (
-            "twelve",
-            "Release and validate Twelve Data scheduler on Fetcher EC2",
-            "findb-fetch-scheduler",
-            "findb-fetcher-scheduler",
-            "findb-fetcher-scheduler-candidate",
-            "findb-fetcher-scheduler-previous",
-        ),
-        (
-            "finlab",
-            "Release and validate FinLab scheduler on Fetcher EC2",
-            "findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id taiwan_market_window --dataset-key tw_equity_eod",
-            "findb-fetcher-finlab-scheduler",
-            "findb-fetcher-finlab-scheduler-candidate",
-            "findb-fetcher-finlab-scheduler-previous",
-        ),
-        (
-            "shioaji",
-            "Release and validate Shioaji scheduler on Fetcher EC2",
-            "findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json",
-            "findb-fetcher-shioaji-scheduler",
-            "findb-fetcher-shioaji-scheduler-candidate",
-            "findb-fetcher-shioaji-scheduler-previous",
-        ),
-    )
 
 
 _FAKE_DOCKER = """#!/bin/sh
@@ -3448,107 +3257,6 @@ case "$1" in
     ;;
 esac
 """
-
-
-def _run_fetcher_reconciliation(
-    tmp_path: Path,
-    provider: tuple[str, str, str, str, str, str],
-    *,
-    initial: dict[str, str],
-    candidate_status: str = "running",
-    preflight_fails: bool = False,
-    wrong_raw_bucket_marker: bool = False,
-    stable_exit_code: int = 0,
-) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
-    provider_id, step_name, command, stable, candidate, previous = provider
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    script = _named_step(workflow, "deploy", step_name)["with"]["script"]
-    function_start = script.index("reconcile_scheduler() {")
-    function_end = script.index("\nruntime_env_args=", function_start)
-    function = script[function_start:function_end]
-
-    state_dir = tmp_path / provider_id / "state"
-    fake_bin = tmp_path / provider_id / "bin"
-    state_dir.mkdir(parents=True)
-    fake_bin.mkdir(parents=True)
-    for name, status in initial.items():
-        (state_dir / name).write_text(status + "\n", encoding="utf-8")
-    state_path = state_dir / "state.sqlite3"
-    state_path.write_text("durable-state\n", encoding="utf-8")
-    marker_components = "0123456789abcdef0123456789abcdef\nraw-bucket"
-    if not wrong_raw_bucket_marker:
-        marker_components += f"\n{provider_id}"
-    (state_dir / "raw-bucket.sha256").write_text(
-        hashlib.sha256(marker_components.encode()).hexdigest() + "\n",
-        encoding="utf-8",
-    )
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
-    fake_docker.chmod(0o755)
-    fake_sudo = fake_bin / "sudo"
-    fake_sudo.write_text(_FAKE_SUDO, encoding="utf-8")
-    fake_sudo.chmod(0o755)
-    fake_sleep = fake_bin / "sleep"
-    fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    fake_sleep.chmod(0o755)
-
-    image = "image:test"
-    if provider_id == "shioaji":
-        invocation = (
-            f"reconcile_scheduler {provider_id} {image} "
-            f"{state_dir} {state_path} {stable} {candidate} {previous} "
-            f'preflight "" {command}'
-        )
-    else:
-        cache_dir = state_dir / "cache" if provider_id == "finlab" else "-"
-        invocation = (
-            f"reconcile_scheduler {provider_id} {image} "
-            f"{state_dir} {state_path} {stable} {candidate} {previous} "
-            f'preflight {cache_dir} "" {command}'
-        )
-    harness = f"""set -euo pipefail
-SOURCE_API_URL=https://findb.example.com
-SOURCE_CLIENT_KEY=source-key
-FINDB_SERVE_BASE_URL=https://findb.example.com
-FETCHER_CALENDAR_SERVE_API_KEY=calendar-key
-CLOUDFLARE_R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef
-CLOUDFLARE_R2_RAW_BUCKET=raw-bucket
-FETCHER_STATE_PATH={state_path}
-FETCHER_SHIOAJI_STATE_PATH={state_path}
-SHIOAJI_SIMULATION=true
-export SOURCE_API_URL SOURCE_CLIENT_KEY FINDB_SERVE_BASE_URL FETCHER_CALENDAR_SERVE_API_KEY
-export CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET FETCHER_STATE_PATH FETCHER_SHIOAJI_STATE_PATH SHIOAJI_SIMULATION
-stable={stable}
-candidate={candidate}
-previous={previous}
-{function}
-{invocation}
-"""
-    log_path = tmp_path / provider_id / "docker.log"
-    environment = dict(os.environ)
-    environment.update(
-        PATH=f"{fake_bin}:{environment['PATH']}",
-        FAKE_DOCKER_STATE=str(state_dir),
-        FAKE_DOCKER_LOG=str(log_path),
-        FAKE_IMAGE=image,
-        FAKE_CANDIDATE_STATUS=candidate_status,
-        FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
-        FAKE_STABLE_EXIT_CODE=str(stable_exit_code),
-    )
-    completed = subprocess.run(
-        ["bash", "-c", harness],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    statuses = {
-        path.name: path.read_text(encoding="utf-8").strip()
-        for path in state_dir.iterdir()
-        if path.is_file() and path.name not in {"state.sqlite3", "raw-bucket.sha256"}
-    }
-    operations = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
-    return completed, statuses, operations, state_path.read_text(encoding="utf-8")
 
 
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
@@ -3815,7 +3523,7 @@ def test_predeploy_unversioned_nonempty_database_fails_with_bootstrap_allowance(
     ) == ["database contains user relations without an Alembic revision"]
 
 
-def test_empty_database_bootstrap_flag_is_production_only() -> None:
+def test_empty_database_bootstrap_is_allowed_in_every_target() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
@@ -3823,9 +3531,9 @@ def test_empty_database_bootstrap_flag_is_production_only() -> None:
         "\nMIGRATION_CHECK_SCRIPT", 1
     )[0]
 
-    assert 'if [ "$APP_ENVIRONMENT" = production ]; then' in migration_check
-    assert "bootstrap_arg=--allow-empty-database-bootstrap" in migration_check
-    assert 'if [ "$APP_ENVIRONMENT" = staging ]' not in migration_check
+    assert "--allow-empty-database-bootstrap" in migration_check
+    assert 'if [ "$APP_ENVIRONMENT"' not in migration_check
+    assert "bootstrap_arg" not in migration_check
 
 
 def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
@@ -3896,7 +3604,7 @@ def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
     assert " stop --timeout " not in commands
     assert "alembic upgrade" not in commands
     cleanup_arm = helper.index("release_services_may_have_started=1")
-    migration_end = helper.index("MIGRATION_SCRIPT\nfi", helper.index("MIGRATION_SCRIPT"))
+    migration_end = helper.index("\nMIGRATION_SCRIPT\n", helper.index("<<'MIGRATION_SCRIPT'"))
     candidate_up = helper.index("<<'UP_SCRIPT'", migration_end)
     assert migration_end < cleanup_arm < candidate_up
 
@@ -3952,9 +3660,8 @@ def test_queue_health_fails_when_dlq_is_not_empty() -> None:
 
 
 def test_deployment_readiness_does_not_enable_mass_import_dlq_gate() -> None:
-    workflow = FINDB_CD_WORKFLOW.read_text()
-
-    assert "--require-empty-dlq" not in workflow
+    for workflow in (CD_WORKFLOW, FINDB_DEPLOY_WORKFLOW):
+        assert "--require-empty-dlq" not in workflow.read_text(encoding="utf-8")
 
 
 def test_queue_readiness_fails_closed_when_dlq_query_fails() -> None:
@@ -4068,62 +3775,21 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
         assert values[-1] == "type=bind,src=/state,dst=/state"
 
 
-@pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("service", ["findb", "fetcher"])
-@pytest.mark.parametrize("flag", ["true", "false", None, "True", "0", ""])
-def test_env_sync_publishes_exact_full_market_flag_or_rejects_invalid_mock_only(
-    tmp_path,
-    monkeypatch,
-    target,
-    service,
-    flag,
-):
-    import sys
-
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    globals_ = namespace["main"].__globals__
-    config = namespace["SERVICE_CONFIGS"][service]
-    assert "FULL_MARKET_ENABLED" in config.variables_for(target)
-    values = {
-        name: name + "-fixture"
-        for name in (*config.variables_for(target), *config.secrets_for(target))
-    }
-    values.update(SHIOAJI_SIMULATION="true", SERVE_REQUIRE_AUTH="false")
-    values.pop("FULL_MARKET_ENABLED")
-    if flag is not None:
-        values["FULL_MARKET_ENABLED"] = flag
-    source = tmp_path / target / service / ".env.remote"
-    source.parent.mkdir(parents=True)
-    source.write_text("\n".join(name + "=" + value for name, value in values.items()))
-    calls = []
-    monkeypatch.setitem(globals_, "ENV_ROOT", tmp_path)
-    monkeypatch.setitem(globals_, "_unexpected_remote_r2_names", lambda *args: ())
-    monkeypatch.setitem(globals_, "_ensure_environment", lambda *args: None)
-    monkeypatch.setitem(globals_, "_run", lambda arguments, **kwargs: calls.append(arguments))
-    monkeypatch.setattr(sys, "argv", ["sync", target, service, "--apply"])
-    result = namespace["main"]()
-    valid = flag in {"true", "false", None}
-    assert result == (0 if valid else 1)
-    if valid:
-        published = [
-            command
-            for command in calls
-            if command[:4] == ["gh", "variable", "set", "FULL_MARKET_ENABLED"]
-        ]
-        assert published == [
-            [
-                "gh",
-                "variable",
-                "set",
-                "FULL_MARKET_ENABLED",
-                "--env",
-                target + "-" + service,
-                "--body",
-                flag or "false",
-            ]
-        ]
-    else:
-        assert calls == []
+def test_full_market_kill_switch_is_exact_control_plane_configuration() -> None:
+    for target in ("staging", "production"):
+        values = {}
+        for unit in ("findb", "fetcher"):
+            document = json.loads(
+                (ENV_CONFIG_ROOT / target / f"{unit}.json").read_text(encoding="utf-8")
+            )
+            values[unit] = document["variables"]["FULL_MARKET_ENABLED"]
+            assert values[unit] in {"true", "false"}
+        assert values["findb"] == values["fetcher"]
+    for workflow in (FINDB_DEPLOY_WORKFLOW, FETCHER_DEPLOY_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        assert '[[ "$FULL_MARKET_ENABLED" =~ ^(true|false)$ ]]' in text
+        assert 'runtime_variable_names="FULL_MARKET_ENABLED' in text
+        assert "gh variable" not in text
 
 
 def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None:

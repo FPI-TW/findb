@@ -1,8 +1,9 @@
 # Full market 啟動、平台配額與治理資料
 
 `FULL_MARKET_ENABLED=false` 是 local、staging、production 的預設值。Backend 與 Fetcher 必須使用
-相同 `APP_ENVIRONMENT=local|staging|production` 與旗標。既有 JSON `deployment_target` 仍是環境匹配契約；legacy replay/inspection 窄 bridge 見 deployment runbook。GitHub Environment 的 `FULL_MARKET_ENABLED` 決定一般 deploy 的
-`bounded`／`full-market` profile；rollback 從 immutable accepted record 讀取原 profile，不修改 bundle。
+相同 `APP_ENVIRONMENT=local|staging|production` 與旗標。既有 JSON `deployment_target` 仍是環境匹配契約。
+旗標值來自 committed control plane `infra/env/<target>/<unit>.json`，是 runtime kill switch，不再選擇
+deployment profile；每個 target 的部署一律安裝四個 Full workers。
 旗標為 true 不會啟動排程。Full market 的啟動資料條件只包含已發布 baseline 與完整已發布 calendar。
 Owner 權限、revision CAS 與 Source 認證屬於既有操作／資料存取規則。
 TAIFEX 官方 OpenAPI 不需 provider 帳號、API key 或 provider secret。部署設定中的
@@ -505,8 +506,9 @@ retirement，再以非 force removal 清理新 candidate／replacement／histori
 GitHub replay 的外層 checkpoint gate 使用 `infra/deploy/check_full_market_checkpoint.sh`，另從同 repo 的
 `github.workflow_sha` checkout 取得；必須驗證 checkout SHA 與 guard 存在，缺檔或不符即停止，不能 fallback
 到 `inputs.revision` 或舊 accepted bundle。SSM 對 base64 傳輸解碼後再次校驗 SHA-256，先執行此唯讀 gate，
-再進入 immutable coordinator 與原本已驗證的 legacy environment bridge。因此 pre-marker accepted bundle
-同樣受保護，仍使用其記錄的 profile，manifest／bundle 內容不改寫。既有 accepted bundle／image 可正常 replay，
+再以 `app-environment-v1` marker gate 確認 coordinator 契約後進入 immutable coordinator。pre-marker
+accepted bundle 在此被拒絕，不再是 replay 目標；帶 marker 的舊 bundle 仍使用其記錄的 profile，
+manifest／bundle 內容不改寫。既有 accepted bundle／image 可正常 replay，
 checkpoint 遺失或不合法時需 operator 處理 durable state，部署不會重建未知 prepared work。
 目前 transported 離線測試使用 frozen coordinator／helper／CLI excerpts 與 no-op registration，證明
 拒絕順序及舊 bootstrap 邊界，未完整覆蓋舊 coordinator 的 flags／traps／pointer 與成功 replay。

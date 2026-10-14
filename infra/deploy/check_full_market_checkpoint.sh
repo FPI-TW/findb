@@ -58,12 +58,25 @@ COMMAND
 }
 
 : "${APP_ENVIRONMENT:?APP_ENVIRONMENT is required}"
-if [[ ! "$APP_ENVIRONMENT" =~ ^(staging|production)$ ]] || { [ "${DEPLOYMENT_TARGET+x}" = x ] && [ "$DEPLOYMENT_TARGET" != "$APP_ENVIRONMENT" ]; }; then
+if [[ ! "$APP_ENVIRONMENT" =~ ^(staging|production)$ ]]; then
   echo "fetcher_checkpoint_gate=failed reason=environment_invalid" >&2
   exit 1
 fi
-full_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
-[ "$APP_ENVIRONMENT" != production ] || full_market_state=/var/lib/findb-full-market
+full_market_state="${FETCHER_FULL_MARKET_STATE_DIR:?FETCHER_FULL_MARKET_STATE_DIR is required}"
+if [[ ! "$full_market_state" =~ ^/var/lib/findb-full-market(/[a-z0-9-]+)?$ ]]; then
+  echo "fetcher_checkpoint_gate=failed reason=full_market_state_dir_invalid" >&2
+  exit 1
+fi
+# Accepted replays of pre-unified bundles derive this path from the environment
+# name. Keep the configured value pinned to that formula until the replay shim
+# for those bundles is retired, so the trusted gate and an older coordinator
+# always inspect the same checkpoint.
+legacy_formula_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
+[ "$APP_ENVIRONMENT" != production ] || legacy_formula_state=/var/lib/findb-full-market
+if [ "$full_market_state" != "$legacy_formula_state" ]; then
+  echo "fetcher_checkpoint_gate=failed reason=full_market_state_dir_mismatch" >&2
+  exit 1
+fi
 require_full_checkpoint() {
   # Installed workers own durable prepared work. Never replace a lost checkpoint,
   # including when an accepted replay invokes an older helper/image.

@@ -4,7 +4,7 @@
 
 ## 現況
 
-- [x] `findb-production-cd.yml`、`fetcher-production-cd.yml`與target-aware reusable deploy workflows已實作；
+- [x] 單一 `cd.yml` 與 target-aware reusable deploy workflows 已實作；
   annotated tag、immutable binding、staging v2 accepted bundle、digest copy、production accepted record與
   rollback fail-closed契約已完成dry-run驗證。
 - [x] Production AWS account、IAM／OIDC、ECR、EC2、RDS、SSM／CloudWatch、deploy-bundle
@@ -18,9 +18,11 @@
   仍使用 bounded profile，`FULL_MARKET_ENABLED=false`；四個 Full controls 均 stopped（revision 3），
   四個 Full workers 尚未安裝。
 - [ ] Production accepted-record-only rollback 的獨立 live acceptance 仍須補齊可核對紀錄。
+- [ ] 統一管線的首次 production `promote` 與 `rollback`（`fetcher-v0.1.7` accepted record replay）
+  演練尚未執行；完成後依 backlog 條件移除 `FETCHER_RUNTIME_PROFILE` replay shim。
 
-Production 已有 live target；`PRODUCTION_DEPLOY_ENABLED` 平時為 false，在 operator 授權的 rollout
-期間暫開並於終態恢復。v0.1.6 完成的是 bounded deployment，不代表 Full-market activation；
+Production 已有 live target；promotion 由 `production-*` Environment 的 required reviewers 與
+`main`-only branch policy 把關，不再使用 `PRODUCTION_DEPLOY_ENABLED`。v0.1.6 完成的是 bounded deployment，不代表 Full-market activation；
 尚未完成的 pacing、Full runtime、provider acceptance 與 rollback 驗證繼續留在本計畫。
 
 2026-10-13 Full credential preparation 的 Fetcher-side Source API 與 calendar 檢查均成功，且
@@ -38,16 +40,17 @@ state KMS key ARN，避免 plan 使用錯誤 state encryption 設定。
 - 建立獨立 production AWS account（`ap-southeast-1`）、每 unit 一台 EC2、獨立 ECR repositories、SSM target tags、CloudWatch log group 與 deploy bundle bucket prefix。
 - Instance role 只能讀取 `findb/production/<unit>/`，deploy OIDC role 只能寫入 bundle、呼叫本 unit SSM 與複製 ECR manifest；它不得讀取 Secrets Manager value。promotion role 另需限於自身 `<unit>/production/release-tags/*` metadata prefix 的 `s3:GetObject`／條件式 `s3:PutObject` 與 deploy-bundle KMS encrypt/decrypt，讓 semver tag 可原子綁定 tag object OID、peeled commit與staging accepted key。
 - 建立 production runtime secret catalog values（包含 `runtime/configuration`）及 host bootstrap，確認 catalog 以 `APP_ENVIRONMENT=production` 推導 prefix，而不是接受外來 prefix。
-- foundation 與 live acceptance 完成前不得建立 `PRODUCTION_DEPLOY_ENABLED`；完成授權後才由 operator 設為精確的 `true`。
+- foundation 與 live acceptance 完成前，reviewer 不得核准 production deployment。
 
 `runtime/configuration` 的 allowlist 以
 `infra/deploy/runtime-secrets/findb.json`、`fetcher.json` 為準；同一relative name會由unit prefix隔離。
-它保存application所需的非敏感runtime設定，讓GitHub Environment只保留AWS／SSM control plane。
+它保存 application 所需的非敏感 runtime 設定；AWS／SSM control-plane 值在 committed
+`infra/env/<target>/<unit>.json`，GitHub Environment 不保存任何變數或 secret。
 不得在payload加入catalog未宣告的key，loader會拒絕cross-target prefix、unknown key及unsafe value。
 
 ## Cutover
 
-1. 只接受 annotated immutable unit semver tag，解析其 tag object OID與peeled commit，先以條件式 KMS binding 固定 exact staging accepted bundle，再 rerun 完整 reusable CI；lightweight tag 必須 fail closed，重跑完整比對 binding，rollback 僅驗證既有 binding。
+1. 只接受 annotated immutable unit semver tag，解析其 tag object OID與peeled commit，以條件式 KMS binding 固定 exact staging accepted bundle；不重跑 CI（promote 的是已 CI、已 staging accepted 的 bundle）；lightweight tag 必須 fail closed，重跑完整比對 binding，rollback 僅驗證既有 binding。
 2. 在 staging accepted record 選擇 exact v2 bundle；驗證其 target、account、registry 與 image digest。
 3. 手動 dispatch `promote`，輸入固定 confirmation；只 registry-copy digest，然後確認 destination digest 並生成 production v2 accepted record。
 4. 以 bounded SSM candidate/activation rollout，驗證 health、marker、runtime secret isolation與 rollback record。

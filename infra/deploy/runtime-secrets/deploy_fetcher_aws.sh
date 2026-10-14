@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # findb_environment_contract=app-environment-v1
-# Transactional Fetcher staging deployment. Secrets are loaded independently
-# for each provider by the instance role and never cross this host boundary.
+# Transactional Fetcher deployment, identical for staging and production.
+# Secrets are loaded independently for each provider by the instance role and
+# never cross this host boundary.
 
 set -Eeuo pipefail
 # A failed inspect is not proof of absence: Docker uses rc=1 for daemon and
@@ -66,10 +67,6 @@ set +x
 : "${AWS_REGION:?AWS_REGION is required}"
 : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is required}"
 : "${APP_ENVIRONMENT:?APP_ENVIRONMENT is required}"
-if [ "${DEPLOYMENT_TARGET+x}" = x ] && [ "$DEPLOYMENT_TARGET" != "$APP_ENVIRONMENT" ]; then
-  echo "application_environment=failed reason=legacy_environment_conflict" >&2
-  exit 1
-fi
 : "${ECR_REGISTRY:?ECR_REGISTRY is required}"
 : "${FETCHER_RELEASE_ROOT:?FETCHER_RELEASE_ROOT is required}"
 : "${FETCHER_DEPLOY_MODE:?FETCHER_DEPLOY_MODE is required}"
@@ -77,15 +74,13 @@ fi
 : "${FINLAB_IMAGE_REF:?FINLAB_IMAGE_REF is required}"
 : "${SHIOAJI_IMAGE_REF:?SHIOAJI_IMAGE_REF is required}"
 
-FETCHER_RUNTIME_PROFILE="${FETCHER_RUNTIME_PROFILE:-bounded}"
-export FETCHER_RUNTIME_PROFILE
 FULL_MARKET_ENABLED="${FULL_MARKET_ENABLED:-false}"
 export FULL_MARKET_ENABLED
-export FETCHER_ACCOUNT_STATE_PATH="/var/lib/findb-account/$APP_ENVIRONMENT/governor.sqlite3"
-if [[ ! "$FETCHER_RUNTIME_PROFILE" =~ ^(bounded|full-market)$ ]]; then
-  echo "fetcher_aws_deploy=failed reason=runtime_profile_invalid" >&2
+if [[ ! "$FULL_MARKET_ENABLED" =~ ^(true|false)$ ]]; then
+  echo "fetcher_aws_deploy=failed reason=full_market_flag_invalid" >&2
   exit 1
 fi
+export FETCHER_ACCOUNT_STATE_PATH="/var/lib/findb-account/$APP_ENVIRONMENT/governor.sqlite3"
 
 expected_registry="$AWS_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
 if [ "$AWS_REGION" != ap-southeast-1 ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || [[ ! "$APP_ENVIRONMENT" =~ ^(staging|production)$ ]] || [ "$ECR_REGISTRY" != "$expected_registry" ]; then
@@ -114,19 +109,6 @@ for path in "$catalog" "$runtime_command" "$provider_helper"; do
   }
 done
 
-manifest_profile="$(python3 - "$FETCHER_RELEASE_ROOT/release-manifest.json" <<'PROFILE'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as source:
-    manifest = json.load(source)
-print(manifest.get("runtime_profile", "bounded"))
-PROFILE
-)"
-if [ "$manifest_profile" != "$FETCHER_RUNTIME_PROFILE" ]; then
-  echo "fetcher_aws_deploy=failed reason=runtime_profile_manifest_mismatch" >&2
-  exit 1
-fi
-
 validate_image() {
   local image="$1" repository="$2"
   printf '%s' "$image" | grep -Eq "^${expected_registry}/${repository}@sha256:[0-9a-f]{64}$" || {
@@ -140,7 +122,7 @@ validate_image "$SHIOAJI_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/shioaji"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=FETCHER_ACCEPTED_REPLAY,FETCHER_LEGACY_ENV_BRIDGE,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,FETCHER_RECORDED_RELEASE_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_SOURCE_API_URL,FINDB_SERVE_BASE_URL,FETCHER_CALENDAR_TIMEOUT_SECONDS,FETCHER_CALENDAR_CACHE_TTL_SECONDS,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_RAW_BUCKET,CLOUDFLARE_R2_MAX_OBJECT_BYTES,FETCHER_REQUEST_TIMEOUT_SECONDS,FETCHER_SCHEDULER_CONTROL_POLL_SECONDS,FETCHER_MAX_ATTEMPTS,FETCHER_MAX_RETRY_AFTER_SECONDS,TWELVE_DATA_BASE_URL,TWELVE_DATA_TIMEOUT_SECONDS,TWELVE_DATA_MAX_RESPONSE_BYTES,TAIFEX_BASE_URL,TAIFEX_TIMEOUT_SECONDS,TAIFEX_MAX_RESPONSE_BYTES,SHIOAJI_SIMULATION,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
+preserve_env=FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_FULL_MARKET_STATE_DIR,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 schedule_file=/app/configs/daily_scheduler.staging.v3.json
 shioaji_manifest=/app/configs/shioaji_tw_staging_pilot.v3.json
@@ -158,10 +140,13 @@ run_runtime() {
     --catalog "$catalog" --region "$AWS_REGION" --deployment-target "$APP_ENVIRONMENT" --aws-account-id "$AWS_ACCOUNT_ID" "$@"
 }
 
-recorded_profile="$FETCHER_RUNTIME_PROFILE"
-export FETCHER_RECORDED_RELEASE_PROFILE="$recorded_profile"
-full_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
-[ "$APP_ENVIRONMENT" != production ] || full_market_state=/var/lib/findb-full-market
+# The checkpoint directory is non-secret control-plane configuration shared by
+# the trusted workflow gate and this coordinator; both targets declare it.
+full_market_state="${FETCHER_FULL_MARKET_STATE_DIR:?FETCHER_FULL_MARKET_STATE_DIR is required}"
+if [[ ! "$full_market_state" =~ ^/var/lib/findb-full-market(/[a-z0-9-]+)?$ ]]; then
+  echo "fetcher_aws_deploy=failed reason=full_market_state_dir_invalid" >&2
+  exit 1
+fi
 require_full_checkpoint() {
   # Installed workers own durable prepared work. Never replace a lost checkpoint,
   # including when an accepted replay invokes an older helper/image.
@@ -495,36 +480,6 @@ if [ "$FETCHER_DEPLOY_MODE" = activate ]; then
   pointer_temp=""
 fi
 
-legacy_historical_shutdown() {
-  local stable="$1" identity="${2:-$1}" provider repository digest shutdown_marker image path args command accepted
-  [ "$APP_ENVIRONMENT" = staging ] && [ "$FETCHER_RUNTIME_PROFILE" = bounded ] || return 1
-  case "$identity" in
-    findb-fetcher-scheduler-historical)
-      provider=twelve_data; repository=twelve-data; digest=2f64ab8c40e082e6601a00839b2345c35c504afcf1d453026d779ac151f46d03 ;;
-    findb-fetcher-finlab-scheduler-historical)
-      provider=finlab; repository=finlab; digest=bcd882dff3412a55f14921474d16ca27950dc51f37252fae404b03eccb862bc2 ;;
-    findb-fetcher-shioaji-scheduler-historical)
-      provider=shioaji; repository=shioaji; digest=161991e5b056becbdc35d67c547a7092807f1e0aa66a34b7b921ed57ecc6bd13 ;;
-    *) return 1 ;;
-  esac
-  shutdown_marker="$(docker inspect --format '{{range $key, $_ := .Config.Labels}}{{if eq $key "com.findb.fetcher.historical-shutdown"}}present{{end}}{{end}}' "$stable")" || return 1
-  # Transitional exception for the observed pre-signal-handler staging binaries only.
-  # They ignore SIGTERM as PID 1. Leased dates replay after server expiry;
-  # this is crash recovery, never a successful graceful shutdown.
-  image="$(docker inspect --format '{{.Config.Image}}' "$stable")" || return 1
-  path="$(docker inspect --format '{{.Path}}' "$stable")" || return 1
-  args="$(docker inspect --format '{{json .Args}}' "$stable")" || return 1
-  command="$(docker inspect --format '{{ join .Config.Cmd " " }}' "$stable")" || return 1
-  accepted="$(docker inspect --format '{{ index .Config.Labels "com.findb.fetcher.accepted" }}' "$stable")" || return 1
-  [ "$AWS_ACCOUNT_ID" = 439622209937 ] \
-    && [ "$image" = "$expected_registry/findb/staging/fetcher/$repository@sha256:$digest" ] \
-    && [ "$path" = findb-fetch-historical-backfill ] \
-    && [ "$args" = "[\"--provider\",\"$provider\",\"--run-forever\"]" ] \
-    && [ "$command" = "findb-fetch-historical-backfill --provider $provider --run-forever" ] \
-    && [ "$accepted" = true ] \
-    && [ -z "$shutdown_marker" ]
-}
-
 require_retired_runtime() {
   local stable="$1" legacy_identity="${2:-$1}" running exit_code oom error
   running="$(docker inspect --format '{{.State.Running}}' "$stable")" || return 1
@@ -534,10 +489,6 @@ require_retired_runtime() {
   error="$(docker inspect --format '{{.State.Error}}' "$stable")" || return 1
   if [ "$running" = false ] && [ "$oom" = false ] && [ -z "$error" ]; then
     if [ "$exit_code" = 0 ]; then
-      return 0
-    fi
-    if [ "$exit_code" = 137 ] && legacy_historical_shutdown "$stable" "$legacy_identity"; then
-      echo "fetcher_aws_deploy=legacy_historical_crash_recovery runtime=$stable lease_policy=expire_and_replay" >&2
       return 0
     fi
   fi
@@ -669,31 +620,18 @@ for pair in "findb-fetcher-scheduler:findb-full-market-twelve-data" "findb-fetch
     fi
   fi
 done
-if [ "$recorded_profile" = full-market ] || [ "$retained_full_market" = true ]; then
-  # A bounded flag-off release upgrades existing workers to immediate drain-only
-  # authorization, preserving prepared bodies in the original checkpoint path.
-  export FETCHER_RUNTIME_PROFILE=full-market
-  export FETCHER_CONSUMER_PROFILE=full_market
-  for provider in twelve-data finlab shioaji taifex; do
+# Every target installs the four Full workers; FULL_MARKET_ENABLED is a runtime
+# kill switch read by the processes, not a deployment profile. Prepared bodies
+# stay in the configured checkpoint and drain whenever acquisition is denied.
+export FETCHER_CONSUMER_PROFILE=full_market
+for provider in twelve-data finlab shioaji taifex; do
     case "$provider" in
       twelve-data) identity=twelve_data; image="$TWELVE_IMAGE_REF"; stable=findb-full-market-twelve-data ;;
       finlab) identity=finlab; image="$FINLAB_IMAGE_REF"; stable=findb-full-market-finlab ;;
       shioaji) identity=shioaji; image="$SHIOAJI_IMAGE_REF"; stable=findb-full-market-shioaji ;;
       taifex) identity=taifex; image="$TWELVE_IMAGE_REF"; stable=findb-full-market-taifex ;;
     esac
-    if [ "$recorded_profile" = bounded ] && ! runtime_exists "$stable" && ! runtime_exists "${stable}-previous"; then
-      continue
-    fi
     register_provider "$stable" "${stable}-previous"
-    export FETCHER_LEGACY_ENV_BRIDGE=false
-    if [ "$recorded_profile" = bounded ] && [ "${FETCHER_ACCEPTED_REPLAY:-false}" = true ]; then
-      # A bounded rollback may predate drain support. Preserve the compatible
-      # installed image while recreating its flag-off environment/checkpoint.
-      snapshot="$(registered_original "$stable")"
-      IFS='|' read -r image_container original_id image <<< "$snapshot"
-      [ "$image_container" != - ] && [ "$original_id" != - ] && [ "$image" != - ] || false
-      export FETCHER_LEGACY_ENV_BRIDGE=true
-    fi
     cache_dir=-
     case "$provider" in
       finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
@@ -706,13 +644,10 @@ if [ "$recorded_profile" = full-market ] || [ "$retained_full_market" = true ]; 
       findb-fetch-full-market --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" \
       --state-path "$full_market_state/state.sqlite3" \
       --provider "$identity" --readiness-file "/var/lib/findb-account/readiness/$identity.json"
-  done
-  provider_count=7
-fi
+done
+provider_count=7
 # Pilot runtimes coexist with full-market workers; checkpoint identities stay stable.
-export FETCHER_RUNTIME_PROFILE="$recorded_profile"
 export FETCHER_CONSUMER_PROFILE=pilot
-unset FETCHER_LEGACY_ENV_BRIDGE
 if true; then
   if [ "$APP_ENVIRONMENT" = staging ]; then
     register_provider findb-fetcher-taifex-scheduler findb-fetcher-taifex-scheduler-previous
@@ -754,18 +689,10 @@ if true; then
     findb-fetch-shioaji-scheduler --manifest "$shioaji_manifest"
 fi
 
-if [ "$FULL_MARKET_ENABLED" = false ] && [ "$FETCHER_DEPLOY_MODE" = activate ]; then
-  for runtime in findb-full-market-twelve-data findb-full-market-finlab findb-full-market-shioaji findb-full-market-taifex; do
-    if runtime_exists "$runtime"; then
-      docker start "$runtime" >/dev/null
-    fi
-  done
-fi
-
 if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
   rollback_processed
   trap - ERR INT TERM HUP
-  echo "fetcher_aws_deploy=candidate_ready_for_acceptance providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"
+  echo "fetcher_aws_deploy=candidate_ready_for_acceptance providers=$provider_count"
   exit 0
 fi
 
@@ -843,4 +770,4 @@ if ! cleanup_originals; then
   echo "fetcher_aws_deploy=failed reason=committed_cleanup_failed committed=true" >&2
   exit 1
 fi
-echo "fetcher_aws_deploy=activated providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"
+echo "fetcher_aws_deploy=activated providers=$provider_count"

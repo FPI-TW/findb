@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Load the nginx consumer on the target and render its lookup key into tmpfs.
+# Load the nginx consumer on the target and render its lookup key and origin
+# TLS material into tmpfs. Staging and production follow the same path.
 
 set -euo pipefail
 set +x
@@ -20,12 +21,7 @@ case "$render_mode" in
   *) echo "render_nginx_runtime=failed reason=render_mode_invalid" >&2; exit 1 ;;
 esac
 
-if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb\.json$ ]] \
-  || [ "$catalog" = /opt/findb/runtime-secrets/findb.json ]; then
-  runtime_dir="${catalog%/findb.json}"
-elif [ "$deployment_target" = staging ] \
-  && [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb\.json$ ]]; then
-  # Keep accepted staging v1 bundles replayable through their original release identity.
+if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb\.json$ ]]; then
   runtime_dir="${catalog%/findb.json}"
 else
   echo "render_nginx_runtime=failed reason=catalog_path_invalid" >&2
@@ -89,41 +85,40 @@ if [ "$render_mode" = materialize ]; then
   fi
 fi
 
-if [ "$deployment_target" = production ]; then
-  certificate_tmp="$(mktemp "$runtime_output_dir/server.crt.XXXXXX")"
-  private_key_tmp="$(mktemp "$runtime_output_dir/server.key.XXXXXX")"
-  if ! printf '%s' "$FINDB_ORIGIN_CERTIFICATE_PEM_B64" | base64 --decode >"$certificate_tmp" \
-    || ! printf '%s' "$FINDB_ORIGIN_PRIVATE_KEY_PEM_B64" | base64 --decode >"$private_key_tmp"; then
-    echo "render_nginx_runtime=failed reason=tls_base64_invalid" >&2
+# Both targets load the origin certificate and key from Secrets Manager.
+certificate_tmp="$(mktemp "$runtime_output_dir/server.crt.XXXXXX")"
+private_key_tmp="$(mktemp "$runtime_output_dir/server.key.XXXXXX")"
+if ! printf '%s' "$FINDB_ORIGIN_CERTIFICATE_PEM_B64" | base64 --decode >"$certificate_tmp" \
+  || ! printf '%s' "$FINDB_ORIGIN_PRIVATE_KEY_PEM_B64" | base64 --decode >"$private_key_tmp"; then
+  echo "render_nginx_runtime=failed reason=tls_base64_invalid" >&2
+  exit 1
+fi
+if ! openssl x509 -in "$certificate_tmp" -noout -checkhost "$public_host" >/dev/null 2>&1 \
+  || ! openssl x509 -in "$certificate_tmp" -noout -checkend 2592000 >/dev/null 2>&1 \
+  || ! openssl pkey -in "$private_key_tmp" -noout >/dev/null 2>&1; then
+  echo "render_nginx_runtime=failed reason=tls_material_invalid" >&2
+  exit 1
+fi
+certificate_public_key="$(openssl x509 -in "$certificate_tmp" -pubkey -noout | openssl sha256)"
+private_public_key="$(openssl pkey -in "$private_key_tmp" -pubout 2>/dev/null | openssl sha256)"
+if [ "$certificate_public_key" != "$private_public_key" ]; then
+  echo "render_nginx_runtime=failed reason=tls_keypair_mismatch" >&2
+  exit 1
+fi
+chown 0:0 "$certificate_tmp" "$private_key_tmp"
+chmod 0600 "$certificate_tmp" "$private_key_tmp"
+for tls_tmp in "$certificate_tmp" "$private_key_tmp"; do
+  if [ "$(stat -c '%u:%g:%a' "$tls_tmp")" != "0:0:600" ] \
+    || [ "$(findmnt -n -o FSTYPE -T "$tls_tmp")" != "tmpfs" ]; then
+    echo "render_nginx_runtime=failed reason=tls_output_unsafe" >&2
     exit 1
   fi
-  if ! openssl x509 -in "$certificate_tmp" -noout -checkhost "$public_host" >/dev/null 2>&1 \
-    || ! openssl x509 -in "$certificate_tmp" -noout -checkend 2592000 >/dev/null 2>&1 \
-    || ! openssl pkey -in "$private_key_tmp" -noout >/dev/null 2>&1; then
-    echo "render_nginx_runtime=failed reason=tls_material_invalid" >&2
-    exit 1
-  fi
-  certificate_public_key="$(openssl x509 -in "$certificate_tmp" -pubkey -noout | openssl sha256)"
-  private_public_key="$(openssl pkey -in "$private_key_tmp" -pubout 2>/dev/null | openssl sha256)"
-  if [ "$certificate_public_key" != "$private_public_key" ]; then
-    echo "render_nginx_runtime=failed reason=tls_keypair_mismatch" >&2
-    exit 1
-  fi
-  chown 0:0 "$certificate_tmp" "$private_key_tmp"
-  chmod 0600 "$certificate_tmp" "$private_key_tmp"
-  for tls_tmp in "$certificate_tmp" "$private_key_tmp"; do
-    if [ "$(stat -c '%u:%g:%a' "$tls_tmp")" != "0:0:600" ] \
-      || [ "$(findmnt -n -o FSTYPE -T "$tls_tmp")" != "tmpfs" ]; then
-      echo "render_nginx_runtime=failed reason=tls_output_unsafe" >&2
-      exit 1
-    fi
-  done
-  if [ "$render_mode" = materialize ]; then
-    mv -f -- "$certificate_tmp" "$certificate_output"
-    certificate_tmp=""
-    mv -f -- "$private_key_tmp" "$private_key_output"
-    private_key_tmp=""
-  fi
+done
+if [ "$render_mode" = materialize ]; then
+  mv -f -- "$certificate_tmp" "$certificate_output"
+  certificate_tmp=""
+  mv -f -- "$private_key_tmp" "$private_key_output"
+  private_key_tmp=""
 fi
 
 echo "render_nginx_runtime=ready mode=$render_mode outputs=tmpfs"

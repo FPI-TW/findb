@@ -127,26 +127,22 @@ def load_consumer(
         relative_name = secret.get("name")
         required_keys = secret.get("required_keys", [])
         optional_keys = secret.get("optional_keys", [])
-        targets = secret.get("targets", list(DEPLOYMENT_TARGETS))
+        # Every secret applies to every deployment target: a catalog cannot
+        # reintroduce a staging/production asymmetry through a target filter.
         if (
             not isinstance(relative_name, str)
             or SECRET_RELATIVE_NAME.fullmatch(relative_name) is None
             or "//" in relative_name
             or relative_name.endswith("/")
+            or set(secret) - {"name", "required_keys", "optional_keys"}
             or not isinstance(required_keys, list)
             or not isinstance(optional_keys, list)
-            or not isinstance(targets, list)
-            or not targets
-            or len(targets) != len(set(targets))
-            or not all(target in DEPLOYMENT_TARGETS for target in targets)
             or not all(
                 isinstance(key, str) and ENVIRONMENT_KEY.fullmatch(key) is not None
                 for key in (*required_keys, *optional_keys)
             )
         ):
             raise LoaderError("catalog_invalid")
-        if deployment_target not in targets:
-            continue
         allowed_keys = set((*required_keys, *optional_keys))
         if len(allowed_keys) != len(required_keys) + len(optional_keys):
             raise LoaderError("catalog_invalid")

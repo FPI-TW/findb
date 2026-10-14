@@ -8,12 +8,9 @@
 Production foundation與live promotion／rollback acceptance由
 [production foundation與cutover計畫](production-foundation-cutover-plan.md)單獨追蹤，不在此重複列項。
 
-- [ ] 修正 production `DeploymentFailure` control-plane/all 測點缺測：告警自 2026-09-17 因
-  `TreatMissingData=breaching` 維持 ALARM。需補足 publisher／告警契約與 live 後驗；不得以靜默重設
-  ALARM 或忽略 missing data 代替修正。v0.1.6 部署與查核證據見 deployment runbook。
-
-- [ ] Staging v1 accepted bundle只保留read-only replay；待所有可能需要的recycle record超過保留期，
-  另行取得明確授權後移除v1 compatibility reader。v1不得promotion至production。
+- [ ] 移除 `fetcher-deploy.yml` 的 `FETCHER_RUNTIME_PROFILE` replay shim 與 `release_manifest.py`
+  的 fetcher bundle layout 1：條件是 rollback 視窗內所有 production accepted records 皆由統一管線
+  （無 `runtime_profile`、layout 2）產生。移除前 `fetcher-v0.1.7` rollback 演練仍需此 shim。
 - [ ] Canonical R2 publish／read／sign runtime完成後，補資料面驗收；目前只完成bucket與credential邊界。
 - [ ] 當單機故障開始阻塞release，或production topology需要先演練時，重新評估staging多EC2／ASG／
   blue-green、private subnet＋ALB，以及RDS Multi-AZ／read replica／proxy。

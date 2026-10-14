@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and validate fail-closed staging release manifests.
+"""Generate and validate fail-closed target-aware release manifests.
 
 This utility deliberately uses only the Python standard library so the release
 record can be verified on an otherwise minimal GitHub Actions runner or host.
@@ -22,7 +22,6 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
-REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_BUNDLE_BYTES = 16 * 1024 * 1024
 MAX_BUNDLE_MEMBERS = 128
@@ -37,29 +36,23 @@ CONTRACT_PATH_RE = re.compile(
     r"^(?P<schema_id>[a-z][a-z0-9_]*)/v(?P<version>[1-9][0-9]*)\.schema\.json$"
 )
 
-IMAGE_REPOSITORIES = {
-    "findb": {
-        "backend": f"{REGISTRY}/findb/staging/backend",
-        "dashboard": f"{REGISTRY}/findb/staging/dashboard",
-    },
-    "fetcher": {
-        "twelve_data": f"{REGISTRY}/findb/staging/fetcher/twelve-data",
-        "finlab": f"{REGISTRY}/findb/staging/fetcher/finlab",
-        "shioaji": f"{REGISTRY}/findb/staging/fetcher/shioaji",
-    },
+UNIT_IMAGE_NAMES = {
+    "findb": ("backend", "dashboard"),
+    "fetcher": ("twelve_data", "finlab", "shioaji"),
 }
+REGISTRY_RE = re.compile(r"[0-9]{12}[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com")
 
 
-def image_repositories(target: str, unit: str, registry: str = REGISTRY) -> dict[str, str]:
+def image_repositories(target: str, unit: str, registry: str) -> dict[str, str]:
     """Return the only repositories that a target/unit release may name.
 
-    The account is deliberately an input to the v2 manifest, rather than a
+    The account and registry are inputs to the v2 manifest rather than a
     staging constant hidden in a host script.  The caller validates its AWS
     identity before accepting this registry value.
     """
-    if target not in {"staging", "production"} or unit not in IMAGE_REPOSITORIES:
+    if target not in {"staging", "production"} or unit not in UNIT_IMAGE_NAMES:
         raise ManifestError("target or unit invalid")
-    if not re.fullmatch(r"[0-9]{12}[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com", registry):
+    if not isinstance(registry, str) or REGISTRY_RE.fullmatch(registry) is None:
         raise ManifestError("registry invalid")
     suffixes = {
         "findb": {"backend": "backend", "dashboard": "dashboard"},
@@ -89,7 +82,6 @@ FINDB_RUNTIME_SECRET_FILES = (
     "infra/deploy/runtime-secrets/render_serve_key.py",
 )
 FETCHER_RUNTIME_SECRET_FILES = (
-    "infra/deploy/inspect_full_market_installation.py",
     "fetcher/configs/full_market.local.v1.json",
     "fetcher/configs/full_market.staging.v1.json",
     "fetcher/configs/full_market.production.v1.json",
@@ -123,12 +115,25 @@ STAGING_PILOT_BUNDLE_FILES = (
     "fetcher/src/findb_fetcher/finlab_scheduler_cli.py",
     "fetcher/pyproject.toml",
 )
-FETCHER_BUNDLE_FILES = (
-    *COMMON_BUNDLE_FILES,
-    *FETCHER_RUNTIME_SECRET_FILES,
-    *STAGING_PILOT_BUNDLE_FILES,
-)
-LEGACY_FETCHER_BUNDLE_FILES = (*COMMON_BUNDLE_FILES, *FETCHER_RUNTIME_SECRET_FILES)
+# Fetcher bundle layouts are part of the bundle format. Installed releases are
+# re-hashed by their recorded layout so a drained host can prove an older
+# accepted release without executing it. Layout 1 shipped the retired
+# installation inspector; layout 2 is the current unified-pipeline layout.
+FETCHER_BUNDLE_LAYOUTS: dict[int, tuple[str, ...]] = {
+    1: (
+        *COMMON_BUNDLE_FILES,
+        "infra/deploy/inspect_full_market_installation.py",
+        *FETCHER_RUNTIME_SECRET_FILES,
+        *STAGING_PILOT_BUNDLE_FILES,
+    ),
+    2: (
+        *COMMON_BUNDLE_FILES,
+        *FETCHER_RUNTIME_SECRET_FILES,
+        *STAGING_PILOT_BUNDLE_FILES,
+    ),
+}
+CURRENT_FETCHER_BUNDLE_VERSION = 2
+FETCHER_BUNDLE_FILES = FETCHER_BUNDLE_LAYOUTS[CURRENT_FETCHER_BUNDLE_VERSION]
 
 # This map is part of the bundle format, not a reflection of the source
 # checkout mode.  The bundle executes these selected tools directly on the
@@ -208,13 +213,15 @@ class SourceBundleReader:
         """The exact selected-source paths frozen into this reader snapshot."""
         return frozenset(self._snapshot)
 
-    def deployment_source_bundle_sha256(self, unit: str, *, pilot_format: bool = True) -> str:
+    def deployment_source_bundle_sha256(
+        self, unit: str, *, bundle_version: int | None = None
+    ) -> str:
         records = [
             {
                 "path": relative,
                 "sha256": hashlib.sha256(self.read(relative)).hexdigest(),
             }
-            for relative in sorted(bundle_paths(unit, pilot_format=pilot_format))
+            for relative in sorted(bundle_paths(unit, bundle_version=bundle_version))
         ]
         canonical = json.dumps(records, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
@@ -239,18 +246,20 @@ class SourceBundleReader:
         return contract_manifest
 
 
-def bundle_paths(unit: str, *, pilot_format: bool = True) -> tuple[str, ...]:
-    try:
-        return {
-            "findb": FINDB_BUNDLE_FILES,
-            "fetcher": FETCHER_BUNDLE_FILES if pilot_format else LEGACY_FETCHER_BUNDLE_FILES,
-        }[unit]
-    except KeyError as exc:
-        raise ManifestError("unit must be findb or fetcher") from exc
+def bundle_paths(unit: str, *, bundle_version: int | None = None) -> tuple[str, ...]:
+    """Return the fixed source allowlist of one unit bundle layout."""
+    if unit == "findb":
+        return FINDB_BUNDLE_FILES
+    if unit != "fetcher":
+        raise ManifestError("unit must be findb or fetcher")
+    version = CURRENT_FETCHER_BUNDLE_VERSION if bundle_version is None else bundle_version
+    if type(version) is not int or version not in FETCHER_BUNDLE_LAYOUTS:
+        raise ManifestError("fetcher_bundle_version invalid")
+    return FETCHER_BUNDLE_LAYOUTS[version]
 
 
 def bundle_source_paths(
-    unit: str, contract_manifest: ContractManifest, *, pilot_format: bool = True
+    unit: str, contract_manifest: ContractManifest, *, bundle_version: int | None = None
 ) -> tuple[str, ...]:
     """Return the complete allowlist captured in a deployable unit bundle.
 
@@ -262,7 +271,7 @@ def bundle_source_paths(
     contract_paths = tuple(
         f"contracts/{contract['path']}" for contract in contract_manifest.parsed["contracts"]
     )
-    return (*bundle_paths(unit, pilot_format=pilot_format), *contract_paths)
+    return (*bundle_paths(unit, bundle_version=bundle_version), *contract_paths)
 
 
 def bundle_file_mode(relative: str) -> int:
@@ -499,9 +508,7 @@ def load_contract_versions(path: Path) -> tuple[str, ...]:
     return load_contract_manifest(path).versions
 
 
-def _validate_images_for_unit(
-    unit: str, images: object, *, target: str = "staging", registry: str = REGISTRY
-) -> None:
+def _validate_images_for_unit(unit: str, images: object, *, target: str, registry: str) -> None:
     expected_images = image_repositories(target, unit, registry)
     if not isinstance(images, dict) or set(images) != set(expected_images):
         raise ManifestError("images keys do not match the unit contract")
@@ -529,47 +536,35 @@ def validate_manifest(
     source_bundle: SourceBundleReader | None = None,
 ) -> None:
     schema_version = manifest.get("schema_version")
-    if schema_version == 1:
-        required = {
-            "schema_version",
-            "deployment_target",
-            "unit",
-            "commit_sha",
-            "images",
-            "migration_revision",
-            "contract_versions",
-            "contract_manifest_sha256",
-            "deployment_source_bundle_sha256",
-            "created_by_run_id",
-        }
-    elif schema_version == 2:
-        required = {
-            "schema_version",
-            "deployment_target",
-            "unit",
-            "commit_sha",
-            "images",
-            "migration_revision",
-            "contract_versions",
-            "contract_manifest_sha256",
-            "deployment_source_bundle_sha256",
-            "created_by_run_id",
-            "registry",
-            "account_id",
-            "release_tag",
-        }
-        if manifest.get("deployment_target") == "production":
-            required.add("promotion_source")
-    else:
+    if schema_version != 2:
         raise ManifestError("schema_version invalid")
-    if schema_version == 2 and "runtime_profile" in manifest:
+    unit = manifest.get("unit")
+    required = {
+        "schema_version",
+        "deployment_target",
+        "unit",
+        "commit_sha",
+        "images",
+        "migration_revision",
+        "contract_versions",
+        "contract_manifest_sha256",
+        "deployment_source_bundle_sha256",
+        "created_by_run_id",
+        "registry",
+        "account_id",
+        "release_tag",
+    }
+    if manifest.get("deployment_target") == "production":
+        required.add("promotion_source")
+    if "runtime_profile" in manifest:
+        # Older accepted bundles recorded a bounded/full-market profile. The
+        # field is tolerated for replay and never emitted by new releases.
         required.add("runtime_profile")
-    if "fetcher_bundle_version" in manifest:
+    if unit == "fetcher":
         required.add("fetcher_bundle_version")
         if (
-            manifest.get("unit") != "fetcher"
-            or type(manifest["fetcher_bundle_version"]) is not int
-            or manifest["fetcher_bundle_version"] != 1
+            type(manifest.get("fetcher_bundle_version")) is not int
+            or manifest["fetcher_bundle_version"] not in FETCHER_BUNDLE_LAYOUTS
         ):
             raise ManifestError("fetcher_bundle_version invalid")
     unknown = set(manifest) - required
@@ -579,55 +574,47 @@ def validate_manifest(
             f"manifest keys invalid: missing={sorted(missing)} unknown={sorted(unknown)}"
         )
     target = manifest["deployment_target"]
-    if type(schema_version) is not int or target not in {"staging", "production"}:
+    if target not in {"staging", "production"}:
         raise ManifestError("schema_version or deployment_target invalid")
-    if schema_version == 1 and target != "staging":
-        raise ManifestError("v1 manifests are staging-only")
-    unit = manifest["unit"]
-    if not isinstance(unit, str) or unit not in IMAGE_REPOSITORIES:
+    if not isinstance(unit, str) or unit not in UNIT_IMAGE_NAMES:
         raise ManifestError("unit invalid")
     if not isinstance(manifest["commit_sha"], str) or not COMMIT_RE.fullmatch(
         manifest["commit_sha"]
     ):
         raise ManifestError("commit_sha must be a lowercase 40-character SHA")
-    validate_runtime_profile(manifest.get("runtime_profile", "bounded"), unit=unit, target=target)
+    if "runtime_profile" in manifest:
+        validate_runtime_profile(manifest["runtime_profile"], unit=unit, target=target)
     images = manifest["images"]
-    registry = REGISTRY
-    if schema_version == 2:
-        registry = manifest["registry"]
-        account_id = manifest["account_id"]
-        release_tag = manifest["release_tag"]
-        expected_release_tag = "" if target == "staging" else rf"{unit}-v[0-9]+[.][0-9]+[.][0-9]+"
+    registry = manifest["registry"]
+    account_id = manifest["account_id"]
+    release_tag = manifest["release_tag"]
+    expected_release_tag = "" if target == "staging" else rf"{unit}-v[0-9]+[.][0-9]+[.][0-9]+"
+    if (
+        not isinstance(registry, str)
+        or not isinstance(account_id, str)
+        or not re.fullmatch(r"[0-9]{12}", account_id)
+        or registry != f"{account_id}.dkr.ecr.ap-southeast-1.amazonaws.com"
+        or not isinstance(release_tag, str)
+        or re.fullmatch(expected_release_tag, release_tag) is None
+    ):
+        raise ManifestError("registry or release_tag invalid")
+    if target == "production":
+        source = manifest["promotion_source"]
+        if not isinstance(source, dict) or set(source) != {
+            "accepted_bundle_key",
+            "staging_registry",
+        }:
+            raise ManifestError("production promotion_source invalid")
         if (
-            not isinstance(registry, str)
-            or not isinstance(account_id, str)
-            or not re.fullmatch(r"[0-9]{12}", account_id)
-            or registry != f"{account_id}.dkr.ecr.ap-southeast-1.amazonaws.com"
-            or not isinstance(release_tag, str)
-            or re.fullmatch(expected_release_tag, release_tag) is None
+            not isinstance(source["accepted_bundle_key"], str)
+            or not re.fullmatch(
+                rf"{unit}/accepted/[0-9a-f]{{40}}/[0-9a-f]{{64}}[.]tar",
+                source["accepted_bundle_key"],
+            )
+            or not isinstance(source["staging_registry"], str)
+            or REGISTRY_RE.fullmatch(source["staging_registry"]) is None
         ):
-            raise ManifestError("registry or release_tag invalid")
-        if target == "production":
-            source = manifest["promotion_source"]
-            if not isinstance(source, dict) or set(source) != {
-                "accepted_bundle_key",
-                "staging_registry",
-            }:
-                raise ManifestError("production promotion_source invalid")
-            if (
-                not isinstance(source["accepted_bundle_key"], str)
-                or not re.fullmatch(
-                    rf"{unit}/accepted/[0-9a-f]{{40}}/[0-9a-f]{{64}}[.]tar",
-                    source["accepted_bundle_key"],
-                )
-                or not isinstance(source["staging_registry"], str)
-                or re.fullmatch(
-                    r"[0-9]{12}[.]dkr[.]ecr[.]ap-southeast-1[.]amazonaws[.]com",
-                    source["staging_registry"],
-                )
-                is None
-            ):
-                raise ManifestError("production promotion_source invalid")
+            raise ManifestError("production promotion_source invalid")
     _validate_images_for_unit(unit, images, target=target, registry=registry)
     migration = manifest["migration_revision"]
     if not isinstance(migration, str) or not migration:
@@ -657,7 +644,7 @@ def validate_manifest(
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise ManifestError("created_by_run_id must be a numeric, nonempty string")
     if source_bundle is not None and bundle_digest != source_bundle.deployment_source_bundle_sha256(
-        unit, pilot_format=manifest.get("fetcher_bundle_version") == 1
+        unit, bundle_version=manifest.get("fetcher_bundle_version")
     ):
         raise ManifestError("deployment source bundle checksum mismatch")
 
@@ -674,7 +661,9 @@ def validate_expected_release_inputs(
 ) -> None:
     """Bind validation to the exact release inputs selected by the workflow."""
     target = deployment_target or str(manifest.get("deployment_target", ""))
-    registry = str(manifest.get("registry", REGISTRY))
+    registry = manifest.get("registry")
+    if not isinstance(registry, str):
+        raise ManifestError("manifest registry missing")
     _validate_images_for_unit(unit, images, target=target, registry=registry)
     expected = {
         "unit": unit,
@@ -744,7 +733,7 @@ def build_bundle(repo_root: Path, manifest_path: Path, unit: str) -> bytes:
                 bundle_source_paths(
                     unit,
                     contract_manifest,
-                    pilot_format=manifest.get("fetcher_bundle_version") == 1,
+                    bundle_version=manifest.get("fetcher_bundle_version"),
                 )
             )
         )
@@ -822,8 +811,12 @@ def validate_bundle_bytes(
         manifest = _load_manifest_bytes(extracted.read())
         if manifest.get("unit") != unit:
             raise ManifestError("bundle unit does not match expected unit")
-        pilot_format = manifest.get("fetcher_bundle_version") == 1
-        expected_paths = set(bundle_paths(unit, pilot_format=pilot_format))
+        bundle_version = manifest.get("fetcher_bundle_version")
+        if unit == "fetcher" and (
+            type(bundle_version) is not int or bundle_version not in FETCHER_BUNDLE_LAYOUTS
+        ):
+            raise ManifestError("fetcher_bundle_version invalid")
+        expected_paths = set(bundle_paths(unit, bundle_version=bundle_version))
         # The contract manifest identifies the schema members expected in the archive.
         contract_member = next(
             (member for member in members if member.name == "contracts/manifest.json"), None
@@ -836,7 +829,7 @@ def validate_bundle_bytes(
             raise ManifestError("bundle contract manifest is unreadable")
         contract_manifest = _parse_contract_manifest_bytes(contract_raw.read())
         expected_paths.update(
-            bundle_source_paths(unit, contract_manifest, pilot_format=pilot_format)
+            bundle_source_paths(unit, contract_manifest, bundle_version=bundle_version)
         )
         if set(names) != ({BUNDLE_MANIFEST_PATH} | expected_paths):
             raise ManifestError("bundle members do not match the unit allowlist")
@@ -853,7 +846,7 @@ def validate_bundle_bytes(
                 raise ManifestError(f"bundle contract schema checksum mismatch: {contract['path']}")
         source_records = [
             {"path": path, "sha256": hashlib.sha256(contents[path]).hexdigest()}
-            for path in sorted(bundle_paths(unit, pilot_format=pilot_format))
+            for path in sorted(bundle_paths(unit, bundle_version=bundle_version))
         ]
         source_sha = hashlib.sha256(canonical_json_bytes(source_records)).hexdigest()
         if manifest.get("deployment_source_bundle_sha256") != source_sha:
@@ -1190,17 +1183,16 @@ def generate(args: argparse.Namespace) -> None:
             "contract_versions": list(contract_manifest.versions),
             "contract_manifest_sha256": contract_manifest.canonical_sha256,
             "deployment_source_bundle_sha256": source_bundle.deployment_source_bundle_sha256(
-                args.unit
+                args.unit,
+                bundle_version=CURRENT_FETCHER_BUNDLE_VERSION if args.unit == "fetcher" else None,
             ),
             "created_by_run_id": args.created_by_run_id,
             "registry": args.registry,
             "account_id": args.account_id,
             "release_tag": args.release_tag,
         }
-        if getattr(args, "runtime_profile", "bounded") != "bounded":
-            manifest["runtime_profile"] = args.runtime_profile
         if args.unit == "fetcher":
-            manifest["fetcher_bundle_version"] = 1
+            manifest["fetcher_bundle_version"] = CURRENT_FETCHER_BUNDLE_VERSION
         if args.deployment_target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": args.promotion_source_bundle_key,
@@ -1286,11 +1278,8 @@ def main(argv: list[str] | None = None) -> int:
     generate_parser.add_argument(
         "--deployment-target", choices=("staging", "production"), default="staging"
     )
-    generate_parser.add_argument(
-        "--runtime-profile", choices=("bounded", "full-market"), default="bounded"
-    )
-    generate_parser.add_argument("--registry", default=REGISTRY)
-    generate_parser.add_argument("--account-id", default=REGISTRY.split(".", 1)[0])
+    generate_parser.add_argument("--registry", required=True)
+    generate_parser.add_argument("--account-id", required=True)
     generate_parser.add_argument("--release-tag", default="")
     generate_parser.add_argument("--promotion-source-bundle-key", default="")
     generate_parser.add_argument("--promotion-source-registry", default="")

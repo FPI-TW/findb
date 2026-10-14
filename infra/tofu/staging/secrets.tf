@@ -108,6 +108,26 @@ locals {
       consumer      = "all-providers"
       status        = "active"
     }
+    # Both targets load the non-sensitive application configuration and the
+    # origin TLS material from Secrets Manager; GitHub Environments hold no values.
+    "findb/runtime/configuration" = {
+      unit          = "findb"
+      relative_name = "runtime/configuration"
+      consumer      = "compose"
+      status        = "active"
+    }
+    "findb/tls/origin-certificate" = {
+      unit          = "findb"
+      relative_name = "tls/origin-certificate"
+      consumer      = "nginx"
+      status        = "active"
+    }
+    "fetcher/runtime/configuration" = {
+      unit          = "fetcher"
+      relative_name = "runtime/configuration"
+      consumer      = "all-providers"
+      status        = "active"
+    }
   }
 
   # Runtime decrypt grants are derived exclusively from the active catalog.

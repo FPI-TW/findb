@@ -25,7 +25,7 @@ def _transport(tmp_path):
         step["run"] for step in _workflow_steps() if "checkpoint_entry_gate=" in step.get("run", "")
     )
     start = run.index("guard=.trusted-checkpoint-safety/")
-    end = run.index("# The downloaded immutable bundle", start)
+    end = run.index("# Every executed helper", start)
     guard = tmp_path / ".trusted-checkpoint-safety/infra/deploy/check_full_market_checkpoint.sh"
     guard.parent.mkdir(parents=True)
     guard.write_bytes(GUARD.read_bytes())
@@ -46,7 +46,9 @@ def _transport(tmp_path):
 def test_workflow_gate_provenance_and_remote_order(tmp_path):
     steps = _workflow_steps()
     checkout = next(
-        step for step in steps if step.get("name") == "Checkout trusted checkpoint safety gate"
+        step
+        for step in steps
+        if step.get("name") == "Checkout trusted checkpoint safety gate and control plane"
     )
     assert checkout["with"]["repository"] == "${{ github.repository }}"
     assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
@@ -111,9 +113,10 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
     assert (
         remote.index("materialize-bundle")
         < remote.index("$checkpoint_entry_gate")
-        < remote.index("$legacy_environment_bridge")
+        < remote.index("$environment_contract_gate")
         < remote.index("/runtime-secrets/deploy_fetcher_aws.sh")
     )
+    assert "legacy_environment_bridge" not in run
     assert "guard=\\$(mktemp" in run
     assert 'base64 --decode > \\"\\$guard\\"' in run
     assert 'sha256sum \\"\\$guard\\"' in run
@@ -190,8 +193,8 @@ def test_transported_gate_before_actual_immutable_coordinator(
     workflow_run = next(
         step["run"] for step in _workflow_steps() if "checkpoint_entry_gate=" in step.get("run", "")
     )
-    bridge = workflow_run[
-        workflow_run.index("legacy_environment_bridge=") : workflow_run.index('host_command="set ')
+    contract_gate = workflow_run[
+        workflow_run.index("environment_contract_gate=") : workflow_run.index('host_command="set ')
     ]
     shell = r"""set -euo pipefail
 export APP_ENVIRONMENT
@@ -229,10 +232,11 @@ docker() {
 export -f sudo docker
 """
     shell += builder + '\neval "$checkpoint_entry_gate"\n'
-    shell += "MODE=replay\n" + bridge + '\neval "$legacy_environment_bridge"\n'
+    # The pre-marker coordinator is rejected by the contract gate AFTER the
+    # checkpoint gate; the retired replay bridge no longer exists.
+    shell += "MODE=replay\n" + contract_gate + '\neval "$environment_contract_gate"\n'
     shell += r"""
-# The narrow verified replay bridge occurs only AFTER the safety gate.
-[ "$DEPLOYMENT_TARGET" = "$APP_ENVIRONMENT" ]
+export DEPLOYMENT_TARGET="$APP_ENVIRONMENT"
 printf '%s\n' immutable-old-coordinator >> "$events"
 TWELVE_IMAGE_REF=accepted-twelve; FINLAB_IMAGE_REF=accepted-finlab; SHIOAJI_IMAGE_REF=accepted-shioaji
 ECR_REGISTRY=fixture; provider_helper=legacy-accepted-helper
@@ -256,6 +260,8 @@ run_runtime() {
             "PATH": binaries + ":" + os.environ["PATH"],
             "APP_ENVIRONMENT": target,
             "FETCHER_RUNTIME_PROFILE": profile,
+            "FETCHER_FULL_MARKET_STATE_DIR": "/var/lib/findb-full-market"
+            + ("/staging" if target == "staging" else ""),
             "installed_name": name,
             "command_output": '["findb-fetch-full-market"]'
             if command_output is None
@@ -276,18 +282,19 @@ run_runtime() {
         text=True,
         timeout=10,
     )
+    assert result.returncode != 0
     if state_kind != "valid" or expected_reason is not None:
-        assert result.returncode != 0
         reason = (
             expected_reason
             or f"full_market_checkpoint_{'missing' if state_kind == 'missing' else 'invalid'}"
         )
         assert f"reason={reason}" in result.stderr
         assert "private-unverified-command" not in result.stderr
-        assert not events.exists()  # No secret, rename/start, old initializer, Source or provider.
     else:
-        assert result.returncode == 0, result.stderr
-        assert events.read_text().splitlines()[0] == "immutable-old-coordinator"
+        # The checkpoint gate passed; the contract gate then refused the
+        # pre-marker coordinator before any of its effects.
+        assert "reason=" not in result.stderr
+    assert not events.exists()  # No secret, rename/start, old initializer, Source or provider.
     if (
         state_kind == "missing"
         and expected_reason is None
@@ -301,6 +308,7 @@ run_runtime() {
             "PATH": binaries + ":" + os.environ["PATH"],
             "APP_ENVIRONMENT": target,
             "FETCHER_RUNTIME_PROFILE": profile,
+            "FETCHER_FULL_MARKET_STATE_DIR": "/var/lib/findb-full-market",
             "installed_name": name,
             "checkpoint": str(checkpoint),
             "events": str(events),
@@ -315,7 +323,13 @@ run_runtime() {
             "inspect_rc": "0",
         }
         unsafe = subprocess.run(
-            ["/bin/bash", "-c", shell.replace('eval "$checkpoint_entry_gate"', ":")],
+            [
+                "/bin/bash",
+                "-c",
+                shell.replace('eval "$checkpoint_entry_gate"', ":").replace(
+                    'eval "$environment_contract_gate"', ":"
+                ),
+            ],
             cwd=tmp_path,
             env=env,
             capture_output=True,
@@ -409,7 +423,9 @@ def test_transported_guard_rejects_managed_name_query_failure_before_legacy(
         ("findb-full-market-finlab-historical-candidate", '["findb-fetch-full-market","--check"]'),
     ],
 )
-def test_transported_guard_preserves_legal_derived_roles_and_legacy_entry(tmp_path, name, command):
+def test_transported_guard_preserves_legal_derived_roles_before_contract_gate(
+    tmp_path, name, command
+):
     test_transported_gate_before_actual_immutable_coordinator(
         tmp_path, "full-market", name, "valid", command_output=command
     )

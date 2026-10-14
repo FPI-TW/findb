@@ -25,6 +25,9 @@ def load_module(name, path):
 release = load_module("full_market_release", "infra/deploy/release_manifest.py")
 loader = load_module("full_market_secrets", "infra/deploy/runtime-secrets/load_runtime_secrets.py")
 policy = load_module("full_market_policy", "infra/deploy/change_policy.py")
+STAGING_REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+DEPLOY = ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+GUARD = ROOT / "infra/deploy/check_full_market_checkpoint.sh"
 
 
 class FullMarketDeploymentTests(unittest.TestCase):
@@ -49,10 +52,12 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "account_id": account,
             "release_tag": f"{unit}-v1.0.0" if target == "production" else "",
         }
+        if unit == "fetcher":
+            manifest["fetcher_bundle_version"] = release.CURRENT_FETCHER_BUNDLE_VERSION
         if target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": f"{unit}/accepted/{'a' * 40}/{'b' * 64}.tar",
-                "staging_registry": release.REGISTRY,
+                "staging_registry": STAGING_REGISTRY,
             }
         return manifest
 
@@ -60,7 +65,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
         contracts = release.ContractManifest(parsed={}, versions=(), canonical_sha256="d" * 64)
         release.validate_manifest(manifest, contracts)
 
-    def test_legacy_bounded_remains_valid(self):
+    def test_manifests_without_a_runtime_profile_remain_valid(self):
         for target in ("staging", "production"):
             self.validate(self.manifest(target))
 
@@ -123,7 +128,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
                             else:
                                 self.assertFalse(ledger.exists())
 
-    def test_full_market_is_environment_bound_fetcher_only(self):
+    def test_legacy_runtime_profile_is_tolerated_only_for_fetcher_bundles(self):
         good = self.manifest()
         good["runtime_profile"] = "full-market"
         self.validate(good)
@@ -146,18 +151,12 @@ class FullMarketDeploymentTests(unittest.TestCase):
         expanded = dict(bounded, runtime_profile="full-market")
         self.assertNotEqual(release.canonical_json(bounded), release.canonical_json(expanded))
 
-    def test_materialized_fetcher_bundle_passes_actual_profile_preflight(self):
+    def test_materialized_fetcher_bundle_is_target_neutral(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory).resolve()
-            for target, profile in (
-                ("staging", "bounded"),
-                ("production", "full-market"),
-            ):
-                with self.subTest(target=target, profile=profile):
+            for target in ("staging", "production"):
+                with self.subTest(target=target):
                     manifest = self.manifest(target)
-                    manifest["fetcher_bundle_version"] = 1
-                    if profile == "full-market":
-                        manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:
                         contracts = sources.load_selected_contract_manifest(
                             ROOT / "contracts/manifest.json"
@@ -171,59 +170,31 @@ class FullMarketDeploymentTests(unittest.TestCase):
                     manifest_path.write_bytes(release.canonical_json(manifest))
                     bundle = release.build_bundle(ROOT, manifest_path, "fetcher")
                     digest = hashlib.sha256(bundle).hexdigest()
-                    expected_inputs = {
-                        "unit": "fetcher",
-                        "commit_sha": manifest["commit_sha"],
-                        "migration_revision": "none",
-                        "created_by_run_id": manifest["created_by_run_id"],
-                        "images": manifest["images"],
-                        "deployment_target": target,
-                    }
-                    release.validate_bundle_bytes(
-                        bundle,
-                        expected_sha256=digest,
-                        unit="fetcher",
-                        expected_inputs=expected_inputs,
-                    )
                     output = base / f"{target}-release"
-                    release.materialize_validated_bundle(
-                        bundle,
-                        expected_sha256=digest,
-                        unit="fetcher",
-                        output=output,
-                        expected_inputs=expected_inputs,
+                    validated = release.materialize_validated_bundle(
+                        bundle, expected_sha256=digest, unit="fetcher", output=output
                     )
-                    # Run the exact host profile preflight from the bundled
-                    # deployment helper. Stop before image/provider/secret or
-                    # container work, without creating a host /opt release.
-                    source = (
+                    self.assertNotIn("runtime_profile", validated)
+                    self.assertFalse(
+                        (output / "infra/deploy/inspect_full_market_installation.py").exists()
+                    )
+                    helper = (
                         output / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
                     ).read_text()
-                    start = source.index('manifest_profile="$(python3 ')
-                    end = source.index("\nvalidate_image()", start)
-                    preflight = "set -euo pipefail\n" + source[start:end]
-                    for requested in (
-                        profile,
-                        "full-market" if profile == "bounded" else "bounded",
-                    ):
-                        completed = subprocess.run(
-                            ["bash", "-c", preflight],
-                            env={
-                                **os.environ,
-                                "FETCHER_RELEASE_ROOT": str(output),
-                                "FETCHER_RUNTIME_PROFILE": requested,
-                            },
+                    self.assertEqual(
+                        subprocess.run(
+                            [
+                                "bash",
+                                "-n",
+                                str(output / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"),
+                            ],
                             capture_output=True,
-                            text=True,
-                            check=False,
-                        )
-                        self.assertEqual(
-                            completed.returncode == 0,
-                            requested == profile,
-                            completed.stderr,
-                        )
-                        if requested != profile:
-                            self.assertIn("runtime_profile_manifest_mismatch", completed.stderr)
+                        ).returncode,
+                        0,
+                    )
+                    self.assertNotIn("FETCHER_RUNTIME_PROFILE", helper)
+                    self.assertNotIn("DEPLOYMENT_TARGET", helper)
+                    self.assertIn('full_market_state="${FETCHER_FULL_MARKET_STATE_DIR:?', helper)
 
     def test_taifex_loads_no_provider_credentials(self):
         catalog = json.loads((ROOT / "infra/deploy/runtime-secrets/fetcher.json").read_text())
@@ -261,13 +232,12 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "AWS_REGION": "ap-southeast-1",
             "AWS_ACCOUNT_ID": "439622209937",
             "APP_ENVIRONMENT": "staging",
-            "ECR_REGISTRY": release.REGISTRY,
+            "ECR_REGISTRY": STAGING_REGISTRY,
             "FETCHER_RELEASE_ROOT": "/does-not-exist",
             "FETCHER_DEPLOY_MODE": "candidate",
             "TWELVE_IMAGE_REF": "unused",
             "FINLAB_IMAGE_REF": "unused",
             "SHIOAJI_IMAGE_REF": "unused",
-            "FETCHER_RUNTIME_PROFILE": "full-market",
         }
         completed = subprocess.run(
             ["bash", str(ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh")],
@@ -279,7 +249,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("release_root_invalid", completed.stderr)
 
-    def test_taifex_rejected_outside_expanded_profile_before_secret_use(self):
+    def test_taifex_provider_is_accepted_without_a_runtime_profile(self):
         completed = subprocess.run(
             [
                 "bash",
@@ -291,38 +261,60 @@ class FullMarketDeploymentTests(unittest.TestCase):
             env={
                 **os.environ,
                 "AWS_REGION": "ap-southeast-1",
-                "FETCHER_RUNTIME_PROFILE": "bounded",
+                "AWS_ACCOUNT_ID": "439622209937",
+                "APP_ENVIRONMENT": "staging",
+                "ECR_REGISTRY": STAGING_REGISTRY,
             },
             capture_output=True,
             text=True,
             check=False,
         )
+        # No profile gate: the TAIFEX provider proceeds to the ordinary image contract.
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("taifex_profile_invalid", completed.stderr)
+        self.assertNotIn("taifex_profile_invalid", completed.stderr)
+        self.assertIn("ecr_image_contract", completed.stderr)
 
     @unittest.skipUnless(shutil.which("jq"), "workflow replay guard requires jq")
-    def test_replay_uses_record_profile_and_legacy_default(self):
+    def test_replay_shim_takes_the_legacy_profile_from_the_bundled_manifest_only(self):
         workflow = (ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
-        guard = next(
-            line.strip()
-            for line in workflow.splitlines()
-            if line.strip().startswith("FETCHER_RUNTIME_PROFILE=") and "runtime_profile //" in line
-        )
+        start = workflow.rindex("\n", 0, workflow.index('legacy_profile="$(jq')) + 1
+        end = workflow.index("\n          fi\n", start) + len("\n          fi\n")
+        guard = "\n".join(line[10:] for line in workflow[start:end].splitlines())
         with tempfile.TemporaryDirectory() as directory:
-            for record, expected in (
-                ({}, "bounded"),
-                ({"runtime_profile": "bounded"}, "bounded"),
-                ({"runtime_profile": "full-market"}, "full-market"),
+            for manifest, mode, expected in (
+                ({}, "candidate", ""),
+                ({}, "replay", ""),
+                ({"runtime_profile": "bounded"}, "replay", "bounded"),
+                ({"runtime_profile": "full-market"}, "replay", "full-market"),
+                ({"runtime_profile": "bounded"}, "candidate", None),
+                ({"runtime_profile": "unsafe;profile"}, "replay", None),
             ):
-                (Path(directory) / "acceptance.json").write_text(json.dumps(record))
-                result = subprocess.run(
-                    ["bash", "-c", guard + '\nprintf "%s" "$FETCHER_RUNTIME_PROFILE"'],
-                    env={**os.environ, "RUNNER_TEMP": directory},
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                self.assertEqual(result.stdout, expected)
+                with self.subTest(manifest=manifest, mode=mode):
+                    (Path(directory) / "release-manifest.json").write_text(json.dumps(manifest))
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            "set -euo pipefail\n" + guard + '\nprintf "%s" "$legacy_profile"',
+                        ],
+                        env={**os.environ, "RUNNER_TEMP": directory, "MODE": mode},
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if expected is None:
+                        self.assertNotEqual(result.returncode, 0)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, expected)
+        ssm = workflow.split("- name: Run candidate acceptance or accepted replay", 1)[1]
+        self.assertIn('if [ "$MODE" = replay ]; then', ssm)
+        self.assertIn('runtime_exports="$runtime_exports FETCHER_RUNTIME_PROFILE=$q_profile"', ssm)
+        self.assertLess(
+            ssm.index('if [ "$MODE" = replay ]; then'),
+            ssm.index("FETCHER_RUNTIME_PROFILE=$q_profile"),
+        )
+        self.assertNotIn("inputs.runtime_profile", workflow)
 
     def test_profile_transition_restores_retired_runtime_on_failure(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
@@ -403,85 +395,54 @@ rollback_processed
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_bounded_accepted_replay_preserves_compatible_installed_drainer_image(self):
-        source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
-        start = source.index(
-            '    if [ "$recorded_profile" = bounded ] && [ "${FETCHER_ACCEPTED_REPLAY:-false}" = true ]; then'
-        )
-        end = source.index("\n    fi", start) + len("\n    fi")
-        guard = source[start:end]
-        registration = "\n".join(
-            re.search(rf"{name}\(\) \{{\n.*?\n\}}", source, re.S).group()
-            for name in ("register_named_full", "register_provider", "registered_original")
-        )
-        inventory = (
-            "runtime_inventory_recovery=none\n"
-            + source[source.index("runtime_inventory_failure() {") : source.index("\nset +x")]
-        )
-        fake = r"""
-set -euo pipefail
-processed=(); named_full_originals=(); named_full_backups=()
-stable=drainer
-# Every row binds a distinct name, running state, ID, image and accepted label.
-case "$layout" in
-  stable) container_rows=drainer:false:accepted-id:installed-compatible:true ;;
-  previous-only) container_rows=drainer-previous:false:accepted-id:installed-compatible:true ;;
-  interrupted-stable) container_rows='drainer:false:interrupted-id:interrupted-image:false
- drainer-previous:false:accepted-id:installed-compatible:true'
-    container_rows="${container_rows// drainer/drainer}" ;;
-  *) exit 99 ;;
-esac
-docker() {
-  local row="$(printf '%s\n' "$container_rows" | awk -F: -v name="${!#}" '$1 == name {print}')"
-  case "$1" in
-    container)
-      if [ "$2" = ls ]; then printf '%s\n' "$container_rows" | cut -d: -f1; else [ -n "$row" ]; fi ;;
-    inspect)
-      [ -n "$row" ] || return 1
-      case "$3" in
-        *State.Running*) printf '%s\n' "$row" | cut -d: -f2 ;;
-        *'{{.Id}}'*) printf '%s\n' "$row" | cut -d: -f3 ;;
-        *Config.Image*) printf '%s\n' "$row" | cut -d: -f4 ;;
-        *Config.Labels*) printf '%s\n' "$row" | cut -d: -f5 ;;
-        *) return 97 ;;
-      esac ;;
-    *) return 96 ;;
-  esac
-}
-"""
-        for layout in ("stable", "previous-only", "interrupted-stable"):
-            for profile, replay, expected in (
-                ("bounded", "true", "installed-compatible"),
-                ("bounded", "false", "bundle-image"),
-                ("full-market", "true", "bundle-image"),
-            ):
-                with self.subTest(layout=layout, profile=profile, replay=replay):
-                    script = (
-                        fake
-                        + inventory
-                        + registration
-                        + '\nregister_provider "$stable" "$stable-previous"\nimage=bundle-image\n'
-                        + guard
-                        + '\nprintf "%s" "$image"'
-                    )
-                    result = subprocess.run(
-                        ["bash", "-c", script],
-                        env={
-                            **os.environ,
-                            "recorded_profile": profile,
-                            "FETCHER_ACCEPTED_REPLAY": replay,
-                            "layout": layout,
-                        },
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    self.assertEqual(result.stdout, expected)
-        workflow = (ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
-        self.assertIn(
-            '[ "$MODE" != replay ] || runtime_exports="$runtime_exports FETCHER_ACCEPTED_REPLAY=true"',
-            workflow,
-        )
+    def test_coordinator_installs_full_workers_in_every_target_without_a_profile(self):
+        deploy = DEPLOY.read_text()
+        self.assertNotIn("FETCHER_RUNTIME_PROFILE", deploy)
+        self.assertNotIn("FETCHER_ACCEPTED_REPLAY", deploy)
+        self.assertNotIn("DEPLOYMENT_TARGET", deploy)
+        self.assertNotIn("legacy_historical_shutdown", deploy)
+        full = deploy.index("export FETCHER_CONSUMER_PROFILE=full_market")
+        loop = deploy.index("for provider in twelve-data finlab shioaji taifex; do", full)
+        pilot = deploy.index("export FETCHER_CONSUMER_PROFILE=pilot", loop)
+        self.assertLess(full, loop)
+        self.assertLess(loop, pilot)
+        self.assertNotIn("recorded_profile", deploy)
+        self.assertIn('full_market_state="${FETCHER_FULL_MARKET_STATE_DIR:?', deploy)
+        self.assertIn("full_market_state_dir_invalid", deploy)
+
+    def test_checkpoint_gate_binds_state_dir_to_control_plane_and_legacy_formula(self):
+        guard = GUARD.read_text()
+        start = guard.index(': "${APP_ENVIRONMENT:?')
+        end = guard.index("require_full_checkpoint() {", start)
+        block = "set -euo pipefail\n" + guard[start:end] + '\nprintf "%s" "$full_market_state"'
+        for target, state_dir, expected in (
+            ("staging", "/var/lib/findb-full-market/staging", 0),
+            ("production", "/var/lib/findb-full-market", 0),
+            ("staging", "/var/lib/findb-full-market", "full_market_state_dir_mismatch"),
+            (
+                "production",
+                "/var/lib/findb-full-market/production",
+                "full_market_state_dir_mismatch",
+            ),
+            ("production", "/tmp/state", "full_market_state_dir_invalid"),
+            ("staging", "/var/lib/findb-full-market/Staging", "full_market_state_dir_invalid"),
+            ("local", "/var/lib/findb-full-market", "environment_invalid"),
+            ("staging", None, "FETCHER_FULL_MARKET_STATE_DIR is required"),
+        ):
+            with self.subTest(target=target, state_dir=state_dir):
+                env = {**os.environ, "APP_ENVIRONMENT": target}
+                env.pop("FETCHER_FULL_MARKET_STATE_DIR", None)
+                if state_dir is not None:
+                    env["FETCHER_FULL_MARKET_STATE_DIR"] = state_dir
+                result = subprocess.run(
+                    ["bash", "-c", block], env=env, capture_output=True, text=True, check=False
+                )
+                if expected == 0:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, state_dir)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(expected, result.stderr)
 
     def test_infra_tests_run_ci_without_staging_deployment(self):
         routed = policy.classify(["infra/tests/test_full_market_deployment.py"])
@@ -492,151 +453,3 @@ docker() {
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class InstallationReceiptTests(unittest.TestCase):
-    def test_receipt_inspects_running_image_config_source_and_every_allocation(self):
-        from unittest.mock import patch
-
-        inspection = load_module(
-            "full_market_installation", "infra/deploy/inspect_full_market_installation.py"
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            manifest = {
-                "deployment_target": "staging",
-                "runtime_profile": "full-market",
-                "unit": "fetcher",
-                "commit_sha": "a" * 40,
-                "images": {"finlab": "image@sha256:" + "b" * 64},
-            }
-            accepted = {**manifest, "state": "accepted", "bundle_sha256": "c" * 64}
-            config = {"deployment_target": "staging", "desired_state": "stopped"}
-            allocation = {
-                "provider": "finlab",
-                "environment": "staging",
-                "requests_per_second": 3,
-                "source_requests_per_minute": 120,
-                "account": {
-                    "governor_identity": "/account/governor.sqlite3",
-                    "consumers": ["full_market", "pilot", "maintenance"],
-                },
-            }
-            for name, value in (
-                ("manifest", manifest),
-                ("accepted", accepted),
-                ("config", config),
-                ("allocation", allocation),
-            ):
-                (base / name).write_text(json.dumps(value))
-            normalized = {**allocation, "requests_per_second": 3.0}
-            allocation_sha = hashlib.sha256(
-                json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-
-            environment_fields = ["APP_ENVIRONMENT=staging"]
-
-            def row(name):
-                consumer = "full_market" if "full-market" in name else "pilot"
-                return {
-                    "Id": consumer + "-container",
-                    "Config": {
-                        "Image": manifest["images"]["finlab"],
-                        "Labels": {"com.findb.fetcher.accepted": "true"},
-                        "Cmd": ["findb-fetch-full-market", "--config", "/installed/config"],
-                        "Env": [
-                            *environment_fields,
-                            "FULL_MARKET_ENABLED=true",
-                            "FETCHER_ACCOUNT_STATE_PATH=/account/governor.sqlite3",
-                            "FETCHER_CONSUMER_PROFILE=" + consumer,
-                            "SOURCE_CLIENT_KEY=private-key",
-                            "FETCHER_ACCOUNT_READINESS_FILE=/readiness/finlab.json",
-                        ],
-                    },
-                    "Mounts": [{"Destination": "/account", "RW": True}],
-                    "State": {"Running": True},
-                }
-
-            calls = []
-
-            def output(command, **kwargs):
-                calls.append(command)
-                return (
-                    inspection.digest(base / "config")
-                    if command[-1] == "/installed/config"
-                    else allocation_sha
-                ) + "\n"
-
-            with (
-                patch.object(inspection, "inspect", side_effect=row),
-                patch.object(inspection.subprocess, "check_output", side_effect=output),
-            ):
-                receipt = inspection.build(
-                    base / "manifest",
-                    base / "accepted",
-                    base / "config",
-                    "finlab",
-                    "/account/governor.sqlite3",
-                    base / "allocation",
-                )
-                restarted = inspection.build(
-                    base / "manifest",
-                    base / "accepted",
-                    base / "config",
-                    "finlab",
-                    "/account/governor.sqlite3",
-                    base / "allocation",
-                )
-            self.assertEqual(receipt["runtime_id"], restarted["runtime_id"])
-            self.assertEqual(receipt["account_allocation_sha256"], allocation_sha)
-            self.assertEqual(
-                receipt["source_key_sha256"], hashlib.sha256(b"private-key").hexdigest()
-            )
-            self.assertNotIn("private-key", json.dumps(receipt))
-            self.assertEqual(len(calls), 6)  # Both allocations plus actual config, twice.
-            environment_fields[:] = ["DEPLOYMENT_TARGET=staging"]
-            with (
-                patch.object(inspection, "inspect", side_effect=row),
-                patch.object(inspection.subprocess, "check_output", side_effect=output),
-            ):
-                arguments = (
-                    base / "manifest",
-                    base / "accepted",
-                    base / "config",
-                    "finlab",
-                    "/account/governor.sqlite3",
-                    base / "allocation",
-                )
-                with self.assertRaisesRegex(ValueError, "explicit legacy inspection"):
-                    inspection.build(*arguments)
-                legacy = inspection.build(*arguments, allow_legacy_environment=True)
-                self.assertEqual(legacy["environment_contracts"], ["legacy-deployment-target-v1"])
-                environment_fields[:] = ["APP_ENVIRONMENT=staging", "DEPLOYMENT_TARGET=production"]
-                with self.assertRaisesRegex(ValueError, "metadata conflict"):
-                    inspection.build(*arguments, allow_legacy_environment=True)
-            environment_fields[:] = ["APP_ENVIRONMENT=staging"]
-            with (
-                patch.object(inspection, "inspect", side_effect=row),
-                patch.object(inspection.subprocess, "check_output", return_value="changed\n"),
-            ):
-                with self.assertRaisesRegex(ValueError, "running consumer allocation"):
-                    inspection.build(
-                        base / "manifest",
-                        base / "accepted",
-                        base / "config",
-                        "finlab",
-                        "/account/governor.sqlite3",
-                        base / "allocation",
-                    )
-            bad = row("findb-full-market-finlab")
-            bad["Config"]["Image"] = "wrong-image"
-            with patch.object(inspection, "inspect", return_value=bad):
-                with self.assertRaisesRegex(ValueError, "image/environment/governor"):
-                    inspection.build(
-                        base / "manifest",
-                        base / "accepted",
-                        base / "config",
-                        "finlab",
-                        "/account/governor.sqlite3",
-                        base / "allocation",
-                    )

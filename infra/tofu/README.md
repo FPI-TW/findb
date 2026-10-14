@@ -14,7 +14,9 @@ bundles, runtime secret metadata, DLM, CloudWatch/SNS, multi-region CloudTrail,
 GuardDuty, and unit-scoped GitHub OIDC roles. It intentionally creates no
 Secrets Manager versions and contains no Cloudflare credentials. Follow
 [`docs/operations/production.md`](../../docs/operations/production.md) for the
-review/apply/bootstrap order. `PRODUCTION_DEPLOY_ENABLED` must remain absent.
+review/apply/bootstrap order. Production promotion is gated by the
+`production-<unit>` GitHub Environment protection rules (required reviewers,
+`main`-only deployments), never by Environment variables.
 
 ## Staging control-plane details
 
@@ -98,35 +100,23 @@ from `backend.s3.tf.example`.
 
 ## Staging foundation
 
-### Pending ECR activation order
+### Staging ECR and the single CD pipeline
 
 `staging/ecr.tf` defines five immutable private staging repositories, two
-main-only GitHub OIDC publisher roles, and instance-role pull permissions. It
-is configuration only: this repository does not claim the resources have been
-applied, does not mutate GitHub variables, and does not authorize deployment.
-
-The activation order is deliberately staged. Keep `STAGING_ECR_CUTOVER_ENABLED`
-unset or `false` while a separately authorized protected-`main` fresh
-zero-delete plan and foundation apply create the ECR/IAM resources. Complete
-foundation-level acceptance before any gated application rollout: verify the
-exact repositories and settings, publisher/deploy/instance role boundaries,
-and safe authentication/authorization checks, including that each instance
-role can obtain an ECR authorization token and pull only its allowed images.
-Only then set the repository variable to the exact string `true` and manually
-trigger the staging workflows. Those workflows publish immutable commit-SHA
-images and perform the host rollout; afterward complete live cutover
-acceptance and observation. If cutover acceptance fails, set the gate back to
-`false` to freeze and block new staging rollouts; this is not a GHCR fallback.
-Every other value fails closed before image publication or host deployment.
-Staging uses AWS Secrets Manager plus instance-role ECR login; it must not
-receive GitHub or GHCR credentials.
-Production has separate target-aware ECR promotion workflows, but its AWS
-foundation and live acceptance remain separately authorized work. Staging
-credentials and GHCR fallback are not production deployment paths.
+main-only GitHub OIDC publisher roles, and instance-role pull permissions.
+`cd.yml` publishes immutable commit-SHA images with the publisher role named in
+`infra/env/staging/<unit>.json` (`AWS_PUBLISHER_ROLE_ARN`) and then hands the
+exact digests to the unit's release and reusable deploy jobs. There is no
+cutover gate variable: a push to `main` that touches a unit deploys it to
+staging through the change policy, and `workflow_dispatch` with
+`mode=candidate` plus the `deploy-new-candidate` confirmation deploys the
+current `main` head. Staging uses AWS Secrets Manager plus instance-role ECR
+login; it must not receive GitHub or GHCR credentials. Production receives only
+digest copies through the promotion role; it never builds images.
 
 The FinDB publisher has one additional repository-scoped read capability:
-`ecr:GetDownloadUrlForLayer` for `findb/staging/backend` only. FinDB CD uses
-it to run `alembic heads` from the selected immutable backend digest before
+`ecr:GetDownloadUrlForLayer` for `findb/staging/backend` only. The publish job
+uses it to run `alembic heads` from the selected immutable backend digest before
 emitting a release manifest. Fetcher publishers do not receive layer-download
 permission, and no publisher receives cross-unit repository access.
 
@@ -136,33 +126,27 @@ bounded two-delete plan, but it never authorizes or performs an apply. Their
 Secrets Manager recovery window is 30 days when retirement is eventually
 scheduled.
 
-`staging/runtime_secret_moves.tf` preserves state-address history for all 17
-active catalog entries: each legacy `runtime` instance moves to the protected
-`active_runtime` instance without recreation. The two GHCR legacy addresses
-are intentionally the only unmoved instances and therefore the only planned
+`staging/runtime_secret_moves.tf` preserves state-address history for the 17
+original catalog entries: each legacy `runtime` instance moves to the protected
+`active_runtime` instance without recreation. The TAIFEX Source secret and the
+three unified-configuration secrets (`findb/runtime/configuration`,
+`findb/tls/origin-certificate`, `fetcher/runtime/configuration`) are created
+metadata resources without legacy addresses. The two GHCR legacy addresses are
+intentionally the only unmoved instances and therefore the only planned
 deletes. Do not remove or alter those exact mappings.
 
-### Controlled staging ECR rollback
+### Controlled staging rollback
 
-Rollback never restores the transitional GHCR credentials. Keep the cutover
-gate exactly `true`, then manually dispatch the affected FinDB or Fetcher CD
-workflow on protected `main` with `deployment_target=staging` and `image_tag`
-set to a previously accepted, lowercase 40-character commit SHA. The workflow
-first verifies the SHA is reachable from that protected `main` and that the
-current checkout's `docker-compose.prod.yml`, `infra/deploy/runtime-secrets/`
-and `infra/nginx/` deployment-contract scope matches the selected SHA; this is
-required because current scripts can deploy older images only while that
-contract is unchanged. A difference is rejected and requires a forward
-compatibility fix before retrying rollback. FinDB then accepts only its two
-fixed staging ECR repositories (backend and dashboard), while Fetcher accepts
-only its three fixed staging ECR repositories (Twelve Data, FinLab and
-Shioaji), each with exact immutable SHA tags.
-When `image_tag` is supplied it runs in reuse-only mode: every required image
-must already exist under that exact tag or the workflow fails before host
-deployment; it never rebuilds the current SHA, accepts a mutable tag, or pulls
-from another registry/repository. The ECR publisher role is main-only, so the
-existing tag is restricted to artifacts previously published through this
-controlled route. After rollback, record the selected SHA and repeat the
+Rollback never restores the transitional GHCR credentials and never rebuilds
+images. Dispatch `cd.yml` with `target=staging`, `mode=replay`, the unit
+selection and the unit's exact `<unit>/accepted/<sha>/<bundle-sha256>.tar` key.
+The resolve job derives the revision from the key, requires it to be reachable
+from protected `main`, and the reusable deploy workflow replays only that
+immutable accepted bundle: the same digests, the same validated bundle and the
+same acceptance record. Bundles accepted before the unified pipeline cannot be
+replayed once the GitHub Environment variables they read are gone; run one new
+candidate per unit after the cutover so the rollback window starts from a
+replayable record. After rollback, record the selected key and repeat the
 unit's bounded acceptance checks before considering a later forward rollout.
 
 The current remote state owns
@@ -338,8 +322,8 @@ or use another unit's bundle prefix. Instance roles use a scoped SSM agent
 transport policy and have exact access to their own declared Secrets Manager
 resources, their own runtime-secret KMS key, their own SSM parameter path, and
 their deployment-bundle prefix. The agent transport policy itself intentionally
-does not grant parameter or secret reads. This does not migrate or delete the
-current GitHub Environment runtime secrets.
+does not grant parameter or secret reads. GitHub Environments hold no runtime secrets or
+variables; runtime values live only in Secrets Manager.
 
 ## Phase 2 runtime-secret metadata and loader
 
@@ -374,9 +358,8 @@ destroys before applying this metadata foundation.
 
 After apply, a trusted operator writes each first `AWSCURRENT` version directly
 to Secrets Manager without routing values through GitHub Actions, shell command
-arguments, OpenTofu variables, or state. Keep existing GitHub Environment
-runtime secrets until the `aws-check` canary and consumer-specific deployment
-acceptance succeed; rotation and revocation are separate, ordered cutover
+arguments, OpenTofu variables, or state. GitHub Environments hold no copies of
+these values; rotation and revocation are separate, ordered Secrets Manager
 actions.
 
 Run Command and Session Manager output is sent to the unit log group. Each

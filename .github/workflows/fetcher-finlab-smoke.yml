@@ -1,0 +1,72 @@
+name: Fetcher FinLab smoke
+
+# Optional, isolated FinLab acquisition smoke against the installed staging
+# release. It reads the installed release root and FinLab digest on the host
+# and never changes the deployed runtime.
+on:
+  workflow_dispatch:
+    inputs:
+      finlab_target_date: {description: ISO trade date for smoke, required: true, type: string}
+      finlab_symbols: {description: Reviewed comma-delimited symbols, required: true, default: '2330,2317', type: choice, options: ['2330,2317']}
+
+permissions: {contents: read}
+concurrency: {group: staging-fetcher-finlab-smoke, cancel-in-progress: false}
+
+jobs:
+  finlab-acquisition-smoke:
+    runs-on: ubuntu-latest
+    environment: staging-fetcher
+    permissions: {contents: read, id-token: write}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - name: Checkout trusted control-plane configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.workflow_sha }}
+          path: .trusted-control-plane
+          persist-credentials: false
+          sparse-checkout: |
+            infra/env/control_plane.py
+            infra/env/staging/findb.json
+            infra/env/staging/fetcher.json
+            infra/env/production/findb.json
+            infra/env/production/fetcher.json
+          sparse-checkout-cone-mode: false
+      - name: Load control-plane configuration
+        env: {WORKFLOW_SHA: '${{ github.workflow_sha }}', TARGET: staging, UNIT: fetcher}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [ "$(git -C .trusted-control-plane rev-parse HEAD)" = "$WORKFLOW_SHA" ]
+          python3 .trusted-control-plane/infra/env/control_plane.py export --target "$TARGET" --unit "$UNIT" >> "$GITHUB_ENV"
+      - name: Configure staging credentials for FinLab smoke
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: fetcher-staging-smoke-${{ github.run_id }}
+      - name: Run bounded FinLab acquisition smoke over SSM
+        env:
+          TARGET_DATE: ${{ inputs.finlab_target_date }}
+          SYMBOLS: ${{ inputs.finlab_symbols }}
+        run: |
+          set -euo pipefail
+          [ "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID" ]
+          [[ "$TARGET_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || exit 1
+          target_ids="$(aws ec2 describe-instances --filters Name=instance-state-name,Values=running Name=tag:Project,Values=findb Name=tag:Environment,Values=staging Name=tag:DeploymentUnit,Values=fetcher --query 'Reservations[].Instances[].InstanceId' --output json)"
+          [ "$(jq -r length <<<"$target_ids")" -eq 1 ]
+          target_id="$(jq -r '.[0]' <<<"$target_ids")"
+          [[ "$target_id" =~ ^i-[0-9a-f]{8,17}$ ]] || exit 1
+          marker="finlab-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          success_marker="finlab_smoke_marker=${marker} status=success"
+          failure_marker="finlab_smoke_marker=${marker} status=failed"
+          printf -v q_date '%q' "$TARGET_DATE"; printf -v q_symbols '%q' "$SYMBOLS"; printf -v q_marker '%q' "$marker"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"
+          command="set -euo pipefail; trap 'printf \"finlab_smoke_marker=%s status=failed\\n\" $q_marker' ERR; export AWS_REGION=ap-southeast-1; root=\$(readlink -f /opt/fetcher/current); [[ \"\$root\" =~ ^/opt/fetcher/releases/[0-9a-f]{64}-[0-9]+-[0-9]+\$ ]]; image=\$(jq -r .images.finlab \"\$root/release-manifest.json\"); [[ \"\$image\" =~ ^$q_registry/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}\$ ]]; cache_dir=/var/lib/findb-finlab-smoke-cache; install -d -m 0700 \"\$cache_dir\"; chown 10001:10001 \"\$cache_dir\"; \"\$root/infra/deploy/runtime-secrets/runtime_secret_command.sh\" --catalog \"\$root/infra/deploy/runtime-secrets/fetcher.json\" --region ap-southeast-1 --deployment-target staging --aws-account-id $q_account --consumer finlab-smoke -- docker run --rm --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --mount \"type=bind,src=\$cache_dir,dst=/home/fetcher\" \"\$image\" findb-fetch-finlab-smoke --target-date $q_date --symbols $q_symbols; printf \"finlab_smoke_marker=%s status=success\\n\" $q_marker"
+          command="$(printf '%s' "$command" | python3 infra/deploy/ssm_bash_command.py)"
+          command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$target_id" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${AWS_SSM_LOG_GROUP}" --parameters "$(jq -nc --arg command "$command" '{commands: [$command]}')" --query Command.CommandId --output text)"
+          source infra/deploy/ssm_command_marker_gate.sh
+          for _ in $(seq 1 120); do state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$target_id" "$success_marker" "$failure_marker")"; [ "$state" = success ] && exit 0; sleep 5; done
+          exit 1

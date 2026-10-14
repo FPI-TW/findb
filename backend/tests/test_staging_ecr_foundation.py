@@ -54,9 +54,9 @@ def test_ecr_iam_separates_main_publishers_instance_pulls_and_deploy_roles() -> 
 
 def test_ecr_immutable_sha_build_helper_reuses_only_exact_main_sha_tags() -> None:
     helper = ECR_BUILD_HELPER.read_text(encoding="utf-8")
-    assert (
-        'readonly expected_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"' in helper
-    )
+    # The registry comes from the committed control plane, never a literal.
+    assert 'expected_registry="$ECR_REGISTRY"' in helper
+    assert "439622209937" not in helper
     for repository in (
         "findb/staging/backend",
         "findb/staging/dashboard",
@@ -71,7 +71,7 @@ def test_ecr_immutable_sha_build_helper_reuses_only_exact_main_sha_tags() -> Non
     assert '"imageTag=$image_tag"' in helper
     assert "ImageNotFoundException" in helper
     assert "ecr_tag_inspection_failed" in helper
-    assert "rollback_tag_not_found" in helper
-    assert "ECR_REUSE_ONLY:-false" in helper
+    assert "rollback_tag_not_found" not in helper
+    assert "ECR_REUSE_ONLY" not in helper
     assert "docker buildx build" in helper
     assert helper.index("docker buildx build") > helper.index("ImageNotFoundException")

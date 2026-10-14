@@ -2,12 +2,11 @@
 Application configuration management.
 """
 
-import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -80,28 +79,15 @@ class Settings(BaseSettings):
     RAW_RETENTION_ENABLED: bool = True
     RAW_RETENTION_DAYS: int = 30
 
+    # Historical backfill window. Both targets declare it in runtime/configuration;
+    # only the value differs (31 days on staging, 366 on production).
+    HISTORICAL_BACKFILL_WINDOW_DAYS: int = Field(default=31, ge=1, le=366)
+
     model_config = SettingsConfigDict(
         env_file=REPO_ROOT / ".env",
         case_sensitive=True,
         extra="ignore",
     )
-
-    @model_validator(mode="after")
-    def validate_environment_metadata(self) -> "Settings":
-        legacy = os.getenv("DEPLOYMENT_TARGET")
-        if legacy is not None and (
-            "APP_ENVIRONMENT" not in self.model_fields_set or legacy != self.APP_ENVIRONMENT
-        ):
-            raise ValueError("APP_ENVIRONMENT conflicts with legacy deployment metadata")
-        return self
-
-    @model_validator(mode="before")
-    @classmethod
-    def validate_environment_input(cls, value: Any) -> Any:
-        if isinstance(value, dict) and "DEPLOYMENT_TARGET" in value:
-            if value.get("APP_ENVIRONMENT") != value["DEPLOYMENT_TARGET"]:
-                raise ValueError("APP_ENVIRONMENT conflicts with legacy deployment metadata")
-        return value
 
 
 @lru_cache()

@@ -19,6 +19,7 @@ x-app-environment: &app-environment
   RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:?RATE_LIMIT_WINDOW must be set in deployment variables}"
   RAW_RETENTION_ENABLED: "${RAW_RETENTION_ENABLED:?RAW_RETENTION_ENABLED must be set in deployment variables}"
   RAW_RETENTION_DAYS: "${RAW_RETENTION_DAYS:?RAW_RETENTION_DAYS must be set in deployment variables}"
+  HISTORICAL_BACKFILL_WINDOW_DAYS: "${HISTORICAL_BACKFILL_WINDOW_DAYS:?HISTORICAL_BACKFILL_WINDOW_DAYS must be set in deployment runtime configuration}"
   NORMALIZATION_EXCHANGE: "findb.ingestion.v1"
   NORMALIZATION_QUEUE: "findb.normalize.v1"
   NORMALIZATION_DLQ: "findb.normalize.dlq.v1"
@@ -193,12 +194,12 @@ services:
         - "80:80"
         - "443:443"
       volumes:
-        - ${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-        - ${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}/cloudflare-real-ip.conf:/etc/nginx/cloudflare-real-ip.conf:ro
-        - ${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}/source-allowlist.conf:/etc/nginx/source-allowlist.conf:ro
+        - ${FINDB_NGINX_CONFIG_DIR:?FINDB_NGINX_CONFIG_DIR must be set by the deployment}/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+        - ${FINDB_NGINX_CONFIG_DIR:?FINDB_NGINX_CONFIG_DIR must be set by the deployment}/cloudflare-real-ip.conf:/etc/nginx/cloudflare-real-ip.conf:ro
+        - ${FINDB_NGINX_CONFIG_DIR:?FINDB_NGINX_CONFIG_DIR must be set by the deployment}/source-allowlist.conf:/etc/nginx/source-allowlist.conf:ro
         - /run/findb-runtime-secrets/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro
-        - ${FINDB_TLS_CERT_PATH:-/home/ubuntu/etc/nginx/ssl/server.crt}:/etc/nginx/ssl/server.crt:ro
-        - ${FINDB_TLS_PRIVATE_KEY_PATH:-/home/ubuntu/etc/nginx/ssl/server.key}:/etc/nginx/ssl/server.key:ro
+        - ${FINDB_TLS_CERT_PATH:?FINDB_TLS_CERT_PATH must be set in deployment runtime configuration}:/etc/nginx/ssl/server.crt:ro
+        - ${FINDB_TLS_PRIVATE_KEY_PATH:?FINDB_TLS_PRIVATE_KEY_PATH must be set in deployment runtime configuration}:/etc/nginx/ssl/server.key:ro
       healthcheck:
         test: ["CMD-SHELL", "wget -q --no-check-certificate --spider https://127.0.0.1/health"]
         interval: 15s

@@ -13,11 +13,17 @@ dockerfile="${3:?Dockerfile required}"
 : "${AWS_REGION:?AWS_REGION is required}"
 : "${GITHUB_REF:?GITHUB_REF is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
+: "${ECR_REGISTRY:?ECR_REGISTRY is required}"
 
 image_tag="${ECR_IMAGE_TAG:-$GITHUB_SHA}"
-reuse_only="${ECR_REUSE_ONLY:-false}"
 
-readonly expected_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+# Images are built only for staging; production receives exact digests through
+# promotion. The registry is the committed staging control plane, not a literal.
+expected_registry="$ECR_REGISTRY"
+if ! printf '%s' "$expected_registry" | grep -Eq '^[0-9]{12}\.dkr\.ecr\.ap-southeast-1\.amazonaws\.com$'; then
+  echo "staging_ecr_build=failed reason=ecr_registry_contract" >&2
+  exit 1
+fi
 case "$image" in
   "$expected_registry/findb/staging/backend"|\
   "$expected_registry/findb/staging/dashboard"|\
@@ -34,9 +40,7 @@ esac
 if [ "$AWS_REGION" != "ap-southeast-1" ] \
   || [ "$GITHUB_REF" != "refs/heads/main" ] \
   || ! printf '%s' "$GITHUB_SHA" | grep -Eq '^[0-9a-f]{40}$' \
-  || ! printf '%s' "$image_tag" | grep -Eq '^[0-9a-f]{40}$' \
-  || { [ "$reuse_only" = "false" ] && [ "$image_tag" != "$GITHUB_SHA" ]; } \
-  || { [ "$reuse_only" != "true" ] && [ "$reuse_only" != "false" ]; }; then
+  || [ "$image_tag" != "$GITHUB_SHA" ]; then
   echo "staging_ecr_build=failed reason=publisher_identity_or_sha_contract" >&2
   exit 1
 fi
@@ -138,11 +142,6 @@ fi
 
 if ! is_image_not_found; then
   echo "staging_ecr_build=failed reason=ecr_tag_inspection_failed repository=$repository_name" >&2
-  exit 1
-fi
-
-if [ "$reuse_only" = "true" ]; then
-  echo "staging_ecr_build=failed reason=rollback_tag_not_found repository=$repository_name tag=$image_tag" >&2
   exit 1
 fi
 

@@ -1,7 +1,5 @@
 """Actual Docker arguments and legacy-name transaction recovery, entirely offline."""
 
-import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -20,8 +18,8 @@ def _inventory_policy(source):
 
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji"])
-def test_production_container_arguments_bind_full_pilot_historical_inspection(
-    tmp_path, monkeypatch, provider
+def test_production_container_arguments_bind_full_pilot_and_historical_consumers(
+    tmp_path, provider
 ):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     environment_args = helper[
@@ -49,7 +47,6 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
     image = "image@sha256:" + "b" * 64
     manifest = {
         "deployment_target": "production",
-        "runtime_profile": "full-market",
         "unit": "fetcher",
         "commit_sha": "a" * 40,
         "images": {provider: image},
@@ -155,40 +152,26 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
             "Mounts": mounts,
             "State": {"Running": True},
         }
-    spec = importlib.util.spec_from_file_location(
-        "inspection_repair", REPO_ROOT / "infra/deploy/inspect_full_market_installation.py"
-    )
-    inspection = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(inspection)
-    monkeypatch.setattr(inspection, "inspect", lambda name: actual[name])
-    allocation_digest = hashlib.sha256(
-        json.dumps(allocation, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    monkeypatch.setattr(
-        inspection.subprocess,
-        "check_output",
-        lambda command, **kwargs: (
-            (
-                inspection.digest(tmp_path / "config")
-                if command[-1] == "/installed/config"
-                else allocation_digest
-            )
-            + "\n"
-        ),
-    )
-    result = inspection.build(
-        tmp_path / "manifest",
-        tmp_path / "accepted",
-        tmp_path / "config",
-        provider,
-        governor,
-        tmp_path / "allocation",
-    )
-    assert result["consumers"] == ["full_market", "pilot", "historical", "maintenance"]
-    assert len(result["installed_consumers"]) == 3
+    full_name = "findb-full-market-" + provider.replace("_", "-")
+    assert set(actual) == {full_name, names[provider], names[provider] + "-historical"}
+    governor_dir = str(Path(governor).parent)
+    for name, entry in actual.items():
+        joined = "\n".join(entry["Config"]["Env"])
+        # No release profile or legacy environment metadata reaches any consumer.
+        assert "FETCHER_RUNTIME_PROFILE" not in joined
+        assert "DEPLOYMENT_TARGET" not in joined
+        assert "APP_ENVIRONMENT=production" in joined
+        assert any(
+            mount["Destination"] == governor_dir and mount["RW"] for mount in entry["Mounts"]
+        )
+        assert any(
+            mount["Destination"] == "/checkpoint" and mount["RW"] for mount in entry["Mounts"]
+        )
+        if name.endswith("-historical"):
+            assert "FETCHER_HISTORICAL_STATE_DIR=/checkpoint/historical" in joined
+    assert not (REPO_ROOT / "infra/deploy/inspect_full_market_installation.py").exists()
 
 
-@pytest.mark.parametrize("profile", ["full-market", "bounded"])
 @pytest.mark.parametrize(
     "boundary",
     [
@@ -206,7 +189,7 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
 @pytest.mark.parametrize("initial_running", [True, False])
 @pytest.mark.parametrize("stale_previous", [False, True])
 def test_legacy_full_runtime_upgrade_or_flagoff_recovers_original_identity(
-    tmp_path, profile, boundary, initial_running, stale_previous
+    tmp_path, boundary, initial_running, stale_previous
 ):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
     transaction = (
@@ -252,7 +235,7 @@ register_provider legacy legacy-previous
 printf 'running\n' > {state_dir}/legacy
 {"kill -TERM $$" if boundary == "signal-replacement" else "false"}
 """
-    shell = f"set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nFETCHER_RUNTIME_PROFILE={profile}\nprocessed=(){transaction}\n{move}\nmove_legacy_full_runtime legacy full\n{suffix}\n"
+    shell = f"set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nprocessed=(){transaction}\n{move}\nmove_legacy_full_runtime legacy full\n{suffix}\n"
     env = {
         **os.environ,
         "PATH": str(fake_bin) + ":" + os.environ["PATH"],
@@ -356,7 +339,6 @@ docker() {
             **environment,
             "provider": provider.replace("_", "-"),
             "APP_ENVIRONMENT": target,
-            "FETCHER_RUNTIME_PROFILE": "full-market",
             "state_path": str(state),
             "state_dir": str(tmp_path),
             "command_log": str(log),
@@ -411,41 +393,37 @@ docker() {
 
 
 @pytest.mark.parametrize(
-    "consumer,command,profile,recorded,allowed",
+    "consumer,command,allowed",
     [
-        ("full_market", "findb-fetch-scheduler", "full-market", None, False),
-        ("full_market", "findb-fetch-finlab-scheduler", "full-market", None, False),
-        ("pilot", "findb-fetch-full-market", "full-market", None, False),
-        ("historical", "findb-fetch-full-market", "full-market", None, False),
-        (None, "findb-fetch-full-market", "full-market", None, False),
-        ("full_market", "findb-fetch-full-market", "bounded", None, True),
-        ("full_market", "findb-fetch-full-market", "full-market", "bounded", True),
+        ("full_market", "findb-fetch-scheduler", False),
+        ("full_market", "findb-fetch-finlab-scheduler", False),
+        ("pilot", "findb-fetch-full-market", False),
+        ("historical", "findb-fetch-full-market", False),
+        (None, "findb-fetch-full-market", False),
+        ("full_market", "findb-fetch-full-market", True),
     ],
 )
-def test_bootstrap_rejects_mismatched_full_consumer_and_preserves_bounded_drain_state(
-    tmp_path, consumer, command, profile, recorded, allowed
-):
+def test_bootstrap_rejects_mismatched_full_consumer_commands(tmp_path, consumer, command, allowed):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     block = helper[helper.index("state_bootstrap=false\n") :].split(
         '\ndocker run --rm \\\n  --name "$preflight_name"', 1
     )[0]
+    assert "FETCHER_RUNTIME_PROFILE" not in helper
+    assert "FETCHER_RECORDED_RELEASE_PROFILE" not in helper
     environment = {**os.environ}
     environment.pop("FETCHER_CONSUMER_PROFILE", None)
-    environment.pop("FETCHER_RECORDED_RELEASE_PROFILE", None)
     environment.update(
-        provider="twelve-data",
-        FETCHER_RUNTIME_PROFILE=profile,
-        state_path=str(tmp_path / "missing"),
+        provider="twelve-data", APP_ENVIRONMENT="staging", state_path=str(tmp_path / "missing")
     )
     if consumer:
         environment["FETCHER_CONSUMER_PROFILE"] = consumer
-    if recorded:
-        environment["FETCHER_RECORDED_RELEASE_PROFILE"] = recorded
     result = subprocess.run(
         [
             "/bin/bash",
             "-c",
-            'set -euo pipefail\nsudo() { "$@"; }\ndocker() { exit 99; }\n' + block,
+            'set -euo pipefail\nsudo() { "$@"; }\nruntime_exists() { return 1; }\n'
+            "docker() { exit 99; }\nstate_dir=/state\npreflight_name=preflight\nimage=image\n"
+            "account_mount=()\ncache_mount=()\nreadiness_mount=()\n" + block,
             "bootstrap",
             command,
         ],
@@ -454,18 +432,23 @@ def test_bootstrap_rejects_mismatched_full_consumer_and_preserves_bounded_drain_
         text=True,
         timeout=10,
     )
-    assert result.returncode == (0 if allowed else 2), result.stderr
-    if not allowed:
+    if allowed:
+        # The matched Full consumer proceeds to the (stubbed) state initializer.
+        assert result.returncode == 99, result.stderr
+        assert "consumer_command_mismatch" not in result.stderr
+    else:
+        assert result.returncode == 2, result.stderr
         assert "reason=consumer_command_mismatch" in result.stderr
     assert not (tmp_path / "missing").exists()
 
 
-def test_coordinator_passes_consumer_identity_independently_of_full_release_profile():
+def test_coordinator_passes_consumer_identity_without_a_release_profile():
     deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
     full = deploy.index("export FETCHER_CONSUMER_PROFILE=full_market")
     pilot = deploy.index("export FETCHER_CONSUMER_PROFILE=pilot", full)
     assert full < deploy.index("findb-fetch-full-market --config", full) < pilot
-    assert 'export FETCHER_RUNTIME_PROFILE="$recorded_profile"' in deploy[pilot - 100 : pilot]
+    assert "FETCHER_RUNTIME_PROFILE" not in deploy
+    assert "recorded_profile" not in deploy
     assert pilot < deploy.index("findb-fetch-scheduler --schedule-file", pilot)
     assert pilot < deploy.index("findb-fetch-finlab-scheduler --schedule-file", pilot)
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
@@ -476,16 +459,13 @@ def test_coordinator_passes_consumer_identity_independently_of_full_release_prof
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("profile", ["bounded", "full-market"])
-@pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("legacy_name", [False, True])
 @pytest.mark.parametrize(
     "state_kind", ["missing", "valid", "empty", "non-full", "malformed", "corrupt", "unusable"]
 )
-@pytest.mark.parametrize("older_helper", [False, True])
 @pytest.mark.parametrize("previous_only", [False, True])
 def test_actual_coordinator_retained_checkpoint_guard_precedes_helper_and_control(
-    tmp_path, target, profile, replay, legacy_name, state_kind, older_helper, previous_only
+    tmp_path, target, legacy_name, state_kind, previous_only
 ):
     import sqlite3
 
@@ -493,9 +473,7 @@ def test_actual_coordinator_retained_checkpoint_guard_precedes_helper_and_contro
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     coordinator = _inventory_policy(deploy) + (
         deploy[
-            deploy.index('recorded_profile="$FETCHER_RUNTIME_PROFILE"') : deploy.index(
-                "processed=()"
-            )
+            deploy.index("# The checkpoint directory is non-secret") : deploy.index("processed=()")
         ]
         + deploy[
             deploy.index("# Preserve historical workers") : deploy.index("# Pilot runtimes coexist")
@@ -506,10 +484,6 @@ def test_actual_coordinator_retained_checkpoint_guard_precedes_helper_and_contro
     bootstrap = helper[helper.index("state_bootstrap=false\n") :].split(
         '\ndocker run --rm \\\n  --name "$preflight_name"', 1
     )[0]
-    if older_helper:
-        # A compatible immutable helper predates recorded-profile dispatch.
-        # Its unsafe initializer is protected by the current caller precondition.
-        bootstrap = 'if [ "$FETCHER_RUNTIME_PROFILE" = full-market ] && ! sudo test -e "$state_path"; then\n  docker run "$image" "$@" --initialize-state\nfi\n'
     control = helper[
         helper.index('docker run --rm \\\n  --name "${preflight_name}-control"') : helper.index(
             "\ncommon_args=("
@@ -654,15 +628,14 @@ docker() {
     shell += (
         r"""run_runtime() {
   printf '%s\n' runtime-secret-wrapper >> "$events"
-  [ "$FETCHER_RUNTIME_PROFILE" = full-market ]
-  [ "$FETCHER_RECORDED_RELEASE_PROFILE" = "$recorded_profile" ]
+  [ -z "${FETCHER_RUNTIME_PROFILE:-}" ]
+  [ -z "${DEPLOYMENT_TARGET:-}" ]
   [ "$FETCHER_CONSUMER_PROFILE" = full_market ]
   while [ "$1" != -- ]; do shift; done
   shift 2
   provider="$1"; image="$2"; stable="$5"; previous="$7"; preflight_name="$8"
-  if [ "$recorded_profile" = bounded ] && [ "$FETCHER_ACCEPTED_REPLAY" = true ]; then
-    [ "$image" = installed-compatible-image ]
-  fi
+  # Every target releases the exact bundle digest, never an installed image.
+  case "$image" in recorded-bundle-*) ;; *) exit 94 ;; esac
   [ "$3" = "${expected_state_path%/*}" ]
   [ "$4" = "$expected_state_path" ]
   state_dir="$3"; state_path="$4"
@@ -690,8 +663,8 @@ docker() {
             + ("/staging" if target == "staging" else "")
             + "/state.sqlite3",
             "probe_paths": str(tmp_path / "probe-paths"),
-            "FETCHER_RUNTIME_PROFILE": profile,
-            "FETCHER_ACCEPTED_REPLAY": str(replay).lower(),
+            "FETCHER_FULL_MARKET_STATE_DIR": "/var/lib/findb-full-market"
+            + ("/staging" if target == "staging" else ""),
             "checkpoint": str(checkpoint),
             "containers": str(containers),
             "events": str(events),
@@ -729,16 +702,23 @@ docker() {
         assert result.returncode == 0, result.stderr
         assert checkpoint.read_bytes() == original_checkpoint
         observed = events.read_text().splitlines()
-        assert observed == ["renamed"] * 3 + (["renamed"] if legacy_name else []) + [
-            "runtime-secret-wrapper"
-        ] + (["renamed", "started"] if previous_only else []) + [
-            "control-cli",
-            "Source-control",
-        ] + [
-            "runtime-secret-wrapper",
-            "control-cli",
-            "Source-control",
-        ] * (3 if profile == "full-market" else 0)
+        assert (
+            observed
+            == ["renamed"] * 3
+            + (["renamed"] if legacy_name else [])
+            + ["runtime-secret-wrapper"]
+            + (["renamed", "started"] if previous_only else [])
+            + [
+                "control-cli",
+                "Source-control",
+            ]
+            + [
+                "runtime-secret-wrapper",
+                "control-cli",
+                "Source-control",
+            ]
+            * 3
+        )
         assert (containers / "findb-full-market-twelve-data").stat().st_ino == original_inode
         with sqlite3.connect(checkpoint) as db:
             assert db.execute("SELECT body FROM full_work").fetchone()[0] == b"prepared"

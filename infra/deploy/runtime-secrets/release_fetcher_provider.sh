@@ -70,10 +70,6 @@ fi
 
 case "$provider" in
   taifex)
-    if ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "${APP_ENVIRONMENT:-}" = staging ]; }; then
-      echo "release_fetcher_provider=failed reason=taifex_profile_invalid" >&2
-      exit 1
-    fi
     marker_identity="taifex"
     image_repository_suffix="twelve-data"
     source_key="${FETCHER_TAIFEX_SOURCE_CLIENT_KEY:-}"
@@ -118,10 +114,6 @@ case "$provider" in
 esac
 
 : "${APP_ENVIRONMENT:?APP_ENVIRONMENT is required}"
-if [ "${DEPLOYMENT_TARGET+x}" = x ] && [ "$DEPLOYMENT_TARGET" != "$APP_ENVIRONMENT" ]; then
-  echo "application_environment=failed reason=legacy_environment_conflict" >&2
-  exit 1
-fi
 
 if [ "${ECR_REGISTRY:-}" != "${AWS_ACCOUNT_ID:-}.dkr.ecr.ap-southeast-1.amazonaws.com" ] \
   || [[ ! "${APP_ENVIRONMENT:-}" =~ ^(staging|production)$ ]]; then
@@ -201,16 +193,6 @@ runtime_env_args=(
 if [ "$provider" = "shioaji" ]; then
   runtime_env_args+=(--env FETCHER_SHIOAJI_STATE_PATH)
 fi
-# Only retained compatible Full images in an accepted bounded replay need the
-# old input. Ordinary current images receive APP_ENVIRONMENT exclusively.
-if [ "${FETCHER_LEGACY_ENV_BRIDGE:-false}" = true ]; then
-  if [ "${FETCHER_ACCEPTED_REPLAY:-false}" != true ] || [ "${FETCHER_CONSUMER_PROFILE:-pilot}" != full_market ] || [ "${FETCHER_DEPLOY_MODE:-candidate}" != activate ]; then
-    echo "application_environment=failed reason=legacy_bridge_not_accepted_replay" >&2
-    exit 1
-  fi
-  runtime_env_args+=(--env "DEPLOYMENT_TARGET=$APP_ENVIRONMENT")
-fi
-
 
 sudo mkdir -p "$state_dir"
 sudo chown 10001:10001 "$state_dir"
@@ -355,7 +337,7 @@ fi
 state_bootstrap=false
 case "${FETCHER_CONSUMER_PROFILE:-pilot}:$1" in
   full_market:findb-fetch-full-market)
-    if [ "${FETCHER_RECORDED_RELEASE_PROFILE:-${FETCHER_RUNTIME_PROFILE:-bounded}}" = full-market ]; then state_bootstrap=true; fi
+    state_bootstrap=true
     ;;
   pilot:findb-fetch-shioaji-scheduler)
     if [ "$provider" = shioaji ]; then state_bootstrap=true; fi
@@ -367,7 +349,7 @@ case "${FETCHER_CONSUMER_PROFILE:-pilot}:$1" in
 esac
 if [ "$state_bootstrap" = true ] && ! sudo test -e "$state_path"; then
   versioned_cutover=false
-  if [ "${APP_ENVIRONMENT:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ]; then
+  if [ "${APP_ENVIRONMENT:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = pilot ]; then
     if ! runtime_exists "$stable"; then
       versioned_cutover=true
     else
@@ -377,7 +359,7 @@ if [ "$state_bootstrap" = true ] && ! sudo test -e "$state_path"; then
       fi
     fi
   fi
-  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"; then
+  if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = pilot ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"; then
     echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
     exit 1
   fi

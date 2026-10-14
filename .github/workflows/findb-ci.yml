@@ -1,7 +1,7 @@
 name: FinDB CI
 
-# Pull requests are routed through required-ci.yml. After merge, FinDB CD calls
-# this workflow once through workflow_call before it can build or deploy.
+# Pull requests are routed through required-ci.yml. After merge, cd.yml calls
+# this workflow once through workflow_call before it can build a staging candidate.
 on:
   workflow_call:
     inputs:

@@ -2,23 +2,27 @@
 
 ## 收斂後的 promotion 契約
 
-`findb-ci.yml` 與 `fetcher-ci.yml` 是唯一的 unit test 定義。Required CI、staging CD
-與 production promotion 都以已解析的 40 字元 SHA 呼叫它們，checkout 後再次比對
-`HEAD`。`infra/deploy/change_policy.py` 是唯一的 changed-path truth table：contract-only
-變更會跑兩個 CI，但不會自動部署；main 上與 unit 有關的變更才自動進 staging。
+`findb-ci.yml` 與 `fetcher-ci.yml` 是唯一的 unit test 定義。Required CI 與單一 CD 管線
+`cd.yml` 都以已解析的 40 字元 SHA 呼叫它們，checkout 後再次比對 `HEAD`。
+`infra/deploy/change_policy.py` 是唯一的 changed-path truth table：contract-only 變更會跑兩個
+CI，但不會自動部署；main 上與 unit 有關的變更才自動進 staging。
 
-`findb-cd.yml`／`fetcher-cd.yml` 只負責 staging；recycle 期間仍保留已完成 live
-acceptance 的 staging SSM transaction。Production promotion／replay 呼叫 target-aware
-reusable deploy workflow；兩條路徑共用 target-aware host helpers 與相同的 candidate、
-accepted-record、activation、health、rollback fail-closed 次序。新 release manifest 為 v2，記錄 target registry、
+`cd.yml` 是 staging 與 production 唯一的部署入口：push `main` 觸發 staging candidate；
+`workflow_dispatch` 以 `target`、`mode`（`candidate`／`replay`／`promote`／`rollback`）、
+`units`、release tags、bundle keys 與固定 `confirmation` 選擇路徑。兩個 target 共用同一組
+target-aware reusable deploy workflow 與 host helpers，以相同的 candidate、accepted-record、
+activation、health、rollback fail-closed 次序執行；staging 因此是 production 的真正前哨。
+所有 runner 需要的非 secret 值來自 committed `infra/env/<target>/<unit>.json`
+（見 [infra/env 契約](../../infra/env/README.md)），GitHub Environment 零變數、零 secret，
+只保留 OIDC 身份與保護規則。release manifest 為 v2，記錄 target registry、account 與
 release tag；production manifest 另必須帶 staging accepted bundle 的 promotion source。
-歷史 staging v1 accepted bundle 僅能 read-only replay，production 一律拒絕 v1。
+v1 manifest 在任何 target 都拒絕。
 
 Production 無 push trigger：operator 必須從 immutable `findb-vX.Y.Z` 或
-`fetcher-vX.Y.Z` tag 手動 dispatch、依 unit 輸入 `PROMOTE_FINDB_PRODUCTION` 或
-`PROMOTE_FETCHER_PRODUCTION`，且 Environment variable
-`PRODUCTION_DEPLOY_ENABLED` 必須精確為 `true`。promotion 不重建 image；它以 Docker
-Buildx registry copy 將 accepted staging digest 複製到 production repository、驗證目的
+`fetcher-vX.Y.Z` tag 手動 dispatch `promote`，依 `units` 輸入 `PROMOTE_FINDB_PRODUCTION`、
+`PROMOTE_FETCHER_PRODUCTION` 或 `PROMOTE_FINDB_FETCHER_PRODUCTION`，並由
+`production-<unit>` Environment 的 required reviewers 核准。promotion 不重跑 CI、不重建 image；
+它以 Docker Buildx registry copy 將 accepted staging digest 複製到 production repository、驗證目的
 digest，tag collision fail closed，同 digest 則為 idempotent。rollback 只可選擇 production
 accepted record。
 
@@ -92,12 +96,12 @@ FinLab、Shioaji、Twelve Data 各由 revision 6／running → 7／stopped；兩
 
 ## Opt-in Full market runtime
 
-Local、staging、production 均以 `FULL_MARKET_ENABLED=false` 預設停用。一般 deployment 依 GitHub
-Environment 旗標選 bounded/full-market；rollback 讀 accepted record 原 profile。Full profile 保留
-獨立 Pilot 與 historical consumers，安裝四個独立 Full workers、共用 durable provider-account governor。
-Owner published baseline 與完整 published calendar 是手動 start 的兩項資料前提；
-不使用 per-feed activation 或五日門檻。旗標關閉的 bounded rollout 保留既有 Full worker
-與 checkpoint 供 prepared backlog drain；不能刪除 payload state 或重用 Pilot container names。
+Local、staging、production 均以 `FULL_MARKET_ENABLED=false` 預設停用。旗標值來自 committed
+control plane `infra/env/<target>/<unit>.json`，是 runtime kill switch，不再選擇 deployment
+profile：每個 target 的部署都安裝四個獨立 Full workers、既有 Pilot 與 historical consumers，
+並共用 durable provider-account governor。Owner published baseline 與完整 published calendar
+是手動 start 的兩項資料前提；不使用 per-feed activation 或五日門檻。旗標關閉時 Full worker
+與 checkpoint 仍保留供 prepared backlog drain；不能刪除 payload state 或重用 Pilot container names。
 
 操作步驟、local/deployed receipt generators、各平台已公布限制、治理資料清單與管理命令見
 [Full market runbook](full_market.md)。Backend migration 先於 Fetcher rollout；所有 controls
@@ -109,13 +113,15 @@ ingest 仍需 `fp1` frozen-plan identity；dataset existence/provider/dataset sc
 | Workflow | Unit | Trigger | Environment／concurrency |
 | --- | --- | --- | --- |
 | `findb-ci.yml` | Backend、migration、Dashboard、contracts | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
-| `findb-cd.yml` | Backend＋Dashboard | FinDB paths合入`main`時，在staging cutover gate啟用後自動rollout；manual dispatch只接受staging | `staging-findb`／`staging-findb` |
 | `fetcher-ci.yml` | Fetcher、contracts、images | PR由`required-ci.yml`路由；`workflow_call`、manual | 不讀deployment Environment |
-| `fetcher-cd.yml` | Generic＋FinLab＋Shioaji Fetcher | Fetcher paths合入`main`時，在staging cutover gate啟用後自動rollout；manual dispatch只接受staging | `staging-fetcher`／`staging-fetcher` |
+| `cd.yml` | 兩個 unit | push `main`（change policy 決定 unit）；manual dispatch 選 target／mode／units | `resolve`、`verify-*`、`publish-*` 無 Environment；`release-*`、`report-*-failure` 綁 `<target>-<unit>`；concurrency `cd-<target>` |
+| `findb-deploy.yml`／`fetcher-deploy.yml` | 單一 unit 的 host rollout | 只由 `cd.yml` 以 `workflow_call` 呼叫 | `<target>-<unit>`／`<target>-<unit>-deploy` |
+| `fetcher-finlab-smoke.yml` | FinLab bounded acquisition smoke | manual dispatch | `staging-fetcher` |
 
-Deployment concurrency一律`cancel-in-progress: false`。Caller以`<target>-<unit>`序列化整條CD，
+Deployment concurrency一律`cancel-in-progress: false`。Caller以`cd-<target>`序列化整條CD，
 reusable deploy job另用`<target>-<unit>-deploy`序列化host mutation；兩層不得使用同名group，避免
-called job與仍持有caller lease的workflow自我競爭。CD直接呼叫同revision reusable CI；
+called job與仍持有caller lease的workflow自我競爭。`deploy-fetcher` 以 job `needs` 等待
+`deploy-findb` 成功或 skipped，不再用 GitHub API 等待同 SHA 的 FinDB run。CD直接呼叫同revision reusable CI；
 不可用branch最近一次成功取代。Contract-only變更會執行兩個CI，但不自動部署任一unit；需要依backend-first順序manual dispatch。
 
 FinDB deployment unit包含backend、Dashboard、nginx、RabbitMQ及Compose services。
@@ -149,7 +155,7 @@ SHA-tag fallback。歷史staging v1只可透過同unit、同commit的immutable a
 record唯讀replay。
 
 workflow 不再額外 `git show` contract manifest；generate 與 validate 都傳入同一個 selected source root 的
-`contracts/manifest.json`，避免第二份 materialization 漂移。`fetcher-cd.yml` 的 PR-only policy 變更同時
+`contracts/manifest.json`，避免第二份 materialization 漂移。`cd.yml` 的 PR-only policy 變更同時
 路由至 FinDB/backend CI，因此完整的 deployment/manifest contract tests 會實際執行；一般 `fetcher/**`
 source 變更仍只路由 Fetcher CI。
 
@@ -230,49 +236,43 @@ backfill。Deployment不改寫DB scheduler desired state；啟用或停止由Das
 
 ## Environment與設定
 
-Staging orchestrator 與 production promotion workflow 已分離。Production 已完成多次 OIDC＋SSM
-promotion；部署 gate 平時為 false，只在 operator 授權的 rollout 期間暫開。現況如下：
+Staging 與 production 使用同一條 `cd.yml` 管線、同一組 reusable deploy workflow 與相同的
+環境變數欄位；只有值不同。現況如下：
 
 | Target／resource | Current state |
 | --- | --- |
-| `staging-findb` GitHub Environment | 已建立，為目前FinDB staging target |
-| `staging-fetcher` GitHub Environment | 已建立，為目前Fetcher staging target |
-| `production-findb` GitHub Environment | 已建立；部署 gate 預設為`false` |
-| `production-fetcher` GitHub Environment | 已建立；部署 gate 預設為`false` |
+| `staging-findb`／`staging-fetcher` GitHub Environment | 零變數、零 secret；只保留 OIDC 身份與 `main`-only branch policy |
+| `production-findb`／`production-fetcher` GitHub Environment | 零變數、零 secret；OIDC 身份、`main`-only branch policy 與 required reviewers |
+| `infra/env/<target>/<unit>.json` | Committed 非 secret control plane；`control_plane.py validate` 於 CI 驗證 |
+| Secrets Manager `findb/<target>/<unit>/runtime/configuration` | 兩個 target 相同欄位的 application 設定，由 instance role 載入 |
 | Production FinDB EC2 | 已建立並以SSM管理；無SSH入口 |
 | Production Fetcher EC2 | 已建立並以SSM管理；無ingress |
 | Production FinDB RDS | 已建立；private PostgreSQL 16且只接受FinDB security group |
 | Production promotion snapshot／dump／seed | 不複製staging資料；使用乾淨migration與reviewed seed |
 
 Push至`main`依 shared change policy 執行 same-revision CI；相關 unit 自動 rollout 至 staging，
-contract-only 只跑兩個 CI。unit-specific staging caller或reusable deploy workflow本身變更時，亦必須
-rollout對應unit，以實際驗證變更後的deployment path；CI workflow、production control plane與其它
-workflow-only變更仍不自動部署。Staging manual dispatch預設只允許exact accepted bundle replay；若
-protected `main`的exact revision因change policy
-未觸發某unit rollout，operator可明確選擇`candidate`並輸入`deploy-new-candidate`。candidate模式必須讓
-`image_tag`與`accepted_bundle_key`保持空白；replay模式則必須提供同revision、同unit的兩者，兩種模式混用時
-fail closed。Production只能從 immutable unit semver tag 手動 dispatch `promote` 或`rollback`，不能由push選取target。
-兩者都不配置GitHub Environment人工核准，仍以PR、required CI、protected branch、immutable tag、
-固定 confirmation與target隔離控制變更。每個job只能取得自己unit與target的設定；branch與Environment
-protection的實際外部設定需另行驗證。
+contract-only 只跑兩個 CI。`cd.yml`、reusable deploy workflow 或 host helper 變更時，亦會
+rollout 對應 unit，以實際驗證變更後的 deployment path；CI workflow、control-plane JSON 與其它
+workflow-only 變更不自動部署。Staging manual dispatch 以 `mode` 區分：`candidate` 必須輸入
+`deploy-new-candidate`、bundle keys 留空，部署目前 `main` head；`replay` 必須提供同 unit 的
+exact accepted bundle key，revision 由 key 內嵌的 SHA 導出，沒有獨立的 `revision` 或
+`image_tag` 輸入。Production 只能從 immutable unit semver tag 手動 dispatch `promote` 或
+`rollback`，不能由 push 選取 target；`confirmation` 必須與選取的 units 精確對應，且
+`release-<unit>` job 需 `production-<unit>` Environment 的 reviewer 核准。每個 job 只能取得
+自己 unit 與 target 的設定；branch 與 Environment protection 的實際外部設定需另行驗證。
 
-完整變數與secret名稱不在本runbook重複維護，以
-[infra/env契約](../../infra/env/README.md)、各target的`remote.env.example`、workflow及
-`app.config.Settings`為準。Sync script只新增或更新GitHub Environment，不會刪除退休值；
-operator必須另行移除不用的repository／Environment設定。
+完整變數名稱不在本runbook重複維護，以
+[infra/env契約](../../infra/env/README.md)、`infra/deploy/runtime-secrets/<unit>.json` catalog、
+workflow 及 `app.config.Settings` 為準。GitHub Environment 不再有任何變數或 secret 可同步或刪除。
 
-目前staging runtime secrets由EC2 instance role依consumer allowlist讀取Secrets Manager。每次載入任何
+兩個 target 的 runtime secrets 都由 EC2 instance role 依 consumer allowlist 讀取 Secrets Manager。每次載入任何
 consumer前，host loader會先在既有`/run` tmpfs安全建立或驗證
 `/run/findb-runtime-secrets`：目錄必須是非 symlink 的目錄、`root:root`與`0700`；若`/run`不是 tmpfs、
 路徑型別不正確或既有權限不安全便會 fail closed。這使EC2重開後清除`/run`時，下一次candidate、accepted
 activation或受包裝的runtime載入可自動恢復空目錄，但不會修復或採用不安全的既有路徑。secret bundle仍只在
-該root下以`0600`建立並於使用後清理。GitHub Environment的23枚舊runtime copies已於2026-09-09依明確授權
-刪除，兩個Environment secret清單回讀皆為空；GitHub OIDC與service-specific deploy role已用於AWS preflight／control-plane；
-FinDB與Fetcher staging日常deployment transport均已完成OIDC＋SSM live驗證；Fetcher的FinLab smoke亦使用
-bounded SSM。`staging-findb`已移除`FINDB_EC2_HOST`、`FINDB_EC2_USER`、`FINDB_EC2_SSH_KEY`，
-`staging-fetcher`已移除對應的三個`FETCHER_EC2_*` deploy secrets。後續Phase 6另已移除staging
-TCP/22 ingress、兩個EC2 key-pair resources與host中的對應recovery keys；production 設計同樣使用
-OIDC＋SSM，GitHub Environment 只保存非 secret control-plane configuration。Different-digest rollback與
+該root下以`0600`建立並於使用後清理。GitHub OIDC與service-specific deploy role用於AWS preflight／control-plane；
+FinDB與Fetcher日常deployment transport均為OIDC＋SSM；Fetcher的FinLab smoke亦使用bounded SSM。
+兩個 target 均無 TCP/22 ingress 與 EC2 key pair。Different-digest rollback與
 schema-incompatibility rejection已在2026-09-03完成live演練。
 
 ## Credential與storage邊界
@@ -309,10 +309,9 @@ Fetcher production deploy gate。
 Staging bounded pilot 使用 `--deployment-target staging --runtime-profile bounded` 校準四個 Source
 clients（新增 `fetcher-taifex`，只允許 `tw_futures_eod`）及 calendar key，共五個 hashes；部署前先建立
 `findb/staging/fetcher/api/source/taifex` secret、套用對應 secret catalog／IAM，並發布 TAIFEX calendar。
-TAIFEX staging consumer 僅讀取 calendar Serve、TAIFEX Source 與 Raw R2 三個 secrets；
-`runtime/configuration` 與其它 provider 相同，只在 production 載入。Staging 非 secret 設定仍由
-runtime env 提供，因此 staging IaC 僅新增 TAIFEX Source metadata。上述 hashes 僅為 reconciliation
-當次輸入，不屬於 backend application runtime env 或 GitHub Environment sync 契約。
+TAIFEX consumer 讀取 calendar Serve、TAIFEX Source、Raw R2 與 `runtime/configuration` 四個
+secrets，兩個 target 相同。上述 hashes 僅為 reconciliation 當次輸入，不屬於 backend application
+runtime env 或 control-plane 契約。
 
 ## Network與GitHub protection
 
@@ -321,24 +320,25 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
 - **Operator pre-deploy**：確認RDS不公開且只接受FinDB EC2 security group，Fetcher沒有RDS
   route；未保存外部設定證據前不得宣稱已驗證。
 - **Workflow**：RabbitMQ ports不對host公開；第三方Actions固定完整commit SHA；不同unit
-  使用獨立deployment concurrency。同一個`main` SHA同時觸發FinDB與Fetcher staging rollout時，
-  Fetcher deploy會先以GitHub Actions API等待該SHA的FinDB CD成功；FinDB失敗、取消、狀態異常或等待超過
-  60分鐘時，Fetcher在取得AWS credential及變更host前fail closed。Fetcher-only SHA沒有對應FinDB run時
-  會先做最多2分鐘的bounded discovery再繼續；manual dispatch仍由operator避免與FinDB部署重疊。
+  使用獨立deployment concurrency。同一個`main` SHA同時觸發FinDB與Fetcher rollout時，
+  `deploy-fetcher` 以 job `needs` 等待 `deploy-findb` 成功或 skipped；FinDB失敗或取消時，
+  Fetcher在取得AWS credential及變更host前fail closed。
 - **Operator pre-deploy**：確認Source經Cloudflare/nginx還原可信client IP後執行allowlist，
   TLS private key只存在FinDB target；外部Cloudflare、DNS與security group設定另行留證。
 - **Operator pre-deploy**：確認repository政策與外部設定要求PR、required CI及protected
-  branch。staging在cutover gate為`true`時由合併至protected `main`自動rollout；production只接受manual
-  dispatch。兩者均不設GitHub Environment人工核准。
+  branch。staging由合併至protected `main`自動rollout；production只接受manual dispatch，並由
+  `production-<unit>` Environment 的 required reviewers 核准。
 
 ## Release順序
 
 一般release：
 
-1. **Workflow**：對同revision執行對應CI；Environment-bound `select`先驗證target／replay contract但不
-   取得AWS身分，無Environment的`publish`再以main-ref publisher role build／reuse並push明確image
-   identity，最後Environment-bound `prepare`以deploy role產生及上傳candidate bundle。Publisher role
-   不得寫bundle，deploy role不得publish image；之後才由reusable deploy workflow pull candidate。
+1. **Workflow**：`resolve` 解析 target、mode、units 與 revision；staging candidate 對同 revision 執行
+   對應 CI，無 Environment 的 `publish-<unit>` 以 main-ref publisher role build／reuse 並 push 明確
+   image identity，最後 Environment-bound `release-<unit>` 以 deploy role 產生及上傳 candidate bundle
+   （production 則 bind release tag、驗證 staging acceptance record、registry-copy digests 並建立
+   production candidate bundle）。Publisher role 不得寫 bundle，deploy role 不得 publish image；
+   之後才由 reusable deploy workflow pull candidate。
    Fetcher的generic、FinLab與Shioaji Dockerfile都從monorepo root複製`fetcher/`及`contracts/`，因此CI與
    staging publisher必須一致使用repository root作build context，並以`fetcher/Dockerfile*`選擇Dockerfile；
    `./fetcher`不是合法context，否則無法包含共享contracts。
@@ -347,7 +347,7 @@ Repository可證實的application／Compose邊界與需要外部核對的target 
 3. **Workflow**：candidate先執行non-disruptive remote／DB preflight、exact image與runtime secret
    validation；通過後才寫入immutable accepted record，不停止writers、不執行migration也不啟動candidate services。
 4. **Workflow**：activation重新通過preflight後停止本unit所有DB writers，由單一migration job升級；
-   Alembic完成後，staging先驗證exact selected revision，production則保留`alembic current`與application
+   Alembic完成後，兩個 target 都先驗證exact selected revision，並保留`alembic current`與application
    啟動revision gate；接著於同一個one-shot migration secret scope以
    `reconcile_database_privileges.py`校準application role在`public`與`raw`的schema `USAGE`、
    table DML及sequence權限，並設定migration owner的default privileges；application role不得取得
@@ -558,12 +558,11 @@ Full使用`--config /app/configs/full_market.production.v1.json --state-path /va
 release／stable runtime、未知非空主機與Docker查詢失敗一律拒絕。這些檢查只讀取檔案及Docker metadata，
 不啟動acquisition，也不修改checkpoint、governor、account allocation或Owner controls。
 
-Staging的non-secret application設定仍以unit GitHub Environment variables為source of truth；reusable
-deployment workflow必須用固定allowlist逐項shell-quote，並在candidate與activation兩個SSM command傳入完整契約。
-FinDB另在runner端要求`PORT=8080`，避免與Nginx upstream契約分歧。Fetcher保留既有bounded numeric／provider
-defaults，但environment-specific URL、R2 account與bucket仍不得缺少。Production不沿用這些GitHub application
-values：workflow傳入空外層值，instance-side runtime-secret wrapper再從
-`findb/production/<unit>/runtime/configuration`載入並覆蓋，維持production Environment只有AWS／SSM控制面設定。
+兩個 target 的 non-secret application 設定都以 Secrets Manager `runtime/configuration` 為 source of
+truth；reusable deployment workflow 只把 control-plane 值（`FULL_MARKET_ENABLED`，Fetcher 另加
+`FETCHER_FULL_MARKET_STATE_DIR`）、exact image refs、release root 與 deploy mode 以固定 allowlist
+逐項 shell-quote 傳入 candidate 與 activation 兩個 SSM command。instance-side runtime-secret wrapper
+再載入本 unit catalog；FinDB 在 pull 階段驗證載入的 `PORT=8080`，避免與 Nginx upstream 契約分歧。
 
 SSM 不會在 archive 驗證前執行 path-writing extract。它先驗證外部 SHA、以 stdlib 結構檢查
 安全取得 archive 內唯一 validator、完成 allowlist/manifest 驗證，再安全 materialize 至新的
@@ -572,8 +571,9 @@ paths。FinDB與Fetcher的release root均保存`release-manifest.json`：只在�
 外部expected release inputs驗證成功後，將已驗證metadata重新序列化為canonical JSON（含結尾換行），
 以固定`0644` mode經由同一個pinned directory descriptor、`O_NOFOLLOW|O_EXCL` writer建立；不直接複製
 未驗證的tar metadata。release root維持`root:root:0700`，來源allowlist與executable/data mode保持固定。
-Fetcher candidate／activation在provider、secret與container工作前讀取此manifest，比對要求的runtime profile；
-缺少或不一致時fail closed，舊manifest未帶`runtime_profile`仍視為`bounded`。
+新 Fetcher manifest 不記錄 `runtime_profile`，coordinator 也不再比對 profile；replay 帶有
+`runtime_profile` 的舊 accepted manifest 時，workflow 只從該 manifest 導出 `FETCHER_RUNTIME_PROFILE`
+供舊 coordinator 自我檢查（candidate 模式拒絕帶 profile 的 manifest）。
 staging canary/deploy/provider helper、catalog、Compose 與 Nginx render scripts 都從該 release root
 執行，僅在 deployment health 成功後更新 current pointer。acceptance record同時綁定 validator SHA，host在執行
 archive 內 validator 前會比對這個獨立 trust anchor。accepted S3 objects 在 bucket policy 層要求 `If-None-Match: *`，
@@ -881,23 +881,16 @@ mass delete強迫恢復。Serve健康且schema相容時可維持唯讀服務。
 `FULL_MARKET_ENABLED` 仍只控制 Full market opt-in，不改變環境身份。既有 immutable manifest、
 accepted record 與 config JSON 的 `deployment_target` 欄位、CLI `--deployment-target` 保持原契約。
 
-正常 current candidate／activation 僅使用 `APP_ENVIRONMENT`。Verified immutable accepted replay
-若使用沒有 `app-environment-v1` marker 的舊 helper，workflow 才將 canonical 值等值映射至
-`DEPLOYMENT_TARGET`，讓該 bundle 的既有 allowlists、Pilot/historical/Full images 與 Compose 可運作；
-marker 不能取代 bundle digest 與 accepted evidence 驗證，也不重寫任何 immutable bundle/record。
-Current helper 在 bounded accepted replay 保留舊 Full drainer image 時，使用明確
-`FETCHER_LEGACY_ENV_BRIDGE`，只為該容器追加 same-value legacy Docker Env。普通 current runtimes
-不讀 legacy 值；新舊 metadata 衝突時 fail closed，不允許 legacy 覆蓋 canonical。
+所有 mode 的 host command 在執行任何 bundle helper 前都以 `environment_contract_gate` 要求
+`deploy_<unit>_aws.sh` 帶有 `# findb_environment_contract=app-environment-v1` marker；缺 marker 的
+pre-marker accepted bundle（`fetcher-v0.1.5` 以前）一律拒絕，不再有把 canonical 值等值映射為
+`DEPLOYMENT_TARGET` 的 legacy bridge，helper、provider release 與 runtime 也不讀或轉傳
+`DEPLOYMENT_TARGET`。marker 不能取代 bundle digest 與 accepted evidence 驗證，也不重寫任何
+immutable bundle/record。
 
-Installation generator 預設要求實際 process/container 的 `APP_ENVIRONMENT`；只有明確傳
-`--allow-legacy-environment` 才檢查 legacy-only 的已驗證 accepted consumers，receipt 標明使用的
-環境契約版本，image/manifest/account/flag/config guards 仍完整套用。新舊值同時存在且衝突時，
-此選項仍不允許 enrollment。
-
-四組 `infra/env/{staging,production}/{findb,fetcher}/.env.remote` 的同步合約包含非敏感
-`FULL_MARKET_ENABLED`；只能使用精確 `true`／`false`，省略時同步為 `false`。各環境的兩個
-unit 必須一致。`sync_github_environment.py --apply` 發布該值供 workflow 選擇 profile，
-不改 scheduler desired state；現行 examples 均預設 `false`。
+`FULL_MARKET_ENABLED` 來自 committed `infra/env/<target>/<unit>.json`，只能使用精確
+`true`／`false`，且各 target 的兩個 unit 必須一致（由 `control_plane.py validate` 強制）。它不改
+scheduler desired state；變更需經 PR review，下一次部署生效。
 
 
 ## Account acquisition protocol v2 升級與 rollback

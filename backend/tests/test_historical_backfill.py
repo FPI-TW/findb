@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from sqlalchemy import delete, func, null, select, update
 
+from app.config import get_settings
 from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
     DatasetRegistry,
@@ -16,7 +17,6 @@ from app.models.registry import (
 )
 from app.services import historical_backfill
 from app.services.historical_backfill import (
-    MAX_BACKFILL_DAYS,
     HistoricalBackfillConflictError,
     HistoricalBackfillError,
     HistoricalBackfillValidationError,
@@ -30,6 +30,9 @@ from app.services.historical_backfill import (
 from app.services.normalize.base import BaseNormalizer
 from app.services.source_clients import create_source_client
 from app.utils import uuid7
+
+# The default configured window; staging and production share the field.
+MAX_BACKFILL_DAYS = 31
 
 
 @pytest.mark.asyncio
@@ -183,15 +186,22 @@ def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
     return now
 
 
-def test_production_allows_one_year_eod_and_disables_shioaji_history(
+def test_backfill_window_is_configuration_and_production_disables_shioaji_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("APP_ENVIRONMENT", "production")
-
+    # Mutate the process-wide cached Settings instance (modules capture it at
+    # import); never clear the cache, which would detach later tests from the app.
+    settings = get_settings()
+    monkeypatch.setattr(settings, "APP_ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "HISTORICAL_BACKFILL_WINDOW_DAYS", 366)
     assert historical_backfill._max_backfill_days() == 366
     assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True
     assert historical_backfill._supports_backfill("finlab", "tw_equity_eod") is True
     assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is False
+    monkeypatch.setattr(settings, "APP_ENVIRONMENT", "staging")
+    monkeypatch.setattr(settings, "HISTORICAL_BACKFILL_WINDOW_DAYS", 31)
+    assert historical_backfill._max_backfill_days() == MAX_BACKFILL_DAYS
+    assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is True
 
 
 async def _seed_scope(session, today: date) -> None:

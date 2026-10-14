@@ -21,6 +21,7 @@ release_manifest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_manifest)
 
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+ACCOUNT = "439622209937"
 COMMIT = "a" * 40
 DIGEST = "b" * 64
 CONTRACT_MANIFEST = REPO_ROOT / "contracts" / "manifest.json"
@@ -30,13 +31,15 @@ CONTRACT_DATA = release_manifest.load_contract_manifest(CONTRACT_MANIFEST)
 def _images(unit: str) -> dict[str, str]:
     return {
         name: f"{repository}@sha256:{DIGEST}"
-        for name, repository in release_manifest.IMAGE_REPOSITORIES[unit].items()
+        for name, repository in release_manifest.image_repositories(
+            "staging", unit, REGISTRY
+        ).items()
     }
 
 
 def _manifest(unit: str = "findb") -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "deployment_target": "staging",
         "unit": unit,
         "commit_sha": COMMIT,
@@ -46,12 +49,21 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
         "contract_manifest_sha256": CONTRACT_DATA.canonical_sha256,
         "deployment_source_bundle_sha256": "d" * 64,
         "created_by_run_id": "123456",
-        **({"fetcher_bundle_version": 1} if unit == "fetcher" else {}),
+        "registry": REGISTRY,
+        "account_id": ACCOUNT,
+        "release_tag": "",
+        **(
+            {"fetcher_bundle_version": release_manifest.CURRENT_FETCHER_BUNDLE_VERSION}
+            if unit == "fetcher"
+            else {}
+        ),
     }
 
 
-def _write_selected_source_bundle(root: Path, unit: str) -> None:
-    for relative in release_manifest.bundle_paths(unit):
+def _write_selected_source_bundle(
+    root: Path, unit: str, *, bundle_version: int | None = None
+) -> None:
+    for relative in release_manifest.bundle_paths(unit, bundle_version=bundle_version):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(relative, encoding="utf-8")
@@ -63,23 +75,16 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         schema.write_bytes((REPO_ROOT / "contracts" / contract["path"]).read_bytes())
 
 
-def test_legacy_accepted_fetcher_bundle_replay_preserves_identity_and_new_format_is_bound(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "legacy"
-    for relative in release_manifest.bundle_source_paths(
-        "fetcher", CONTRACT_DATA, pilot_format=False
-    ):
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((REPO_ROOT / relative).read_bytes())
+def test_fetcher_bundle_layouts_are_bound_to_their_recorded_version(tmp_path: Path) -> None:
+    root = tmp_path / "layout-one"
+    _write_selected_source_bundle(root, "fetcher", bundle_version=1)
     manifest = _manifest("fetcher")
-    manifest.pop("fetcher_bundle_version")
+    manifest["fetcher_bundle_version"] = 1
     with release_manifest.SourceBundleReader(root) as reader:
         manifest["deployment_source_bundle_sha256"] = reader.deployment_source_bundle_sha256(
-            "fetcher", pilot_format=False
+            "fetcher", bundle_version=1
         )
-    manifest_path = tmp_path / "legacy-manifest.json"
+    manifest_path = tmp_path / "layout-one-manifest.json"
     manifest_path.write_text(json.dumps(manifest))
     raw = release_manifest.build_bundle(root, manifest_path, "fetcher")
     digest = hashlib.sha256(raw).hexdigest()
@@ -87,15 +92,21 @@ def test_legacy_accepted_fetcher_bundle_replay_preserves_identity_and_new_format
         release_manifest.validate_bundle_bytes(raw, expected_sha256=digest, unit="fetcher")
         == manifest
     )
-    assert not (root / "fetcher/configs/staging_provider_pilots.v1.json").exists()
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        names = {member.name for member in archive.getmembers()}
+    assert "infra/deploy/inspect_full_market_installation.py" in names
     assert release_manifest.build_bundle(root, manifest_path, "fetcher") == raw
-    manifest["fetcher_bundle_version"] = 1
+    # The same tree recorded as the current layout no longer matches its checksum.
+    manifest["fetcher_bundle_version"] = release_manifest.CURRENT_FETCHER_BUNDLE_VERSION
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(release_manifest.ManifestError):
         release_manifest.build_bundle(root, manifest_path, "fetcher")
+    current = set(release_manifest.FETCHER_BUNDLE_FILES)
+    assert "infra/deploy/inspect_full_market_installation.py" not in current
+    assert current < set(release_manifest.FETCHER_BUNDLE_LAYOUTS[1])
 
 
-@pytest.mark.parametrize("value", [False, 0, 2, "1"])
+@pytest.mark.parametrize("value", [False, 0, 3, "1", 1.0, True])
 def test_fetcher_bundle_version_rejects_unknown_or_malformed_format(value) -> None:
     manifest = _manifest("fetcher")
     manifest["fetcher_bundle_version"] = value
@@ -146,11 +157,17 @@ def test_manifest_schema_rejects_unknown_missing_and_image_contract_breaks() -> 
     findb["migration_revision"] = "c" * 40
     with pytest.raises(release_manifest.ManifestError, match="Alembic head"):
         release_manifest.validate_manifest(findb, CONTRACT_DATA)
-    for invalid_schema_version in (True, 1.0, "1"):
+    for invalid_schema_version in (True, 1.0, "1", 1):
         candidate = _manifest()
         candidate["schema_version"] = invalid_schema_version
         with pytest.raises(release_manifest.ManifestError, match="schema_version"):
             release_manifest.validate_manifest(candidate, CONTRACT_DATA)
+    profiled = _manifest("fetcher")
+    profiled["runtime_profile"] = "full-market"
+    release_manifest.validate_manifest(profiled, CONTRACT_DATA)  # tolerated on replay
+    profiled["runtime_profile"] = "expanded"
+    with pytest.raises(release_manifest.ManifestError, match="runtime_profile"):
+        release_manifest.validate_manifest(profiled, CONTRACT_DATA)
 
 
 def test_contract_versions_must_match_the_exact_ingress_contract_set() -> None:
@@ -673,13 +690,22 @@ def test_bundle_allowlists_are_unit_scoped() -> None:
         "infra/deploy/runtime-secrets/render_serve_key.py",
     )
     assert release_manifest.FETCHER_RUNTIME_SECRET_FILES == (
-        "infra/deploy/inspect_full_market_installation.py",
         "fetcher/configs/full_market.local.v1.json",
         "fetcher/configs/full_market.staging.v1.json",
         "fetcher/configs/full_market.production.v1.json",
         "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
+    )
+    assert release_manifest.CURRENT_FETCHER_BUNDLE_VERSION == 2
+    assert set(release_manifest.FETCHER_BUNDLE_LAYOUTS) == {1, 2}
+    assert (
+        "infra/deploy/inspect_full_market_installation.py"
+        in (release_manifest.FETCHER_BUNDLE_LAYOUTS[1])
+    )
+    assert (
+        "infra/deploy/inspect_full_market_installation.py"
+        not in (release_manifest.FETCHER_BUNDLE_LAYOUTS[2])
     )
     assert "contracts/manifest.json" in release_manifest.COMMON_BUNDLE_FILES
     assert "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh" not in (
@@ -714,6 +740,10 @@ def test_generate_is_canonical_and_validates_real_bundle(tmp_path: Path) -> None
         str(REPO_ROOT),
         "--unit",
         "findb",
+        "--registry",
+        REGISTRY,
+        "--account-id",
+        ACCOUNT,
         "--commit-sha",
         COMMIT,
         "--migration-revision",
@@ -767,6 +797,10 @@ def test_validate_cli_binds_every_expected_release_input(tmp_path: Path) -> None
         str(REPO_ROOT),
         "--unit",
         "findb",
+        "--registry",
+        REGISTRY,
+        "--account-id",
+        ACCOUNT,
         "--commit-sha",
         COMMIT,
         "--migration-revision",
@@ -1132,6 +1166,10 @@ def test_manifest_cli_rejects_non_file_bundle_input(tmp_path: Path) -> None:
             str(root),
             "--unit",
             "fetcher",
+            "--registry",
+            REGISTRY,
+            "--account-id",
+            ACCOUNT,
             "--commit-sha",
             COMMIT,
             "--migration-revision",
@@ -1173,6 +1211,10 @@ def test_manifest_cli_rejects_a_symlinked_repo_root_for_generate_and_validate(
             str(repo_root),
             "--unit",
             "fetcher",
+            "--registry",
+            REGISTRY,
+            "--account-id",
+            ACCOUNT,
             "--commit-sha",
             COMMIT,
             "--migration-revision",
@@ -1486,6 +1528,10 @@ def test_generate_rejects_duplicate_image_name(tmp_path: Path) -> None:
             str(REPO_ROOT),
             "--unit",
             "findb",
+            "--registry",
+            REGISTRY,
+            "--account-id",
+            ACCOUNT,
             "--commit-sha",
             COMMIT,
             "--migration-revision",
@@ -1517,6 +1563,10 @@ def test_validate_rejects_a_different_selected_contract_manifest(tmp_path: Path)
                 str(REPO_ROOT),
                 "--unit",
                 "findb",
+                "--registry",
+                REGISTRY,
+                "--account-id",
+                ACCOUNT,
                 "--commit-sha",
                 COMMIT,
                 "--migration-revision",

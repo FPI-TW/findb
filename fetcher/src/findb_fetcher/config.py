@@ -20,11 +20,8 @@ _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def app_environment(default: str = "local") -> str:
-    """Canonical input; legacy metadata is only a same-value compatibility bridge."""
+    """Canonical runtime environment identity; the only environment input."""
     value = os.getenv("APP_ENVIRONMENT")
-    legacy = os.getenv("DEPLOYMENT_TARGET")
-    if legacy is not None and (value is None or value != legacy):
-        raise ConfigError("APP_ENVIRONMENT conflicts with legacy deployment metadata")
     if value is None:
         return default
     if value not in {"local", "staging", "production"}:

@@ -55,7 +55,6 @@ locals {
       active_feed_rejected = { unit = "findb", metric = "ActiveFeedRejectedAttempts", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
       active_feed_empty    = { unit = "findb", metric = "ActiveFeedEmptySnapshots", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
       active_feed_dq       = { unit = "findb", metric = "ActiveFeedDQErrors", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
-      deployment_failure   = { unit = "control-plane", metric = "DeploymentFailure", resource = "all", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
     },
   )
   metric_service = {
@@ -164,6 +163,30 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
   treat_missing_data  = "breaching"
   dimensions = {
     DeploymentUnit = each.value.unit, Resource = each.value.resource
+  }
+  alarm_actions = [aws_sns_topic.operations.arn]
+  ok_actions    = [aws_sns_topic.operations.arn]
+}
+
+# The CD workflow publishes DeploymentFailure once per failed unit rollout with
+# DeploymentUnit=<unit>, Resource=github-actions in both targets. The metric is
+# sparse by design, so missing data is healthy and one datapoint alarms.
+resource "aws_cloudwatch_metric_alarm" "deployment_failure" {
+  for_each            = local.units
+  alarm_name          = "findb-production-${each.key}-deployment-failed"
+  alarm_description   = "The ${each.key} production CD workflow published a deployment failure."
+  namespace           = "FinDB/Production"
+  metric_name         = "DeploymentFailure"
+  statistic           = "Maximum"
+  unit                = "Count"
+  period              = 300
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    DeploymentUnit = each.key, Resource = "github-actions"
   }
   alarm_actions = [aws_sns_topic.operations.arn]
   ok_actions    = [aws_sns_topic.operations.arn]

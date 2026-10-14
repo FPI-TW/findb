@@ -38,6 +38,13 @@ PROVIDERS = (
     ),
 )
 
+FULL_MARKET_STABLES = (
+    "findb-full-market-twelve-data",
+    "findb-full-market-finlab",
+    "findb-full-market-shioaji",
+    "findb-full-market-taifex",
+)
+
 FAKE_COMMAND = r"""
 import json, os, sys
 from pathlib import Path
@@ -64,7 +71,7 @@ elif command == "sudo":
     provider, image, state_dir, state_path, stable, candidate, previous = args[index+1:index+8]
     state.setdefault("provider_images", []).append([stable, image])
     runtime_command = args[index+10:]
-    if state.get("fault") == "provider_before": status = 7
+    if state.get("fault") in ("provider_before", "provider_before:" + stable): status = 7
     else:
         row = rows.get(stable)
         if row and row.get("accepted") == "false":
@@ -78,7 +85,7 @@ elif command == "sudo":
             else: rows[previous] = rows.pop(stable)
         if not status and os.environ["FETCHER_DEPLOY_MODE"] == "activate":
             rows[stable] = dict(id="new-"+stable, running=True, exit=0, oom=False, error="", accepted="true", cmd=runtime_command)
-            if os.environ["APP_ENVIRONMENT"] == "production" and os.environ.get("FETCHER_RUNTIME_PROFILE", "bounded") == "bounded":
+            if os.environ["APP_ENVIRONMENT"] == "production" and os.environ.get("FETCHER_CONSUMER_PROFILE") == "pilot":
                 rows[stable+"-historical"] = dict(id="new-"+stable+"-historical", running=True, exit=0, oom=False, error="", accepted="true", marker="date-boundary-v1", cmd=["findb-fetch-historical-backfill","--provider",provider.replace("-","_"),"--run-forever"])
         if not status and state.get("fault") == "provider_after": status = 9
         if not status and state.get("fault") == "provider_signal": state["signal_on_exit"] = True
@@ -169,10 +176,11 @@ def original_rows():
             id="old-" + stable + "-historical",
             running=True,
             exit=0,
-            stop_exit=137,
+            stop_exit=0,
             oom=False,
             error="",
             accepted="true",
+            marker="date-boundary-v1",
             image=f"{REGISTRY}/findb/staging/fetcher/{repository}@sha256:{digest}",
             cmd=f"findb-fetch-historical-backfill --provider {provider} --run-forever",
         )
@@ -184,12 +192,10 @@ def execute(
     *,
     mode="candidate",
     fault="",
-    profile="bounded",
     target="staging",
     source=None,
     postcommit_field=None,
     full_checkpoint=False,
-    accepted_replay=False,
     command_query=None,
     checkpoint_kind="valid",
 ):
@@ -207,15 +213,19 @@ def execute(
             "release_fetcher_provider.sh",
         ):
             (runtime / name).write_text("{}")
-        (release / "release-manifest.json").write_text(json.dumps({"runtime_profile": profile}))
+        (release / "release-manifest.json").write_text("{}")
         (host / "current").symlink_to(old_release)
         script = root / "deploy.sh"
         script_source = source or DEPLOY.read_text()
         checkpoint = root / "checkpoint"
+        # The coordinator receives the checkpoint directory from the committed
+        # control plane; offline it is either the relocated fixture or the
+        # legacy formula path that no fixture file ever satisfies.
+        state_root = checkpoint if full_checkpoint else Path("/var/lib/findb-full-market")
+        state_dir = state_root / "staging" if target == "staging" else state_root
         if full_checkpoint:
             import sqlite3
 
-            state_dir = checkpoint / "staging" if target == "staging" else checkpoint
             state_dir.mkdir(parents=True)
             with sqlite3.connect(state_dir / "state.sqlite3") as db:
                 db.executescript(
@@ -271,8 +281,7 @@ def execute(
             "ECR_REGISTRY": registry,
             "FETCHER_RELEASE_ROOT": str(release),
             "FETCHER_DEPLOY_MODE": mode,
-            "FETCHER_RUNTIME_PROFILE": profile,
-            "FETCHER_ACCEPTED_REPLAY": str(accepted_replay).lower(),
+            "FETCHER_FULL_MARKET_STATE_DIR": str(state_dir),
             "TWELVE_IMAGE_REF": f"{registry}/findb/{target}/fetcher/twelve-data@sha256:{'c' * 64}",
             "FINLAB_IMAGE_REF": f"{registry}/findb/{target}/fetcher/finlab@sha256:{'c' * 64}",
             "SHIOAJI_IMAGE_REF": f"{registry}/findb/{target}/fetcher/shioaji@sha256:{'c' * 64}",
@@ -445,7 +454,8 @@ def test_known_cmd_roles_and_full_checkpoint_are_preserved_in_both_entries(entry
             for call in actual.get("provider_images", [])
             if call[0].startswith("findb-full-market-")
         ]
-        assert bool(full_calls) == full
+        # The Full workers are released unconditionally in every target.
+        assert {call[0] for call in full_calls} == set(FULL_MARKET_STABLES)
 
 
 @pytest.mark.parametrize(
@@ -733,54 +743,6 @@ def test_previous_only_historical_retires_before_replacement_and_restores_on_fai
 
 
 @pytest.mark.parametrize(
-    "mode",
-    [
-        pytest.param("stable", id="mode=stable"),
-        pytest.param("previous-only", id="mode=previous-only"),
-        pytest.param("interrupted-stable", id="mode=interrupted-stable"),
-    ],
-)
-def test_bounded_replay_image_comes_from_registered_accepted_original(mode):
-    before = original_rows()
-    for name, row in before.items():
-        if name.endswith("-historical"):
-            row.update(marker="date-boundary-v1", stop_exit=0)
-    stable = "findb-full-market-twelve-data"
-    image = f"{REGISTRY}/findb/production/fetcher/twelve-data@sha256:{'b' * 64}"
-    accepted = dict(
-        id="accepted-full",
-        image=image,
-        running=False,
-        exit=0,
-        oom=False,
-        error="",
-        accepted="true",
-        cmd="findb-fetch-full-market",
-    )
-    before[stable if mode == "stable" else stable + "-previous"] = accepted
-    if mode == "interrupted-stable":
-        before[stable] = dict(
-            accepted,
-            image=f"{REGISTRY}/findb/production/fetcher/twelve-data@sha256:{'d' * 64}",
-            accepted="false",
-            id="interrupted-full",
-        )
-    completed, actual, pointer = execute(
-        copy.deepcopy(before),
-        target="production",
-        mode="activate",
-        accepted_replay=True,
-        full_checkpoint=True,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert [stable, image] in actual["provider_images"]
-    assert [stable, before.get(stable, {}).get("image")] not in (
-        actual["provider_images"] if mode == "interrupted-stable" else []
-    )
-    assert pointer == "a" * 64 + "-123-1"
-
-
-@pytest.mark.parametrize(
     "command,replay,mode,running,fault",
     [
         pytest.param(
@@ -952,7 +914,6 @@ def test_legacy_full_migration_selects_accepted_original_before_command(
         target="production",
         mode=mode,
         full_checkpoint=True,
-        accepted_replay=replay,
         fault=injected,
     )
     assert actual["checkpoint_preserved"]
@@ -992,12 +953,11 @@ def test_legacy_full_migration_selects_accepted_original_before_command(
     elif fault != "stop-refused":
         full_calls = [call for call in actual.get("provider_images", []) if call[0] == full]
         assert full_calls
-        expected_image = (
-            image
-            if replay
-            else f"289112218471.dkr.ecr.ap-southeast-1.amazonaws.com/findb/production/fetcher/twelve-data@sha256:{'c' * 64}"
-        )
+        # Every target re-releases the Full worker from the exact bundle digest;
+        # accepted replay no longer reuses an installed compatible image.
+        expected_image = f"289112218471.dkr.ecr.ap-southeast-1.amazonaws.com/findb/production/fetcher/twelve-data@sha256:{'c' * 64}"
         assert full_calls[0][1] == expected_image
+        assert replay in (True, False)
 
 
 @pytest.mark.parametrize(
@@ -1119,7 +1079,6 @@ def test_replay_unknown_accepted_metadata_rejects_before_runtime_effects(failure
         copy.deepcopy(before),
         target="production",
         mode="activate",
-        accepted_replay=True,
         full_checkpoint=True,
         fault=fault,
     )
@@ -1181,50 +1140,10 @@ def test_historical_interrupted_stable_preserves_selected_previous(running, faul
     assert "interrupted-historical" not in actual.get("started_ids", [])
 
 
-def test_accepted_legacy_historical_137_passes_postcommit_cleanup():
-    completed, actual, pointer = execute(original_rows(), mode="activate")
-    assert completed.returncode == 0, completed.stderr
-    assert "fetcher_aws_deploy=activated" in completed.stdout
-    assert pointer == "a" * 64 + "-123-1"
-    assert not any((row["id"].startswith("old-") for row in actual["rows"].values()))
-
-
 def assert_restored(before, after):
     for name, original in before.items():
         assert after["rows"][name]["id"] == original["id"]
         assert after["rows"][name]["running"] == original["running"], name
-
-
-def test_legacy_retirement_and_candidate_restores_originals():
-    before = original_rows()
-    completed, state, pointer = execute(before)
-    assert completed.returncode == 0, completed.stderr
-    assert_restored(before, state)
-    assert pointer == "b" * 64 + "-122-1"
-    assert completed.stderr.count("legacy_historical_crash_recovery") == 3
-
-
-def test_retry_handles_previously_stopped_legacy_137():
-    before = original_rows()
-    before[PROVIDERS[0][0] + "-historical"].update(running=False, exit=137)
-    completed, state, _ = execute(before)
-    assert completed.returncode == 0, completed.stderr
-    assert_restored(before, state)
-
-
-@pytest.mark.parametrize(
-    "profile",
-    [
-        pytest.param("bounded", id="profile=bounded"),
-        pytest.param("full-market", id="profile=full-market"),
-    ],
-)
-def test_legacy_exception_does_not_apply_to_production_or_full_market(profile):
-    before = original_rows()
-    completed, state, _ = execute(before, target="production", profile=profile)
-    assert completed.returncode != 0
-    assert "runtime_retirement_failed" in completed.stderr
-    assert_restored(before, state)
 
 
 def test_absent_historical_is_normal():
@@ -1265,31 +1184,11 @@ def test_failed_provider_transactions_restore_containers_and_pointer(mode, fault
         pytest.param({"oom": True}, id="change=oom=true"),
         pytest.param({"error": "sensitive-host-error"}, id="change=error=sensitive-host-error"),
         pytest.param({"stop_exit": 1}, id="change=stop_exit=1"),
-        pytest.param({"marker": "date-boundary-v1"}, id="change=marker=date-boundary-v1"),
-        pytest.param(
-            {
-                "image": "unknown@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-            },
-            id="change=image=unknown@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        ),
-        pytest.param(
-            {"cmd": "findb-fetch-scheduler --run-forever"},
-            id="change=cmd=findb-fetch-scheduler --run-forever",
-        ),
-        pytest.param({"accepted": "false"}, id="change=accepted=false"),
-        pytest.param({"path": "unexpected-entrypoint"}, id="change=path=unexpected-entrypoint"),
-        pytest.param(
-            {"args": ["--provider", "twelve_data", "--run-forever", "--extra"]},
-            id="change=args=--provider-twelve_data---run-forever---extra",
-        ),
-        pytest.param(
-            {"cmd": "findb-fetch-historical-backfill --provider finlab --run-forever"},
-            id="change=cmd=findb-fetch-historical-backfill --provider finlab --run-forever",
-        ),
+        pytest.param({"stop_exit": 137}, id="change=stop_exit=137"),
         pytest.param({"stop_error": True}, id="change=stop_error=true"),
     ],
 )
-def test_nonlegacy_or_unsafe_retirement_aborts_and_recovers(change):
+def test_unsafe_retirement_aborts_and_recovers(change):
     change = copy.deepcopy(change)
     before = original_rows()
     before[PROVIDERS[0][0] + "-historical"].update(change)
@@ -1297,8 +1196,7 @@ def test_nonlegacy_or_unsafe_retirement_aborts_and_recovers(change):
     assert completed.returncode != 0
     assert "transaction_aborted" in completed.stderr
     assert "sensitive-host-error" not in completed.stderr
-    if change.get("accepted") != "false":
-        assert_restored(before, state)
+    assert_restored(before, state)
 
 
 def test_new_historical_clean_exit_activates():
@@ -1311,7 +1209,12 @@ def test_new_historical_clean_exit_activates():
     assert pointer == "a" * 64 + "-123-1"
     assert not any((name.endswith("-previous") for name in state["rows"]))
     assert all((row["id"].startswith("new-") for row in state["rows"].values()))
-    assert set(state["rows"]) == {row[0] for row in PROVIDERS} | {"findb-fetcher-taifex-scheduler"}
+    # Every target installs the four Full workers next to the pilots.
+    assert set(state["rows"]) == (
+        {row[0] for row in PROVIDERS}
+        | {"findb-fetcher-taifex-scheduler"}
+        | set(FULL_MARKET_STABLES)
+    )
     assert not any((name.endswith("-historical") for name in state["rows"]))
 
 
@@ -1469,7 +1372,10 @@ def test_unaccepted_stable_never_displaces_accepted_retained_original(retained, 
         marker="date-boundary-v1",
         cmd=command,
     )
-    completed, state, pointer = execute(before, mode=mode, fault="provider_before")
+    # Fail at the provider that owns the retained original; the Full workers
+    # released before the pilots must not change this guarantee.
+    fault = "provider_before" if retained.endswith("-historical") else "provider_before:" + retained
+    completed, state, pointer = execute(before, mode=mode, fault=fault)
     assert completed.returncode != 0
     assert state["rows"][retained + "-previous"]["id"] == original["id"]
     assert not state["rows"][retained + "-previous"]["running"]

@@ -6,7 +6,6 @@ acquisition, then submits data through the normal raw-first Source ingest API.
 
 from __future__ import annotations
 
-import os
 from datetime import date, datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -16,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
     DatasetRegistry,
@@ -33,10 +33,6 @@ CAPABILITIES: dict[tuple[str, str], str] = {
     ("shioaji", "tw_equity_minute"): "executable",
     ("shioaji", "tw_etf_minute"): "executable",
 }
-STAGING_MAX_BACKFILL_DAYS = 31
-PRODUCTION_MAX_BACKFILL_DAYS = 366
-# Compatibility for existing staging callers; production uses the target-aware helper.
-MAX_BACKFILL_DAYS = STAGING_MAX_BACKFILL_DAYS
 LEASE_DURATION = timedelta(minutes=15)
 PROVIDER_TIMEZONES: dict[str, str] = {
     "twelve_data": "America/New_York",
@@ -46,18 +42,14 @@ PROVIDER_TIMEZONES: dict[str, str] = {
 
 
 def _max_backfill_days() -> int:
-    return (
-        PRODUCTION_MAX_BACKFILL_DAYS
-        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
-        else STAGING_MAX_BACKFILL_DAYS
-    )
+    """The configured window; staging and production share the field, not the value."""
+    return get_settings().HISTORICAL_BACKFILL_WINDOW_DAYS
 
 
 def _supports_backfill(provider: str, dataset_key: str) -> bool:
-    if (
-        os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
-        and provider == "shioaji"
-    ):
+    # Shioaji history stays declared-only in production until the published-universe
+    # historical runtime replaces the bounded manifests.
+    if get_settings().APP_ENVIRONMENT == "production" and provider == "shioaji":
         return False
     return (provider, dataset_key) in CAPABILITIES
 

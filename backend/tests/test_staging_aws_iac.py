@@ -442,11 +442,13 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             f"{unit}/{secret['name']}"
             for consumer in catalog["consumers"].values()
             for secret in consumer["secrets"]
-            if "staging" in secret.get("targets", ["staging", "production"])
         )
     assert tofu_secret_ids == catalog_secret_ids
     assert "fetcher/api/source/taifex" in tofu_secret_ids
-    assert "fetcher/runtime/configuration" not in tofu_secret_ids
+    # Both targets hold the application configuration and origin TLS in Secrets Manager.
+    assert "fetcher/runtime/configuration" in tofu_secret_ids
+    assert "findb/runtime/configuration" in tofu_secret_ids
+    assert "findb/tls/origin-certificate" in tofu_secret_ids
     assert "registry/ghcr-pull" not in secrets
     assert secrets.count('status        = "active"') == len(tofu_secret_ids)
     assert secrets.count('resource "aws_kms_key" "runtime_secrets"') == 1
@@ -497,11 +499,16 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             moves,
         )
     )
-    # TAIFEX Source is the only newly created metadata resource. The original
-    # state addresses keep their existing moves; it has no legacy address.
-    assert moved_pairs == {
-        (secret_id, secret_id) for secret_id in catalog_secret_ids - {"fetcher/api/source/taifex"}
+    # TAIFEX Source and the three unified-configuration secrets are created
+    # metadata resources without legacy state addresses; the original
+    # addresses keep their existing moves.
+    created = {
+        "fetcher/api/source/taifex",
+        "findb/runtime/configuration",
+        "findb/tls/origin-certificate",
+        "fetcher/runtime/configuration",
     }
+    assert moved_pairs == {(secret_id, secret_id) for secret_id in catalog_secret_ids - created}
     assert len(moved_pairs) == 17
     assert "registry/ghcr-pull" not in moves
 
@@ -831,19 +838,27 @@ def test_phase6_root_volume_backup_is_current_volume_bounded_and_retained() -> N
     assert 'output "root_volume_backup"' in outputs
 
 
-def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> None:
-    for unit, workflow_name, environment in (
-        ("findb", "findb-cd.yml", "staging-findb"),
-        ("fetcher", "fetcher-cd.yml", "staging-fetcher"),
-    ):
-        workflow = _read(REPO_ROOT / ".github" / "workflows" / workflow_name)
-        report_job = workflow.split("  report-staging-deployment-failure:", 1)[1]
+def test_cd_reports_deployment_failures_with_unit_scoped_metrics_in_every_target() -> None:
+    workflow = _read(REPO_ROOT / ".github" / "workflows" / "cd.yml")
+    for unit in ("findb", "fetcher"):
+        report_job = workflow.split(f"  report-{unit}-failure:", 1)[1].split("\n  report-", 1)[0]
         assert "always() &&" in report_job
-        assert "github.ref == 'refs/heads/main'" in report_job
-        assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in report_job
-        assert "needs.deploy.result == 'failure'" in report_job
-        assert f"environment: {environment}" in report_job
+        assert f"needs.deploy-{unit}.result == 'failure'" in report_job
+        assert f"needs.release-{unit}.result == 'failure'" in report_job
+        assert "needs.resolve.result == 'failure'" in report_job
+        assert f"environment: ${{{{ inputs.target || 'staging' }}}}-{unit}" in report_job
         assert "id-token: write" in report_job
-        assert "--namespace FinDB/Staging" in report_job
+        assert "control_plane.py export" in report_job
+        assert "FinDB/Production" in report_job and "FinDB/Staging" in report_job
+        assert '--namespace "$NAMESPACE"' in report_job
         assert "--metric-name DeploymentFailure" in report_job
         assert f"--dimensions DeploymentUnit={unit},Resource=github-actions" in report_job
+        assert "vars." not in report_job
+    production = _read(REPO_ROOT / "infra" / "tofu" / "production" / "monitoring.tf")
+    alarm = production.split('resource "aws_cloudwatch_metric_alarm" "deployment_failure"', 1)[1]
+    assert "for_each" in alarm
+    assert 'namespace           = "FinDB/Production"' in alarm
+    assert 'metric_name         = "DeploymentFailure"' in alarm
+    assert 'treat_missing_data  = "notBreaching"' in alarm
+    assert 'Resource = "github-actions"' in alarm or 'Resource       = "github-actions"' in alarm
+    assert "control-plane" not in alarm

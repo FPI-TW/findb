@@ -112,11 +112,11 @@ Source key與consumer隔離，不載入其他 provider credentials。
 
 Owner 依核准的 Full-market credential preparation 流程校準下列 DB-backed Source dataset
 allowlists 與 production Secrets Manager metadata；key 的 source identity 必須一致。
-`reconcile_fetcher_credentials.py --runtime-profile bounded|full-market` bridge 預設 bounded；
-一般部署時，operator 必須從已驗證的 Fetcher accepted bundle `release-manifest.json` 讀取
-`runtime_profile`（舊 manifest 缺值為 bounded），再傳入相同 profile；不得由 provider secrets
-或 mutable env 推測。另經明確授權且完成 review 的 Full-market credential preparation，可在
-Full runtime 尚未安裝前明確指定 `full-market`，只調整 allowlist／hash 並留下 audit 與 proof。
+`reconcile_fetcher_credentials.py --runtime-profile bounded|full-market` 預設 bounded；統一管線
+後每個 target 都安裝四個 Full workers，新 bundle 不再記錄 `runtime_profile`，因此 production 校準
+一律明確指定 `full-market`，不得由 provider secrets 或 mutable env 推測。經明確授權且完成 review
+的 Full-market credential preparation 可先於 Full runtime 驗收執行，只調整 allowlist／hash 並留下
+audit 與 proof。
 Source keys 或 bridge profile 不代表 runtime 已安裝、feed 已啟用或 deployment acceptance 已通過。
 Full-market bridge要求三個 provider Source hashes、獨立 TAIFEX Source hash與calendar Serve
 hash的精確集合；只校準 allowlist/hash並留下 deployment audit，不啟用 feed或scheduler。
@@ -202,11 +202,10 @@ After-hours 仍保留交易所 attributed trade_date，不能轉成民曆日期�
 HK／CN／TAIFEX 初次套用與 US successor 均不改動 scheduler admission、首次日期、
 readiness 或 scheduler desired state；本 repo fixture 的更新不等於 live DB 已調整。
 
-首次部署的 predeploy gate 只在`APP_ENVIRONMENT=production`接受完全沒有任何使用者 relation 的
+首次部署的 predeploy gate 在每個 target 都只接受完全沒有任何使用者 relation 的
 乾淨資料庫；candidate acceptance落盤後，activation才可執行唯一一次`alembic upgrade head`。
-正式`findb-production-cd`／reusable deploy workflow會提供validated release root並走上述
-candidate／accepted-record／activation序列；helper在沒有release root時保留的legacy direct-invocation分支
-只供既有相容流程，不是標準production release順序。
+`cd.yml` 與 reusable deploy workflow 會提供 validated release root 並走上述
+candidate／accepted-record／activation 序列；helper 沒有無 release root 的 legacy direct-invocation 分支。
 Alembic完成後、任何常駐服務啟動前，activation必須在同一個one-shot migration secret scope校準並
 驗證application DB role的最小權限；只允許`public`與`raw`的schema `USAGE`、table DML及sequence
 使用權，不得授予schema `CREATE`或把migration credential帶入常駐container；Alembic revision table
@@ -224,27 +223,26 @@ Manager values；不得為了自動化bootstrap放寬cross-unit IAM。腳本只�
 fingerprint，並將Source allowlist固定為`twelve_data/us_equity_eod`、`finlab/tw_equity_eod`及
 `shioaji/{tw_equity_minute,tw_etf_minute}`，calendar key固定為`serve` scope及page size 1000。
 只要已存在任一 table、partition、view、materialized view、sequence或foreign table卻沒有Alembic
-revision，即使帶有bootstrap旗標也必須fail closed。Staging與後續已有revision的Production部署維持
-既有的revision安全邊界：Staging在migration前驗證相容性並在migration後驗證exact revision；Production
-依既有predeploy、`alembic current`及application啟動revision gate驗證。不得以手動migration、staging image
+revision，即使帶有bootstrap旗標也必須fail closed。後續已有 revision 的部署在每個 target 都維持
+相同的 revision 安全邊界：migration 前驗證相容性、migration 後驗證 exact revision，並保留
+`alembic current` 與 application 啟動 revision gate。不得以手動migration、staging image
 或跳過preflight繞過。
-SSM host preflight通常要求至少一個目標服務容器正在執行；只有Production首次部署可在Docker完全沒有
-任何既有或停止容器時通過乾淨host例外。Staging、已有任一容器的Production host，或服務容器全數
+SSM host preflight通常要求至少一個目標服務容器正在執行；任一 target 的首次部署都可在Docker完全沒有
+任何既有或停止容器時通過乾淨host例外。已有任一容器的host，或服務容器全數
 停止但仍有殘留容器時都必須fail closed；此例外不放寬後續的exact digest、secret isolation與乾淨DB
 檢查。Secret isolation probe固定讀取另一unit已建立的`runtime/configuration`名稱並要求失敗，隨後
 必須成功載入本unit catalog；不得以不存在的同unit假secret或僅比對AWS CLI錯誤文字取代。
 
-由 OpenTofu outputs填入兩份 ignored `infra/env/production/*/.env.remote`，先執行 sync script的
-dry-run，再建立 branch policy僅允許 `main` 的 `production-findb` 與 `production-fetcher`。兩個
-Environment 只存 control-plane variables，不存 application secrets。只有下列 gate 全通過才可另外
-建立 `PRODUCTION_DEPLOY_ENABLED=true`：
+由 OpenTofu outputs 填入 `infra/env/production/{findb,fetcher}.json` 並經 PR review；
+`production-findb` 與 `production-fetcher` Environment 不存任何變數或 secret，只設定 branch policy
+僅允許 `main` 與 required reviewers。只有下列 gate 全通過，reviewer 才可核准 production deployment：
 
 - foundation、host、RDS、SSM、ECR、secret isolation、DNS/TLS、R2、monitoring/backup通過；
 - exact protected-main SHA 的 FinDB/Fetcher staging rollout均有 v2 accepted bundle；
 - staging promotion-reader可讀自身 accepted bundle/ECR且 cross-unit denied；
-- Production `.env.remote` dry-run無 placeholder、缺值或額外 key。
+- `python3 infra/env/control_plane.py validate` 通過，production JSON 無 placeholder。
 
-任一 live gate失敗，移除或將 gate設為非 `true`，所有 scheduler恢復 `stopped`。不得 fallback至
+任一 live gate 失敗，reviewer 拒絕核准並取消 run，所有 scheduler 恢復 `stopped`。不得 fallback至
 SHA tag、staging bundle、舊 image或 rebuild；Production只部署 `repository@sha256`。
 
 ## Initial production deployment evidence（2026-09-18）

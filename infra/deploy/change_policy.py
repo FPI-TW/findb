@@ -26,13 +26,10 @@ SHARED_PREFIXES = (
     "infra/deploy/",
 )
 INFRA_PREFIXES = ("infra/tofu/", "infra/env/")
-FINDB_STAGING_WORKFLOWS = {
-    ".github/workflows/findb-cd.yml",
-    ".github/workflows/findb-deploy.yml",
-}
-FETCHER_STAGING_WORKFLOWS = {
-    ".github/workflows/fetcher-cd.yml",
-    ".github/workflows/fetcher-deploy.yml",
+CD_WORKFLOW = ".github/workflows/cd.yml"
+UNIT_DEPLOY_WORKFLOWS = {
+    ".github/workflows/findb-deploy.yml": "findb",
+    ".github/workflows/fetcher-deploy.yml": "fetcher",
 }
 
 
@@ -47,14 +44,15 @@ def classify(paths: list[str]) -> dict[str, bool]:
             continue
         if path.startswith(".github/workflows/"):
             # Workflow changes are shared delivery policy and require both CI
-            # suites. A unit's staging caller or reusable deployment workflow
-            # must also exercise that exact changed path on staging; CI and
-            # production-control-plane changes remain non-deploying.
+            # suites. The single CD caller and a unit's reusable deployment
+            # workflow must also exercise that exact changed path on staging;
+            # CI-only workflow changes remain non-deploying.
             result["findb_ci"] = result["fetcher_ci"] = True
-            if path in FINDB_STAGING_WORKFLOWS:
-                result["findb_staging"] = True
-            if path in FETCHER_STAGING_WORKFLOWS:
-                result["fetcher_staging"] = True
+            if path == CD_WORKFLOW:
+                result["findb_staging"] = result["fetcher_staging"] = True
+            unit = UNIT_DEPLOY_WORKFLOWS.get(path)
+            if unit is not None:
+                result[f"{unit}_staging"] = True
             continue
         if path.startswith("infra/tests/"):
             result["findb_ci"] = True
