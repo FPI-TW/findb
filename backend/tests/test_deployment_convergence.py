@@ -501,9 +501,16 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
             text,
             re.S,
         ).group("body")
-        assert "if ! docker ps --format '{{.Names}}' | grep -Eq" in preflight_block
-        assert "then [ $q_target = production ];" in preflight_block
-        assert '[ -z \\"\\$(docker ps -aq)\\" ]; fi' in preflight_block
+        if unit == "fetcher":
+            assert "check_fetcher_host.py" in preflight_block
+            assert (
+                "--target $q_target --registry $q_registry --installed-validator" in preflight_block
+            )
+            assert "q_host_guard_sha" in preflight_block
+        else:
+            assert "if ! docker ps --format '{{.Names}}' | grep -Eq" in preflight_block
+            assert "then [ $q_target = production ];" in preflight_block
+            assert '[ -z \\"\\$(docker ps -aq)\\" ]; fi' in preflight_block
         assert "phase1-preflight-denial-probe" not in preflight_block
         cross_unit = "fetcher" if unit == "findb" else "findb"
         assert (

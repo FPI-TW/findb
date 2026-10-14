@@ -527,6 +527,37 @@ FinDB preflight只以`config --no-interpolate -q`驗證結構，runtime interpol
 包裝的candidate／activation helper內執行。Fetcher bundle刻意不包含FinDB Compose；其preflight改以`bash -n`
 驗證bundle內三個runtime shell helpers，再由candidate／activation執行provider transaction。
 
+Fetcher host eligibility guard由workflow SHA的獨立trusted checkout取得並在host比對checksum，
+不依賴被replay的舊bundle。Installed-current admission使用同一workflow SHA取得、runner端比對Git object checksum、
+host端再比對傳輸checksum的獨立manifest validator；installed manifest必須經該validator的嚴格bytes parser，
+拒絕重複JSON keys、非object root與malformed JSON。不執行installed release的validator，也不使用candidate的
+source allowlist驗證installed release。Candidate仍由自身已驗證的immutable bundle validator驗證與materialize。
+Drained installed manifest必須明確含有typed integer `fetcher_bundle_version=1`（bool不接受）；
+缺失、未知格式或缺少Pilot selected source時，即使重算較小legacy checksum也一律拒絕。
+Installed source只接受兩種已知Pilot format-1 allowlist：包含三個Full configs與installation inspection helper的現行格式，
+或四者全數不存在的舊格式（包含schema-v2 `fetcher-v0.1.5`）；四者僅部分存在一律拒絕。兩種格式皆用完整
+selected source bytes重算canonical SHA，並驗證contracts／schemas。這讓舊accepted candidate可在新drained host
+replay，新candidate也可驗證合法legacy installed host；不修改既有release、accepted record或tag。
+既有running-host分支保持；首次bootstrap只允許Docker inventory確定為空、
+且沒有current pointer的production host。Production host已drain時，所有容器都必須停止；guard驗證
+root-owned、不可由其他帳號寫入的`/opt/fetcher/current`所指immutable release、manifest的production／fetcher／
+registry身分、完整contract與source checksum，以及三個精確stable scheduler與任何已存在historical consumer的
+accepted label、manifest image digest、`APP_ENVIRONMENT`、command與正常`exited/0`狀態。Runtime身分證據
+必須包含`Config.Entrypoint`（只能是null或空array）、實際`Path`與`Args`；`Path`須等於該consumer的
+accepted command，`Args`須完整等於`Config.Cmd[1:]`，且完整`Config.Cmd`須逐項符合known production helper的固定argv契約：
+Twelve Data／FinLab scheduler使用`--schedule-file /app/configs/daily_scheduler.production.v3.json`、
+對應的`--slot-id western_markets_window --dataset-key us_equity_eod`／
+`--slot-id taiwan_market_window --dataset-key tw_equity_eod`；Shioaji使用
+`--manifest /app/configs/shioaji_tw50_2026_09_21.v2.json`；historical使用`--provider <provider>`；
+Full使用`--config /app/configs/full_market.production.v1.json --state-path /var/lib/findb-full-market/state.sqlite3
+--provider <provider> --readiness-file /var/lib/findb-account/readiness/<provider>.json`，以上均以`--run-forever`結尾。
+參數順序、路徑與完整內容皆固定；額外／重複／替代模式旗標（包含`--help`）拒絕，不執行installed helper推導命令。缺少欄位、entrypoint override或實際argv衝突均拒絕，
+即使`Config.Cmd`正確且exit code為0也不得視為drained。Full profile另要求
+四個stable Full consumers；historical不存在時不阻擋有效的首次Full installation。停止的recovery／backup
+容器可以保留，但不提供主機身分證明；缺失或衝突的
+release／stable runtime、未知非空主機與Docker查詢失敗一律拒絕。這些檢查只讀取檔案及Docker metadata，
+不啟動acquisition，也不修改checkpoint、governor、account allocation或Owner controls。
+
 Staging的non-secret application設定仍以unit GitHub Environment variables為source of truth；reusable
 deployment workflow必須用固定allowlist逐項shell-quote，並在candidate與activation兩個SSM command傳入完整契約。
 FinDB另在runner端要求`PORT=8080`，避免與Nginx upstream契約分歧。Fetcher保留既有bounded numeric／provider
