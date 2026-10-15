@@ -58,7 +58,7 @@ services:
       CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: "${CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN:-}"
     restart: unless-stopped
     healthcheck: *app-healthcheck
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in deployment variables} --workers 2"
+    command: sh -c "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in deployment variables} --workers 2"
     volumes:
       - findb-static-data:/app/app/static/data
 
@@ -76,7 +76,7 @@ services:
       FINDB_QUEUE_HEALTH_ADMIN_API_KEY: "${FINDB_QUEUE_HEALTH_ADMIN_API_KEY:?FINDB_QUEUE_HEALTH_ADMIN_API_KEY must be set in deployment runtime secrets}"
     restart: unless-stopped
     healthcheck: *app-healthcheck
-    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in deployment variables} --workers 1"
+    command: sh -c "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:?PORT must be set in deployment variables} --workers 1"
     volumes:
       - findb-static-data:/app/app/static/data
 
@@ -152,6 +152,7 @@ services:
     environment:
       <<: *app-environment
       CELERY_BROKER_URL: "${CELERY_BROKER_URL:?CELERY_BROKER_URL must be set in deployment runtime secrets}"
+    init: true
     command: python /app/scripts/dispatch_outbox.py
     depends_on:
       rabbitmq-policy:
@@ -217,7 +218,7 @@ services:
     environment:
       <<: *app-environment
     restart: unless-stopped
-    command: sh -c "while true; do python /app/scripts/cleanup_raw.py; sleep 86400; done"
+    command: python /app/scripts/cleanup_raw.py --repeat
 
 volumes:
   findb-static-data:

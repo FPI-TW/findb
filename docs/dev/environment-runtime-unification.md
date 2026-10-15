@@ -34,7 +34,7 @@ Staging refresh plan 為新增 3／修改 11／刪除 0；production 原先因�
 Staging TLS 已在原主機直接遷入 Secrets Manager，驗證 certificate／private key 配對，
 遷移用 15 分鐘暫時 write policy 已撤除。四台主機以各自 instance role 驗證新版 catalog 通過
 （每環境 Backend 11 個 secrets、Fetcher 10 個 secrets），沒有將應用秘密交給 runner。
-目前僅完成設定與授權基礎；應用服務尚未停止／切換。
+設定與授權基礎已完成；staging 已進入停止／備份階段，尚未部署統一版本。
 
 - 將統一版本經 PR／Required CI 整合至 protected main。
 - 依正式文件備份並停止／drain 舊 runtime，先 staging、後 production promotion 同一組 digests。
@@ -42,3 +42,10 @@ Staging TLS 已在原主機直接遷入 Secrets Manager，驗證 certificate／p
 - Native provider／R2 問題與 native acceptance 繼續獨立列管，不能以 fixtures 或部署通過關閉。
 
 尚未完成 AWS 應用實際切換，不能宣稱完整計畫完成。完成後移除此文件與對應 backlog。
+
+2026-10-15 PR #294 Required CI 通過後已開始 staging 切換：Owner 停止八個 controls，
+取消排隊歷史回補並確認 queue／outbox drain；八個 Fetcher 正常 exit 0，15 個 SQLite
+與完整安裝備份、checksum 已核對。Backend 舊 shell PID 1 未轉送 TERM，ingest 與
+raw cleanup 在 120 秒後 exit 137；切換已停在備份階段，尚未部署或 promotion。
+正在修正新版 API 的 exec、dispatcher init 與 cleanup 可中斷的日循環，保留異常退出紀錄，
+以停止後 DB 交易／drain 核對與成套快照完成復原基準；不得將 exit 137 記為優雅停止。

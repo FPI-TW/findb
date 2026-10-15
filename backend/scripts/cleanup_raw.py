@@ -3,8 +3,10 @@ Raw data cleanup script.
 Deletes expired raw data records based on retention policy.
 """
 
+import argparse
 import asyncio
 import logging
+import signal
 from datetime import timedelta
 
 from sqlalchemy import delete, exists, func, select
@@ -108,5 +110,30 @@ async def main():
     logger.info(f"Cleanup completed. Deleted {deleted} records.")
 
 
+async def run_repeated(*, interval: float = 86400, stop: asyncio.Event | None = None):
+    """Finish the current transaction, then stop promptly even during the daily wait."""
+    stop = stop if stop is not None else asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    try:
+        while not stop.is_set():
+            try:
+                await main()
+            except Exception:
+                logger.exception("Raw cleanup pass failed; retrying at the next interval")
+            if not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=interval)
+                except TimeoutError:
+                    pass
+    finally:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(sig)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repeat", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(run_repeated() if args.repeat else main())
