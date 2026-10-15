@@ -167,7 +167,7 @@ FinLab 資料完成後主機仍於 11:35 UTC 發生 global OOM，所有 Pilot �
 剩餘 provider 問題見 [原生驗收待辦](../dev/production-foundation-cutover-plan.md)。
 
 FinLab FileStorage 與各 feed 目錄缺欄隔離修復已經 PR #304／#306 部署；
-目前 staging Fetcher 為 `50cb51faadd9`，Fetcher CD `38769679416` 成功。
+該輪部署後 staging Fetcher 為 `50cb51faadd9`，Fetcher CD `38769679416` 成功。
 部署前 RDS snapshot `findb-staging-native-20261015-1605` 為 available，
 Fetcher 備份為 `/var/backups/findb-unification/staging-20261015T163004Z`。
 Owner 允許的 historical Shioaji 短暫啟停命令 `135b700c-be9b-42fa-86d7-af58cd092f5c`
@@ -190,6 +190,19 @@ ETF mapped 360、gap `00415A`；不再因單一 ETF 缺欄將整批 equity 標�
 11 個容器 restart 均為 0。
 這是目錄多輪穩定性證據，沒有新 market delivery，不增加 4／6 的 native 通過數；
 仍需多輪日常抓取及同時運作的記憶體觀測。Production 尚未進行本輪 native 驗收。
+
+TAIFEX 同日期目錄修正 PR #307 已合併為 `0a8d491a064d`，完整 `pnpm check`／`pnpm test`
+及修正後完整 Fetcher 1,394 項測試通過。獨立 `gpt-6.1-sol` High 最終審查為 CLEAR，
+另執行 Fetcher 118 + 355、Backend 66 項針對性測試與修改模組 typecheck。
+部署前備份命令 `8a9d2d59-52a9-4aaa-afec-4c51f411652f` 確認 11 個 runtime 全部優雅退出，
+16 份 SQLite 保存於 `/var/backups/findb-unification/staging-20261015T170222Z`，
+archive SHA-256 為 `7db30f43f177e1229885a9d8d705701061755e6d22e7b8fe59a665f62821c059`；
+RDS snapshot `findb-staging-native-20261015-1702` 為 available。
+Backend CD `38775214962` 成功；`5eae0a88-778c-499f-bc22-3afce819015b` 核對實際安裝版本，
+八組資料指紋、controls、首次日期與既有 plans／歷史工作均未改變。
+Fetcher CD `38775214709` 已成功；本機 AWS session 逾期，部署後 16 份 SQLite 的
+獨立備份比對與最終 controls／健康檢查待恢復登入後完成。CD 成功不代替這些保留驗證。
+本次不重設 2026-10-15 的 TAIFEX terminal checkpoints，也不以部署通過代替 native 驗收。
 
 `fetcher/tests/test_finlab_file_cache.py` 覆蓋五欄位重複呼叫的 frame 釋放、
 實際 storage 與舊 package alias、storage replacement、各錯誤路徑及 SDK lock。
