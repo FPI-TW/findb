@@ -158,6 +158,23 @@ FinLab 資料完成後主機仍於 11:35 UTC 發生 global OOM，所有 Pilot �
 資料證據通過不代表 runtime 穩定性、Full market 或 production 通過。
 剩餘 provider 問題見 [原生驗收待辦](../dev/production-foundation-cutover-plan.md)。
 
+同日 PR #304 經完整 `pnpm check`、`pnpm test` 與獨立 High 審查後，
+Fetcher CD `38732467628` 已將 FileStorage 修復 `b6fac56ac435` 部署至 staging。
+部署前 RDS snapshot `findb-staging-native-20261015-1205` 為 available，
+Fetcher 備份為 `/var/backups/findb-unification/staging-20261015T120528Z`。
+部署後唯讀命令 `82bddc22-43f6-4143-a6e7-a73d830f040c` 確認 11 個容器使用 accepted images，
+Pilot／Full market／歷史 SQLite 與帳號 governor 均保留 durable rows、配額及 cooldown；
+`cd505651-8787-4eec-bf75-c6af419cdd43` 確認 Backend 八組資料指紋、首次日期與 controls
+完全一致，所有抓取控制仍為 stopped。
+
+一次普通、受 governor 控制的 FinLab universe refresh 診斷
+`d9bb36a0-68de-4753-99ec-722cd4fe8262` 確認 SDK 實際 storage 為 FileStorage、
+`use_cache=false`、`cached_frames=0`，該診斷程序 peak RSS 為 284,656 KiB（約 278 MiB）。
+股票目錄 1,948 項無缺欄，ETF 361 項仍缺 `00415A`，candidate 未強制發布。
+後續健康命令 `00b8708f-ddbf-4796-80c3-2deb60d31400` 未見部署後新 OOM，11 個容器 restart 均為 0。
+這次診斷沒有新 market delivery，不增加 4／7 的 native 通過數；
+單次程序 RSS 也不代表日常多輪抓取或所有程序同時運作的記憶體上限。Production 未變更。
+
 `fetcher/tests/test_finlab_file_cache.py` 覆蓋五欄位重複呼叫的 frame 釋放、
 實際 storage 與舊 package alias、storage replacement、各錯誤路徑及 SDK lock。
 驗證 optional FinLab SDK 時，另以固定 1.5.7、封鎖外網的測試檢查真實 FileStorage：
