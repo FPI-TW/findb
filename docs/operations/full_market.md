@@ -108,6 +108,11 @@ Raw R2 以內容雜湊決定 immutable object key，使用 `If-None-Match: *` �
 讀取失敗或內容不一致仍阻擋交付，查無物件的競態可重試；不移除 bucket lock 或刪除物件。
 Twelve Data 的 catalogue 與實際日資料回應共用 Nasdaq MIC 規則：僅 `XNCM`、`XNGS`、
 `XNMS` 對應官方 `XNAS`，其餘交易所與幣別仍須完全符合 frozen universe；原始回應不改寫。
+Twelve Data universe refresh 只抓取 Source 當次授權的美國／香港 country catalogue，
+不下載全球 `/stocks` 目錄。每個市場各自經過 dataset-bound fresh authorization 與 account governor；
+回應大小上限維持不變，Raw 與 evidence URL 按市場分開，API key 不寫入 evidence URL。
+中途停機、撤銷某市場權限或任一回應失敗時，不提交部分 catalogue evidence。
+
 這些程式保護不等於 native 驗收通過。驗收仍須包含真正 locked object 的重複寫入、七條 feeds
 各自的非零 canonical／Serve 證據，以及 profile、plan、run 與 R2 bytes 的對應。
 Shioaji 共用 runtime 明確套用既有 `SHIOAJI_SIMULATION=true` 驗證，再建立隔離 SDK；

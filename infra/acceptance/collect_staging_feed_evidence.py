@@ -35,6 +35,11 @@ FETCHER_CONTAINERS = {
     "shioaji": "findb-fetcher-shioaji-scheduler",
     "taifex": "findb-fetcher-taifex-scheduler",
 }
+CURRENT_FETCHER_CONTAINERS = {
+    f"findb-{profile}-{provider}"
+    for profile in ("pilot", "full-market")
+    for provider in ("twelve-data", "finlab", "shioaji", "taifex")
+}
 
 
 def catalog_feeds() -> tuple[tuple[str, str], ...]:
@@ -169,9 +174,11 @@ def _transport_command(
     index: int = 0,
     environment: dict[str, str] | None = None,
 ) -> str:
-    if container not in {"findb-ingest", *FETCHER_CONTAINERS.values()} or not re.fullmatch(
-        r"[0-9a-f]{32}", nonce
-    ):
+    if container not in {
+        "findb-ingest",
+        *FETCHER_CONTAINERS.values(),
+        *CURRENT_FETCHER_CONTAINERS,
+    } or not re.fullmatch(r"[0-9a-f]{32}", nonce):
         raise ValueError("invalid evidence transport target")
     config = {
         "version": TRANSPORT_VERSION,
@@ -331,6 +338,7 @@ def _ssm_probe(
     container: str,
     provider: str | None = None,
     timeout_seconds: int = 180,
+    environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     nonce = secrets.token_hex(16)
     deadline = time.monotonic() + timeout_seconds
@@ -338,7 +346,7 @@ def _ssm_probe(
         command_id, envelope = _ssm_json(
             region=region,
             instance_id=instance_id,
-            command=_probe_command(script, container, provider, nonce=nonce),
+            command=_probe_command(script, container, provider, environment, nonce=nonce),
             deadline=deadline,
         )
         if envelope.get("transport") != TRANSPORT_VERSION or envelope.get("nonce") != nonce:
@@ -926,4 +934,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("Legacy five-feed CLI retired; use collect_native_feed_evidence.py")

@@ -526,7 +526,7 @@ def test_real_universe_refresh_preserves_partial_authorized_scope(
     source.universes = universes
     source.submit = submit
     runtime._snapshot = snapshot
-    runtime._catalogue = lambda: [
+    runtime._catalogue = lambda **kwargs: [
         {"symbol": "AAPL", "mic_code": "XNAS", "currency": "USD", "type": "Common Stock"}
     ]
     runtime._acquire = lambda member, plan, *args: (

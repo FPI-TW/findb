@@ -229,4 +229,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("Legacy checkpoint CLI retired; use export_native_fetcher_evidence.py")
