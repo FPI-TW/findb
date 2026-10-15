@@ -2,7 +2,8 @@
 
 Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，state、KMS、ECR、S3、IAM、DB、host 與 runtime secrets 均與 staging 隔離。
 兩環境共用部署契約，以 [部署文件](deployment.md) 為準；本文件保留 production 資源與待處理資料問題。
-程式或 IaC 宣告不等於 live acceptance；統一版切換狀態見 [待完成項目](../dev/environment-runtime-unification.md)。
+兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
+[待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
 ## Shioaji 缺口與 DQ 調查（2026-10-05）
 
@@ -106,14 +107,16 @@ Origin certificate secret固定使用單行 base64 欄位
 | `taifex` | `tw_futures_eod` |
 
 `reconcile_fetcher_credentials.py --runtime-profile unified` 只校準 allowlist／hash 並留下 audit，
-不啟動 scheduler。四把 Source keys 與 calendar Serve key 分離；跨 unit bridge 只傳 SHA-256，
+不啟動 scheduler。四把 Source keys 相互隔離；有效日曆與執行政策由 Source 提供，不再注入 calendar Serve key。
+跨 unit bridge 只傳 SHA-256，
 instance roles 不放寬跨 unit Secrets Manager 讀取。
 TAIFEX 公開 API 不需要 provider credential，但需要獨立 Source key；IaC 固定宣告此 metadata。
 S3 state backend 必須使用既有 KMS key ARN，不能任意替換 encryption 設定。
 
 ## DB 與 calendar
 
-兩環境共用 migration、application role 最小權限校準、registry、credential 與 calendar 初始化。
+兩環境共用 migration、application role 最小權限校準、registry 與 credential 初始化；
+部署不執行 calendar seed，也不要求日曆完整。Published 日期優先，缺少日期採 weekday default。
 新 controls 均 stopped；不得複製 staging canonical／raw／workflow data 至 production。
 Candidate 必須先通過 migration 與內部健康驗證，才保存 acceptance；失敗保持停止，不讓舊程式操作新 schema。
 詳見 [統一切換與回退程序](deployment.md)。

@@ -5,8 +5,8 @@
 
 ## 延後：平台強化
 
-Production foundation與live promotion／rollback acceptance由
-[production foundation與cutover計畫](production-foundation-cutover-plan.md)單獨追蹤，不在此重複列項。
+Production native 資料與實際 rollback 演練由
+[未完成驗收](production-foundation-cutover-plan.md)單獨追蹤，不在此重複列項。
 
 - [ ] 修正 production `DeploymentFailure` control-plane/all 測點缺測：告警自 2026-09-17 因
   `TreatMissingData=breaching` 維持 ALARM。需補足 publisher／告警契約與 live 後驗；不得以靜默重設
@@ -38,8 +38,6 @@ Production foundation與live promotion／rollback acceptance由
 - [ ] 以各 provider 的實際帳號確認 US 普通股／ADR、HK 主板／GEM、TW 上市／上櫃普通股與
   各類 ETF、Shioaji 分鐘資料 entitlement，並保存完整 official universe mapping、各平台已確認
   限制的 API 用量證據與治理資料；受限項保持 blocked。
-- [ ] 兩環境統一 runtime 的實際切換、quota／checkpoint 保留與 rollback 驗收，集中追蹤於
-  [環境與抓取流程統一](environment-runtime-unification.md)。七個 native provider feeds 另留資料驗收證據。
 - [ ] TW、HK、US、futures 實際 rollout 驗證 open-day 準時 complete，驗證
   expected 分母、durable no_data、partial Serve、gap catch-up、session 與 nullable futures fields。
 
