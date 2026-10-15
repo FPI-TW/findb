@@ -81,6 +81,11 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.resolve.outputs.revision }}
+        persist-credentials: false
+        clean: false
     - name: Load deployment driver from protected main
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -92,11 +97,6 @@ jobs:
       with:
         target: production
         unit: findb
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.resolve.outputs.revision }}
-        persist-credentials: false
-        clean: false
     - name: Verify exact release revision for binding
       env:
         EXPECTED_SHA: ${{ needs.resolve.outputs.revision }}
@@ -173,6 +173,11 @@ jobs:
     outputs:
       candidate_bundle_key: ${{ steps.bundle.outputs.candidate_bundle_key }}
     steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.resolve.outputs.revision }}
+        persist-credentials: false
+        clean: false
     - name: Load deployment driver from protected main
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -184,11 +189,6 @@ jobs:
       with:
         target: production
         unit: findb
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.resolve.outputs.revision }}
-        persist-credentials: false
-        clean: false
     - name: Verify exact release revision
       env:
         EXPECTED_SHA: ${{ needs.resolve.outputs.revision }}

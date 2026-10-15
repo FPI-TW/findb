@@ -45,6 +45,11 @@ jobs:
       release_root: ${{ steps.outputs.outputs.release_root }}
       finlab_image_ref: ${{ steps.release.outputs.finlab }}
     steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ inputs.revision }}
+        persist-credentials: false
+        clean: false
     - name: Load deployment driver from protected main
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -56,11 +61,6 @@ jobs:
       with:
         target: ${{ inputs.deployment_target }}
         unit: fetcher
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ inputs.revision }}
-        persist-credentials: false
-        clean: false
     - name: Checkout trusted checkpoint safety gate
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:

@@ -9,6 +9,8 @@ GitHub Actions 負責編排，不使用 GitHub Environment 設定、secrets、�
 所有部署入口從 protected `main` 執行，再解析 immutable release。OIDC subject 是
 `repo:FPI-TW/findb:ref:refs/heads/main`；套用 IAM 前須讀取 repository 實際 subject customization，
 不得只依預設格式推測。不同 account、unit、publisher、deploy、promotion reader 維持分離權限。
+Job 先 checkout immutable release，再於 `.deployment-driver` checkout protected-main driver 並載入 AWS 設定。
+載入本機 composite action 後不得重新初始化根 checkout，避免 action 在 post cleanup 前被刪除。
 第三方 Actions 固定完整 commit SHA；concurrency 依環境及 unit 分離，不取消進行中的部署。
 
 | Unit | Staging | Production |

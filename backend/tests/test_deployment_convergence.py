@@ -884,3 +884,41 @@ def test_release_tag_binding_validates_conditional_put_race_winner(
     result = _run_binding(environment)
     assert result.returncode == expected_code
     assert expected_marker in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "filename",
+    (
+        "findb-cd.yml",
+        "fetcher-cd.yml",
+        "findb-deploy.yml",
+        "fetcher-deploy.yml",
+        "findb-production-cd.yml",
+        "fetcher-production-cd.yml",
+    ),
+)
+def test_checkout_cannot_remove_configuration_action_before_its_post_step(filename):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+    checked = 0
+    for job in workflow["jobs"].values():
+        steps = job.get("steps", [])
+        for index, step in enumerate(steps):
+            if step.get("uses") != "./.deployment-driver/.github/actions/aws-configuration":
+                continue
+            driver_index = next(
+                i
+                for i, item in enumerate(steps[:index])
+                if item.get("with", {}).get("path") == ".deployment-driver"
+            )
+            assert steps[driver_index]["with"]["ref"] == "${{ github.workflow_sha }}"
+            root_checkouts = [
+                i
+                for i, item in enumerate(steps)
+                if item.get("uses", "").startswith("actions/checkout@")
+                and item.get("with", {}).get("path", ".") == "."
+            ]
+            # Initializing a root checkout can recreate its workspace even with
+            # clean:false. The local action must survive through job post steps.
+            assert all(i < driver_index for i in root_checkouts)
+            checked += 1
+    assert checked

@@ -49,3 +49,11 @@ Staging TLS 已在原主機直接遷入 Secrets Manager，驗證 certificate／p
 raw cleanup 在 120 秒後 exit 137；切換已停在備份階段，尚未部署或 promotion。
 正在修正新版 API 的 exec、dispatcher init 與 cleanup 可中斷的日循環，保留異常退出紀錄，
 以停止後 DB 交易／drain 核對與成套快照完成復原基準；不得將 exit 137 記為優雅停止。
+
+PR #294 已合併為 `adcfe41fb8350d37f5c21743b38ffd3a3650283f`。Staging 停止後
+確認沒有活動 DB sessions，durable work summaries 未變；Backend／Fetcher archive 與所有 mounts
+驗證完成，RDS `findb-unification-staging-20261015-0138`、兩份加密 EBS snapshots 已完成。
+舊 containers／current pointer 已封存移出 active installation，原 SQLite 與 governor 目錄保留。
+首次 staging CD 測試／image publication 通過，但 prepare job 的後續根 checkout 刪除了
+`.deployment-driver`，導致 composite action post cleanup 失敗；尚未執行 migration。
+已統一調整 checkout 順序，待修正 PR／CI／審查完成後重新部署。Production 尚未停止或部署。
