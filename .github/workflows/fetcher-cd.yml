@@ -234,6 +234,11 @@ jobs:
       ACCOUNT: '439622209937'
       REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
     steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.select.outputs.revision }}
+        persist-credentials: false
+        clean: false
     - name: Load deployment driver from protected main
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -245,11 +250,6 @@ jobs:
       with:
         target: staging
         unit: fetcher
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.select.outputs.revision }}
-        persist-credentials: false
-        clean: false
     - name: Verify exact requested revision for bundle preparation
       env:
         EXPECTED_SHA: ${{ needs.select.outputs.revision }}

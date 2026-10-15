@@ -40,6 +40,11 @@ jobs:
       target_id: ${{ steps.outputs.outputs.target_id }}
       release_root: ${{ steps.outputs.outputs.release_root }}
     steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ inputs.revision }}
+        persist-credentials: false
+        clean: false
     - name: Load deployment driver from protected main
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -51,11 +56,6 @@ jobs:
       with:
         target: ${{ inputs.deployment_target }}
         unit: findb
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ inputs.revision }}
-        persist-credentials: false
-        clean: false
     - name: Verify immutable target contract
       env:
         EXPECTED_SHA: ${{ inputs.revision }}
