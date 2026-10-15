@@ -44,6 +44,8 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
    不啟動未 accepted 的抓取程序。
 5. Orchestrator 保存 immutable accepted bundle／record，綁定 commit、unit、target、digests、SSM command 與成功結果。
    SSM timeout、結果不明或缺少成功 marker 均不得視為 acceptance。
+   Provider 安裝抑制 Docker image prune／pull 的例行 stdout，避免超過 SSM 回應上限而截斷終態 marker；
+   錯誤 stderr 與失敗 exit code 仍保留，不以 CloudWatch 的成功文字繞過 acceptance gate。
 6. Activate 再次驗證相同 identity 與必要 gates，啟動 accepted services、公開 nginx，完成 TLS／routing／queue health，
    才更新 current pointer。Fetcher daemon 可保持 idle，抓取 desired state 仍由 Owner 人工控制。
 

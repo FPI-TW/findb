@@ -230,10 +230,7 @@ function makeFullMarketFreshness(
         pending_feeds: [
           {
             dataset_key: "tw_futures_eod",
-            blockers: [
-              "activation_disabled",
-              "calendar_does_not_cover_evaluation_date",
-            ],
+            blockers: ["activation_disabled", "baseline_not_published"],
           },
         ],
         status: "not_due",
@@ -616,37 +613,60 @@ describe("Operations presentation", () => {
     ).toBe("configuration_error")
   })
 
-  it("retains calendar prerequisites and explains that fresh raw detail is not full-market proof", () => {
-    const freshness = makeFullMarketFreshness("taifex")
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <IngestionOverviewPanel
-          profile="full_market"
-          freshnessResult={{
-            ok: true,
-            data: { success: true, data: [freshness] },
-          }}
-          schedulersResult={null}
-          loading={false}
-          pending={false}
-          freshnessError=""
-          schedulersError=""
-          role="viewer"
-        />
-      </QueryClientProvider>
-    )
-    expect(screen.getByText("尚未啟用")).toBeInTheDocument()
-    expect(
-      screen.getByText(
-        /tw_futures_eod：activation_disabled；calendar_does_not_cover_evaluation_date/
+  it.each([
+    ["pilot", "Pilot", "pilot_taifex_v1"],
+    ["full_market", "Full market", "full_market_taifex_v1"],
+  ] as const)(
+    "labels %s scope and distinguishes pending activation from blockers",
+    (profile, label, schedulerKey) => {
+      const freshness = makeFullMarketFreshness("taifex", {
+        scheduler_key: schedulerKey,
+        execution_profile: profile,
+        pending_feeds: [
+          { dataset_key: "tw_futures_eod", blockers: [] },
+          {
+            dataset_key: "tw_futures_daily",
+            blockers: ["baseline_not_published"],
+          },
+        ],
+      })
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <IngestionOverviewPanel
+            profile={profile}
+            freshnessResult={{
+              ok: true,
+              data: { success: true, data: [freshness] },
+            }}
+            schedulersResult={null}
+            loading={false}
+            pending={false}
+            freshnessError=""
+            schedulersError=""
+            role="viewer"
+          />
+        </QueryClientProvider>
       )
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/資料更新不代表全市場已啟用或此 Scheduler 已回報心跳/)
-    ).toBeInTheDocument()
-    expect(screen.getByText(/此全市場 runtime 尚未回報/)).toBeInTheDocument()
-    expect(screen.queryByText("執行中")).not.toBeInTheDocument()
-  })
+      expect(screen.getByText("尚未啟用")).toBeInTheDocument()
+      expect(screen.getByText("tw_futures_eod：尚未啟用")).toBeInTheDocument()
+      expect(
+        screen.getByText("tw_futures_daily：baseline_not_published")
+      ).toBeInTheDocument()
+      expect(screen.getByText("尚未納入抓取範圍：")).toBeInTheDocument()
+      expect(
+        screen.getByText(new RegExp(`${label} 已啟用範圍：無`))
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(/資料更新不代表此模式已啟用或排程已回報心跳/)
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(new RegExp(`${label} 排程尚未回報心跳`))
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/Baseline／Calendar/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/全市場已啟用範圍/)).not.toBeInTheDocument()
+      expect(screen.queryByText("執行中")).not.toBeInTheDocument()
+    }
+  )
 
   it.each(["not_activated", "activated"])(
     "shows registry contract scope errors for %s full-market cards",

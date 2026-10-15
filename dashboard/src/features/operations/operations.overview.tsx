@@ -855,6 +855,7 @@ function IngestionCardView({
   requestToggle: (control: SchedulerMutationTarget) => void
 }) {
   const { control, freshness } = card
+  const profileLabel = schedulerProfileLabel(schedulerProfile(control))
   const runtimeStatus = selectSchedulerRuntimeStatus({ control, freshness })
   const runtimeStatusMeta = SCHEDULER_RUNTIME_STATUS_META[runtimeStatus]
   const normalizationCompleted =
@@ -976,22 +977,22 @@ function IngestionCardView({
       {freshness?.monitor_kind === "full_market" && (
         <div className="grid gap-2 text-xs text-muted">
           <p className="m-0">
-            全市場已啟用範圍：{freshness.active_dataset_keys.join(", ") || "無"}
-            。 Feed 明細可能來自 bounded runtime；資料更新不代表全市場已啟用或此
-            Scheduler 已回報心跳。
+            {profileLabel} 已啟用範圍：
+            {freshness.active_dataset_keys.join(", ") || "無"}
+            。資料更新不代表此模式已啟用或排程已回報心跳。
           </p>
           {!control.last_heartbeat_at && (
             <p className="m-0">
-              此全市場 runtime 尚未回報；請確認部署與 Owner 啟用狀態。
+              {profileLabel} 排程尚未回報心跳；請確認部署與 Owner 啟用狀態。
             </p>
           )}
           {freshness.pending_feeds.length > 0 && (
             <div>
-              <strong>待準備 Baseline／Calendar：</strong>
+              <strong>尚未納入抓取範圍：</strong>
               <ul className="mt-1 mb-0 list-disc pl-5">
                 {freshness.pending_feeds.map(feed => (
                   <li key={feed.dataset_key}>
-                    {feed.dataset_key}：{feed.blockers.join("；")}
+                    {feed.dataset_key}：{feed.blockers.join("；") || "尚未啟用"}
                   </li>
                 ))}
               </ul>
