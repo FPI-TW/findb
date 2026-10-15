@@ -1,148 +1,38 @@
-# Deployment environment sources
+# AWS 環境設定
 
-Application-local `.env.example` files remain next to the application they
-configure. Remote deployment values are managed here:
+GitHub Actions 保留編排責任；部署不使用 GitHub Environment、Environment secrets、審批或 OIDC environment subject。
+Repo 的 `bootstrap.json` 只保存 AWS account、region、unit bootstrap role 與 SSM 路徑。
+`GITHUB_ENV` 是 runner 的暫存輸出檔，與 GitHub Environment 設定無關。
 
-```text
-infra/env/
-|- staging/
-|  |- findb/
-|  |  |- remote.env.example
-|  |  `- .env.remote
-|  `- fetcher/
-|     |- remote.env.example
-|     `- .env.remote
-`- production/
-   |- findb/
-   |  |- remote.env.example
-   |  `- .env.remote
-   `- fetcher/
-      |- remote.env.example
-      `- .env.remote
-```
+## 設定來源
 
-`remote.env.example` is committed and documents the deployment contract.
-All four unit/environment sources publish `FULL_MARKET_ENABLED` as a non-secret variable.
-Only the exact values `true` and `false` are accepted; an omitted value defaults to `false`.
-Backend and Fetcher must use the same value in each environment. Publishing this flag
-selects the deployment profile and never starts a scheduler.
-`.env.remote` contains real values, must remain ignored with mode `0600`, and
-must never be copied to EC2 or committed.
+| 設定 | 權威來源 | 讀取者 |
+| --- | --- | --- |
+| 部署控制 | `/findb/<environment>/<unit>/deployment` SSM String | unit deploy role |
+| 應用設定 | `findb/<environment>/<unit>/runtime/configuration` Secrets Manager | instance role |
+| DB、provider、Source、R2、TLS credentials | runtime catalog 指定的獨立 Secrets Manager secrets | instance 上各 consumer 的最小 scope |
 
-The staging control-plane contract publishes seven non-sensitive AWS/SSM/ECR variables
-only. Populate the role, profile, and log-group values from the accepted
-OpenTofu staging outputs after review; the region, account, and DNS name must
-match the accepted staging OpenTofu variables and target contract:
+`deployment.schema.json` 定義兩環境相同的必填欄位、選填欄位與預設值。
+`infra/deploy/runtime-secrets/{findb,fetcher}.json` 定義每個 consumer 的相同設定／credentials schema。
+不得為 staging 放寬必填值，或將應用秘密送進 runner。所有命令只回報欄位名稱與驗證狀態。
 
-| Variable | Purpose |
-| --- | --- |
-| `AWS_REGION` | Region containing the existing staging EC2 targets. |
-| `AWS_ACCOUNT_ID` | Expected account guard for OIDC credentials and STS. |
-| `AWS_DEPLOY_ROLE_ARN` | Unit-specific, environment-bound GitHub OIDC deploy role. |
-| `AWS_INSTANCE_PROFILE_NAME` | Exact profile/role name expected on the existing EC2 target. |
-| `AWS_SSM_LOG_GROUP` | Unit-specific CloudWatch log group for bounded SSM preflight output. |
-| `AWS_DNS_CHECK_NAME` | DNS name resolved by the bounded host preflight. |
-| `ECR_REGISTRY` | Exact account/region-scoped ECR registry accepted by release manifests and host preflight. |
+## 驗證與同步
 
-For example, review `deploy_role_arns`, `instance_profile_names`, and
-`ssm_log_group_names` from:
+各目錄的 `deployment.json.example` 是模板，KMS UUID 等示範值必須替換為實際資源。
+Production promotion 設定需提供 production promotion role，以及 staging account、registry、bundle bucket、unit promotion reader role。
+先驗證本機 JSON，再使用已登入且帳號吻合的 AWS profile 同步：
 
 ```bash
-tofu -chdir=infra/tofu/staging output -json deploy_role_arns
-tofu -chdir=infra/tofu/staging output -json instance_profile_names
-tofu -chdir=infra/tofu/staging output -json ssm_log_group_names
+uv --directory backend run python ../infra/env/aws_configuration.py validate \
+  --target staging --unit findb --input /private/tmp/findb-staging-deployment.json
+AWS_PROFILE=staging uv --directory backend run python ../infra/env/aws_configuration.py sync \
+  --target staging --unit findb --input /private/tmp/findb-staging-deployment.json
 ```
 
-The seven control-plane names are required by `staging-findb` and `staging-fetcher`.
-`staging-findb` additionally requires the non-secret `RDS_DB_INSTANCE_IDENTIFIER` for its
-automated-backup/PITR health gate. Its sync contract no longer publishes `FINDB_EC2_HOST`,
-`FINDB_EC2_USER`, or `FINDB_EC2_SSH_KEY`; this does not delete any existing remote secret.
-Production Environment contracts are control-plane-only: `AWS_REGION`, account,
-OIDC deploy role, instance profile, SSM log group/DNS check, ECR registry,
-deployment-bundle bucket. They contain no
-application secrets or host transport keys. Production instances load runtime
-values from `findb/production/<unit>/` using their instance roles; deploy roles
-must not read secret values. `PRODUCTION_DEPLOY_ENABLED` is deliberately not
-part of the sync contract and remains absent until the foundation and live
-acceptance gates authorize an operator to create it with the exact value `true`.
-The production catalogs load the non-sensitive application configuration from
-the target-scoped `runtime/configuration` payload so GitHub remains a
-control-plane-only contract.
+相同工具支援 `--target production` 與 `--unit fetcher`。`sync` 會覆寫該 unit 的單一 SSM parameter；
+先保留原 parameter version，部署前對四組設定執行相同驗證。不得在此 JSON 加入 application secrets。
+`FULL_MARKET_ENABLED` 預設 `false`，只接受 `true`／`false`；它不選擇安裝程式，也不啟動抓取。
 
-`AWS_PROMOTION_ROLE_ARN` 也必須能在自身 unit 的
-`<unit>/production/release-tags/*` metadata prefix 執行 `s3:GetObject` 與條件式
-`s3:PutObject`，並使用 `DEPLOY_BUNDLE_KMS_KEY_ARN` 加密／解密。此 permission 不新增 GitHub
-variable：workflow 已使用既有 production bucket、KMS key 與 account contract；binding 物件只能
-以 `If-None-Match: *` 首次寫入，後續只讀取並嚴格比對。
-
-Each target and service pair publishes to an isolated GitHub Environment:
-
-| Target | Service | Local source | GitHub Environment |
-| --- | --- | --- | --- |
-| Staging | FinDB backend and Dashboard | `infra/env/staging/findb/.env.remote` | `staging-findb` |
-| Staging | Fetcher | `infra/env/staging/fetcher/.env.remote` | `staging-fetcher` |
-| Production | FinDB backend and Dashboard | `infra/env/production/findb/.env.remote` | `production-findb` |
-| Production | Fetcher | `infra/env/production/fetcher/.env.remote` | `production-fetcher` |
-
-Never copy a staging `.env.remote` into production. Start from the matching
-production `remote.env.example`; provision independent hosts, databases,
-broker credentials, API credentials, R2 buckets, and instance-role secret
-paths out of band.
-
-Validate a source without changing GitHub:
-
-```bash
-uv --directory backend run python ../infra/env/sync_github_environment.py staging findb
-uv --directory backend run python ../infra/env/sync_github_environment.py staging fetcher
-uv --directory backend run python ../infra/env/sync_github_environment.py production findb
-uv --directory backend run python ../infra/env/sync_github_environment.py production fetcher
-```
-
-Publish after reviewing the reported key names:
-
-```bash
-uv --directory backend run python ../infra/env/sync_github_environment.py staging findb --apply
-uv --directory backend run python ../infra/env/sync_github_environment.py staging fetcher --apply
-uv --directory backend run python ../infra/env/sync_github_environment.py production findb --apply
-uv --directory backend run python ../infra/env/sync_github_environment.py production fetcher --apply
-```
-
-The sync command creates or updates the Environment, restricts deployment to
-`main`, then publishes Variables and Secrets. It validates every required value
-before making remote changes and never prints values. Serve lookup/cache secrets
-are required only when `SERVE_REQUIRE_AUTH=true`; when enabled they must be
-different DB-backed credentials.
-
-Fetcher Environments set `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS` (default `30`,
-valid range `1`–`30`) for the DB control poll/heartbeat cadence. Desired state
-is not an Environment variable; it is stored in FinDB DB and changed by an
-owner through Dashboard. Fetcher Environments also set `SHIOAJI_SIMULATION=true`;
-the reviewed data-only
-account and scheduler reject production trading mode in every target.
-The same CD workflow preflights each provider image and its own durable SQLite
-state before converging that provider's isolated container. Scheduler rows are
-created stopped in each environment and enabled only after controlled rollout. Calendar Serve
-and all three provider Source credentials must be pairwise distinct. Removing a
-local value does not delete an already-published GitHub Environment value:
-delete retired remote values explicitly before redeploying.
-
-The ordinary deployment workflows use the non-secret `FULL_MARKET_ENABLED`
-GitHub Environment variable to select the `bounded` or `full-market` profile
-for staging and production. Local runs set the flag in their application `.env`
-files. Backend and Fetcher values must match in every environment, and the
-default is `false`. Publishing `true` selects a profile but does not start its
-scheduler. Immutable accepted replay retains the profile recorded at acceptance.
-Full market still requires provider entitlement, installed runtime and account
-enrollment, a published Owner baseline, a complete calendar, and an explicit
-Owner start. TAIFEX has an independent `api/source/taifex` credential and loads
-no provider API key. `enable_full_market_runtime=false` leaves its OpenTofu
-secret metadata absent by default; declaration and secret population require
-their normal review and do not establish live data acceptance.
-
-The deployment workflow injects canonical `APP_ENVIRONMENT` from the verified
-deployment target, so `.env.remote` and GitHub Environments do not need to set
-it manually. The immutable manifest, accepted record, and config JSON
-`deployment_target` field and CLI `--deployment-target` contract remain
-unchanged. A reviewed legacy bridge maps the canonical value for verified
-accepted replay when an older helper still requires `DEPLOYMENT_TARGET`; it
-does not change immutable bundle or acceptance metadata.
+應用設定與 credentials 由 host loader 在 tmpfs 建立短期檔案，結束即清除；TLS／nginx 敏感檔案留在
+`/run/findb-runtime-secrets/nginx`，開機由 systemd 重新載入。詳細部署契約見
+[deployment.md](../../docs/operations/deployment.md)。

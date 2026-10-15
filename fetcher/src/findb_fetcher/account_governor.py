@@ -145,7 +145,10 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
 
     if consumer() in {"pilot", "historical"}:
         return {"acquisition_allowed": True}  # Each bounded runtime retains its own control/auth.
-    if not enabled():
+    profile = os.getenv("FETCHER_EXECUTION_PROFILE", "full_market")
+    if profile not in {"pilot", "full_market"}:
+        raise QuotaBlockedError("invalid execution profile")
+    if profile == "full_market" and not enabled():
         raise QuotaBlockedError("local full-market flag is disabled")
     with FullMarketSourceClient(FetcherConfig.from_env()) as source:
         result = source.request(
@@ -154,6 +157,7 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
             + urlencode(
                 {
                     "consumer": consumer(),
+                    "execution_profile": profile,
                 }
             ),
         )
@@ -178,7 +182,11 @@ def reserve(provider: str, *, force: bool = False) -> Permit | None:
     state = FullMarketState(path)
     account = account_identity(provider, state)
     while True:
-        if consumer() not in {"pilot", "historical"} and not enabled():
+        if (
+            consumer() not in {"pilot", "historical"}
+            and os.getenv("FETCHER_EXECUTION_PROFILE", "full_market") == "full_market"
+            and not enabled()
+        ):
             raise QuotaBlockedError("local full-market flag is disabled")
         wait, before, after, window = state.reserve_acquisition(
             account=account,

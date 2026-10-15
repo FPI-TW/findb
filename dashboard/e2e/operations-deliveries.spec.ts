@@ -1,13 +1,18 @@
 import { expect, test, type Page } from "@playwright/test"
 const backend = "http://127.0.0.1:18081"
 const plansPath = "/api/v1/admin/delivery-plans"
-async function login(page: Page, role = "owner") {
+async function login(page: Page, role = "owner", profile = "full_market") {
   await page.goto("/dashboard/login")
   await page.waitForLoadState("networkidle")
   await page.getByLabel("帳號", { exact: true }).fill(role)
   await page.getByLabel("密碼", { exact: true }).fill("fixture-password")
   await page.getByRole("button", { name: "登入", exact: true }).click()
   await page.getByRole("link", { name: "交付監控", exact: true }).click()
+  await expect(
+    page.getByRole("tab", { name: "Pilot", exact: true })
+  ).toHaveAttribute("aria-selected", "true")
+  if (profile === "full_market")
+    await page.getByRole("tab", { name: "Full market", exact: true }).click()
   await expect(
     page.getByRole("button", { name: "展開詳細資料" }).first()
   ).toBeVisible()
@@ -68,18 +73,20 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
   request,
 }) => {
   await login(page)
-  await expect(page.getByRole("tab", { name: "全市場計畫" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
     "aria-selected",
     "true"
   )
-  await page.getByRole("button", { name: "全市場計畫分頁下一頁" }).click()
+  await page
+    .getByRole("button", { name: "Full market 交付計畫分頁下一頁" })
+    .click()
   await expect(page).toHaveURL(/pp=2/)
   await page
     .getByRole("combobox", { name: "資料集", exact: true })
     .selectOption("old_dataset")
   await expect(page).toHaveURL(/dataset=old_dataset/)
   await expect(
-    page.getByRole("table", { name: "全市場交付計畫" })
+    page.getByRole("table", { name: "Full market 交付計畫" })
   ).toContainText("old_dataset")
   await withDelayedTabs(
     page,
@@ -88,9 +95,10 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
       await expect(
         page.getByRole("combobox", { name: "資料集", exact: true })
       ).toHaveValue("old_dataset")
-      await expect(
-        page.getByRole("tab", { name: "全市場計畫" })
-      ).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
     }
   )
   await page.getByRole("tab", { name: "缺漏告警" }).click()
@@ -105,7 +113,7 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
     .click()
   await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
   await page.getByLabel("回補結束日期").fill("2026-10-08")
-  await page.getByRole("tab", { name: "全市場計畫" }).click()
+  await page.getByRole("tab", { name: "交付計畫" }).click()
   await expect(
     page.getByRole("combobox", { name: "資料集", exact: true })
   ).toHaveValue("old_dataset")
@@ -119,7 +127,7 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
     page.getByRole("button", { name: "建立回補", exact: true })
   ).toBeDisabled()
   await page.goForward()
-  await expect(page.getByRole("tab", { name: "全市場計畫" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
     "aria-selected",
     "true"
   )
@@ -136,7 +144,7 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
   await page.clock.install()
   await login(page)
   await page.getByRole("button", { name: "展開詳細資料" }).first().click()
-  const table = page.getByRole("table", { name: "全市場交付計畫" })
+  const table = page.getByRole("table", { name: "Full market 交付計畫" })
   const viewport = table.locator("..")
   const focus = page.getByLabel("交易日", { exact: true })
   await focus.focus()
@@ -166,7 +174,7 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
       )
       .toBe(count + 1)
     await expect(
-      page.getByText("正在更新全市場交付計畫…", { exact: false })
+      page.getByText("正在更新Full market 交付計畫…", { exact: false })
     ).toBeVisible()
     const during = await table.boundingBox()
     expect(Math.abs(during!.y - before!.y)).toBeLessThanOrEqual(1)
@@ -174,7 +182,7 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
       Math.abs((await focus.boundingBox())!.y - toolbarBefore!.y)
     ).toBeLessThanOrEqual(1)
     await expect(
-      page.getByText("正在更新全市場交付計畫…", { exact: false })
+      page.getByText("正在更新Full market 交付計畫…", { exact: false })
     ).toHaveCount(0)
     await expect(focus).toBeFocused()
     await expect(
@@ -191,13 +199,13 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
     .getByRole("button", { name: "重新整理", exact: true })
     .evaluate((button: HTMLButtonElement) => button.click())
   await expect(
-    page.getByText("正在更新全市場交付計畫…", { exact: false })
+    page.getByText("正在更新Full market 交付計畫…", { exact: false })
   ).toBeVisible()
   expect(
     Math.abs((await table.boundingBox())!.y - before!.y)
   ).toBeLessThanOrEqual(1)
   await expect(
-    page.getByText("正在更新全市場交付計畫…", { exact: false })
+    page.getByText("正在更新Full market 交付計畫…", { exact: false })
   ).toHaveCount(0)
   await request.post(`${backend}/fixture/delivery-config`, {
     data: { error: true },
@@ -238,17 +246,21 @@ test("viewer deep links cannot expose historical backfill and tab keyboard navig
   await withDelayedTabs(
     page,
     () =>
-      page.goto("/dashboard/operations/deliveries?tab=backfills", {
-        waitUntil: "commit",
-      }),
+      page.goto(
+        "/dashboard/operations/deliveries?profile=full_market&tab=backfills",
+        {
+          waitUntil: "commit",
+        }
+      ),
     async () => {
-      await expect(
-        page.getByRole("tab", { name: "全市場計畫" })
-      ).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
       await expect(page.getByRole("tab", { name: "歷史回補" })).toHaveCount(0)
     }
   )
-  await page.getByRole("tab", { name: "全市場計畫" }).focus()
+  await page.getByRole("tab", { name: "交付計畫" }).focus()
   await page.keyboard.press("ArrowRight")
   await expect(page.getByRole("tab", { name: "缺漏告警" })).toBeFocused()
   await expect(page).toHaveURL(/tab=alerts/)
@@ -308,7 +320,7 @@ for (const role of ["operator", "owner"]) {
     ).toEqual([])
     await confirmation.check()
     await expect(create).toBeEnabled()
-    await page.getByRole("tab", { name: "全市場計畫" }).click()
+    await page.getByRole("tab", { name: "交付計畫" }).click()
     await page.getByRole("button", { name: "重新整理", exact: true }).click()
     await page.getByRole("tab", { name: "歷史回補" }).click()
     await expect(preview).toBeVisible()
@@ -465,3 +477,43 @@ for (const expiry of ["local", "upstream"] as const) {
     ).toEqual([])
   })
 }
+
+test("Pilot defaults and profile switches keep plans, datasets and cache isolated", async ({
+  page,
+  request,
+}) => {
+  await login(page, "owner", "pilot")
+  await expect(page).toHaveURL(/profile=pilot/)
+  const pilot = page.getByRole("table", { name: "Pilot 交付計畫", exact: true })
+  await expect(pilot).toContainText("pilot_dataset")
+  await expect(pilot).not.toContainText("tw_futures_eod")
+  await expect(
+    page.getByRole("combobox", { name: "資料集", exact: true })
+  ).toContainText("pilot_dataset")
+  await request.post(`${backend}/fixture/delivery-config`, {
+    data: { delay: 300 },
+  })
+  await page.getByRole("tab", { name: "Full market", exact: true }).click()
+  await expect(page).toHaveURL(/profile=full_market/)
+  await expect(pilot).toHaveCount(0)
+  const full = page.getByRole("table", {
+    name: "Full market 交付計畫",
+    exact: true,
+  })
+  await expect(full).toContainText("tw_futures_eod")
+  await expect(full).not.toContainText("pilot_dataset")
+  await expect(
+    page.getByRole("combobox", { name: "資料集", exact: true })
+  ).not.toContainText("pilot_dataset")
+  await page.getByRole("tab", { name: "Pilot", exact: true }).click()
+  await expect(full).toHaveCount(0)
+  await expect(pilot).toContainText("pilot_dataset")
+  await page.reload()
+  await expect(
+    page.getByRole("tab", { name: "Pilot", exact: true })
+  ).toHaveAttribute("aria-selected", "true")
+  await expect(pilot).toContainText("pilot_dataset")
+  expect(
+    (await (await request.get(`${backend}/fixture/state`)).json()).mutations
+  ).toEqual([])
+})

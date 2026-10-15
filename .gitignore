@@ -17,6 +17,8 @@ env/
 private/
 !infra/env/
 !infra/env/**
+infra/env/**/__pycache__/
+infra/env/**/*.py[cod]
 infra/env/**/.env.remote
 
 build/

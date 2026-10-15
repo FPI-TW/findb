@@ -1,12 +1,6 @@
-"""Provision target-specific dataset registry policy for a deployment.
+"""Reconcile the same registry declarations in both AWS environments.
 
-Alembic migrations and the normal seed path are deliberately environment
-neutral.  CD invokes this explicit step after migrations and before writers
-restart.  It applies the bounded FinLab pilot policy in staging and removes
-only the exact historical pilot value in production.
-
-The update is one transaction protected by a PostgreSQL transaction advisory
-lock.  A bounded JSON report is printed for deployment audit evidence.
+Remove exact legacy pilot overrides; retain operator-owned policies and controls.
 """
 
 from __future__ import annotations
@@ -144,26 +138,17 @@ def provision_registry_config(
         )
 
     previous_override = _copy_json(source_overrides.get(SOURCE_KEY))
-    if target == "staging":
-        source_overrides[SOURCE_KEY] = _copy_json(FINLAB_PILOT_OVERRIDE)
-        expectation["source_overrides"] = source_overrides
-        changed = previous_override != FINLAB_PILOT_OVERRIDE
-        action = "staging_finlab_pilot_applied" if changed else "staging_finlab_pilot_unchanged"
-    elif previous_override == FINLAB_PILOT_OVERRIDE:
+    if previous_override == FINLAB_PILOT_OVERRIDE:
         source_overrides.pop(SOURCE_KEY, None)
         if source_overrides:
             expectation["source_overrides"] = source_overrides
         else:
             expectation.pop("source_overrides", None)
         changed = True
-        action = "production_exact_finlab_pilot_removed"
+        action = "legacy_finlab_pilot_removed"
     else:
         changed = False
-        action = (
-            "production_operator_finlab_override_preserved"
-            if previous_override is not None
-            else "production_full_market_policy_unchanged"
-        )
+        action = "operator_policy_preserved"
 
     resulting_source_overrides = expectation.get("source_overrides")
     resulting_override_value = (
@@ -289,7 +274,7 @@ TAIFEX_PILOT_MARKER = {"version": 1, "provider": "taifex", "instruments": ["TX",
 def provision_taifex_pilot_config(
     config: Mapping[str, Any], *, deployment_target: str
 ) -> dict[str, Any]:
-    target = _validate_target(deployment_target)
+    _validate_target(deployment_target)
     working = _copy_json(dict(config))
     governance = working.get("full_market")
     if (
@@ -313,25 +298,9 @@ def provision_taifex_pilot_config(
             raise RegistryProvisioningError(
                 "TAIFEX staging pilot policy changed; operator review required"
             )
-        if target == "production":
-            working["delivery_expectation"] = neutral_expectation
-            governance["required"] = True
-            working.pop("staging_pilot")
-        return working
-    if target == "staging":
-        if working.get("delivery_expectation") != neutral_expectation:
-            raise RegistryProvisioningError(
-                "TAIFEX staging cannot overwrite operator monitoring policy"
-            )
-        if {key: governance.get(key) for key in ("enabled", "required", "calendar_market")} != {
-            "enabled": False,
-            "required": True,
-            "calendar_market": "TAIFEX",
-        }:
-            raise RegistryProvisioningError("TAIFEX staging cannot overwrite operator governance")
-        working["delivery_expectation"] = stage_expectation
-        governance["required"] = False
-        working["staging_pilot"] = _copy_json(TAIFEX_PILOT_MARKER)
+        working["delivery_expectation"] = neutral_expectation
+        governance["required"] = True
+        working.pop("staging_pilot")
     return working
 
 
@@ -390,27 +359,6 @@ async def provision_registry(
                         ),
                     },
                 )
-            if target == "staging":
-                await connection.execute(
-                    text(
-                        "UPDATE dataset_registry SET is_active=:active, updated_at=now() WHERE dataset_key='tw_futures_eod'"
-                    ),
-                    {"active": True},
-                )
-            if target == "staging":
-                await connection.execute(
-                    text("""
-                    INSERT INTO scheduler_control (scheduler_key,provider,slot_id,scheduled_local_time,timezone,desired_state,observed_state,revision,created_at,updated_at)
-                    VALUES ('taifex_tw_futures_pilot_v1','taifex','taiwan_market_window','18:00:00','Asia/Taipei','stopped','stopped',1,now(),now())
-                    ON CONFLICT (scheduler_key) DO NOTHING
-                """)
-                )
-                await connection.execute(
-                    text("""
-                    INSERT INTO scheduler_dataset (scheduler_key,dataset_key)
-                    VALUES ('taifex_tw_futures_pilot_v1','tw_futures_eod') ON CONFLICT DO NOTHING
-                """)
-                )
         return report
     finally:
         await engine.dispose()
@@ -422,7 +370,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--deployment-target",
         choices=DEPLOYMENT_TARGETS,
         required=True,
-        help="GitHub deployment target whose registry policy should be provisioned",
+        help="AWS deployment target whose registry policy should be provisioned",
     )
     return parser
 

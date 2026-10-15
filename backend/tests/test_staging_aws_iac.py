@@ -122,7 +122,7 @@ def test_provider_and_instance_tag_contract_are_explicit_and_have_no_filesystem_
     assert "required_marker_contract" not in outputs
 
 
-def test_oidc_trust_is_exactly_bound_to_each_github_environment() -> None:
+def test_oidc_trust_is_exactly_bound_to_protected_main() -> None:
     iam = _read(STAGING_ROOT / "iam.tf")
     main = _read(STAGING_ROOT / "main.tf")
     tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
@@ -139,7 +139,7 @@ def test_oidc_trust_is_exactly_bound_to_each_github_environment() -> None:
     assert 'variable = "token.actions.githubusercontent.com:aud"' in iam
     assert 'values   = ["sts.amazonaws.com"]' in iam
     assert 'variable = "token.actions.githubusercontent.com:sub"' in iam
-    assert "repo:${var.github_repository}:environment:${each.value.environment_name}" in iam
+    assert "repo:${var.github_repository}:ref:refs/heads/main" in iam
     assert re.search(r'environment_name\s*=\s*"staging-findb"', main)
     assert re.search(r'environment_name\s*=\s*"staging-fetcher"', main)
     trust = iam.split('data "aws_iam_policy_document" "deploy_trust"', 1)[1].split(
@@ -446,7 +446,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
         )
     assert tofu_secret_ids == catalog_secret_ids
     assert "fetcher/api/source/taifex" in tofu_secret_ids
-    assert "fetcher/runtime/configuration" not in tofu_secret_ids
+    assert "fetcher/runtime/configuration" in tofu_secret_ids
     assert "registry/ghcr-pull" not in secrets
     assert secrets.count('status        = "active"') == len(tofu_secret_ids)
     assert secrets.count('resource "aws_kms_key" "runtime_secrets"') == 1
@@ -500,7 +500,14 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     # TAIFEX Source is the only newly created metadata resource. The original
     # state addresses keep their existing moves; it has no legacy address.
     assert moved_pairs == {
-        (secret_id, secret_id) for secret_id in catalog_secret_ids - {"fetcher/api/source/taifex"}
+        (secret_id, secret_id)
+        for secret_id in catalog_secret_ids
+        - {
+            "fetcher/api/source/taifex",
+            "fetcher/runtime/configuration",
+            "findb/runtime/configuration",
+            "findb/tls/origin-certificate",
+        }
     }
     assert len(moved_pairs) == 17
     assert "registry/ghcr-pull" not in moves
@@ -840,9 +847,9 @@ def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> No
         report_job = workflow.split("  report-staging-deployment-failure:", 1)[1]
         assert "always() &&" in report_job
         assert "github.ref == 'refs/heads/main'" in report_job
-        assert "vars.STAGING_ECR_CUTOVER_ENABLED == 'true'" in report_job
+        assert "STAGING_ECR_CUTOVER_ENABLED" not in report_job
         assert "needs.deploy.result == 'failure'" in report_job
-        assert f"environment: {environment}" in report_job
+        assert f"environment: {environment}" not in report_job
         assert "id-token: write" in report_job
         assert "--namespace FinDB/Staging" in report_job
         assert "--metric-name DeploymentFailure" in report_job

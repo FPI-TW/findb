@@ -1,0 +1,36 @@
+name: AWS deployment configuration
+description: Authenticate from protected main and load allowlisted nonsecret SSM configuration
+inputs:
+  target:
+    required: true
+    description: staging or production
+  unit:
+    required: true
+    description: findb or fetcher
+runs:
+  using: composite
+  steps:
+    - name: Resolve bootstrap location
+      shell: bash
+      env:
+        CONFIGURATION_TARGET: ${{ inputs.target }}
+        CONFIGURATION_UNIT: ${{ inputs.unit }}
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REF" = refs/heads/main
+        python3 "${{ github.action_path }}/../../../infra/env/aws_configuration.py" bootstrap --target "$CONFIGURATION_TARGET" --unit "$CONFIGURATION_UNIT" --github-env "$GITHUB_ENV"
+    - name: Authenticate the deployment unit
+      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      with:
+        role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+        role-session-name: ${{ inputs.unit }}-${{ inputs.target }}-${{ github.run_id }}
+    - name: Load and validate deployment configuration
+      shell: bash
+      env:
+        CONFIGURATION_TARGET: ${{ inputs.target }}
+        CONFIGURATION_UNIT: ${{ inputs.unit }}
+      run: |
+        set -euo pipefail
+        python3 "${{ github.action_path }}/../../../infra/env/aws_configuration.py" load --target "$CONFIGURATION_TARGET" --unit "$CONFIGURATION_UNIT" --github-env "$GITHUB_ENV"

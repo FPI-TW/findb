@@ -1,5 +1,11 @@
 import { z } from "zod"
 
+export const executionProfileSchema = z.enum(["pilot", "full_market"])
+export type ExecutionProfile = z.infer<typeof executionProfileSchema>
+export const executionProfileRequestSchema = z.object({
+  profile: executionProfileSchema,
+})
+
 const isoDateTime = z.string().datetime({ offset: true })
 const nullableDateTime = isoDateTime.nullable()
 
@@ -11,6 +17,7 @@ const paginationSchema = z.object({
 })
 
 export const deliveryPlansRequestSchema = z.object({
+  profile: executionProfileSchema.optional(),
   datasetKey: z.string().trim().max(100).default(""),
   tradeDate: z.union([z.iso.date(), z.literal("")]).default(""),
   page: z.number().int().positive().default(1),
@@ -22,6 +29,7 @@ export const deliveryPlansSchema = z.object({
   pagination: paginationSchema,
   data: z.array(
     z.object({
+      execution_profile: executionProfileSchema.default("full_market"),
       plan_id: z.string(),
       dataset_key: z.string(),
       provider: z.string(),
@@ -65,6 +73,7 @@ export const deliveryPlansSchema = z.object({
 export type DeliveryPlan = z.infer<typeof deliveryPlansSchema>["data"][number]
 
 export const auditFiltersSchema = z.object({
+  profile: executionProfileSchema.optional(),
   datasetKey: z.string().trim().max(100).default(""),
   runId: z.union([z.uuid(), z.literal("")]).default(""),
   dateFrom: z.union([z.iso.date(), z.literal("")]).default(""),
@@ -117,6 +126,7 @@ export const canonicalSlotIdSchema = z.enum([
 export type CanonicalSlotId = z.infer<typeof canonicalSlotIdSchema>
 
 export const schedulerSchema = z.object({
+  execution_profile: executionProfileSchema.optional(),
   full_market_enabled: z.boolean().nullable().optional(),
   environment: z.string().nullable().optional(),
   admission_id: z.string().nullable().optional(),
@@ -197,6 +207,7 @@ export const marketFreshnessSchema = z.object({
   data: z.array(
     z.object({
       market: z.string(),
+      execution_profile: executionProfileSchema.optional(),
       scheduler_key: z.string().trim().min(1).max(200),
       provider: z.string().trim().min(1).max(100),
       dataset_keys: z.array(z.string().trim().min(1).max(200)),
@@ -273,6 +284,7 @@ export const missingDeliveriesSchema = z.object({
       source: z.string(),
       schema_id: z.string(),
       schema_version: z.number().int(),
+      execution_profile: executionProfileSchema.optional(),
       expected_data_date: z.iso.date(),
       status: z.string(),
       first_detected_at: isoDateTime,
@@ -630,6 +642,7 @@ export const deliveryPlanDatasetsSchema = z.object({
   data: z.array(z.string()),
 })
 export const deliveryResourceRequestSchema = z.object({
+  profile: executionProfileSchema.optional(),
   resource: z.enum(["alerts", "backfills", "scopes"]),
   page: z.number().int().positive().default(1),
   pageSize: z.number().int().min(1).max(100).default(25),

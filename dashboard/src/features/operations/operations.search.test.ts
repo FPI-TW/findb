@@ -13,10 +13,10 @@ import {
 
 describe("operations route search", () => {
   it.each([undefined, "unknown", "FULL_MARKET", null, ["full_market"]])(
-    "defaults invalid overview profile %j to Pilot",
+    "leaves invalid overview profile %j for environment default",
     profile => {
       expect(overviewSearchSchema.parse({ profile })).toEqual({
-        profile: "pilot",
+        profile: undefined,
       })
     }
   )

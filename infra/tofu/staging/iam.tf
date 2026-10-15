@@ -2,7 +2,7 @@ data "aws_iam_policy_document" "deploy_trust" {
   for_each = local.unit_config
 
   statement {
-    sid     = "GitHubActionsEnvironmentOnly"
+    sid     = "GitHubActionsMainOnly"
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
 
@@ -20,7 +20,7 @@ data "aws_iam_policy_document" "deploy_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.value.environment_name}"]
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
     }
   }
 }
@@ -157,6 +157,11 @@ resource "aws_iam_role_policy" "ssm_agent" {
 data "aws_iam_policy_document" "deploy_permissions" {
   for_each = local.unit_config
 
+  statement {
+    sid       = "ReadOwnDeploymentConfiguration"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${var.aws_account_id}:parameter/findb/staging/${each.key}/deployment"]
+  }
   statement {
     sid    = "DescribeTargetState"
     effect = "Allow"

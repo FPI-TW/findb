@@ -6,7 +6,6 @@ import json
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -19,61 +18,44 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
     SchedulerControl,
-    SchedulerDataset,
 )
 from app.services.normalization_queue import execute_normalization, reconcile_stale_jobs
 from app.utils import utc_now
 from scripts.provision_registry import (
-    RegistryProvisioningError,
     provision_registry,
     provision_taifex_pilot_config,
 )
 from scripts.reconcile_fetcher_credentials import source_specs_for_profile
 from scripts.seed_data import DATASETS, seed_datasets
-from scripts.seed_staging_pilot_calendar import seed_staging_pilot_calendar
 from tests.test_full_market import _calendar, _ingress, _quote, _source_headers
-from tests.test_scheduler_control import _admin_headers
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-def test_pilot_catalog_matches_target_source_scope_and_supported_contracts(target: str) -> None:
+def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target):
     catalog = json.loads(
-        (
-            Path(__file__).resolve().parents[2] / "fetcher/configs/staging_provider_pilots.v1.json"
-        ).read_bytes()
+        (Path(__file__).resolve().parents[1] / "configs/execution_feeds.v1.json").read_text()
     )
-    specs = source_specs_for_profile("bounded", target)
-    assert {spec.source_name for spec in specs} == (
-        set(catalog["providers"]) if target == "staging" else {"twelve_data", "finlab", "shioaji"}
-    )
+    specs = source_specs_for_profile("unified", target)
     declarations = {item["dataset_key"]: item["config"] for item in DATASETS}
+    assert len(catalog["feeds"]) == 7
     for spec in specs:
         assert set(spec.allowed_datasets) == {
-            feed["dataset_key"] for feed in catalog["providers"][spec.source_name]["feeds"]
+            feed["dataset_key"] for feed in catalog["feeds"] if feed["provider"] == spec.source_name
         }
-        for feed in catalog["providers"][spec.source_name]["feeds"]:
-            config = declarations[feed["dataset_key"]]
-            assert config["schema_id"] == feed["schema_id"]
-            assert config["allowed_sources"] == [spec.source_name]
+        for key in spec.allowed_datasets:
+            assert declarations[key]["allowed_sources"] == [spec.source_name]
 
 
-def test_stage_futures_governance_exact_reversal_and_operator_fail_closed() -> None:
+def test_futures_provisioning_has_same_policy_in_both_environments():
     neutral = deepcopy(
         next(item["config"] for item in DATASETS if item["dataset_key"] == "tw_futures_eod")
     )
     neutral["operator_note"] = "keep"
-    stage = provision_taifex_pilot_config(neutral, deployment_target="staging")
-    assert stage["full_market"]["required"] is False
-    assert stage["full_market"]["enabled"] is False
-    assert provision_taifex_pilot_config(stage, deployment_target="production") == neutral
-    custom = deepcopy(neutral)
-    custom["full_market"]["enabled"] = True
-    assert provision_taifex_pilot_config(custom, deployment_target="production") == custom
-    with pytest.raises(RegistryProvisioningError):
-        provision_taifex_pilot_config(custom, deployment_target="staging")
-    stage["full_market"]["required"] = "false"
-    with pytest.raises(RegistryProvisioningError):
-        provision_taifex_pilot_config(stage, deployment_target="production")
+    for target in ("staging", "production"):
+        assert provision_taifex_pilot_config(neutral, deployment_target=target) == neutral
+        custom = deepcopy(neutral)
+        custom["full_market"]["enabled"] = True
+        assert provision_taifex_pilot_config(custom, deployment_target=target) == custom
 
 
 @pytest.mark.parametrize("recovery", ["none", "published_lost", "expired_lease"])
@@ -88,54 +70,66 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     await test_session.refresh(dataset)
     assert dataset.is_active is True
     assert dataset.config["full_market"]["enabled"] is False
-    assert dataset.config["full_market"]["required"] is False
-    expectations = dataset.config["delivery_expectation"]
-    assert expectations["schedule"]["enabled"] is True
-    assert expectations["schedule"]["local_time"] == "18:00:00"
-    assert expectations["record_count"]["minimum_record_count"] == 4
-    control = await test_session.get(SchedulerControl, "taifex_tw_futures_pilot_v1")
+    assert dataset.config["full_market"]["required"] is True
+    control = await test_session.get(SchedulerControl, "pilot_taifex_v1")
     assert control.desired_state == control.observed_state == "stopped"
-    assert (
-        await test_session.scalars(
-            select(SchedulerDataset.dataset_key).where(
-                SchedulerDataset.scheduler_key == control.scheduler_key
-            )
-        )
-    ).all() == ["tw_futures_eod"]
-    owner_headers = await _admin_headers(test_session, role="owner")
-    started = await client.patch(
-        "/api/v1/admin/schedulers/taifex_tw_futures_pilot_v1",
-        headers=owner_headers,
-        json={"desired_state": "running", "expected_revision": 1},
-    )
-    assert started.status_code == 200, started.text
-    assert started.json()["data"]["desired_state"] == "running"
-    assert all(
-        row.desired_state == "stopped"
-        for row in await test_session.scalars(
-            select(SchedulerControl).where(SchedulerControl.scheduler_key.like("%full_market%"))
-        )
-    )
-    for market in ("US", "TW", "HK"):
-        await _calendar(test_session, market)
-    operator_ids = set(await test_session.scalars(select(CalendarYearRevision.id)))
-    calendar = await seed_staging_pilot_calendar(test_session)
-    assert calendar["market"] == "TAIFEX"
-    assert set(await test_session.scalars(select(CalendarYearRevision.market))) == {
-        "US",
-        "TW",
-        "HK",
-        "TAIFEX",
-    }
-    assert operator_ids <= set(await test_session.scalars(select(CalendarYearRevision.id)))
-    assert (await seed_staging_pilot_calendar(test_session))[
-        "action"
-    ] == "operator_revision_preserved"
     day = date(2026, 10, 2)
-    plan = SimpleNamespace(
-        dataset_key="tw_futures_eod",
-        trade_date=day,
-        parts=[SimpleNamespace(work_item_id="taifex_tw_staging_pilot_v1")],
+    await _calendar(test_session, "TAIFEX", [day])
+    from app.schemas.full_market import (
+        DeliveryPlanCreateRequest,
+        UniversePublishRequest,
+        UniverseSubmitRequest,
+    )
+    from app.services.full_market import create_plan, publish_universe, submit_universe
+    from tests.full_market_fixtures import historical_admission
+    from tests.test_full_market import _universe
+
+    body = _universe(effective_date=day).model_dump(mode="json")
+    body["members"] = [
+        dict(
+            symbol=product,
+            provider_symbol=product + "202610",
+            exchange="TAIFEX",
+            currency="TWD",
+            asset_class="future",
+            product_code=product,
+            contract_code=product + ":202610",
+            contract_month="202610",
+            sessions=["regular", "after_hours"],
+        )
+        for product in ("TX", "MTX")
+    ]
+    release = await submit_universe(
+        test_session,
+        UniverseSubmitRequest.model_validate(body),
+        allowed_datasets=[dataset.dataset_key],
+    )
+    await publish_universe(
+        test_session,
+        release.release_id,
+        UniversePublishRequest(
+            evidence_note="Reviewed fixture baseline", first_baseline_approved=True
+        ),
+        actor="test-owner",
+    )
+    revision = await test_session.scalar(select(CalendarYearRevision))
+    from app.models.registry import UniverseRelease
+
+    release_row = await test_session.get(UniverseRelease, release.release_id)
+    await historical_admission(
+        test_session, dataset, release_row, day, revision.id, profile="pilot"
+    )
+    plan = await create_plan(
+        test_session,
+        DeliveryPlanCreateRequest(
+            version=1,
+            execution_profile="pilot",
+            dataset_key=dataset.dataset_key,
+            provider="taifex",
+            trade_date=day,
+            release_id=release.release_id,
+        ),
+        allowed_datasets=[dataset.dataset_key],
     )
     rows = [
         {
@@ -210,12 +204,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     from io import BytesIO
 
     from scripts import export_staging_feed_evidence as exporter
-    from tests.test_staging_feed_evidence import _load
 
-    collector = _load(
-        "taifex_actual_assessment",
-        Path(__file__).resolve().parents[2] / "infra/acceptance/collect_staging_feed_evidence.py",
-    )
     observed_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc)
     sample = dict(sample)
     served = await client.get(
@@ -252,32 +241,13 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     assert (
         feed["serve_probe"]["returned_fingerprint"] == feed["serve_probe"]["canonical_fingerprint"]
     )
-    catalog = json.loads(
-        (
-            Path(__file__).resolve().parents[2] / "fetcher/configs/staging_provider_pilots.v1.json"
-        ).read_bytes()
+    from app.services.full_market import get_plan
+
+    completed = await get_plan(
+        test_session, plan.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
     )
-    fetcher = {
-        "taifex": {
-            "provider": "taifex",
-            "recent_trade_dates": [
-                {"target_date": day.isoformat(), "status": "completed", "run_id": str(run_id)}
-            ],
-            "config": {"manifest_sha256": catalog["files"]["taifex_tw_staging_pilot.v1.json"]},
-        }
-    }
-    assert (
-        collector._assessment(package, fetcher, observed_at=observed_at)[
-            "pilot_functional_acceptance"
-        ]["taifex/tw_futures_eod"]
-        is True
-    )
-    assert (
-        collector._assessment(
-            package, fetcher, observed_at=datetime(2026, 10, 5, 10, tzinfo=timezone.utc)
-        )["pilot_functional_acceptance"]["taifex/tw_futures_eod"]
-        is False
-    )
+    assert completed.execution_profile == "pilot" and completed.status == "complete"
+    assert completed.summary.data == 4
     await provision_registry(database_url, deployment_target="production")
     await test_session.refresh(dataset)
     assert dataset.is_active is True and dataset.config["full_market"]["required"] is True

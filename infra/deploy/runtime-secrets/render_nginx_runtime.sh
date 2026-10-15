@@ -20,12 +20,7 @@ case "$render_mode" in
   *) echo "render_nginx_runtime=failed reason=render_mode_invalid" >&2; exit 1 ;;
 esac
 
-if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb\.json$ ]] \
-  || [ "$catalog" = /opt/findb/runtime-secrets/findb.json ]; then
-  runtime_dir="${catalog%/findb.json}"
-elif [ "$deployment_target" = staging ] \
-  && [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb\.json$ ]]; then
-  # Keep accepted staging v1 bundles replayable through their original release identity.
+if [[ "$catalog" =~ ^/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+/infra/deploy/runtime-secrets/findb\.json$ ]]; then
   runtime_dir="${catalog%/findb.json}"
 else
   echo "render_nginx_runtime=failed reason=catalog_path_invalid" >&2
@@ -89,7 +84,7 @@ if [ "$render_mode" = materialize ]; then
   fi
 fi
 
-if [ "$deployment_target" = production ]; then
+{
   certificate_tmp="$(mktemp "$runtime_output_dir/server.crt.XXXXXX")"
   private_key_tmp="$(mktemp "$runtime_output_dir/server.key.XXXXXX")"
   if ! printf '%s' "$FINDB_ORIGIN_CERTIFICATE_PEM_B64" | base64 --decode >"$certificate_tmp" \
@@ -124,7 +119,7 @@ if [ "$deployment_target" = production ]; then
     mv -f -- "$private_key_tmp" "$private_key_output"
     private_key_tmp=""
   fi
-fi
+}
 
 echo "render_nginx_runtime=ready mode=$render_mode outputs=tmpfs"
 RENDER_SCRIPT

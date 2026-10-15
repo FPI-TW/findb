@@ -90,8 +90,12 @@ describe("full market plans", () => {
       })
     )
     renderPanel()
-    expect(screen.getByText("正在載入全市場交付計畫…")).toBeInTheDocument()
-    expect(screen.queryByText("此條件沒有交付計畫。")).not.toBeInTheDocument()
+    expect(screen.getByText("正在載入Pilot 交付計畫…")).toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        "此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
+      )
+    ).not.toBeInTheDocument()
     await screen.findByRole("option", { name: "old_dataset" })
     await act(async () => resolve({ data: [plan], pagination }))
     expect(await screen.findByText("已逾時")).toBeInTheDocument()
@@ -133,12 +137,18 @@ describe("full market plans", () => {
     expect(mocks.loadDeliveryPlanDatasets).not.toHaveBeenCalled()
     hidden.unmount()
     const { client } = renderPanel()
-    await screen.findByText("此條件沒有交付計畫。")
+    await screen.findByText(
+      "此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
+    )
     mocks.loadDeliveryPlans.mockRejectedValue(new Error("offline"))
     await act(() =>
       client.refetchQueries({ queryKey: ["operations", "delivery-plans"] })
     )
-    expect(screen.getByText("此條件沒有交付計畫。")).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
+      )
+    ).toBeInTheDocument()
     expect(await screen.findByText(/保留最後成功資料/)).toBeInTheDocument()
   })
   it("uses server pagination and dataset/date filters without showing previous-filter rows", async () => {
@@ -149,11 +159,17 @@ describe("full market plans", () => {
     renderPanel()
     await screen.findByRole("button", { name: "展開詳細資料" })
     fireEvent.click(
-      screen.getByRole("button", { name: "全市場計畫分頁下一頁" })
+      screen.getByRole("button", { name: "Pilot 交付計畫分頁下一頁" })
     )
     await waitFor(() =>
       expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
-        data: { datasetKey: "", tradeDate: "", page: 2, pageSize: 25 },
+        data: {
+          profile: "pilot",
+          datasetKey: "",
+          tradeDate: "",
+          page: 2,
+          pageSize: 25,
+        },
       })
     )
     mocks.loadDeliveryPlans.mockReturnValue(new Promise(() => {}))
@@ -163,6 +179,7 @@ describe("full market plans", () => {
     await waitFor(() =>
       expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
         data: {
+          profile: "pilot",
           datasetKey: "old_dataset",
           tradeDate: "",
           page: 1,
@@ -198,4 +215,32 @@ describe("full market plans", () => {
     expect(screen.getByText(/已列出 1／總缺口 1502/)).toBeInTheDocument()
     expect(screen.getByText(/new_provider_reason/)).toBeInTheDocument()
   })
+})
+
+it("isolates profile queries and removes the previous profile while the next is loading", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const props = (profile: "pilot" | "full_market") => (
+    <QueryClientProvider client={client}>
+      <DeliveryPlansPanel search={deliveriesSearchSchema.parse({ profile })} />
+    </QueryClientProvider>
+  )
+  const view = render(props("pilot"))
+  await screen.findByText("已逾時")
+  expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
+    data: expect.objectContaining({ profile: "pilot" }),
+  })
+  mocks.loadDeliveryPlans.mockReturnValue(new Promise(() => {}))
+  view.rerender(props("full_market"))
+  expect(screen.queryByText("已逾時")).not.toBeInTheDocument()
+  await waitFor(() =>
+    expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
+      data: expect.objectContaining({ profile: "full_market" }),
+    })
+  )
+  expect(mocks.loadDeliveryPlanDatasets).toHaveBeenCalledWith({
+    data: { profile: "full_market" },
+  })
+  expect(screen.getByText("正在載入Full market 交付計畫…")).toBeInTheDocument()
 })

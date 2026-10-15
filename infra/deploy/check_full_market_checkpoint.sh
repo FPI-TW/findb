@@ -44,6 +44,10 @@ try:
     }
     if command == ["python", "-m", "findb_fetcher"]:
         role = "readiness"
+    elif command[0] == "findb-fetch-runtime":
+        role = command[command.index("--execution-profile") + 1]
+        if role not in {"pilot", "full_market"}:
+            raise ValueError("invalid profile")
     else:
         role = roles[command[0]]
     print(role)
@@ -65,6 +69,7 @@ fi
 full_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
 [ "$APP_ENVIRONMENT" != production ] || full_market_state=/var/lib/findb-full-market
 require_full_checkpoint() {
+  local full_market_state="${1:-$full_market_state}"
   # Installed workers own durable prepared work. Never replace a lost checkpoint,
   # including when an accepted replay invokes an older helper/image.
   if ! sudo test -f "$full_market_state/state.sqlite3" \
@@ -100,7 +105,7 @@ retained_full_market=false
 for pair in "findb-fetcher-scheduler:findb-full-market-twelve-data" "findb-fetcher-finlab-scheduler:findb-full-market-finlab" "findb-fetcher-shioaji-scheduler:findb-full-market-shioaji" "findb-fetcher-taifex-scheduler:findb-full-market-taifex"; do
   pilot_name="${pair%%:*}"
   full_name="${pair#*:}"
-  for base in "$full_name" "$pilot_name" "${full_name}-historical" "${pilot_name}-historical"; do
+  for base in "${full_name/full-market/historical}" "${full_name/full-market/pilot}" "$full_name" "$pilot_name" "${full_name}-historical" "${pilot_name}-historical"; do
     for installed in "$base" "${base}-previous" "${base}-candidate" "${base}-transaction-backup" "${base}-legacy-previous" "${base}-preflight" "${base}-preflight-state" "${base}-preflight-control"; do
       if runtime_exists "$installed"; then
         installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$installed")" || runtime_inventory_failure
@@ -108,6 +113,8 @@ for pair in "findb-fetcher-scheduler:findb-full-market-twelve-data" "findb-fetch
         if [[ "$installed" == "$full_name"* ]] || [ "$installed_role" = full_market ]; then
           require_full_checkpoint
           retained_full_market=true
+        elif [[ "$installed" == findb-pilot-* ]]; then
+          require_full_checkpoint "/var/lib/findb-pilot/$APP_ENVIRONMENT"
         fi
       fi
     done

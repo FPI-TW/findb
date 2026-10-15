@@ -43,6 +43,7 @@ MIGRATION_TEMPLATE_REVISIONS = (
     "c5d6e7f8a9b0",
     "a8b9c0d1e2f3",
     "1331cb73adad",
+    "3553ed95cfbf",
 )
 
 _REVISION_PATTERN = re.compile(r"^[0-9a-f]{12}$")

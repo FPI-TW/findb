@@ -1,5 +1,23 @@
 locals {
   runtime_secret_specs = {
+    "findb/runtime/configuration" = {
+      unit          = "findb"
+      relative_name = "runtime/configuration"
+      consumer      = "compose"
+      status        = "active"
+    }
+    "findb/tls/origin-certificate" = {
+      unit          = "findb"
+      relative_name = "tls/origin-certificate"
+      consumer      = "nginx"
+      status        = "active"
+    }
+    "fetcher/runtime/configuration" = {
+      unit          = "fetcher"
+      relative_name = "runtime/configuration"
+      consumer      = "all-providers"
+      status        = "active"
+    }
     "findb/database/application" = {
       unit          = "findb"
       relative_name = "database/application"

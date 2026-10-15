@@ -7,7 +7,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +16,8 @@ import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,7 +131,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
             contracts = source.load_selected_contract_manifest(contract_path)
             source_sha = source.deployment_source_bundle_sha256("fetcher")
         self.manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
+            "runtime_profile": "unified",
             "fetcher_bundle_version": 1,
             "deployment_target": "production",
             "unit": "fetcher",
@@ -156,20 +158,37 @@ class FetcherHostPreflightTests(unittest.TestCase):
         }
         self.write_manifest()
         self.rows = []
-        for provider, (name, command) in host.STABLES.items():
-            for suffix, args in (
-                ("", production_args(command)),
-                (
-                    "-historical",
-                    [
-                        "findb-fetch-historical-backfill",
-                        "--provider",
-                        provider,
-                        "--run-forever",
-                    ],
-                ),
-            ):
-                self.rows.append(self.row(name + suffix, provider, args))
+        for profile in ("pilot", "full_market"):
+            for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
+                prefix = profile.replace("_", "-")
+                name = f"findb-{prefix}-{provider.replace('_', '-')}"
+                state = f"/var/lib/findb-{prefix}/production"
+                if profile == "full_market":
+                    state = "/var/lib/findb-full-market"
+                args = [
+                    "findb-fetch-runtime",
+                    "--execution-profile",
+                    profile,
+                    "--config",
+                    "/app/configs/full_market.production.v1.json",
+                    "--state-path",
+                    state + "/state.sqlite3",
+                    "--provider",
+                    provider,
+                    "--run-forever",
+                ]
+                self.rows.append(
+                    self.row(name, "twelve_data" if provider == "taifex" else provider, args)
+                )
+
+        for provider in ("twelve_data", "finlab", "shioaji"):
+            self.rows.append(
+                self.row(
+                    "findb-historical-" + provider.replace("_", "-"),
+                    provider,
+                    ["findb-fetch-historical-backfill", "--provider", provider, "--run-forever"],
+                )
+            )
 
     def install_historical_source(self):
         shutil.rmtree(self.root)
@@ -233,16 +252,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.assertEqual(len(calls), 1 if not self.rows else 2)
         return result
 
-    def test_old_failing_six_consumers_and_three_inert_recovery_containers(self):
-        for provider, (name, _) in host.STABLES.items():
-            row = self.row(name + "-historical-legacy-recovery-v015", provider, ["old-command"])
-            row["Config"]["Env"] = []
-            row["Config"]["Image"] = "old-immutable-image"
-            row["State"]["ExitCode"] = 1
-            self.rows.append(row)
+    def test_complete_unified_installation_is_drained(self):
+        self.assertEqual(len(self.rows), 11)
         self.assertEqual(self.check(), "drained")
-        self.assertNotEqual(len(self.rows), 0)  # Old empty-inventory fallback fails.
-        self.assertFalse(any(row["State"]["Running"] for row in self.rows))
 
     def test_negative_runtime_identity_and_drain_branches(self):
         original = copy.deepcopy(self.rows)
@@ -317,16 +329,6 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.assertEqual(self.check(), "drained")
 
     def test_complete_argv_rejects_alternative_modes_for_every_consumer(self):
-        self.manifest["runtime_profile"] = "full-market"
-        self.write_manifest()
-        for provider in (*host.STABLES, "taifex"):
-            self.rows.append(
-                self.row(
-                    "findb-full-market-" + provider.replace("_", "-"),
-                    "twelve_data" if provider == "taifex" else provider,
-                    production_args("findb-fetch-full-market", provider),
-                )
-            )
         original = copy.deepcopy(self.rows)
         self.assertEqual(self.check(), "drained")
         for index, row in enumerate(original):
@@ -372,40 +374,18 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
-    def test_smaller_legacy_layout_rejected_even_with_matching_checksum(self):
-        self.install_historical_source()
-        for relative in release.STAGING_PILOT_BUNDLE_FILES:
-            (self.root / relative).unlink()
-        with host.installed_source_reader(release)(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", pilot_format=False)
-            )
-        self.manifest.pop("fetcher_bundle_version")
-        self.write_manifest()
-        with self.assertRaisesRegex(ValueError, "format identity invalid"):
-            self.check()
-        self.manifest["fetcher_bundle_version"] = 1
-        self.write_manifest()
-        with self.assertRaises(ValueError):
-            self.check()
-        for relative in host.FULL_SOURCE_FILES:
-            path = self.root / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / relative, path)
-        with host.installed_source_reader(release)(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", pilot_format=False)
-            )
-        self.manifest.pop("fetcher_bundle_version")
-        self.write_manifest()
-        with self.assertRaisesRegex(ValueError, "format identity invalid"):
-            self.check()
+    def test_pre_unification_schema_is_rejected(self):
+        for version in (1, 2):
+            self.manifest["schema_version"] = version
+            self.write_manifest()
+            with self.assertRaises(ValueError):
+                self.check()
 
     def test_installed_manifest_strict_json_fails_closed(self):
         original = json.dumps(self.manifest)
         for raw in (
             '{"deployment_target":"staging",' + original[1:],
-            original.replace('"schema_version": 2', '"schema_version": 1,"schema_version": 2'),
+            original.replace('"schema_version": 3', '"schema_version": 2,"schema_version": 3'),
             "[]",
             "{",
         ):
@@ -416,9 +396,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
-    def test_present_historical_identity_must_match_current_release(self):
-        self.rows[1]["Config"]["Image"] = "obsolete-image"
-        with self.assertRaises(ValueError):
+    def test_missing_profile_worker_is_rejected(self):
+        self.rows.pop()
+        with self.assertRaises(KeyError):
             self.check()
 
     def test_manifest_unit_target_registry_and_source_corruption_fail(self):
@@ -457,80 +437,39 @@ class FetcherHostPreflightTests(unittest.TestCase):
             self.check()
 
     def test_running_behavior_and_production_only_empty_bootstrap(self):
-        for target in ("staging", "production"):
-            with self.subTest(target=target):
-                self.rows[0]["State"]["Running"] = True
-                self.assertEqual(self.check(target), "running")
+        self.rows[0]["State"]["Running"] = True
+        self.rows[0]["State"]["Status"] = "running"
+        self.assertEqual(self.check(), "running")
+        with self.assertRaises(ValueError):
+            self.check("staging")
         self.rows = []
         with self.assertRaises(ValueError):
             self.check()  # Missing containers with a current pointer are corrupt.
         (self.base / "current").unlink()
         self.assertEqual(self.check(), "bootstrap")
-        with self.assertRaises(ValueError):
-            self.check("staging")
+        self.assertEqual(self.check("staging"), "bootstrap")
         self.rows = [self.row("unknown-service", "finlab", ["unknown"])]
         self.rows[0]["State"]["Running"] = True
         with self.assertRaises(ValueError):
             self.check()
 
-    def test_full_profile_requires_all_four_additional_drained_consumers(self):
-        self.manifest["runtime_profile"] = "full-market"
-        self.write_manifest()
-        with self.assertRaises(KeyError):
-            self.check()
-        for provider in (*host.STABLES, "taifex"):
-            self.rows.append(
-                self.row(
-                    "findb-full-market-" + provider.replace("_", "-"),
-                    "twelve_data" if provider == "taifex" else provider,
-                    production_args("findb-fetch-full-market", provider),
-                )
-            )
+    def test_same_image_cannot_substitute_a_different_provider(self):
         self.assertEqual(self.check(), "drained")
-        self.rows = [row for row in self.rows if not row["Name"].endswith("-historical")]
-        self.assertEqual(
-            self.check(), "drained"
-        )  # Valid first Full installation has seven workers.
-        self.rows[-1]["Config"]["Cmd"] = [
-            "findb-fetch-full-market",
-            "--provider",
-            "finlab",
-            "--run-forever",
-        ]
+        self.rows[-1]["Config"]["Cmd"][-2] = "twelve_data"
         with self.assertRaises(ValueError):
-            self.check()  # TAIFEX shares Twelve Data's image, but cannot share its role.
-
-    def test_real_historical_source_is_validated_without_executing_installed_code(self):
-        self.install_historical_source()
-        self.assertEqual(self.check(), "drained")
-        self.manifest["runtime_profile"] = "full-market"
-        self.write_manifest()
-        for provider in (*host.STABLES, "taifex"):
-            self.rows.append(
-                self.row(
-                    "findb-full-market-" + provider.replace("_", "-"),
-                    "twelve_data" if provider == "taifex" else provider,
-                    production_args("findb-fetch-full-market", provider),
-                )
-            )
-        self.rows = [row for row in self.rows if not row["Name"].endswith("-historical")]
-        self.assertEqual(self.check(), "drained")
-        installed_code = self.root / "infra/deploy/release_manifest.py"
-        installed_code.write_text("raise RuntimeError('must never execute installed code')")
-        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
             self.check()
 
-    def test_partial_known_layout_and_contract_corruption_fail_closed(self):
-        self.install_historical_source()
-        addition = self.root / sorted(host.FULL_SOURCE_FILES)[0]
-        addition.parent.mkdir(parents=True, exist_ok=True)
-        addition.write_text("unexpected")
-        with self.assertRaisesRegex(ValueError, "layout is incomplete"):
+    def test_installed_validator_is_never_executed(self):
+        self.assertEqual(self.check(), "drained")
+        (self.root / "infra/deploy/release_manifest.py").write_text(
+            "raise RuntimeError('must never execute')"
+        )
+        with self.assertRaises(ValueError):
             self.check()
-        addition.unlink()
-        contracts = json.loads((self.root / "contracts/manifest.json").read_text())
-        (self.root / "contracts" / contracts["contracts"][0]["path"]).write_text("corrupt")
-        with self.assertRaisesRegex(ValueError, "contract schema checksum mismatch"):
+
+    def test_missing_runtime_configuration_is_rejected(self):
+        (self.root / "fetcher/configs/full_market.staging.v1.json").unlink()
+        with self.assertRaises(ValueError):
             self.check()
 
     def generated_preflight(self, *, historical_candidate=False, tamper=None):
@@ -687,12 +626,10 @@ class FetcherHostPreflightTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
 
         def step(name):
-            block = re.search(
-                r"- name: " + re.escape(name) + r"(?P<body>.*?)(?=\n      - name:)",
-                workflow,
-                re.S,
-            )["body"]
-            return textwrap.dedent(block.split("        run: |\n", 1)[1])
+            parsed = yaml.safe_load(workflow)
+            return next(
+                row["run"] for row in parsed["jobs"]["deploy"]["steps"] if row.get("name") == name
+            )
 
         if tamper in ("provenance", "guard-provenance"):
             helper = (
@@ -751,38 +688,22 @@ class FetcherHostPreflightTests(unittest.TestCase):
             )
         return result
 
-    def test_generated_old_accepted_candidate_on_new_drained_host(self):
-        historical = historical_source(Path(self.temp.name) / "historical-validator-proof")
-        with historical.SourceBundleReader(self.root) as source:
-            contracts = source.load_selected_contract_manifest(
-                self.root / "contracts/manifest.json"
-            )
-            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                historical.validate_manifest(self.manifest, contracts, source)
-        self.manifest["runtime_profile"] = "full-market"
-        self.write_manifest()
-        self.rows = [row for row in self.rows if not row["Name"].endswith("-historical")]
-        for provider in (*host.STABLES, "taifex"):
-            self.rows.append(
-                self.row(
-                    "findb-full-market-" + provider.replace("_", "-"),
-                    "twelve_data" if provider == "taifex" else provider,
-                    production_args("findb-fetch-full-market", provider),
-                )
-            )
-        result = self.generated_preflight(historical_candidate=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("fetcher_host_eligibility=drained", result.stdout)
-
-    def test_generated_new_candidate_on_real_legacy_installed_host(self):
-        self.install_historical_source()
+    def test_generated_unified_candidate_on_drained_host(self):
         result = self.generated_preflight()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("fetcher_host_eligibility=drained", result.stdout)
 
+    def test_generated_candidate_rejects_pre_unification_installation(self):
+        self.manifest["schema_version"] = 2
+        self.write_manifest()
+        # Restore the candidate schema while retaining old installed evidence.
+        self.manifest["schema_version"] = 3
+        result = self.generated_preflight()
+        self.assertNotEqual(result.returncode, 0)
+
     def test_generated_wrong_installed_identity_fails(self):
         self.rows[0]["Config"]["Image"] = "wrong-image"
-        result = self.generated_preflight(historical_candidate=True)
+        result = self.generated_preflight()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fetcher_host_eligibility=failed", result.stderr)
 
@@ -791,20 +712,20 @@ class FetcherHostPreflightTests(unittest.TestCase):
         (self.root / "release-manifest.json").write_text(
             '{"deployment_target":"staging",' + raw[1:]
         )
-        result = self.generated_preflight(historical_candidate=True)
+        result = self.generated_preflight()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fetcher_host_eligibility=failed", result.stderr)
 
     def test_generated_actual_runtime_override_fails(self):
         self.rows[0]["Config"]["Entrypoint"] = ["/bin/true"]
         self.rows[0]["Path"] = "/bin/true"
-        result = self.generated_preflight(historical_candidate=True)
+        result = self.generated_preflight()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fetcher_host_eligibility=failed", result.stderr)
 
     def test_generated_corrupt_installed_source_fails(self):
         (self.root / "infra/deploy/runtime-secrets/fetcher.json").write_text("corrupt")
-        result = self.generated_preflight(historical_candidate=True)
+        result = self.generated_preflight()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fetcher_host_eligibility=failed", result.stderr)
 

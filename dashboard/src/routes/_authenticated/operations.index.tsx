@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { getDashboardEnvironment } from "../../lib/environment.functions"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import { overviewSearchSchema } from "../../features/operations/operations.search"
 
@@ -6,6 +7,20 @@ import { OperationsOverviewPage } from "../../features/operations/operations.ove
 
 export const Route = createFileRoute("/_authenticated/operations/")({
   validateSearch: overviewSearchSchema,
+  beforeLoad: async ({ search }) => {
+    if (!search.profile)
+      throw redirect({
+        to: "/operations",
+        search: {
+          ...search,
+          profile:
+            (await getDashboardEnvironment()) === "PRODUCTION"
+              ? "full_market"
+              : "pilot",
+        },
+        replace: true,
+      })
+  },
   component: OperationsOverviewRoute,
 })
 
@@ -16,7 +31,7 @@ function OperationsOverviewRoute() {
   return (
     <OperationsOverviewPage
       role={role}
-      profile={profile}
+      profile={profile ?? "pilot"}
       updateProfile={next =>
         void navigate({ search: previous => ({ ...previous, profile: next }) })
       }

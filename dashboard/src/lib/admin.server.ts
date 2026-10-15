@@ -23,6 +23,7 @@ import {
   deliveryResourceResponseSchema,
   type DeliveryResourceRequest,
   type DeliveryPlansRequest,
+  type ExecutionProfile,
   type SchedulerMutationRequest,
   type PanelResult,
 } from "./admin-api"
@@ -43,6 +44,7 @@ export async function fetchDeliveryPlansData(
   fetchImplementation: FetchImplementation = fetch
 ) {
   const params = new URLSearchParams({
+    execution_profile: request.profile ?? "full_market",
     page: String(request.page),
     page_size: String(request.pageSize),
   })
@@ -140,7 +142,7 @@ export async function fetchDashboardData(
       fetchTarget(
         baseUrl,
         sessionToken,
-        "/api/v1/admin/market-freshness",
+        `/api/v1/admin/market-freshness?execution_profile=${data.audit.profile ?? "full_market"}`,
         marketFreshnessSchema,
         fetchImplementation
       ),
@@ -151,13 +153,30 @@ export async function fetchDashboardData(
         queueHealthSchema,
         fetchImplementation
       ),
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        "/api/v1/admin/schedulers",
-        schedulersResponseSchema,
-        fetchImplementation
-      ),
+      // Controls for both profiles are needed for overlap warnings. Freshness
+      // and delivery totals above remain scoped to the selected profile.
+      Promise.all(
+        (["pilot", "full_market"] as const).map(profile =>
+          fetchTarget(
+            baseUrl,
+            sessionToken,
+            `/api/v1/admin/schedulers?execution_profile=${profile}`,
+            schedulersResponseSchema,
+            fetchImplementation
+          )
+        )
+      ).then(responses => ({
+        success: true as const,
+        data: Array.from(
+          new Map(
+            responses.flatMap(response =>
+              response.data.map(
+                control => [control.scheduler_key, control] as const
+              )
+            )
+          ).values()
+        ),
+      })),
     ])
     assertNoAuthenticationFailure([freshness, queue, schedulers])
     return dashboardResponseSchema.parse({
@@ -173,7 +192,7 @@ export async function fetchDashboardData(
       fetchTarget(
         baseUrl,
         sessionToken,
-        `/api/v1/admin/missing-deliveries?status=open&page=${data.audit.page}&page_size=${data.audit.pageSize}`,
+        `/api/v1/admin/missing-deliveries?status=open&page=${data.audit.page}&page_size=${data.audit.pageSize}&execution_profile=${data.audit.profile ?? "full_market"}`,
         missingDeliveriesSchema,
         fetchImplementation
       ),
@@ -456,12 +475,13 @@ export function previewHistoricalBackfillData(
 export async function fetchDeliveryPlanDatasetsData(
   sessionToken: string,
   baseUrl: string | undefined,
-  fetchImplementation: FetchImplementation = fetch
+  fetchImplementation: FetchImplementation = fetch,
+  profile: ExecutionProfile = "full_market"
 ) {
   return fetchTarget(
     safeBaseUrl(baseUrl),
     sessionToken,
-    "/api/v1/admin/delivery-plans/datasets",
+    `/api/v1/admin/delivery-plans/datasets?execution_profile=${profile}`,
     deliveryPlanDatasetsSchema,
     fetchImplementation
   )
@@ -481,7 +501,7 @@ export async function fetchDeliveryResourceData(
       result: await fetchTarget(
         base,
         sessionToken,
-        `/api/v1/admin/missing-deliveries?status=open&page=${page}&page_size=${pageSize}`,
+        `/api/v1/admin/missing-deliveries?status=open&page=${page}&page_size=${pageSize}&execution_profile=${request.profile ?? "full_market"}`,
         missingDeliveriesSchema,
         fetchImplementation
       ),

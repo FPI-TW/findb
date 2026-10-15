@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "units": {
+    "findb": {
+      "required": [
+        "AWS_INSTANCE_PROFILE_NAME",
+        "AWS_SSM_LOG_GROUP",
+        "AWS_DNS_CHECK_NAME",
+        "ECR_REGISTRY",
+        "DEPLOY_BUNDLE_BUCKET",
+        "DEPLOY_BUNDLE_KMS_KEY_ARN",
+        "RDS_DB_INSTANCE_IDENTIFIER"
+      ],
+      "defaults": {
+        "FULL_MARKET_ENABLED": "false",
+        "AWS_PROMOTION_ROLE_ARN": "",
+        "STAGING_AWS_ACCOUNT_ID": "",
+        "STAGING_PROMOTION_READ_ROLE_ARN": "",
+        "STAGING_ECR_REGISTRY": "",
+        "STAGING_DEPLOY_BUNDLE_BUCKET": ""
+      }
+    },
+    "fetcher": {
+      "required": [
+        "AWS_INSTANCE_PROFILE_NAME",
+        "AWS_SSM_LOG_GROUP",
+        "AWS_DNS_CHECK_NAME",
+        "ECR_REGISTRY",
+        "DEPLOY_BUNDLE_BUCKET",
+        "DEPLOY_BUNDLE_KMS_KEY_ARN"
+      ],
+      "defaults": {
+        "FULL_MARKET_ENABLED": "false",
+        "AWS_PROMOTION_ROLE_ARN": "",
+        "STAGING_AWS_ACCOUNT_ID": "",
+        "STAGING_PROMOTION_READ_ROLE_ARN": "",
+        "STAGING_ECR_REGISTRY": "",
+        "STAGING_DEPLOY_BUNDLE_BUCKET": ""
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.execution_profiles import ExecutionProfile
 from app.schemas.common import PaginatedResponse, PaginationInfo
 from app.schemas.full_market import DeliveryPlanResponse
 from app.services.slot_identity import CanonicalSlotId
@@ -488,6 +489,7 @@ class QueueHealthResponse(BaseModel):
 
 
 class MissingDeliveryAlertResponse(BaseModel):
+    execution_profile: ExecutionProfile = "pilot"
     alert_id: UUID
     dataset_key: str
     source: str
@@ -535,6 +537,7 @@ class PendingMarketFeedResponse(BaseModel):
 
 
 class MarketFreshnessResponse(BaseModel):
+    execution_profile: ExecutionProfile = "pilot"
     market: str
     scheduler_key: str
     provider: str
@@ -767,6 +770,7 @@ class SuccessResponse(BaseModel):
 
 
 class SchedulerControlResponse(BaseModel):
+    execution_profile: ExecutionProfile = "pilot"
     """A persisted scheduler control row plus its current heartbeat age."""
 
     scheduler_key: str

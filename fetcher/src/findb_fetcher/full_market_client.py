@@ -24,7 +24,16 @@ class FullMarketProtocolError(RuntimeError):
 
 
 class FullMarketSourceClient:
-    def __init__(self, config: FetcherConfig, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        config: FetcherConfig,
+        *,
+        client: httpx.Client | None = None,
+        execution_profile: str = "full_market",
+    ) -> None:
+        if execution_profile not in {"pilot", "full_market"}:
+            raise ValueError("Unsupported execution profile")
+        self.execution_profile = execution_profile
         self.config = config
         self.client = client or httpx.Client(timeout=config.request_timeout_seconds)
         self.owns_client = client is None
@@ -188,6 +197,7 @@ class FullMarketSourceClient:
             + urlencode(
                 {
                     "dataset_key": dataset,
+                    "execution_profile": self.execution_profile,
                     "provider": provider,
                     **({"as_of": as_of} if as_of else {}),
                 }
@@ -209,6 +219,7 @@ class FullMarketSourceClient:
             {
                 "version": 1,
                 "dataset_key": dataset,
+                "execution_profile": self.execution_profile,
                 "provider": provider,
                 "trade_date": trade_date,
                 "release_id": release_id,
@@ -222,6 +233,7 @@ class FullMarketSourceClient:
             + urlencode(
                 {
                     "dataset_key": dataset,
+                    "execution_profile": self.execution_profile,
                     "start_date": trade_date,
                     "end_date": trade_date,
                     "limit": 1,

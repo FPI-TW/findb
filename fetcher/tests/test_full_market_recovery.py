@@ -27,6 +27,7 @@ def _frozen_plan(dataset: str, day: date, release: dict[str, Any]) -> dict[str, 
     return {
         "plan_id": identity,
         "provider": "twelve_data",
+        "execution_profile": "full_market",
         "dataset_key": dataset,
         "trade_date": str(day),
         "release_id": release["release_id"],
@@ -65,7 +66,7 @@ class _Governance:
         self.outcomes: list[dict[str, Any]] = []
 
     def request(self, method: str, path: str) -> dict[str, Any]:
-        assert method == "GET" and path == "full-market/authorization"
+        assert method == "GET" and path == "full-market/authorization?consumer=full_market"
         return {"acquisition_allowed": True, "admitted_dataset_keys": list(self.current)}
 
     def authorization(self, *args: Any, **kwargs: Any):
@@ -483,9 +484,9 @@ def test_real_universe_refresh_preserves_partial_authorized_scope(
     def authorization(method, path):
         requests.append(path)
         assert method == "GET"
-        if path.endswith("consumer=maintenance"):
+        if "consumer=maintenance&execution_profile=full_market" in path:
             return {"acquisition_allowed": True, "authorized_dataset_keys": ["us_equity_eod"]}
-        assert path == "full-market/authorization"
+        assert path == "full-market/authorization?consumer=full_market"
         return {"acquisition_allowed": True, "admitted_dataset_keys": ["us_equity_eod"]}
 
     def universes(dataset, provider, as_of=None):
@@ -536,14 +537,16 @@ def test_real_universe_refresh_preserves_partial_authorized_scope(
         assert acquired == ["us_equity_eod"]
         assert universe_reads and set(universe_reads) == {"us_equity_eod"}
         assert source.created and {plan["dataset"] for plan in source.created} == {"us_equity_eod"}
-        assert requests == ["full-market/authorization"]
+        assert requests == ["full-market/authorization?consumer=full_market"]
     else:
         if refresh_failure:
             with pytest.raises(ReadinessBlockedError, match="snapshot unavailable"):
                 runtime.sync_universes()
         else:
             runtime.sync_universes()
-        assert requests == ["full-market/authorization?consumer=maintenance"]
+        assert requests == [
+            "full-market/authorization?consumer=maintenance&execution_profile=full_market"
+        ]
         assert acquired == universe_reads == []
     assert len(submissions) == (0 if refresh_failure else 1)
     assert snapshots and HKEX_URL not in snapshots

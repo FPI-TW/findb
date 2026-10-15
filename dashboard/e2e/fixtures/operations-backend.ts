@@ -25,6 +25,7 @@ const user = adminUserSchema.parse({
 function scheduler(key: string, provider: string, running = false) {
   return schedulerSchema.parse({
     scheduler_key: key,
+    execution_profile: key.startsWith("full_market_") ? "full_market" : "pilot",
     provider,
     dataset_keys: ["tw_equity_eod", "tw_etf_eod"],
     slot_id: "taiwan_market_window",
@@ -76,6 +77,7 @@ let overviewFailurePath = ""
 
 const plans = Array.from({ length: 31 }, (_, index) => ({
   plan_id: `plan-${index}`,
+  execution_profile: "full_market",
   dataset_key: index === 30 ? "old_dataset" : "tw_futures_eod",
   provider: "taifex",
   trade_date: `2026-09-${String(30 - Math.min(index, 29)).padStart(2, "0")}`,
@@ -84,6 +86,7 @@ const plans = Array.from({ length: 31 }, (_, index) => ({
   status: "incomplete",
   parts: [],
   summary: {
+    execution_profile: "full_market",
     expected: 5,
     data: 2,
     no_data: 1,
@@ -97,6 +100,24 @@ const plans = Array.from({ length: 31 }, (_, index) => ({
     ],
   },
 }))
+const pilotPlans = [
+  {
+    ...plans[0]!,
+    plan_id: "pilot-plan",
+    dataset_key: "pilot_dataset",
+    execution_profile: "pilot",
+    summary: {
+      ...plans[0]!.summary,
+      execution_profile: "pilot",
+      expected: 2,
+      data: 1,
+      no_data: 0,
+      missing: 1,
+      blocked: 0,
+      gaps: [{ member_key: "TX", status: "missing", reason: "pending" }],
+    },
+  },
+]
 function paginated<T>(items: T[], params: URLSearchParams) {
   const page = Number(params.get("page") ?? 1),
     size = Number(params.get("page_size") ?? 25)
@@ -209,14 +230,22 @@ createServer(async (request, response) => {
     return send({ detail: "Session expired upstream" }, 401)
   if (overviewFailurePath === path) return send({ detail: "Unavailable" }, 503)
   if (path === "/api/v1/admin/delivery-plans/datasets")
-    return send({ data: ["old_dataset", "tw_futures_eod"] })
+    return send({
+      data:
+        url.searchParams.get("execution_profile") === "pilot"
+          ? ["pilot_dataset"]
+          : ["old_dataset", "tw_futures_eod"],
+    })
   if (path === "/api/v1/admin/delivery-plans") {
     if (plansDelay)
       await new Promise(resolve => setTimeout(resolve, plansDelay))
     if (plansError) return send({ detail: "Unavailable" }, 503)
     return send(
       paginated(
-        plans.filter(
+        (url.searchParams.get("execution_profile") === "pilot"
+          ? pilotPlans
+          : plans
+        ).filter(
           plan =>
             (!url.searchParams.get("dataset_key") ||
               plan.dataset_key === url.searchParams.get("dataset_key")) &&
@@ -333,7 +362,14 @@ createServer(async (request, response) => {
       ],
     })
   if (path === "/api/v1/admin/schedulers")
-    return send({ success: true, data: rows })
+    return send({
+      success: true,
+      data: rows.filter(
+        row =>
+          !url.searchParams.get("execution_profile") ||
+          row.execution_profile === url.searchParams.get("execution_profile")
+      ),
+    })
   if (path === "/api/v1/admin/market-freshness")
     return send(marketFreshnessSchema.parse({ success: true, data: [] }))
   if (path === "/api/v1/admin/queue/health") return send(queue)

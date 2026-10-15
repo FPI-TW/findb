@@ -207,7 +207,9 @@ describe("FinDB Admin server boundary", () => {
     )
 
     expect(calls.map(call => `${call.url.pathname}${call.url.search}`)).toEqual(
-      ["/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100"]
+      [
+        "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100&execution_profile=full_market",
+      ]
     )
     expect(result.view).toBe("deliveries")
     if (result.view === "deliveries") {
@@ -220,15 +222,16 @@ describe("FinDB Admin server boundary", () => {
     [
       "overview",
       [
-        "/api/v1/admin/market-freshness",
+        "/api/v1/admin/market-freshness?execution_profile=full_market",
         "/api/v1/admin/queue/health",
-        "/api/v1/admin/schedulers",
+        "/api/v1/admin/schedulers?execution_profile=pilot",
+        "/api/v1/admin/schedulers?execution_profile=full_market",
       ],
     ],
     [
       "deliveries",
       [
-        "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100",
+        "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100&execution_profile=full_market",
         "/api/v1/admin/historical-backfills?page=1&page_size=25",
         "/api/v1/admin/historical-backfills/scopes",
       ],
@@ -248,12 +251,12 @@ describe("FinDB Admin server boundary", () => {
       )
 
       expect(calls).toHaveLength(
-        view === "overview" ? 3 : view === "deliveries" ? 3 : 1
+        view === "overview" ? 4 : view === "deliveries" ? 3 : 1
       )
       expect(
         calls.map(
           call =>
-            `${call.url.pathname}${view === "deliveries" ? call.url.search : view === "corrections" ? call.url.search : ""}`
+            `${call.url.pathname}${view === "deliveries" || view === "corrections" || view === "overview" ? call.url.search : ""}`
         )
       ).toEqual(expected)
       expect(result.view).toBe(view)
@@ -308,7 +311,7 @@ describe("FinDB Admin server boundary", () => {
         recordingFetch(calls, {}, undefined, "/api/v1/admin/queue/health")
       )
 
-      expect(timeoutSpy).toHaveBeenCalledTimes(3)
+      expect(timeoutSpy).toHaveBeenCalledTimes(4)
       expect(calls.every(call => call.init?.signal === controller.signal)).toBe(
         true
       )

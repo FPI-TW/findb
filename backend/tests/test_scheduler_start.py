@@ -96,7 +96,9 @@ async def test_manual_start_partial_scope_freeze_repeat_and_restart(
     projection = await admission_projection(test_session, "finlab", source=True)
     assert projection["acquisition_allowed"]
     assert projection["admitted_dataset_keys"] == ["tw_equity_eod"]
-    first = await test_session.get(FullMarketDatasetState, "tw_equity_eod")
+    first = await test_session.get(
+        FullMarketDatasetState, {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"}
+    )
     dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
     assert first.first_start_date == local_today(dataset)
     before = projection["admission_id"]
@@ -239,7 +241,9 @@ async def test_flag_off_audited_stop_on_does_not_restart_and_dates_remain(
         expected_revision=1,
         principal=PRINCIPAL,
     )
-    first = await test_session.get(FullMarketDatasetState, "tw_equity_eod")
+    first = await test_session.get(
+        FullMarketDatasetState, {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"}
+    )
     first_date = first.first_start_date
     monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
     await reconcile_environment(test_session, actor="test-management")
@@ -669,7 +673,10 @@ async def test_malformed_legacy_date_is_replaced_by_first_start(test_session, mo
         expected_revision=1,
         principal=PRINCIPAL,
     )
-    first = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    first = await test_session.get(
+        FullMarketDatasetState,
+        {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+    )
     assert first.first_start_date == local_today(dataset)
     assert dataset.config["full_market"]["activation_date"] == first.first_start_date.isoformat()
 
@@ -696,7 +703,10 @@ async def test_uninitialized_legacy_date_permits_first_start(test_session, monke
         principal=PRINCIPAL,
     )
     assert (
-        await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+        await test_session.get(
+            FullMarketDatasetState,
+            {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+        )
     ).first_start_date == local_today(dataset)
 
 
@@ -714,7 +724,9 @@ async def test_null_legacy_metadata_cannot_reset_existing_permanent_first_date(
         expected_revision=1,
         principal=PRINCIPAL,
     )
-    first = await test_session.get(FullMarketDatasetState, "tw_equity_eod")
+    first = await test_session.get(
+        FullMarketDatasetState, {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"}
+    )
     cutoff = first.first_start_date
     stopped = await update_scheduler_desired_state(
         test_session,
@@ -736,7 +748,10 @@ async def test_null_legacy_metadata_cannot_reset_existing_permanent_first_date(
         principal=PRINCIPAL,
     )
     assert (
-        await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+        await test_session.get(
+            FullMarketDatasetState,
+            {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+        )
     ).first_start_date == cutoff
     assert dataset.config["full_market"]["activation_date"] == cutoff.isoformat()
 
@@ -959,7 +974,10 @@ async def test_owner_api_start_ignores_malformed_optional_governance(
     config = deepcopy(dataset.config)
     config["full_market"] = legacy
     dataset.config = config
-    first = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    first = await test_session.get(
+        FullMarketDatasetState,
+        {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+    )
     cutoff = first.first_start_date if first else local_today(dataset)
     before = await test_session.scalar(select(func.count()).select_from(AdminAuditEvent))
     await test_session.commit()
@@ -973,7 +991,10 @@ async def test_owner_api_start_ignores_malformed_optional_governance(
     assert response.json()["data"]["revision"] == revision + 1
     await test_session.refresh(dataset)
     assert parse_dataset_contract_declaration(dataset.config) == contract
-    first = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    first = await test_session.get(
+        FullMarketDatasetState,
+        {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+    )
     assert first.first_start_date == cutoff
     assert dataset.config["full_market"] == {"activation_date": cutoff.isoformat()}
     projection = await admission_projection(test_session, "finlab", source=True)

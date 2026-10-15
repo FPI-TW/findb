@@ -94,6 +94,9 @@ def test_active_staging_catalog_matches_exact_metadata_and_no_ghcr_runtime_secre
         if "staging" in secret.get("targets", ["staging", "production"])
     }
     assert configured == {
+        "findb/runtime/configuration",
+        "findb/tls/origin-certificate",
+        "fetcher/runtime/configuration",
         "findb/database/application",
         "findb/database/migration",
         "findb/api/admin-break-glass",
@@ -159,9 +162,14 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
         },
     }
 
+    configuration = dict.fromkeys(
+        catalog["consumers"]["twelve-data"]["secrets"][0]["required_keys"], "runtime-value"
+    )
+    payloads["findb/staging/fetcher/runtime/configuration"] = configuration
     loaded = loader.load_consumer(catalog, "twelve-data", lambda name: json.dumps(payloads[name]))
 
     assert loaded == {
+        **configuration,
         "FETCHER_CALENDAR_SERVE_API_KEY": "calendar-key",
         "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY": "source-key",
         "TWELVE_DATA_API_KEY": "provider-key",
@@ -186,15 +194,14 @@ def test_taifex_consumer_loads_only_its_target_scoped_allowlist(target: str) -> 
         },
     }
     expected = {key: value for payload in payloads.values() for key, value in payload.items()}
-    if target == "production":
-        runtime = next(
-            secret
-            for secret in catalog["consumers"]["taifex"]["secrets"]
-            if secret["name"] == "runtime/configuration"
-        )
-        configuration = dict.fromkeys(runtime["required_keys"], "production-config")
-        payloads[prefix + "runtime/configuration"] = configuration
-        expected.update(configuration)
+    runtime = next(
+        secret
+        for secret in catalog["consumers"]["taifex"]["secrets"]
+        if secret["name"] == "runtime/configuration"
+    )
+    configuration = dict.fromkeys(runtime["required_keys"], "production-config")
+    payloads[prefix + "runtime/configuration"] = configuration
+    expected.update(configuration)
     fetched: list[str] = []
 
     def fetch(name: str) -> str:
@@ -208,13 +215,6 @@ def test_taifex_consumer_loads_only_its_target_scoped_allowlist(target: str) -> 
     assert len(fetched) == len(payloads)
     assert "TWELVE_DATA_API_KEY" not in loaded
     assert "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY" not in loaded
-    if target == "staging":
-        assert set(fetched) == {
-            prefix + "api/calendar-serve",
-            prefix + "api/source/taifex",
-            prefix + "r2/raw",
-        }
-        assert "FETCHER_SOURCE_API_URL" not in loaded
 
 
 def test_production_consumer_loads_target_scoped_runtime_configuration() -> None:
@@ -227,7 +227,6 @@ def test_production_consumer_loads_target_scoped_runtime_configuration() -> None
                 "secrets": [
                     {
                         "name": "runtime/configuration",
-                        "targets": ["production"],
                         "required_keys": ["SHIOAJI_SIMULATION"],
                     },
                     {"name": "provider/key", "required_keys": ["TOKEN"]},
@@ -250,14 +249,15 @@ def test_production_consumer_loads_target_scoped_runtime_configuration() -> None
     assert loaded == {"SHIOAJI_SIMULATION": "true", "TOKEN": "production-token"}
 
 
-def test_findb_nginx_loads_origin_tls_only_in_production() -> None:
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_findb_nginx_loads_origin_tls_in_both_environments(target) -> None:
     loader = _loader()
     catalog = _catalog("findb")
     fetched: list[str] = []
 
     payloads = {
-        "findb/production/findb/api/lookup-serve": {"FINDB_LOOKUP_SERVE_API_KEY": "lookup-key"},
-        "findb/production/findb/tls/origin-certificate": {
+        f"findb/{target}/findb/api/lookup-serve": {"FINDB_LOOKUP_SERVE_API_KEY": "lookup-key"},
+        f"findb/{target}/findb/tls/origin-certificate": {
             "FINDB_ORIGIN_CERTIFICATE_PEM_B64": "certificate-base64",
             "FINDB_ORIGIN_PRIVATE_KEY_PEM_B64": "private-key-base64",
         },
@@ -271,7 +271,7 @@ def test_findb_nginx_loads_origin_tls_only_in_production() -> None:
         catalog,
         "nginx",
         fetch,
-        deployment_target="production",
+        deployment_target=target,
     )
 
     assert loaded == {
@@ -280,18 +280,6 @@ def test_findb_nginx_loads_origin_tls_only_in_production() -> None:
         "FINDB_ORIGIN_PRIVATE_KEY_PEM_B64": "private-key-base64",
     }
     assert fetched == list(payloads)
-
-    fetched.clear()
-    staging = loader.load_consumer(
-        catalog,
-        "nginx",
-        lambda name: (
-            fetched.append(name) or json.dumps({"FINDB_LOOKUP_SERVE_API_KEY": "staging-lookup-key"})
-        ),
-        deployment_target="staging",
-    )
-    assert staging == {"FINDB_LOOKUP_SERVE_API_KEY": "staging-lookup-key"}
-    assert fetched == ["findb/staging/findb/api/lookup-serve"]
 
 
 def test_findb_production_runtime_configuration_schema_is_consumer_consistent() -> None:
@@ -339,7 +327,7 @@ def test_fetcher_production_runtime_configuration_schema_is_consumer_consistent(
     } <= declared[0]
 
 
-def test_staging_consumer_skips_production_only_runtime_configuration() -> None:
+def test_environment_specific_catalog_is_rejected() -> None:
     loader = _loader()
     catalog = {
         "schema_version": 2,
@@ -363,10 +351,9 @@ def test_staging_consumer_skips_production_only_runtime_configuration() -> None:
         fetched.append(name)
         return json.dumps({"TOKEN": "staging-token"})
 
-    loaded = loader.load_consumer(catalog, "provider", fetch)
-
-    assert loaded == {"TOKEN": "staging-token"}
-    assert fetched == ["findb/staging/fetcher/provider/key"]
+    with pytest.raises(loader.LoaderError, match="catalog_invalid"):
+        loader.load_consumer(catalog, "provider", fetch)
+    assert fetched == []
 
 
 def test_fetcher_finlab_smoke_consumer_is_provider_only() -> None:

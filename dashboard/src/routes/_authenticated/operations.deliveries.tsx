@@ -1,3 +1,4 @@
+import { getDashboardEnvironment } from "../../lib/environment.functions"
 import { createFileRoute, redirect } from "@tanstack/react-router"
 
 import {
@@ -11,7 +12,19 @@ import {
 
 export const Route = createFileRoute("/_authenticated/operations/deliveries")({
   validateSearch: deliveriesSearchSchema,
-  beforeLoad: ({ context, search }) => {
+  beforeLoad: async ({ context, search }) => {
+    if (!search.profile)
+      throw redirect({
+        to: "/operations/deliveries",
+        search: {
+          ...search,
+          profile:
+            (await getDashboardEnvironment()) === "PRODUCTION"
+              ? "full_market"
+              : "pilot",
+        },
+        replace: true,
+      })
     if (context.role === "viewer" && search.tab === "backfills")
       throw redirect({
         to: "/operations/deliveries",

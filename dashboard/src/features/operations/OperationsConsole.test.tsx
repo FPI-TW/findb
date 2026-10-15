@@ -1859,7 +1859,7 @@ describe("Operations presentation", () => {
         <DeliveriesPage role="operator" />
       </QueryClientProvider>
     )
-    expect(screen.getByRole("tab", { name: "全市場計畫" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
       "aria-selected",
       "true"
     )
@@ -1878,7 +1878,7 @@ describe("Operations presentation", () => {
     fireEvent.change(screen.getByLabelText("回補結束日期"), {
       target: { value: "2026-09-01" },
     })
-    fireEvent.click(screen.getByRole("tab", { name: "全市場計畫" }))
+    fireEvent.click(screen.getByRole("tab", { name: "交付計畫" }))
     fireEvent.click(screen.getByRole("tab", { name: "歷史回補" }))
     expect(screen.getByLabelText("回補結束日期")).toHaveValue("2026-09-01")
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()

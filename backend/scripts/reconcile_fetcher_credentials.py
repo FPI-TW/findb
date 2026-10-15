@@ -55,21 +55,21 @@ SOURCE_SPECS = (
         env_name="FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY_HASH",
         name="fetcher-twelve-data",
         source_name="twelve_data",
-        description="Production Twelve Data Fetcher Source client",
+        description="Twelve Data Fetcher Source client",
         allowed_datasets=("us_equity_eod",),
     ),
     SourceCredentialSpec(
         env_name="FETCHER_FINLAB_SOURCE_CLIENT_KEY_HASH",
         name="fetcher-finlab",
         source_name="finlab",
-        description="Production FinLab Fetcher Source client",
+        description="FinLab Fetcher Source client",
         allowed_datasets=("tw_equity_eod",),
     ),
     SourceCredentialSpec(
         env_name="FETCHER_SHIOAJI_SOURCE_CLIENT_KEY_HASH",
         name="fetcher-shioaji",
         source_name="shioaji",
-        description="Production Shioaji Fetcher Source client",
+        description="Shioaji Fetcher Source client",
         allowed_datasets=("tw_equity_minute", "tw_etf_minute"),
     ),
 )
@@ -87,27 +87,22 @@ FULL_MARKET_SOURCE_SPECS = (
         env_name="FETCHER_TAIFEX_SOURCE_CLIENT_KEY_HASH",
         name="fetcher-taifex",
         source_name="taifex",
-        description="Production TAIFEX Fetcher Source client",
+        description="TAIFEX Fetcher Source client",
         allowed_datasets=("tw_futures_eod",),
         rate_limit_requests=2400,
     ),
 )
 
 
+SOURCE_SPECS = FULL_MARKET_SOURCE_SPECS
+
+
 def source_specs_for_profile(
-    runtime_profile: str, deployment_target: str = "production"
+    runtime_profile: str = "unified", deployment_target: str = "production"
 ) -> tuple[SourceCredentialSpec, ...]:
-    if deployment_target not in {"local", "staging", "production"}:
+    if deployment_target not in {"local", "staging", "production"} or runtime_profile != "unified":
         raise FetcherCredentialError("unsupported Fetcher deployment target/profile")
-    if runtime_profile == "bounded":
-        return (
-            (*SOURCE_SPECS, FULL_MARKET_SOURCE_SPECS[3])
-            if deployment_target == "staging"
-            else SOURCE_SPECS
-        )
-    if runtime_profile == "full-market":
-        return FULL_MARKET_SOURCE_SPECS
-    raise FetcherCredentialError("unsupported Fetcher runtime profile")
+    return SOURCE_SPECS
 
 
 CALENDAR_HASH_ENV = "FETCHER_CALENDAR_SERVE_API_KEY_HASH"
@@ -333,24 +328,11 @@ async def reconcile_fetcher_credentials_in_session(
     db: AsyncSession,
     hashes_by_env: dict[str, str],
     *,
-    runtime_profile: str = "bounded",
+    runtime_profile: str = "unified",
     deployment_target: str = "production",
 ) -> list[ReconciliationResult]:
     specs = source_specs_for_profile(runtime_profile, deployment_target)
     normalized = {name: validate_key_hash(value) for name, value in hashes_by_env.items()}
-    taifex = FULL_MARKET_SOURCE_SPECS[3]
-    if (
-        runtime_profile == "bounded"
-        and deployment_target == "production"
-        and taifex.env_name in normalized
-    ):
-        existing = await db.scalar(
-            select(SourceClient).where(
-                SourceClient.name == taifex.name, SourceClient.revoked_at.is_(None)
-            )
-        )
-        if existing is not None:
-            specs = (*specs, taifex)
     required = {CALENDAR_HASH_ENV, *(spec.env_name for spec in specs)}
     if set(normalized) != required or len(set(normalized.values())) != len(required):
         raise FetcherCredentialError("Fetcher credential hashes are missing or reused")
@@ -385,7 +367,7 @@ async def reconcile_fetcher_credentials(
     application_database_url: str,
     hashes_by_env: dict[str, str],
     *,
-    runtime_profile: str = "bounded",
+    runtime_profile: str = "unified",
     deployment_target: str = "production",
 ) -> list[ReconciliationResult]:
     url = validate_application_database_url(application_database_url)
@@ -410,7 +392,7 @@ def parse_args() -> argparse.Namespace:
         choices=("local", "staging", "production"),
         default=os.getenv("APP_ENVIRONMENT", "production"),
     )
-    parser.add_argument("--runtime-profile", choices=("bounded", "full-market"), default="bounded")
+    parser.add_argument("--runtime-profile", choices=("unified",), default="unified")
     parser.add_argument("--application-database-url", default=os.getenv("APPLICATION_DATABASE_URL"))
     for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in FULL_MARKET_SOURCE_SPECS)):
         parser.add_argument(

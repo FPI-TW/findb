@@ -1,20 +1,49 @@
 name: FinDB CD
-
-on:
+'on':
   push:
-    branches: [main]
+    branches:
+    - main
   workflow_dispatch:
     inputs:
-      deployment_target: {description: Staging target only, required: true, default: staging, type: choice, options: [staging]}
-      revision: {description: Exact protected-main commit SHA, required: true, type: string}
-      deployment_mode: {description: Create a new candidate or replay an accepted bundle, required: true, default: replay, type: choice, options: [replay, candidate]}
-      candidate_confirmation: {description: Type deploy-new-candidate for candidate mode, required: false, default: '', type: string}
-      image_tag: {description: Existing staging SHA for an accepted replay, required: false, default: '', type: string}
-      accepted_bundle_key: {description: Exact staging accepted bundle key for replay, required: false, default: '', type: string}
-
-concurrency: {group: staging-findb, cancel-in-progress: false}
-permissions: {contents: read}
-
+      deployment_target:
+        description: Staging target only
+        required: true
+        default: staging
+        type: choice
+        options:
+        - staging
+      revision:
+        description: Exact protected-main commit SHA
+        required: true
+        type: string
+      deployment_mode:
+        description: Create a new candidate or replay an accepted bundle
+        required: true
+        default: replay
+        type: choice
+        options:
+        - replay
+        - candidate
+      candidate_confirmation:
+        description: Type deploy-new-candidate for candidate mode
+        required: false
+        default: ''
+        type: string
+      image_tag:
+        description: Existing staging SHA for an accepted replay
+        required: false
+        default: ''
+        type: string
+      accepted_bundle_key:
+        description: Exact staging accepted bundle key for replay
+        required: false
+        default: ''
+        type: string
+concurrency:
+  group: staging-findb
+  cancel-in-progress: false
+permissions:
+  contents: read
 jobs:
   policy:
     runs-on: ubuntu-latest
@@ -23,85 +52,102 @@ jobs:
       findb_ci: ${{ steps.policy.outputs.findb_ci }}
       findb_staging: ${{ steps.policy.outputs.findb_staging }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: {ref: '${{ inputs.revision || github.sha }}', fetch-depth: 0, persist-credentials: false}
-      - id: revision
-        env: {EXPECTED_SHA: '${{ inputs.revision || github.sha }}', IMAGE_TAG: '${{ inputs.image_tag }}'}
-        run: |
-          set -euo pipefail
-          actual="$(git rev-parse HEAD)"; [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; [ "$actual" = "$EXPECTED_SHA" ]
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            git fetch --no-tags origin main:refs/remotes/origin/main
-            git merge-base --is-ancestor "$actual" refs/remotes/origin/main
-            [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "$actual" ]
-          fi
-          echo "sha=$actual" >> "$GITHUB_OUTPUT"
-      - id: policy
-        env: {EVENT: '${{ github.event_name }}', BASE: '${{ github.event.before }}', HEAD: '${{ inputs.revision || github.sha }}'}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" = workflow_dispatch ]; then
-            printf 'findb_ci=true\nfindb_staging=true\n' >> "$GITHUB_OUTPUT"
-          else
-            python3 infra/deploy/change_policy.py --base "$BASE" --head "$HEAD" --github-output "$GITHUB_OUTPUT"
-          fi
-
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ inputs.revision || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+        clean: false
+    - id: revision
+      env:
+        EXPECTED_SHA: ${{ inputs.revision || github.sha }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+      run: |
+        set -euo pipefail
+        actual="$(git rev-parse HEAD)"; [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; [ "$actual" = "$EXPECTED_SHA" ]
+        if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$actual" refs/remotes/origin/main
+          [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "$actual" ]
+        fi
+        echo "sha=$actual" >> "$GITHUB_OUTPUT"
+    - id: policy
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.before }}
+        HEAD: ${{ inputs.revision || github.sha }}
+      run: |
+        set -euo pipefail
+        if [ "$EVENT" = workflow_dispatch ]; then
+          printf 'findb_ci=true\nfindb_staging=true\n' >> "$GITHUB_OUTPUT"
+        else
+          python3 infra/deploy/change_policy.py --base "$BASE" --head "$HEAD" --github-output "$GITHUB_OUTPUT"
+        fi
   verify:
     needs: policy
     if: ${{ needs.policy.outputs.findb_ci == 'true' }}
     uses: ./.github/workflows/findb-ci.yml
-    with: {revision: '${{ needs.policy.outputs.revision }}'}
-
+    with:
+      revision: ${{ needs.policy.outputs.revision }}
   select:
-    needs: [policy, verify]
-    if: >-
-      github.ref == 'refs/heads/main' && needs.verify.result == 'success' &&
-      needs.policy.outputs.findb_staging == 'true' &&
-      (github.event_name == 'workflow_dispatch' || vars.STAGING_ECR_CUTOVER_ENABLED == 'true')
+    needs:
+    - policy
+    - verify
+    if: github.ref == 'refs/heads/main' && needs.verify.result == 'success' && needs.policy.outputs.findb_staging == 'true'
     runs-on: ubuntu-latest
-    environment: staging-findb
-    permissions: {contents: read}
+    permissions:
+      contents: read
     outputs:
       revision: ${{ steps.selection.outputs.revision }}
       mode: ${{ steps.selection.outputs.mode }}
       bundle_key: ${{ steps.selection.outputs.bundle_key }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: {ref: '${{ needs.policy.outputs.revision }}', fetch-depth: 0, persist-credentials: false}
-      - name: Verify exact requested revision, staging-only route, and deployment selection
-        id: selection
-        env: {REVISION: '${{ needs.policy.outputs.revision }}', DEPLOYMENT_MODE: '${{ inputs.deployment_mode }}', CANDIDATE_CONFIRMATION: '${{ inputs.candidate_confirmation }}', IMAGE_TAG: '${{ inputs.image_tag }}', ACCEPTED: '${{ inputs.accepted_bundle_key }}', CUTOVER: '${{ vars.STAGING_ECR_CUTOVER_ENABLED }}'}
-        run: |
-          set -euo pipefail
-          [ "${{ inputs.deployment_target || 'staging' }}" = staging ]; [ "$CUTOVER" = true ]
-          [ "$(git rev-parse HEAD)" = "$REVISION" ]
-          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            case "$DEPLOYMENT_MODE" in
-              candidate)
-                [ "$CANDIDATE_CONFIRMATION" = deploy-new-candidate ]
-                [ -z "$ACCEPTED" ] && [ -z "$IMAGE_TAG" ]
-                echo 'mode=candidate' >> "$GITHUB_OUTPUT"
-                ;;
-              replay)
-                [ -z "$CANDIDATE_CONFIRMATION" ]
-                [ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ]
-                [ "$IMAGE_TAG" = "$REVISION" ]
-                [[ "$ACCEPTED" =~ ^findb/accepted/${REVISION}/[0-9a-f]{64}[.]tar$ ]]
-                printf 'mode=replay\nbundle_key=%s\n' "$ACCEPTED" >> "$GITHUB_OUTPUT"
-                ;;
-              *) exit 1 ;;
-            esac
-          else
-            [ "${{ github.event_name }}" = push ] && [ -z "$DEPLOYMENT_MODE" ] && [ -z "$CANDIDATE_CONFIRMATION" ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
-            echo 'mode=candidate' >> "$GITHUB_OUTPUT"
-          fi
-
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.policy.outputs.revision }}
+        fetch-depth: 0
+        persist-credentials: false
+        clean: false
+    - name: Verify exact requested revision, staging-only route, and deployment selection
+      id: selection
+      env:
+        REVISION: ${{ needs.policy.outputs.revision }}
+        DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
+        CANDIDATE_CONFIRMATION: ${{ inputs.candidate_confirmation }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        ACCEPTED: ${{ inputs.accepted_bundle_key }}
+      run: |
+        set -euo pipefail
+        [ "${{ inputs.deployment_target || 'staging' }}" = staging ]
+        [ "$(git rev-parse HEAD)" = "$REVISION" ]
+        echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+        if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+          case "$DEPLOYMENT_MODE" in
+            candidate)
+              [ "$CANDIDATE_CONFIRMATION" = deploy-new-candidate ]
+              [ -z "$ACCEPTED" ] && [ -z "$IMAGE_TAG" ]
+              echo 'mode=candidate' >> "$GITHUB_OUTPUT"
+              ;;
+            replay)
+              [ -z "$CANDIDATE_CONFIRMATION" ]
+              [ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ]
+              [ "$IMAGE_TAG" = "$REVISION" ]
+              [[ "$ACCEPTED" =~ ^findb/accepted/${REVISION}/[0-9a-f]{64}[.]tar$ ]]
+              printf 'mode=replay\nbundle_key=%s\n' "$ACCEPTED" >> "$GITHUB_OUTPUT"
+              ;;
+            *) exit 1 ;;
+          esac
+        else
+          [ "${{ github.event_name }}" = push ] && [ -z "$DEPLOYMENT_MODE" ] && [ -z "$CANDIDATE_CONFIRMATION" ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
+          echo 'mode=candidate' >> "$GITHUB_OUTPUT"
+        fi
   publish:
     needs: select
     if: ${{ needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
     runs-on: ubuntu-latest
-    permissions: {contents: read, id-token: write}
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       backend_image: ${{ steps.backend_image.outputs.image_ref }}
       dashboard_image: ${{ steps.dashboard_image.outputs.image_ref }}
@@ -113,53 +159,60 @@ jobs:
       BACKEND: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend
       DASHBOARD: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: {ref: '${{ needs.select.outputs.revision }}', persist-credentials: false}
-      - name: Verify exact requested revision for publication
-        env: {EXPECTED_SHA: '${{ needs.select.outputs.revision }}'}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Configure staging publisher credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        with:
-          role-to-assume: arn:aws:iam::439622209937:role/findb-staging-ecr-publisher
-          aws-region: ap-southeast-1
-          allowed-account-ids: '439622209937'
-          role-session-name: findb-staging-publish-${{ github.run_id }}
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-      - name: Build or reuse immutable backend image
-        id: backend_image
-        env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
-        run: |
-          set -euo pipefail
-          [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
-          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-          infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$BACKEND" ./backend ./backend/Dockerfile
-      - name: Build or reuse immutable dashboard image
-        id: dashboard_image
-        env: {ECR_IMAGE_TAG: '${{ needs.select.outputs.revision }}'}
-        run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$DASHBOARD" . ./dashboard/Dockerfile
-      - name: Resolve immutable release inputs
-        id: release
-        env:
-          BACKEND_IMAGE: ${{ steps.backend_image.outputs.image_ref }}
-          DASHBOARD_IMAGE: ${{ steps.dashboard_image.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-          [[ "$BACKEND_IMAGE" =~ ^${REGISTRY}/findb/staging/backend@sha256:[0-9a-f]{64}$ ]]
-          [[ "$DASHBOARD_IMAGE" =~ ^${REGISTRY}/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]
-          migration="$(docker run --rm --network none "$BACKEND_IMAGE" alembic heads | sed -n 's/^\([0-9a-f]\{12\}\) (head)$/\1/p')"
-          [[ "$migration" =~ ^[0-9a-f]{12}$ ]]
-          echo "migration_revision=$migration" >> "$GITHUB_OUTPUT"
-
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.select.outputs.revision }}
+        persist-credentials: false
+        clean: false
+    - name: Verify exact requested revision for publication
+      env:
+        EXPECTED_SHA: ${{ needs.select.outputs.revision }}
+      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+    - name: Configure staging publisher credentials
+      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+      with:
+        role-to-assume: arn:aws:iam::439622209937:role/findb-staging-ecr-publisher
+        aws-region: ap-southeast-1
+        allowed-account-ids: '439622209937'
+        role-session-name: findb-staging-publish-${{ github.run_id }}
+    - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+    - name: Build or reuse immutable backend image
+      id: backend_image
+      env:
+        ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
+      run: |
+        set -euo pipefail
+        [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
+        aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+        infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$BACKEND" ./backend ./backend/Dockerfile
+    - name: Build or reuse immutable dashboard image
+      id: dashboard_image
+      env:
+        ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
+      run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$DASHBOARD" . ./dashboard/Dockerfile
+    - name: Resolve immutable release inputs
+      id: release
+      env:
+        BACKEND_IMAGE: ${{ steps.backend_image.outputs.image_ref }}
+        DASHBOARD_IMAGE: ${{ steps.dashboard_image.outputs.image_ref }}
+      run: |
+        set -euo pipefail
+        [[ "$BACKEND_IMAGE" =~ ^${REGISTRY}/findb/staging/backend@sha256:[0-9a-f]{64}$ ]]
+        [[ "$DASHBOARD_IMAGE" =~ ^${REGISTRY}/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]
+        migration="$(docker run --rm --network none "$BACKEND_IMAGE" alembic heads | sed -n 's/^\([0-9a-f]\{12\}\) (head)$/\1/p')"
+        [[ "$migration" =~ ^[0-9a-f]{12}$ ]]
+        echo "migration_revision=$migration" >> "$GITHUB_OUTPUT"
   prepare:
-    needs: [select, publish]
-    if: >-
-      always() && needs.select.result == 'success' &&
-      ((needs.select.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
+    needs:
+    - select
+    - publish
+    if: |-
+      always() && needs.select.result == 'success' && ((needs.select.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
        (needs.select.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
-    environment: staging-findb
-    permissions: {contents: read, id-token: write}
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       revision: ${{ needs.select.outputs.revision }}
       mode: ${{ needs.select.outputs.mode }}
@@ -169,51 +222,65 @@ jobs:
       ACCOUNT: '439622209937'
       REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: {ref: '${{ needs.select.outputs.revision }}', persist-credentials: false}
-      - name: Verify exact requested revision for bundle preparation
-        env: {EXPECTED_SHA: '${{ needs.select.outputs.revision }}'}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Configure staging deploy credentials
-        if: ${{ needs.select.outputs.mode == 'candidate' }}
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ap-southeast-1
-          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-          role-session-name: findb-staging-bundle-${{ github.run_id }}
-      - name: Build and upload exact v2 staging candidate
-        if: ${{ needs.select.outputs.mode == 'candidate' }}
-        id: candidate
-        env:
-          REVISION: ${{ needs.select.outputs.revision }}
-          BUNDLE_BUCKET: ${{ vars.DEPLOY_BUNDLE_BUCKET }}
-          KMS_KEY: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}
-          BACKEND_IMAGE: ${{ needs.publish.outputs.backend_image }}
-          DASHBOARD_IMAGE: ${{ needs.publish.outputs.dashboard_image }}
-          MIGRATION_REVISION: ${{ needs.publish.outputs.migration_revision }}
-        run: |
-          set -euo pipefail
-          [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
-          [[ "$BACKEND_IMAGE" =~ ^${REGISTRY}/findb/staging/backend@sha256:[0-9a-f]{64}$ ]]; [[ "$DASHBOARD_IMAGE" =~ ^${REGISTRY}/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]
-          [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]]
-          python3 infra/deploy/release_manifest.py generate --repo-root . --unit findb --commit-sha "$REVISION" --migration-revision "$MIGRATION_REVISION" --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "backend=$BACKEND_IMAGE" --image "dashboard=$DASHBOARD_IMAGE" --output "$RUNNER_TEMP/manifest.json"
-          python3 infra/deploy/release_manifest.py bundle --repo-root . --unit findb --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
-          sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="findb/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
-          aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
-          echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
-      - name: Publish exact reusable deployment contract
-        id: contract
-        env: {MODE: '${{ needs.select.outputs.mode }}', REPLAY_KEY: '${{ needs.select.outputs.bundle_key }}', CANDIDATE_KEY: '${{ steps.candidate.outputs.bundle_key }}'}
-        run: |
-          set -euo pipefail
-          key="$REPLAY_KEY"; [ "$MODE" = candidate ] && key="$CANDIDATE_KEY"
-          [ -n "$key" ]; echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
-
+    - name: Load deployment driver from protected main
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: .deployment-driver
+        persist-credentials: false
+    - name: Load AWS deployment configuration
+      uses: ./.deployment-driver/.github/actions/aws-configuration
+      with:
+        target: staging
+        unit: findb
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.select.outputs.revision }}
+        persist-credentials: false
+        clean: false
+    - name: Verify exact requested revision for bundle preparation
+      env:
+        EXPECTED_SHA: ${{ needs.select.outputs.revision }}
+      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+    - name: Verify deployment account
+      shell: bash
+      run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+    - name: Build and upload exact v2 staging candidate
+      if: ${{ needs.select.outputs.mode == 'candidate' }}
+      id: candidate
+      env:
+        REVISION: ${{ needs.select.outputs.revision }}
+        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
+        KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+        BACKEND_IMAGE: ${{ needs.publish.outputs.backend_image }}
+        DASHBOARD_IMAGE: ${{ needs.publish.outputs.dashboard_image }}
+        MIGRATION_REVISION: ${{ needs.publish.outputs.migration_revision }}
+      run: |
+        set -euo pipefail
+        [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
+        [[ "$BACKEND_IMAGE" =~ ^${REGISTRY}/findb/staging/backend@sha256:[0-9a-f]{64}$ ]]; [[ "$DASHBOARD_IMAGE" =~ ^${REGISTRY}/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]
+        [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]]
+        python3 infra/deploy/release_manifest.py generate --repo-root . --unit findb --commit-sha "$REVISION" --migration-revision "$MIGRATION_REVISION" --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "backend=$BACKEND_IMAGE" --image "dashboard=$DASHBOARD_IMAGE" --output "$RUNNER_TEMP/manifest.json"
+        python3 infra/deploy/release_manifest.py bundle --repo-root . --unit findb --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
+        sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="findb/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
+        aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
+        echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
+    - name: Publish exact reusable deployment contract
+      id: contract
+      env:
+        MODE: ${{ needs.select.outputs.mode }}
+        REPLAY_KEY: ${{ needs.select.outputs.bundle_key }}
+        CANDIDATE_KEY: ${{ steps.candidate.outputs.bundle_key }}
+      run: |
+        set -euo pipefail
+        key="$REPLAY_KEY"; [ "$MODE" = candidate ] && key="$CANDIDATE_KEY"
+        [ -n "$key" ]; echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
   deploy:
     needs: prepare
     if: ${{ needs.prepare.result == 'success' }}
-    permissions: {contents: read, id-token: write}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/findb-deploy.yml
     with:
       deployment_target: staging
@@ -221,15 +288,15 @@ jobs:
       mode: ${{ needs.prepare.outputs.mode }}
       bundle_key: ${{ needs.prepare.outputs.bundle_key }}
       release_tag: ''
-
   report-staging-deployment-failure:
-    needs: [verify, select, publish, prepare, deploy]
-    if: >-
-      always() &&
-      github.ref == 'refs/heads/main' &&
-      (inputs.deployment_target || 'staging') == 'staging' &&
-      vars.STAGING_ECR_CUTOVER_ENABLED == 'true' &&
-      (needs.verify.result == 'failure' ||
+    needs:
+    - verify
+    - select
+    - publish
+    - prepare
+    - deploy
+    if: |-
+      always() && github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'staging' && (needs.verify.result == 'failure' ||
         needs.verify.result == 'cancelled' ||
         needs.select.result == 'failure' ||
         needs.select.result == 'cancelled' ||
@@ -241,24 +308,30 @@ jobs:
         needs.deploy.result == 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment: staging-findb
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Configure staging AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ap-southeast-1
-          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-          role-session-name: findb-staging-failure-${{ github.run_id }}
-      - name: Publish staging deployment failure metric
-        run: |
-          aws cloudwatch put-metric-data \
-            --region ap-southeast-1 \
-            --namespace FinDB/Staging \
-            --metric-name DeploymentFailure \
-            --dimensions DeploymentUnit=findb,Resource=github-actions \
-            --value 1 \
-            --unit Count
+    - name: Load deployment driver from protected main
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: .deployment-driver
+        persist-credentials: false
+    - name: Load AWS deployment configuration
+      uses: ./.deployment-driver/.github/actions/aws-configuration
+      with:
+        target: staging
+        unit: findb
+    - name: Verify deployment account
+      shell: bash
+      run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+    - name: Publish staging deployment failure metric
+      run: |
+        aws cloudwatch put-metric-data \
+          --region ap-southeast-1 \
+          --namespace FinDB/Staging \
+          --metric-name DeploymentFailure \
+          --dimensions DeploymentUnit=findb,Resource=github-actions \
+          --value 1 \
+          --unit Count

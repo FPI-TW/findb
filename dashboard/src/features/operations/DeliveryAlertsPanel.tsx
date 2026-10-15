@@ -59,7 +59,12 @@ export function DeliveryAlertsPanel({
   onBackfill: (row: MissingDelivery) => void
 }) {
   const query = useDeliveryResource(
-    { resource: "alerts", page: search.p, pageSize: search.ps },
+    {
+      resource: "alerts",
+      profile: search.profile ?? "pilot",
+      page: search.p,
+      pageSize: search.ps,
+    },
     active
   )
   const result =
@@ -102,7 +107,7 @@ export function DeliveryAlertsPanel({
       result={{ ok: true, data: null }}
     >
       <p className="mb-3 text-sm text-muted">
-        資料集／日期層級的交付告警；全市場逐成員核對請查看「全市場計畫」。
+        只顯示所選模式的資料集／日期交付告警；逐成員核對請查看「交付計畫」。
       </p>
       <QueryStatus
         hasData={query.data !== undefined}

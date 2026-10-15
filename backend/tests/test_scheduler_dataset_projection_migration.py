@@ -64,10 +64,10 @@ def test_wave5_is_single_linear_head_and_does_not_edit_c5() -> None:
     assert wave5 is not None
     assert wave5.down_revision == C5_REVISION
     assert c5 is not None
-    assert scripts.get_heads() == ["3553ed95cfbf"]
-    ancestry = list(scripts.iterate_revisions("3553ed95cfbf", C5_REVISION))
+    assert scripts.get_heads() == ["6b93ef20a147"]
+    ancestry = list(scripts.iterate_revisions("6b93ef20a147", C5_REVISION))
     assert ancestry[-1].revision == D6_REVISION
-    assert ancestry[0].down_revision == "2442dc84beae"
+    assert ancestry[0].down_revision == "3553ed95cfbf"
     assert all(
         newer.down_revision == older.revision for newer, older in zip(ancestry, ancestry[1:])
     )

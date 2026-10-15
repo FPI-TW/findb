@@ -12,15 +12,13 @@ Production foundation與live promotion／rollback acceptance由
   `TreatMissingData=breaching` 維持 ALARM。需補足 publisher／告警契約與 live 後驗；不得以靜默重設
   ALARM 或忽略 missing data 代替修正。v0.1.6 部署與查核證據見 deployment runbook。
 
-- [ ] Staging v1 accepted bundle只保留read-only replay；待所有可能需要的recycle record超過保留期，
-  另行取得明確授權後移除v1 compatibility reader。v1不得promotion至production。
 - [ ] Canonical R2 publish／read／sign runtime完成後，補資料面驗收；目前只完成bucket與credential邊界。
 - [ ] 當單機故障開始阻塞release，或production topology需要先演練時，重新評估staging多EC2／ASG／
   blue-green、private subnet＋ALB，以及RDS Multi-AZ／read replica／proxy。
 - [ ] Production SLA、法遵或客戶稽核需求確立時，建立正式24/7 on-call與企業稽核控制。
 - [ ] Production環境複製或drift治理需求確立時，重新評估既有AWS data-plane資源的全面IaC import；
   目前OpenTofu只納管新增控制面並引用既有EC2／RDS／VPC。
-- [ ] 本次Serve breaking replacement部署至staging後，重生instrument cache，對四個active feeds
+- [ ] 本次Serve breaking replacement部署至staging後，重生instrument cache，對七條 feeds
   執行required Serve evidence、bounded latency smoke與Dashboard人工驗收；部署前不得沿用舊
   minute `not_applicable` evidence宣稱完成。
 
@@ -28,11 +26,6 @@ Production foundation與live promotion／rollback acceptance由
   previous-only stopped original 的 rename/start 必須在 recovery trap 後；stable accepted label 須明確驗證；
   state mkdir/chown/chmod 必須在完整可信 inventory 後。目前只支援 verified coordinator child，
   上述 standalone 邊界依賴 parent inventory／journal gate，尚未提供獨立介面保證。
-
-- [ ] 補完整 frozen legacy coordinator 經實際 trusted transport 的離線 replay harness，保留原 flags、
-  traps 與 pointer 流程，僅替換 Docker／secret wrapper 等外部介面；驗證 invalid Cmd 在任何 effects 前
-  拒絕、原 container IDs／狀態與 pointer 不變，並加入合法 accepted bundle 成功 replay control。
-  現有 transported excerpt harness 的 no-op registration 不代表完整 legacy transaction 覆蓋。
 
 ## Full-market external acceptance
 
@@ -45,9 +38,8 @@ Production foundation與live promotion／rollback acceptance由
 - [ ] 以各 provider 的實際帳號確認 US 普通股／ADR、HK 主板／GEM、TW 上市／上櫃普通股與
   各類 ETF、Shioaji 分鐘資料 entitlement，並保存完整 official universe mapping、各平台已確認
   限制的 API 用量證據與治理資料；受限項保持 blocked。
-- [ ] Production opt-in full-market runtime：長期 HK／FinLab ETF scopes、TAIFEX 獨立 Source credential
-  與雙向 secret isolation 已配置查核；仍須正式安裝四個 Full workers，驗證 durable quota/checkpoint
-  與 rollback、七個 native provider feeds；staging／production baseline 與 2026 calendar 已備齊，現況見 Full market runbook。
+- [ ] 兩環境統一 runtime 的實際切換、quota／checkpoint 保留與 rollback 驗收，集中追蹤於
+  [環境與抓取流程統一](environment-runtime-unification.md)。七個 native provider feeds 另留資料驗收證據。
 - [ ] TW、HK、US、futures 實際 rollout 驗證 open-day 準時 complete，驗證
   expected 分母、durable no_data、partial Serve、gap catch-up、session 與 nullable futures fields。
 

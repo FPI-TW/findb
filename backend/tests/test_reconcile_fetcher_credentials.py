@@ -10,7 +10,6 @@ from app.models.registry import APIKey, SourceClient
 from scripts.reconcile_fetcher_credentials import (
     CALENDAR_CREDENTIAL_NAME,
     CALENDAR_HASH_ENV,
-    FULL_MARKET_SOURCE_SPECS,
     SOURCE_SPECS,
     FetcherCredentialError,
     reconcile_fetcher_credentials_in_session,
@@ -48,9 +47,9 @@ async def test_fetcher_credentials_are_created_and_idempotent(
         await test_session.execute(select(APIKey).where(APIKey.name == CALENDAR_CREDENTIAL_NAME))
     ).scalar_one()
 
-    assert [row.action for row in created] == ["created"] * 4
-    assert [row.action for row in unchanged] == ["unchanged"] * 4
-    assert len(source_rows) == 3
+    assert [row.action for row in created] == ["created"] * 5
+    assert [row.action for row in unchanged] == ["unchanged"] * 5
+    assert len(source_rows) == 4
     by_name = {row.name: row for row in source_rows}
     for spec in SOURCE_SPECS:
         assert by_name[spec.name].source_name == spec.source_name
@@ -98,38 +97,15 @@ async def test_fetcher_credentials_reject_reused_hash(
         await reconcile_fetcher_credentials_in_session(test_session, hashes)
 
 
-async def test_full_market_profile_expands_exact_scopes_and_retains_bounded_default(test_session):
-    from app.models.registry import AdminAuditEvent
-
-    hashes = {CALENDAR_HASH_ENV: _hash("calendar")}
-    hashes.update({spec.env_name: _hash(spec.source_name) for spec in FULL_MARKET_SOURCE_SPECS})
-    with pytest.raises(FetcherCredentialError):
-        await reconcile_fetcher_credentials_in_session(test_session, hashes)
-    await reconcile_fetcher_credentials_in_session(test_session, _hashes())
+@pytest.mark.parametrize("target", ["staging", "production"])
+async def test_unified_credentials_cover_seven_feeds_without_profile_branch(test_session, target):
     results = await reconcile_fetcher_credentials_in_session(
-        test_session, hashes, runtime_profile="full-market"
+        test_session, _hashes(), deployment_target=target
     )
-    assert [result.action for result in results] == [
-        "updated",
-        "updated",
-        "updated",
-        "created",
-        "unchanged",
-    ]
+    assert len(results) == 5
     rows = (await test_session.scalars(select(SourceClient))).all()
-    by_provider = {row.source_name: row for row in rows}
-    for spec in FULL_MARKET_SOURCE_SPECS:
-        assert by_provider[spec.source_name].allowed_datasets == list(spec.allowed_datasets)
-        assert by_provider[spec.source_name].rate_limit_requests == 2400
-    audits = (
-        await test_session.scalars(
-            select(AdminAuditEvent).where(AdminAuditEvent.actor_type == "deployment")
-        )
-    ).all()
-    assert len(audits) == 8 and all("key_hash" not in (row.details or {}) for row in audits)
+    assert sum(len(row.allowed_datasets) for row in rows) == 7
+    assert {row.source_name for row in rows} == {"twelve_data", "finlab", "shioaji", "taifex"}
+    assert all(row.rate_limit_requests == 2400 for row in rows)
     with pytest.raises(FetcherCredentialError):
-        await reconcile_fetcher_credentials_in_session(
-            test_session, _hashes(), runtime_profile="full-market"
-        )
-    with pytest.raises(FetcherCredentialError):
-        source_specs_for_profile("unreviewed")
+        source_specs_for_profile("bounded", target)

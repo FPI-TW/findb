@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.execution_profiles import ExecutionProfile
 from app.schemas.ingress import FUTURES_CONTRACT_MONTH_PATTERN
 
 
@@ -159,6 +160,7 @@ class UniverseListResponse(FullMarketModel):
 
 
 class DeliveryPlanCreateRequest(FullMarketModel):
+    execution_profile: ExecutionProfile = "full_market"
     version: Literal[1]
     dataset_key: str = Field(pattern=r"^[a-z0-9_]{1,50}$")
     provider: str = Field(pattern=r"^[a-z0-9_]{1,50}$")
@@ -174,6 +176,7 @@ class DeliveryPartResponse(FullMarketModel):
 
 
 class DeliverySummaryResponse(FullMarketModel):
+    execution_profile: ExecutionProfile = "full_market"
     expected: int
     data: int
     no_data: int
@@ -185,6 +188,7 @@ class DeliverySummaryResponse(FullMarketModel):
 
 
 class DeliveryPlanResponse(FullMarketModel):
+    execution_profile: ExecutionProfile = "full_market"
     plan_id: UUID
     dataset_key: str
     provider: str

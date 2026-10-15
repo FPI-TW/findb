@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
+from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
 from app.models.registry import DailyDeliveryPlan
 from app.schemas.full_market import (
     DeliveryOutcomeRequest,
@@ -154,14 +155,18 @@ async def report_full_market_readiness(
 async def full_market_authorization(
     response: Response,
     consumer: str = "full_market",
+    execution_profile: ExecutionProfile = "full_market",
     declaration_sha256: str = "",
     runtime_id: str = "",
     _api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     provider, _ = _full_market_source_scope(db)
-    projection = await admission_projection(db, provider, source=True)
-    account = await account_authorization(db, provider, consumer, declaration_sha256, runtime_id)
+    profile: ExecutionProfile = "pilot" if consumer == "pilot" else execution_profile
+    projection = await admission_projection(db, provider, source=True, profile=profile)
+    account = await account_authorization(
+        db, provider, consumer, declaration_sha256, runtime_id, profile=profile
+    )
     checked_at = utc_now()
     _authorization_headers(response, checked_at.isoformat())
     return {
@@ -196,8 +201,10 @@ async def scheduler_acquisition_authorization(
     if not datasets or row.provider != provider or not set(datasets) <= set(allowed):
         raise HTTPException(status_code=403, detail="Source scheduler scope denied")
     acquisition_allowed = row.desired_state == "running"
-    if scheduler_key.startswith("full_market_"):
-        current = await account_authorization(db, provider, "full_market", "", "")
+    if unified_scheduler(scheduler_key):
+        current = await account_authorization(
+            db, provider, scheduler_profile(scheduler_key), "", ""
+        )
         acquisition_allowed = acquisition_allowed and current["acquisition_allowed"]
     checked_at = utc_now()
     _authorization_headers(response, checked_at.isoformat())
@@ -278,13 +285,19 @@ async def submit_universe_endpoint(
 async def list_universes_endpoint(
     dataset_key: str,
     as_of: date | None = None,
+    execution_profile: ExecutionProfile = "full_market",
     _api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> UniverseListResponse:
     provider, datasets = _full_market_source_scope(db)
     try:
         return await list_universes(
-            db, dataset_key=dataset_key, provider=provider, allowed_datasets=datasets, as_of=as_of
+            db,
+            dataset_key=dataset_key,
+            provider=provider,
+            allowed_datasets=datasets,
+            as_of=as_of,
+            profile=execution_profile,
         )
     except FullMarketError as exc:
         raise _full_market_http_error(exc) from exc
@@ -332,6 +345,7 @@ async def get_delivery_plan_endpoint(
 @router.get("/delivery-plans")
 async def list_delivery_plans_endpoint(
     dataset_key: str,
+    execution_profile: ExecutionProfile = "full_market",
     start_date: date | None = None,
     end_date: date | None = None,
     limit: int = 100,
@@ -346,6 +360,7 @@ async def list_delivery_plans_endpoint(
     stmt = select(DailyDeliveryPlan).where(
         DailyDeliveryPlan.dataset_key == dataset_key,
         DailyDeliveryPlan.provider == provider,
+        DailyDeliveryPlan.execution_profile == execution_profile,
     )
     if start_date is not None:
         stmt = stmt.where(DailyDeliveryPlan.trade_date >= start_date)

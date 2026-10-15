@@ -1470,6 +1470,7 @@ export function OperationsOverviewPage({
   const effectiveRole = role ?? "viewer"
   const audit: DashboardRequest["audit"] = {
     ...OPERATIONS_OVERVIEW_AUDIT,
+    profile,
   }
   const query = useOperationsDashboardQuery("overview", audit)
   const state = useOperationsDashboardState(query)

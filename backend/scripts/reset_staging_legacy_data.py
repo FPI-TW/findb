@@ -87,6 +87,7 @@ TARGET_TABLES = (
     "public.canonical_correction",
     "public.corporate_action",
     "public.dq_issue",
+    "public.delivery_member_evidence",
     "public.daily_delivery_member",
     "public.daily_delivery_part",
     "public.daily_delivery_plan",

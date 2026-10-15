@@ -16,9 +16,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
+from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
+    DailyDeliveryPart,
+    DailyDeliveryPlan,
     DatasetRegistry,
+    DeliveryMemberEvidence,
     IngestionRun,
     MissingDeliveryAlert,
     SchedulerControl,
@@ -104,6 +109,7 @@ class MarketFreshness:
     late_feed_count: int
     feeds: tuple[FreshnessFeed, ...]
     monitor_kind: Literal["bounded", "full_market"]
+    execution_profile: ExecutionProfile
     activation_state: Literal["not_activated", "activated", "deactivated"] | None
     active_dataset_keys: tuple[str, ...]
     pending_feeds: tuple[PendingFeed, ...]
@@ -440,6 +446,163 @@ async def _feed_freshness(
     )
 
 
+async def _profile_feed_freshness(
+    db: AsyncSession,
+    feed: _ConfiguredFeed,
+    profile: ExecutionProfile,
+    evaluated_at: datetime,
+    first_date: str | None,
+) -> FreshnessFeed:
+    from app.services.calendar_management import complete_published_revision_ids
+    from app.services.full_market import reconcile_plan
+    from app.services.full_market_governance import feed_schedule
+
+    timezone_name, scheduled_time = feed_schedule(feed.dataset.dataset_key)
+    local = evaluated_at.astimezone(ZoneInfo(timezone_name))
+    through = local.date() - timedelta(days=int(local.strftime("%H:%M") < scheduled_time))
+    covered = await db.scalar(
+        select(CalendarRevisionDay.id)
+        .join(
+            CalendarYearRevision,
+            CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
+        )
+        .where(
+            CalendarYearRevision.market
+            == ("TAIFEX" if feed.dataset.dataset_key == "tw_futures_eod" else feed.dataset.market),
+            CalendarYearRevision.id.in_(complete_published_revision_ids()),
+            CalendarRevisionDay.trade_date == local.date(),
+        )
+        .limit(1)
+    )
+    calendar_errors = [] if covered else ["calendar_does_not_cover_evaluation_date"]
+    expected = (
+        await db.scalar(
+            select(func.max(CalendarRevisionDay.trade_date))
+            .join(
+                CalendarYearRevision,
+                CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
+            )
+            .where(
+                CalendarYearRevision.market
+                == (
+                    "TAIFEX"
+                    if feed.dataset.dataset_key == "tw_futures_eod"
+                    else feed.dataset.market
+                ),
+                CalendarYearRevision.id.in_(complete_published_revision_ids()),
+                CalendarRevisionDay.is_open.is_(True),
+                CalendarRevisionDay.trade_date <= through,
+                CalendarRevisionDay.trade_date
+                >= (date.fromisoformat(first_date) if first_date else local.date()),
+            )
+        )
+        if first_date
+        else None
+    )
+    plans = list(
+        await db.scalars(
+            select(DailyDeliveryPlan)
+            .where(
+                DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
+                DailyDeliveryPlan.provider == feed.source,
+                DailyDeliveryPlan.execution_profile == profile,
+                DailyDeliveryPlan.trade_date <= through,
+            )
+            .order_by(DailyDeliveryPlan.trade_date.desc())
+        )
+    )
+    latest_complete = None
+    current = None
+    for plan in plans:
+        summary = await reconcile_plan(db, plan, now=evaluated_at)
+        if plan.trade_date == expected:
+            current = summary
+        if latest_complete is None and summary.data + summary.no_data == summary.expected:
+            latest_complete = plan.trade_date
+        if latest_complete is not None and (expected is None or plan.trade_date <= expected):
+            break
+    last_run = await db.scalar(
+        select(IngestionRun)
+        .join(DailyDeliveryPart, DailyDeliveryPart.part_id == IngestionRun.delivery_part_id)
+        .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryPart.plan_id)
+        .where(
+            DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
+            DailyDeliveryPlan.provider == feed.source,
+            DailyDeliveryPlan.execution_profile == profile,
+        )
+        .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
+        .limit(1)
+    )
+    last_successful_update = await db.scalar(
+        select(func.max(IngestionRun.completed_at))
+        .join(DailyDeliveryPart, DailyDeliveryPart.part_id == IngestionRun.delivery_part_id)
+        .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryPart.plan_id)
+        .where(
+            DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
+            DailyDeliveryPlan.provider == feed.source,
+            DailyDeliveryPlan.execution_profile == profile,
+            IngestionRun.status.in_(["completed", "completed_with_errors"]),
+            select(DeliveryMemberEvidence.run_id)
+            .where(DeliveryMemberEvidence.run_id == IngestionRun.run_id)
+            .exists(),
+        )
+    )
+    last_fetched = (
+        await db.scalar(
+            select(RawMarketPayload.fetched_at).where(
+                RawMarketPayload.raw_payload_id == last_run.raw_payload_id
+            )
+        )
+        if last_run and last_run.raw_payload_id
+        else None
+    )
+    alert = (
+        await db.scalar(
+            select(MissingDeliveryAlert.alert_id)
+            .where(
+                MissingDeliveryAlert.dataset_key == feed.dataset.dataset_key,
+                MissingDeliveryAlert.source == feed.source,
+                MissingDeliveryAlert.execution_profile == profile,
+                MissingDeliveryAlert.expected_data_date == expected,
+                MissingDeliveryAlert.status == "open",
+            )
+            .limit(1)
+        )
+        if expected
+        else None
+    )
+    state: FreshnessStatus = "not_due" if expected is None else "never_received"
+    if current:
+        state = (
+            "fresh"
+            if current.data + current.no_data == current.expected
+            else "partial"
+            if current.data or current.no_data
+            else "late"
+            if current.is_late
+            else "not_due"
+        )
+    return FreshnessFeed(
+        dataset_key=feed.dataset.dataset_key,
+        source=feed.source,
+        schema_id=feed.schema_id,
+        schema_version=feed.schema_version,
+        expected_data_date=expected,
+        latest_successful_data_date=latest_complete,
+        last_fetched_at=ensure_utc(last_fetched) if last_fetched else None,
+        last_completed_at=ensure_utc(last_successful_update) if last_successful_update else None,
+        last_run_id=last_run.run_id if last_run else None,
+        total_records=current.expected if current else None,
+        success_records=current.data if current else None,
+        failed_records=current.blocked if current else None,
+        policy_outcome=last_run.policy_outcome if last_run else None,
+        open_missing_delivery_alert=alert is not None,
+        last_failure_code=last_run.failure_code if last_run else None,
+        configuration_error="; ".join([*feed.configuration_errors, *calendar_errors]) or None,
+        status=state,
+    )
+
+
 def _definition_from_control(row: SchedulerControl) -> _SchedulerDefinition:
     keys = tuple(scheduler_dataset_keys(row))
     return _SchedulerDefinition(
@@ -516,7 +679,8 @@ async def _build_scheduler_freshness(
     datasets: dict[str, DatasetRegistry],
     evaluated_at: datetime,
 ) -> MarketFreshness:
-    full_market = definition.scheduler_key.startswith("full_market_")
+    full_market = unified_scheduler(definition.scheduler_key)
+    profile = scheduler_profile(definition.scheduler_key)
     configuration_errors: list[str] = []
     if not definition.dataset_keys:
         configuration_errors.append("scheduler_dataset_mapping_missing")
@@ -527,12 +691,17 @@ async def _build_scheduler_freshness(
 
     from app.services.full_market_admission import admission_projection, eligibility
 
-    projection = await admission_projection(db, definition.provider) if full_market else None
+    projection = (
+        await admission_projection(db, definition.provider, profile=profile)
+        if full_market
+        else None
+    )
     readiness = (
         await eligibility(
             db,
             definition.provider,
             [datasets[key] for key in definition.dataset_keys if key in datasets],
+            profile=profile,
         )
         if full_market
         else None
@@ -552,6 +721,7 @@ async def _build_scheduler_freshness(
             enabled, previous, errors, blockers = _full_market_configuration(
                 dataset, definition.provider
             )
+            previous = bool(projection and projection["first_start_dates"].get(dataset_key))
             previously_activated = previously_activated or previous
             enabled = bool(
                 projection
@@ -583,6 +753,34 @@ async def _build_scheduler_freshness(
     feed_rows: list[FreshnessFeed] = []
     for feed in feed_configs:
         eligible = not full_market or feed.dataset.dataset_key in active_keys
+        if full_market:
+            row = await _profile_feed_freshness(
+                db,
+                feed,
+                profile,
+                evaluated_at,
+                projection["first_start_dates"].get(feed.dataset.dataset_key)
+                if projection
+                else None,
+            )
+            if row.configuration_error:
+                for error in row.configuration_error.split("; "):
+                    if not eligible and error == "calendar_does_not_cover_evaluation_date":
+                        activation_blockers[feed.dataset.dataset_key].append(error)
+                    else:
+                        configuration_errors.append(f"{feed.dataset.dataset_key}:{error}")
+            feed_rows.append(
+                replace(
+                    row,
+                    runtime_eligible=eligible,
+                    activation_blockers=tuple(
+                        activation_blockers.get(feed.dataset.dataset_key, [])
+                    ),
+                )
+            )
+            if eligible:
+                expected_by_feed.append(row.expected_data_date)
+            continue
         expected: date | None = None
         feed_errors = list(feed.configuration_errors)
         effective_expectation = (
@@ -743,6 +941,7 @@ async def _build_scheduler_freshness(
         late_feed_count=late_count,
         feeds=tuple(feed_rows),
         monitor_kind="full_market" if full_market else "bounded",
+        execution_profile=profile,
         activation_state=(
             "activated"
             if active_keys
@@ -768,6 +967,7 @@ async def list_market_freshness(
     slot_id: str | None = None,
     status: FreshnessStatus | None = None,
     now: datetime | None = None,
+    profile: ExecutionProfile | None = None,
 ) -> list[MarketFreshness]:
     """Build a scheduler-backed projection without mutating registry state."""
     evaluated_at = ensure_utc(now or utc_now())
@@ -792,6 +992,8 @@ async def list_market_freshness(
 
     results: list[MarketFreshness] = []
     for definition in definitions:
+        if profile is not None and scheduler_profile(definition.scheduler_key) != profile:
+            continue
         if validated_slot_filter and definition.slot_id != validated_slot_filter:
             continue
         mapped_markets = {

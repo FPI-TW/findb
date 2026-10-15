@@ -36,7 +36,10 @@ def _images(unit: str) -> dict[str, str]:
 
 def _manifest(unit: str = "findb") -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 3,
+        "registry": REGISTRY,
+        "account_id": "439622209937",
+        "release_tag": "",
         "deployment_target": "staging",
         "unit": unit,
         "commit_sha": COMMIT,
@@ -46,7 +49,9 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
         "contract_manifest_sha256": CONTRACT_DATA.canonical_sha256,
         "deployment_source_bundle_sha256": "d" * 64,
         "created_by_run_id": "123456",
-        **({"fetcher_bundle_version": 1} if unit == "fetcher" else {}),
+        **(
+            {"fetcher_bundle_version": 1, "runtime_profile": "unified"} if unit == "fetcher" else {}
+        ),
     }
 
 
@@ -63,36 +68,12 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         schema.write_bytes((REPO_ROOT / "contracts" / contract["path"]).read_bytes())
 
 
-def test_legacy_accepted_fetcher_bundle_replay_preserves_identity_and_new_format_is_bound(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "legacy"
-    for relative in release_manifest.bundle_source_paths(
-        "fetcher", CONTRACT_DATA, pilot_format=False
-    ):
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((REPO_ROOT / relative).read_bytes())
+@pytest.mark.parametrize("version", [1, 2])
+def test_pre_unification_manifest_is_below_rollback_floor(version):
     manifest = _manifest("fetcher")
-    manifest.pop("fetcher_bundle_version")
-    with release_manifest.SourceBundleReader(root) as reader:
-        manifest["deployment_source_bundle_sha256"] = reader.deployment_source_bundle_sha256(
-            "fetcher", pilot_format=False
-        )
-    manifest_path = tmp_path / "legacy-manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
-    raw = release_manifest.build_bundle(root, manifest_path, "fetcher")
-    digest = hashlib.sha256(raw).hexdigest()
-    assert (
-        release_manifest.validate_bundle_bytes(raw, expected_sha256=digest, unit="fetcher")
-        == manifest
-    )
-    assert not (root / "fetcher/configs/staging_provider_pilots.v1.json").exists()
-    assert release_manifest.build_bundle(root, manifest_path, "fetcher") == raw
-    manifest["fetcher_bundle_version"] = 1
-    manifest_path.write_text(json.dumps(manifest))
-    with pytest.raises(release_manifest.ManifestError):
-        release_manifest.build_bundle(root, manifest_path, "fetcher")
+    manifest["schema_version"] = version
+    with pytest.raises(release_manifest.ManifestError, match="schema_version"):
+        release_manifest.validate_manifest(manifest, CONTRACT_DATA)
 
 
 @pytest.mark.parametrize("value", [False, 0, 2, "1"])
@@ -103,14 +84,14 @@ def test_fetcher_bundle_version_rejects_unknown_or_malformed_format(value) -> No
         release_manifest.validate_manifest(manifest, CONTRACT_DATA)
 
 
-def test_protocol_cli_emits_only_the_v2_marker() -> None:
+def test_protocol_cli_emits_only_the_v3_marker() -> None:
     result = subprocess.run(
         [sys.executable, str(TOOL_PATH), "protocol"],
         capture_output=True,
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout == b"findb-release-manifest-v2\n"
+    assert result.stdout == b"findb-release-manifest-v3\n"
     assert result.stderr == b""
 
 
@@ -537,7 +518,7 @@ def test_bundle_rejects_tampered_member_mode_and_materializes_runnable_tools(
     validator = output / "infra/deploy/release_manifest.py"
     protocol = subprocess.run([str(validator), "protocol"], capture_output=True, check=False)
     assert protocol.returncode == 0
-    assert protocol.stdout == b"findb-release-manifest-v2\n"
+    assert protocol.stdout == b"findb-release-manifest-v3\n"
     for relative in (
         "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
         "infra/deploy/runtime-secrets/runtime_secret_command.sh",

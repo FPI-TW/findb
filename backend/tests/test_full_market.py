@@ -112,8 +112,16 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
             {
                 "symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
                 "provider_symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
-                "exchange": "HKEX" if key == "hk_equity_eod" else "TWSE",
-                "currency": "HKD" if key == "hk_equity_eod" else "TWD",
+                "exchange": "HKEX"
+                if key == "hk_equity_eod"
+                else "NASDAQ"
+                if key == "us_equity_eod"
+                else "TWSE",
+                "currency": "HKD"
+                if key == "hk_equity_eod"
+                else "USD"
+                if key == "us_equity_eod"
+                else "TWD",
                 "asset_class": "etf" if key in {"tw_etf_eod", "tw_etf_minute"} else "equity",
             }
             for i in range(count)

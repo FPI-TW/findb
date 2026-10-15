@@ -141,6 +141,7 @@ def _probe(provider, mode):
         return operation
 
     class FullDouble:
+        execution_profile = "full_market"
         state = SimpleNamespace(path=Path(".state/full-market/state.sqlite3"))
         source = SourceDouble()
 

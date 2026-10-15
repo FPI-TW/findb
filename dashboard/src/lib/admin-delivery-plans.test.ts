@@ -55,7 +55,7 @@ describe("delivery plan session proxy", () => {
     )
     const [url, init] = fetchMock.mock.calls[0] ?? []
     expect(String(url)).toBe(
-      "https://api.example.test/api/v1/admin/delivery-plans?page=1&page_size=25&dataset_key=tw_futures_eod&trade_date=2026-10-01"
+      "https://api.example.test/api/v1/admin/delivery-plans?execution_profile=full_market&page=1&page_size=25&dataset_key=tw_futures_eod&trade_date=2026-10-01"
     )
     expect(init.headers).toEqual({
       Authorization: "Bearer session-token",

@@ -13,29 +13,33 @@ from tests.test_migration_upgrade import _run_alembic
 async def test_baseline_calendar_admission_upgrade_and_guarded_downgrade(monkeypatch):
     import subprocess
 
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    from app.services.scheduler_control import update_scheduler_desired_state
-    from tests.test_scheduler_start import KEY, PRINCIPAL, ready
+    from app.utils import uuid7
 
     async with get_active_migration_database_factory().clone(
         "1331cb73adad", "findb_baseline_calendar"
     ) as (url, engine):
-        await _run_alembic(url, "head")
-        async with AsyncSession(engine, expire_on_commit=False) as db:
-            await ready(db, monkeypatch)
-            await update_scheduler_desired_state(
-                db,
-                scheduler_key=KEY,
-                desired_state="running",
-                expected_revision=1,
-                principal=PRINCIPAL,
+        await _run_alembic(url, "3553ed95cfbf")
+        # Exercise the historical migration using its own schema, not current ORM/seed.
+        async with engine.begin() as db:
+            await db.execute(
+                text("""INSERT INTO scheduler_control
+                (scheduler_key,provider,slot_id,scheduled_local_time,timezone,
+                 desired_state,observed_state,revision,created_at,updated_at)
+                VALUES ('full_market_finlab_v1','finlab','taiwan_market_window',
+                        '18:00','Asia/Taipei','stopped','stopped',1,now(),now())
+                ON CONFLICT DO NOTHING""")
+            )
+            await db.execute(
+                text("""INSERT INTO full_market_admission
+                (admission_id,scheduler_key,control_revision,enrollment_id,capacity,created_at)
+                VALUES (:id,'full_market_finlab_v1',1,NULL,'{}',now())"""),
+                {"id": uuid7()},
             )
         with pytest.raises(subprocess.CalledProcessError) as failed:
             await _run_alembic(url, "2442dc84beae", command="downgrade")
         assert "baseline/calendar admissions require the current schema" in failed.value.stderr
         async with engine.begin() as db:
-            assert await db.scalar(text("SELECT count(*) FROM full_market_enrollment")) == 1
+            assert await db.scalar(text("SELECT count(*) FROM full_market_enrollment")) == 0
             assert (
                 await db.scalar(
                     text("SELECT count(*) FROM full_market_admission WHERE enrollment_id IS NULL")
@@ -46,7 +50,7 @@ async def test_baseline_calendar_admission_upgrade_and_guarded_downgrade(monkeyp
             await db.execute(text("DELETE FROM full_market_admission"))
         await _run_alembic(url, "2442dc84beae", command="downgrade")
         async with engine.connect() as db:
-            assert await db.scalar(text("SELECT count(*) FROM full_market_enrollment")) == 1
+            assert await db.scalar(text("SELECT count(*) FROM full_market_enrollment")) == 0
             assert (
                 await db.scalar(
                     text(
@@ -162,7 +166,13 @@ async def test_migrated_malformed_metadata_does_not_add_start_gate(monkeypatch, 
             await ready(db, monkeypatch, scope=["tw_equity_eod"])
             dataset = await db.get(DatasetRegistry, "tw_equity_eod")
             assert dataset.config["full_market"]["activation_date"] == legacy
-            assert await db.get(FullMarketDatasetState, "tw_equity_eod") is None
+            assert (
+                await db.get(
+                    FullMarketDatasetState,
+                    {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"},
+                )
+                is None
+            )
             result = await eligibility(db, "finlab", [dataset])
             assert result["feeds"][0]["ready"]
             control = await update_scheduler_desired_state(
@@ -173,4 +183,10 @@ async def test_migrated_malformed_metadata_does_not_add_start_gate(monkeypatch, 
                 principal=PRINCIPAL,
             )
             assert control.desired_state == "running"
-            assert await db.get(FullMarketDatasetState, "tw_equity_eod") is not None
+            assert (
+                await db.get(
+                    FullMarketDatasetState,
+                    {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"},
+                )
+                is not None
+            )

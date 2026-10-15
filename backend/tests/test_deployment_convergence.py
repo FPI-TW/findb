@@ -59,7 +59,7 @@ def _v2_manifest(target: str) -> dict[str, object]:
         for name, repo in manifest.image_repositories(target, unit, registry).items()
     }
     result: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "deployment_target": target,
         "unit": unit,
         "commit_sha": "a" * 40,
@@ -105,33 +105,21 @@ def test_v2_manifest_is_target_aware_and_production_requires_promotion_source() 
         manifest.validate_manifest(source_registry_mismatch, contracts)
 
 
-def test_v1_staging_replay_is_accepted_but_v1_production_is_rejected() -> None:
-    legacy = {
-        "schema_version": 1,
-        "deployment_target": "staging",
-        "unit": "fetcher",
-        "commit_sha": "a" * 40,
-        "images": {
-            name: f"{repo}@sha256:{'b' * 64}"
-            for name, repo in manifest.IMAGE_REPOSITORIES["fetcher"].items()
-        },
-        "migration_revision": "none",
-        "contract_versions": list(contracts.versions),
-        "contract_manifest_sha256": contracts.canonical_sha256,
-        "deployment_source_bundle_sha256": "d" * 64,
-        "created_by_run_id": "1",
-    }
-    manifest.validate_manifest(legacy, contracts)
-    legacy["deployment_target"] = "production"
-    with pytest.raises(manifest.ManifestError, match="v1 manifests are staging-only"):
-        manifest.validate_manifest(legacy, contracts)
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("version", [1, 2])
+def test_pre_unification_releases_are_below_rollback_floor(target, version):
+    value = _v2_manifest(target)
+    value["schema_version"] = version
+    with pytest.raises(manifest.ManifestError, match="schema_version"):
+        manifest.validate_manifest(value, contracts)
 
 
 def test_production_workflows_are_manual_and_do_not_contain_legacy_transport() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-production-cd.yml").read_text()
         assert "workflow_dispatch" in text and "push:" not in text
-        assert "PRODUCTION_DEPLOY_ENABLED" in text
+        assert "PRODUCTION_DEPLOY_ENABLED" not in text
+        assert 'test "$GITHUB_REF" = refs/heads/main' in text
         assert f"PROMOTE_{unit.upper()}_PRODUCTION" in text
         assert "promote_image.sh" in text and "docker build" not in text
         assert "STAGING_PROMOTION_READ_ROLE_ARN" in text
@@ -144,43 +132,25 @@ def test_production_workflows_are_manual_and_do_not_contain_legacy_transport() -
         assert not {"ghcr.io", "appleboy", "FINDB_EC2_", "FETCHER_EC2_", "scp"} & set(text.split())
 
 
-def test_production_release_tag_binding_precedes_ci_and_all_deploy_paths() -> None:
+def test_production_release_binding_precedes_all_deploy_paths():
     for unit in ("findb", "fetcher"):
-        text = (ROOT / ".github" / "workflows" / f"{unit}-production-cd.yml").read_text()
-        assert 'git rev-parse "refs/tags/$RELEASE_TAG"' in text
+        text = (ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text()
+        jobs = yaml.safe_load(text)["jobs"]
+        assert "tag_ref_oid" in jobs["resolve"]["outputs"]
+        binding = jobs["bind-release-tag"]
+        names = [step.get("name") for step in binding["steps"]]
+        assert names.index("Verify exact accepted staging binding source") < names.index(
+            "Bind or validate immutable release tag"
+        )
+        assert binding["needs"] == "resolve"
+        for job in jobs.values():
+            if "uses" in job:
+                assert "bind-release-tag" in job["needs"]
         assert 'git rev-parse "refs/tags/$RELEASE_TAG^{commit}"' in text
         assert '[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag ]' in text
-        assert 'echo "tag_ref_oid=$tag_ref_oid" >> "$GITHUB_OUTPUT"' in text
-        assert "outputs: {revision:" in text and "tag_ref_oid:" in text
-        binding = re.search(
-            r"^  bind-release-tag:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
-            text,
-            re.M | re.S,
-        )
-        assert binding
-        binding_body = binding.group("body")
-        assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in binding_body
-        assert "ref: '${{ needs.resolve.outputs.revision }}'" in binding_body
-        assert "Verify exact release revision for binding" in binding_body
-        assert "Verify exact accepted staging binding source" in binding_body
-        assert '.deployment_target == "staging"' in binding_body
-        assert '.release_tag == ""' in binding_body
-        assert (
-            binding_body.index("Verify exact accepted staging binding source")
-            < binding_body.index("Configure production release-binding credentials")
-            < binding_body.index("Bind or validate immutable release tag")
-        )
-        assert "Configure production release-binding credentials" in binding_body
-        assert "infra/deploy/bind_release_tag.sh" in binding_body
-        assert "TAG_REF_OID: ${{ needs.resolve.outputs.tag_ref_oid }}" in binding_body
-        assert "COMMIT_SHA: ${{ needs.resolve.outputs.revision }}" in binding_body
-        assert "BUNDLE_KMS_KEY: ${{ vars.DEPLOY_BUNDLE_KMS_KEY_ARN }}" in binding_body
-        assert "needs: [resolve, bind-release-tag]" in text
-        assert "needs: [resolve, bind-release-tag, verify, promote]" in text
-        assert "needs: [resolve, bind-release-tag, verify]" in text
         for action in re.findall(r"uses:\s*([^\s#}]+)", text):
             if not action.startswith("./"):
-                assert re.search(r"@[0-9a-f]{40}$", action), action
+                assert re.search(r"@[0-9a-f]{40}$", action)
 
 
 def test_production_release_tags_require_annotated_object_identity(tmp_path: Path) -> None:
@@ -245,7 +215,8 @@ def test_reusable_deployments_persist_production_acceptance_and_replay_only_acce
         assert f"{unit}/production/accepted/" in text
         assert 'state:"accepted"' in text
         assert "ssm_command_marker_state" in text
-        assert "PRODUCTION_DEPLOY_ENABLED" in text
+        assert "PRODUCTION_DEPLOY_ENABLED" not in text
+        assert 'test "$GITHUB_REF" = refs/heads/main' in text
         assert 'bundle_sha256="${bundle_filename##*-}"' in text
         assert 'infra/deploy/release_manifest.py > \\"\\$validator\\"' in text
         assert "VALIDATOR_SHA256" in text
@@ -372,14 +343,14 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         workflow = yaml.safe_load(text)
         jobs = workflow["jobs"]
-        assert jobs["select"]["environment"] == f"staging-{unit}"
+        assert "environment" not in jobs["select"]
         assert jobs["select"]["permissions"].get("id-token") is None
         assert "environment" not in jobs["publish"]
         assert jobs["publish"]["permissions"] == {
             "contents": "read",
             "id-token": "write",
         }
-        assert jobs["prepare"]["environment"] == f"staging-{unit}"
+        assert "environment" not in jobs["prepare"]
         assert jobs["prepare"]["permissions"] == {
             "contents": "read",
             "id-token": "write",
@@ -396,7 +367,7 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
         ).group("body")
         assert f"role/{unit}-staging-ecr-publisher" in publish_block
         assert f"role/{unit}-staging-ecr-publisher" not in prepare_block
-        assert "role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}" in prepare_block
+        assert "aws-configuration" in prepare_block
         assert "aws s3api put-object" not in publish_block
         assert "aws s3api put-object" in prepare_block
         deploy_block = re.search(
@@ -497,7 +468,7 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
         )
         assert '--output \\"\\$work/runtime.env\\" --check-only' not in text
         preflight_block = re.search(
-            r"- name: Run target-aware read-only SSM preflight(?P<body>.*?)(?=\n      - name:)",
+            r"- name: Run target-aware read-only SSM preflight(?P<body>.*?)(?=\n    - name:)",
             text,
             re.S,
         ).group("body")
@@ -509,7 +480,7 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
             assert "q_host_guard_sha" in preflight_block
         else:
             assert "if ! docker ps --format '{{.Names}}' | grep -Eq" in preflight_block
-            assert "then [ $q_target = production ];" in preflight_block
+            assert "then [ $q_target = production ];" not in preflight_block
             assert '[ -z \\"\\$(docker ps -aq)\\" ]; fi' in preflight_block
         assert "phase1-preflight-denial-probe" not in preflight_block
         cross_unit = "fetcher" if unit == "findb" else "findb"
@@ -524,7 +495,7 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
     assert "FINDB_NGINX_CONFIG_DIR=/etc/findb/nginx" in findb_text
     assert "/home/ubuntu/etc/nginx" not in findb_text
     preflight_block = re.search(
-        r"- name: Run target-aware read-only SSM preflight(?P<body>.*?)(?=\n      - name:)",
+        r"- name: Run target-aware read-only SSM preflight(?P<body>.*?)(?=\n    - name:)",
         findb_text,
         re.S,
     ).group("body")
@@ -543,94 +514,17 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
     assert "bash -n" in fetcher_text
 
 
-def test_reusable_deployments_forward_complete_staging_runtime_variable_contract() -> None:
-    contracts = {
-        "findb": (
-            "FULL_MARKET_ENABLED",
-            "APP_NAME",
-            "APP_VERSION",
-            "DEBUG",
-            "PORT",
-            "DATABASE_POOL_SIZE",
-            "DATABASE_MAX_OVERFLOW",
-            "API_V1_PREFIX",
-            "API_KEY_HEADER",
-            "SOURCE_TRUST_PROXY_HEADERS",
-            "SERVE_REQUIRE_AUTH",
-            "RATE_LIMIT_REQUESTS",
-            "RATE_LIMIT_WINDOW",
-            "RAW_RETENTION_ENABLED",
-            "RAW_RETENTION_DAYS",
-            "FINDB_STATIC_CACHE_BASE_URL",
-            "CLOUDFLARE_R2_ACCOUNT_ID",
-            "CLOUDFLARE_R2_CANONICAL_BUCKET",
-        ),
-        "fetcher": (
-            "FULL_MARKET_ENABLED",
-            "FETCHER_RUNTIME_PROFILE",
-            "FETCHER_SOURCE_API_URL",
-            "FINDB_SERVE_BASE_URL",
-            "FETCHER_CALENDAR_TIMEOUT_SECONDS",
-            "FETCHER_CALENDAR_CACHE_TTL_SECONDS",
-            "FETCHER_REQUEST_TIMEOUT_SECONDS",
-            "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS",
-            "FETCHER_MAX_ATTEMPTS",
-            "FETCHER_MAX_RETRY_AFTER_SECONDS",
-            "TWELVE_DATA_BASE_URL",
-            "TWELVE_DATA_TIMEOUT_SECONDS",
-            "TWELVE_DATA_MAX_RESPONSE_BYTES",
-            "SHIOAJI_SIMULATION",
-            "CLOUDFLARE_R2_ACCOUNT_ID",
-            "CLOUDFLARE_R2_RAW_BUCKET",
-            "CLOUDFLARE_R2_MAX_OBJECT_BYTES",
-        ),
-    }
-    for unit, expected_names in contracts.items():
-        workflow = yaml.safe_load(
-            (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        )
-        for step_name in (
-            "Run candidate acceptance or accepted replay through bounded SSM",
-            "Activate only after immutable acceptance is durable",
-        ):
-            step = next(
-                item
-                for item in workflow["jobs"]["deploy"]["steps"]
-                if item.get("name") == step_name
-            )
-            effective_env = {**workflow["jobs"]["deploy"].get("env", {}), **step["env"]}
-            assert set(expected_names) <= set(effective_env)
-            for name in expected_names:
-                if name == "FETCHER_RUNTIME_PROFILE":
-                    # Scope is bound to the reviewed caller input, not a secret
-                    # or mutable runtime variable loaded on the host.
-                    assert (
-                        effective_env[name]
-                        == "${{ inputs.runtime_profile || (vars.FULL_MARKET_ENABLED == 'true' && 'full-market' || 'bounded') }}"
-                    )
-                elif name == "FULL_MARKET_ENABLED":
-                    assert effective_env[name] == "${{ vars.FULL_MARKET_ENABLED || 'false' }}"
-                else:
-                    assert "inputs.deployment_target == 'staging'" in effective_env[name]
-                    assert f"vars.{name}" in effective_env[name]
-            match = re.search(r'^runtime_variable_names="([A-Z0-9_ ]+)"$', step["run"], re.M)
-            assert match
-            assert tuple(match.group(1).split()) == expected_names
-            assert (
-                'if [ "$TARGET" = staging ]; then [ -n "${!name:-}" ] || exit 1; fi' in step["run"]
-            )
-            assert 'runtime_exports+=" $name=$q_runtime_value"' in step["run"]
-            assert "$runtime_exports" in step["run"]
-
-    findb = yaml.safe_load((ROOT / ".github" / "workflows" / "findb-deploy.yml").read_text())
-    for step_name in (
-        "Run candidate acceptance or accepted replay through bounded SSM",
-        "Activate only after immutable acceptance is durable",
-    ):
-        step = next(
-            item for item in findb["jobs"]["deploy"]["steps"] if item.get("name") == step_name
-        )
-        assert 'if [ "$TARGET" = staging ]; then [ "$PORT" = 8080 ]; fi' in step["run"]
+def test_reusable_deployments_only_forward_deployment_controls():
+    for unit in ("findb", "fetcher"):
+        text = (ROOT / ".github/workflows" / f"{unit}-deploy.yml").read_text()
+        jobs = yaml.safe_load(text)["jobs"]
+        assert all("environment" not in job for job in jobs.values())
+        assert "${{ vars." not in text and "${{ secrets." not in text
+        assert 'runtime_variable_names="FULL_MARKET_ENABLED"' in text
+        assert "APP_NAME: ${{" not in text
+        assert "FETCHER_SOURCE_API_URL: ${{" not in text
+        assert "aws-configuration" in text
+        assert "load_runtime_secrets.py" in text
 
 
 def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
@@ -641,8 +535,8 @@ def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
         assert text.count(wrapper) == 3
 
     fetcher_cd = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
-    assert fetcher_cd.count("--document-name AWS-RunShellScript") == 1
-    assert fetcher_cd.count(wrapper) == 1
+    assert fetcher_cd.count("--document-name AWS-RunShellScript") == 0
+    assert fetcher_cd.count(wrapper) == 0
 
 
 def test_bundle_validation_never_passes_an_incomplete_exact_input_contract() -> None:
@@ -665,21 +559,23 @@ def test_bundle_validation_never_passes_an_incomplete_exact_input_contract() -> 
             assert "--image" in call
 
 
-def test_v1_staging_replay_uses_the_bundle_local_validator_without_a_bare_sha_fallback() -> None:
+def test_reusable_deployment_uses_current_validator_and_unified_acceptance():
     for unit in ("findb", "fetcher"):
-        text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        assert "staging-v1-bundle-validator.py" in text
-        assert 'tar -xOf "$RUNNER_TEMP/release-bundle.tar" infra/deploy/release_manifest.py' in text
-        assert "jq -r .validator_sha256" in text
-        assert f"--unit {unit}" in text
-        assert "manifest-missing" not in text
+        text = (ROOT / ".github/workflows" / f"{unit}-deploy.yml").read_text()
+        assert 'validator=".deployment-driver/infra/deploy/release_manifest.py"' in text
+        assert "staging-v1-bundle-validator" not in text
+        assert "legacy_environment_bridge" not in text
+        assert ".schema_version == 3" in text
+        assert "schema_version:3" in text
 
 
 def test_prepare_contracts_are_main_push_or_confirmed_manual_candidate_or_exact_replay() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         assert 'github.event_name }}" = workflow_dispatch' in text
-        assert "options: [replay, candidate]" in text
+        assert yaml.safe_load(text)["on"]["workflow_dispatch"]["inputs"]["deployment_mode"][
+            "options"
+        ] == ["replay", "candidate"]
         assert '[ "$CANDIDATE_CONFIRMATION" = deploy-new-candidate ]' in text
         assert '[ -z "$ACCEPTED" ] && [ -z "$IMAGE_TAG" ]' in text
         assert '[ -z "$CANDIDATE_CONFIRMATION" ]' in text
@@ -714,15 +610,10 @@ def test_reusable_records_and_ssm_gates_are_immutable_and_bounded() -> None:
         )
 
 
-def test_fetcher_smoke_is_exact_hardened_and_non_destructive() -> None:
-    text = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
-    assert "options: ['2330,2317']" in text
-    assert "needs.deploy.outputs.finlab_image_ref" in text
-    assert '[[ "$FINLAB_IMAGE" =~ /findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]' in text
-    assert "chown 10001:10001" in text
-    assert "--user 10001:10001" in text
-    for prune_command in ("docker image prune", "docker system prune", "docker volume prune"):
-        assert prune_command not in text
+def test_native_provider_smoke_is_not_a_daily_deployment_gate():
+    text = (ROOT / ".github/workflows/fetcher-cd.yml").read_text()
+    assert "finlab-acquisition-smoke" not in yaml.safe_load(text)["jobs"]
+    assert "findb-fetch-finlab-smoke" not in text
 
 
 def test_promotion_helper_has_copy_collision_and_destination_digest_guards() -> None:
