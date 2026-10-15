@@ -51,6 +51,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_work (key TEXT PRIMARY KEY, provider TEXT NOT NULL, plan_id TEXT NOT NULL, member_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0, body BLOB, body_sha256 TEXT, receipt TEXT, reason TEXT, next_at REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_plan (plan_id TEXT PRIMARY KEY, provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, body BLOB NOT NULL, complete INTEGER NOT NULL DEFAULT 0, late INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
                 CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
                 CREATE TABLE IF NOT EXISTS acquisition_usage(operation_id TEXT NOT NULL, observed_at REAL NOT NULL, bytes INTEGER NOT NULL, limit_bytes INTEGER NOT NULL, remaining_bytes INTEGER NOT NULL, PRIMARY KEY(operation_id,observed_at));
@@ -612,6 +613,30 @@ class FullMarketState:
                 ),
             )
 
+    def date_prerequisite_due(self, provider: str, dataset: str, day: date) -> bool:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT next_at FROM full_date_prerequisite WHERE provider=? AND dataset=? AND trade_date=?",
+                (provider, dataset, day.isoformat()),
+            ).fetchone()
+        return row is None or row[0] <= self.clock()
+
+    def block_date(self, provider: str, dataset: str, day: date, reason: str) -> None:
+        if reason not in {"dated_report_unavailable", "dated_universe_pending"}:
+            raise FullMarketStateError("unknown dated prerequisite reason")
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO full_date_prerequisite VALUES(?,?,?,?,?) ON CONFLICT(provider,dataset,trade_date) DO UPDATE SET reason=excluded.reason,next_at=excluded.next_at",
+                (provider, dataset, day.isoformat(), reason, self.clock() + 3600),
+            )
+
+    def clear_date(self, provider: str, dataset: str, day: date) -> None:
+        with self.connection() as db:
+            db.execute(
+                "DELETE FROM full_date_prerequisite WHERE provider=? AND dataset=? AND trade_date=?",
+                (provider, dataset, day.isoformat()),
+            )
+
     def health(self, provider: str) -> dict[str, Any]:
         with self.connection() as db:
             gaps = [
@@ -627,11 +652,19 @@ class FullMarketState:
             refresh = db.execute(
                 "SELECT result FROM full_refresh WHERE provider=?", (provider,)
             ).fetchone()
+            prerequisites = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT dataset,trade_date,reason,next_at FROM full_date_prerequisite WHERE provider=? ORDER BY trade_date",
+                    (provider,),
+                )
+            ]
         return {
             "acquisition_protocol_version": 2,
             "universe_refresh": json.loads(refresh["result"]) if refresh else [],
             "provider": provider,
             "unresolved": gaps,
             "manual_required": manual,
+            "date_prerequisites": prerequisites,
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }

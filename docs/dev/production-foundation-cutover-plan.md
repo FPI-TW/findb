@@ -17,10 +17,11 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   香港另列未解項目，不計入本次分母，也不標示通過。既有兩項 retry exhausted 不重設。
   美股 2026-10-15 排程為台北 10 月 16 日 05:00，本輪不等待過夜，待 Owner 回覆後接續。
   FinLab 的兩條每日 feed 已取得完整真實交付證據，連同 Shioaji 在本次範圍共 4／6（原七條範圍仍為 4／7），見正式測試文件。
-  FileStorage 記憶體快取修復已部署至 `b6fac56ac435`，單次實機診斷與資料保留檢查見正式測試文件。
-  仍需驗證多輪日常抓取穩定性；Pilot 全部停止，不將已有資料證據當作記憶體問題結案。
-  FinLab 最新目錄的 ETF `00415A` 缺少欄位，現有 refresh 又將同批 equity 標成 mapping gaps；
-  需分開處理目錄缺漏與跨 feed 錯誤影響，不直接發布 candidate 或修改既有凍結樣本。
+  FinLab FileStorage 與跨 feed 目錄缺欄隔離修復已部署至 `50cb51faadd9`，三輪目錄 refresh、
+  記憶體與資料保留驗證見正式測試文件；仍需多輪日常抓取穩定性驗證。
+  Pilot 全部停止，不將目錄診斷當作日常抓取驗收。
+  最新股票 `8908` 與 ETF `00415A` 仍為 mapping gap，需核對 provider 資料可用性；
+  不將已發布目錄等同所有成員有資料，也不修改既有凍結樣本。
   TAIFEX 2026-10-15 Pilot 計畫有兩筆 canonical 寫入，另兩項已 retry exhausted，整條 feed 未通過；
   未完成項目為前一日目錄的 MTX:202610W2 sessions，需核對新計畫的目錄日期與到期契約；
   保留凍結成員、首次日期與 terminal checkpoint，不以重設狀態或無證據 no_data 掩蓋失敗。

@@ -143,6 +143,9 @@ Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest 
 - `/source/delivery-plans` 建立／列出交易日 plan，`/{plan_id}` 讀取 frozen parts。
   列表依交易日降冪，`start_date`／`end_date` 為包含端點的日期篩選，`limit` 為 1–100；
   以 `start_date=end_date=目標日` 與 `limit=1` 找回原 frozen plan，provider 由 Source key 決定。
+  TAIFEX 新計畫在日曆略過判定後要求 release effective date 等於目標日；不符時回傳
+  `409 {"detail":{"code":"taifex_dated_universe_required"}}`，供 Fetcher 取得該日官方目錄後重試。
+  既有凍結計畫與 durable skip 不重新套用此限制。
 - `/source/delivery-plans/{plan_id}/outcomes` 記錄 no_data／blocked。
 
 Universe material change 計入新增／刪除與 mapping、分類、幣別、exchange、契約身分等欄位變更；

@@ -35,6 +35,7 @@ from tests.test_full_market import (
     DAY,
     EVIDENCE,
     _activated_plan,
+    _baseline,
     _calendar,
     _dataset,
     _ingress,
@@ -215,6 +216,7 @@ async def test_actual_full_market_ingress_rejects_future_date_or_fetch_time(
     future = DAY + timedelta(days=1)
     dataset, body, first = await _activated_plan(test_session, count=1, open_dates=[DAY, future])
     target = future if invalid == "trade_date" else DAY
+    _, release = await _baseline(test_session, count=1, effective_date=target)
     plan = await create_plan(
         test_session,
         DeliveryPlanCreateRequest(
@@ -222,7 +224,7 @@ async def test_actual_full_market_ingress_rejects_future_date_or_fetch_time(
             dataset_key=dataset.dataset_key,
             provider=body.provider,
             trade_date=target,
-            release_id=first.release_id,
+            release_id=release.release_id,
         ),
         allowed_datasets=[dataset.dataset_key],
     )
@@ -455,6 +457,7 @@ async def test_no_data_rejects_future_trade_day_but_allows_plan_and_blocked(
 ):
     tomorrow = DAY + timedelta(days=1)
     _, body, first = await _activated_plan(test_session, count=1, open_dates=[DAY, tomorrow])
+    _, release = await _baseline(test_session, count=1, effective_date=tomorrow)
     plan = await create_plan(
         test_session,
         DeliveryPlanCreateRequest(
@@ -462,7 +465,7 @@ async def test_no_data_rejects_future_trade_day_but_allows_plan_and_blocked(
             dataset_key=first.dataset_key,
             provider=body.provider,
             trade_date=tomorrow,
-            release_id=first.release_id,
+            release_id=release.release_id,
         ),
         allowed_datasets=[first.dataset_key],
     )

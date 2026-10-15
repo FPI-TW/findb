@@ -22,13 +22,14 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from findb_fetcher.acquisition import authorization_scope, http_acquisition
-from findb_fetcher.client import SourceAPIClient, SourceAPIResponseError
+from findb_fetcher.client import SourceAPIClient, SourceAPIResponseError, SourceAPITransportError
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.full_market_universe import (
     HKEX_URL,
     MAX_SNAPSHOT_BYTES,
     NASDAQ_URLS,
+    TAIFEX_HISTORY_URL,
     TAIFEX_URL,
     TW_COMPANY_URLS,
     TW_ISIN_URLS,
@@ -59,7 +60,12 @@ from findb_fetcher.providers.finlab import (
 )
 from findb_fetcher.providers.shioaji import _simulation_from_env, build_market_minute_request
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
-from findb_fetcher.providers.taifex import fetch_report, parse_report, report_members
+from findb_fetcher.providers.taifex import (
+    TaifexOperationalError,
+    fetch_report,
+    parse_report,
+    report_members,
+)
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
@@ -68,13 +74,17 @@ from findb_fetcher.providers.twelve_data import (
 from findb_fetcher.providers.twelve_data import (
     build_market_eod_request as td_request,
 )
-from findb_fetcher.raw_storage import RawObject, RawPayloadStore, attach_raw_object
+from findb_fetcher.raw_storage import RawObject, RawPayloadStore, RawStorageError, attach_raw_object
 
 _TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "Hong Kong"}
 
 
 class ReadinessBlockedError(RuntimeError):
     pass
+
+
+class DatedUniversePendingError(ReadinessBlockedError):
+    """A date-local prerequisite; other frozen dates may still make progress."""
 
 
 def load_readiness(
@@ -197,6 +207,8 @@ def _governed(method):
                 required_dataset=(
                     kwargs.get("dataset_key") or args[0]
                     if method.__name__ == "_catalogue_market"
+                    else args[0]["dataset_key"]
+                    if method.__name__ == "_dated_taifex_universe"
                     else plan["dataset_key"]
                     if plan
                     else None
@@ -247,6 +259,7 @@ class FullMarketRuntime:
         self.catalogue_evidence: dict[str, bytes] = {}
         self.futures: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}
         self.bundles: dict[tuple[str, date], Any] = {}
+        self._drain_blocked = False
 
     def close(self) -> None:
         if self.sdk is not None:
@@ -412,6 +425,10 @@ class FullMarketRuntime:
                 suffix = "minute" if self.provider == "shioaji" else "eod"
                 asset = "etf" if url in TW_ISIN_URLS else "equity"
                 dataset = f"tw_{asset}_{suffix}"
+            # An empty TAIFEX HTTP 200 report has no raw object; the dated
+            # report resolver handles fallback/retry without fabricating evidence.
+            if url == TAIFEX_URL and not body:
+                return body
             self.snapshot_objects[url] = self._persist(body, dataset, "official_universe")
             return body
 
@@ -697,6 +714,7 @@ class FullMarketRuntime:
 
     def drain(self) -> dict[str, Any]:
         """Deliver immutable prepared bodies without acquiring new provider data."""
+        self._drain_blocked = False
         for saved in self.state.pending_plans(self.provider):
             plan = json.loads(saved["body"])
             feed = next(
@@ -710,12 +728,18 @@ class FullMarketRuntime:
             if feed is None:
                 continue
             release = self.source.release(plan["release_id"])
-            self._deliver_plan(plan, release, feed, drain_only=True)
+            can_continue = self._deliver_plan(plan, release, feed, drain_only=True)
             self.state.evaluate(self.source.evaluate(plan["plan_id"]))
+            if not can_continue:
+                self._drain_blocked = True
+                break
         return self.state.health(self.provider)
 
-    def cycle(self) -> dict[str, Any]:
-        self.drain()
+    def cycle(self, *, drain_prepared: bool = True) -> dict[str, Any]:
+        if drain_prepared:
+            self.drain()
+        if self._drain_blocked:
+            return self.state.health(self.provider)
         self._ensure_proof()
         authorization = self.source.request(
             "GET", "full-market/authorization?consumer=" + self.execution_profile
@@ -728,7 +752,7 @@ class FullMarketRuntime:
             if feed["dataset_key"] in authorization["admitted_dataset_keys"]
         ]
         now = datetime.now(timezone.utc)
-        if self.state.refresh_due(self.provider, now.timestamp()):
+        if self.provider != "taifex" and self.state.refresh_due(self.provider, now.timestamp()):
             try:
                 refreshed = self.sync_universes(
                     dataset_keys=[feed["dataset_key"] for feed in self.feeds]
@@ -787,7 +811,11 @@ class FullMarketRuntime:
                 self.pause()
                 return self.state.health(self.provider)
             # Current deadline comes first; catchup retains every unresolved scheduled date.
-            plan = self._plan_for_date(feed, day)
+            try:
+                plan = self._plan_for_date(feed, day)
+            except DatedUniversePendingError:
+                continue
+            self.state.clear_date(self.provider, feed["dataset_key"], day)
             if plan["status"] == "skipped_calendar":
                 continue
             self.state.record_plan(plan, self.provider)
@@ -844,7 +872,99 @@ class FullMarketRuntime:
                 existing = self._existing_plan(feed, day)
                 if existing is not None:
                     return existing
+                if self.provider == "taifex" and exc.code == "taifex_dated_universe_required":
+                    dataset = feed["dataset_key"]
+                    if not self.state.date_prerequisite_due(self.provider, dataset, day):
+                        raise DatedUniversePendingError("dated universe retry is pending") from None
+                    try:
+                        release = self._dated_taifex_universe(feed, day)
+                    except DatedUniversePendingError as pending:
+                        self.state.block_date(self.provider, dataset, day, str(pending))
+                        raise
+                    try:
+                        plan = self.source.plan(
+                            dataset=dataset,
+                            provider=self.provider,
+                            trade_date=day.isoformat(),
+                            release_id=release["release_id"],
+                        )
+                        return self._validate_plan_identity(plan, feed, day)
+                    except FullMarketProtocolError as retry:
+                        if retry.status_code == 409:
+                            existing = self._existing_plan(feed, day)
+                            if existing is not None:
+                                return existing
+                        raise
             raise
+
+    def _taifex_report(self, day: date, dataset: str) -> tuple[bytes, list[dict[str, Any]], bool]:
+        if day.isoformat() not in self.futures:
+            latest_raw = self._snapshot(TAIFEX_URL, provider_response=True)
+            if latest_raw:
+                self._persist(latest_raw, dataset, "exchange_report")
+            try:
+                rows = parse_report(latest_raw, target_date=day)
+                raw, historical = latest_raw, False
+            except (ValueError, UnicodeError):
+                reports = {}
+                rows = []
+                for product in ("TX", "MTX", "TMF", "TE", "TF"):
+                    product_raw = fetch_report(
+                        self.http,
+                        target_date=day,
+                        latest=False,
+                        product=product,
+                        max_response_bytes=int(self.proof["max_response_bytes"]),
+                        on_observed_bytes=self._observed_response,
+                        on_bounded_response=lambda size, declared: self._observed_response(
+                            size, declared=declared
+                        ),
+                        on_http_rate_limited=self._rate_limited,
+                    )
+                    if not product_raw:
+                        raise DatedUniversePendingError("dated_report_unavailable")
+                    self._persist(product_raw, dataset, product)
+                    try:
+                        parsed = parse_report(product_raw, target_date=day, historical=True)
+                    except (ValueError, UnicodeError):
+                        raise DatedUniversePendingError("dated_report_unavailable") from None
+                    if any(row["product_code"] != product for row in parsed):
+                        raise DatedUniversePendingError("dated_report_unavailable")
+                    reports[product] = product_raw.decode("cp950")
+                    rows.extend(parsed)
+                raw, historical = canonical_bytes(reports), True
+            self.futures[day.isoformat()] = (raw, rows, historical)
+        return self.futures[day.isoformat()]
+
+    @_governed
+    def _dated_taifex_universe(self, feed: dict[str, Any], day: date) -> dict[str, Any]:
+        dataset = feed["dataset_key"]
+        raw, rows, historical = self._taifex_report(day, dataset)
+        stored = self._persist(raw, dataset, "dated_universe")
+        members = report_members(rows)
+        for member in members:
+            member["raw_evidence_ref"] = stored.ref
+        url = (TAIFEX_HISTORY_URL if historical else TAIFEX_URL) + "?trade_date=" + day.isoformat()
+        result = self.source.submit(
+            universe_request(
+                dataset_key=dataset,
+                provider=self.provider,
+                effective_date=day,
+                observed_at=datetime.now(timezone.utc),
+                source_timezone=feed["source_timezone"],
+                snapshots={url: raw},
+                members=members,
+            )
+        )
+        if (
+            result.get("provider") != self.provider
+            or result.get("dataset_key") != dataset
+            or result.get("effective_date") != day.isoformat()
+        ):
+            raise ReadinessBlockedError("dated universe response identity invalid")
+        if result.get("status") != "published":
+            raise DatedUniversePendingError("dated_universe_pending")
+        return result
 
     def _release_for_date(self, feed: dict[str, Any], day: date) -> dict[str, Any]:
         listed = self.source.universes(feed["dataset_key"], self.provider, as_of=day.isoformat())
@@ -951,20 +1071,34 @@ class FullMarketRuntime:
                         reason="source_rejected",
                         now=time.time(),
                     )
-                except Exception:
+                    if self.provider == "taifex":
+                        return False
+                except Exception as exc:
                     # Provider/SDK diagnostics never enter durable state or logs.
-                    self.source.outcome(
-                        plan["plan_id"],
-                        work_item_id=part["work_item_id"],
-                        member_key=member_key,
-                        reason="source_error",
-                    )
                     self.state.finish(
                         key,
                         status="prepared" if self.state.prepared(key) else "pending",
                         reason="source_error",
                         now=time.time(),
                     )
+                    self.source.outcome(
+                        plan["plan_id"],
+                        work_item_id=part["work_item_id"],
+                        member_key=member_key,
+                        reason="source_error",
+                    )
+                    if self.provider == "taifex" and isinstance(
+                        exc,
+                        (
+                            TaifexOperationalError,
+                            httpx.HTTPError,
+                            SourceAPITransportError,
+                            FullMarketProtocolError,
+                            RawStorageError,
+                            ReadinessBlockedError,
+                        ),
+                    ):
+                        return False
 
         return True
 
@@ -1165,39 +1299,7 @@ class FullMarketRuntime:
                 }
             )
         else:
-            if day.isoformat() not in self.futures:
-                latest_raw = self._snapshot(TAIFEX_URL, provider_response=True)
-                self._persist(latest_raw, dataset, "exchange_report")
-                try:
-                    rows = parse_report(latest_raw, target_date=day)
-                    raw, historical = latest_raw, False
-                except ValueError:
-                    reports = {}
-                    rows = []
-                    for product in ("TX", "MTX", "TMF", "TE", "TF"):
-                        product_raw = fetch_report(
-                            self.http,
-                            target_date=day,
-                            latest=False,
-                            product=product,
-                            max_response_bytes=int(self.proof["max_response_bytes"]),
-                            on_observed_bytes=self._observed_response,
-                            on_bounded_response=lambda size, declared: self._observed_response(
-                                size, declared=declared
-                            ),
-                            on_http_rate_limited=self._rate_limited,
-                        )
-                        self._persist(product_raw, dataset, product)
-                        parsed = parse_report(product_raw, target_date=day, historical=True)
-                        if any(row["product_code"] != product for row in parsed):
-                            raise ReadinessBlockedError(
-                                "TAIFEX per-product report identity changed"
-                            )
-                        reports[product] = product_raw.decode("cp950")
-                        rows.extend(parsed)
-                    raw, historical = canonical_bytes(reports), True
-                self.futures[day.isoformat()] = (raw, rows, historical)
-            raw, rows, historical = self.futures[day.isoformat()]
+            raw, rows, historical = self._taifex_report(day, dataset)
             stored = self._persist(raw, dataset, "exchange_report")
             selected = [
                 row

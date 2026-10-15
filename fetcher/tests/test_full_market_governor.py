@@ -20,10 +20,10 @@ import pytest
 import findb_fetcher.full_market_runtime as runtime_module
 from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
-from findb_fetcher.full_market_universe import TAIFEX_URL, UniverseSnapshotError, canonical_bytes
+from findb_fetcher.full_market_universe import TAIFEX_URL, canonical_bytes
 from findb_fetcher.providers.finlab import FinLabSdkGateway
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
-from findb_fetcher.providers.taifex import fetch_report
+from findb_fetcher.providers.taifex import TaifexOperationalError, fetch_report
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
@@ -924,7 +924,7 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
         error = (
             ReadinessBlockedError
             if path != "report" or boundary in {"gzip", "declared", "wire"}
-            else UniverseSnapshotError
+            else TaifexOperationalError
         )
         message = (
             "Content-Encoding"
@@ -933,6 +933,8 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
             if boundary in {"invalid", "negative"}
             else "size"
         )
+        if error is TaifexOperationalError:
+            message = "response bound failed"
         with pytest.raises(error, match=message):
             acquire()
         assert raw.calls == [] and runtime.catalogue_evidence == {} and runtime.bundles == {}
@@ -1287,7 +1289,7 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
                 ReadinessBlockedError,
                 QuotaBlockedError,
                 TwelveDataResponseError,
-                UniverseSnapshotError,
+                TaifexOperationalError,
                 httpx.ReadError,
             )
         ):
@@ -1451,7 +1453,7 @@ def test_taifex_error_reader_uses_its_own_shared_permit_for_bounded_consumers(
                 == raw
             )
         else:
-            with pytest.raises((UniverseSnapshotError, QuotaBlockedError, httpx.ReadError)):
+            with pytest.raises((TaifexOperationalError, QuotaBlockedError, httpx.ReadError)):
                 fetch_report(
                     http, target_date=date(2026, 10, 1), latest=False, max_response_bytes=10
                 )

@@ -172,6 +172,8 @@ async def test_all_feeds_profiles_and_environments_freeze_weekend_decision(
     ready = await eligibility(test_session, body.provider, [dataset], profile=profile)
     assert ready["ready"] and not ready["blockers"]
     weekend = DAY + timedelta(days=(5 - DAY.weekday()) % 7)
+    if body.provider == "taifex" and not skip:
+        _, release = await _baseline(test_session, key, count=3, effective_date=weekend)
     request = DeliveryPlanCreateRequest(
         version=1,
         dataset_key=key,
