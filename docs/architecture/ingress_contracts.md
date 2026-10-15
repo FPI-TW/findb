@@ -156,10 +156,10 @@ release 一致。重送既有日期只能使用原 release；不得混用新版 
 daily_update group 的所有 sequences 完成後計入 data，其他完成群組不會使部分交付成員完整。
 
 治理中的 Source 實際交付不得使用交易所當地未來交易日，`fetched_at` 不得超過伺服器時間
-五分鐘。EOD／minute 的伺服器時間與 `fetched_at` 都須已過 published calendar 的當日收盤；
+五分鐘。EOD／minute 的伺服器時間與 `fetched_at` 都須已過 該 plan 凍結的有效日曆收盤（未發布日期使用同市場正常時間）；
 缺個別日期時間時，保守採 US 16:00 New York、HK 16:10 Hong Kong（含收市競價）、
 TW 13:30 Taipei、TAIFEX regular 13:45 Taipei。TAIFEX after_hours 採歸屬交易日 Taipei 05:00，
-不等待日盤收盤。這些限制只適用啟用 full-market governance 的 feeds，未來 plan 仍可預先建立。
+不等待日盤收盤。Pilot／Full market 建立新計畫或略過決策時，也會拒絕未來日期與尚未到正常／已發布收盤的日期。
 
 `no_data` 限 `halted`／`no_trade`，必須有 credential-free HTTPS URL、SHA-256、observed_at、
 source_symbol、trade_date、source_status 與 bounded excerpt；futures 同時匹配 session。
@@ -200,3 +200,5 @@ fixture／shadow驗證、Fetcher切換pin版本、觀察attempt／DQ／freshness
 - Retry 429、timeout、502、503、504時沿用相同idempotency key。
 - 分別記錄fetch、durable accepted及normalization terminal state。
 - 所有feed只走`/source/ingest`；不得重新加入direct、market或provider-specific routes。
+
+每日決策依 execution_profile 隔離。POST delivery-plans 可回傳 skipped_calendar；其日期、政策 hash 與來源持久化，不產生 plan 或 no_data。已建立 plan 的 session bounds 不因日曆更新改變。

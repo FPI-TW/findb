@@ -136,8 +136,8 @@ class FullMarketAdmissionFeed(Base):
     baseline_id: Mapped[UUID] = mapped_column(
         ForeignKey("universe_release.release_id"), nullable=False
     )
-    calendar_revision_id: Mapped[UUID] = mapped_column(
-        ForeignKey("calendar_year_revision.id"), nullable=False
+    calendar_revision_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("calendar_year_revision.id"), nullable=True
     )
 
 
@@ -271,6 +271,32 @@ class DailyDeliveryPlan(Base):
     release: Mapped["UniverseRelease"] = relationship()
     parts: Mapped[list["DailyDeliveryPart"]] = relationship(
         back_populates="plan", order_by="DailyDeliveryPart.part_number"
+    )
+
+
+class DailyExecutionDecision(Base):
+    """Immutable Source decision; a date is either planned or skipped, never both."""
+
+    __tablename__ = "daily_execution_decision"
+    dataset_key: Mapped[str] = mapped_column(
+        ForeignKey("dataset_registry.dataset_key"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(50), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    execution_profile: Mapped[str] = mapped_column(String(20), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    plan_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("daily_delivery_plan.plan_id"), nullable=True, unique=True
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (
+        CheckConstraint("execution_profile IN ('pilot','full_market')", name="decision_profile"),
+        CheckConstraint(
+            "(kind='planned' AND plan_id IS NOT NULL) OR "
+            "(kind='skipped_calendar' AND plan_id IS NULL)",
+            name="decision_kind_plan",
+        ),
     )
 
 
@@ -991,7 +1017,7 @@ class HistoricalBackfillItem(Base):
     __table_args__ = (
         UniqueConstraint("request_id", "trade_date", name="uq_historical_backfill_item_date"),
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'skipped_calendar')",
             name="historical_backfill_item_status_valid",
         ),
         Index("idx_historical_backfill_item_claim", "status", "trade_date"),
@@ -1005,6 +1031,7 @@ class HistoricalBackfillItem(Base):
         nullable=False,
     )
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    calendar_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)

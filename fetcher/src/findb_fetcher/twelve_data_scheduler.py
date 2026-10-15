@@ -89,7 +89,7 @@ class SchedulerRun:
 class CalendarPreflight(Protocol):
     """Minimum read contract required by scheduled execution."""
 
-    def get_day(self, market: str, value: date) -> tuple[Any, int]: ...
+    def get_day(self, market: str, value: date) -> tuple[Any, int | None]: ...
 
 
 class TwelveDataScheduledExecutor:

@@ -13,8 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, execution_profile, scheduler_key
 from app.models.canonical import (
-    CalendarRevisionDay,
-    CalendarYearRevision,
     FuturesContract,
     FuturesContractEOD,
     Instrument,
@@ -25,6 +23,7 @@ from app.models.registry import (
     DailyDeliveryMember,
     DailyDeliveryPart,
     DailyDeliveryPlan,
+    DailyExecutionDecision,
     DatasetRegistry,
     DeliveryMemberEvidence,
     IngestionRun,
@@ -32,6 +31,7 @@ from app.models.registry import (
     UniverseRelease,
 )
 from app.schemas.full_market import (
+    CalendarSkipResponse,
     DeliveryOutcomeRequest,
     DeliveryPartResponse,
     DeliveryPlanCreateRequest,
@@ -51,7 +51,7 @@ from app.schemas.ingress import (
     MarketEODRow,
     MarketMinuteRow,
 )
-from app.services.calendar_management import complete_published_revision_ids
+from app.services.effective_calendar import effective_days, execution_policy, execution_snapshot
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
@@ -279,6 +279,7 @@ async def list_universes(
             and dataset_key in projection["admitted_dataset_keys"],
             "activation_date": projection["first_start_dates"].get(dataset_key),
             **projection,
+            "execution_policy": execution_policy(provider),
         },
     )
 
@@ -337,41 +338,21 @@ async def _require_closed_acceptance_day(
     *,
     now: datetime,
     session: Literal["regular", "after_hours"] = "regular",
+    snapshot: dict | None = None,
 ) -> None:
-    local_now = now.astimezone(_exchange_timezone(dataset))
+    zone = ZoneInfo(snapshot["timezone"]) if snapshot else _exchange_timezone(dataset)
+    local_now = now.astimezone(zone)
     if trade_date > local_now.date():
         raise FullMarketError("Acceptance requires actual elapsed exchange trading days", 409)
-    day = (
-        await db.scalars(
-            select(CalendarRevisionDay)
-            .join(
-                CalendarYearRevision,
-                CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
-            )
-            .where(
-                CalendarYearRevision.market == _calendar_market(dataset),
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
-                CalendarRevisionDay.trade_date == trade_date,
-                CalendarRevisionDay.is_open.is_(True),
-            )
-        )
-    ).one_or_none()
-    if day is None:
-        raise FullMarketError("Acceptance requires a published exchange trading day", 409)
-    # A published per-day close preserves official early-closing sessions.
-    # Missing hours use conservative regular-session policy, never weekdays.
-    conservative_closes = {
-        "US": time(16),
-        "HK": time(16, 10),
-        "TW": time(13, 30),
-        "TAIFEX": time(13, 45),
-    }
-    close_time = (
-        time(5)
-        if _calendar_market(dataset) == "TAIFEX" and session == "after_hours"
-        else day.session_close or conservative_closes[_calendar_market(dataset)]
+    calendar = (
+        snapshot or (await effective_days(db, _calendar_market(dataset), trade_date, trade_date))[0]
     )
-    closed_at = datetime.combine(trade_date, close_time, _exchange_timezone(dataset))
+    close_time = time.fromisoformat(
+        calendar["after_hours_close"]
+        if session == "after_hours" and calendar["after_hours_close"]
+        else calendar["regular_close"]
+    )
+    closed_at = datetime.combine(trade_date, close_time, zone)
     if local_now < closed_at:
         raise FullMarketError("Acceptance exchange session has not closed", 409)
 
@@ -385,8 +366,14 @@ async def _require_elapsed_delivery(
     sessions: set[Literal["regular", "after_hours"]],
     action: str,
     timestamp_field: str,
+    plan_id: UUID,
 ) -> None:
     """Final data and no-data claims require elapsed server and source clocks."""
+    decision = await db.scalar(
+        select(DailyExecutionDecision).where(DailyExecutionDecision.plan_id == plan_id)
+    )
+    if decision is None:
+        raise FullMarketError("Frozen execution decision is missing", 409)
     now = utc_now()
     if trade_date > now.astimezone(_exchange_timezone(dataset)).date():
         raise FullMarketError(f"{action} cannot target a future exchange trading date", 409)
@@ -395,31 +382,8 @@ async def _require_elapsed_delivery(
     for session in sessions:
         for clock in (now, observed_at):
             await _require_closed_acceptance_day(
-                db, dataset, trade_date, now=clock, session=session
+                db, dataset, trade_date, now=clock, session=session, snapshot=decision.snapshot
             )
-
-
-async def _require_exchange_open(
-    db: AsyncSession, dataset: DatasetRegistry, trade_date: date
-) -> None:
-    calendar_market = _calendar_market(dataset)
-    day = (
-        await db.scalars(
-            select(CalendarRevisionDay)
-            .join(
-                CalendarYearRevision,
-                CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
-            )
-            .where(
-                CalendarYearRevision.market == calendar_market,
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
-                CalendarRevisionDay.trade_date == trade_date,
-                CalendarRevisionDay.is_open.is_(True),
-            )
-        )
-    ).first()
-    if day is None:
-        raise FullMarketError("Complete published exchange calendar has no open trading day", 409)
 
 
 def _deadline(dataset: DatasetRegistry, trade_date: date) -> datetime:
@@ -437,7 +401,7 @@ async def create_plan(
     body: DeliveryPlanCreateRequest,
     *,
     allowed_datasets: list[str] | None,
-) -> DeliveryPlanResponse:
+) -> DeliveryPlanResponse | CalendarSkipResponse:
     from app.services.full_market_admission import lock_calendars, lock_environment
 
     await lock_environment(db)
@@ -455,6 +419,24 @@ async def create_plan(
         allowed_datasets=allowed_datasets,
         lock=False,
     )
+    decision = await db.get(
+        DailyExecutionDecision,
+        {
+            "dataset_key": body.dataset_key,
+            "provider": body.provider,
+            "trade_date": body.trade_date,
+            "execution_profile": body.execution_profile,
+        },
+    )
+    if decision is not None:
+        if decision.kind == "skipped_calendar":
+            return _skip_response(decision)
+        plan = await db.get(DailyDeliveryPlan, decision.plan_id)
+        if plan is None or plan.release_id != body.release_id:
+            raise FullMarketError("Daily plan is frozen to another release", 409)
+        return await get_plan(
+            db, plan.plan_id, provider=body.provider, allowed_datasets=allowed_datasets
+        )
     await lock_calendars(db, datasets)
     if db.info.get("source_client_id"):
         await db.get(
@@ -480,7 +462,6 @@ async def create_plan(
     activation_date = date.fromisoformat(activation_value)
     if body.trade_date < activation_date:
         raise FullMarketError("Pre-first-start delivery plans are forbidden", 409)
-    await _require_exchange_open(db, dataset, body.trade_date)
     existing = (
         await db.scalars(
             select(DailyDeliveryPlan).where(
@@ -497,6 +478,12 @@ async def create_plan(
         return await get_plan(
             db, existing.plan_id, provider=body.provider, allowed_datasets=allowed_datasets
         )
+    snapshot = await execution_snapshot(
+        db, _calendar_market(dataset), body.trade_date, body.provider
+    )
+    await _require_closed_acceptance_day(
+        db, dataset, body.trade_date, now=utc_now(), snapshot=snapshot
+    )
     release = await db.get(UniverseRelease, body.release_id)
     if (
         release is None
@@ -521,6 +508,21 @@ async def create_plan(
     ).one_or_none()
     if latest is None or latest.release_id != release.release_id:
         raise FullMarketError("Plan must use latest published release for the date", 409)
+    decision = DailyExecutionDecision(
+        dataset_key=body.dataset_key,
+        provider=body.provider,
+        trade_date=body.trade_date,
+        execution_profile=body.execution_profile,
+        snapshot=snapshot,
+        created_at=utc_now(),
+        kind="skipped_calendar"
+        if snapshot["policy"]["skip_non_trading_days"] and not snapshot["is_open"]
+        else "planned",
+    )
+    if decision.kind == "skipped_calendar":
+        db.add(decision)
+        await db.commit()
+        return _skip_response(decision)
     members = list(
         (
             await db.scalars(
@@ -556,6 +558,8 @@ async def create_plan(
     )
     db.add(plan)
     await db.flush()
+    decision.plan_id = plan.plan_id
+    db.add(decision)
     for start in range(0, len(members), 50):
         chunk = members[start : start + 50]
         part_id = uuid7()
@@ -586,6 +590,17 @@ async def create_plan(
     await db.commit()
     return await get_plan(
         db, plan.plan_id, provider=body.provider, allowed_datasets=allowed_datasets
+    )
+
+
+def _skip_response(row: DailyExecutionDecision) -> CalendarSkipResponse:
+    return CalendarSkipResponse(
+        execution_profile=execution_profile(row.execution_profile),
+        dataset_key=row.dataset_key,
+        provider=row.provider,
+        trade_date=row.trade_date,
+        snapshot=row.snapshot,
+        created_at=row.created_at,
     )
 
 
@@ -850,6 +865,7 @@ async def record_outcome(
             sessions={cast(Literal["regular", "after_hours"], member.session or "regular")},
             action="No-data evidence",
             timestamp_field="observed_at",
+            plan_id=plan.plan_id,
         )
     evidence = body.evidence.model_dump(mode="json") if body.evidence else None
     if (
@@ -911,6 +927,7 @@ async def validate_ingest_part(
         sessions=sessions,
         action="Actual ingress",
         timestamp_field="fetched_at",
+        plan_id=plan.plan_id,
     )
     if (
         delivery is None

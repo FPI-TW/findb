@@ -1,7 +1,7 @@
 """Thin HTTP routes for canonical read-only Serve queries."""
 
 from datetime import date
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_serve_api_key, verify_serve_api_key
 from app.dependencies import get_db
-from app.models.canonical import CalendarRevisionDay
 from app.schemas.serve import (
     CalendarListResponse,
     CalendarResponse,
@@ -27,7 +26,7 @@ from app.schemas.serve import (
     SortDirection,
 )
 from app.services import serve as serve_queries
-from app.services.calendar_management import published_year
+from app.services.effective_calendar import effective_days
 from app.services.market_freshness import list_market_freshness
 from app.services.slot_identity import CanonicalSlotId
 
@@ -158,21 +157,30 @@ async def get_published_calendar_year(
 ) -> PublishedCalendarYearEnvelope:
     if year < 1900 or year > 2200:
         raise HTTPException(status_code=422, detail="year must be between 1900 and 2200")
-    resolved = await published_year(db, market.upper(), year)
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="Complete published calendar year not found")
-    revision, _market_config, days = resolved
+    market = market.upper()
+    try:
+        days = await effective_days(db, market, date(year, 1, 1), date(year, 12, 31))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    sources = {day["calendar_source"] for day in days}
+    status: Literal["published", "defaulted", "mixed"] = (
+        "published"
+        if sources == {"published"}
+        else "defaulted"
+        if sources == {"weekday_default"}
+        else "mixed"
+    )
     return PublishedCalendarYearEnvelope(
         data=PublishedCalendarYearResponse(
-            market=revision.market,
-            year=revision.year,
-            revision=revision.revision,
-            status="published",
+            market=market,
+            year=year,
+            revision=days[0]["calendar_revision"] if status == "published" else None,
+            status=status,
             coverage_complete=True,
-            timezone=revision.timezone,
-            expected_days=revision.expected_days,
-            actual_days=revision.actual_days,
-            days=[_calendar_response(day, revision.market) for day in days],
+            timezone=days[0]["timezone"],
+            expected_days=len(days),
+            actual_days=len(days),
+            days=[CalendarResponse(**day) for day in days],
         )
     )
 
@@ -196,19 +204,6 @@ async def get_calendar(
         is_open=is_open,
         page=page,
         page_size=page_size,
-    )
-
-
-def _calendar_response(day: CalendarRevisionDay, market: str) -> CalendarResponse:
-    return CalendarResponse(
-        market=market,
-        trade_date=day.trade_date,
-        is_open=day.is_open,
-        session_open=str(day.session_open) if day.session_open else None,
-        session_close=str(day.session_close) if day.session_close else None,
-        holiday_name=day.holiday_name,
-        day_status=day.day_status,
-        description=day.description,
     )
 
 

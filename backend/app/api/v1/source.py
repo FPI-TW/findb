@@ -23,6 +23,7 @@ from app.dependencies import get_db
 from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
 from app.models.registry import DailyDeliveryPlan
 from app.schemas.full_market import (
+    CalendarSkipResponse,
     DeliveryOutcomeRequest,
     DeliveryPlanCreateRequest,
     DeliveryPlanResponse,
@@ -316,12 +317,12 @@ async def get_universe_endpoint(
         raise _full_market_http_error(exc) from exc
 
 
-@router.post("/delivery-plans", response_model=DeliveryPlanResponse)
+@router.post("/delivery-plans", response_model=DeliveryPlanResponse | CalendarSkipResponse)
 async def create_delivery_plan_endpoint(
     body: DeliveryPlanCreateRequest,
     _api_key: str = Depends(verify_source_api_key),
     db: AsyncSession = Depends(get_db),
-) -> DeliveryPlanResponse:
+) -> DeliveryPlanResponse | CalendarSkipResponse:
     _, datasets = _full_market_source_scope(db, body.provider)
     try:
         return await create_plan(db, body, allowed_datasets=datasets)

@@ -1437,17 +1437,17 @@ describe("Operations presentation", () => {
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
     await waitFor(() =>
       expect(
-        screen.getByText("範圍有效；休市日期會略過，只為開市日期建立工作項目。")
+        screen.getByText("範圍有效；抓取與略過日期會在建立時凍結。")
       ).toBeInTheDocument()
     )
     expect(
-      screen.getByText(/可建立 1 個開市日期工作項目；略過 1 個休市日期。/)
+      screen.getByText(/可建立 1 個抓取日期工作項目；略過 1 個依設定略過日期。/)
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole("checkbox"))
     expect(screen.getByRole("button", { name: "建立回補" })).not.toBeDisabled()
   })
 
-  it("blocks an all-closed preview from confirmation and creation", async () => {
+  it("allows an all-skipped request without pretending it acquired data", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
       provider: "shioaji",
@@ -1481,13 +1481,13 @@ describe("Operations presentation", () => {
       target: { value: "2026-08-31" },
     })
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
-    await screen.findByText("範圍無可執行交易日；整個回補請求將被拒絕。")
-    expect(screen.getByRole("checkbox")).toBeDisabled()
+    await screen.findByText("範圍有效；抓取與略過日期會在建立時凍結。")
+    expect(screen.getByRole("checkbox")).not.toBeDisabled()
     expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
   })
 
-  it("blocks previews containing an unpublished date even when another date is open", async () => {
+  it("allows default calendar dates in historical preview", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
       provider: "shioaji",
@@ -1499,8 +1499,8 @@ describe("Operations presentation", () => {
         { trade_date: "2026-08-30", valid: true, reason: null },
         {
           trade_date: "2026-08-31",
-          valid: false,
-          reason: "calendar_unpublished",
+          valid: true,
+          reason: null,
         },
       ],
     })
@@ -1526,8 +1526,8 @@ describe("Operations presentation", () => {
       target: { value: "2026-08-31" },
     })
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
-    await screen.findByText("範圍含未發布交易日；整個回補請求將被拒絕。")
-    expect(screen.getByRole("checkbox")).toBeDisabled()
+    await screen.findByText("範圍有效；抓取與略過日期會在建立時凍結。")
+    expect(screen.getByRole("checkbox")).not.toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
   })
 
@@ -1793,7 +1793,7 @@ describe("Operations presentation", () => {
       target: { value: "2026-08-30" },
     })
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
-    await screen.findByText("範圍有效；所有日期都會建立工作項目。")
+    await screen.findByText("範圍有效；抓取與略過日期會在建立時凍結。")
     fireEvent.click(screen.getByRole("checkbox"))
     fireEvent.click(screen.getByRole("button", { name: "建立回補" }))
 
@@ -1950,7 +1950,7 @@ describe("Operations presentation", () => {
     })
 
     expect(
-      screen.queryByText("範圍有效；所有日期都會建立工作項目。")
+      screen.queryByText("範圍有效；抓取與略過日期會在建立時凍結。")
     ).not.toBeInTheDocument()
     expect(screen.getByRole("checkbox")).not.toBeChecked()
     expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()

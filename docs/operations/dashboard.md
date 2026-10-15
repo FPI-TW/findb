@@ -73,3 +73,11 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dat
 Overview、freshness、plans、alerts 的請求與 query cache key 都包含 profile；切換時只掛載選中模式，
 不以另一 profile 的上一筆資料作為 placeholder。新 runtime／Dashboard 一律明確傳入 profile；
 舊版未指定 profile 的 plan API 保留 Full market 語意。
+
+### 有效日曆與依設定略過
+
+日曆管理同時顯示可編輯修訂與「抓取使用的日曆」來源；published revision 優先，未設定日期標示
+「週一至週五預設」且 revision 為空，draft 不影響抓取。日曆 API 查詢不寫入或自動發布。
+交付計畫在各 profile 下分開顯示有效 provider 政策及「依設定略過」日期／資料集，支援日期與資料集篩選。
+略過清單最多顯示最近 100 筆並顯示總數；略過不混入 expected、missing、blocked 或 no_data。
+人工回補的 skipped_calendar 顯示「依設定略過」，不算成功 Source run。

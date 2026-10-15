@@ -929,7 +929,7 @@ async def test_admin_plan_discovery_pagination_and_legacy_limit(
     for params, length in [({}, 20), ({"limit": 3}, 3)]:
         legacy = await client.get(base, params=params, headers=admin_headers)
         assert legacy.status_code == 200
-        assert set(legacy.json()) == {"data"}
+        assert set(legacy.json()) == {"data", "skipped", "skipped_total", "execution_policies"}
         assert len(legacy.json()["data"]) == length
     filtered = await client.get(
         base,

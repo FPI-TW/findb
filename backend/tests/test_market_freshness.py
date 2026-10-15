@@ -263,7 +263,7 @@ async def test_dormant_full_market_reports_prerequisites_without_runtime_failure
             for feed in row.pending_feeds
             if feed.dataset_key in {"tw_futures_eod", "hk_equity_eod"}
         )
-        assert "full_market_calendar_missing" in unavailable.blockers
+        assert "full_market_calendar_missing" not in unavailable.blockers
 
 
 @pytest.mark.asyncio
@@ -316,10 +316,6 @@ async def test_full_market_registry_contract_scope_conflicts_remain_configuratio
     assert row.activation_state == ("activated" if enabled else "not_activated")
     pending_etf = next(feed for feed in row.pending_feeds if feed.dataset_key == "tw_etf_eod")
     expected_blockers = ("full_market_baseline_missing",)
-    if field == "market":
-        # No feed is ready: the CN conflict also contributes its missing calendar
-        # to scheduler prerequisites, while the ETF's own baseline is absent.
-        expected_blockers += ("full_market_calendar_missing",)
     assert pending_etf.blockers == expected_blockers
 
     response = await client.get("/api/v1/admin/market-freshness", headers=admin_headers)
@@ -331,7 +327,7 @@ async def test_full_market_registry_contract_scope_conflicts_remain_configuratio
 
 
 @pytest.mark.asyncio
-async def test_enabled_full_market_inactive_and_missing_calendar_are_errors_even_stopped(
+async def test_inactive_dataset_is_error_but_missing_calendar_is_allowed(
     test_session,
 ):
     _, datasets = await _setup_full_market(test_session, "taifex")
@@ -341,7 +337,7 @@ async def test_enabled_full_market_inactive_and_missing_calendar_are_errors_even
     row = (await list_market_freshness(test_session, now=NOW))[0]
     assert row.activation_state == "activated"
     assert "tw_futures_eod:dataset_inactive" in row.configuration_errors
-    assert "tw_futures_eod:calendar_does_not_cover_evaluation_date" in row.configuration_errors
+    assert "tw_futures_eod:calendar_does_not_cover_evaluation_date" not in row.configuration_errors
     assert row.configuration_status == "error"
     assert row.pending_feeds == ()
 
@@ -411,7 +407,7 @@ async def test_full_market_endpoint_keeps_pending_metadata_without_feed_details(
     assert row["monitor_kind"] == "full_market"
     assert row["activation_state"] == "not_activated"
     assert row["pending_feeds"][0]["dataset_key"] == "tw_futures_eod"
-    assert "calendar_does_not_cover_evaluation_date" in row["pending_feeds"][0]["blockers"]
+    assert "calendar_does_not_cover_evaluation_date" not in row["pending_feeds"][0]["blockers"]
     assert row["feeds"] == []
 
 

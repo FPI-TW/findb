@@ -137,6 +137,8 @@ async def test_canonical_overwrite_preserves_only_own_plan_evidence(
 async def test_outcomes_and_missing_alerts_are_profile_isolated(
     test_session, client, admin_headers
 ):
+    from datetime import timedelta
+
     from app.models.registry import DailyDeliveryMember
     from app.schemas.full_market import DeliveryOutcomeRequest
     from app.services.delivery_monitor import scan_missing_deliveries
@@ -171,7 +173,7 @@ async def test_outcomes_and_missing_alerts_are_profile_isolated(
             provider="taifex",
             allowed_datasets=[dataset.dataset_key],
         )
-    await scan_missing_deliveries(test_session)
+    await scan_missing_deliveries(test_session, now=full.deadline_at + timedelta(minutes=1))
     await test_session.commit()
     for profile in ("pilot", "full_market"):
         result = await client.get(

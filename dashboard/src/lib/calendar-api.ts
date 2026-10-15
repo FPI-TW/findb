@@ -56,7 +56,19 @@ const revisionSchema = z.object({
   published_by: z.string().nullable().optional(),
 })
 
+export const effectiveCalendarDaySchema = z.object({
+  trade_date: z.iso.date(),
+  is_open: z.boolean(),
+  calendar_source: z.enum(["published", "weekday_default"]),
+  calendar_revision: z.number().int().positive().nullable(),
+  regular_close: z.string().nullable(),
+})
+export const effectiveCalendarSchema = z.object({
+  days: z.array(effectiveCalendarDaySchema),
+})
+
 export const calendarYearSchema = z.object({
+  effective_days: z.array(effectiveCalendarDaySchema).optional(),
   market: z.string().trim().min(1).max(10),
   year: z.number().int().min(1900).max(2200),
   timezone: z.string().trim().min(1).max(100),
@@ -80,7 +92,7 @@ export function emptyCalendarYear(
     const value = new Date(first)
     value.setUTCDate(value.getUTCDate() + offset)
     const isoWeekday = (value.getUTCDay() + 6) % 7
-    const isOpen = !market.weekend_days.includes(isoWeekday)
+    const isOpen = isoWeekday < 5
     return {
       date: value.toISOString().slice(0, 10),
       status: isOpen ? ("open" as const) : ("closed" as const),

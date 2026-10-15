@@ -21,8 +21,6 @@ from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql import ColumnElement
 
 from app.models.canonical import (
-    CalendarRevisionDay,
-    CalendarYearRevision,
     FuturesContract,
     FuturesContractEOD,
     Instrument,
@@ -56,7 +54,6 @@ from app.schemas.serve import (
     ResolvedDateRangeResponse,
     SortDirection,
 )
-from app.services.calendar_management import complete_published_revision_ids
 from app.services.ingress_contracts import DatasetContractDeclaration
 
 LookupColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
@@ -311,59 +308,23 @@ async def list_calendar(
     page: int,
     page_size: int,
 ) -> CalendarListResponse:
-    market = market.upper()
-    base = (
-        select(CalendarRevisionDay, CalendarYearRevision.market)
-        .join(
-            CalendarYearRevision,
-            CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
-        )
-        .where(
-            CalendarYearRevision.market == market,
-            CalendarYearRevision.id.in_(complete_published_revision_ids()),
-        )
-    )
-    count_query = (
-        select(func.count(CalendarRevisionDay.id))
-        .join(
-            CalendarYearRevision,
-            CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
-        )
-        .where(
-            CalendarYearRevision.market == market,
-            CalendarYearRevision.id.in_(complete_published_revision_ids()),
-        )
-    )
-    if start_date:
-        base = base.where(CalendarRevisionDay.trade_date >= start_date)
-        count_query = count_query.where(CalendarRevisionDay.trade_date >= start_date)
-    if end_date:
-        base = base.where(CalendarRevisionDay.trade_date <= end_date)
-        count_query = count_query.where(CalendarRevisionDay.trade_date <= end_date)
-    if is_open is not None:
-        base = base.where(CalendarRevisionDay.is_open == is_open)
-        count_query = count_query.where(CalendarRevisionDay.is_open == is_open)
-    total_records = int((await db.execute(count_query)).scalar() or 0)
-    rows = (
-        await db.execute(
-            base.order_by(CalendarRevisionDay.trade_date)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-    ).all()
+    from app.services.effective_calendar import effective_days
+    from app.utils import utc_now
+
+    year = (start_date or end_date or utc_now().date()).year
+    start_date = start_date or date(year, 1, 1)
+    end_date = end_date or date(year, 12, 31)
+    if (end_date - start_date).days > 3660:
+        raise HTTPException(status_code=422, detail="calendar range exceeds 3661 dates")
+    try:
+        days = await effective_days(db, market, start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    selected = [day for day in days if is_open is None or day["is_open"] == is_open]
+    total_records = len(selected)
     return CalendarListResponse(
         data=[
-            CalendarResponse(
-                market=market_code,
-                trade_date=day.trade_date,
-                is_open=day.is_open,
-                session_open=str(day.session_open) if day.session_open else None,
-                session_close=str(day.session_close) if day.session_close else None,
-                holiday_name=day.holiday_name,
-                day_status=day.day_status,
-                description=day.description,
-            )
-            for day, market_code in rows
+            CalendarResponse(**day) for day in selected[(page - 1) * page_size : page * page_size]
         ],
         pagination=PaginationInfo(
             page=page,

@@ -7,7 +7,7 @@ acquisition, then submits data through the normal raw-first Source ingest API.
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -16,7 +16,6 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
     DatasetRegistry,
     HistoricalBackfillItem,
@@ -25,6 +24,7 @@ from app.models.registry import (
     SchedulerControl,
     SchedulerDataset,
 )
+from app.services.effective_calendar import effective_days, execution_policy
 from app.utils import utc_now, uuid7
 
 CAPABILITIES: dict[tuple[str, str], str] = {
@@ -84,43 +84,19 @@ def _provider_current_date(provider: str, now: datetime) -> date:
     return now.astimezone(ZoneInfo(timezone_name)).date()
 
 
-async def _open_dates(db: AsyncSession, market: str, start: date, end: date) -> list[date]:
-    rows = (
-        await db.execute(
-            select(CalendarRevisionDay.trade_date, CalendarRevisionDay.is_open)
-            .join(
-                CalendarYearRevision,
-                CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
-            )
-            .where(
-                CalendarYearRevision.market == market,
-                CalendarYearRevision.status == "published",
-                CalendarRevisionDay.trade_date >= start,
-                CalendarRevisionDay.trade_date <= end,
-            )
-            .order_by(CalendarRevisionDay.trade_date)
-        )
-    ).all()
-    # A gap makes the calendar unsafe: every requested date must be explicitly
-    # published. Published market closures are intentionally omitted from the
-    # executable item list while preserving the operator's requested range.
-    for year in range(start.year, end.year + 1):
-        revision = (
-            await db.execute(
-                select(CalendarYearRevision.id).where(
-                    CalendarYearRevision.market == market,
-                    CalendarYearRevision.year == year,
-                    CalendarYearRevision.status == "published",
-                )
-            )
-        ).scalar_one_or_none()
-        if revision is None:
-            raise HistoricalBackfillError(f"published calendar is required for {market} {year}")
-    published_days = {trade_date: is_open for trade_date, is_open in rows}
-    requested_days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
-    if any(value not in published_days for value in requested_days):
-        raise HistoricalBackfillError("requested dates include unpublished calendar days")
-    return [value for value in requested_days if published_days[value] is True]
+def _session_closed(item: HistoricalBackfillItem, now: datetime) -> bool:
+    """Use the immutable request snapshot for new acquisition, never live calendar data."""
+    snapshot = item.calendar_snapshot
+    if now.tzinfo is None:
+        raise HistoricalBackfillError("historical acquisition clock must be timezone-aware")
+    if not isinstance(snapshot, dict) or snapshot.get("trade_date") != item.trade_date.isoformat():
+        raise HistoricalBackfillError("historical calendar snapshot is invalid")
+    try:
+        zone = ZoneInfo(snapshot["timezone"])
+        close = time.fromisoformat(snapshot["regular_close"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HistoricalBackfillError("historical calendar snapshot is invalid") from exc
+    return now.astimezone(zone) >= datetime.combine(item.trade_date, close, zone)
 
 
 async def create_request(
@@ -178,9 +154,9 @@ async def create_request(
     ).scalar_one_or_none()
     if scope is None:
         raise HistoricalBackfillError("provider is not active for dataset")
-    dates = await _open_dates(db, dataset.market, start_date, end_date)
-    if not dates:
-        raise HistoricalBackfillError("requested range has no open market dates")
+    calendar = await effective_days(db, dataset.market, start_date, end_date)
+    policy = execution_policy(provider)
+    now = utc_now()
     row = HistoricalBackfillRequest(
         request_id=uuid7(),
         request_key=request_key,
@@ -193,9 +169,19 @@ async def create_request(
         status="queued",
     )
     row.items = [
-        HistoricalBackfillItem(item_id=uuid7(), trade_date=trade_date, status="pending")
-        for trade_date in dates
+        HistoricalBackfillItem(
+            item_id=uuid7(),
+            trade_date=date.fromisoformat(day["trade_date"]),
+            status="skipped_calendar"
+            if policy["skip_non_trading_days"] and not day["is_open"]
+            else "pending",
+            completed_at=now if policy["skip_non_trading_days"] and not day["is_open"] else None,
+            calendar_snapshot={**day, "policy": policy, "snapshot_origin": "creation"},
+        )
+        for day in calendar
     ]
+    if all(item.status == "skipped_calendar" for item in row.items):
+        row.status, row.completed_at = "completed", now
     db.add(row)
     await db.flush()
     return row, False
@@ -302,30 +288,25 @@ async def preview_request(
         scope_reason = "provider_scope_inactive"
     if end_date < start_date:
         return market, scope_reason, []
-    calendar_rows: dict[date, bool] = {}
-    if market is not None:
-        result = await db.execute(
-            select(CalendarRevisionDay.trade_date, CalendarRevisionDay.is_open)
-            .join(
-                CalendarYearRevision,
-                CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
-            )
-            .where(
-                CalendarYearRevision.market == market,
-                CalendarYearRevision.status == "published",
-                CalendarRevisionDay.trade_date >= start_date,
-                CalendarRevisionDay.trade_date <= end_date,
-            )
-        )
-        calendar_rows = {trade_date: is_open for trade_date, is_open in result.all()}
+    calendar_rows = (
+        {
+            date.fromisoformat(day["trade_date"]): day["is_open"]
+            for day in await effective_days(db, market, start_date, end_date)
+        }
+        if market is not None
+        else {}
+    )
+    skip_non_trading = (
+        execution_policy(provider)["skip_non_trading_days"]
+        if provider in {"twelve_data", "finlab", "shioaji", "taifex"}
+        else False
+    )
     days: list[tuple[date, bool, str | None]] = []
     current = start_date
     while current <= end_date:
         if scope_reason is not None:
             days.append((current, False, scope_reason))
-        elif current not in calendar_rows:
-            days.append((current, False, "calendar_unpublished"))
-        elif not calendar_rows[current]:
+        elif skip_non_trading and not calendar_rows[current]:
             days.append((current, False, "market_closed"))
         else:
             days.append((current, True, None))
@@ -440,13 +421,15 @@ async def claim_next_item(
     if allowed_datasets is not None:
         stmt = stmt.where(HistoricalBackfillRequest.dataset_key.in_(allowed_datasets))
     for item in (await db.execute(stmt)).scalars().unique():
+        if not _session_closed(item, now):
+            continue
         prior = (
             await db.execute(
                 select(HistoricalBackfillItem.item_id)
                 .where(
                     HistoricalBackfillItem.request_id == item.request_id,
                     HistoricalBackfillItem.trade_date < item.trade_date,
-                    HistoricalBackfillItem.status != "completed",
+                    HistoricalBackfillItem.status.not_in(("completed", "skipped_calendar")),
                 )
                 .limit(1)
             )
@@ -505,6 +488,7 @@ async def authorize_item(
         and item.lease_token == lease_token
         and item.lease_expires_at is not None
         and item.lease_expires_at > checked_at
+        and _session_closed(item, checked_at)
     )
     return (
         allowed,
@@ -576,7 +560,7 @@ async def complete_item(
         for sibling in request.items:
             if sibling.status == "pending":
                 sibling.status, sibling.completed_at = "cancelled", now
-    elif all(sibling.status == "completed" for sibling in request.items):
+    elif all(sibling.status in {"completed", "skipped_calendar"} for sibling in request.items):
         request.status, request.completed_at = "completed", now
     await db.flush()
     return item

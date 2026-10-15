@@ -7,6 +7,7 @@ import {
   calendarRollbackRequestSchema,
   calendarSelectionSchema,
   emptyCalendarYear,
+  effectiveCalendarSchema,
   normalizeCalendarPreview,
   normalizeCalendarYear,
   calendarPreviewResponseSchema,
@@ -14,6 +15,27 @@ import {
 } from "./calendar-api"
 
 describe("calendar API helpers", () => {
+  it("accepts effective dates for independent markets without session hours", () => {
+    const result = effectiveCalendarSchema.parse({
+      market: "JP",
+      year: 2024,
+      days: [
+        {
+          trade_date: "2024-02-29",
+          is_open: true,
+          calendar_source: "weekday_default",
+          calendar_revision: null,
+          regular_close: null,
+        },
+      ],
+    })
+    expect(result.days[0]).toMatchObject({
+      calendar_source: "weekday_default",
+      calendar_revision: null,
+      regular_close: null,
+    })
+  })
+
   it("bounds market/year selection and manual text mutations", () => {
     expect(
       calendarSelectionSchema.safeParse({ market: "TW", year: 2026 }).success

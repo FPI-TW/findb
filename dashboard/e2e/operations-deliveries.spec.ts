@@ -317,7 +317,7 @@ for (const role of ["operator", "owner"]) {
       (await (await request.get(`${backend}/fixture/state`)).json()).mutations
     ).toEqual([])
     await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
-    const preview = page.getByText("範圍有效；所有日期都會建立工作項目。", {
+    const preview = page.getByText("範圍有效；抓取與略過日期會在建立時凍結。", {
       exact: true,
     })
     await expect(preview).toBeVisible()

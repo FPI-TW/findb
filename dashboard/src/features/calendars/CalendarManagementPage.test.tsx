@@ -78,6 +78,15 @@ beforeEach(() => {
     timezone: "Asia/Taipei",
     draft_revision: null,
     published_revision: null,
+    effective_days: [
+      {
+        trade_date: "2026-01-02",
+        is_open: true,
+        calendar_source: "weekday_default",
+        calendar_revision: null,
+        regular_close: "13:30:00",
+      },
+    ],
     current_revision: 0,
     coverage_complete: false,
     summary: {
@@ -215,4 +224,10 @@ it("calendar direct edit expiry hides the editor and removes its protected data"
   expect(screen.queryByText("2026-01-02")).toBeNull()
   expect(client.getQueryCache().findAll()).toHaveLength(0)
   expect(navigate).toHaveBeenCalledTimes(1)
+})
+
+it("labels effective defaults without presenting a published revision", async () => {
+  renderPage()
+  expect(await screen.findByText("週一至週五預設 · 交易日")).toBeInTheDocument()
+  expect(screen.queryByText(/已發布日曆 r0/)).not.toBeInTheDocument()
 })

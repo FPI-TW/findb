@@ -551,7 +551,6 @@ def _runtime(tmp_path: Path, *, provider: str = "twelve_data") -> tuple[Any, Any
         state=state,
         source=source,
         delivery=SimpleNamespace(),
-        calendar=SimpleNamespace(),
         raw_store=raw,
         readiness_file=None,
         client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(500))),

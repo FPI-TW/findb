@@ -198,6 +198,18 @@ export function DeliveryPlansPanel({
         依固定 universe
         與交易日逐成員核對交付。本區為唯讀監控，不會啟動抓取或建立回補。
       </p>
+      {query.data?.execution_policies && (
+        <p className="mb-3 text-sm text-muted">
+          目前非交易日政策：
+          {Object.entries(query.data.execution_policies)
+            .map(
+              ([provider, policy]) =>
+                `${provider}：${policy.skip_non_trading_days ? "略過" : "照常抓取"}`
+            )
+            .join("；")}
+          。設定經部署生效。
+        </p>
+      )}
       <div className="mb-2 grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="plan-dataset">資料集</Label>
@@ -279,6 +291,33 @@ export function DeliveryPlansPanel({
           })
         }}
       />
+      {query.data?.skipped && (
+        <section className="mt-5 space-y-2" aria-label="依設定略過">
+          <h3 className="font-medium">
+            依設定略過（{query.data.skipped_total} 個日期／資料集）
+          </h3>
+          <p className="text-sm text-muted">
+            不計入預期、缺漏或正常無資料。顯示符合上方篩選的最近 100
+            筆；可指定日期查看。
+          </p>
+          {query.data.skipped.length === 0 ? (
+            <p className="text-sm text-muted">沒有符合條件的略過紀錄。</p>
+          ) : (
+            <ul className="max-h-64 space-y-1 overflow-auto text-sm">
+              {query.data.skipped.map(row => (
+                <li
+                  key={`${row.execution_profile}:${row.provider}:${row.dataset_key}:${row.trade_date}`}
+                >
+                  {row.trade_date} · {row.provider} · {row.dataset_key} ·{" "}
+                  {row.snapshot.calendar_source === "published"
+                    ? `已發布日曆 r${row.snapshot.calendar_revision}`
+                    : "週一至週五預設"}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </Panel>
   )
 }

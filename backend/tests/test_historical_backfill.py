@@ -178,7 +178,7 @@ class _StatusOnlyNormalizer(BaseNormalizer):
 
 @pytest.fixture
 def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
-    now = datetime(2026, 9, 1, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 1, 6, tzinfo=timezone.utc)
     monkeypatch.setattr(historical_backfill, "utc_now", lambda: now)
     return now
 
@@ -328,7 +328,7 @@ async def test_historical_backfill_rejects_out_of_window_and_is_idempotent(test_
 
 
 @pytest.mark.asyncio
-async def test_calendar_gap_rejects_whole_request_without_persistence(
+async def test_calendar_gap_defaults_without_blocking_request(
     test_session,
 ) -> None:
     today = date(2026, 9, 1)
@@ -347,28 +347,25 @@ async def test_calendar_gap_rejects_whole_request_without_persistence(
     )
     assert market == "TW" and reason is None
     assert [(value, valid, day_reason) for value, valid, day_reason in days] == [
-        (missing, False, "calendar_unpublished"),
+        (missing, True, None),
         (today, True, None),
     ]
-    with pytest.raises(HistoricalBackfillError, match="unpublished calendar days"):
-        await create_request(
-            test_session,
-            provider="shioaji",
-            dataset_key="tw_equity_minute",
-            start_date=missing,
-            end_date=today,
-            request_key="historic-calendar-gap",
-            created_by="operator",
-            today=today,
-        )
-    assert (
-        await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
-    ) == 0
-    assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 0
+    request, _ = await create_request(
+        test_session,
+        provider="shioaji",
+        dataset_key="tw_equity_minute",
+        start_date=missing,
+        end_date=today,
+        request_key="historic-calendar-gap",
+        created_by="operator",
+        today=today,
+    )
+    assert [item.trade_date for item in request.items] == [missing, today]
+    assert request.items[0].calendar_snapshot["calendar_source"] == "weekday_default"
 
 
 @pytest.mark.asyncio
-async def test_closed_days_are_skipped_but_all_closed_range_is_rejected_without_persistence(
+async def test_closed_days_default_to_acquisition(
     test_session,
 ) -> None:
     today = date(2026, 9, 1)
@@ -405,22 +402,20 @@ async def test_closed_days_are_skipped_but_all_closed_range_is_rejected_without_
     )
     assert duplicate is False
     assert (request.start_date, request.end_date) == (closed, today)
-    assert [item.trade_date for item in request.items] == [today]
+    assert [item.trade_date for item in request.items] == [closed, today]
 
-    with pytest.raises(HistoricalBackfillError, match="no open market dates"):
-        await create_request(
-            test_session,
-            provider="shioaji",
-            dataset_key="tw_equity_minute",
-            start_date=closed,
-            end_date=closed,
-            request_key="historic-calendar-all-closed",
-            created_by="operator",
-            today=today,
-        )
-    assert (
-        await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
-    ) == 1
+    closed_request, _ = await create_request(
+        test_session,
+        provider="shioaji",
+        dataset_key="tw_equity_minute",
+        start_date=closed,
+        end_date=closed,
+        request_key="historic-calendar-all-closed",
+        created_by="operator",
+        today=today,
+    )
+    assert closed_request.items[0].status == "pending"
+    assert closed_request.items[0].calendar_snapshot["is_open"] is False
 
 
 @pytest.mark.asyncio
@@ -838,6 +833,10 @@ async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_sessio
     expired_item.trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS + 1)
     # Inclusive: Shioaji's own target-date gate permits local-today minus 31 days.
     valid_request.items[0].trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS)
+    valid_request.items[0].calendar_snapshot = {
+        **valid_request.items[0].calendar_snapshot,
+        "trade_date": valid_request.items[0].trade_date.isoformat(),
+    }
     await test_session.flush()
 
     claimed = await claim_next_item(
@@ -1148,7 +1147,7 @@ async def test_operator_lists_historical_backfills_with_requested_pagination(
 
 
 @pytest.mark.asyncio
-async def test_create_endpoint_skips_published_closed_dates_but_preserves_requested_range(
+async def test_create_endpoint_acquires_closed_dates_by_default(
     client, test_session, admin_headers, monkeypatch
 ) -> None:
     today = date(2026, 9, 1)
@@ -1190,15 +1189,18 @@ async def test_create_endpoint_skips_published_closed_dates_but_preserves_reques
     assert response.status_code == 202
     assert response.json()["start_date"] == closed.isoformat()
     assert response.json()["end_date"] == today.isoformat()
-    assert [item["trade_date"] for item in response.json()["items"]] == [today.isoformat()]
+    assert [item["trade_date"] for item in response.json()["items"]] == [
+        closed.isoformat(),
+        today.isoformat(),
+    ]
     assert (
         await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest)) == 1
     )
-    assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 1
+    assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 2
 
 
 @pytest.mark.asyncio
-async def test_create_endpoint_calendar_gap_rejects_without_persisting_scope(
+async def test_create_endpoint_calendar_gap_uses_default(
     client, test_session, admin_headers, historical_backfill_clock
 ) -> None:
     today = historical_backfill_clock.date()
@@ -1219,9 +1221,8 @@ async def test_create_endpoint_calendar_gap_rejects_without_persisting_scope(
             "request_key": "historic-api-calendar-gap",
         },
     )
-    assert response.status_code == 422
-    assert response.json()["detail"] == "requested dates include unpublished calendar days"
+    assert response.status_code == 202
     assert (
         await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
-    ) == 0
-    assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 0
+    ) == 1
+    assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 2

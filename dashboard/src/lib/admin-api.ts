@@ -26,6 +26,25 @@ export const deliveryPlansRequestSchema = z.object({
 export type DeliveryPlansRequest = z.infer<typeof deliveryPlansRequestSchema>
 
 export const deliveryPlansSchema = z.object({
+  skipped: z
+    .array(
+      z.object({
+        execution_profile: executionProfileSchema,
+        dataset_key: z.string(),
+        provider: z.string(),
+        trade_date: z.iso.date(),
+        status: z.literal("skipped_calendar"),
+        snapshot: z.object({
+          calendar_source: z.enum(["published", "weekday_default"]),
+          calendar_revision: z.number().nullable(),
+        }),
+      })
+    )
+    .default([]),
+  skipped_total: z.number().int().nonnegative().default(0),
+  execution_policies: z
+    .record(z.string(), z.object({ skip_non_trading_days: z.boolean() }))
+    .default({}),
   pagination: paginationSchema,
   data: z.array(
     z.object({

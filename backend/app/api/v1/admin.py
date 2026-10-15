@@ -1548,9 +1548,36 @@ async def refresh_instrument_cache(
 async def list_calendar_markets(
     _: AdminPrincipal = Depends(require_viewer), db: AsyncSession = Depends(get_db)
 ):
-    return (
-        (await db.execute(select(CalendarMarket).order_by(CalendarMarket.market))).scalars().all()
-    )
+    from app.services.effective_calendar import MARKETS
+
+    rows = {row.market: row for row in (await db.scalars(select(CalendarMarket))).all()}
+    return [rows[market] for market in sorted(rows.keys() - MARKETS.keys())] + [
+        rows.get(market)
+        or CalendarMarketResponse(
+            market=market,
+            display_name=market,
+            timezone=zone,
+            weekend_days=[5, 6],
+            default_session_open=opening,
+            default_session_close=closing,
+        )
+        for market, (zone, opening, closing) in sorted(MARKETS.items())
+    ]
+
+
+@router.get("/calendars/effective")
+async def get_effective_calendar_year(
+    market: str = Query(..., min_length=1, max_length=10),
+    year: int = Query(..., ge=1900, le=2200),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.services.effective_calendar import effective_days
+
+    try:
+        return {"days": await effective_days(db, market, date(year, 1, 1), date(year, 12, 31))}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.put("/calendars/markets/{market}", response_model=CalendarMarketResponse)
@@ -1711,7 +1738,12 @@ async def preview_calendar_json(
     principal: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
-    market = await db.get(CalendarMarket, normalize_market(body.market))
+    from app.services.effective_calendar import ensure_market_for_edit
+
+    try:
+        market = await ensure_market_for_edit(db, normalize_market(body.market))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if market is None or not market.active:
         raise HTTPException(status_code=404, detail="Active calendar market not found")
     try:
@@ -1757,7 +1789,12 @@ async def preview_twse_calendar_csv(
     principal: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
-    market = await db.get(CalendarMarket, normalize_market(body.market))
+    from app.services.effective_calendar import ensure_market_for_edit
+
+    try:
+        market = await ensure_market_for_edit(db, normalize_market(body.market))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if market is None or not market.active:
         raise HTTPException(status_code=404, detail="Active calendar market not found")
     try:
@@ -1837,8 +1874,12 @@ async def edit_calendar_day(
     db: AsyncSession = Depends(get_db),
 ):
     normalized = normalize_market(market)
-    if await db.get(CalendarMarket, normalized) is None:
-        raise HTTPException(status_code=404, detail="Calendar market not found")
+    from app.services.effective_calendar import ensure_market_for_edit
+
+    try:
+        await ensure_market_for_edit(db, normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         revision = await clone_with_day_change(
             db,

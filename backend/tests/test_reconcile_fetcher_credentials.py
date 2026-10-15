@@ -8,8 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.registry import APIKey, SourceClient
 from scripts.reconcile_fetcher_credentials import (
-    CALENDAR_CREDENTIAL_NAME,
-    CALENDAR_HASH_ENV,
     SOURCE_SPECS,
     FetcherCredentialError,
     reconcile_fetcher_credentials_in_session,
@@ -22,9 +20,7 @@ def _hash(label: str) -> str:
 
 
 def _hashes() -> dict[str, str]:
-    values = {CALENDAR_HASH_ENV: _hash("calendar")}
-    values.update({spec.env_name: _hash(spec.source_name) for spec in SOURCE_SPECS})
-    return values
+    return {spec.env_name: _hash(spec.source_name) for spec in SOURCE_SPECS}
 
 
 async def test_fetcher_credentials_are_created_and_idempotent(
@@ -43,22 +39,16 @@ async def test_fetcher_credentials_are_created_and_idempotent(
         .scalars()
         .all()
     )
-    calendar = (
-        await test_session.execute(select(APIKey).where(APIKey.name == CALENDAR_CREDENTIAL_NAME))
-    ).scalar_one()
+    assert not (await test_session.scalars(select(APIKey))).all()
 
-    assert [row.action for row in created] == ["created"] * 5
-    assert [row.action for row in unchanged] == ["unchanged"] * 5
+    assert [row.action for row in created] == ["created"] * 4
+    assert [row.action for row in unchanged] == ["unchanged"] * 4
     assert len(source_rows) == 4
     by_name = {row.name: row for row in source_rows}
     for spec in SOURCE_SPECS:
         assert by_name[spec.name].source_name == spec.source_name
         assert by_name[spec.name].allowed_datasets == list(spec.allowed_datasets)
         assert by_name[spec.name].key_hash == _hashes()[spec.env_name]
-    assert calendar.kind == "serve"
-    assert calendar.scopes == ["serve"]
-    assert calendar.page_size_limit == 1000
-    assert calendar.key_hash == _hashes()[CALENDAR_HASH_ENV]
 
 
 async def test_fetcher_source_rotation_revokes_previous_identity(
@@ -102,7 +92,7 @@ async def test_unified_credentials_cover_seven_feeds_without_profile_branch(test
     results = await reconcile_fetcher_credentials_in_session(
         test_session, _hashes(), deployment_target=target
     )
-    assert len(results) == 5
+    assert len(results) == 4
     rows = (await test_session.scalars(select(SourceClient))).all()
     assert sum(len(row.allowed_datasets) for row in rows) == 7
     assert {row.source_name for row in rows} == {"twelve_data", "finlab", "shioaji", "taifex"}

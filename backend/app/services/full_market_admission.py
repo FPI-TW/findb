@@ -397,8 +397,6 @@ async def eligibility(
             )
             .limit(1)
         )
-        if calendar is None:
-            reasons.append("full_market_calendar_missing")
         feed_blockers.update(reasons)
         info = {
             "dataset_key": dataset.dataset_key,
@@ -407,12 +405,12 @@ async def eligibility(
             "first_start_date": state.first_start_date.isoformat() if state else None,
         }
         feeds.append(info)
-        if not reasons and baseline and calendar:
+        if not reasons and baseline:
             ready.append((dataset, baseline, calendar))
     if not ready:
         blockers.extend(sorted(feed_blockers))
         if not feeds:
-            blockers.extend(["full_market_baseline_missing", "full_market_calendar_missing"])
+            blockers.append("full_market_baseline_missing")
     capacity: dict = {}
     return {
         "enabled": profile == "pilot" or settings.FULL_MARKET_ENABLED,
@@ -471,7 +469,7 @@ async def freeze_admission(
                 admission_id=admission.admission_id,
                 dataset_key=dataset.dataset_key,
                 baseline_id=baseline.release_id,
-                calendar_revision_id=calendar.id,
+                calendar_revision_id=calendar.id if calendar else None,
             )
         )
         state = await db.get(

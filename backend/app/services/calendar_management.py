@@ -61,7 +61,7 @@ def _all_days(year: int, market: CalendarMarket) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     for offset in range(_expected_days(year)):
         day = first + timedelta(days=offset)
-        is_open = day.weekday() not in market.weekend_days
+        is_open = day.weekday() < 5
         values.append(
             {
                 "trade_date": day.isoformat(),

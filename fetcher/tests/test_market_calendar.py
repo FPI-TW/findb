@@ -153,3 +153,24 @@ def test_client_bounds_response_and_transport_failures() -> None:
     )
     with pytest.raises(MarketCalendarError, match="request failed"):
         PublishedCalendarClient(_config(), client=failing_client).get_year("TW", 2026)
+
+
+@pytest.mark.parametrize("status", ["defaulted", "mixed"])
+def test_effective_calendar_preserves_nullable_revision_and_date_provenance(status):
+    payload = _payload()
+    payload["data"].update(status=status, revision=None)
+    for index, day in enumerate(payload["data"]["days"]):
+        published = status == "mixed" and index == 0
+        day.update(
+            calendar_source="published" if published else "weekday_default",
+            calendar_revision=3 if published else None,
+        )
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    ) as http:
+        client = PublishedCalendarClient(_config(), client=http)
+        result = client.get_year("TW", 2026)
+        assert result.revision is None
+        assert result.days[-1].calendar_revision is None
+        assert result.days[-1].calendar_source == "weekday_default"
+        assert result.days[0].calendar_revision == (3 if status == "mixed" else None)

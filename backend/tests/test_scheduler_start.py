@@ -138,7 +138,7 @@ async def test_manual_start_partial_scope_freeze_repeat_and_restart(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("block", ["calendar", "baseline"])
+@pytest.mark.parametrize("block", ["baseline"])
 async def test_start_blocks_without_freezing_or_auditing(test_session, monkeypatch, block):
     row, proof = await ready(test_session, monkeypatch)
     if block == "flag":
@@ -301,11 +301,8 @@ async def test_registry_metadata_is_not_an_additional_start_gate(
     await _baseline(test_session, key)
     change_runtime_identity(dataset, invalid)
     result = await eligibility(test_session, provider, [dataset])
-    if invalid == "market" and key != "tw_futures_eod":
-        assert result["feeds"][0]["blockers"] == ["full_market_calendar_missing"]
-    else:
-        assert result["ready"]
-        assert result["feeds"][0]["blockers"] == []
+    assert result["ready"]
+    assert result["feeds"][0]["blockers"] == []
 
 
 @pytest.mark.asyncio
@@ -1047,3 +1044,32 @@ async def test_maintenance_bootstrap_uses_source_scope_without_baseline_or_admis
     assert response.json()["acquisition_allowed"] is False
     assert response.json()["acquisition_blockers"] == ["full_market_flag_disabled"]
     assert response.json()["authorized_dataset_keys"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["staging", "production"])
+@pytest.mark.parametrize("calendar_state", ["missing", "draft"])
+async def test_start_accepts_missing_or_draft_calendar(
+    test_session, monkeypatch, environment, calendar_state
+):
+    from sqlalchemy import delete
+
+    from app.models.canonical import CalendarYearRevision
+
+    await ready(test_session, monkeypatch, environment=environment)
+    if calendar_state == "missing":
+        await test_session.execute(delete(CalendarYearRevision))
+    else:
+        row = await test_session.scalar(select(CalendarYearRevision))
+        row.status = "draft"
+    await test_session.flush()
+    control = await update_scheduler_desired_state(
+        test_session,
+        scheduler_key=KEY,
+        desired_state="running",
+        expected_revision=1,
+        principal=PRINCIPAL,
+    )
+    assert control.desired_state == "running"
+    admission = await test_session.scalar(select(FullMarketAdmissionFeed))
+    assert admission.calendar_revision_id is None

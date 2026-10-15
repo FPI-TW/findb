@@ -134,13 +134,8 @@ export function HistoricalBackfillsPanel({
   const openDays = previewResult?.days.filter(day => day.valid) ?? []
   const closedDays =
     previewResult?.days.filter(day => day.reason === "market_closed") ?? []
-  const unpublishedDays =
-    previewResult?.days.filter(day => day.reason === "calendar_unpublished") ??
-    []
   const previewCanCreate = Boolean(
-    previewResult?.scope_valid &&
-    openDays.length > 0 &&
-    unpublishedDays.length === 0
+    previewResult?.scope_valid && previewResult.days.length > 0
   )
   const draftComplete = Object.values(backfillDraft).every(Boolean)
 
@@ -419,30 +414,17 @@ export function HistoricalBackfillsPanel({
                     <AlertTriangle aria-hidden="true" />
                   )}
                   <AlertTitle>
-                    {previewResult.scope_valid
-                      ? previewCanCreate
-                        ? closedDays.length > 0
-                          ? "範圍有效；休市日期會略過，只為開市日期建立工作項目。"
-                          : "範圍有效；所有日期都會建立工作項目。"
-                        : unpublishedDays.length > 0
-                          ? "範圍含未發布交易日；整個回補請求將被拒絕。"
-                          : "範圍無可執行交易日；整個回補請求將被拒絕。"
+                    {previewCanCreate
+                      ? "範圍有效；抓取與略過日期會在建立時凍結。"
                       : `範圍無效：${formatBackfillScopeReason(previewResult.scope_reason)}`}
                   </AlertTitle>
                   <AlertDescription>
-                    可建立 {openDays.length} 個開市日期工作項目；略過{" "}
-                    {closedDays.length} 個休市日期。
+                    可建立 {openDays.length} 個抓取日期工作項目；略過{" "}
+                    {closedDays.length} 個依設定略過日期。
                     {closedDays.length > 0 && (
                       <>
                         略過日期：
                         {closedDays.map(day => day.trade_date).join("、")}。
-                      </>
-                    )}
-                    {unpublishedDays.length > 0 && (
-                      <>
-                        未發布日期：
-                        {unpublishedDays.map(day => day.trade_date).join("、")}
-                        ；整個請求會被拒絕。
                       </>
                     )}
                   </AlertDescription>
@@ -497,7 +479,7 @@ export function HistoricalBackfillsPanel({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="m-0 text-xs leading-relaxed text-muted">
                   {previewCanCreate
-                    ? `驗證已通過；將建立 ${openDays.length} 個開市日期工作項目，勾選確認後即可送出原始範圍。`
+                    ? `驗證已通過；將建立 ${openDays.length} 個抓取日期工作項目，勾選確認後即可送出原始範圍。`
                     : "完成前兩個步驟後才能建立回補。"}
                 </p>
                 <Button
@@ -557,8 +539,11 @@ export function HistoricalBackfillsPanel({
                       <ul className="mt-2 space-y-1 border-t pt-2 font-mono text-xs text-muted">
                         {row.items.map(item => (
                           <li key={item.item_id}>
-                            {item.trade_date} · {item.status} · run:{" "}
-                            {item.run_id ?? "—"}
+                            {item.trade_date} ·{" "}
+                            {item.status === "skipped_calendar"
+                              ? "依設定略過"
+                              : item.status}{" "}
+                            · run: {item.run_id ?? "—"}
                             {item.failure_code ? ` · ${item.failure_code}` : ""}
                             {item.failure_message
                               ? ` · ${item.failure_message}`

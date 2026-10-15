@@ -91,6 +91,7 @@ TARGET_TABLES = (
     "public.daily_delivery_member",
     "public.daily_delivery_part",
     "public.daily_delivery_plan",
+    "public.daily_execution_decision",
     # Associations reference mutable baseline/calendar rows; clear the full FK graph.
     "public.full_market_admission",
     "public.full_market_admission_feed",

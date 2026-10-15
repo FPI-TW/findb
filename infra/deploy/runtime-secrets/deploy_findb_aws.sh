@@ -322,9 +322,6 @@ docker compose -f "$compose_file" run --rm --no-deps \
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
   --deployment-target "$APP_ENVIRONMENT" </dev/null
-docker compose -f "$compose_file" run --rm --no-deps ingest \
-  python /app/scripts/seed_production_calendars.py \
-  --deployment-target "$APP_ENVIRONMENT" --apply --actor runtime-bootstrap </dev/null
 MIGRATION_SCRIPT
 
 # The candidate uses internal services while the public nginx entry stays stopped.

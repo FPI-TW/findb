@@ -212,6 +212,8 @@ class CalendarResponse(BaseModel):
     holiday_name: str | None = None
     day_status: Literal["open", "closed", "settlement_only"] = "open"
     description: str | None = None
+    calendar_source: Literal["published", "weekday_default"] = "published"
+    calendar_revision: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -225,8 +227,8 @@ class CalendarListResponse(BaseModel):
 class PublishedCalendarYearResponse(BaseModel):
     market: str
     year: int
-    revision: int
-    status: Literal["published"]
+    revision: int | None
+    status: Literal["published", "defaulted", "mixed"]
     coverage_complete: Literal[True]
     timezone: str
     expected_days: int

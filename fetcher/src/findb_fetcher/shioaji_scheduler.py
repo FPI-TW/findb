@@ -389,7 +389,7 @@ def validate_contracts(contracts_dir: Path) -> ContractRegistry:
 
 
 class Calendar(Protocol):
-    def get_day(self, market: str, value: date) -> tuple[Any, int]: ...
+    def get_day(self, market: str, value: date) -> tuple[Any, int | None]: ...
 
 
 @dataclass(frozen=True, slots=True)

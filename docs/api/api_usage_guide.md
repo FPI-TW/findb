@@ -30,8 +30,8 @@ Authorization: Bearer <admin-session>
 | Serve | 由`SERVE_REQUIRE_AUTH`控制；即使開放仍保持唯讀 |
 | Admin | 永遠需要具名session、DB-backed machine key或break-glass recovery key |
 
-每個provider/client使用獨立Source key。Fetcher的calendar Serve key只讀published
-calendar且不得與Source key共用。`ADMIN_BREAK_GLASS_API_KEY`只供bootstrap與緊急復原。
+每個 provider/client 使用獨立 Source key；共用 Fetcher runtime 從 Source 取得有效執行政策，
+不再注入 calendar Serve key。`ADMIN_BREAK_GLASS_API_KEY` 只供 bootstrap 與緊急復原。
 
 ## Canonical ingest
 
@@ -142,14 +142,17 @@ transaction 鎖定 registry／control 並重新驗證資格；資格不符回 `4
 （原因依未完成條件而異），不變更 desired state、revision 或 audit。既有 revision conflict
 仍回 `409`；停止永遠保留既有 Owner 權限／revision 檢查，但不要求啟動資格。
 
-Scheduler取得完整published calendar：
+獨立查詢有效年度日曆：
 
 ```http
 GET /api/v1/serve/calendar/years/{market}/{year}
 ```
 
-缺少published revision或年度不完整時回`404`。Dashboard calendar preview、draft、publish
-與rollback由Admin API處理；只有Owner可publish／rollback。
+已發布日期優先，缺少的日期以週一至週五開市、週末休市補足；回應逐日標示
+`calendar_source` 與可空的 `calendar_revision`，預設資料不會寫入 DB 或發布。
+Dashboard calendar preview、draft、publish 與 rollback 由 Admin API 處理；只有 Owner 可
+publish／rollback，draft 不影響抓取。Source 依 Backend 各 provider 的 `*_SKIP_NON_TRADING_DAYS` 開關
+決定新工作是否略過非交易日，四個 provider 預設均不略過。
 
 `GET /api/v1/admin/market-freshness` 保留既有 freshness／heartbeat 欄位，另回傳
 `monitor_kind`（`bounded`／`full_market`）、`activation_state`（bounded 為 null；
@@ -200,7 +203,7 @@ OpenAPI 為準。Universe first baseline 或異動超過 20 個成員／2% 的 c
 `first_baseline_approved`／`threshold_exception_approved`，並留下 audit。
 
 Owner 使用既有 `PATCH /admin/schedulers/{scheduler_key}`，傳 `desired_state` 與
-`expected_revision`。啟動資格只檢查 Owner published baseline 與完整 published calendar；兩者通過後，
+`expected_revision`。啟動資格檢查 Owner published baseline，不要求設定日曆；通過後，
 凍結 ready feeds；部分 scope 可 start，重複
 running PATCH 不重凍結。首次日期為交易所當地今天，合法 legacy date 保留，停止／重新啟動不重設。
 舊 `/admin/feeds/{dataset_key}/activate|deactivate` 需 Owner 認證並回傳 410。
@@ -212,7 +215,7 @@ Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/diges
 仍可核對容量修復證據；它不授權抓取，也不寫 control/audit。
 旗標關閉、Owner 停止或 Source key 撤銷／到期阻擋新 acquisition/plan，既有 frozen prepared delivery 與 normalization 可完成。
 詳細管理 enrollment、平台限制與治理資料見 [runbook](../operations/full_market.md)。
-所有環境的 startup 只依 baseline/calendar；新抓取不要求 enrollment、readiness、expiry 或 capacity proof。
+所有環境的 startup 都不以日曆完整性為 gate；新抓取不要求 enrollment、readiness、expiry 或 capacity proof。
 `GET /source/full-market/authorization` 仍驗證 Source key/provider/scope、flag 與 running control；
 `consumer=maintenance` 允許已認證、flag 開啟的 candidate 蒐集，無須先 start 或 enrollment。
 未知 consumer 拒絕；舊 digest/runtime query 不再影響新抓取資格。此分支尚未部署。

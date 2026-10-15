@@ -57,3 +57,10 @@ PR #294 已合併為 `adcfe41fb8350d37f5c21743b38ffd3a3650283f`。Staging 停止
 首次 staging CD 測試／image publication 通過，但 prepare job 的後續根 checkout 刪除了
 `.deployment-driver`，導致 composite action post cleanup 失敗；尚未執行 migration。
 已統一調整 checkout 順序，待修正 PR／CI／審查完成後重新部署。Production 尚未停止或部署。
+
+PR #295 已通過 CI 並合併為 `92f057fe02930e0d005fb67a733e4fa8bed23f1a`，checkout／prepare 已在
+實際 CD 通過。Staging migration 已升至 `6b93ef20a147`，但 calendar seed 因既有 Owner published
+revision 與初始 reviewed 檔不同而停止；candidate 保持停止，尚無 acceptance／activation。
+唯讀比對確認 TW 2026 revision 5 保有人工休市，US／HK 也使用 published manual revisions。
+最新方案取消 calendar bootstrap／completeness gate，改採 published 日期覆蓋 weekday default，並新增凍結政策與 durable skip。
+實作、完整測試與獨立 High review 仍進行中，尚未建立此修正 PR 或重新部署。不得啟動統一前舊 runtime 操作已升級狀態；原成套備份與快照保留。
