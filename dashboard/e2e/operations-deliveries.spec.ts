@@ -14,6 +14,12 @@ async function login(page: Page, role = "owner", profile = "full_market") {
   if (profile === "full_market")
     await page.getByRole("tab", { name: "Full market", exact: true }).click()
   await expect(
+    page.getByRole("tab", {
+      name: profile === "full_market" ? "Full market" : "Pilot",
+      exact: true,
+    })
+  ).toHaveAttribute("aria-selected", "true")
+  await expect(
     page.getByRole("button", { name: "展開詳細資料" }).first()
   ).toBeVisible()
 }
@@ -148,6 +154,7 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
   const viewport = table.locator("..")
   const focus = page.getByLabel("交易日", { exact: true })
   await focus.focus()
+  await expect(focus).toBeFocused()
   await viewport.evaluate(element => {
     element.scrollTop = 30
     element.scrollLeft = 60
