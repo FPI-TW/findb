@@ -33,6 +33,7 @@ from findb_fetcher.full_market_universe import (
     TW_COMPANY_URLS,
     TW_ISIN_URLS,
     canonical_bytes,
+    canonical_twelve_data_mic,
     checksum,
     map_catalogue,
     nasdaq_effective_date,
@@ -54,7 +55,7 @@ from findb_fetcher.providers.finlab import (
 from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
 )
-from findb_fetcher.providers.shioaji import build_market_minute_request
+from findb_fetcher.providers.shioaji import _simulation_from_env, build_market_minute_request
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from findb_fetcher.providers.taifex import fetch_report, parse_report, report_members
 from findb_fetcher.providers.twelve_data import (
@@ -259,7 +260,9 @@ class FullMarketRuntime:
         try:
             if self.sdk is None:
                 self.sdk = PersistentIsolatedShioajiGateway(
-                    os.getenv("SHIOAJI_API_KEY", ""), os.getenv("SHIOAJI_SECRET_KEY", "")
+                    os.getenv("SHIOAJI_API_KEY", ""),
+                    os.getenv("SHIOAJI_SECRET_KEY", ""),
+                    simulation=_simulation_from_env(),
                 )
             return getattr(self.sdk, operation)(*args)
         except Exception:
@@ -421,7 +424,7 @@ class FullMarketRuntime:
         if self.provider == "shioaji":
             catalogue = self._shioaji_request("catalogue")
             detached = canonical_bytes(
-                {"sdk_version": "1.7.1", "simulation": False, "catalogue": catalogue}
+                {"sdk_version": "1.7.1", "simulation": True, "catalogue": catalogue}
             )
             self._observed_response(len(detached))
             self._persist(detached, "tw_equity_minute", "sdk_catalogue")
@@ -987,7 +990,7 @@ class FullMarketRuntime:
                 delivery=delivery,
             )
             if (
-                response["meta"]["mic_code"] != member["exchange"]
+                canonical_twelve_data_mic(response["meta"]["mic_code"]) != member["exchange"]
                 or response["meta"]["currency"] != member["currency"]
             ):
                 raise ReadinessBlockedError("provider identity differs from official universe")

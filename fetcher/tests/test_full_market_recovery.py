@@ -328,7 +328,8 @@ def test_shioaji_failed_child_recreated_shared_feeds_and_stopped(
     gateways: list[Any] = []
 
     class Gateway:
-        def __init__(self, *args: Any) -> None:
+        def __init__(self, *args: Any, simulation: bool = True) -> None:
+            assert simulation is True
             self.closed = False
             self.calls: list[str] = []
             gateways.append(self)

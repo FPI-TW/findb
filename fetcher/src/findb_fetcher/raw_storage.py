@@ -183,6 +183,7 @@ class R2RawPayloadStore:
             "Body": raw_bytes,
             "ContentLength": len(raw_bytes),
             "ContentType": "application/json",
+            "IfNoneMatch": "*",
             "ChecksumSHA256": base64.b64encode(digest_bytes).decode("ascii"),
             "Metadata": {
                 "sha256": digest,
@@ -192,7 +193,17 @@ class R2RawPayloadStore:
             },
         }
         try:
-            self._client.put_object(**arguments)
+            try:
+                self._client.put_object(**arguments)
+            except ClientError as exc:
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if status not in {409, 412}:
+                    raise
+                # A locked or concurrently created object is reusable only after
+                # verifying its actual bytes. A conflict alone is not evidence.
+                self._verify_existing(arguments)
+        except RawStorageUploadError:
+            raise
         except ClientError as exc:
             error = exc.response.get("Error", {})
             code = str(error.get("Code", ""))
@@ -227,6 +238,31 @@ class R2RawPayloadStore:
         except Exception as exc:
             raise RawStorageUploadError("raw provider payload upload failed") from exc
         return RawObject(ref=ref, sha256=digest, size_bytes=len(raw_bytes))
+
+    def _verify_existing(self, expected: dict[str, Any]) -> None:
+        try:
+            response = self._client.get_object(Bucket=expected["Bucket"], Key=expected["Key"])
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "NotFound", "404"}:
+                raise RawStorageUploadError(
+                    "raw object disappeared after conditional upload", retryable=True
+                ) from exc
+            raise
+        body = response["Body"]
+        try:
+            if (
+                response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 200
+                or response.get("ContentLength") != expected["ContentLength"]
+                or response.get("ContentType") != expected["ContentType"]
+                or response.get("ContentEncoding") not in {None, "identity"}
+                or response.get("Metadata") != expected["Metadata"]
+            ):
+                raise RawStorageUploadError("existing raw object metadata differs")
+            actual = body.read(expected["ContentLength"] + 1)
+            if actual != expected["Body"]:
+                raise RawStorageUploadError("existing raw object bytes differ")
+        finally:
+            body.close()
 
 
 def attach_raw_object(

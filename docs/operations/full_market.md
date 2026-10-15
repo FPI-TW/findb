@@ -102,6 +102,18 @@ Installed consumers 的用量與 cooldown 由 durable governor 保存，process 
 FinDB internal Source API 的 2400 RPM 為內部服務設定，與 provider 的平台配額分開。
 Payload／R2 object／解壓縮／IPC bounds 屬於傳輸與資料處理保護，不列為額外 provider 配額證據。
 
+Raw R2 以內容雜湊決定 immutable object key，使用 `If-None-Match: *` 建立，避免重試覆寫
+已鎖定物件。409／412 不直接視為成功；必須在同一 bucket/key 讀回完整且有大小上限的 bytes，
+核對長度、內容、content type 與 provider/dataset/symbol/SHA-256 metadata 後才可重用。
+讀取失敗或內容不一致仍阻擋交付，查無物件的競態可重試；不移除 bucket lock 或刪除物件。
+Twelve Data 的 catalogue 與實際日資料回應共用 Nasdaq MIC 規則：僅 `XNCM`、`XNGS`、
+`XNMS` 對應官方 `XNAS`，其餘交易所與幣別仍須完全符合 frozen universe；原始回應不改寫。
+這些程式保護不等於 native 驗收通過。驗收仍須包含真正 locked object 的重複寫入、七條 feeds
+各自的非零 canonical／Serve 證據，以及 profile、plan、run 與 R2 bytes 的對應。
+Shioaji 共用 runtime 明確套用既有 `SHIOAJI_SIMULATION=true` 驗證，再建立隔離 SDK；
+Pilot／Full market 均使用資料擷取用 simulation，catalogue raw evidence 也記錄相同模式。
+不合法設定在 child process 建立前拒絕，不能默默回退至 live-account mode。
+
 啟動資格的程式修改位於 `refactor/full-market-baseline-calendar-start`；migration
 `3553ed95cfbf` 允許 admission 的 legacy enrollment reference 為 null，保留既有歷史綁定。
 所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依

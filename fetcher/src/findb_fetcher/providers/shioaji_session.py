@@ -305,7 +305,7 @@ class PersistentIsolatedShioajiGateway:
         api_key: str,
         secret_key: str,
         *,
-        simulation: bool = False,
+        simulation: bool = True,
         timeout_seconds: float = 60,
     ) -> None:
         if not api_key.strip() or not secret_key.strip():
