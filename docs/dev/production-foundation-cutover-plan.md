@@ -23,7 +23,10 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   最新股票 `8908` 與 ETF `00415A` 仍為 mapping gap，需核對 provider 資料可用性；
   不將已發布目錄等同所有成員有資料，也不修改既有凍結樣本。
   TAIFEX 2026-10-15 Pilot 計畫有兩筆 canonical 寫入，另兩項已 retry exhausted，整條 feed 未通過；
-  未完成項目為前一日目錄的 MTX:202610W2 sessions，需核對新計畫的目錄日期與到期契約；
+  未完成項目為前一日目錄的 MTX:202610W2 sessions。PR #307 已加入新計畫的同日期目錄要求，
+  Backend／Fetcher CD 已將 `0a8d491a064d` 部署至 staging；Backend 資料保留核對通過，
+  Fetcher 的 16 份 SQLite 備份比對與最終健康檢查仍待本機 AWS 登入恢復後完成；
+  下一個新日期計畫排程為台北 2026-10-16 17:00，須用新計畫完成 native 驗收；
   保留凍結成員、首次日期與 terminal checkpoint，不以重設狀態或無證據 no_data 掩蓋失敗。
 - 新統一版在 production 的 accepted-record rollback 演練與可核對證據。
 - 既有 missing／DQ alerts 的人工調查與修復；不得由部署成功自動結案。
