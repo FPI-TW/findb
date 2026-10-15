@@ -319,6 +319,11 @@ def parse_tw_etfs(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
     return members
 
 
+def canonical_twelve_data_mic(mic: str) -> str:
+    """Map only Nasdaq listing segments to their official operating MIC."""
+    return "XNAS" if mic in NASDAQ_LISTING_SEGMENTS else mic
+
+
 def map_catalogue(
     members: Iterable[dict[str, Any]],
     catalogue: Iterable[Mapping[str, Any]],
@@ -331,8 +336,8 @@ def map_catalogue(
         symbol = str(row.get("symbol", ""))
         exchange = str(row.get("mic_code", row.get("exchange", "")))
         currency = str(row.get("currency", ""))
-        if not shioaji and exchange in NASDAQ_LISTING_SEGMENTS:
-            exchange = "XNAS"
+        if not shioaji:
+            exchange = canonical_twelve_data_mic(exchange)
         if shioaji:
             exchange = {"TSE": "XTAI", "OTC": "ROCO"}.get(exchange, exchange)
             currency = currency or "TWD"

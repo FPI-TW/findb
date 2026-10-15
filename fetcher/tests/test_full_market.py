@@ -500,7 +500,9 @@ def test_live_readiness_probe_stops_after_one_credit_if_insufficient() -> None:
     assert "secret" not in json.dumps(result)
 
 
-def _runtime(tmp_path: Path, *, provider: str = "twelve_data") -> tuple[Any, Any, Any]:
+def _runtime(
+    tmp_path: Path, *, provider: str = "twelve_data", execution_profile: str = "full_market"
+) -> tuple[Any, Any, Any]:
     from findb_fetcher.full_market_runtime import FullMarketRuntime
     from findb_fetcher.raw_storage import RawObject
 
@@ -547,6 +549,7 @@ def _runtime(tmp_path: Path, *, provider: str = "twelve_data") -> tuple[Any, Any
     }
     runtime = FullMarketRuntime(
         provider=provider,
+        execution_profile=execution_profile,
         config=config,
         state=state,
         source=source,
@@ -570,6 +573,52 @@ def _member() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("setting", [None, "true", "false", "TRUE"])
+def test_shioaji_runtime_enforces_data_only_mode_and_catalogue_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str, setting: str | None
+) -> None:
+    from findb_fetcher.providers.shioaji import ShioajiConfigError
+
+    if setting is None:
+        monkeypatch.delenv("SHIOAJI_SIMULATION", raising=False)
+    else:
+        monkeypatch.setenv("SHIOAJI_SIMULATION", setting)
+    instances = []
+    catalogue = [{"symbol": "2330", "exchange": "TSE", "currency": "TWD"}]
+
+    class Gateway:
+        def __init__(self, key: str, secret: str, *, simulation: bool) -> None:
+            assert simulation is True
+            instances.append(self)
+
+        def catalogue(self) -> list[dict[str, str]]:
+            return catalogue
+
+        def is_alive(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "findb_fetcher.full_market_runtime.PersistentIsolatedShioajiGateway", Gateway
+    )
+    runtime, _, raw = _runtime(tmp_path, provider="shioaji", execution_profile=profile)
+    try:
+        if setting in {None, "true"}:
+            assert runtime._catalogue() == catalogue
+            assert runtime._catalogue() == catalogue
+            assert len(instances) == 1
+            assert all(json.loads(value)["simulation"] is True for value in raw.calls)
+        else:
+            with pytest.raises(ShioajiConfigError, match="must be true"):
+                runtime._catalogue()
+            assert not instances and not raw.calls
+    finally:
+        runtime.close()
+
+
 def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
     from findb_fetcher.providers.twelve_data import TwelveDataResponse
 
@@ -585,6 +634,58 @@ def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
         runtime._acquire(_member(), plan, part, {"release_id": "r"}, runtime.feeds[0])
     assert raw.calls == [b'{"meta":{}}']
     runtime.http.close()
+
+
+@pytest.mark.parametrize("mic", ["XNAS", "XNCM", "XNGS", "XNMS", "XNYS", "XHKG"])
+@pytest.mark.parametrize("currency", ["USD", "HKD"])
+def test_native_twelve_data_identity_uses_catalogue_mic_rules(
+    tmp_path: Path, mic: str, currency: str
+) -> None:
+    from findb_fetcher.full_market_runtime import ReadinessBlockedError
+    from findb_fetcher.providers.twelve_data import TwelveDataResponse
+
+    runtime, _, raw = _runtime(tmp_path)
+    payload = {
+        "status": "ok",
+        "meta": {
+            "symbol": "AAPL",
+            "type": "Common Stock",
+            "currency": currency,
+            "exchange": "NASDAQ",
+            "mic_code": mic,
+            "interval": "1day",
+            "exchange_timezone": "America/New_York",
+        },
+        "values": [
+            {
+                "datetime": "2026-10-01",
+                "open": "1",
+                "high": "2",
+                "low": "1",
+                "close": "2",
+                "volume": "10",
+            }
+        ],
+    }
+    native = canonical_bytes(payload)
+    runtime.td = SimpleNamespace(
+        fetch_daily=lambda *args, **kwargs: TwelveDataResponse(payload, raw_bytes=native)
+    )
+    plan = _plan()
+    try:
+        if currency == "USD" and mic in {"XNAS", "XNCM", "XNGS", "XNMS"}:
+            requests = runtime._acquire(
+                _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
+            )
+            assert requests[0]["payload"]["data"][0]["symbol"] == "AAPL"
+            assert raw.calls == [native]
+        else:
+            with pytest.raises(ReadinessBlockedError, match="provider identity differs"):
+                runtime._acquire(
+                    _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
+                )
+    finally:
+        runtime.http.close()
 
 
 @pytest.mark.parametrize("capacity_violated", [False, True])

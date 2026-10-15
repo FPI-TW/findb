@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 from copy import deepcopy
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError, ReadTimeoutError
 
 from findb_fetcher.raw_storage import (
     R2RawPayloadStore,
@@ -75,6 +76,7 @@ def test_r2_store_uploads_exact_bytes_with_deterministic_metadata() -> None:
     )
     assert all(token not in first.ref for token in ("?", "#", "@"))
     assert client.calls[0]["Body"] == RAW_BYTES
+    assert client.calls[0]["IfNoneMatch"] == "*"
     assert client.calls[0]["ContentLength"] == len(RAW_BYTES)
     assert client.calls[0]["ChecksumSHA256"] == base64.b64encode(digest_bytes).decode("ascii")
     assert client.calls[0]["Metadata"] == {
@@ -86,6 +88,103 @@ def test_r2_store_uploads_exact_bytes_with_deterministic_metadata() -> None:
     assert "ServerSideEncryption" not in client.calls[0]
     assert "SSEKMSKeyId" not in client.calls[0]
     assert client.calls[0]["Key"] == client.calls[1]["Key"]
+
+
+class ExistingR2(FakeR2):
+    def __init__(self, status: int, **overrides: Any) -> None:
+        super().__init__(ClientError({"ResponseMetadata": {"HTTPStatusCode": status}}, "PutObject"))
+        self.body = io.BytesIO(RAW_BYTES)
+        self.overrides = overrides
+        self.reads: list[dict[str, Any]] = []
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        self.reads.append(kwargs)
+        return {
+            "Body": self.body,
+            "ResponseMetadata": {"HTTPStatusCode": 200},
+            "ContentLength": len(RAW_BYTES),
+            "ContentType": "application/json",
+            "Metadata": self.calls[0]["Metadata"],
+            **self.overrides,
+        }
+
+
+@pytest.mark.parametrize("status", [409, 412])
+def test_locked_or_concurrent_object_requires_exact_readback(status: int) -> None:
+    client = ExistingR2(status)
+    stored = R2RawPayloadStore(_config(), client=client).persist(
+        RAW_BYTES, dataset_key="us_equity_eod", source_symbol="AAPL"
+    )
+    assert stored.sha256 == hashlib.sha256(RAW_BYTES).hexdigest()
+    assert client.reads == [{"Bucket": client.calls[0]["Bucket"], "Key": client.calls[0]["Key"]}]
+    assert client.body.closed
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"ContentLength": len(RAW_BYTES) + 1},
+        {"ContentType": "text/plain"},
+        {"ContentEncoding": "gzip"},
+        {"Metadata": {"provider": "finlab"}},
+        {"ResponseMetadata": {"HTTPStatusCode": 206}},
+    ],
+)
+def test_conflict_metadata_mismatch_fails_closed_and_closes_body(override: dict[str, Any]) -> None:
+    client = ExistingR2(412, **override)
+    with pytest.raises(RawStorageUploadError, match="metadata differs") as error:
+        R2RawPayloadStore(_config(), client=client).persist(
+            RAW_BYTES, dataset_key="us_equity_eod", source_symbol="AAPL"
+        )
+    assert not error.value.retryable
+    assert client.body.closed
+
+
+@pytest.mark.parametrize("actual", [b"different", RAW_BYTES[:-1], RAW_BYTES + b"extra"])
+def test_conflict_body_must_match_even_with_matching_metadata(actual: bytes) -> None:
+    client = ExistingR2(409)
+    client.body = io.BytesIO(actual)
+    with pytest.raises(RawStorageUploadError, match="bytes differ"):
+        R2RawPayloadStore(_config(), client=client).persist(
+            RAW_BYTES, dataset_key="us_equity_eod", source_symbol="AAPL"
+        )
+    assert client.body.closed
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "retryable"),
+    [(404, "NoSuchKey", True), (403, "AccessDenied", False), (503, "SlowDown", True)],
+)
+def test_conflict_read_failure_is_not_success(status: int, code: str, retryable: bool) -> None:
+    class FailedRead(ExistingR2):
+        def get_object(self, **kwargs: Any) -> dict[str, Any]:
+            raise ClientError(
+                {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}},
+                "GetObject",
+            )
+
+    with pytest.raises(RawStorageUploadError) as error:
+        R2RawPayloadStore(_config(), client=FailedRead(412)).persist(
+            RAW_BYTES, dataset_key="us_equity_eod", source_symbol="AAPL"
+        )
+    assert error.value.retryable is retryable
+
+
+def test_conflict_stream_read_is_bounded_and_closed_on_timeout() -> None:
+    class TimedOutBody(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            assert size == len(RAW_BYTES) + 1
+            raise ReadTimeoutError(endpoint_url="https://example.invalid")
+
+    client = ExistingR2(412)
+    client.body = TimedOutBody()
+    with pytest.raises(RawStorageUploadError) as error:
+        R2RawPayloadStore(_config(), client=client).persist(
+            RAW_BYTES, dataset_key="us_equity_eod", source_symbol="AAPL"
+        )
+    assert error.value.retryable
+    assert client.body.closed
 
 
 def test_r2_store_builds_only_the_account_scoped_cloudflare_endpoint(
