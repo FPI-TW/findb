@@ -8,13 +8,15 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
-- 七條 feeds 的 staging Pilot 真實交付驗收尚未全部通過，因此 production native 驗收保持未開始。
+- Owner 於台北時間 2026-10-16 將香港排除本次 native 驗收；本次 staging Pilot 目標為其餘六條，
+  尚未全部通過，因此 production native 驗收保持未開始。七條 feed 架構與香港失敗紀錄仍保留。
   R2 診斷 prefix 的鎖定與相同 bytes 重試已驗證；不能據此宣稱整個 bucket 或七條 feeds 通過。
   Twelve Data 的美國 6,018 筆、香港 2,828 筆目錄已成功發布，413 問題已排除；
   香港凍結商品 `0001` 的受控單次診斷得到 HTTP／provider code 400、`no_data_response`，
-  尚無足夠證據判定為路由、權限或發布延遲。既有兩項 retry exhausted 不重設。
+  指定 `exchange=HKEX` 的追加診斷亦為相同結果；官方將 XHKG 列為需授權或未支援市場，
+  香港另列未解項目，不計入本次分母，也不標示通過。既有兩項 retry exhausted 不重設。
   美股 2026-10-15 排程為台北 10 月 16 日 05:00，本輪不等待過夜，待 Owner 回覆後接續。
-  FinLab 的兩條每日 feed 已取得完整真實交付證據，連同 Shioaji 共 4／7，見正式測試文件。
+  FinLab 的兩條每日 feed 已取得完整真實交付證據，連同 Shioaji 在本次範圍共 4／6（原七條範圍仍為 4／7），見正式測試文件。
   FileStorage 記憶體快取修復已部署至 `b6fac56ac435`，單次實機診斷與資料保留檢查見正式測試文件。
   仍需驗證多輪日常抓取穩定性；Pilot 全部停止，不將已有資料證據當作記憶體問題結案。
   FinLab 最新目錄的 ETF `00415A` 缺少欄位，現有 refresh 又將同批 equity 標成 mapping gaps；
