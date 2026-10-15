@@ -154,6 +154,14 @@ Backend 最新唯讀證據命令為 `f7b10581-110e-4241-a3ad-6d5559c6cd6e`，
 FinLab Fetcher 為 `aad9978e-a510-4ea7-b702-accfbaecae04`，
 Shioaji Fetcher 為 `af29aac1-217c-421f-8d4e-37932b93adca`。
 七條 feed assembler 判定這四條通過，整體仍為 4／7。
+Owner 於台北時間 2026-10-16 將香港移出本次 native 驗收；本次目標改為其餘六條，
+目前為 4／6，待 TAIFEX 與美股通過後才接續 production。這是驗收範圍調整，
+不代表香港成功；七條 feed 的部署／fixture 範圍、香港既有計畫與失敗紀錄維持。
+追加單次香港 HKEX 診斷 `c91545a9-1d55-4240-acd7-f524b138b477` 仍回傳 HTTP／provider code 400。
+診斷後由 Owner 停止 Twelve Data Pilot，`d5e9e9c1-844f-4d7f-9b4e-55842d976913` 確認
+Pilot／Full market／account checkpoint integrity 正常，active leases、prepared 與 armed 均為 0。
+[Twelve Data 官方說明](https://support.twelvedata.com/en/articles/12682324-end-of-day-eod-pricing-market-data)
+將 XHKG 列為需授權或未支援市場；實際帳號可用性仍待確認。
 FinLab 資料完成後主機仍於 11:35 UTC 發生 global OOM，所有 Pilot 已停止；
 資料證據通過不代表 runtime 穩定性、Full market 或 production 通過。
 剩餘 provider 問題見 [原生驗收待辦](../dev/production-foundation-cutover-plan.md)。

@@ -405,3 +405,32 @@ def test_asset_class_has_a_fixed_source_dataset_key() -> None:
             field_datasets=wrong_fields,
             symbols=config.symbols,
         )
+
+
+@pytest.mark.parametrize("columns,expected", [(("2330", "0050"), ("0050",)), (("2330",), ())])
+def test_catalogue_presence_is_independent_of_date_and_missing_symbols(columns, expected):
+    frame = SimpleNamespace(index=(date(2026, 7, 28),), columns=columns)
+    sdk = SimpleNamespace(login=lambda _: None, data=SimpleNamespace(get=lambda _: frame))
+    gateway = FinLabSdkGateway(api_token="offline-token", _sdk=sdk)
+    table = gateway.fetch_catalogue(symbols=("0050", "00415A"))
+    assert table == FinLabDatasetTable((), expected, ())
+    with pytest.raises(FinLabSdkError):
+        gateway.fetch_dataset("price:收盤價", target_date=TARGET_DATE, symbols=("0050", "00415A"))
+
+
+@pytest.mark.parametrize(
+    "axis", ["duplicate_columns", "duplicate_dates", "invalid_columns", "invalid_dates"]
+)
+def test_catalogue_rejects_malformed_axes(axis):
+    frame = SimpleNamespace(index=(TARGET_DATE,), columns=("2330",))
+    if axis == "duplicate_columns":
+        frame.columns = ("2330", "2330")
+    elif axis == "duplicate_dates":
+        frame.index = (TARGET_DATE, TARGET_DATE)
+    elif axis == "invalid_columns":
+        frame.columns = (2330,)
+    else:
+        frame.index = ("2026-07-29",)
+    sdk = SimpleNamespace(login=lambda _: None, data=SimpleNamespace(get=lambda _: frame))
+    with pytest.raises(FinLabSdkError):
+        FinLabSdkGateway(api_token="offline-token", _sdk=sdk).fetch_catalogue(symbols=("2330",))

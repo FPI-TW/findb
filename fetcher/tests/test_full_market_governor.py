@@ -132,8 +132,9 @@ def test_legacy_dated_cooldown_promoted_and_new_cooldown_preserves_later_permit(
 
 
 @pytest.mark.parametrize("fail_at", [None, 1, 2])
+@pytest.mark.parametrize("missing_etf", [False, True])
 def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_at: int | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_at: int | None, missing_etf: bool
 ) -> None:
     runtime, source, raw, clock, _ = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
     runtime._ensure_proof = lambda: None
@@ -176,7 +177,7 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
     calls = []
     frame = SimpleNamespace(
         index=(clock.now().astimezone(runtime_module.ZoneInfo("Asia/Taipei")).date(),),
-        columns=("2330", "0050"),
+        columns=("2330",) if missing_etf else ("2330", "0050"),
         loc=_Loc(),
     )
 
@@ -207,10 +208,23 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
         }
 
     source.request = authorize
-    runtime.sync_universes()
+    if fail_at is None:
+        runtime.sync_universes()
+    else:
+        from findb_fetcher.providers.finlab import FinLabOperationalError
+
+        with pytest.raises(FinLabOperationalError):
+            runtime.sync_universes()
     assert len(authorizations) == 1
-    assert [call[1] for call in calls] == ([100] if fail_at == 1 else [100, 103])
-    assert len(submitted) == 2 and runtime.bundles == {}
+    assert [call[1] for call in calls] == [100, 103][:fail_at]
+    assert len(submitted) == (2 if fail_at is None else 0) and runtime.bundles == {}
+    for index, body in enumerate(submitted, start=1):
+        mapped = index == 1 or not missing_etf
+        assert body["members"][0]["mapping_status"] == ("mapped" if mapped else "gap")
+        evidence = [
+            row for row in body["evidence"] if row["url"].startswith("https://www.finlab.tw/")
+        ]
+        assert len(evidence) == int(fail_at != index)
     assert _quota(runtime, "2026-10-01") == (len(calls), 0)
     completion = clock.elapsed
     fresh, _, _ = _runtime(tmp_path, provider="finlab")
@@ -224,9 +238,7 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
         operation.start()
     assert clock.elapsed == completion + 1
     assert _quota(fresh, "2026-10-01") == (len(calls) + 1, 0)
-    assert sum(b"dates" in body for body in raw.calls) == (
-        0 if fail_at == 1 else 1 if fail_at == 2 else 2
-    )
+    assert sum(b"dates" in body for body in raw.calls) == (2 if fail_at is None else fail_at - 1)
     runtime.http.close()
     fresh.http.close()
 
@@ -1677,3 +1689,89 @@ def test_twelve_data_partial_transport_preserves_known_received_bytes(status):
     assert caught.value.observed_bytes == 5
     assert caught.value.declared_bytes == 0
     assert caught.value.__cause__.observed_bytes == 5
+
+
+@pytest.mark.parametrize(
+    "failure", ["authorization", "accounting", "r2", "quota_500", "quota_5000", "network", "login"]
+)
+def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
+    tmp_path, monkeypatch, failure
+):
+    from findb_fetcher.providers.finlab import FinLabOperationalError
+    from test_finlab_dataframe_bytes import Frame
+
+    runtime, source, raw, clock, _ = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    runtime._ensure_proof = lambda: None
+    member = {
+        **_member(),
+        "symbol": "2330",
+        "provider_symbol": "2330",
+        "exchange": "XTAI",
+        "classification": "ordinary",
+    }
+    monkeypatch.setattr(
+        runtime_module, "parse_tw_companies", lambda body, *, otc: [] if otc else [member]
+    )
+    monkeypatch.setattr(
+        runtime_module, "parse_tw_ordinary", lambda body, *, otc: [] if otc else [member.copy()]
+    )
+    monkeypatch.setattr(runtime_module, "parse_tw_etfs", lambda body, *, otc: [])
+    runtime._snapshot = lambda url: b"official snapshot"
+    submitted, calls = [], []
+    source.submit = lambda body: submitted.append(body) or body
+
+    def authorize(*args, **kwargs):
+        raise QuotaBlockedError("private failure context")
+
+    if failure == "authorization":
+        source.authorization = authorize
+
+    def observed(size):
+        if failure == "accounting":
+            raise ReadinessBlockedError("private failure context")
+
+    def get(dataset):
+        calls.append(dataset)
+        if failure == "quota_500":
+            raise Exception(
+                "**Error: Usage exceed 500 MB/day. Please consider upgrade to VIP program."
+            )
+        if failure == "quota_5000":
+            raise Exception(
+                "**Error: Usage exceed 5000 MB/day. Please consider reaching out to us at "
+                "https://discord.gg/tAr4ysPqvR to reset your usage."
+            )
+        if failure == "network":
+            raise OSError("private connection failure")
+        return Frame(["2330"])
+
+    def login(token):
+        if failure == "login":
+            raise RuntimeError("private login failure " + token)
+
+    gateway = FinLabSdkGateway(
+        api_token="offline-token",
+        _sdk=SimpleNamespace(login=login, data=SimpleNamespace(get=get)),
+        on_response_bytes=observed,
+    )
+    runtime._finlab_gateway = lambda: gateway
+    if failure == "r2":
+
+        def persist(*args, **kwargs):
+            raise RuntimeError("offline raw storage unavailable")
+
+        raw.persist = persist
+    with pytest.raises(RuntimeError if failure == "r2" else FinLabOperationalError) as caught:
+        runtime.sync_universes(dataset_keys=["tw_equity_eod"])
+    assert "private" not in str(caught.value) and "offline-token" not in str(caught.value)
+    assert submitted == [] and runtime.bundles == {}
+    assert len(calls) == int(failure not in {"authorization", "login"})
+    if failure.startswith("quota_") or failure == "network":
+        with runtime.state.connection() as db:
+            assert (
+                db.execute(
+                    "SELECT SUM(requests) FROM full_quota WHERE window NOT LIKE '%T%'"
+                ).fetchone()[0]
+                == 1
+            )
+    runtime.http.close()

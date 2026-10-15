@@ -194,6 +194,14 @@ FinLab SDK 的完整歷史 DataFrame 仍計入既有回應大小上限，但以�
 與完整 `orient=columns` JSON 相同的 UTF-8 bytes，避免同時持有整份 JSON 字串與 bytes 副本。
 全域重複欄位／索引仍在 accounting 前拒絕；完整大小只回報一次，之後才選取目標日期與商品。
 此計算不改 provider 配額、下載請求、回應上限或凍結計畫，也不保證 SDK 本身載入 DataFrame 的記憶體足夠。
+FinLab universe refresh 使用獨立的欄位存在性查詢，股票與 ETF 分別處理；官方名單中的缺欄商品
+保留為 mapping gap，不因單一 ETF 缺欄而清除股票目錄的有效 mapping。目錄證據只表示
+provider 欄位存在，沒有交易日期或價格成功語意；每日 OHLCV 仍要求指定日期、全部凍結成員
+及完整欄位。每個成功的 provider catalogue 先保存 R2，再將 credential-free HTTPS 身分與
+detached bytes checksum 加入 release evidence。SDK 資料錯誤只影響該 feed；授權、配額、
+回應 accounting 或 R2 失敗中止 refresh，不發布假缺漏。TW 目錄的 effective date 使用台北日期，
+universe request 的未來日期檢查亦依 source timezone 判定。
+
 Gateway 對 FinLab 1.5.7 原生 FileStorage 設定 `use_cache=False`，只釋放記憶體中的
 DataFrame references，保留既有磁碟檔案與到期 metadata；不呼叫會刪檔的 `clear()`。
 SDK scope 內同時處理呼叫前後的實際 storage 與 package re-export，避免切換 storage 後
