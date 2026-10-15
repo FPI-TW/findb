@@ -73,6 +73,8 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dat
 Overview、freshness、plans、alerts 的請求與 query cache key 都包含 profile；切換時只掛載選中模式，
 不以另一 profile 的上一筆資料作為 placeholder。新 runtime／Dashboard 一律明確傳入 profile；
 舊版未指定 profile 的 plan API 保留 Full market 語意。
+概況卡片的啟用範圍與心跳提示同樣標示所選 Pilot／Full market。尚未納入抓取範圍的 feed
+若有 blocker，顯示實際原因；沒有 blocker 則顯示「尚未啟用」，不視為日曆缺漏或資料缺漏。
 
 ### 有效日曆與依設定略過
 

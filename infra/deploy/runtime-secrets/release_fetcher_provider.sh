@@ -327,8 +327,10 @@ if runtime_exists "$previous"; then
   fi
 fi
 
-docker image prune -af
-docker pull "$image"
+# Keep routine Docker output below SSM's bounded stdout so the coordinator's
+# terminal marker remains visible. Failures still retain stderr and exit status.
+docker image prune -af >/dev/null
+docker pull "$image" >/dev/null
 cache_mount=()
 if [ "$cache_dir" != "-" ]; then
   cache_mount=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
