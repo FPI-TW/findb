@@ -112,8 +112,10 @@ Twelve Data universe refresh 只抓取 Source 當次授權的美國／香港 cou
 不下載全球 `/stocks` 目錄。每個市場各自經過 dataset-bound fresh authorization 與 account governor；
 回應大小上限維持不變，Raw 與 evidence URL 按市場分開，API key 不寫入 evidence URL。
 
-Source 的 `/api/v1/source/universes` 使用 16 MiB nginx request body 上限，容納完整市場
-成員；其餘 Source 端點維持 1 MiB。Universe 端點繼承相同 IP allowlist、proxy 與 Backend
+Source 的 `POST /api/v1/source/universes` 使用 16 MiB nginx 與 Backend Content-Length 上限，
+容納完整市場成員；其餘 Source 端點維持 1 MiB nginx 上限及原有
+`SOURCE_MAX_PAYLOAD_BYTES` Backend 限制（預設 1,000,000 bytes）。nginx 同時限制 chunked
+body 的實際大小。Universe 端點使用相同 IP allowlist、proxy 與 Backend
 Source 認證，仍驗證 dataset scope、最多 30,000 個成員與 evidence；上限不是略過驗證的權限。
 中途停機、撤銷某市場權限或任一回應失敗時，不提交部分 catalogue evidence。
 

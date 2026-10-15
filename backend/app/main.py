@@ -18,6 +18,7 @@ from app.services.credential_usage import flush_usage, periodic_flush, record_us
 
 settings = get_settings()
 APP_ROLE = settings.APP_ROLE.lower().strip()
+SOURCE_UNIVERSE_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 
 OPENAPI_TAGS = [
     {"name": "Serve API", "description": "唯讀市場資料查詢端點。"},
@@ -79,18 +80,18 @@ async def enforce_source_payload_size(request, call_next):
     """Short-circuit oversized Source API requests before body parsing."""
     source_prefix = f"{settings.API_V1_PREFIX}/source"
     if request.url.path.startswith(source_prefix):
+        limit = (
+            SOURCE_UNIVERSE_MAX_PAYLOAD_BYTES
+            if request.method == "POST" and request.url.path == f"{source_prefix}/universes"
+            else max(1, int(settings.SOURCE_MAX_PAYLOAD_BYTES))
+        )
         content_length = request.headers.get("content-length")
         if content_length:
             try:
-                if int(content_length) > max(1, int(settings.SOURCE_MAX_PAYLOAD_BYTES)):
+                if int(content_length) > limit:
                     return JSONResponse(
                         status_code=413,
-                        content={
-                            "detail": (
-                                "Payload exceeds maximum size of "
-                                f"{settings.SOURCE_MAX_PAYLOAD_BYTES} bytes"
-                            )
-                        },
+                        content={"detail": f"Payload exceeds maximum size of {limit} bytes"},
                     )
             except ValueError:
                 pass
