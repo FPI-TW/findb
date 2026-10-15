@@ -48,6 +48,8 @@ from findb_fetcher.http_response import BoundedResponseError, read_identity_resp
 from findb_fetcher.providers.finlab import (
     FinLabDatasetConfig,
     FinLabDatasetTable,
+    FinLabOperationalError,
+    FinLabSdkError,
     FinLabSdkGateway,
     FinLabSymbol,
     build_finlab_dataset_bundle,
@@ -603,17 +605,16 @@ class FullMarketRuntime:
                     map_catalogue(etfs, catalogue, shioaji=True),
                 )
             else:
-                # Provider column presence is verified independently from official share classification.
-                try:
-                    self._ensure_proof()
-                    gateway = self._finlab_gateway()
-                    for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
-                        if dataset not in dataset_keys:
-                            continue
+                # Catalogue presence is independent of daily OHLCV completeness.
+                catalogue_snapshots: dict[str, dict[str, bytes]] = {}
+                self._ensure_proof()
+                gateway = self._finlab_gateway()
+                for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
+                    if dataset not in dataset_keys:
+                        continue
+                    try:
                         try:
-                            table = gateway.fetch_dataset(
-                                "price:收盤價",
-                                target_date=now.astimezone(ZoneInfo("Asia/Taipei")).date(),
+                            table = gateway.fetch_catalogue(
                                 symbols=tuple(member["provider_symbol"] for member in members),
                             )
                         finally:
@@ -626,35 +627,42 @@ class FullMarketRuntime:
                                     else 0
                                 ),
                             )
-                        detached = self._finlab_table_bytes(table)
-                        self._observed_response(len(detached))
-                        self._persist(
-                            detached,
-                            "tw_equity_eod" if members is equity else "tw_etf_eod",
-                            "provider_catalogue",
-                        )
+                    except FinLabOperationalError:
+                        raise
+                    except FinLabSdkError:
                         for member in members:
-                            if (
-                                member["classification"] != "classification_gap"
-                                and member["provider_symbol"] in table.symbols
-                            ):
-                                member["mapping_status"] = "mapped"
-                except Exception:
-                    for member in equity + etfs:
-                        member["mapping_status"] = "gap"
+                            member["mapping_status"] = "gap"
+                        continue
+                    detached = self._finlab_table_bytes(table)
+                    self._observed_response(len(detached))
+                    url = f"https://www.finlab.tw/data/price-close?dataset={dataset}"
+                    self.snapshot_objects[url] = self._persist(
+                        detached, dataset, "provider_catalogue"
+                    )
+                    catalogue_snapshots[dataset] = {url: detached}
+                    for member in members:
+                        member["mapping_status"] = (
+                            "mapped"
+                            if member["classification"] != "classification_gap"
+                            and member["provider_symbol"] in table.symbols
+                            else "gap"
+                        )
             suffix = "minute" if self.provider == "shioaji" else "eod"
             groups = {
                 f"tw_equity_{suffix}": (
-                    now.date(),
+                    now.astimezone(ZoneInfo("Asia/Taipei")).date(),
                     equity,
                     {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
                 ),
                 f"tw_etf_{suffix}": (
-                    now.date(),
+                    now.astimezone(ZoneInfo("Asia/Taipei")).date(),
                     etfs,
                     {url: snapshots[url] for url in TW_ISIN_URLS},
                 ),
             }
+            if self.provider == "finlab":
+                for dataset, evidence in catalogue_snapshots.items():
+                    groups[dataset][2].update(evidence)
         else:
             self._ensure_proof()
             raw = self._snapshot(TAIFEX_URL, provider_response=True)

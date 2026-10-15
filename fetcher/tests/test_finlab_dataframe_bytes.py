@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from findb_fetcher.providers.finlab import (
+    FinLabOperationalError,
     FinLabSdkError,
     FinLabSdkGateway,
     _dataframe_response_bytes,
@@ -110,4 +111,38 @@ def test_invalid_serialization_cannot_be_accounted_as_valid():
             "price:收盤價", target_date=DAY, symbols=("0",)
         )
     assert observed == []
+    assert "credential-must-not-leak" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_catalogue_accounts_full_frame_and_preserves_operational_failure():
+    frame = Frame(["2330", "0050"])
+    observed = []
+    table = gateway(frame, observed.append).fetch_catalogue(symbols=("0050", "00415A"))
+    assert table.symbols == ("0050",) and table.dates == table.values == ()
+    assert observed == [len(frame.fragment(frame.columns).encode())]
+
+    def reject(size):
+        raise RuntimeError("credential-must-not-leak")
+
+    with pytest.raises(FinLabOperationalError) as raised:
+        gateway(frame, reject).fetch_catalogue(symbols=("0050",))
+    assert "credential-must-not-leak" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_catalogue_source_denial_is_operational_before_sdk_get(tmp_path):
+    from findb_fetcher.acquisition import authorization_scope
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    calls = []
+    sdk = SimpleNamespace(
+        login=lambda _: None, data=SimpleNamespace(get=lambda _: calls.append("get"))
+    )
+
+    def deny():
+        raise QuotaBlockedError("credential-must-not-leak")
+
+    with authorization_scope(deny, state_path=tmp_path / "account.sqlite3"):
+        with pytest.raises(FinLabOperationalError) as raised:
+            FinLabSdkGateway(api_token="offline-token", _sdk=sdk).fetch_catalogue(symbols=("0050",))
+    assert calls == []
     assert "credential-must-not-leak" not in "".join(traceback.format_exception(raised.value))

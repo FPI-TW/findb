@@ -13,6 +13,7 @@ from datetime import date, datetime
 from html.parser import HTMLParser
 from typing import Any
 from xml.etree import ElementTree as ET
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 NASDAQ_URLS = (
     "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
@@ -380,7 +381,16 @@ def universe_request(
     snapshots: Mapping[str, bytes],
     members: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if observed_at.tzinfo is None or effective_date > observed_at.date() or not members:
+    try:
+        zone = ZoneInfo(source_timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise UniverseSnapshotError("universe timezone is invalid") from exc
+    if (
+        observed_at.tzinfo is None
+        or observed_at.utcoffset() is None
+        or effective_date > observed_at.astimezone(zone).date()
+        or not members
+    ):
         raise UniverseSnapshotError("universe date, clock or members are invalid")
     ordered = sorted(
         members, key=lambda member: (member["symbol"], member.get("contract_code", ""))

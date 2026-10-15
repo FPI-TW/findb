@@ -54,6 +54,10 @@ class FinLabSdkError(FinLabError):
     """The optional FinLab SDK is unavailable or returned an unsafe table."""
 
 
+class FinLabOperationalError(FinLabSdkError):
+    """Acquisition or accounting failed; never classify this as a mapping gap."""
+
+
 class FinLabTargetNotReadyError(FinLabSdkError, FinLabPayloadError):
     """The provider has not published the requested target trading date yet."""
 
@@ -121,10 +125,19 @@ class FinLabSdkGateway:
         target_date: date,
         symbols: Sequence[str],
     ) -> FinLabDatasetTable:
-        if not isinstance(dataset, str) or not dataset.strip():
-            raise FinLabConfigError("FinLab dataset name must be a non-empty string")
         if not isinstance(target_date, date) or isinstance(target_date, datetime):
             raise FinLabConfigError("FinLab target_date must be a date")
+        return self._fetch(dataset, target_date=target_date, symbols=symbols)
+
+    def fetch_catalogue(self, *, symbols: Sequence[str]) -> FinLabDatasetTable:
+        """Observe column presence, without claiming any trading-date data exists."""
+        return self._fetch("price:收盤價", target_date=None, symbols=symbols)
+
+    def _fetch(
+        self, dataset: str, *, target_date: date | None, symbols: Sequence[str]
+    ) -> FinLabDatasetTable:
+        if not isinstance(dataset, str) or not dataset.strip():
+            raise FinLabConfigError("FinLab dataset name must be a non-empty string")
         reviewed_symbols = tuple(symbols)
         if (
             not reviewed_symbols
@@ -140,7 +153,7 @@ class FinLabSdkGateway:
             try:
                 sdk = importlib.import_module("finlab")
             except ImportError as exc:
-                raise FinLabSdkError("FinLab SDK is not installed") from exc
+                raise FinLabOperationalError("FinLab SDK is not installed") from exc
         login = getattr(sdk, "login", None)
         data = getattr(sdk, "data", None)
         if data is None:
@@ -150,7 +163,9 @@ class FinLabSdkGateway:
                 data = None
         get = getattr(data, "get", None)
         if not callable(login) or not callable(get):
-            raise FinLabSdkError("FinLab SDK does not expose the required headless data API")
+            raise FinLabOperationalError(
+                "FinLab SDK does not expose the required headless data API"
+            )
         from findb_fetcher.account_governor import provider_permit
         from findb_fetcher.acquisition import Acquisition
 
@@ -160,24 +175,35 @@ class FinLabSdkGateway:
                 storages = _file_storages(data, get)
                 _disable_frame_cache(storages)
                 try:
-                    try:
-                        # Keep acquisition/finalization at the actual SDK boundary.
-                        with Acquisition(
-                            "finlab", credential=self._identity_credential
-                        ) as operation:
+                    # Operational failures must not become catalogue mapping gaps.
+                    with Acquisition("finlab", credential=self._identity_credential) as operation:
+                        try:
                             login(self.api_token)
-                            operation.start()
+                        except Exception:
+                            raise FinLabOperationalError("FinLab SDK login failed") from None
+                        operation.start()
+                        try:
                             frame = get(dataset.strip())
-                    except Exception:
-                        raise FinLabSdkError("FinLab SDK dataset retrieval failed") from None
-                    try:
-                        if permit or self.on_response_bytes is not None:
-                            # Account for the complete frame before scope projection.
+                        except Exception:
+                            raise FinLabOperationalError(
+                                "FinLab SDK dataset retrieval failed"
+                            ) from None
+                    if permit or self.on_response_bytes is not None:
+                        try:
                             observed = _dataframe_response_bytes(frame)
                             if permit:
                                 permit.observe(observed)
                             if self.on_response_bytes is not None:
                                 self.on_response_bytes(observed)
+                        except Exception:
+                            raise FinLabOperationalError(
+                                "FinLab response accounting failed"
+                            ) from None
+                    try:
+                        if target_date is None:
+                            return _catalogue_from_dataframe(
+                                frame, reviewed_symbols=reviewed_symbols
+                            )
                         return _table_from_dataframe(
                             frame, target_date=target_date, reviewed_symbols=reviewed_symbols
                         )
@@ -195,7 +221,7 @@ class FinLabSdkGateway:
             raise
         except Exception:
             # Never expose provider/credential context, including scope failures.
-            raise FinLabSdkError("FinLab SDK dataset retrieval failed") from None
+            raise FinLabOperationalError("FinLab acquisition failed") from None
 
 
 def _file_storages(data: object, get: object) -> tuple[Any, ...]:
@@ -490,17 +516,10 @@ def _dataframe_response_bytes(frame: Any) -> int:
     return size
 
 
-def _table_from_dataframe(
-    frame: object,
-    *,
-    target_date: date,
-    reviewed_symbols: tuple[str, ...],
-) -> FinLabDatasetTable:
-    """Narrow a pandas-like FinLab frame to exactly one validated date row."""
+def _frame_axes(frame: object) -> tuple[tuple[object, ...], tuple[date, ...], tuple[str, ...]]:
     index = getattr(frame, "index", None)
     columns = getattr(frame, "columns", None)
-    loc = getattr(frame, "loc", None)
-    if index is None or columns is None or loc is None:
+    if index is None or columns is None:
         raise FinLabSdkError("FinLab dataset result is not a DataFrame")
     try:
         index_values = tuple(index)
@@ -514,6 +533,30 @@ def _table_from_dataframe(
         raise FinLabSdkError("FinLab dataset has non-string symbol columns")
     if len(set(column_values)) != len(column_values):
         raise FinLabSdkError("FinLab dataset has duplicate symbol columns")
+    return index_values, dates, column_values
+
+
+def _catalogue_from_dataframe(
+    frame: object, *, reviewed_symbols: tuple[str, ...]
+) -> FinLabDatasetTable:
+    _, _, columns = _frame_axes(frame)
+    present = set(columns)
+    return FinLabDatasetTable(
+        (), tuple(symbol for symbol in reviewed_symbols if symbol in present), ()
+    )
+
+
+def _table_from_dataframe(
+    frame: object,
+    *,
+    target_date: date,
+    reviewed_symbols: tuple[str, ...],
+) -> FinLabDatasetTable:
+    """Narrow a pandas-like FinLab frame to exactly one validated date row."""
+    index_values, dates, column_values = _frame_axes(frame)
+    loc = getattr(frame, "loc", None)
+    if loc is None:
+        raise FinLabSdkError("FinLab dataset result is not a DataFrame")
     missing_symbols = set(reviewed_symbols).difference(column_values)
     if missing_symbols:
         raise FinLabSdkError("FinLab dataset is missing reviewed symbols")

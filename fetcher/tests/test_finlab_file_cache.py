@@ -55,7 +55,8 @@ def getter(namespace):
     return namespace["get"]
 
 
-def test_repeated_five_field_calls_release_frames_without_changing_metadata():
+@pytest.mark.parametrize("catalogue", [False, True])
+def test_repeated_five_field_calls_release_frames_without_changing_metadata(catalogue):
     storage = FileStorage()
     retained = Frame()
     references = [weakref.ref(retained)]
@@ -80,7 +81,12 @@ def test_repeated_five_field_calls_release_frames_without_changing_metadata():
     )
     for _ in range(3):
         for field in ("open", "high", "low", "close", "volume"):
-            assert invoke(gateway(data), field).values == ((123,),)
+            if catalogue:
+                assert gateway(data).fetch_catalogue(symbols=("2330", "00415A")).symbols == (
+                    "2330",
+                )
+            else:
+                assert invoke(gateway(data), field).values == ((123,),)
             gc.collect()
             assert all(reference() is None for reference in references)
     assert len(calls) == 15

@@ -430,7 +430,7 @@ def test_manifest_stopped_seven_feeds_no_staging_changes() -> None:
 
 
 def test_universe_version_evidence_checksum_stable_members() -> None:
-    now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
     request = universe_request(
         dataset_key="us_equity_eod",
         provider="twelve_data",
@@ -1270,3 +1270,33 @@ def test_legacy_checkpoint_cannot_be_relabelled_pilot(tmp_path):
             db.execute("SELECT requests,bytes,blocked_until FROM full_quota").fetchone()
         ) == (12, 345, 678)
         assert db.execute("SELECT trade_date FROM full_cursor").fetchone()[0] == "2026-10-01"
+
+
+@pytest.mark.parametrize(
+    "zone,observed,effective,valid",
+    [
+        ("Asia/Taipei", "2026-10-14T17:00:00+00:00", "2026-10-15", True),
+        ("America/New_York", "2026-10-15T01:00:00+00:00", "2026-10-15", False),
+        ("America/New_York", "2026-10-15T01:00:00+00:00", "2026-10-14", True),
+        ("Asia/Taipei", "2026-10-14T17:00:00+00:00", "2026-10-16", False),
+        ("Asia/Taipei", "2026-10-15T01:00:00", "2026-10-15", False),
+        ("Unknown/Timezone", "2026-10-15T01:00:00+00:00", "2026-10-15", False),
+    ],
+)
+def test_universe_date_uses_exchange_local_observation(zone, observed, effective, valid):
+    def request():
+        return universe_request(
+            dataset_key="tw_equity_eod",
+            provider="finlab",
+            effective_date=date.fromisoformat(effective),
+            observed_at=datetime.fromisoformat(observed),
+            source_timezone=zone,
+            snapshots={"https://official.example/list": b"abc"},
+            members=[{"symbol": "2330"}],
+        )
+
+    if valid:
+        assert request()["effective_date"] == effective
+    else:
+        with pytest.raises(ValueError):
+            request()
