@@ -15,7 +15,7 @@ from datetime import time as clock_time
 from functools import wraps
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -67,6 +67,8 @@ from findb_fetcher.providers.twelve_data import (
     build_market_eod_request as td_request,
 )
 from findb_fetcher.raw_storage import RawObject, RawPayloadStore, attach_raw_object
+
+_TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "Hong Kong"}
 
 
 class ReadinessBlockedError(RuntimeError):
@@ -190,7 +192,13 @@ def _governed(method):
                 + consumer
                 + "&execution_profile="
                 + self.execution_profile,
-                required_dataset=plan["dataset_key"] if plan else None,
+                required_dataset=(
+                    kwargs.get("dataset_key") or args[0]
+                    if method.__name__ == "_catalogue_market"
+                    else plan["dataset_key"]
+                    if plan
+                    else None
+                ),
             )
 
         with authorization_scope(authorize, state_path=self.state.path):
@@ -419,7 +427,7 @@ class FullMarketRuntime:
         return FinLabSdkGateway.from_env(on_response_bytes=self._observed_response)
 
     @_governed
-    def _catalogue(self) -> list[dict[str, Any]]:
+    def _catalogue(self, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
         self._ensure_proof()
         if self.provider == "shioaji":
             catalogue = self._shioaji_request("catalogue")
@@ -431,8 +439,39 @@ class FullMarketRuntime:
             return catalogue
         if self.provider == "finlab":
             return []
+        installed = {feed["dataset_key"] for feed in self.installed_feeds}
+        selected = installed if dataset_keys is None else set(dataset_keys)
+        if (
+            not selected
+            or not selected <= installed
+            or not selected <= _TD_CATALOGUE_COUNTRIES.keys()
+        ):
+            raise ReadinessBlockedError("provider catalogue dataset scope invalid")
+        combined: list[dict[str, Any]] = []
+        evidence: dict[str, bytes] = {}
+        for dataset in _TD_CATALOGUE_COUNTRIES:
+            if dataset not in selected:
+                continue
+            rows, url, raw = self._catalogue_market(dataset)
+            combined.extend(rows)
+            evidence[url] = raw
+        self.catalogue_evidence = evidence
+        return combined
+
+    def _catalogue_evidence_for(self, dataset_key: str) -> dict[str, bytes]:
+        country = _TD_CATALOGUE_COUNTRIES[dataset_key]
+        return {
+            url: raw
+            for url, raw in self.catalogue_evidence.items()
+            if dict(parse_qsl(urlsplit(url).query)).get("country") == country
+        }
+
+    @_governed
+    def _catalogue_market(self, dataset_key: str) -> tuple[list[dict[str, Any]], str, bytes]:
         config = TwelveDataConfig.from_env()
-        # Catalogue and daily acquisition use the exact same durable account ledger.
+        country = _TD_CATALOGUE_COUNTRIES[dataset_key]
+        evidence_url = config.base_url + "/stocks?" + urlencode({"country": country})
+        # Each country request uses a fresh dataset-bound authorization and account permit.
         with (
             http_acquisition(self.provider, self.http, url=config.base_url + "/stocks") as (
                 operation,
@@ -441,7 +480,7 @@ class FullMarketRuntime:
             self.http.stream(
                 "GET",
                 config.base_url + "/stocks",
-                params={"apikey": config.api_key},
+                params={"apikey": config.api_key, "country": country},
                 headers={"Accept-Encoding": "identity"},
                 extensions=extensions,
             ) as response,
@@ -468,9 +507,8 @@ class FullMarketRuntime:
             if not isinstance(value, dict) or not isinstance(value.get("data"), list):
                 raise ReadinessBlockedError("provider catalogue shape invalid")
             catalogue_raw = bytes(raw)
-            self._persist(catalogue_raw, "us_equity_eod", "provider_catalogue")
-            self.catalogue_evidence = {config.base_url + "/stocks": catalogue_raw}
-            return value["data"]
+            self._persist(catalogue_raw, dataset_key, "provider_catalogue")
+            return value["data"], evidence_url, catalogue_raw
 
     @_governed
     def sync_universes(self, *, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
@@ -499,7 +537,7 @@ class FullMarketRuntime:
         snapshots: dict[str, bytes] = {}
         if self.provider == "twelve_data":
             groups = {}
-            catalogue = self._catalogue()
+            catalogue = self._catalogue(dataset_keys=[feed["dataset_key"] for feed in feeds])
             if "us_equity_eod" in dataset_keys:
                 snapshots.update({url: self._snapshot(url) for url in NASDAQ_URLS})
                 us = parse_nasdaq(snapshots[NASDAQ_URLS[0]]) + parse_nasdaq(
@@ -519,7 +557,10 @@ class FullMarketRuntime:
                 groups["us_equity_eod"] = (
                     next(iter(us_dates)),
                     map_catalogue(us, catalogue),
-                    {**{url: snapshots[url] for url in NASDAQ_URLS}, **self.catalogue_evidence},
+                    {
+                        **{url: snapshots[url] for url in NASDAQ_URLS},
+                        **self._catalogue_evidence_for("us_equity_eod"),
+                    },
                 )
             if "hk_equity_eod" in dataset_keys:
                 snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
@@ -530,7 +571,10 @@ class FullMarketRuntime:
                 groups["hk_equity_eod"] = (
                     hk_date,
                     map_catalogue(hk, catalogue),
-                    {HKEX_URL: snapshots[HKEX_URL], **self.catalogue_evidence},
+                    {
+                        HKEX_URL: snapshots[HKEX_URL],
+                        **self._catalogue_evidence_for("hk_equity_eod"),
+                    },
                 )
         elif self.provider in {"finlab", "shioaji"}:
             snapshots = {url: self._snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}

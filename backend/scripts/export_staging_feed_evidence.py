@@ -445,4 +445,4 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit("Legacy five-feed CLI retired; use export_native_feed_evidence.py")
