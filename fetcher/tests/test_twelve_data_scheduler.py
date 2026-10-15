@@ -419,7 +419,7 @@ def test_executor_delivers_only_rows_after_checkpoint(contracts_dir: Path) -> No
             "AAPL",
             {
                 "start_date": date(2024, 1, 4),
-                "end_date": date(2024, 1, 6),
+                "end_date": date(2024, 1, 5),
                 "exchange": "NASDAQ",
             },
         )
@@ -437,7 +437,7 @@ def test_executor_delivers_only_rows_after_checkpoint(contracts_dir: Path) -> No
         (date(2024, 1, 3), date(2024, 1, 4), ["2024-01-04", "2024-01-05"]),
     ],
 )
-def test_v2_scheduler_uses_exclusive_provider_end_date_and_filters_future_rows(
+def test_v2_scheduler_uses_inclusive_client_end_date_and_filters_future_rows(
     contracts_dir: Path,
     checkpoint: date | None,
     expected_start: date,
@@ -469,7 +469,7 @@ def test_v2_scheduler_uses_exclusive_provider_end_date_and_filters_future_rows(
             "AAPL",
             {
                 "start_date": expected_start,
-                "end_date": date(2024, 1, 6),
+                "end_date": date(2024, 1, 5),
                 "exchange": "NASDAQ",
             },
         )
@@ -512,7 +512,7 @@ def test_executor_bootstrap_is_bounded_and_large_checkpoint_gap_is_rejected(
             "AAPL",
             {
                 "start_date": date(2024, 1, 5),
-                "end_date": date(2024, 1, 6),
+                "end_date": date(2024, 1, 5),
                 "exchange": "NASDAQ",
             },
         )

@@ -201,3 +201,12 @@ AWS 設定、首次切換備份／drain、immutable acceptance 與 rollback 下�
 [Full market runbook](../docs/operations/full_market.md)。
 兩環境使用相同部署健康 gate，native provider 抓取不是日常部署 gate。
 七條 feeds 的 fixtures 驗證與真實 provider／R2 驗收分開記錄，尚未解決的 native 問題保留 backlog。
+
+### Twelve Data 日期邊界
+
+`TwelveDataClient.fetch_daily` 的 `start_date`／`end_date` 都是包含當日的交易所本地日期。
+Client 統一將上界編碼成隔日午夜；scheduler、人工回補與共用 Pilot／Full market runtime
+不得另加一天。無法表示隔日的 `date.max` 在發出請求前拒絕。
+CLI、universe 與 scheduler/runtime 的 canonical mapping 只納入要求的日期範圍；
+Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不改寫原始證據。
+空回應或範圍內無資料仍按既有錯誤／重試規則處理，不直接標示成功或 no_data。

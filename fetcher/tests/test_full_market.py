@@ -1300,3 +1300,43 @@ def test_universe_date_uses_exchange_local_observation(zone, observed, effective
     else:
         with pytest.raises(ValueError):
             request()
+
+
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+def test_native_twelve_daily_uses_inclusive_wire_window_and_bounds_delivery(
+    tmp_path: Path, profile: str
+) -> None:
+    from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
+
+    runtime, _, raw = _runtime(tmp_path, execution_profile=profile)
+    plan = _plan()
+    payload = json.loads(
+        (
+            Path(__file__).parent / "fixtures/twelve_data/aapl_1day_2024-01-02_2024-01-05.json"
+        ).read_text()
+    )
+    payload["values"] = [
+        dict(payload["values"][0], datetime=day)
+        for day in ("2026-09-30", "2026-10-01", "2026-10-02")
+    ]
+    native = canonical_bytes(payload)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.params["start_date"] == "2026-10-01"
+        assert request.url.params["end_date"] == "2026-10-02"
+        return httpx.Response(200, content=native)
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+            runtime.td = TwelveDataClient(TwelveDataConfig(api_key="test-key"), client=http)
+            requests = runtime._acquire(
+                _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
+            )
+        assert len(calls) == 1
+        assert raw.calls == [native]
+        assert [row["trade_date"] for row in requests[0]["payload"]["data"]] == ["2026-10-01"]
+        assert plan == _plan()
+    finally:
+        runtime.http.close()

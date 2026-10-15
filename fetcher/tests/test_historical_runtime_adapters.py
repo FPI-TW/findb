@@ -10,6 +10,7 @@ from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
 import findb_fetcher.historical_runtime as runtime
@@ -20,7 +21,10 @@ from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.historical_backfill import HistoricalWorkItem
 from findb_fetcher.providers.finlab import FinLabDatasetTable
-from findb_fetcher.providers.twelve_data import TwelveDataResponse
+from findb_fetcher.providers.twelve_data import (
+    TwelveDataClient,
+    TwelveDataConfig,
+)
 from findb_fetcher.raw_storage import RawObject
 from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.shioaji_scheduler import EXPECTED as SHIOAJI_EXPECTED
@@ -145,14 +149,18 @@ def test_twelve_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     monkeypatch.setattr(runtime, "_schedule", lambda *_args: schedule)
     monkeypatch.setattr(runtime, "load_symbol_universe", lambda _path: universe)
 
-    class Provider:
-        def fetch_daily(self, symbol: str, **_kwargs: object) -> TwelveDataResponse:
-            events.append("fetch")
-            payload = json.loads(TWELVE_FIXTURE_PATH.read_text())
-            payload["meta"]["symbol"] = symbol
-            return TwelveDataResponse(payload, raw_bytes=json.dumps(payload).encode())
+    def handler(request: httpx.Request) -> httpx.Response:
+        events.append("fetch")
+        assert request.url.params["start_date"] == "2024-01-05"
+        assert request.url.params["end_date"] == "2024-01-06"
+        payload = json.loads(TWELVE_FIXTURE_PATH.read_text())
+        payload["meta"]["symbol"] = request.url.params["symbol"]
+        return httpx.Response(200, json=payload)
 
-    provider = Provider()
+    provider = TwelveDataClient(
+        TwelveDataConfig(api_key="test-key"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
     monkeypatch.setattr(runtime, "TwelveDataClient", lambda *_args: _Context(provider))
     monkeypatch.setattr(runtime.TwelveDataConfig, "from_env", lambda: object())
 
