@@ -23,6 +23,12 @@ from findb_fetcher.full_market_universe import (
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
 
 _PRODUCTS = {"TX", "MTX", "TMF", "TE", "TF"}
+
+
+class TaifexOperationalError(RuntimeError):
+    """Transport, HTTP or response-bound failures must stop acquisition."""
+
+
 _FIELDS = {
     "Date": "交易日期",
     "Contract": "契約",
@@ -196,7 +202,7 @@ def fetch_report(
             if on_observed_bytes is not None:
                 on_observed_bytes(len(raw))
             if response.status_code != 200:
-                raise UniverseSnapshotError("TAIFEX report request failed")
+                raise TaifexOperationalError("TAIFEX report request failed")
             return raw
         except BoundedResponseError as exc:
             if permit:
@@ -208,7 +214,7 @@ def fetch_report(
                     on_declared_bytes(exc.declared_bytes)
                 if on_observed_bytes is not None and exc.observed_bytes:
                     on_observed_bytes(exc.observed_bytes)
-            raise UniverseSnapshotError(f"TAIFEX report {exc}") from exc
+            raise TaifexOperationalError("TAIFEX report response bound failed") from exc
         except httpx.HTTPError as exc:
             observed = getattr(exc, "observed_bytes", 0)
             if permit:

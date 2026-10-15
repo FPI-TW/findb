@@ -139,8 +139,8 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
     )
 
 
-async def _baseline(db, key="tw_futures_eod", count=2):
-    body = _universe(key, count)
+async def _baseline(db, key="tw_futures_eod", count=2, effective_date=DAY):
+    body = _universe(key, count, effective_date=effective_date)
     release = await submit_universe(db, body, allowed_datasets=[key])
     await publish_universe(
         db,
@@ -598,6 +598,10 @@ async def test_source_plan_list_exact_date_retains_scope_and_existing_order(clie
     key = "tw_futures_eod"
     days = [DAY, DAY + timedelta(days=1)]
     _, body, first = await _activated_plan(test_session, count=1, open_dates=days)
+    dated = await submit_universe(
+        test_session, _universe(count=1, effective_date=days[1]), allowed_datasets=[key]
+    )
+    assert dated.status == "published"
     last = await create_plan(
         test_session,
         DeliveryPlanCreateRequest(
@@ -605,7 +609,7 @@ async def test_source_plan_list_exact_date_retains_scope_and_existing_order(clie
             dataset_key=key,
             provider=body.provider,
             trade_date=days[1],
-            release_id=first.release_id,
+            release_id=dated.release_id,
         ),
         allowed_datasets=[key],
     )

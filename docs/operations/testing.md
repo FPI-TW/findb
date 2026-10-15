@@ -166,22 +166,30 @@ FinLab 資料完成後主機仍於 11:35 UTC 發生 global OOM，所有 Pilot �
 資料證據通過不代表 runtime 穩定性、Full market 或 production 通過。
 剩餘 provider 問題見 [原生驗收待辦](../dev/production-foundation-cutover-plan.md)。
 
-同日 PR #304 經完整 `pnpm check`、`pnpm test` 與獨立 High 審查後，
-Fetcher CD `38732467628` 已將 FileStorage 修復 `b6fac56ac435` 部署至 staging。
-部署前 RDS snapshot `findb-staging-native-20261015-1205` 為 available，
-Fetcher 備份為 `/var/backups/findb-unification/staging-20261015T120528Z`。
-部署後唯讀命令 `82bddc22-43f6-4143-a6e7-a73d830f040c` 確認 11 個容器使用 accepted images，
-Pilot／Full market／歷史 SQLite 與帳號 governor 均保留 durable rows、配額及 cooldown；
-`cd505651-8787-4eec-bf75-c6af419cdd43` 確認 Backend 八組資料指紋、首次日期與 controls
+FinLab FileStorage 與各 feed 目錄缺欄隔離修復已經 PR #304／#306 部署；
+目前 staging Fetcher 為 `50cb51faadd9`，Fetcher CD `38769679416` 成功。
+部署前 RDS snapshot `findb-staging-native-20261015-1605` 為 available，
+Fetcher 備份為 `/var/backups/findb-unification/staging-20261015T163004Z`。
+Owner 允許的 historical Shioaji 短暫啟停命令 `135b700c-be9b-42fa-86d7-af58cd092f5c`
+正常退出（exit 0、未 OOM、image 不變），未建立歷史工作。
+部署後 `97771109-be24-44ae-8642-0dea78395605` 確認 11 個容器使用 accepted images，
+並逐一比對備份所列全部 16 份 SQLite 的 durable rows、配額及 cooldown。
+`e2ba2c33-7b4e-4315-b16d-9d162eda0cd5` 確認 Backend 八組資料指紋、首次日期與 controls
 完全一致，所有抓取控制仍為 stopped。
 
-一次普通、受 governor 控制的 FinLab universe refresh 診斷
-`d9bb36a0-68de-4753-99ec-722cd4fe8262` 確認 SDK 實際 storage 為 FileStorage、
-`use_cache=false`、`cached_frames=0`，該診斷程序 peak RSS 為 284,656 KiB（約 278 MiB）。
-股票目錄 1,948 項無缺欄，ETF 361 項仍缺 `00415A`，candidate 未強制發布。
-後續健康命令 `00b8708f-ddbf-4796-80c3-2deb60d31400` 未見部署後新 OOM，11 個容器 restart 均為 0。
-這次診斷沒有新 market delivery，不增加 4／7 的 native 通過數；
-單次程序 RSS 也不代表日常多輪抓取或所有程序同時運作的記憶體上限。Production 未變更。
+三輪普通、受 governor 控制的 FinLab universe refresh 診斷
+`c8f1fedb-fc6c-4ec4-adc8-30f647a4f5ed` 在同一程序執行，三輪均為 exit 0，
+實際 storage 為 FileStorage、`use_cache=false`、`cached_frames=0`。
+RSS 依序為 273,304／284,036／284,036 KiB；peak RSS 為 284,024／284,960／290,900 KiB。
+股票 1,948 項與 ETF 361 項目錄依既有規則發布，第二、三輪重用相同 release；
+這不表示每個商品都有資料。唯讀查詢 `4ee06208-f870-4b14-83cb-91eefac42d6d` 與
+`cfdbf8ee-f1cb-45f3-b722-a992df8669a8` 確認 equity mapped 1,947、gap `8908`，
+ETF mapped 360、gap `00415A`；不再因單一 ETF 缺欄將整批 equity 標成 gap。
+相同查詢也確認三輪診斷未改寫既有 plans、首次日期、歷史工作或 controls。
+健康命令 `70d6fad4-920b-413c-a6a2-ed93bbdfa499` 未見此次部署後新 OOM，
+11 個容器 restart 均為 0。
+這是目錄多輪穩定性證據，沒有新 market delivery，不增加 4／6 的 native 通過數；
+仍需多輪日常抓取及同時運作的記憶體觀測。Production 尚未進行本輪 native 驗收。
 
 `fetcher/tests/test_finlab_file_cache.py` 覆蓋五欄位重複呼叫的 frame 釋放、
 實際 storage 與舊 package alias、storage replacement、各錯誤路徑及 SDK lock。

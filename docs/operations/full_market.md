@@ -145,6 +145,18 @@ regular／after_hours sessions，排除價差與 continuous futures。官方成�
 不能刪除缺口來宣稱完整。Owner 發布與 start audit 是既有操作紀錄，不新增 receipt／enrollment
 等外部啟動核准步驟。
 
+TAIFEX 新的 daily plan 必須使用與 trade date 相同日期的 published universe。
+Source 先處理既有凍結計畫與依日曆政策略過的日期，再檢查目錄日期；需要更新時回傳
+`409` 與固定 `taifex_dated_universe_required` code。Fetcher 此時才取得該日官方報表，
+latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，透過原有 R2、governor
+及 Source publication 流程建立目錄，再建立計畫。不能由過期週契約猜測 no_data。
+日常 cycle 不先執行 TAIFEX latest 目錄更新；明確的 maintenance refresh 仍可使用。
+報表尚未可用或目錄等待發布時，在各 profile checkpoint 保存日期、原因與一小時後的
+重試時間，CLI health 的 `date_prerequisites` 可查詢；其他已凍結日期繼續補抓。
+HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期略過。
+既有計畫、成員與 terminal work 不受新日期限制影響。此變更須先部署 Backend，再部署 Fetcher，
+部署期間維持 controls stopped；SQLite 僅新增 prerequisite table，保留原有 rows 與 quota debt。
+
 七個 feed 的 baseline 對應如下，每個 dataset 都需要自己的 immutable release：
 
 | Provider | Dataset | Calendar market |

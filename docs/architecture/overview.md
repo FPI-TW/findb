@@ -74,7 +74,8 @@ date、classification 與 provider mapping。第一份 baseline 需要 Owner 明
 相對上一份 published release 異動超過 20 個成員或 2% 時保留 candidate，須明確 exception
 approval 才可發布。Mapping gap 仍列為 expected，不能刪除成員來降低分母。
 
-每個 profile／實際開市日建立 frozen daily delivery plan，以 release 固定成員、交易日與 work item。
+每個 profile／已到排程時間的日期建立 frozen daily delivery plan，以 release 固定成員、日期與 work item；
+只有 provider 明確設定跳過非交易日時才記錄 durable skip。TAIFEX 新計畫使用同日期官方報表的 published release。
 完整度恆等式是 `expected = data + no_data + missing + blocked`；data 只計入成功 canonical
 lineage，no_data 只接受停牌／無成交的 durable source evidence。成功部分立即可查，partial
 coverage 不等同全日 complete；mapping、quota、permission 或 source error 均保留 gap。

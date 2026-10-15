@@ -58,9 +58,10 @@ from app.utils import utc_now, uuid7
 
 
 class FullMarketError(ValueError):
-    def __init__(self, message: str, status_code: int = 409):
+    def __init__(self, message: str, status_code: int = 409, *, code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 def _digest(value: object) -> str:
@@ -523,6 +524,11 @@ async def create_plan(
         db.add(decision)
         await db.commit()
         return _skip_response(decision)
+    if body.provider == "taifex" and release.effective_date != body.trade_date:
+        raise FullMarketError(
+            "TAIFEX new plan requires a universe for the exact trade date",
+            code="taifex_dated_universe_required",
+        )
     members = list(
         (
             await db.scalars(

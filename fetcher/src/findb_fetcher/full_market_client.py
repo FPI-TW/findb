@@ -18,9 +18,12 @@ from findb_fetcher.full_market_universe import canonical_bytes
 
 
 class FullMarketProtocolError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, status_code: int | None = None, code: str | None = None
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 class FullMarketSourceClient:
@@ -124,9 +127,20 @@ class FullMarketSourceClient:
                         time.sleep(self._retry_delay(response, attempt))
                         continue
                     if not 200 <= response.status_code < 300:
+                        code = None
+                        if response.status_code == 409:
+                            try:
+                                error = json.loads(raw)
+                            except (ValueError, UnicodeError):
+                                error = None
+                            if isinstance(error, dict) and error.get("detail") == {
+                                "code": "taifex_dated_universe_required"
+                            }:
+                                code = "taifex_dated_universe_required"
                         raise FullMarketProtocolError(
                             f"Source governance returned HTTP {response.status_code}",
                             status_code=response.status_code,
+                            code=code,
                         )
                     result = json.loads(raw)
                     if not isinstance(result, dict):
