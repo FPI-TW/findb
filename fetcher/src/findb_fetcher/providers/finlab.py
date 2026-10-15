@@ -157,33 +157,67 @@ class FinLabSdkGateway:
         permit = provider_permit("finlab")
         try:
             with sdk_credential_scope():
-                # Headless 1.5.7 login only selects the token; it is not an
-                # upstream acquisition. data.get remains the actual boundary.
-                with Acquisition("finlab", credential=self._identity_credential) as operation:
-                    login(self.api_token)
-                    operation.start()
-                    frame = get(dataset.strip())
+                storages = _file_storages(data, get)
+                _disable_frame_cache(storages)
+                try:
+                    try:
+                        # Keep acquisition/finalization at the actual SDK boundary.
+                        with Acquisition(
+                            "finlab", credential=self._identity_credential
+                        ) as operation:
+                            login(self.api_token)
+                            operation.start()
+                            frame = get(dataset.strip())
+                    except Exception:
+                        raise FinLabSdkError("FinLab SDK dataset retrieval failed") from None
+                    try:
+                        if permit or self.on_response_bytes is not None:
+                            # Account for the complete frame before scope projection.
+                            observed = _dataframe_response_bytes(frame)
+                            if permit:
+                                permit.observe(observed)
+                            if self.on_response_bytes is not None:
+                                self.on_response_bytes(observed)
+                        return _table_from_dataframe(
+                            frame, target_date=target_date, reviewed_symbols=reviewed_symbols
+                        )
+                    except FinLabSdkError as exc:
+                        raise type(exc)(str(exc)) from None
+                    except Exception:
+                        raise FinLabSdkError(
+                            "FinLab SDK dataset result failed validation"
+                        ) from None
+                finally:
+                    # get() can replace its storage while the package re-export
+                    # still retains the old instance. Release both under the lock.
+                    _disable_frame_cache((*storages, *_file_storages(data, get)))
+        except FinLabSdkError:
+            raise
         except Exception:
-            # Never retain provider exceptions: some SDK errors include request context.
+            # Never expose provider/credential context, including scope failures.
             raise FinLabSdkError("FinLab SDK dataset retrieval failed") from None
-        try:
-            if permit or self.on_response_bytes is not None:
-                # Account for the entire SDK frame before reviewed scope projection.
-                observed = _dataframe_response_bytes(frame)
-                if permit:
-                    permit.observe(observed)
-                if self.on_response_bytes is not None:
-                    self.on_response_bytes(observed)
-            table = _table_from_dataframe(
-                frame, target_date=target_date, reviewed_symbols=reviewed_symbols
-            )
-            return table
-        except FinLabSdkError as exc:
-            # Preserve the safe publication-miss subtype while discarding any
-            # provider traceback or credential-bearing context.
-            raise type(exc)(str(exc)) from None
-        except Exception:
-            raise FinLabSdkError("FinLab SDK dataset result failed validation") from None
+
+
+def _file_storages(data: object, get: object) -> tuple[Any, ...]:
+    """Resolve only the pinned SDK's concrete disk-backed storage instances."""
+    storage_type = getattr(data, "FileStorage", None)
+    if not isinstance(storage_type, type):
+        return ()
+    namespace = getattr(get, "__globals__", {})
+    actual = namespace.get("_storage") if isinstance(namespace, dict) else None
+    candidates = (getattr(data, "_storage", None), actual)
+    return tuple(storage for storage in candidates if type(storage) is storage_type)
+
+
+def _disable_frame_cache(storages: tuple[Any, ...]) -> None:
+    for storage in storages:
+        cache = getattr(storage, "_cache", None)
+        if type(cache) is dict:
+            # Native FileStorage still reads/writes its existing pickle files.
+            # Do not call clear(): it deletes disk data. CacheStorage must retain
+            # its memory-only data to avoid additional upstream downloads.
+            storage.use_cache = False
+            cache.clear()
 
 
 @dataclass(frozen=True, slots=True)

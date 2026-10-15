@@ -145,13 +145,26 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
 
-2026-10-15 staging Pilot 已核對 Shioaji `tw_equity_minute` 與 `tw_etf_minute`：
-每條計畫 `expected=2, data=2, no_data=0, missing=0, blocked=0`，完整 sequenced snapshot、
-Source receipt、normalization、canonical 與 Serve projection 一致，R2 bytes／hash 與 frozen
-checkpoint 亦符合。Backend 唯讀證據命令為 `0841854e-0f86-45dd-9de3-e4e8e2ab0971`，
-Fetcher 為 `af29aac1-217c-421f-8d4e-37932b93adca`；七條 feed assembler 僅判定這兩條通過。
-整體仍為 2／7，不代表 Full market 或 production 通過；剩餘 provider 問題見
-[原生驗收待辦](../dev/production-foundation-cutover-plan.md)。
+2026-10-15 staging Pilot 已核對四條 feeds：FinLab `tw_equity_eod`／`tw_etf_eod`，
+以及 Shioaji `tw_equity_minute`／`tw_etf_minute`。每條計畫均為
+`expected=2, data=2, no_data=0, missing=0, blocked=0`，Source receipt、normalization、
+canonical 與 Serve projection 一致，R2 bytes／hash 與 frozen checkpoint 亦符合；
+minute 同時具完整 sequenced snapshot。
+Backend 最新唯讀證據命令為 `f7b10581-110e-4241-a3ad-6d5559c6cd6e`，
+FinLab Fetcher 為 `aad9978e-a510-4ea7-b702-accfbaecae04`，
+Shioaji Fetcher 為 `af29aac1-217c-421f-8d4e-37932b93adca`。
+七條 feed assembler 判定這四條通過，整體仍為 4／7。
+FinLab 資料完成後主機仍於 11:35 UTC 發生 global OOM，所有 Pilot 已停止；
+資料證據通過不代表 runtime 穩定性、Full market 或 production 通過。
+剩餘 provider 問題見 [原生驗收待辦](../dev/production-foundation-cutover-plan.md)。
+
+`fetcher/tests/test_finlab_file_cache.py` 覆蓋五欄位重複呼叫的 frame 釋放、
+實際 storage 與舊 package alias、storage replacement、各錯誤路徑及 SDK lock。
+驗證 optional FinLab SDK 時，另以固定 1.5.7、封鎖外網的測試檢查真實 FileStorage：
+有效磁碟檔案重複讀取不下載、bytes／expiry／created 不變，以及 CacheStorage 不被清除。
+外部 process 更新 pickle 後，`use_cache=False` 沿用 SDK 原生 `_created` 行為；
+`.recent` 可能使用較舊的 `time_saved`，須驗證 hash 不符仍走原生完整下載 fallback。
+不把所有過期／外部改寫檔案的請求完全相同列為保證，也不以離線測試取代 staging 記憶體觀測。
 
 ## 有效日曆政策回歸
 

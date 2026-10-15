@@ -194,6 +194,12 @@ FinLab SDK 的完整歷史 DataFrame 仍計入既有回應大小上限，但以�
 與完整 `orient=columns` JSON 相同的 UTF-8 bytes，避免同時持有整份 JSON 字串與 bytes 副本。
 全域重複欄位／索引仍在 accounting 前拒絕；完整大小只回報一次，之後才選取目標日期與商品。
 此計算不改 provider 配額、下載請求、回應上限或凍結計畫，也不保證 SDK 本身載入 DataFrame 的記憶體足夠。
+Gateway 對 FinLab 1.5.7 原生 FileStorage 設定 `use_cache=False`，只釋放記憶體中的
+DataFrame references，保留既有磁碟檔案與到期 metadata；不呼叫會刪檔的 `clear()`。
+SDK scope 內同時處理呼叫前後的實際 storage 與 package re-export，避免切換 storage 後
+舊物件仍保留整份歷史資料。純記憶體 CacheStorage 與自訂 storage 不變，避免清除唯一副本而增加下載。
+有效且未變動的檔案仍由磁碟命中；外部更新／過期時遵循 SDK 的 recent merge、hash 檢查及完整下載 fallback，
+所有網路使用仍受原有 acquisition／governor 管理。這項調整不保證單一大型 frame 或 CacheStorage 的記憶體上限。
 Source API 依 DB-backed credential 的實際 rate limit 執行 429，舊 allocation 不另加 Source 預算。
 Full governance client 遇到 429 時依 `Retry-After` 秒數或 HTTP 日期等待；無效值使用既有指數
 backoff，等待受 `FETCHER_MAX_RETRY_AFTER_SECONDS` 限制，嘗試次數受 `FETCHER_MAX_ATTEMPTS` 限制。
@@ -223,7 +229,8 @@ HTTP 在 transport send boundary、FinLab 在 `data.get`、Shioaji 在 child `ap
 Twelve Data HTTP boundary 使用該 client 實際 config credential（保留 raw／normalized pin 合併），
 即使環境變數指向另一個 key，account lock、request debt 與 cooldown 都跟隨實際送出的 key。
 FinLab 1.5.7 的 headless `login(token)` 只選取 process-global token，不算上游 acquisition。
-所有 `FinLabSdkGateway` 以 process-wide SDK lock 保護 login、最後授權、`data.get` 與 finalization；
+所有 `FinLabSdkGateway` 以 process-wide SDK lock 保護 login、最後授權、`data.get`、finalization、
+完整回應計量、目標投影與 FileStorage 記憶體快取清理；Acquisition 仍在 `data.get` 後完成，
 SDK lock 先於 account lock，不同 explicit tokens 在同 process 依序使用，拒絕授權會釋放 lock。
 Account identity 在 login 前建立；SDK 修改的 token environment 在離開 scope 時還原，避免
 installed allocation 的環境身份被改寫，成功、拒絕或 SDK error 都遵守此規則。`from_env`
