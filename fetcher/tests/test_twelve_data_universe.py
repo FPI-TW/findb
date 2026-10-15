@@ -463,3 +463,24 @@ def test_total_record_limit_halts_before_another_delivery(
     ]
     assert execution.records_fetched == 400
     assert execution.credits_used == 2
+
+
+def test_universe_bounds_mapping_even_when_provider_returns_extra_dates(
+    universe, contracts_dir: Path
+) -> None:
+    registry = CapturingRegistry(ContractRegistry(contracts_dir))
+    execution = execute_twelve_data_universe(
+        universe,
+        provider=FakeProvider(),
+        registry=registry,
+        start_date=date(2024, 1, 3),
+        end_date=date(2024, 1, 4),
+        outputsize=None,
+        now=lambda: datetime(2024, 1, 6, 12, tzinfo=timezone.utc),
+    )
+    assert execution.status == "completed"
+    assert execution.records_fetched == 6
+    assert all(
+        [row["trade_date"] for row in request["payload"]["data"]] == ["2024-01-03", "2024-01-04"]
+        for request in registry.requests
+    )

@@ -200,8 +200,15 @@ archive SHA-256 為 `7db30f43f177e1229885a9d8d705701061755e6d22e7b8fe59a665f6282
 RDS snapshot `findb-staging-native-20261015-1702` 為 available。
 Backend CD `38775214962` 成功；`5eae0a88-778c-499f-bc22-3afce819015b` 核對實際安裝版本，
 八組資料指紋、controls、首次日期與既有 plans／歷史工作均未改變。
-Fetcher CD `38775214709` 已成功；本機 AWS session 逾期，部署後 16 份 SQLite 的
-獨立備份比對與最終 controls／健康檢查待恢復登入後完成。CD 成功不代替這些保留驗證。
+Fetcher CD `38775214709` 已成功。台北 2026-10-16 07:02 的命令
+`6e170400-ef45-45aa-b931-9218398752b7` 確認全部 16 份 SQLite integrity 正常，
+既有 durable rows 與備份相同、quota／cooldown 未倒退，11 個容器均使用 accepted digests。
+`8b9ef1b3-36f6-4691-8d16-c698268f63a3` 再次核對 Backend 八組資料指紋與部署前相同，
+所有 controls 均 stopped。`58f2fb93-8e5f-428a-a0f5-ad2149e13116` 確認 Fetcher
+自本次部署後沒有重啟或 OOM，可用記憶體 761 MiB。
+Backend 健康命令 `8789d81c-6a7b-4b26-a969-d44bde78d4f8` 確認 ingest／serve HTTP 200、
+服務健康與 queue check 通過，DLQ／過期 lease／未發布 outbox 均為 0；
+既有 missing deliveries 29 與 retry exhausted 1 仍保留，不因部署驗收通過而結案。
 本次不重設 2026-10-15 的 TAIFEX terminal checkpoints，也不以部署通過代替 native 驗收。
 
 `fetcher/tests/test_finlab_file_cache.py` 覆蓋五欄位重複呼叫的 frame 釋放、
@@ -220,3 +227,21 @@ Fetcher CD `38775214709` 已成功；本機 AWS session 逾期，部署後 16 �
 skipped_calendar 不建立本機抓取工作。Dashboard 驗證來源標示、政策略過與 profile cache 隔離。
 `pnpm check`、`pnpm test` 與兩環境 IaC format／validate／plan 必須通過後才能部署。
 以上架構與 fixture 驗收不代表 provider／R2 native 資料問題已排除。
+
+2026-10-16 US 排程到期後，凍結 Pilot 計畫 `01a141cf-70f7-7ad5-a2f9-ecfa9002bd9e`
+選定 `A`／`AA`，兩者尚未交付。單日查詢診斷
+`cbf0694e-d81d-4317-9470-59a0b2eb9919` 回傳 HTTP 400，最新兩筆診斷
+`f63c484d-c78d-4786-b506-c9f8120f0d35` 則含 10 月 15 日。
+同一商品改以 10 月 15 日至 16 日為 provider 範圍的診斷
+`66fe44c0-b9d5-4b2b-9c52-d88e7eca9d97` 成功且只回傳 10 月 15 日；
+此證據支持修正同日查詢的上界，不代表完整 native 交付通過。
+診斷後 Owner 已停止 Pilot（revision 23），`0963c33a-1323-4cc7-b911-54784e5bd6d0`
+確認 Pilot／Full market／account integrity 正常，active leases、prepared、armed 全為 0；
+US 兩項工作仍 pending，各保留四次嘗試，香港失敗紀錄維持。
+
+本次日期修正部署前，備份命令 `c023be63-db49-45d9-bb9a-f164e8c38382` 已確認
+11 個 Fetcher 容器優雅退出，16 份 SQLite 存入
+`/var/backups/findb-unification/staging-20261015T232242Z`；archive SHA-256 為
+`c2fc293951db5804cbd1c66861fd0b96caf8a83ebc5bbdef589eec1052e20e90`。
+Backend 部署前唯讀基準 `2d4d896c-aceb-47f7-81f7-d5c36526d6dc` 保存八組資料指紋，
+包含新增 US 計畫，所有 controls 仍 stopped。

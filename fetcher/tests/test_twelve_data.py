@@ -123,7 +123,7 @@ def test_client_requests_bounded_daily_json_without_leaking_key() -> None:
     assert captured_request.url.params["format"] == "JSON"
     assert captured_request.url.params["adjust"] == "splits"
     assert captured_request.url.params["start_date"] == "2024-01-02"
-    assert captured_request.url.params["end_date"] == "2024-01-06"
+    assert captured_request.url.params["end_date"] == "2024-01-07"
     assert captured_request.url.params["exchange"] == "NASDAQ"
     assert captured_request.url.params["apikey"] == "provider-secret"
     assert captured_request.headers["accept-encoding"] == "identity"
@@ -470,3 +470,70 @@ def test_fixture_contains_no_credentials() -> None:
 
     assert "apikey" not in fixture
     assert "api_key" not in fixture
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "wire_end"),
+    [
+        (date(2024, 1, 5), date(2024, 1, 5), "2024-01-06"),
+        (date(2024, 1, 2), date(2024, 1, 5), "2024-01-06"),
+        (date(2024, 2, 29), date(2024, 2, 29), "2024-03-01"),
+        (date(2024, 12, 31), date(2024, 12, 31), "2025-01-01"),
+        (None, date(2024, 1, 5), "2024-01-06"),
+        (None, None, None),
+    ],
+)
+def test_client_inclusive_dates_reach_provider_as_next_midnight(
+    start: date | None, end: date | None, wire_end: str | None
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.params.get("start_date") == (start.isoformat() if start else None)
+        assert request.url.params.get("end_date") == wire_end
+        assert request.url.params.get("outputsize") == ("2" if start is None else None)
+        return httpx.Response(200, content=FIXTURE_PATH.read_bytes())
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        provider = TwelveDataClient(TwelveDataConfig(api_key="test-key"), client=http)
+        response = provider.fetch_daily(
+            "AAPL", start_date=start, end_date=end, outputsize=2 if start is None else None
+        )
+    assert len(requests) == 1
+    assert response.raw_bytes == FIXTURE_PATH.read_bytes()
+
+
+def test_client_rejects_unrepresentable_end_before_acquisition() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        pytest.fail("invalid upper bound must not consume provider quota")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        provider = TwelveDataClient(TwelveDataConfig(api_key="test-key"), client=http)
+        with pytest.raises(ValueError, match="following midnight"):
+            provider.fetch_daily("AAPL", end_date=date.max)
+
+
+def test_mapping_contains_inclusive_window_without_changing_raw(
+    twelve_data_response: dict[str, Any],
+) -> None:
+    original = deepcopy(twelve_data_response)
+    request = build_market_eod_request(
+        twelve_data_response,
+        dataset_key="us_equity_eod",
+        fetched_at=FETCHED_AT,
+        requested_symbol="AAPL",
+        from_trade_date=date(2024, 1, 3),
+        through_trade_date=date(2024, 1, 4),
+    )
+    assert [row["trade_date"] for row in request["payload"]["data"]] == ["2024-01-03", "2024-01-04"]
+    assert twelve_data_response == original
+    with pytest.raises(TwelveDataNoNewDataError):
+        build_market_eod_request(
+            twelve_data_response,
+            dataset_key="us_equity_eod",
+            fetched_at=FETCHED_AT,
+            requested_symbol="AAPL",
+            from_trade_date=date(2024, 1, 6),
+            through_trade_date=date(2024, 1, 6),
+        )

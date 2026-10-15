@@ -145,9 +145,11 @@ def test_deliver_reports_attempt_and_run_identity(
     assert _FakeSourceClient.delivered_deadline is None
 
 
+@pytest.mark.parametrize("bounded", [False, True])
 def test_single_symbol_delivery_persists_raw_before_contract_validation(
     monkeypatch: pytest.MonkeyPatch,
     contracts_dir: Path,
+    bounded: bool,
 ) -> None:
     payload = json.loads(
         (
@@ -200,12 +202,15 @@ def test_single_symbol_delivery_persists_raw_before_contract_validation(
             "--contracts-dir",
             str(contracts_dir),
             "--deliver",
+            *(["--start-date", "2024-01-03", "--end-date", "2024-01-04"] if bounded else []),
         ]
     )
 
     request, _registry = twelve_data_cli._fetch_and_validate(args)
 
     assert events == ["fetch", "upload", "validate"]
+    if bounded:
+        assert [r["trade_date"] for r in request["payload"]["data"]] == ["2024-01-03", "2024-01-04"]
     assert request["payload"]["batch"]["source_raw_ref"].startswith("r2://")
 
 

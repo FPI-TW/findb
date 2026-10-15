@@ -9,7 +9,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from typing import Any
@@ -161,6 +161,13 @@ class TwelveDataClient:
         max_response_bytes: int | None = None,
         on_http_rate_limited: Callable[[], None] | None = None,
     ) -> TwelveDataResponse:
+        """Fetch daily rows using inclusive exchange-local date bounds.
+
+        The provider upper bound is the following midnight; callers must map
+        only their requested dates while retaining the exact raw response.
+        """
+        if end_date == date.max:
+            raise ValueError("end_date must allow a following midnight")
         bound = self._config.max_response_bytes
         if max_response_bytes is not None:
             if type(max_response_bytes) is not int or max_response_bytes < 1:
@@ -187,7 +194,7 @@ class TwelveDataClient:
         if start_date is not None:
             params["start_date"] = start_date.isoformat()
         if end_date is not None:
-            params["end_date"] = end_date.isoformat()
+            params["end_date"] = (end_date + timedelta(days=1)).isoformat()
         if outputsize is not None:
             params["outputsize"] = outputsize
         if exchange is not None:
@@ -311,6 +318,7 @@ def build_market_eod_request(
     requested_exchange: str | None = None,
     canonical_symbol: str | None = None,
     allowed_instrument_types: Sequence[str] = tuple(_DEFAULT_ALLOWED_TYPES),
+    from_trade_date: date | None = None,
     after_trade_date: date | None = None,
     through_trade_date: date | None = None,
     delivery: Mapping[str, Any] | None = None,
@@ -405,11 +413,13 @@ def build_market_eod_request(
         dated_rows.append((trade_date, row))
 
     dated_rows.sort(key=lambda item: item[0])
+    if from_trade_date is not None:
+        dated_rows = [item for item in dated_rows if item[0] >= from_trade_date]
     if after_trade_date is not None:
         dated_rows = [item for item in dated_rows if item[0] > after_trade_date]
     if through_trade_date is not None:
         dated_rows = [item for item in dated_rows if item[0] <= through_trade_date]
-    if after_trade_date is not None or through_trade_date is not None:
+    if any(bound is not None for bound in (from_trade_date, after_trade_date, through_trade_date)):
         if not dated_rows:
             raise TwelveDataNoNewDataError(
                 "Twelve Data response has no rows in the requested checkpoint window"

@@ -179,6 +179,8 @@ def _fetch_and_validate(args: argparse.Namespace) -> tuple[dict[str, Any], Contr
         requested_symbol=args.symbol,
         requested_exchange=args.exchange,
         canonical_symbol=args.canonical_symbol,
+        from_trade_date=args.start_date,
+        through_trade_date=args.end_date,
     )
     if raw_object is not None:
         attach_raw_object(request, raw_object)

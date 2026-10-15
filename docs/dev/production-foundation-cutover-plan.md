@@ -15,7 +15,8 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   香港凍結商品 `0001` 的受控單次診斷得到 HTTP／provider code 400、`no_data_response`，
   指定 `exchange=HKEX` 的追加診斷亦為相同結果；官方將 XHKG 列為需授權或未支援市場，
   香港另列未解項目，不計入本次分母，也不標示通過。既有兩項 retry exhausted 不重設。
-  美股 2026-10-15 排程為台北 10 月 16 日 05:00，本輪不等待過夜，待 Owner 回覆後接續。
+  美股 2026-10-15 排程已到期，A／AA 凍結計畫尚未交付；受控診斷確認 A 當日資料可用，
+  單日上界導致 HTTP 400。共用日期契約修正及回歸測試完成後，須部署並從原計畫接續 native 驗收。
   FinLab 的兩條每日 feed 已取得完整真實交付證據，連同 Shioaji 在本次範圍共 4／6（原七條範圍仍為 4／7），見正式測試文件。
   FinLab FileStorage 與跨 feed 目錄缺欄隔離修復已部署至 `50cb51faadd9`，三輪目錄 refresh、
   記憶體與資料保留驗證見正式測試文件；仍需多輪日常抓取穩定性驗證。
@@ -24,8 +25,8 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   不將已發布目錄等同所有成員有資料，也不修改既有凍結樣本。
   TAIFEX 2026-10-15 Pilot 計畫有兩筆 canonical 寫入，另兩項已 retry exhausted，整條 feed 未通過；
   未完成項目為前一日目錄的 MTX:202610W2 sessions。PR #307 已加入新計畫的同日期目錄要求，
-  Backend／Fetcher CD 已將 `0a8d491a064d` 部署至 staging；Backend 資料保留核對通過，
-  Fetcher 的 16 份 SQLite 備份比對與最終健康檢查仍待本機 AWS 登入恢復後完成；
+  Backend／Fetcher CD 已將 `0a8d491a064d` 部署至 staging；Backend 八組資料指紋、
+  Fetcher 的 16 份 SQLite 備份比對與服務／queue 健康檢查均已通過；
   下一個新日期計畫排程為台北 2026-10-16 17:00，須用新計畫完成 native 驗收；
   保留凍結成員、首次日期與 terminal checkpoint，不以重設狀態或無證據 no_data 掩蓋失敗。
 - 新統一版在 production 的 accepted-record rollback 演練與可核對證據。

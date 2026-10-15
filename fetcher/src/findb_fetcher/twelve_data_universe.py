@@ -291,6 +291,8 @@ def _fetch_request(
         requested_exchange=member.exchange,
         canonical_symbol=member.canonical_symbol,
         allowed_instrument_types=(universe.instrument_type,),
+        from_trade_date=start_date,
+        through_trade_date=end_date,
     )
     if raw_object is not None:
         attach_raw_object(request, raw_object)
