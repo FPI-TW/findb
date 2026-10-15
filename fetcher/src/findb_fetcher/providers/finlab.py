@@ -35,6 +35,7 @@ _REQUIRED_DATASETS = {
     "volume": "price:成交股數",
 }
 _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
+_FRAME_JSON_COLUMN_BATCH = 16
 
 
 class FinLabError(RuntimeError):
@@ -168,7 +169,7 @@ class FinLabSdkGateway:
         try:
             if permit or self.on_response_bytes is not None:
                 # Account for the entire SDK frame before reviewed scope projection.
-                observed = len(frame.to_json().encode("utf-8"))
+                observed = _dataframe_response_bytes(frame)
                 if permit:
                     permit.observe(observed)
                 if self.on_response_bytes is not None:
@@ -437,6 +438,22 @@ def _validate_table(
     if any(len(row) != len(table.symbols) for row in table.values):
         raise FinLabPayloadError(f"{field} table value grid is inconsistent")
     return table.dates, table.symbols, table.values
+
+
+def _dataframe_response_bytes(frame: Any) -> int:
+    """Count the complete columns JSON without retaining its full string/bytes copies."""
+    if not frame.columns.is_unique or not frame.index.is_unique:
+        raise FinLabSdkError("FinLab dataset axes must be unique")
+    size = 2  # One outer object, including the zero-column case.
+    for start in range(0, len(frame.columns), _FRAME_JSON_COLUMN_BATCH):
+        fragment = frame.iloc[:, start : start + _FRAME_JSON_COLUMN_BATCH].to_json().encode("utf-8")
+        if not fragment.startswith(b"{") or not fragment.endswith(b"}"):
+            raise FinLabSdkError("FinLab dataset JSON representation is invalid")
+        # Each default orient=columns slice owns complete column values. Replace
+        # its outer braces with a comma between slices, preserving the exact size.
+        size += len(fragment) - 2 + int(start > 0)
+        del fragment
+    return size
 
 
 def _table_from_dataframe(
