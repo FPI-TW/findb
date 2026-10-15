@@ -57,7 +57,6 @@ def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
         },
         "fetcher": {
             "runtime/configuration",
-            "api/calendar-serve",
             "api/source/twelve-data",
             "api/source/finlab",
             "api/source/shioaji",
@@ -106,7 +105,6 @@ def test_active_staging_catalog_matches_exact_metadata_and_no_ghcr_runtime_secre
         "findb/rabbitmq/runtime",
         "findb/r2/canonical-publisher",
         "findb/r2/canonical-reader",
-        "fetcher/api/calendar-serve",
         "fetcher/api/source/twelve-data",
         "fetcher/api/source/finlab",
         "fetcher/api/source/shioaji",
@@ -149,9 +147,6 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
     loader = _loader()
     catalog = _catalog("fetcher")
     payloads = {
-        "findb/staging/fetcher/api/calendar-serve": {
-            "FETCHER_CALENDAR_SERVE_API_KEY": "calendar-key"
-        },
         "findb/staging/fetcher/api/source/twelve-data": {
             "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY": "source-key"
         },
@@ -170,7 +165,6 @@ def test_fetcher_consumer_loads_only_its_exact_allowlist() -> None:
 
     assert loaded == {
         **configuration,
-        "FETCHER_CALENDAR_SERVE_API_KEY": "calendar-key",
         "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY": "source-key",
         "TWELVE_DATA_API_KEY": "provider-key",
         "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID": "r2-id",
@@ -186,7 +180,6 @@ def test_taifex_consumer_loads_only_its_target_scoped_allowlist(target: str) -> 
     catalog = _catalog("fetcher")
     prefix = f"findb/{target}/fetcher/"
     payloads = {
-        prefix + "api/calendar-serve": {"FETCHER_CALENDAR_SERVE_API_KEY": "calendar-key"},
         prefix + "api/source/taifex": {"FETCHER_TAIFEX_SOURCE_CLIENT_KEY": "taifex-key"},
         prefix + "r2/raw": {
             "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID": "r2-id",
@@ -806,3 +799,39 @@ def test_cli_does_not_echo_invalid_consumer_input(tmp_path: Path) -> None:
     assert "consumer=invalid reason=consumer_not_allowed" in completed.stderr
     assert "SECRET-DO-NOT-PRINT" not in completed.stderr
     assert "INJECTED" not in completed.stderr
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("provider", ["TWELVE_DATA", "FINLAB", "SHIOAJI", "TAIFEX"])
+@pytest.mark.parametrize("value", ["false", "true", "yes", "1", "{}"])
+def test_backend_execution_policy_uses_independent_boolean_switches(target, provider, value):
+    loader = _loader()
+    keys = [
+        name + "_SKIP_NON_TRADING_DAYS" for name in ("TWELVE_DATA", "FINLAB", "SHIOAJI", "TAIFEX")
+    ]
+    catalog = {
+        "schema_version": 2,
+        "unit": "findb",
+        "consumers": {
+            "compose": {
+                "secrets": [
+                    {
+                        "name": "runtime/configuration",
+                        "required_keys": keys,
+                    }
+                ]
+            }
+        },
+    }
+    switches = dict.fromkeys(keys, "false")
+    switches[provider + "_SKIP_NON_TRADING_DAYS"] = value
+
+    def fetch(name):
+        assert name == f"findb/{target}/findb/runtime/configuration"
+        return json.dumps(switches)
+
+    if value not in {"true", "false"}:
+        with pytest.raises(loader.LoaderError, match="provider_execution_policy_invalid"):
+            loader.load_consumer(catalog, "compose", fetch, deployment_target=target)
+    else:
+        assert loader.load_consumer(catalog, "compose", fetch, deployment_target=target) == switches

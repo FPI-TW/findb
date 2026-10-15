@@ -15,12 +15,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig, MarketCalendarConfig, app_environment
+from findb_fetcher.config import FetcherConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_client import FullMarketSourceClient
 from findb_fetcher.full_market_runtime import FullMarketRuntime
 from findb_fetcher.full_market_state import FullMarketState
-from findb_fetcher.market_calendar import PublishedCalendarClient
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 from findb_fetcher.scheduler_control import SchedulerControlClient, scheduler_stop_event
 
@@ -126,7 +125,6 @@ def main(argv: list[str] | None = None) -> int:
     runtime = None
     source = None
     delivery = None
-    calendar = None
     try:
         account_path = Path(
             os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
@@ -212,7 +210,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             source = FullMarketSourceClient(fetcher, execution_profile=args.execution_profile)
             delivery = SourceAPIClient(fetcher, ContractRegistry(fetcher.contracts_dir))
-            calendar = PublishedCalendarClient(MarketCalendarConfig.from_env())
 
             def can_acquire() -> bool:
                 if (
@@ -245,7 +242,6 @@ def main(argv: list[str] | None = None) -> int:
                 state=state,
                 source=source,
                 delivery=delivery,
-                calendar=calendar,
                 raw_store=R2RawPayloadStore(RawStorageConfig.from_env()),
                 can_acquire=can_acquire,
                 readiness_file=Path(os.environ["FETCHER_ACCOUNT_READINESS_FILE"]),
@@ -297,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception:
         print(
-            "full-market startup or operation blocked; inspect baseline, calendar, authentication and durable state",
+            "full-market startup or operation blocked; inspect baseline, authentication and durable state",
             file=sys.stderr,
         )
         return 2
@@ -308,8 +304,6 @@ def main(argv: list[str] | None = None) -> int:
             source.close()
         if delivery is not None:
             delivery.close()
-        if calendar is not None:
-            calendar.close()
 
 
 if __name__ == "__main__":

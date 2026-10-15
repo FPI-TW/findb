@@ -17,7 +17,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
-from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DailyDeliveryPart,
@@ -453,52 +452,29 @@ async def _profile_feed_freshness(
     evaluated_at: datetime,
     first_date: str | None,
 ) -> FreshnessFeed:
-    from app.services.calendar_management import complete_published_revision_ids
+    from app.services.effective_calendar import acquisition_dates
     from app.services.full_market import reconcile_plan
     from app.services.full_market_governance import feed_schedule
 
     timezone_name, scheduled_time = feed_schedule(feed.dataset.dataset_key)
     local = evaluated_at.astimezone(ZoneInfo(timezone_name))
     through = local.date() - timedelta(days=int(local.strftime("%H:%M") < scheduled_time))
-    covered = await db.scalar(
-        select(CalendarRevisionDay.id)
-        .join(
-            CalendarYearRevision,
-            CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
-        )
-        .where(
-            CalendarYearRevision.market
-            == ("TAIFEX" if feed.dataset.dataset_key == "tw_futures_eod" else feed.dataset.market),
-            CalendarYearRevision.id.in_(complete_published_revision_ids()),
-            CalendarRevisionDay.trade_date == local.date(),
-        )
-        .limit(1)
-    )
-    calendar_errors = [] if covered else ["calendar_does_not_cover_evaluation_date"]
-    expected = (
-        await db.scalar(
-            select(func.max(CalendarRevisionDay.trade_date))
-            .join(
-                CalendarYearRevision,
-                CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
-            )
-            .where(
-                CalendarYearRevision.market
-                == (
-                    "TAIFEX"
-                    if feed.dataset.dataset_key == "tw_futures_eod"
-                    else feed.dataset.market
-                ),
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
-                CalendarRevisionDay.is_open.is_(True),
-                CalendarRevisionDay.trade_date <= through,
-                CalendarRevisionDay.trade_date
-                >= (date.fromisoformat(first_date) if first_date else local.date()),
-            )
+    dates = (
+        await acquisition_dates(
+            db,
+            market="TAIFEX"
+            if feed.dataset.dataset_key == "tw_futures_eod"
+            else feed.dataset.market,
+            dataset_key=feed.dataset.dataset_key,
+            provider=feed.source,
+            profile=profile,
+            start=date.fromisoformat(first_date),
+            end=through,
         )
         if first_date
-        else None
+        else []
     )
+    expected = max(dates) if dates else None
     plans = list(
         await db.scalars(
             select(DailyDeliveryPlan)
@@ -598,7 +574,7 @@ async def _profile_feed_freshness(
         policy_outcome=last_run.policy_outcome if last_run else None,
         open_missing_delivery_alert=alert is not None,
         last_failure_code=last_run.failure_code if last_run else None,
-        configuration_error="; ".join([*feed.configuration_errors, *calendar_errors]) or None,
+        configuration_error="; ".join(feed.configuration_errors) or None,
         status=state,
     )
 

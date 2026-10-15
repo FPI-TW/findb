@@ -46,7 +46,7 @@ Dashboard 導入概況與 Scheduler 面板依 `full_market_` key 前綴區分 Fu
 Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「Full market 全部啟動」或
 「Pilot 全部啟動」只更新該區符合資格且
 尚未 running 的 controls，確認視窗顯示實際更新數量與跳過原因；單筆啟動套用相同資格。
-全市場啟動須至少一個 feed 同時具備 published baseline 與完整 published calendar；其餘
+全市場啟動須至少一個 feed 同時具備 published baseline；缺日曆採週一至週五預設；其餘
 readiness／enrollment／expiry／capacity 條件不再列為啟動 gate。stopped→running
 凍結 ready scope；新 ready sibling 須停止再啟動，running 重複 start 不改 scope。首次日期由交易所
 當地今天決定並永久保留。停止不受 start blockers 限制；旗標關閉由 trusted lifecycle/management

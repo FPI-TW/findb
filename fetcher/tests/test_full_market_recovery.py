@@ -552,3 +552,40 @@ def test_real_universe_refresh_preserves_partial_authorized_scope(
     assert snapshots and HKEX_URL not in snapshots
     assert len(runtime.installed_feeds) == 2
     runtime.close()
+
+
+@pytest.mark.parametrize("skip", [False, True])
+def test_every_elapsed_date_uses_source_decision_without_calendar_dependency(
+    tmp_path, monkeypatch, skip
+):
+    import findb_fetcher.full_market_runtime as runtime_module
+
+    fixed = datetime(2026, 9, 6, 23, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(runtime_module, "datetime", FixedDateTime)
+    days = [fixed.date() - timedelta(days=1), fixed.date()]
+    runtime, source = _cycle_runtime(
+        tmp_path, [_release("weekend", "us_equity_eod", [_member()])], days
+    )
+    runtime.calendar.get_year = lambda *args: pytest.fail("runtime must not read Serve calendar")
+    acquired = []
+    runtime._acquire = lambda member, plan, *args: (
+        acquired.append(plan["trade_date"]) or [{"symbol": member["symbol"]}]
+    )
+    if skip:
+        source.plan = lambda **kwargs: {
+            "status": "skipped_calendar",
+            "execution_profile": "full_market",
+            "dataset_key": kwargs["dataset"],
+            "provider": "twelve_data",
+            "trade_date": kwargs["trade_date"],
+        }
+    runtime.cycle()
+    assert acquired == ([] if skip else [str(days[1]), str(days[0])])
+    assert len(source.plans) == (0 if skip else 2)
+    runtime.http.close()

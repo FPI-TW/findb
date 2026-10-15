@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start"
 import { z } from "zod"
 
 import {
+  effectiveCalendarSchema,
   calendarApplyRequestSchema,
   calendarJsonPreviewRequestSchema,
   calendarManualEditPayload,
@@ -36,18 +37,29 @@ export const loadCalendarYear = createServerFn({ method: "GET" })
       .parse(await calendarRequest("/api/v1/admin/calendars/markets"))
     const market = markets.find(item => item.market === data.market)
     if (!market) throw new Error("找不到指定的市場設定。")
+    const effective = effectiveCalendarSchema.parse(
+      await calendarRequest(
+        `/api/v1/admin/calendars/effective?market=${encodeURIComponent(data.market)}&year=${data.year}`
+      )
+    )
     try {
       const payload = await calendarRequest(
         `/api/v1/admin/calendars/days?market=${encodeURIComponent(data.market)}&year=${data.year}`
       )
-      return normalizeCalendarYear(
-        calendarYearResponseSchema.parse(payload),
-        market
-      )
+      return {
+        ...normalizeCalendarYear(
+          calendarYearResponseSchema.parse(payload),
+          market
+        ),
+        effective_days: effective.days,
+      }
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : ""
       if (!message.includes("Managed calendar year not found")) throw reason
-      return emptyCalendarYear(market, data.year)
+      return {
+        ...emptyCalendarYear(market, data.year),
+        effective_days: effective.days,
+      }
     }
   })
 

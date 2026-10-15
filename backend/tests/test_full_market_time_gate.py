@@ -524,7 +524,7 @@ async def test_no_data_observed_clock_skew_exact_boundary(test_session, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_no_data_respects_published_early_close(test_session, monkeypatch):
+async def test_no_data_keeps_frozen_close_after_calendar_edit(test_session, monkeypatch):
     key = "us_equity_eod"
     _, body, plan = await _activated_plan(test_session, key, count=1)
     day = (
@@ -537,7 +537,7 @@ async def test_no_data_respects_published_early_close(test_session, monkeypatch)
     clock = datetime.combine(DAY, time(13), ZoneInfo("America/New_York"))
     monkeypatch.setattr(full_market, "utc_now", lambda: clock)
     claim = await _no_data_claim(test_session, plan, None, clock)
-    summary = await record_outcome(
-        test_session, plan.plan_id, claim, provider=body.provider, allowed_datasets=[key]
-    )
-    assert summary.no_data == 1
+    with pytest.raises(FullMarketError, match="session has not closed"):
+        await record_outcome(
+            test_session, plan.plan_id, claim, provider=body.provider, allowed_datasets=[key]
+        )

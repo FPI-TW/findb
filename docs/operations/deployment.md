@@ -36,7 +36,8 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 2. 以實際 image 執行 configuration、DB migration compatibility、credential reconciliation 的唯讀 preflight。
    SQLite checkpoint 必須存在且完整；已安裝 runtime 的 checkpoint 遺失不得被當成新主機初始化。
 3. Backend 停止公開 nginx、舊讀寫服務，優雅停止 writers；以 migration role 升級、核對 exact revision、
-   校準 DB grants、deployment credentials、registry 與 calendars。兩環境執行相同步驟。
+   校準 DB grants、deployment credentials 與 registry。兩環境執行相同步驟；不執行 calendar seed 或 completeness gate。
+   Migration `91a4c7e2d630` 凍結既有工作使用的日曆與政策快照，完整保留既有 plans、first dates、prepared deliveries。
 4. Backend candidate 只啟動內部 services，驗證 API、Dashboard、RabbitMQ durable topology、worker ping／heartbeat
    及 queue health；公開入口保持停止。成功後停止 candidate services，再回報可保存 acceptance。
    Fetcher candidate 執行 offline config、controls stopped 與 checkpoint 驗證，驗證最終 container config，
@@ -102,8 +103,8 @@ application role 不具 superuser／CREATEDB／CREATEROLE，授予 public／raw 
 
 Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewer、lookup Serve、static-cache Serve
 固定 identity，輪替保留 audit；preflight check-only transaction rollback，migration／初始化階段才 commit。
-Fetcher Source／calendar credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
-四個 provider 的 Source scopes 必須涵蓋對應七條 feeds，calendar key 與 Source key 分離。
+Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
+四個 provider 的 Source scopes 必須涵蓋對應七條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 
 RDS 不公開且只接受 FinDB security group；Fetcher 不連 RDS。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
 nginx 非敏感設定在 `/etc/findb/nginx`，TLS、lookup key 在 `/run/findb-runtime-secrets/nginx`，
@@ -115,3 +116,15 @@ systemd 在 Docker 啟動前重建 tmpfs；缺失時 fail closed。Serve API 保
 部署證據至少保留：release／digest、schema version、設定欄位驗證、IAM subject、備份、drain、migration revision、
 SSM command 與終態、candidate health、immutable acceptance、activation health，以及兩 profile 缺漏隔離結果。
 Native 資料驗收另列每條 feed 的實際結果與未解問題，見 [backlog](../dev/backlog.md)。
+
+## 日曆政策設定切換
+
+Backend `runtime/configuration` 加入四個獨立開關：`TWELVE_DATA_SKIP_NON_TRADING_DAYS`、
+`FINLAB_SKIP_NON_TRADING_DAYS`、`SHIOAJI_SKIP_NON_TRADING_DAYS`、`TAIFEX_SKIP_NON_TRADING_DAYS`，
+皆使用 `true`／`false` 字串且預設 `false`。
+Fetcher `runtime/configuration` 移除 `FINDB_SERVE_BASE_URL`、`FETCHER_CALENDAR_TIMEOUT_SECONDS`、
+`FETCHER_CALENDAR_CACHE_TTL_SECONDS`，不再讀取／注入 `FETCHER_CALENDAR_SERVE_API_KEY`；移除其 hash bridge 輸入。
+舊 calendar credential metadata 標示 retired 並保留稽核，停止舊 runtime 後才移除作用中的依賴。
+新部署載入器拒絕失效欄位，因此必須在對應環境維護停止後、部署新 candidate 前同步 AWS configuration。
+政策只在 Backend 保存；Fetcher 經 Source 決策。兩環境部署均保持 controls stopped。
+新版不能 downgrade 到沒有 frozen decision 的版本；失敗依成套備份復原，成功後以新版作 rollback 下限。

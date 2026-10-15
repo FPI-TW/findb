@@ -214,7 +214,10 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "secretsmanager:ListTagsForResource",
     ]
 
-    resources = [for secret in aws_secretsmanager_secret.active_runtime : secret.arn]
+    resources = concat(
+      [for secret in aws_secretsmanager_secret.active_runtime : secret.arn],
+      [aws_secretsmanager_secret.retired_calendar.arn],
+    )
   }
 
   statement {

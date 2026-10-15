@@ -261,6 +261,9 @@ export function CalendarManagementPage({
               {revisionText(calendar)}
             </Badge>
             <Badge variant="outline">{calendar.timezone}</Badge>
+            <span className="text-muted">
+              抓取使用已發布日曆；未設定日期採週一至週五預設。草稿不影響抓取。
+            </span>
             {calendar.published_revision && (
               <span className="text-muted">
                 最後發布：{formatDate(calendar.published_revision.published_at)}
@@ -525,8 +528,22 @@ function YearView({
         meta: { width: 320, minWidth: 240, wrap: true },
       },
       {
+        id: "effective_calendar",
+        header: "抓取使用的日曆",
+        enableSorting: false,
+        cell: info => {
+          const effective = calendar.effective_days?.find(
+            day => day.trade_date === info.row.original.date
+          )
+          return effective
+            ? `${effective.calendar_source === "published" ? `已發布日曆 r${effective.calendar_revision}` : "週一至週五預設"} · ${effective.is_open ? "交易日" : "非交易日"}`
+            : "—"
+        },
+        meta: { width: 240 },
+      },
+      {
         accessorKey: "source_kind",
-        header: "來源",
+        header: "修訂來源",
         enableSorting: false,
         cell: info => String(info.getValue() ?? "—"),
         meta: { width: 140 },

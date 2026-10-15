@@ -74,6 +74,12 @@ async def test_profile_upgrade_preserves_full_dates_and_frozen_plans():
                     .all()
                 )
                 assert after == before
+            decision = await db.scalar(
+                text("SELECT snapshot FROM daily_execution_decision WHERE plan_id=:plan"), ids
+            )
+            assert decision["snapshot_origin"] == "legacy_migration_snapshot"
+            assert decision["calendar_revision"] is None
+            assert decision["regular_close"] == "13:30:00"
             assert (
                 await db.scalar(text("SELECT execution_profile FROM daily_delivery_plan"))
                 == "full_market"

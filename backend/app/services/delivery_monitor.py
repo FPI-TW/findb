@@ -13,7 +13,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, execution_profile
-from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
     DailyDeliveryPart,
     DailyDeliveryPlan,
@@ -22,7 +21,6 @@ from app.models.registry import (
     IngestionRun,
     MissingDeliveryAlert,
 )
-from app.services.calendar_management import complete_published_revision_ids
 from app.services.delivery_policy import (
     delivery_run_coverage_condition,
     parse_delivery_expectation,
@@ -301,23 +299,22 @@ async def _scan_full_market_feed(
     if not start_value:
         return 0, 0
     start_date = date.fromisoformat(start_value)
-    dates = (
-        await db.scalars(
-            select(CalendarRevisionDay.trade_date)
-            .join(
-                CalendarYearRevision,
-                CalendarYearRevision.id == CalendarRevisionDay.calendar_revision_id,
-            )
-            .where(
-                CalendarYearRevision.market == _calendar_market(dataset),
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
-                CalendarRevisionDay.is_open.is_(True),
-                CalendarRevisionDay.trade_date >= start_date,
-                CalendarRevisionDay.trade_date <= evaluated_at.date(),
-            )
-            .order_by(CalendarRevisionDay.trade_date)
-        )
-    ).all()
+    from zoneinfo import ZoneInfo
+
+    from app.services.effective_calendar import acquisition_dates
+    from app.services.full_market_governance import feed_schedule
+
+    zone, _ = feed_schedule(dataset.dataset_key)
+    through = evaluated_at.astimezone(ZoneInfo(zone)).date()
+    dates = await acquisition_dates(
+        db,
+        market=_calendar_market(dataset),
+        dataset_key=dataset.dataset_key,
+        provider=source,
+        profile=profile,
+        start=start_date,
+        end=through,
+    )
     plans = list(
         (
             await db.scalars(
@@ -332,7 +329,25 @@ async def _scan_full_market_feed(
     )
     by_date = {plan.trade_date: plan for plan in plans}
     created = 0
-    resolved = 0
+    policy_resolved = await db.execute(
+        update(MissingDeliveryAlert)
+        .where(
+            MissingDeliveryAlert.dataset_key == dataset.dataset_key,
+            MissingDeliveryAlert.source == source,
+            MissingDeliveryAlert.execution_profile == profile,
+            MissingDeliveryAlert.status == "open",
+            MissingDeliveryAlert.expected_data_date >= start_date,
+            MissingDeliveryAlert.expected_data_date <= through,
+            MissingDeliveryAlert.expected_data_date.not_in(dates),
+        )
+        .values(
+            status="resolved",
+            resolved_at=evaluated_at,
+            details={"code": "SKIPPED_CALENDAR", "reason": "provider_policy"},
+        )
+        .returning(MissingDeliveryAlert.alert_id)
+    )
+    resolved = len(policy_resolved.scalars().all())
     for trade_date in dates:
         deadline = _deadline(dataset, trade_date)
         if evaluated_at < deadline:

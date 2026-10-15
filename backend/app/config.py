@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +25,25 @@ class Settings(BaseSettings):
     PORT: int = 8080
     APP_ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     FULL_MARKET_ENABLED: bool = False
+    TWELVE_DATA_SKIP_NON_TRADING_DAYS: bool = False
+    FINLAB_SKIP_NON_TRADING_DAYS: bool = False
+    SHIOAJI_SKIP_NON_TRADING_DAYS: bool = False
+    TAIFEX_SKIP_NON_TRADING_DAYS: bool = False
+
+    @field_validator(
+        "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
+        "FINLAB_SKIP_NON_TRADING_DAYS",
+        "SHIOAJI_SKIP_NON_TRADING_DAYS",
+        "TAIFEX_SKIP_NON_TRADING_DAYS",
+        mode="before",
+    )
+    @classmethod
+    def validate_provider_calendar_policy(cls, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value in {"true", "false"}:
+            return value == "true"
+        raise ValueError("provider calendar switch must be true or false")
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://findb:findb@localhost:5435/findb"

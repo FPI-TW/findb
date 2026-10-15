@@ -631,7 +631,7 @@ async def test_admin_preview_lifecycle_and_scheduler_contract(
     assert apply.json()["status"] == "draft"
     assert (
         await client.get("/api/v1/serve/calendar/years/TW/2026", headers=serve_headers)
-    ).status_code == 404
+    ).status_code == 200
     publish = await client.post(
         "/api/v1/admin/calendars/TW/2026/publish",
         headers=admin_headers,
@@ -685,6 +685,6 @@ async def test_calendar_year_route_requires_db_backed_serve_key_when_auth_option
         ).status_code == 403
         assert (await client.get(path, headers=wrong_scope_headers)).status_code == 403
         assert (await client.get(path, headers=wrong_kind_headers)).status_code == 403
-        assert (await client.get(path, headers=valid_headers)).status_code == 404
+        assert (await client.get(path, headers=valid_headers)).status_code == 200
     finally:
         settings.SERVE_REQUIRE_AUTH = original_require_auth

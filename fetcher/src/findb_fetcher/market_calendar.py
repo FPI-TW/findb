@@ -1,4 +1,4 @@
-"""Strict, bounded client for complete published FinDB market calendars."""
+"""Bounded client for effective published/default FinDB market calendars."""
 
 from __future__ import annotations
 
@@ -28,13 +28,15 @@ class CalendarDay:
     trade_date: date
     day_status: str
     is_open: bool
+    calendar_source: str = "published"
+    calendar_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PublishedCalendar:
     market: str
     year: int
-    revision: int
+    revision: int | None
     timezone_name: str
     days: tuple[CalendarDay, ...]
 
@@ -108,7 +110,7 @@ class PublishedCalendarClient:
         self._cache[cache_key] = (now, calendar)
         return calendar
 
-    def get_day(self, market: str, value: date) -> tuple[CalendarDay, int]:
+    def get_day(self, market: str, value: date) -> tuple[CalendarDay, int | None]:
         calendar = self.get_year(market, value.year)
         return calendar.day(value), calendar.revision
 
@@ -141,7 +143,7 @@ def _parse_calendar(
 
     market = _required_string(data, "market")
     year = _required_integer(data, "year")
-    revision = _required_integer(data, "revision")
+    revision = data.get("revision")
     status = _required_string(data, "status")
     coverage_complete = data.get("coverage_complete")
     timezone_name = _required_string(data, "timezone")
@@ -149,8 +151,13 @@ def _parse_calendar(
     actual_days = _required_integer(data, "actual_days")
     if market != expected_market or year != expected_year:
         raise MarketCalendarError("calendar API identity mismatch")
-    if revision < 1 or status != "published" or coverage_complete is not True:
-        raise MarketCalendarError("calendar is not a complete published revision")
+    if (
+        status not in {"published", "defaulted", "mixed"}
+        or coverage_complete is not True
+        or (status == "published" and (type(revision) is not int or revision < 1))
+        or (status != "published" and revision is not None)
+    ):
+        raise MarketCalendarError("calendar effective coverage or revision is invalid")
     try:
         ZoneInfo(timezone_name)
     except Exception as exc:
@@ -184,11 +191,21 @@ def _parse_calendar(
             raise MarketCalendarError("calendar day status is invalid")
         if is_open is not (day_status == "open"):
             raise MarketCalendarError("calendar day open flag is inconsistent")
+        source = raw_day.get("calendar_source", "published" if status == "published" else None)
+        day_revision = raw_day.get("calendar_revision", revision if source == "published" else None)
+        if (
+            source not in {"published", "weekday_default"}
+            or (source == "published" and (type(day_revision) is not int or day_revision < 1))
+            or (source == "weekday_default" and day_revision is not None)
+        ):
+            raise MarketCalendarError("calendar day provenance is invalid")
         days.append(
             CalendarDay(
                 trade_date=trade_date,
                 day_status=day_status,
                 is_open=is_open,
+                calendar_source=source,
+                calendar_revision=day_revision,
             )
         )
     return PublishedCalendar(

@@ -244,3 +244,47 @@ it("isolates profile queries and removes the previous profile while the next is 
   })
   expect(screen.getByText("正在載入Full market 交付計畫…")).toBeInTheDocument()
 })
+
+it("shows durable policy skips separately from plan totals and isolates profile cache", async () => {
+  mocks.loadDeliveryPlans.mockImplementation(async ({ data }) => ({
+    data: data.profile === "pilot" ? [plan] : [],
+    pagination,
+    execution_policies: { finlab: { skip_non_trading_days: true } },
+    skipped_total: 1,
+    skipped: [
+      {
+        execution_profile: data.profile,
+        dataset_key: "tw_equity_eod",
+        provider: "finlab",
+        trade_date: data.profile === "pilot" ? "2026-10-03" : "2026-10-04",
+        status: "skipped_calendar",
+        snapshot: {
+          calendar_source: "weekday_default",
+          calendar_revision: null,
+        },
+      },
+    ],
+  }))
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const view = render(
+    <QueryClientProvider client={client}>
+      <DeliveryPlansPanel
+        search={deliveriesSearchSchema.parse({ profile: "pilot" })}
+      />
+    </QueryClientProvider>
+  )
+  expect(await screen.findByText(/2026-10-03 · finlab/)).toBeInTheDocument()
+  expect(screen.getByText(/依設定略過（1 個日期／資料集）/)).toBeInTheDocument()
+  expect(screen.getByText(/finlab：略過/)).toBeInTheDocument()
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <DeliveryPlansPanel
+        search={deliveriesSearchSchema.parse({ profile: "full_market" })}
+      />
+    </QueryClientProvider>
+  )
+  expect(screen.queryByText(/2026-10-03 · finlab/)).not.toBeInTheDocument()
+  expect(await screen.findByText(/2026-10-04 · finlab/)).toBeInTheDocument()
+})

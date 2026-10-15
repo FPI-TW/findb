@@ -72,12 +72,6 @@ locals {
       consumer      = "serve"
       status        = "active"
     }
-    "fetcher/api/calendar-serve" = {
-      unit          = "fetcher"
-      relative_name = "api/calendar-serve"
-      consumer      = "all-providers"
-      status        = "active"
-    }
     "fetcher/api/source/twelve-data" = {
       unit          = "fetcher"
       relative_name = "api/source/twelve-data"
@@ -218,4 +212,18 @@ resource "aws_secretsmanager_secret" "active_runtime" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# Retired credential metadata is retained for rollback audit; no deployed consumer reads it.
+resource "aws_secretsmanager_secret" "retired_calendar" {
+  name                    = "findb/staging/fetcher/api/calendar-serve"
+  description             = "Retired Fetcher calendar credential; unified runtime uses Source execution policy"
+  kms_key_id              = aws_kms_key.runtime_secrets["fetcher"].arn
+  recovery_window_in_days = 30
+  tags                    = merge(local.common_tags, { DeploymentUnit = "fetcher", Consumer = "retired", RuntimeStatus = "retired" })
+  lifecycle { prevent_destroy = true }
+}
+moved {
+  from = aws_secretsmanager_secret.active_runtime["fetcher/api/calendar-serve"]
+  to   = aws_secretsmanager_secret.retired_calendar
 }

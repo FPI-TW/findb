@@ -205,10 +205,12 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     assert 'sid       = "ReadExactSsmLogGroupTags"' in permissions
     assert "resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]" in permissions
     assert 'sid    = "ReadExactSecretMetadata"' in permissions
-    assert (
-        "resources = [for secret in aws_secretsmanager_secret.active_runtime : secret.arn]"
-        in permissions
-    )
+    metadata = permissions.split('sid    = "ReadExactSecretMetadata"', 1)[1].split(
+        "statement {", 1
+    )[0]
+    assert "resources = concat(" in metadata
+    assert "[for secret in aws_secretsmanager_secret.active_runtime : secret.arn]" in metadata
+    assert "[aws_secretsmanager_secret.retired_calendar.arn]" in metadata
     assert "secretsmanager:GetResourcePolicy" in permissions
     assert 'sid       = "ReadExactStateObject"' in permissions
     assert 'sid    = "ListExactStatePrefix"' in permissions
@@ -458,7 +460,8 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     assert "for_each = local.runtime_secret_specs" in runtime_secret_resource
     assert "prevent_destroy = true" in runtime_secret_resource
     assert "recovery_window_in_days = 30" in secrets
-    assert secrets.count("prevent_destroy = true") == 2
+    assert secrets.count("prevent_destroy = true") == 3
+    assert 'resource "aws_secretsmanager_secret" "retired_calendar"' in secrets
     assert 'resource "aws_secretsmanager_secret_version"' not in all_staging
     assert "secret_string" not in all_staging
     assert "secret_binary" not in all_staging
@@ -476,6 +479,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     assert 'sid    = "ReadOwnRuntimeSecrets"' in instance_policy
     assert "aws_secretsmanager_secret.active_runtime[key].arn" in instance_policy
     assert 'if spec.unit == each.key && spec.status == "active"' in instance_policy
+    assert "retired_calendar" not in instance_policy
     assert 'sid       = "DecryptOwnRuntimeSecrets"' in instance_policy
     assert "resources = [aws_kms_key.runtime_secrets[each.key].arn]" in instance_policy
     assert (
@@ -501,7 +505,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     # state addresses keep their existing moves; it has no legacy address.
     assert moved_pairs == {
         (secret_id, secret_id)
-        for secret_id in catalog_secret_ids
+        for secret_id in (catalog_secret_ids | {"fetcher/api/calendar-serve"})
         - {
             "fetcher/api/source/taifex",
             "fetcher/runtime/configuration",

@@ -200,6 +200,16 @@ class DeliveryPlanResponse(FullMarketModel):
     summary: DeliverySummaryResponse
 
 
+class CalendarSkipResponse(FullMarketModel):
+    execution_profile: ExecutionProfile
+    dataset_key: str
+    provider: str
+    trade_date: date
+    status: Literal["skipped_calendar"] = "skipped_calendar"
+    snapshot: dict
+    created_at: datetime
+
+
 class OutcomeEvidence(FullMarketModel):
     url: str = Field(min_length=12, max_length=2048)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

@@ -327,14 +327,12 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
     from app.models.registry import SourceClient
     from app.services.full_market_admission import reconcile_environment
     from scripts.reconcile_fetcher_credentials import (
-        CALENDAR_HASH_ENV,
         FULL_MARKET_SOURCE_SPECS,
         reconcile_fetcher_credentials_in_session,
     )
 
     dataset, _, plan = await _activated_plan(test_session, dataset_key, count=1)
     keys = {spec.env_name: "first-" + spec.source_name for spec in FULL_MARKET_SOURCE_SPECS}
-    keys[CALENDAR_HASH_ENV] = "calendar-key"
     hashes = {name: hashlib.sha256(key.encode()).hexdigest() for name, key in keys.items()}
     await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="unified")
     keys = {name: "rotated-" + key for name, key in keys.items()}

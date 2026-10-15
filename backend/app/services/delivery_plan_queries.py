@@ -6,10 +6,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile
-from app.models.registry import DailyDeliveryPlan
+from app.models.registry import DailyDeliveryPlan, DailyExecutionDecision
 from app.schemas.admin import DeliveryPlanListResponse, PaginatedDeliveryPlanListResponse
 from app.schemas.common import PaginationInfo
-from app.services.full_market import get_plan
+from app.services.effective_calendar import execution_policy
+from app.services.full_market import _skip_response, get_plan
 
 
 async def list_plan_datasets(
@@ -20,8 +21,12 @@ async def list_plan_datasets(
             await db.scalars(
                 select(DailyDeliveryPlan.dataset_key)
                 .where(DailyDeliveryPlan.execution_profile == profile)
-                .distinct()
-                .order_by(DailyDeliveryPlan.dataset_key)
+                .union(
+                    select(DailyExecutionDecision.dataset_key).where(
+                        DailyExecutionDecision.execution_profile == profile
+                    )
+                )
+                .order_by("dataset_key")
             )
         ).all()
     )
@@ -63,10 +68,40 @@ async def list_delivery_plans(
         )
         for plan in plans
     ]
+    skips = select(DailyExecutionDecision).where(
+        DailyExecutionDecision.execution_profile == profile,
+        DailyExecutionDecision.kind == "skipped_calendar",
+    )
+    if dataset_key is not None:
+        skips = skips.where(DailyExecutionDecision.dataset_key == dataset_key)
+    if trade_date is not None:
+        skips = skips.where(DailyExecutionDecision.trade_date == trade_date)
+    skipped_total = int(await db.scalar(select(func.count()).select_from(skips.subquery())) or 0)
+    skipped = [
+        _skip_response(row)
+        for row in (
+            await db.scalars(
+                skips.order_by(
+                    DailyExecutionDecision.trade_date.desc(),
+                    DailyExecutionDecision.dataset_key,
+                    DailyExecutionDecision.provider,
+                ).limit(100)
+            )
+        ).all()
+    ]
+    policies = {
+        provider: execution_policy(provider)
+        for provider in ("twelve_data", "finlab", "shioaji", "taifex")
+    }
     if not paginated:
-        return DeliveryPlanListResponse(data=data)
+        return DeliveryPlanListResponse(
+            data=data, skipped=skipped, skipped_total=skipped_total, execution_policies=policies
+        )
     return PaginatedDeliveryPlanListResponse(
         data=data,
+        skipped=skipped,
+        skipped_total=skipped_total,
+        execution_policies=policies,
         pagination=PaginationInfo(
             page=current_page,
             page_size=size,

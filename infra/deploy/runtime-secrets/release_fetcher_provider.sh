@@ -143,17 +143,11 @@ fi
 if [ "$provider" = "shioaji" ]; then
   require_value provider_secret_credential "$provider_secret_key"
 fi
-require_value serve_base_url "${FINDB_SERVE_BASE_URL:-}"
-require_value calendar_key "${FETCHER_CALENDAR_SERVE_API_KEY:-}"
 require_value r2_account "${CLOUDFLARE_R2_ACCOUNT_ID:-}"
 require_value r2_bucket "${CLOUDFLARE_R2_RAW_BUCKET:-}"
 require_value r2_access_key "${CLOUDFLARE_R2_RAW_ACCESS_KEY_ID:-}"
 require_value r2_secret_key "${CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY:-}"
 
-if [ "$source_key" = "$FETCHER_CALENDAR_SERVE_API_KEY" ]; then
-  echo "release_fetcher_provider=failed reason=credential_reuse" >&2
-  exit 1
-fi
 if ! printf '%s' "$CLOUDFLARE_R2_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$'; then
   echo "release_fetcher_provider=failed reason=r2_account_invalid" >&2
   exit 1
@@ -178,10 +172,6 @@ runtime_env_args=(
   --env APP_ENVIRONMENT
   --env SOURCE_API_URL
   --env SOURCE_CLIENT_KEY
-  --env FINDB_SERVE_BASE_URL
-  --env FETCHER_CALENDAR_SERVE_API_KEY
-  --env FETCHER_CALENDAR_TIMEOUT_SECONDS
-  --env FETCHER_CALENDAR_CACHE_TTL_SECONDS
   --env CLOUDFLARE_R2_ACCOUNT_ID
   --env CLOUDFLARE_R2_RAW_BUCKET
   --env CLOUDFLARE_R2_RAW_ACCESS_KEY_ID

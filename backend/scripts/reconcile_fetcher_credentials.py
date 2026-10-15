@@ -105,10 +105,6 @@ def source_specs_for_profile(
     return SOURCE_SPECS
 
 
-CALENDAR_HASH_ENV = "FETCHER_CALENDAR_SERVE_API_KEY_HASH"
-CALENDAR_CREDENTIAL_NAME = "fetcher-calendar"
-
-
 @dataclass(frozen=True)
 class ReconciliationResult:
     name: str
@@ -254,76 +250,6 @@ def _apply_calendar_policy(row: APIKey, key_hash: str) -> bool:
     return changed
 
 
-async def reconcile_calendar_credential(
-    db: AsyncSession,
-    key_hash_value: str,
-    now: datetime,
-) -> ReconciliationResult:
-    key_hash = validate_key_hash(key_hash_value)
-    rows = list(
-        (
-            await db.execute(
-                select(APIKey)
-                .where((APIKey.name == CALENDAR_CREDENTIAL_NAME) | (APIKey.key_hash == key_hash))
-                .with_for_update()
-            )
-        )
-        .scalars()
-        .all()
-    )
-    hash_matches = [row for row in rows if row.key_hash == key_hash]
-    active_named = [
-        row for row in rows if row.name == CALENDAR_CREDENTIAL_NAME and _is_active(row, now)
-    ]
-    if len(hash_matches) > 1 or len(active_named) > 1:
-        raise FetcherCredentialError("Fetcher calendar credential state is ambiguous")
-    if hash_matches:
-        row = hash_matches[0]
-        if row.name != CALENDAR_CREDENTIAL_NAME or row.kind != "serve":
-            raise FetcherCredentialError("Fetcher calendar hash is used by another identity")
-        if not _is_active(row, now) or row.expires_at is not None:
-            raise FetcherCredentialError("Fetcher calendar credential is revoked or expiring")
-        if active_named and active_named[0].key_id != row.key_id:
-            raise FetcherCredentialError("another Fetcher calendar credential is active")
-        changed = _apply_calendar_policy(row, key_hash)
-        return ReconciliationResult(
-            CALENDAR_CREDENTIAL_NAME,
-            "updated" if changed else "unchanged",
-            key_hash[:16],
-        )
-
-    rotated_from_id = None
-    if active_named:
-        previous = active_named[0]
-        previous.revoked_at = now
-        rotated_from_id = previous.key_id
-    db.add(
-        APIKey(
-            key_id=uuid7(),
-            key_hash=key_hash,
-            fingerprint=key_hash[:16],
-            kind="serve",
-            name=CALENDAR_CREDENTIAL_NAME,
-            owner="deployment",
-            description="Fetcher published-calendar Serve credential",
-            role=None,
-            tier="internal",
-            scopes=["serve"],
-            rate_limit_requests=120,
-            rate_limit_window=60,
-            page_size_limit=1000,
-            usage_count=0,
-            created_at=now,
-            rotated_from_id=rotated_from_id,
-        )
-    )
-    return ReconciliationResult(
-        CALENDAR_CREDENTIAL_NAME,
-        "rotated" if rotated_from_id else "created",
-        key_hash[:16],
-    )
-
-
 async def reconcile_fetcher_credentials_in_session(
     db: AsyncSession,
     hashes_by_env: dict[str, str],
@@ -333,7 +259,7 @@ async def reconcile_fetcher_credentials_in_session(
 ) -> list[ReconciliationResult]:
     specs = source_specs_for_profile(runtime_profile, deployment_target)
     normalized = {name: validate_key_hash(value) for name, value in hashes_by_env.items()}
-    required = {CALENDAR_HASH_ENV, *(spec.env_name for spec in specs)}
+    required = {spec.env_name for spec in specs}
     if set(normalized) != required or len(set(normalized.values())) != len(required):
         raise FetcherCredentialError("Fetcher credential hashes are missing or reused")
     now = utc_now()
@@ -341,7 +267,6 @@ async def reconcile_fetcher_credentials_in_session(
         await reconcile_source_credential(db, normalized[spec.env_name], spec, now)
         for spec in specs
     ]
-    results.append(await reconcile_calendar_credential(db, normalized[CALENDAR_HASH_ENV], now))
     for result in results:
         if result.action != "unchanged":
             db.add(
@@ -394,7 +319,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runtime-profile", choices=("unified",), default="unified")
     parser.add_argument("--application-database-url", default=os.getenv("APPLICATION_DATABASE_URL"))
-    for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in FULL_MARKET_SOURCE_SPECS)):
+    for env_name in (spec.env_name for spec in FULL_MARKET_SOURCE_SPECS):
         parser.add_argument(
             f"--{env_name.lower().replace('_', '-')}",
             dest=env_name,
@@ -407,7 +332,7 @@ def main() -> int:
     args = parse_args()
     hashes_by_env = {
         env_name: getattr(args, env_name)
-        for env_name in (CALENDAR_HASH_ENV, *(spec.env_name for spec in FULL_MARKET_SOURCE_SPECS))
+        for env_name in (spec.env_name for spec in FULL_MARKET_SOURCE_SPECS)
         if getattr(args, env_name)
     }
     if not args.application_database_url or not all(hashes_by_env.values()):

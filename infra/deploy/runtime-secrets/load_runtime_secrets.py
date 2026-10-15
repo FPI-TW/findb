@@ -166,6 +166,15 @@ def load_consumer(
                 raise LoaderError("secret_key_collision")
             loaded[key] = value
 
+    for key in (
+        "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
+        "FINLAB_SKIP_NON_TRADING_DAYS",
+        "SHIOAJI_SKIP_NON_TRADING_DAYS",
+        "TAIFEX_SKIP_NON_TRADING_DAYS",
+    ):
+        if key in loaded and loaded[key] not in {"true", "false"}:
+            raise LoaderError("provider_execution_policy_invalid")
+
     constraints = consumer.get("distinct_keys", [])
     if not isinstance(constraints, list):
         raise LoaderError("catalog_invalid")

@@ -242,7 +242,6 @@ class FullMarketDeploymentTests(unittest.TestCase):
             set(fetched),
             {
                 "findb/production/fetcher/runtime/configuration",
-                "findb/production/fetcher/api/calendar-serve",
                 "findb/production/fetcher/api/source/taifex",
                 "findb/production/fetcher/r2/raw",
             },

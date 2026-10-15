@@ -44,7 +44,7 @@ Fetcher 的三環境 manifest；兩個 execution profiles 共用宣告。
 | `shioaji` | `tw_equity_minute`、`tw_etf_minute` | `market_minute.v1` |
 | `taifex` | `tw_futures_eod` | `futures_eod.v1` |
 
-Pilot 與 Full market 使用同一 CLI、provider adapter、published universe／calendar、交易所時區、
+Pilot 與 Full market 使用同一 CLI、provider adapter、published universe／有效日曆、交易所時區、
 收盤判定、重試、Raw R2、Source、normalization 與 Serve 流程。Pilot 只在建立 daily plan 時依 canonical
 識別排序取前兩個商品，不足兩個取實際數量；期貨按 product／contract 選擇，保留各自所有 sessions。
 空集合阻塞；plan 建立後 universe 更新與重試不得改寫成員。
@@ -58,8 +58,7 @@ Serve catalog 由 active registry 動態解析，canonical 資料可跨 profile 
 Full market 在 local/staging/production 皆為 opt-in，預設 false。Registry acceptance 與 acquisition
 admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Full-only feeds 普通 ingress
 不接受，需 `fp1` frozen plan。Owner 手動 scheduler start 各自凍結當時 ready feeds，首次日期以 dataset＋profile 隔離，首日為 exchange-local
-今天且永不重設；合法 legacy cutoff 保留。啟動 eligibility 只檢查 published baseline 與完整
-published calendar。所有環境的新抓取不依賴 enrollment、readiness ACK／expiry 或 capacity proof；API 認證、
+今天且永不重設；合法 legacy cutoff 保留。啟動 eligibility 只檢查 published baseline；日曆缺日期採週一至週五預設。所有環境的新抓取不依賴 enrollment、readiness ACK／expiry 或 capacity proof；API 認證、
 平台配額、running control 與資料驗證保留。
 操作與部署/rollback contracts 見 [runbook](../operations/full_market.md)。
 
@@ -84,7 +83,7 @@ coverage 不等同全日 complete；mapping、quota、permission 或 source erro
 TAIFEX trade date 使用交易所歸屬日，盤後不由 timestamp 推算成隔日；無 settlement／open
 interest 保留 null。Published exchange calendar 是開市日權威，TAIFEX 使用獨立市場日曆。
 
-治理資料只要求 Owner published official baseline 與完整 published calendar。平台限制為 Twelve Data
+治理資料只要求 Owner published official baseline；日曆缺日期採週一至週五預設。平台限制為 Twelve Data
 1597 credits／分鐘、FinLab API 5000 MB／日、Shioaji 500 MiB／日與 50 行情查詢／10 秒；
 TAIFEX OpenAPI 無帳號及明確數值配額，收到 429 時等待／重試。帳號 ledger 保留用量與 cooldown，
 不設跨環境分配或额外 capacity 前提；API 權限、payload 與資料驗證仍保留。
@@ -131,9 +130,12 @@ provider-scoped Source key輪詢
 建立新cycle；停止要求會讓目前cycle完成後不再啟動下一輪。
 
 市場日曆以不可變的年度revision管理。Dashboard建立draft，只有Owner可publish或rollback。
-Scheduler只使用
-`GET /api/v1/serve/calendar/years/{market}/{year}`；未發布、不完整或不一致時回`404`
-並fail closed。`settlement_only`不可觸發抓取，沒有static weekday fallback。
+Backend 共用有效日曆解析：published 日期優先，缺日期採週一至週五預設；draft 不影響抓取。
+Serve 年度／區間查詢及 Admin 顯示日期來源與可空 revision，不寫入或自動發布。
+Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials。Provider 預設連非交易日也抓取，
+只有 Backend AWS 設定中對應 provider 的 `*_SKIP_NON_TRADING_DAYS` 開關設為 true，才略過並保存 durable skip。
+部署與啟動不要求日曆完整；其他認證、時區、收盤、Owner controls、配額與交付證據規則保留。
+
 
 ## 不可破壞的規則
 

@@ -41,9 +41,13 @@ data "aws_iam_policy_document" "instance_base" {
 
   }
   statement {
-    sid       = "ReadOwnSecrets"
-    actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
-    resources = ["arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:findb/production/${each.key}/*"]
+    sid     = "ReadOwnSecrets"
+    actions = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
+    resources = [
+      for name, spec in local.secret_catalog :
+      "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:findb/production/${name}-??????"
+      if spec.unit == each.key
+    ]
 
   }
   statement {

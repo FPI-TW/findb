@@ -92,6 +92,9 @@ probe 送 EOF 並收完輸出。EOF grace 45 秒逾時後，僅對該測試建�
 不可依 prefix 批次刪除仍在使用中的 DB。
 
 
+以下舊版五 feeds native evidence probes 仍保留供問題追查；尚未完成七 feeds 與有效日曆政策的 native 驗收，
+不能作為新版部署 gate 或宣稱新版資料驗收通過。新版 fixture 與部署驗收見下方兩節。
+
 Staging provider functional acceptance 由 `fetcher/tests/test_staging_pilots.py`、
 `backend/tests/test_staging_provider_pilots.py` 與 staging evidence probes 覆蓋。CI 必須核對 catalog 與
 runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 時 fail closed。
@@ -141,3 +144,12 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 `test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
+
+## 有效日曆政策回歸
+
+`test_effective_calendar.py` 覆蓋 staging／production、pilot／full_market、七 feeds 的無日曆／週末／跳過政策，
+以及 draft、部分發布、閏年與不寫入的預設查詢。`test_effective_calendar_migration.py` 與 profile migration 測試
+驗證歷史 item／plan／首次日期保留，標記 migration 時點快照。Fetcher recovery 測試驗證週末仍取得 Source 決策，
+skipped_calendar 不建立本機抓取工作。Dashboard 驗證來源標示、政策略過與 profile cache 隔離。
+`pnpm check`、`pnpm test` 與兩環境 IaC format／validate／plan 必須通過後才能部署。
+以上架構與 fixture 驗收不代表 provider／R2 native 資料問題已排除。

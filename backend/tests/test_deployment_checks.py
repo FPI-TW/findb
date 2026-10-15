@@ -79,13 +79,10 @@ UniqueKeyLoader.add_constructor(
 )
 
 
-def test_both_targets_seed_calendars_after_migration():
+def test_neither_target_requires_calendar_seeding():
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text()
-    migration = helper.index("uv run alembic upgrade head")
-    seed = helper.index("python /app/scripts/seed_production_calendars.py", migration)
-    assert migration < seed
-    assert '--deployment-target "$APP_ENVIRONMENT"' in helper[seed : seed + 240]
-    assert "--apply" in helper[seed : seed + 240]
+    assert "seed_production_calendars.py" not in helper
+    assert "alembic upgrade head" in helper
 
 
 def test_migration_script_does_not_let_compose_consume_remaining_commands(
@@ -134,13 +131,12 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
 
     assert completed.returncode == 0, completed.stderr
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 6
+    assert len(calls) == 5
     assert "alembic upgrade head" in calls[0]
     assert "--require-exact-alembic-revision" in calls[1]
     assert "reconcile_database_privileges.py" in calls[2]
     assert "reconcile_deployment_credentials.py" in calls[3]
     assert "provision_registry.py --deployment-target production" in calls[4]
-    assert "seed_production_calendars.py --deployment-target production --apply" in calls[5]
 
 
 def test_staging_migration_requires_exact_revision_before_reconciliation_or_service_start(

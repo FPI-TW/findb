@@ -44,7 +44,6 @@ from findb_fetcher.full_market_universe import (
     universe_request,
 )
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
-from findb_fetcher.market_calendar import PublishedCalendarClient
 from findb_fetcher.providers.finlab import (
     FinLabDatasetConfig,
     FinLabDatasetTable,
@@ -208,7 +207,6 @@ class FullMarketRuntime:
         state: FullMarketState,
         source: FullMarketSourceClient,
         delivery: SourceAPIClient,
-        calendar: PublishedCalendarClient,
         raw_store: RawPayloadStore,
         readiness_file: Path | None = None,
         execution_profile: str = "full_market",
@@ -220,10 +218,9 @@ class FullMarketRuntime:
         self.execution_profile = execution_profile
         self.provider, self.config, self.state = provider, config, state
         self.can_acquire = can_acquire or (lambda: True)
-        self.source, self.delivery, self.calendar, self.raw_store = (
+        self.source, self.delivery, self.raw_store = (
             source,
             delivery,
-            calendar,
             raw_store,
         )
         self.readiness_file = readiness_file
@@ -725,24 +722,19 @@ class FullMarketRuntime:
             through = local.date() - timedelta(days=feed["target_date_lag_days"])
             if local.strftime("%H:%M") < feed["scheduled_time"]:
                 through -= timedelta(days=1)
-            due_dates: list[date] = []
-            for year in range(activation.year, through.year + 1):
-                calendar_market = (
-                    "TAIFEX" if feed["dataset_key"] == "tw_futures_eod" else feed["market"]
-                )
-                calendar = self.calendar.get_year(calendar_market, year)
-                due_dates.extend(
-                    day.trade_date
-                    for day in calendar.days
-                    if activation <= day.trade_date <= through and day.is_open
-                )
+            due_dates = [
+                activation + timedelta(days=offset)
+                for offset in range((through - activation).days + 1)
+            ]
             due_work.extend((day, feed) for day in due_dates)
         for day, feed in sorted(due_work, key=lambda work: work[0], reverse=True):
             if not self._acquisition_allowed():
                 self.pause()
                 return self.state.health(self.provider)
-            # Current deadline comes first; catchup retains every unresolved open date.
+            # Current deadline comes first; catchup retains every unresolved scheduled date.
             plan = self._plan_for_date(feed, day)
+            if plan["status"] == "skipped_calendar":
+                continue
             self.state.record_plan(plan, self.provider)
             can_continue = True
             if plan["status"] != "complete":

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.execution_profiles import ExecutionProfile
 from app.schemas.common import PaginatedResponse, PaginationInfo
-from app.schemas.full_market import DeliveryPlanResponse
+from app.schemas.full_market import CalendarSkipResponse, DeliveryPlanResponse
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc, utc_now
 
@@ -19,7 +19,9 @@ from app.utils import ensure_utc, utc_now
 
 
 HistoricalBackfillStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
-HistoricalBackfillItemStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+HistoricalBackfillItemStatus = Literal[
+    "pending", "running", "completed", "failed", "cancelled", "skipped_calendar"
+]
 
 
 class HistoricalBackfillCreateRequest(BaseModel):
@@ -42,6 +44,7 @@ class HistoricalBackfillItemResponse(BaseModel):
     item_id: UUID
     trade_date: date
     status: HistoricalBackfillItemStatus
+    calendar_snapshot: dict[str, Any] | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     failure_code: str | None = None
@@ -142,8 +145,8 @@ class CalendarMarketRequest(BaseModel):
 
 
 class CalendarMarketResponse(CalendarMarketRequest):
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -920,6 +923,9 @@ class DeliveryPlanDatasetsResponse(BaseModel):
 
 
 class DeliveryPlanListResponse(BaseModel):
+    skipped: list[CalendarSkipResponse] = Field(default_factory=list)
+    skipped_total: int = 0
+    execution_policies: dict[str, dict[str, Any]] = Field(default_factory=dict)
     data: list[DeliveryPlanResponse]
 
 

@@ -3,7 +3,7 @@
 `FULL_MARKET_ENABLED=false` 是 local、staging、production 的預設值。Backend 與 Fetcher 必須使用
 相同 `APP_ENVIRONMENT=local|staging|production` 與旗標。JSON `deployment_target` 仍是環境匹配契約。`FULL_MARKET_ENABLED` 從 AWS 部署控制設定載入，
 只控制 Full market 新抓取資格；兩環境固定安裝相同 runtime，不以旗標選擇程式。
-旗標為 true 不會啟動排程。Full market 的啟動資料條件只包含已發布 baseline 與完整已發布 calendar。
+旗標為 true 不會啟動排程。Full market 的啟動資料條件只包含已發布 baseline。
 Owner 權限、revision CAS 與 Source 認證屬於既有操作／資料存取規則。
 TAIFEX 官方 OpenAPI 不需 provider 帳號、API key 或 provider secret。部署設定中的
 `FETCHER_TAIFEX_SOURCE_CLIENT_KEY` 是 **FinDB 自己簽發的 Source API key**，供 TAIFEX Fetcher
@@ -32,12 +32,8 @@ Pilot 成功不能直接完成 Full plan。Minute 必須有完整 sequenced snap
 
 ## 啟動契約
 
-Pilot／Full market 每個 feed 僅檢查兩項啟動條件：
-
-1. 同 provider／dataset 有 `published` official baseline，且 effective date 不晚於交易所當地今天。
-2. 對應交易市場當年度有完整 `published` calendar revision。
-
-至少一個 feed 同時具備這兩項資料即可啟動，並只凍結符合條件的 feeds。
+Pilot／Full market 每個 feed 只要求同 provider／dataset 有 `published` official baseline，且 effective date
+不晚於交易所當地今天。至少一個 feed 符合即可啟動，並只凍結符合條件的 feeds。日曆不必先設定。
 Enrollment、installation receipt、readiness ACK／expiry、account／capacity proof、環境旗標與
 registry 額外 metadata 不列為啟動資格 gate。舊 `full_market` metadata 若為字串或 list，
 start 視為缺少 optional governance，重新建立 activation date；有效 contract declaration 與
@@ -45,16 +41,45 @@ start 視為缺少 optional governance，重新建立 activation date；有效 c
 處理，Owner 操作權限與 CAS 保留。
 
 Owner 透過 `PATCH /api/v1/admin/schedulers/{scheduler_key}`，傳入 `desired_state=running`
-與 `expected_revision`。Backend 在同一 transaction 重查 baseline／calendar，凍結 ready datasets、
-baseline IDs、calendar revision IDs 與首次日期，並寫入操作 audit；admission 不必綁定 enrollment。
+與 `expected_revision`。Backend 在同一 transaction 重查 baseline 與當時可用的 calendar metadata，凍結 ready datasets、
+baseline IDs、可空的 calendar revision IDs 與首次日期，並寫入操作 audit；admission 不必綁定 enrollment。
 新的 ready sibling 須停止後再啟動，重複 running PATCH 不改凍結範圍。
 每 dataset＋profile 首次日期由交易所當地今天決定；migration 保留合法 legacy activation_date，malformed
 legacy 日期在首次 start 時以 immutable first date 修正。停止、重啟與重新 enrollment 均不重設日期。舊 `/admin/feeds/{dataset}/activate`
 與 `/deactivate` 在 Owner 認證後回傳 410；沒有 per-feed activation、manual readiness_approved 或五日門檻。
 
-每次 provider call 前立即查 effective Source authorization。Full market 旗標關閉（不影響 Pilot）、Owner 停止、Source credential 撤銷／到期或 calendar 不完整時，禁止新抓取與 plan。已保存 prepared payload／frozen plan 的 delivery、
+每次 provider call 前立即查 effective Source authorization。Full market 旗標關閉（不影響 Pilot）、Owner 停止、Source credential 撤銷／到期時，禁止新抓取與 plan。已保存 prepared payload／frozen plan 的 delivery、
 normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。關閉旗標由 ingest/all lifespan 或
 下述管理命令停止 Full controls 並寫 audit；GET 投影永遠唯讀。重新開旗標後仍需 Owner 手動啟動。
+
+## 有效日曆與每日政策
+
+Backend 是政策權威。`runtime/configuration` 使用四個獨立開關：
+`TWELVE_DATA_SKIP_NON_TRADING_DAYS`、`FINLAB_SKIP_NON_TRADING_DAYS`、
+`SHIOAJI_SKIP_NON_TRADING_DAYS`、`TAIFEX_SKIP_NON_TRADING_DAYS`。
+每個開關皆為 `true`／`false` 字串，預設全部 `false`，兩環境欄位相同，經部署生效。
+Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設每日執行，包括週末／休市；
+true 才略過非交易日。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
+不設連續十筆失敗中斷規則。
+
+有效日曆逐日優先讀 published revision；缺市場、年份或日期採週一至週五開市／週六日休市，draft 不參與。
+TW／US／HK／CN／TAIFEX 使用固定市場時區及正常收盤時間，published 提早收盤優先。
+查詢不寫 DB、不自動發布；API 保留 `calendar_source=published|weekday_default` 與可空 revision。
+缺日曆可預設，DB／認證／通訊故障則正常報錯。部署與 Owner start 不 seed 或檢查 calendar completeness。
+
+`daily_execution_decision` 以 provider／dataset／日期／profile 唯一識別，原子保存 planned 或 skipped_calendar，
+凍結當日 calendar／session bounds／policy hash。既有 plan、成員、first dates、prepared bodies 不因後續更新改變。
+`skipped_calendar` 是最終決策，政策變更不重開；可另建受當時政策約束的人工回補。
+Source 仍拒絕未來日期、超前 fetched_at 與未結束 session；非交易日使用正常收盤時間。
+
+人工回補在建立時凍結所有日期，略過項目標示 skipped_calendar；全略過的 request 完成但不產生成功 run。
+Claim 不重算政策；可先建立當日請求，但必須到凍結快照的市場收盤時間才發給 lease，
+每次新抓取授權也核對同一界線。Published 提早收盤及非交易日正常收盤皆使用建立時快照，
+後續日曆修訂不改變既有工作的界線；已準備的交付可繼續完成。
+既有失敗／過期與序列執行規則保留。略過不計入 expected、missing 或 no_data。
+實際非交易日回應依原有 canonical evidence、完整 minute snapshot 與 DQ 判定，空回應不等於成功。
+Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有效日曆建立 `legacy_migration_snapshot`，
+不聲稱它是原始建立時的日曆；不補入舊回補範圍中原本省略的日期。這是新的 rollback 下限。
 
 ## 平台限制與用量
 
@@ -80,18 +105,17 @@ Payload／R2 object／解壓縮／IPC bounds 屬於傳輸與資料處理保護�
 啟動資格的程式修改位於 `refactor/full-market-baseline-calendar-start`；migration
 `3553ed95cfbf` 允許 admission 的 legacy enrollment reference 為 null，保留既有歷史綁定。
 所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依
-published baseline 與完整 published calendar；新抓取另遵守 running control、有效旗標、Source
+published baseline；日曆缺少時使用週一至週五預設；新抓取另遵守 running control、有效旗標、Source
 及 provider API 認證與資料驗證。每次部署仍須確認 installed revision、環境與有效旗標；最新 staging 資料查核見上方現況。
 Nasdaq MIC 與 publication 排序修正已隨上述 c744a36 staging release 部署；production 狀態見 deployment runbook。
 
 ## 治理資料明確需求
 
-啟動必要治理資料只包含以下兩類，其餘診斷／部署資料不列為啟動前提：
+啟動必要治理資料只包含 published baseline，其餘診斷／部署資料不列為啟動前提：
 
 | 資料 | 必備內容 | 驗收方式／目前 staging 狀態 |
 | --- | --- | --- |
 | Published baseline | 每 provider／dataset 的 release ID、effective date、完整官方成員／provider mapping、來源 URL／SHA256 與不可變原始資料參考、member count／SHA256、Owner publication timestamp／audit | 同 provider／dataset、status=`published`、effective date 不晚於當地今天；staging 七個 feeds 已發布，release IDs 見上表。首份發布提供 `evidence_note` 與 `first_baseline_approved=true`；重大成員異動仍遵循既有 publish 規則 |
-| Published calendar | 對應交易市場／當年度的 revision ID、timezone、完整日期與開休市／session times | status=`published` 且年度完整；US／HK／TW／TAIFEX 2026 皆已具備 365／365 published revision |
 
 TAIFEX baseline 成員保留 TX／MTX／TMF／TE／TF、實際月／週到期 contract code／month 與
 regular／after_hours sessions，排除價差與 continuous futures。官方成員與 mapping gaps 保留，
@@ -109,7 +133,7 @@ regular／after_hours sessions，排除價差與 continuous futures。官方成�
 
 ## 設定與啟動
 
-Backend 先 migration、registry／calendar 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動。
+Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動。
 Staging 常態只開 Pilot，新版驗證時短暫開 Full；production 常態只開 Full。部署本身不 start controls。
 
 ```bash
@@ -124,7 +148,7 @@ uv run --env-file .env findb-fetch-runtime --execution-profile pilot --provider 
 Full 使用 `--execution-profile full_market` 與獨立 checkpoint，並將 Backend／Fetcher 的
 `FULL_MARKET_ENABLED` 同步設為 true。各 consumer 共用同一 governor 絕對路徑；不能把 checkpoint 與
 account DB 指向同一檔。既有 governor 的 pins、debt、unknown liability、cooldown 不得刪除或重設。
-維護同步以 Source maintenance 授權執行，不需要 enrollment；新抓取仍要求 published baseline、calendar 與 running controls。
+維護同步以 Source maintenance 授權執行，不需要 enrollment；新抓取仍要求 published baseline 與 running controls。
 
 AWS 路徑、首次切換、備份與回退下限見 [deployment.md](deployment.md)。CLI 的 `--check` 不呼叫 provider，
 `--initialize-state` 只允許新 installation 建立 schema，既有 checkpoint 遺失必須阻塞。
