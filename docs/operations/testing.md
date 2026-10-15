@@ -145,6 +145,14 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
 
+2026-10-15 staging Pilot 已核對 Shioaji `tw_equity_minute` 與 `tw_etf_minute`：
+每條計畫 `expected=2, data=2, no_data=0, missing=0, blocked=0`，完整 sequenced snapshot、
+Source receipt、normalization、canonical 與 Serve projection 一致，R2 bytes／hash 與 frozen
+checkpoint 亦符合。Backend 唯讀證據命令為 `0841854e-0f86-45dd-9de3-e4e8e2ab0971`，
+Fetcher 為 `af29aac1-217c-421f-8d4e-37932b93adca`；七條 feed assembler 僅判定這兩條通過。
+整體仍為 2／7，不代表 Full market 或 production 通過；剩餘 provider 問題見
+[原生驗收待辦](../dev/production-foundation-cutover-plan.md)。
+
 ## 有效日曆政策回歸
 
 `test_effective_calendar.py` 覆蓋 staging／production、pilot／full_market、七 feeds 的無日曆／週末／跳過政策，
