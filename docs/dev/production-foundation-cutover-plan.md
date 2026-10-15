@@ -1,7 +1,7 @@
 # Production native 資料與回復驗收待辦
 
 Production foundation 與既有 releases 的歷史由 Git 追溯。
-Staging／production 統一部署切換工作集中於 [環境與抓取流程統一](environment-runtime-unification.md)，
+Staging／production 已採用 [統一部署契約](../operations/deployment.md)，
 不再沿用 GitHub Environment gate、bounded topology 或 schema v2 accepted replay。
 現行操作契約見 [部署文件](../operations/deployment.md)、[production 維運](../operations/production.md)
 與 [Full market runbook](../operations/full_market.md)。

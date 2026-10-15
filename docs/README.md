@@ -21,8 +21,6 @@
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
 | 追蹤 production native 資料及 rollback 驗收 | [dev/production-foundation-cutover-plan.md](dev/production-foundation-cutover-plan.md) |
 
-| 追蹤 staging／production 統一部署與實際切換 | [dev/environment-runtime-unification.md](dev/environment-runtime-unification.md) |
-
 ## Source of truth
 
 文件用來解釋穩定邊界與操作意圖；精確行為依下列來源為準：
