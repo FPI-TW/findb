@@ -3,6 +3,8 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution_profiles import scheduler_key as profile_scheduler_key
+from app.execution_profiles import scheduler_profile, unified_scheduler
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 
@@ -30,12 +32,13 @@ async def scheduler_start_blockers(
     datasets: list[DatasetRegistry] | None = None,
 ) -> list[str]:
     """Return safe reason codes, allowing partial approved acceptance scopes."""
-    if not row.scheduler_key.startswith("full_market_"):
+    if not unified_scheduler(row.scheduler_key):
         return []
     expected = PROVIDER_DATASET_SCOPE.get(row.provider)
     if (
         expected is None
-        or row.scheduler_key != f"full_market_{row.provider}_v1"
+        or row.scheduler_key
+        != profile_scheduler_key(row.provider, scheduler_profile(row.scheduler_key))
         or set(dataset_keys) != set(expected)
     ):
         return ["full_market_scope_invalid"]
@@ -45,4 +48,6 @@ async def scheduler_start_blockers(
         return ["full_market_scope_invalid"]
     from app.services.full_market_admission import eligibility
 
-    return (await eligibility(db, row.provider, datasets))["blockers"]
+    return (
+        await eligibility(db, row.provider, datasets, profile=scheduler_profile(row.scheduler_key))
+    )["blockers"]

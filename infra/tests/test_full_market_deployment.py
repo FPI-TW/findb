@@ -5,8 +5,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -32,7 +30,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
         account = "289112218471" if target == "production" else "439622209937"
         registry = f"{account}.dkr.ecr.ap-southeast-1.amazonaws.com"
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "deployment_target": target,
             "unit": unit,
             "commit_sha": "a" * 40,
@@ -49,6 +47,8 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "account_id": account,
             "release_tag": f"{unit}-v1.0.0" if target == "production" else "",
         }
+        if unit == "fetcher":
+            manifest.update(runtime_profile="unified", fetcher_bundle_version=1)
         if target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": f"{unit}/accepted/{'a' * 40}/{'b' * 64}.tar",
@@ -67,9 +67,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
     def test_every_runtime_mounts_writable_shared_governor_with_full_disabled(self):
         source = (ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
         start = source.index("readiness_mount=()")
-        end = source.index(
-            '\nif [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then', start
-        )
+        end = source.index("\n{\n  # The official", start)
         mount_setup = source[start:end]
         for target in ("staging", "production"):
             for enabled in ("false", "true"):
@@ -125,10 +123,10 @@ class FullMarketDeploymentTests(unittest.TestCase):
 
     def test_full_market_is_environment_bound_fetcher_only(self):
         good = self.manifest()
-        good["runtime_profile"] = "full-market"
+        good["runtime_profile"] = "unified"
         self.validate(good)
         staging = self.manifest("staging")
-        staging["runtime_profile"] = "full-market"
+        staging["runtime_profile"] = "unified"
         self.validate(staging)
         for target, unit in (("staging", "findb"), ("production", "findb")):
             wrong = self.manifest(target, unit)
@@ -150,14 +148,13 @@ class FullMarketDeploymentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory).resolve()
             for target, profile in (
-                ("staging", "bounded"),
-                ("production", "full-market"),
+                ("staging", "unified"),
+                ("production", "unified"),
             ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
                     manifest["fetcher_bundle_version"] = 1
-                    if profile == "full-market":
-                        manifest["runtime_profile"] = profile
+                    manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:
                         contracts = sources.load_selected_contract_manifest(
                             ROOT / "contracts/manifest.json"
@@ -204,7 +201,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
                     preflight = "set -euo pipefail\n" + source[start:end]
                     for requested in (
                         profile,
-                        "full-market" if profile == "bounded" else "bounded",
+                        "bounded",
                     ):
                         completed = subprocess.run(
                             ["bash", "-c", preflight],
@@ -279,209 +276,30 @@ class FullMarketDeploymentTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("release_root_invalid", completed.stderr)
 
-    def test_taifex_rejected_outside_expanded_profile_before_secret_use(self):
-        completed = subprocess.run(
-            [
-                "bash",
-                str(ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"),
-                "taifex",
-                *(["unused"] * 8),
-                "findb-fetch-full-market",
-            ],
-            env={
-                **os.environ,
-                "AWS_REGION": "ap-southeast-1",
-                "FETCHER_RUNTIME_PROFILE": "bounded",
-            },
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("taifex_profile_invalid", completed.stderr)
-
-    @unittest.skipUnless(shutil.which("jq"), "workflow replay guard requires jq")
-    def test_replay_uses_record_profile_and_legacy_default(self):
-        workflow = (ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
-        guard = next(
-            line.strip()
-            for line in workflow.splitlines()
-            if line.strip().startswith("FETCHER_RUNTIME_PROFILE=") and "runtime_profile //" in line
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            for record, expected in (
-                ({}, "bounded"),
-                ({"runtime_profile": "bounded"}, "bounded"),
-                ({"runtime_profile": "full-market"}, "full-market"),
-            ):
-                (Path(directory) / "acceptance.json").write_text(json.dumps(record))
-                result = subprocess.run(
-                    ["bash", "-c", guard + '\nprintf "%s" "$FETCHER_RUNTIME_PROFILE"'],
-                    env={**os.environ, "RUNNER_TEMP": directory},
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                self.assertEqual(result.stdout, expected)
-
-    def test_profile_transition_restores_retired_runtime_on_failure(self):
+    def test_fixed_topology_installs_both_profiles_with_full_flag_off(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
-        functions = []
-        for name in (
-            "register_provider",
-            "registered_original",
-            "require_retired_runtime",
-            "retire_runtime",
-            "register_named_full",
-            "restore_named_identity",
-            "rollback_named_full",
-            "rollback_named_full_backups",
-            "rollback_provider",
-            "rollback_processed",
-            "rollback_legacy_moves",
-        ):
-            match = re.search(rf"{name}\(\) \{{\n.*?\n\}}", source, re.DOTALL)
-            self.assertIsNotNone(match)
-            functions.append(match.group())
-        # Docker is represented only in memory. Execute the actual shell
-        # transaction functions without access to a daemon or any host paths.
-        functions.insert(
-            0,
-            "runtime_inventory_recovery=none\n"
-            + source[source.index("runtime_inventory_failure() {") : source.index("\nset +x")],
-        )
-        fake_docker = r"""
-set -euo pipefail
-container_rows=historical:true:old:accepted-image:true
-processed=()
-legacy_moves=()
-named_full_originals=()
-named_full_backups=()
-rollback_failed=0
-docker() {
-  case "$1" in
-    container)
-      if [ "$2" = ls ]; then printf "%s\n" "$container_rows" | cut -d: -f1; else [ -n "$(printf '%s\n' "$container_rows" | awk -F: -v name="$3" '$1 == name {print $1}')" ]; fi ;;
-    inspect)
-      case "$3" in
-        *State.Running*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $2}' ;;
-        *State.Identity*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $3}' ;;
-        *Config.Image*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $4}' ;;
-        *Config.Labels*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $5}' ;;
-        *State.ExitCode*) echo 0 ;;
-        *State.OOMKilled*) echo false ;;
-        *State.Error*) echo '' ;;
-        *'{{.Id}}'*) printf '%s\n' "$container_rows" | awk -F: -v name="$4" '$1 == name {print $3}' ;;
-        *) echo true ;;
-      esac ;;
-    stop) container_rows="$(printf '%s\n' "$container_rows" | awk -F: -v name="$4" 'BEGIN {OFS=":"} $1 == name {$2="false"} NF {print}')" ;;
-    rm) container_rows="$(printf '%s\n' "$container_rows" | awk -F: -v name="$2" 'NF && $1 != name {print}')" ;;
-    rename) container_rows="$(printf '%s\n' "$container_rows" | awk -F: -v name="$2" -v target="$3" 'BEGIN {OFS=":"} $1 == name {$1=target} NF {print}')" ;;
-    start) container_rows="$(printf '%s\n' "$container_rows" | awk -F: -v name="$2" 'BEGIN {OFS=":"} $1 == name {$2="true"} NF {print}')" ;;
-    *) return 99 ;;
-  esac
-}
-"""
-        scenario = r"""
-retire_runtime historical
-! docker container inspect historical
-[ "$(docker inspect --format '{{.State.Running}}' historical-previous)" = false ]
-container_rows="${container_rows}
-historical:true:new:new-image:false"
-rollback_processed
-[ "$(docker inspect --format '{{.State.Running}}' historical)" = true ]
-[ "$(docker inspect --format '{{.State.Identity}}' historical)" = old ]
-[ "$(docker inspect --format '{{.Config.Image}}' historical)" = accepted-image ]
-! docker container inspect historical-previous
+        self.assertIn("for execution_profile in pilot full_market; do", source)
+        self.assertIn("for provider in twelve-data finlab shioaji taifex; do", source)
+        self.assertIn('findb-fetch-runtime --execution-profile "$execution_profile"', source)
+        self.assertNotIn('[ "$FULL_MARKET_ENABLED" =', source)
 
-"""
-        completed = subprocess.run(
-            ["bash", "-c", fake_docker + "\n".join(functions) + scenario],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+    def test_rollback_floor_rejects_legacy_runtime_profiles(self):
+        for profile in (None, "bounded", "full-market"):
+            manifest = self.manifest()
+            manifest["runtime_profile"] = profile
+            with self.assertRaises(release.ManifestError):
+                self.validate(manifest)
 
-    def test_bounded_accepted_replay_preserves_compatible_installed_drainer_image(self):
+    def test_first_cutover_rejects_legacy_containers(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
-        start = source.index(
-            '    if [ "$recorded_profile" = bounded ] && [ "${FETCHER_ACCEPTED_REPLAY:-false}" = true ]; then'
-        )
-        end = source.index("\n    fi", start) + len("\n    fi")
-        guard = source[start:end]
-        registration = "\n".join(
-            re.search(rf"{name}\(\) \{{\n.*?\n\}}", source, re.S).group()
-            for name in ("register_named_full", "register_provider", "registered_original")
-        )
-        inventory = (
-            "runtime_inventory_recovery=none\n"
-            + source[source.index("runtime_inventory_failure() {") : source.index("\nset +x")]
-        )
-        fake = r"""
-set -euo pipefail
-processed=(); named_full_originals=(); named_full_backups=()
-stable=drainer
-# Every row binds a distinct name, running state, ID, image and accepted label.
-case "$layout" in
-  stable) container_rows=drainer:false:accepted-id:installed-compatible:true ;;
-  previous-only) container_rows=drainer-previous:false:accepted-id:installed-compatible:true ;;
-  interrupted-stable) container_rows='drainer:false:interrupted-id:interrupted-image:false
- drainer-previous:false:accepted-id:installed-compatible:true'
-    container_rows="${container_rows// drainer/drainer}" ;;
-  *) exit 99 ;;
-esac
-docker() {
-  local row="$(printf '%s\n' "$container_rows" | awk -F: -v name="${!#}" '$1 == name {print}')"
-  case "$1" in
-    container)
-      if [ "$2" = ls ]; then printf '%s\n' "$container_rows" | cut -d: -f1; else [ -n "$row" ]; fi ;;
-    inspect)
-      [ -n "$row" ] || return 1
-      case "$3" in
-        *State.Running*) printf '%s\n' "$row" | cut -d: -f2 ;;
-        *'{{.Id}}'*) printf '%s\n' "$row" | cut -d: -f3 ;;
-        *Config.Image*) printf '%s\n' "$row" | cut -d: -f4 ;;
-        *Config.Labels*) printf '%s\n' "$row" | cut -d: -f5 ;;
-        *) return 97 ;;
-      esac ;;
-    *) return 96 ;;
-  esac
-}
-"""
-        for layout in ("stable", "previous-only", "interrupted-stable"):
-            for profile, replay, expected in (
-                ("bounded", "true", "installed-compatible"),
-                ("bounded", "false", "bundle-image"),
-                ("full-market", "true", "bundle-image"),
-            ):
-                with self.subTest(layout=layout, profile=profile, replay=replay):
-                    script = (
-                        fake
-                        + inventory
-                        + registration
-                        + '\nregister_provider "$stable" "$stable-previous"\nimage=bundle-image\n'
-                        + guard
-                        + '\nprintf "%s" "$image"'
-                    )
-                    result = subprocess.run(
-                        ["bash", "-c", script],
-                        env={
-                            **os.environ,
-                            "recorded_profile": profile,
-                            "FETCHER_ACCEPTED_REPLAY": replay,
-                            "layout": layout,
-                        },
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    self.assertEqual(result.stdout, expected)
-        workflow = (ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
-        self.assertIn(
-            '[ "$MODE" != replay ] || runtime_exports="$runtime_exports FETCHER_ACCEPTED_REPLAY=true"',
-            workflow,
-        )
+        self.assertIn("reason=legacy_runtime_requires_cutover", source)
+        self.assertNotIn("move_legacy_full_runtime", source)
+
+    def test_unified_runtime_never_bridges_legacy_environment(self):
+        for name in ("deploy_fetcher_aws.sh", "release_fetcher_provider.sh"):
+            source = (ROOT / "infra/deploy/runtime-secrets" / name).read_text()
+            self.assertNotIn("FETCHER_LEGACY_ENV_BRIDGE", source)
+            self.assertNotIn("FETCHER_ACCEPTED_REPLAY", source)
 
     def test_infra_tests_run_ci_without_staging_deployment(self):
         routed = policy.classify(["infra/tests/test_full_market_deployment.py"])
@@ -505,7 +323,7 @@ class InstallationReceiptTests(unittest.TestCase):
             base = Path(directory)
             manifest = {
                 "deployment_target": "staging",
-                "runtime_profile": "full-market",
+                "runtime_profile": "unified",
                 "unit": "fetcher",
                 "commit_sha": "a" * 40,
                 "images": {"finlab": "image@sha256:" + "b" * 64},
@@ -519,7 +337,7 @@ class InstallationReceiptTests(unittest.TestCase):
                 "source_requests_per_minute": 120,
                 "account": {
                     "governor_identity": "/account/governor.sqlite3",
-                    "consumers": ["full_market", "pilot", "maintenance"],
+                    "consumers": ["full_market", "pilot", "historical", "maintenance"],
                 },
             }
             for name, value in (
@@ -537,7 +355,13 @@ class InstallationReceiptTests(unittest.TestCase):
             environment_fields = ["APP_ENVIRONMENT=staging"]
 
             def row(name):
-                consumer = "full_market" if "full-market" in name else "pilot"
+                consumer = (
+                    "historical"
+                    if "historical" in name
+                    else "full_market"
+                    if "full-market" in name
+                    else "pilot"
+                )
                 return {
                     "Id": consumer + "-container",
                     "Config": {
@@ -593,7 +417,7 @@ class InstallationReceiptTests(unittest.TestCase):
                 receipt["source_key_sha256"], hashlib.sha256(b"private-key").hexdigest()
             )
             self.assertNotIn("private-key", json.dumps(receipt))
-            self.assertEqual(len(calls), 6)  # Both allocations plus actual config, twice.
+            self.assertEqual(len(calls), 8)  # Both allocations plus actual config, twice.
             environment_fields[:] = ["DEPLOYMENT_TARGET=staging"]
             with (
                 patch.object(inspection, "inspect", side_effect=row),

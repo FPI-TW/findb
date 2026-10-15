@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "targets": {
+    "staging": {
+      "account": "439622209937",
+      "region": "ap-southeast-1",
+      "units": {
+        "findb": {
+          "role": "arn:aws:iam::439622209937:role/findb-staging-deploy",
+          "parameter": "/findb/staging/findb/deployment"
+        },
+        "fetcher": {
+          "role": "arn:aws:iam::439622209937:role/fetcher-staging-deploy",
+          "parameter": "/findb/staging/fetcher/deployment"
+        }
+      }
+    },
+    "production": {
+      "account": "289112218471",
+      "region": "ap-southeast-1",
+      "units": {
+        "findb": {
+          "role": "arn:aws:iam::289112218471:role/findb-production-deploy",
+          "parameter": "/findb/production/findb/deployment"
+        },
+        "fetcher": {
+          "role": "arn:aws:iam::289112218471:role/fetcher-production-deploy",
+          "parameter": "/findb/production/fetcher/deployment"
+        }
+      }
+    }
+  }
+}

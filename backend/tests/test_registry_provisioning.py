@@ -41,65 +41,31 @@ def _config(*, finlab: dict | None = None, other: dict | None = None) -> dict:
     }
 
 
-def test_staging_applies_bounded_finlab_override_and_is_idempotent() -> None:
-    first, first_report = provisioning.provision_registry_config(
-        _config(), deployment_target="staging"
-    )
-    second, second_report = provisioning.provision_registry_config(
-        first, deployment_target="staging"
-    )
-
-    assert first["operator_note"] == "preserve"
-    assert first["delivery_expectation"]["record_count"] == {"minimum_record_count": 2100}
-    assert first["delivery_expectation"]["source_overrides"]["finlab"] == {
-        "baseline": {"enabled": False},
-        "record_count": {"minimum_record_count": 2},
-    }
-    assert first_report.changed is True
-    assert second == first
-    assert second_report.changed is False
-    assert second_report.action == "staging_finlab_pilot_unchanged"
-
-
-def test_production_removes_only_exact_pilot_and_preserves_other_overrides() -> None:
-    staged, _ = provisioning.provision_registry_config(
-        _config(other={"record_count": {"minimum_record_count": 17}}),
-        deployment_target="staging",
-    )
-    production, report = provisioning.provision_registry_config(
-        staged,
-        deployment_target="production",
-    )
-
-    assert production["delivery_expectation"]["record_count"] == {"minimum_record_count": 2100}
-    assert production["delivery_expectation"]["source_overrides"] == {
-        "other": {"record_count": {"minimum_record_count": 17}}
-    }
-    assert report.action == "production_exact_finlab_pilot_removed"
-    assert report.changed is True
-
-    custom = _config(
-        finlab={"baseline": {"enabled": True}, "record_count": {"minimum_record_count": 99}},
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_unified_registry_removes_exact_legacy_pilot_and_is_idempotent(target):
+    original = _config(
+        finlab=provisioning.FINLAB_PILOT_OVERRIDE,
         other={"record_count": {"minimum_record_count": 17}},
     )
-    unchanged, custom_report = provisioning.provision_registry_config(
-        custom,
-        deployment_target="production",
+    first, report = provisioning.provision_registry_config(original, deployment_target=target)
+    assert first["delivery_expectation"]["record_count"] == {"minimum_record_count": 2100}
+    assert first["delivery_expectation"]["source_overrides"] == {
+        "other": {"record_count": {"minimum_record_count": 17}}
+    }
+    assert report.changed and report.action == "legacy_finlab_pilot_removed"
+    second, second_report = provisioning.provision_registry_config(first, deployment_target=target)
+    assert second == first and not second_report.changed
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_unified_registry_preserves_operator_overrides(target):
+    original = _config(
+        finlab={"baseline": {"enabled": True}, "record_count": {"minimum_record_count": 99}}
     )
-    assert unchanged == custom
-    assert custom_report.changed is False
-    assert custom_report.action == "production_operator_finlab_override_preserved"
-    custom_output = custom_report.as_dict()
-    assert custom_output["previous_finlab_override"] == "custom"
-    assert "99" not in str(custom_output)
-
-
-def test_production_without_pilot_is_a_noop() -> None:
-    config = _config()
-    result, report = provisioning.provision_registry_config(config, deployment_target="production")
-    assert result == config
-    assert report.changed is False
-    assert report.action == "production_full_market_policy_unchanged"
+    result, report = provisioning.provision_registry_config(original, deployment_target=target)
+    assert result == original
+    assert not report.changed
+    assert report.action == "operator_policy_preserved"
 
 
 def test_report_never_serializes_arbitrary_custom_policy() -> None:

@@ -646,6 +646,10 @@ class BaseNormalizer(ABC):
                 run.started_at = utc_now()
             if status in ("completed", "completed_with_errors", "failed"):
                 run.completed_at = utc_now()
+            if status in ("completed", "completed_with_errors"):
+                from app.services.delivery_evidence import record_delivery_evidence
+
+                await record_delivery_evidence(self.db, run)
             if status == "completed" and run.source and run.schema_id and run.schema_version:
                 await resolve_missing_delivery_for_run(
                     self.db,

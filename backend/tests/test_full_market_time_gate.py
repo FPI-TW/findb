@@ -196,7 +196,10 @@ async def test_resume_preserves_original_activation_and_existing_gaps(test_sessi
         await test_session.get(SchedulerControl, "full_market_taifex_v1")
     ).desired_state == "stopped"
     assert (
-        await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+        await test_session.get(
+            FullMarketDatasetState,
+            {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+        )
     ).first_start_date == DAY
     existing = await get_plan(
         test_session, plan.plan_id, provider=body.provider, allowed_datasets=[dataset.dataset_key]

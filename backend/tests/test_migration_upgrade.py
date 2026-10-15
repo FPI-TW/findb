@@ -310,7 +310,8 @@ async def test_upgrade_from_early_f7_repairs_schema() -> None:
                         },
                     )
 
-        await _run_alembic(database_url, "head")
+        # Historical reversible migrations stop below the unified rollback floor.
+        await _run_alembic(database_url, "3553ed95cfbf")
 
         async with target_engine.connect() as connection:
             column_count = await connection.scalar(

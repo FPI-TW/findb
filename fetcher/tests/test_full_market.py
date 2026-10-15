@@ -463,6 +463,7 @@ def test_source_protocol_exact_server_owned_plan_no_deadline_or_size() -> None:
         )
     assert set(json.loads(calls[0].content)) == {
         "version",
+        "execution_profile",
         "dataset_key",
         "provider",
         "trade_date",
@@ -1140,3 +1141,32 @@ def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
     assert checkpoint.read_bytes() == before
     assert not (tmp_path / "state.sqlite3-wal").exists()
     assert not (tmp_path / "state.sqlite3-shm").exists()
+
+
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+def test_checkpoint_profile_binding_is_durable(tmp_path, profile):
+    state = FullMarketState(tmp_path / "checkpoint.sqlite3")
+    state.bind_profile(profile)
+    restarted = FullMarketState(state.path)
+    restarted.bind_profile(profile)
+    with pytest.raises(FullMarketStateError, match="profile mismatch"):
+        restarted.bind_profile("pilot" if profile == "full_market" else "full_market")
+
+
+def test_legacy_checkpoint_cannot_be_relabelled_pilot(tmp_path):
+    state = FullMarketState(tmp_path / "checkpoint.sqlite3")
+    state.record_plan(_plan(), "twelve_data")
+    body = canonical_bytes({"fetched_at": "frozen", "source_raw_sha256": "a" * 64})
+    state.prepare("fp1:123:AAPL", body)
+    with state.connection() as db:
+        db.execute("INSERT INTO full_cursor VALUES ('taifex','tw_futures_eod','2026-10-01')")
+        db.execute("INSERT INTO full_quota VALUES ('account','day',12,345,678)")
+    with pytest.raises(FullMarketStateError, match="legacy full-market checkpoint"):
+        state.bind_profile("pilot")
+    state.bind_profile("full_market")
+    assert state.prepared("fp1:123:AAPL") == body
+    with state.connection() as db:
+        assert tuple(
+            db.execute("SELECT requests,bytes,blocked_until FROM full_quota").fetchone()
+        ) == (12, 345, 678)
+        assert db.execute("SELECT trade_date FROM full_cursor").fetchone()[0] == "2026-10-01"

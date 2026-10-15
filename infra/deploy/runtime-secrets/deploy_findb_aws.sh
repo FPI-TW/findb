@@ -1,33 +1,20 @@
 #!/usr/bin/env bash
 # findb_environment_contract=app-environment-v1
-# FinDB staging AWS-mode deployment. Runtime secrets are loaded on the host
+# Unified FinDB AWS deployment. Runtime secrets are loaded on the host
 # from the instance role and are never supplied by the runner.
 
 set -euo pipefail
 set +x
 
-if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
-  release_root="$FINDB_RELEASE_ROOT"
-  runtime_dir="$release_root/infra/deploy/runtime-secrets"
-  compose_file="$release_root/docker-compose.prod.yml"
-  # A release-root Compose file must still manage the stable FinDB project,
-  # whose containers have fixed names and are validated below by project label.
-  COMPOSE_PROJECT_NAME=findb
-  export COMPOSE_PROJECT_NAME
-else
-  # Explicit production compatibility: staging always supplies a validated
-  # release root, while legacy production retains its established layout.
-  release_root=/opt/findb
-  runtime_dir=/opt/findb/runtime-secrets
-  compose_file=/opt/findb/docker-compose.prod.yml
-fi
+: "${FINDB_RELEASE_ROOT:?validated immutable release root is required}"
+release_root="$FINDB_RELEASE_ROOT"
+runtime_dir="$release_root/infra/deploy/runtime-secrets"
+compose_file="$release_root/docker-compose.prod.yml"
+export COMPOSE_PROJECT_NAME=findb
 catalog="$runtime_dir/findb.json"
 runtime_command="$runtime_dir/runtime_secret_command.sh"
 nginx_runtime="$runtime_dir/render_nginx_runtime.sh"
-# Production retains its established host path.  A validated staging release
-# must opt into the root-owned path below; it must never render as root below
-# an SSH user's home directory.
-nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"
+nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/etc/findb/nginx}"
 
 : "${AWS_REGION:?AWS_REGION is required}"
 : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is required}"
@@ -57,23 +44,11 @@ if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
   echo "findb_aws_deploy=failed reason=ecr_image_contract" >&2
   exit 1
 fi
-if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
-  deploy_mode="${FINDB_DEPLOY_MODE:-}"
-  case "$deploy_mode" in
-    candidate|activate) ;;
-    *) echo "findb_aws_deploy=failed reason=staging_deploy_mode_invalid" >&2; exit 1 ;;
-  esac
-else
-  # Explicit production compatibility: production continues to use its legacy
-  # single-command behaviour and never enters the staging transaction modes.
-  deploy_mode=legacy
-fi
+deploy_mode="${FINDB_DEPLOY_MODE:?deployment mode is required}"
+case "$deploy_mode" in candidate|activate) ;; *) exit 1 ;; esac
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=FULL_MARKET_ENABLED,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,APP_NAME,APP_VERSION,DEBUG,PORT,DATABASE_POOL_SIZE,DATABASE_MAX_OVERFLOW,API_V1_PREFIX,API_KEY_HEADER,SOURCE_ALLOWLIST_CIDRS,SOURCE_TRUST_PROXY_HEADERS,SERVE_REQUIRE_AUTH,RATE_LIMIT_REQUESTS,RATE_LIMIT_WINDOW,RAW_RETENTION_ENABLED,RAW_RETENTION_DAYS,FINDB_STATIC_CACHE_BASE_URL,CLOUDFLARE_R2_ACCOUNT_ID,CLOUDFLARE_R2_CANONICAL_BUCKET
-if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
-  preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"
-fi
+preserve_env=FULL_MARKET_ENABLED,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -190,16 +165,6 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
       exit 1
     fi
   done
-  render_nginx_files() {
-    python3 "$release_root/backend/scripts/render_nginx_public_host.py" \
-      --host "$FINDB_PUBLIC_HOST" --template "$release_root/infra/nginx/nginx.conf" \
-      --output "$nginx_config_dir/nginx.conf"
-    python3 "$release_root/backend/scripts/render_nginx_source_allowlist.py" \
-      --cidrs "$SOURCE_ALLOWLIST_CIDRS" --output "$nginx_config_dir/source-allowlist.conf"
-    python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
-      --output "$nginx_config_dir/cloudflare-real-ip.conf"
-  }
-  if [ "$APP_ENVIRONMENT" = production ]; then
     run_runtime --consumer deployment -- bash -s -- \
       "$release_root" "$nginx_config_dir" "$FINDB_PUBLIC_HOST" <<'RENDER_NGINX_SCRIPT'
 set -euo pipefail
@@ -214,9 +179,6 @@ python3 "$release_root/backend/scripts/render_nginx_source_allowlist.py" \
 python3 "$release_root/backend/scripts/render_nginx_cloudflare_real_ip.py" \
   --output "$nginx_config_dir/cloudflare-real-ip.conf"
 RENDER_NGINX_SCRIPT
-  else
-    render_nginx_files
-  fi
 fi
 for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
   if [ ! -f "$nginx_config_dir/$conf" ] || [ -L "$nginx_config_dir/$conf" ]; then
@@ -235,14 +197,6 @@ for conf in nginx.conf source-allowlist.conf cloudflare-real-ip.conf; do
     fi
   fi
 done
-for tls_file in server.crt server.key; do
-  if [ "$APP_ENVIRONMENT" = staging ] \
-    && [ ! -f "/home/ubuntu/etc/nginx/ssl/$tls_file" ]; then
-    echo "findb_aws_deploy=failed reason=tls_file_missing" >&2
-    exit 1
-  fi
-done
-
 # Compose interpolation needs the compose consumer while pulling images. The
 # registry token is confined to the same tmpfs Docker config and command.
 run_runtime --consumer compose --ecr-registry "$ECR_REGISTRY" --docker-login -- bash -s -- "$compose_file" <<'PULL_SCRIPT'
@@ -265,7 +219,7 @@ if [ "$deploy_mode" = candidate ]; then
   echo "findb_aws_deploy=candidate_nginx_runtime_validated"
 else
   sudo --preserve-env="$preserve_env" "$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$APP_ENVIRONMENT" "$AWS_ACCOUNT_ID"
-  if [ "$APP_ENVIRONMENT" = production ]; then
+  {
     for tls_file in server.crt server.key; do
       if [ ! -f "/run/findb-runtime-secrets/nginx/$tls_file" ] \
         || [ "$(stat -c '%u:%g:%a' "/run/findb-runtime-secrets/nginx/$tls_file")" != "0:0:600" ]; then
@@ -273,7 +227,7 @@ else
         exit 1
       fi
     done
-  fi
+  }
 fi
 
 run_runtime --consumer migration --consumer compose --consumer credentials \
@@ -282,23 +236,13 @@ run_runtime --consumer migration --consumer compose --consumer credentials \
   -- bash -s -- "$compose_file" <<'MIGRATION_CHECK_SCRIPT'
 set -euo pipefail
 compose_file="$1"
-bootstrap_arg=""
-if [ "$APP_ENVIRONMENT" = production ]; then
-  bootstrap_arg=--allow-empty-database-bootstrap
-fi
-if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
-  expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
-  expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
-  docker compose -f "$compose_file" run --rm --no-deps ingest \
-    python /app/scripts/predeploy_db_check.py \
-      --expected-alembic-revision "$expected_revision" \
-      --expected-rds-endpoint "$expected_rds_endpoint" \
-      ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
-else
-  docker compose -f "$compose_file" run --rm --no-deps ingest \
-    python /app/scripts/predeploy_db_check.py \
-      ${bootstrap_arg:+"$bootstrap_arg"} </dev/null
-fi
+expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}"
+expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}"
+docker compose -f "$compose_file" run --rm --no-deps ingest \
+  python /app/scripts/predeploy_db_check.py \
+    --expected-alembic-revision "$expected_revision" \
+    --expected-rds-endpoint "$expected_rds_endpoint" \
+    --allow-empty-database-bootstrap </dev/null
 docker compose -f "$compose_file" run --rm --no-deps \
   -e APPLICATION_DATABASE_URL \
   -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
@@ -309,20 +253,10 @@ docker compose -f "$compose_file" run --rm --no-deps \
   --check-only </dev/null
 MIGRATION_CHECK_SCRIPT
 
-# Candidate validation is deliberately non-disruptive: it has authenticated,
-# pulled every exact digest, rendered/validated configuration, loaded the
-# target-scoped secret catalog, and completed the read-only DB predeploy gate.
-# It must return before stopping writers or creating any fixed-name Compose
-# container. Durable acceptance is persisted by the orchestrator afterward;
-# only the activation invocation may mutate the live Compose project.
-if [ "$deploy_mode" = candidate ]; then
-  transaction_finalized=1
-  echo "findb_aws_deploy=candidate_ready_for_acceptance image_refs=exact-digests live_containers=untouched"
-  exit 0
-fi
-
-if [ "$deploy_mode" = activate ] || [ "$deploy_mode" = legacy ]; then
-writer_services=(ingest dispatcher worker raw-cleanup)
+# Migration and internal health precede immutable acceptance. Stop the public
+# entry and all old application readers/writers before changing the schema.
+release_services_may_have_started=1
+writer_services=(nginx dashboard serve ingest dispatcher worker raw-cleanup)
 run_runtime --consumer compose -- bash -s -- "$compose_file" "${writer_services[*]}" <<'STOP_SCRIPT'
 set -euo pipefail
 compose_file="$1"
@@ -339,6 +273,11 @@ for service in "${writer_services[@]}"; do
       case "$state" in
         exited\ false\ false|created\ false\ false) ;;
         *) echo "findb_aws_deploy=failed reason=writer_not_stopped service=$service" >&2; exit 1 ;;
+      esac
+      shutdown="$(docker inspect --format '{{.State.ExitCode}} {{.State.OOMKilled}}' "$container_id")"
+      case "$shutdown" in
+        0\ false|143\ false) ;;
+        *) echo "findb_aws_deploy=failed reason=writer_shutdown_not_graceful service=$service" >&2; exit 1 ;;
       esac
     done <<< "$container_ids"
   fi
@@ -363,15 +302,13 @@ docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
   uv run alembic upgrade head
   uv run alembic current
 ' </dev/null
-if [ "$APP_ENVIRONMENT" = staging ]; then
-  expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?staging target revision is required}"
-  expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?staging RDS endpoint is required}"
+  expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}"
+  expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}"
   docker compose -f "$compose_file" run --rm --no-deps ingest \
     python /app/scripts/predeploy_db_check.py \
       --expected-alembic-revision "$expected_revision" \
       --expected-rds-endpoint "$expected_rds_endpoint" \
       --require-exact-alembic-revision </dev/null
-fi
 docker compose -f "$compose_file" run --rm --no-deps \
   -e APPLICATION_DATABASE_URL ingest \
   python /app/scripts/reconcile_database_privileges.py </dev/null
@@ -385,30 +322,23 @@ docker compose -f "$compose_file" run --rm --no-deps \
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/provision_registry.py \
   --deployment-target "$APP_ENVIRONMENT" </dev/null
-if [ "$APP_ENVIRONMENT" = production ]; then
-  docker compose -f "$compose_file" run --rm --no-deps ingest \
-    python /app/scripts/seed_production_calendars.py \
-    --deployment-target production \
-    --apply \
-    --actor production-bootstrap </dev/null
-else
-  docker compose -f "$compose_file" run --rm --no-deps ingest \
-    python /app/scripts/seed_staging_pilot_calendar.py \
-    --deployment-target staging </dev/null
-fi
+docker compose -f "$compose_file" run --rm --no-deps ingest \
+  python /app/scripts/seed_production_calendars.py \
+  --deployment-target "$APP_ENVIRONMENT" --apply --actor runtime-bootstrap </dev/null
 MIGRATION_SCRIPT
-fi
 
-# The candidate can now replace/start services. Preflight and migration errors
-# intentionally leave the stable public containers alone; writer-stop remains
-# fail-closed before the single normal-deployment migration.
+# The candidate uses internal services while the public nginx entry stays stopped.
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
   release_services_may_have_started=1
 fi
 run_runtime --consumer compose -- bash -s -- "$compose_file" <<'UP_SCRIPT'
 set -euo pipefail
 compose_file="$1"
-docker compose -f "$compose_file" up -d --remove-orphans </dev/null
+if [ "$FINDB_DEPLOY_MODE" = candidate ]; then
+  docker compose -f "$compose_file" up -d --remove-orphans rabbitmq serve ingest dispatcher worker dashboard </dev/null
+else
+  docker compose -f "$compose_file" up -d --remove-orphans </dev/null
+fi
 
 if ! docker compose -f "$compose_file" exec -T rabbitmq rabbitmq-diagnostics -q ping </dev/null >/dev/null; then
   echo "findb_aws_deploy=failed reason=rabbitmq_unhealthy" >&2
@@ -500,6 +430,11 @@ docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
   python /app/scripts/check_queue_health.py \
   --attempts 12 --interval 5 --maximum-heartbeat-age 90 </dev/null >/dev/null
 
+if [ "$FINDB_DEPLOY_MODE" = candidate ]; then
+  echo "findb_aws_deploy=candidate_checks_passed image_refs=exact-digests public_entry=stopped"
+  exit 0
+fi
+
 # The prior compose restart did not reliably load the newly rendered single-file
 # tmpfs bind mount. Replace the exact, verified nginx container so Docker mounts
 # the current source path; verify that replacement before health and key probes.
@@ -588,6 +523,14 @@ docker image prune -af --filter "until=168h" </dev/null >/dev/null
 echo "findb_aws_deploy=candidate_checks_passed image_refs=exact-digests"
 UP_SCRIPT
 
+if [ "$deploy_mode" = candidate ]; then
+  # No unaccepted process survives an SSM timeout or acceptance-write failure.
+  stop_fixed_candidate_containers
+  transaction_finalized=1
+  echo "findb_aws_deploy=candidate_ready_for_acceptance image_refs=exact-digests services=stopped"
+  exit 0
+fi
+
 if [ "$deploy_mode" = activate ]; then
   sudo "$release_root/infra/deploy/runtime-secrets/install_findb_bootstrap.sh" \
     "$AWS_REGION" "$FINDB_PUBLIC_HOST" "$release_root" "$APP_ENVIRONMENT" "$AWS_ACCOUNT_ID"
@@ -597,6 +540,5 @@ if [ "$deploy_mode" = activate ]; then
   exit 0
 fi
 
-# Legacy production compatibility path.
-transaction_finalized=1
-echo "findb_aws_deploy=ready image_refs=exact-digests"
+echo "findb_aws_deploy=failed reason=unexpected_deployment_phase" >&2
+exit 1

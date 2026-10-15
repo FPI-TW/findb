@@ -48,9 +48,9 @@ cache_dir="${9:?cache directory or - required}"
 shift 9
 [ "$#" -gt 0 ] || { echo "release_fetcher_provider=failed reason=scheduler_command_missing" >&2; exit 2; }
 
-provider_release_mode="${FETCHER_PROVIDER_RELEASE_MODE:-legacy}"
+provider_release_mode="${FETCHER_PROVIDER_RELEASE_MODE:-transactional}"
 case "$provider_release_mode" in
-  legacy|transactional) ;;
+  transactional) ;;
   *)
     echo "release_fetcher_provider=failed reason=release_mode_invalid" >&2
     exit 1
@@ -70,10 +70,6 @@ fi
 
 case "$provider" in
   taifex)
-    if ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = full-market ]; } && ! { [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "${APP_ENVIRONMENT:-}" = staging ]; }; then
-      echo "release_fetcher_provider=failed reason=taifex_profile_invalid" >&2
-      exit 1
-    fi
     marker_identity="taifex"
     image_repository_suffix="twelve-data"
     source_key="${FETCHER_TAIFEX_SOURCE_CLIENT_KEY:-}"
@@ -172,6 +168,7 @@ export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
 export SOURCE_CLIENT_KEY="$source_key"
 export FETCHER_STATE_PATH="$state_path"
 export FETCHER_SHIOAJI_STATE_PATH="$state_path"
+export FETCHER_HISTORICAL_STATE_DIR="$state_dir"
 
 runtime_env_args=(
   --env FULL_MARKET_ENABLED
@@ -196,22 +193,12 @@ runtime_env_args=(
   --env FETCHER_MAX_ATTEMPTS
   --env FETCHER_MAX_RETRY_AFTER_SECONDS
   --env FETCHER_STATE_PATH
+  --env FETCHER_HISTORICAL_STATE_DIR
   "${provider_env[@]}"
 )
 if [ "$provider" = "shioaji" ]; then
   runtime_env_args+=(--env FETCHER_SHIOAJI_STATE_PATH)
 fi
-# Only retained compatible Full images in an accepted bounded replay need the
-# old input. Ordinary current images receive APP_ENVIRONMENT exclusively.
-if [ "${FETCHER_LEGACY_ENV_BRIDGE:-false}" = true ]; then
-  if [ "${FETCHER_ACCEPTED_REPLAY:-false}" != true ] || [ "${FETCHER_CONSUMER_PROFILE:-pilot}" != full_market ] || [ "${FETCHER_DEPLOY_MODE:-candidate}" != activate ]; then
-    echo "application_environment=failed reason=legacy_bridge_not_accepted_replay" >&2
-    exit 1
-  fi
-  runtime_env_args+=(--env "DEPLOYMENT_TARGET=$APP_ENVIRONMENT")
-fi
-
-
 sudo mkdir -p "$state_dir"
 sudo chown 10001:10001 "$state_dir"
 sudo chmod 0700 "$state_dir"
@@ -242,7 +229,7 @@ sudo mkdir -p "$account_dir" /etc/findb-full-market/readiness
 sudo chown 10001:10001 "$account_dir"
 sudo chmod 0700 "$account_dir"
 account_mount=(--mount "type=bind,src=$account_dir,dst=$account_dir" --mount "type=bind,src=/etc/findb-full-market/readiness,dst=/var/lib/findb-account/readiness,readonly")
-if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
+{
   # The official TW ISIN full universe exceeds the bounded 8 MiB default.
   # Keep the expanded raw/response ceiling explicit and profile-scoped.
   export CLOUDFLARE_R2_MAX_OBJECT_BYTES=16777216
@@ -259,12 +246,15 @@ if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
     exit 1
   }
   readiness_mount=(--mount "type=bind,src=$readiness_dir,dst=$state_dir/readiness,readonly")
-fi
+}
 
+if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
 raw_marker="$state_dir/raw-bucket.sha256"
 if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
   # All four providers share only the quota/checkpoint DB, never credentials.
   marker_identity="full-market"
+else
+  marker_identity="pilot"
 fi
 fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$marker_identity" | sha256sum | cut -d ' ' -f1)"
 write_marker() {
@@ -289,6 +279,8 @@ elif sudo test -e "$raw_marker"; then
   fi
 else
   write_marker
+fi
+
 fi
 
 # Resolve all entry identities before interrupted-candidate cleanup. Unknown
@@ -352,35 +344,17 @@ if [ "$cache_dir" != "-" ]; then
   cache_mount=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
 
-state_bootstrap=false
-case "${FETCHER_CONSUMER_PROFILE:-pilot}:$1" in
-  full_market:findb-fetch-full-market)
-    if [ "${FETCHER_RECORDED_RELEASE_PROFILE:-${FETCHER_RUNTIME_PROFILE:-bounded}}" = full-market ]; then state_bootstrap=true; fi
-    ;;
-  pilot:findb-fetch-shioaji-scheduler)
-    if [ "$provider" = shioaji ]; then state_bootstrap=true; fi
-    ;;
-  full_market:*|*:findb-fetch-full-market)
-    echo "release_fetcher_provider=failed reason=consumer_command_mismatch" >&2
-    exit 2
-    ;;
+case "${FETCHER_CONSUMER_PROFILE:-}:$1" in
+  pilot:findb-fetch-runtime|full_market:findb-fetch-runtime|historical:findb-fetch-historical-backfill) ;;
+  *) echo "release_fetcher_provider=failed reason=consumer_command_mismatch" >&2; exit 2 ;;
 esac
-if [ "$state_bootstrap" = true ] && ! sudo test -e "$state_path"; then
-  versioned_cutover=false
-  if [ "${APP_ENVIRONMENT:-}" = staging ] && [ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ] && [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ]; then
-    if ! runtime_exists "$stable"; then
-      versioned_cutover=true
-    else
-      stable_mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$stable")" || exit 1
-      if ! grep -Fxq "$state_dir" <<< "$stable_mounts"; then
-        versioned_cutover=true
-      fi
+if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && ! sudo test -e "$state_path"; then
+  for installed in "$stable" "$previous"; do
+    if runtime_exists "$installed"; then
+      echo "release_fetcher_provider=failed reason=checkpoint_missing_with_runtime" >&2
+      exit 1
     fi
-  fi
-  if [ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"; then
-    echo "release_fetcher_provider=failed reason=shioaji_state_missing_with_stable" >&2
-    exit 1
-  fi
+  done
   state_bootstrap_name="${preflight_name}-state"
   if runtime_exists "$state_bootstrap_name"; then
     remove_recovery_runtime "$state_bootstrap_name"
@@ -437,7 +411,6 @@ recover() {
   trap - ERR INT TERM HUP
   runtime_inventory_recovery=helper_recovery
   recovery_failed=0
-  remove_recovery_runtime "${stable}-historical" || recovery_failed=1
   remove_recovery_runtime "$candidate" || recovery_failed=1
   if runtime_exists "$previous"; then
     previous_id="$(docker inspect --format '{{.Id}}' "$previous")" || recovery_failed=1
@@ -503,6 +476,7 @@ fi
 # The deployment identity only reports the already-stopped observation and
 # reads DB desired state. It never changes desired state; Dashboard Owner must
 # stop all providers before dispatch and re-enable approved providers later.
+if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
 docker run --rm \
   --name "${preflight_name}-control" \
   --user 10001:10001 \
@@ -515,6 +489,7 @@ docker run --rm \
   ${readiness_mount[@]+"${readiness_mount[@]}"} \
   "${runtime_env_args[@]}" \
   "$image" "$@" --require-stopped
+fi
 
 common_args=(
   --user 10001:10001
@@ -530,7 +505,10 @@ common_args=(
 if [ "$cache_dir" != "-" ]; then
   common_args+=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
 fi
-if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
+if [ "${FETCHER_CONSUMER_PROFILE:-}" = historical ]; then
+  common_args+=(--label com.findb.fetcher.historical-shutdown=date-boundary-v1)
+fi
+if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" != historical ]; then
   common_args+=("${readiness_mount[@]}")
 fi
 if [ "$accepted_release" = false ]; then
@@ -581,38 +559,5 @@ if [ "$(docker inspect --format '{{.State.Running}}' "$stable")" != "true" ]; th
   false
 fi
 
-# This process runs *inside* runtime_secret_command, after exactly one
-# provider consumer's secret set has been loaded.  Reuse only that already
-# allowlisted ``runtime_env_args`` array; the outer deployment shell never
-# receives SOURCE_CLIENT_KEY/provider/R2 credentials.
-if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ] || [ "$APP_ENVIRONMENT" = staging ]; then
-  trap - ERR INT TERM HUP
-  echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"
-  exit 0
-fi
-case "$provider" in
-  twelve-data) historical_provider=twelve_data ;;
-  finlab) historical_provider=finlab ;;
-  shioaji) historical_provider=shioaji ;;
-esac
-historical_name="${stable}-historical"
-historical_state_dir="$state_dir/historical"
-sudo mkdir -p "$historical_state_dir"
-sudo chown 10001:10001 "$historical_state_dir"
-sudo chmod 0700 "$historical_state_dir"
-remove_recovery_runtime "$historical_name"
-docker run -d --name "$historical_name" --label "com.findb.fetcher.accepted=$accepted_release" \
-  --label com.findb.fetcher.historical-shutdown=date-boundary-v1 \
-  --restart unless-stopped "${common_args[@]}" "${runtime_env_args[@]}" \
-  --env FETCHER_CONSUMER_PROFILE=historical \
-  --env "FETCHER_HISTORICAL_STATE_DIR=$historical_state_dir" \
-  "$image" findb-fetch-historical-backfill --provider "$historical_provider" --run-forever >/dev/null
-if [ "$(docker inspect --format '{{.State.Running}}' "$historical_name")" != "true" ]; then
-  echo "release_fetcher_provider=failed reason=historical_not_running" >&2
-  false
-fi
-if [ "$provider_release_mode" = legacy ] && [ "$had_previous" -eq 1 ]; then
-  docker rm "$previous" >/dev/null
-fi
 trap - ERR INT TERM HUP
 echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"

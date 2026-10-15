@@ -56,7 +56,8 @@ output "ssm_log_groups" {
     for unit, group in aws_cloudwatch_log_group.ssm : unit => group.name
   }
 }
-output "github_environment_variables" {
+output "aws_configuration_locations" {
+  description = "Nonsecret resource locations for SSM deployment configuration and host runtime configuration."
   value = {
     AWS_ACCOUNT_ID            = var.aws_account_id
     AWS_REGION                = var.aws_region

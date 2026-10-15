@@ -39,23 +39,17 @@ def build(
         accepted.get("state") != "accepted"
         or accepted.get("deployment_target") != target
         or accepted.get("unit") != "fetcher"
-        or accepted.get("runtime_profile") != "full-market"
+        or accepted.get("runtime_profile") != "unified"
         or accepted.get("commit_sha") != manifest["commit_sha"]
         or accepted.get("images") != manifest["images"]
     ):
         raise ValueError("immutable acceptance does not bind this installation")
-    names = {
-        "twelve_data": "findb-fetcher-scheduler",
-        "finlab": "findb-fetcher-finlab-scheduler",
-        "shioaji": "findb-fetcher-shioaji-scheduler",
-        "taifex": "findb-fetcher-taifex-scheduler",
-    }
+    names = {provider: "findb-pilot-" + provider.replace("_", "-")}
     full_name = "findb-full-market-" + provider.replace("_", "-")
     actual = [("full_market", inspect(full_name))]
-    if provider != "taifex" or target == "staging":
-        actual.append(("pilot", inspect(names[provider])))
-    if target == "production" and provider != "taifex":
-        actual.append(("historical", inspect(names[provider] + "-historical")))
+    actual.append(("pilot", inspect(names[provider])))
+    if provider != "taifex":
+        actual.append(("historical", inspect("findb-historical-" + provider.replace("_", "-"))))
     allocation = json.loads(allocation_path.read_bytes())
     if (
         allocation["environment"] != target

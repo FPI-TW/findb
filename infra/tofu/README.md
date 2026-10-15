@@ -14,7 +14,8 @@ bundles, runtime secret metadata, DLM, CloudWatch/SNS, multi-region CloudTrail,
 GuardDuty, and unit-scoped GitHub OIDC roles. It intentionally creates no
 Secrets Manager versions and contains no Cloudflare credentials. Follow
 [`docs/operations/production.md`](../../docs/operations/production.md) for the
-review/apply/bootstrap order. `PRODUCTION_DEPLOY_ENABLED` must remain absent.
+review/apply/bootstrap order. All seven feeds and their secret metadata are always installed.
+GitHub OIDC deployment roles trust the protected `main` ref; deployment controls live in AWS SSM.
 
 ## Staging control-plane details
 
@@ -98,31 +99,27 @@ from `backend.s3.tf.example`.
 
 ## Staging foundation
 
-### Pending ECR activation order
+### Unified application deployment
 
-`staging/ecr.tf` defines five immutable private staging repositories, two
-main-only GitHub OIDC publisher roles, and instance-role pull permissions. It
-is configuration only: this repository does not claim the resources have been
-applied, does not mutate GitHub variables, and does not authorize deployment.
+Staging and production use the same AWS configuration schema and deployment
+procedure. GitHub Actions runs from protected `main`; no GitHub Environment or
+`STAGING_ECR_CUTOVER_ENABLED` switch participates in the new path. Staging
+publishes immutable commit images, and production promotes the staging-accepted
+digests without rebuilding. Both environments load application configuration and
+credentials on the host through the instance role.
 
-The activation order is deliberately staged. Keep `STAGING_ECR_CUTOVER_ENABLED`
-unset or `false` while a separately authorized protected-`main` fresh
-zero-delete plan and foundation apply create the ECR/IAM resources. Complete
-foundation-level acceptance before any gated application rollout: verify the
-exact repositories and settings, publisher/deploy/instance role boundaries,
-and safe authentication/authorization checks, including that each instance
-role can obtain an ECR authorization token and pull only its allowed images.
-Only then set the repository variable to the exact string `true` and manually
-trigger the staging workflows. Those workflows publish immutable commit-SHA
-images and perform the host rollout; afterward complete live cutover
-acceptance and observation. If cutover acceptance fails, set the gate back to
-`false` to freeze and block new staging rollouts; this is not a GHCR fallback.
-Every other value fails closed before image publication or host deployment.
-Staging uses AWS Secrets Manager plus instance-role ECR login; it must not
-receive GitHub or GHCR credentials.
-Production has separate target-aware ECR promotion workflows, but its AWS
-foundation and live acceptance remain separately authorized work. Staging
-credentials and GHCR fallback are not production deployment paths.
+Before the first unified release, inventory the live accounts, review a fresh
+zero-delete plan, converge IAM and secret metadata, and migrate the configuration
+values. Preserve each environment's credentials and storage. Follow the
+[deployment runbook](../../docs/operations/deployment.md) for stop/drain, backups,
+Backend-first migration, candidate acceptance, activation and rollback. Current
+cutover progress is tracked in the
+[unfinished work](../../docs/dev/environment-runtime-unification.md).
+
+Production pins `host_ami_id` to the existing hosts' immutable AMI rather than
+Canonical's moving `current` SSM parameter. Changing this ID requires a separate
+reviewed host replacement and recovery plan; `prevent_destroy` remains enabled.
+Routine IAM/configuration convergence must not replace EC2 instances.
 
 The FinDB publisher has one additional repository-scoped read capability:
 `ecr:GetDownloadUrlForLayer` for `findb/staging/backend` only. FinDB CD uses
@@ -142,28 +139,14 @@ active catalog entries: each legacy `runtime` instance moves to the protected
 are intentionally the only unmoved instances and therefore the only planned
 deletes. Do not remove or alter those exact mappings.
 
-### Controlled staging ECR rollback
+### Unified rollback boundary
 
-Rollback never restores the transitional GHCR credentials. Keep the cutover
-gate exactly `true`, then manually dispatch the affected FinDB or Fetcher CD
-workflow on protected `main` with `deployment_target=staging` and `image_tag`
-set to a previously accepted, lowercase 40-character commit SHA. The workflow
-first verifies the SHA is reachable from that protected `main` and that the
-current checkout's `docker-compose.prod.yml`, `infra/deploy/runtime-secrets/`
-and `infra/nginx/` deployment-contract scope matches the selected SHA; this is
-required because current scripts can deploy older images only while that
-contract is unchanged. A difference is rejected and requires a forward
-compatibility fix before retrying rollback. FinDB then accepts only its two
-fixed staging ECR repositories (backend and dashboard), while Fetcher accepts
-only its three fixed staging ECR repositories (Twelve Data, FinLab and
-Shioaji), each with exact immutable SHA tags.
-When `image_tag` is supplied it runs in reuse-only mode: every required image
-must already exist under that exact tag or the workflow fails before host
-deployment; it never rebuilds the current SHA, accepts a mutable tag, or pulls
-from another registry/repository. The ECR publisher role is main-only, so the
-existing tag is restricted to artifacts previously published through this
-controlled route. After rollback, record the selected SHA and repeat the
-unit's bounded acceptance checks before considering a later forward rollout.
+Only schema-v3 accepted bundles from the unified runtime are eligible for
+rollback. Select the exact accepted bundle through the current workflow; images
+are never rebuilt and production never substitutes its own build. A migration
+compatibility failure requires a forward fix or restoration from the coordinated
+backup while stopped. The first unified cutover cannot automatically replay a
+pre-unification release. See the [deployment runbook](../../docs/operations/deployment.md).
 
 The current remote state owns
 `aws_iam_openid_connect_provider.github[0]`. The checked-in
@@ -225,9 +208,9 @@ deletes before retirement or zero deletes after a separately completed
 retirement. Its summary contains only the commit, configuration/lockfile
 checksums and bounded counts.
 
-After the role is created, configure its output as the nonsecret repository
-variable `STAGING_INFRA_PLAN_ROLE_ARN`. The PR workflow does not read a GitHub
-secret or environment secret for this identity.
+The PR workflow uses the fixed nonsecret bootstrap role ARN from its reviewed
+configuration. It does not read repository variables, GitHub secrets or
+Environment secrets for this identity.
 
 The first creation of the plan role requires a separately authorized operator
 apply because a role cannot bootstrap its own OIDC credentials. A pull-request
@@ -318,11 +301,10 @@ outside both deploy roles by design.
 
 ## IAM boundaries
 
-GitHub trust is exact and environment-bound:
+GitHub deployment trust is exact and bound to protected main:
 
 ```text
-repo:FPI-TW/findb:environment:staging-findb
-repo:FPI-TW/findb:environment:staging-fetcher
+repo:FPI-TW/findb:ref:refs/heads/main
 aud = sts.amazonaws.com
 ```
 
@@ -338,8 +320,8 @@ or use another unit's bundle prefix. Instance roles use a scoped SSM agent
 transport policy and have exact access to their own declared Secrets Manager
 resources, their own runtime-secret KMS key, their own SSM parameter path, and
 their deployment-bundle prefix. The agent transport policy itself intentionally
-does not grant parameter or secret reads. This does not migrate or delete the
-current GitHub Environment runtime secrets.
+does not grant parameter or secret reads. GitHub Environment values are retired only after both AWS cutovers are verified;
+see the unified deployment runbook.
 
 ## Phase 2 runtime-secret metadata and loader
 

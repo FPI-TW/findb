@@ -5,17 +5,21 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution_profiles import ExecutionProfile
 from app.models.registry import DailyDeliveryPlan
 from app.schemas.admin import DeliveryPlanListResponse, PaginatedDeliveryPlanListResponse
 from app.schemas.common import PaginationInfo
 from app.services.full_market import get_plan
 
 
-async def list_plan_datasets(db: AsyncSession) -> list[str]:
+async def list_plan_datasets(
+    db: AsyncSession, profile: ExecutionProfile = "full_market"
+) -> list[str]:
     return list(
         (
             await db.scalars(
                 select(DailyDeliveryPlan.dataset_key)
+                .where(DailyDeliveryPlan.execution_profile == profile)
                 .distinct()
                 .order_by(DailyDeliveryPlan.dataset_key)
             )
@@ -31,8 +35,9 @@ async def list_delivery_plans(
     limit: int | None,
     page: int | None,
     page_size: int | None,
+    profile: ExecutionProfile = "full_market",
 ) -> DeliveryPlanListResponse | PaginatedDeliveryPlanListResponse:
-    stmt = select(DailyDeliveryPlan)
+    stmt = select(DailyDeliveryPlan).where(DailyDeliveryPlan.execution_profile == profile)
     if dataset_key is not None:
         stmt = stmt.where(DailyDeliveryPlan.dataset_key == dataset_key)
     if trade_date is not None:

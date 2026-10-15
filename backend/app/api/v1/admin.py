@@ -25,6 +25,7 @@ from app.api.deps import (
 )
 from app.config import get_settings
 from app.dependencies import get_db
+from app.execution_profiles import ExecutionProfile, scheduler_profile
 from app.models.canonical import CalendarImportBatch, CalendarMarket, CalendarYearRevision
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
@@ -271,16 +272,20 @@ async def retired_full_market_feed_action(
 
 @router.get("/delivery-plans/datasets", response_model=DeliveryPlanDatasetsResponse)
 async def list_full_market_plan_datasets(
+    execution_profile: ExecutionProfile = "full_market",
     _: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ) -> DeliveryPlanDatasetsResponse:
-    return DeliveryPlanDatasetsResponse(data=await list_plan_datasets(db))
+    return DeliveryPlanDatasetsResponse(
+        data=await list_plan_datasets(db, profile=execution_profile)
+    )
 
 
 @router.get(
     "/delivery-plans", response_model=PaginatedDeliveryPlanListResponse | DeliveryPlanListResponse
 )
 async def list_full_market_delivery_plans(
+    execution_profile: ExecutionProfile = "full_market",
     dataset_key: str | None = None,
     trade_date: date | None = None,
     limit: int | None = Query(default=None, ge=1, le=100),
@@ -293,6 +298,7 @@ async def list_full_market_delivery_plans(
         raise HTTPException(status_code=422, detail="limit cannot be combined with page/page_size")
     return await list_delivery_plans(
         db,
+        profile=execution_profile,
         dataset_key=dataset_key,
         trade_date=trade_date,
         limit=limit,
@@ -560,6 +566,7 @@ async def logout_admin(
 
 @router.get("/schedulers", response_model=SchedulerControlListResponse)
 async def list_schedulers(
+    execution_profile: ExecutionProfile | None = Query(default=None),
     _: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ):
@@ -569,6 +576,8 @@ async def list_schedulers(
         data=[
             SchedulerControlResponse(**await present_admin_scheduler_control(db, row))
             for row in rows
+            if execution_profile is None
+            or scheduler_profile(row.scheduler_key) == execution_profile
         ]
     )
 
@@ -969,6 +978,7 @@ async def queue_health_endpoint(
 
 @router.get("/missing-deliveries", response_model=MissingDeliveryAlertListResponse)
 async def list_missing_deliveries_endpoint(
+    execution_profile: ExecutionProfile | None = None,
     alert_status: Optional[Literal["open", "resolved"]] = Query(None, alias="status"),
     dataset_key: Optional[str] = Query(None, min_length=1, max_length=50),
     source: Optional[str] = Query(None, min_length=1, max_length=50),
@@ -980,6 +990,7 @@ async def list_missing_deliveries_endpoint(
     """List durable missing-delivery alerts without mutating their state."""
     rows, total = await list_missing_delivery_alerts(
         db,
+        profile=execution_profile,
         status=alert_status,
         dataset_key=dataset_key,
         source=source,
@@ -999,6 +1010,7 @@ async def list_missing_deliveries_endpoint(
 
 @router.get("/market-freshness", response_model=MarketFreshnessListResponse)
 async def list_market_freshness_endpoint(
+    execution_profile: ExecutionProfile | None = None,
     market: Optional[str] = Query(None, min_length=1, max_length=10),
     slot_id: Optional[str] = Query(None, min_length=1, max_length=50),
     freshness_status: Optional[
@@ -1014,7 +1026,11 @@ async def list_market_freshness_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Unsupported slot_id") from exc
     rows = await list_market_freshness(
-        db, market=market, slot_id=normalized_slot_id, status=freshness_status
+        db,
+        market=market,
+        slot_id=normalized_slot_id,
+        status=freshness_status,
+        profile=execution_profile,
     )
     data = []
     for row in rows:
@@ -1037,6 +1053,7 @@ async def list_market_freshness_endpoint(
             "configuration_status": row.configuration_status,
             "configuration_errors": list(row.configuration_errors),
             "monitor_kind": row.monitor_kind,
+            "execution_profile": row.execution_profile,
             "activation_state": row.activation_state,
             "active_dataset_keys": list(row.active_dataset_keys),
             "pending_feeds": [

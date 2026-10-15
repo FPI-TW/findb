@@ -34,29 +34,30 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 
 ## Active feeds
 
-文件層級的active feed清單只在本節維護；最終真相是
-target-aware registry provisioning及`fetcher/configs/staging_provider_pilots.v1.json`。
+七條 feeds 的唯一宣告在 `backend/configs/execution_feeds.v1.json`，由 exporter 確定性產生
+Fetcher 的三環境 manifest；兩個 execution profiles 共用宣告。
 
-| Provider | Dataset | Staging範圍 |
+| Provider | Datasets | Contract |
 | --- | --- | --- |
-| `twelve_data` | `us_equity_eod` | `AAPL`、`MSFT` daily pilot |
-| `finlab` | `tw_equity_eod` | `2330`、`2317` daily pilot |
-| `shioaji` | `tw_equity_minute` | `2330` pilot |
-| `shioaji` | `tw_etf_minute` | `0050` pilot |
-| `taifex` | `tw_futures_eod` | `TX`、`MTX` 各一個實際近月合約、兩個 sessions |
+| `twelve_data` | `us_equity_eod`、`hk_equity_eod` | `market_eod.v1` |
+| `finlab` | `tw_equity_eod`、`tw_etf_eod` | `market_eod.v1` |
+| `shioaji` | `tw_equity_minute`、`tw_etf_minute` | `market_minute.v1` |
+| `taifex` | `tw_futures_eod` | `futures_eod.v1` |
 
-五個 feed 只驗證最新已完成交易日，不建立 historical backfill。TAIFEX staging override 使用
-`full_market.required=false`、`enabled=false`；Full market 由環境旗標與 admission 獨立授權。
-Serve catalog由active `dataset_registry`動態解析，公開US/TW equity EOD、TW
-equity/ETF minute及實際 futures EOD。只有至少符合一個active scope的商品會出現在Serve instruments。Canonical
-tables可保留inactive歷史資料，但不因此產生公開route或catalog項目。新增資料域必須另案完成
-contract、registry、normalizer、DQ與Serve驗收。
+Pilot 與 Full market 使用同一 CLI、provider adapter、published universe／calendar、交易所時區、
+收盤判定、重試、Raw R2、Source、normalization 與 Serve 流程。Pilot 只在建立 daily plan 時依 canonical
+識別排序取前兩個商品，不足兩個取實際數量；期貨按 product／contract 選擇，保留各自所有 sessions。
+空集合阻塞；plan 建立後 universe 更新與重試不得改寫成員。
+
+Serve catalog 由 active registry 動態解析，canonical 資料可跨 profile 共用；交付完成證據不共用。
+`delivery_member_evidence` 與 canonical writes 在同一 normalization transaction 保存，另一 profile
+覆寫 canonical 最新 run_id 不會撤銷已完成計畫。Minute 仍須完整 sequenced snapshot。
 
 ## Full-market governance
 
 Full market 在 local/staging/production 皆為 opt-in，預設 false。Registry acceptance 與 acquisition
 admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Full-only feeds 普通 ingress
-不接受，需 `fp1` frozen plan。Owner 手動 scheduler start 凍結當時 ready feeds，首日為 exchange-local
+不接受，需 `fp1` frozen plan。Owner 手動 scheduler start 各自凍結當時 ready feeds，首次日期以 dataset＋profile 隔離，首日為 exchange-local
 今天且永不重設；合法 legacy cutoff 保留。啟動 eligibility 只檢查 published baseline 與完整
 published calendar。所有環境的新抓取不依賴 enrollment、readiness ACK／expiry 或 capacity proof；API 認證、
 平台配額、running control 與資料驗證保留。
@@ -74,7 +75,7 @@ date、classification 與 provider mapping。第一份 baseline 需要 Owner 明
 相對上一份 published release 異動超過 20 個成員或 2% 時保留 candidate，須明確 exception
 approval 才可發布。Mapping gap 仍列為 expected，不能刪除成員來降低分母。
 
-每個實際開市日建立 frozen daily delivery plan，以 release 固定成員、交易日與 work item。
+每個 profile／實際開市日建立 frozen daily delivery plan，以 release 固定成員、交易日與 work item。
 完整度恆等式是 `expected = data + no_data + missing + blocked`；data 只計入成功 canonical
 lineage，no_data 只接受停牌／無成交的 durable source evidence。成功部分立即可查，partial
 coverage 不等同全日 complete；mapping、quota、permission 或 source error 均保留 gap。

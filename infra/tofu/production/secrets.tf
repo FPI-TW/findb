@@ -1,5 +1,5 @@
 locals {
-  secret_catalog = merge({
+  secret_catalog = {
     "findb/database/application" = {
       unit = "findb", consumer = "application"
     }
@@ -61,11 +61,10 @@ locals {
       unit = "fetcher", consumer = "compose"
     }
 
-    }, var.enable_full_market_runtime ? {
     "fetcher/api/source/taifex" = {
       unit = "fetcher", consumer = "taifex"
     }
-  } : {})
+  }
 }
 data "aws_iam_policy_document" "runtime_kms" {
   for_each = local.units

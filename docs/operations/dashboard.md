@@ -13,8 +13,11 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 
 ## 交付監控
 
-入口為 `/dashboard/operations/deliveries`。頁內有「全市場計畫」「缺漏告警」「歷史回補」三個分頁，
-預設全市場計畫；viewer 不顯示歷史回補，直接開啟該分頁會導回全市場計畫。
+入口為 `/dashboard/operations/deliveries`。最外層是獨立的「Pilot」與「Full market」分頁，
+staging 預設 Pilot，production 預設 Full market；切換不寫入 controls。
+各 profile 內分為計畫、缺漏告警與歷史回補；viewer 不顯示歷史回補。
+計畫 expected、data、no_data、missing、blocked、缺漏清單與告警只計算所選 profile，不能跨頁混加。
+尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
 
 - 全市場計畫：資料集下拉選單列出所有曾有計畫的資料集，不受最近筆數或交易日篩選限制；
   預設全部資料集、不限交易日、每頁 25 筆，可選 50／100 筆。
@@ -27,9 +30,9 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
+URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
-全市場計畫是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
+兩種 profile 的計畫都是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 
 ## 載入、更新與失敗
 
@@ -66,3 +69,7 @@ URL 的 `tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/
 - 新增非同步頁面時，同步測試空集合重整失敗、快取隔離、隱藏查詢及錯誤恢復。
 
 測試方式見 [testing.md](testing.md)；全市場交付判定與操作邊界見 [full_market.md](full_market.md)。
+
+Overview、freshness、plans、alerts 的請求與 query cache key 都包含 profile；切換時只掛載選中模式，
+不以另一 profile 的上一筆資料作為 placeholder。新 runtime／Dashboard 一律明確傳入 profile；
+舊版未指定 profile 的 plan API 保留 Full market 語意。

@@ -101,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--provider", required=True, choices=sorted(_SCOPES))
     parser.add_argument(
+        "--execution-profile", choices=("pilot", "full_market"), default="full_market"
+    )
+    parser.add_argument(
         "--state-path", type=Path, default=Path("/var/lib/findb-full-market/state.sqlite3")
     )
     parser.add_argument("--readiness-file", type=Path)
@@ -116,15 +119,25 @@ def main(argv: list[str] | None = None) -> int:
     ):
         modes.add_argument("--" + mode, action="store_true")
     args = parser.parse_args(argv)
+    if args.execution_profile == "pilot" and args.state_path == Path(
+        "/var/lib/findb-full-market/state.sqlite3"
+    ):
+        args.state_path = Path("/var/lib/findb-pilot/state.sqlite3")
     runtime = None
     source = None
     delivery = None
     calendar = None
     try:
+        account_path = Path(
+            os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
+        )
+        if args.state_path.resolve() == account_path.resolve():
+            raise ValueError("execution checkpoint must be separate from account governor")
         config = load_config(args.config)
         if config["deployment_target"] != app_environment("local"):
             raise ValueError("runtime environment identity mismatch")
-        os.environ["FETCHER_CONSUMER_PROFILE"] = "full_market"
+        os.environ["FETCHER_CONSUMER_PROFILE"] = args.execution_profile
+        os.environ["FETCHER_EXECUTION_PROFILE"] = args.execution_profile
         os.environ["FETCHER_FULL_MARKET_CONFIG"] = str(args.config)
         os.environ["FETCHER_ACCOUNT_READINESS_FILE"] = str(
             args.readiness_file
@@ -165,13 +178,26 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 for table, columns in core_columns.items():
                     db.execute(f"SELECT {columns} FROM {table} LIMIT 0")
+                identity_table = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_identity'"
+                ).fetchone()
+                identity = (
+                    db.execute("SELECT profile FROM execution_identity WHERE id=1").fetchone()
+                    if identity_table
+                    else None
+                )
+                if identity is not None and identity[0] != args.execution_profile:
+                    raise ValueError("checkpoint execution profile mismatch")
+                if identity is None and args.execution_profile != "full_market":
+                    raise ValueError("pilot checkpoint identity missing")
         else:
             state = FullMarketState(args.state_path)
+            state.bind_profile(args.execution_profile)
         if args.initialize_state or args.health:
             print(json.dumps(state.health(args.provider), separators=(",", ":")))
             return 0
         fetcher = FetcherConfig.from_env()
-        scheduler_key = f"full_market_{args.provider}_v1"
+        scheduler_key = f"{args.execution_profile}_{args.provider}_v1"
         with SchedulerControlClient(fetcher, scheduler_key) as control:
             observed = control.poll(observed_state="stopped")
             if (
@@ -184,22 +210,29 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("DB full-market control must be stopped")
                 print(json.dumps({"status": "stopped", "provider": args.provider}))
                 return 0
-            source = FullMarketSourceClient(fetcher)
+            source = FullMarketSourceClient(fetcher, execution_profile=args.execution_profile)
             delivery = SourceAPIClient(fetcher, ContractRegistry(fetcher.contracts_dir))
             calendar = PublishedCalendarClient(MarketCalendarConfig.from_env())
 
             def can_acquire() -> bool:
-                if os.getenv("FULL_MARKET_ENABLED", "false").lower() != "true":
+                if (
+                    args.execution_profile == "full_market"
+                    and os.getenv("FULL_MARKET_ENABLED", "false").lower() != "true"
+                ):
                     return False
                 if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance":
                     return (
-                        source.request("GET", "full-market/authorization?consumer=maintenance").get(
-                            "acquisition_allowed"
-                        )
+                        source.request(
+                            "GET",
+                            "full-market/authorization?consumer=maintenance&execution_profile="
+                            + args.execution_profile,
+                        ).get("acquisition_allowed")
                         is True
                     )
                 current = control.poll(observed_state="running")
-                authorization = source.request("GET", "full-market/authorization")
+                authorization = source.request(
+                    "GET", "full-market/authorization?consumer=" + args.execution_profile
+                )
                 return (
                     current.desired_state == "running"
                     and authorization.get("acquisition_allowed") is True
@@ -207,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
 
             runtime = FullMarketRuntime(
                 provider=args.provider,
+                execution_profile=args.execution_profile,
                 config=config,
                 state=state,
                 source=source,

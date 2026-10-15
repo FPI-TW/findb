@@ -143,21 +143,19 @@ def run_entry(
     checkpoint.mkdir()
     durable = checkpoint / "state.sqlite3"
     durable.write_bytes(b"prepared-payload-debt-and-cursors")
-    marker_identity = "full-market" if kind == "full" else "twelve"
+    marker_identity = "full-market" if kind == "full" else "pilot"
     fingerprint = hashlib.sha256(("a" * 32 + "\nraw-data\n" + marker_identity).encode()).hexdigest()
     (checkpoint / "raw-bucket.sha256").write_text(fingerprint + "\n")
-    stable = "findb-full-market-twelve-data" if kind == "full" else "findb-fetcher-scheduler"
+    stable = "findb-full-market-twelve-data" if kind == "full" else "findb-pilot-twelve-data"
     if kind == "historical":
-        stable += "-historical"
+        stable = "findb-historical-twelve-data"
     previous = stable + "-previous"
     candidate = stable + "-candidate"
     image = REGISTRY + "/findb/production/fetcher/twelve-data@sha256:" + "b" * 64
     runtime_command = (
-        "findb-fetch-full-market"
+        "findb-fetch-runtime"
         if kind == "full"
-        else (
-            "findb-fetch-historical-backfill" if kind == "historical" else "findb-fetch-scheduler"
-        )
+        else ("findb-fetch-historical-backfill" if kind == "historical" else "findb-fetch-runtime")
     )
     rows = {
         stable: dict(
@@ -226,7 +224,7 @@ def run_entry(
         "ECR_REGISTRY": REGISTRY,
         "FETCHER_PROVIDER_RELEASE_MODE": "transactional",
         "FETCHER_DEPLOY_MODE": "activate",
-        "FETCHER_RUNTIME_PROFILE": "full-market",
+        "FETCHER_RUNTIME_PROFILE": "unified",
         "FETCHER_CONSUMER_PROFILE": "full_market"
         if kind == "full"
         else ("historical" if kind == "historical" else "pilot"),
@@ -252,18 +250,18 @@ def run_entry(
         previous,
         stable + "-preflight",
         "-",
-        "findb-fetch-full-market"
+        "findb-fetch-runtime"
         if kind == "full"
-        else (
-            "findb-fetch-historical-backfill" if kind == "historical" else "findb-fetch-scheduler"
-        ),
+        else ("findb-fetch-historical-backfill" if kind == "historical" else "findb-fetch-runtime"),
     ]
     if kind == "historical":
-        args.extend(["--provider", "twelve_data", "--run-forever"])
+        args.extend(["--provider", "twelve_data"])
+    else:
+        args.extend(["--execution-profile", "full_market" if kind == "full" else "pilot"])
     command = ["/bin/bash", *args]
     if parent:
         source = DEPLOY.read_text()
-        transaction = source.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+        transaction = source.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
         # Execute actual registration/rollback together with the whole child.
         script = (
             "set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nprocessed=()\n"
@@ -498,7 +496,7 @@ def test_retirement_field_query_failure_is_not_empty_success(tmp_path, field, fa
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("branch", ["legacy", "generic-cleanup"])
+@pytest.mark.parametrize("branch", ["generic-cleanup"])
 @pytest.mark.parametrize("failure", ["rc1", "rc81", "empty", "invalid"])
 @pytest.mark.parametrize("running", [False, True])
 def test_conditional_legacy_and_generic_recovery_do_not_guess_running_state(
@@ -507,7 +505,7 @@ def test_conditional_legacy_and_generic_recovery_do_not_guess_running_state(
     import re
 
     source = DEPLOY.read_text()
-    transaction = source.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+    transaction = source.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
     retirement = re.search(r"require_retired_runtime\(\) \{\n.*?\n\}", source, re.S).group()
     fake = r"""
     docker() {
@@ -673,10 +671,8 @@ def test_whole_parent_matching_identity_stdout_requires_success(tmp_path, field,
         "restore",
         "backup-prepare",
         "backup-cleanup",
-        "legacy-restore",
         "original-prepare",
         "commit-named",
-        "commit-legacy",
         "cleanup",
     ],
 )
@@ -691,7 +687,6 @@ def test_conditional_identity_queries_require_success_before_mutation(
         "restore_named_identity",
         "prepare_named_full_backup_cleanup",
         "cleanup_named_full_backups",
-        "rollback_legacy_moves",
         "prepare_original_cleanup",
         "prepare_commit_backups",
         "cleanup_originals",
@@ -765,58 +760,32 @@ docker() {
         assert events.exists(), "Successful status control must execute real mutation branch"
 
 
-@pytest.mark.parametrize(
-    "field,rc",
-    [
-        (field, rc)
-        for field in [
-            "{{.Config.Image}}",
-            "{{.Path}}",
-            "{{json .Args}}",
-            '{{ join .Config.Cmd " " }}',
-            '{{ index .Config.Labels "com.findb.fetcher.accepted" }}',
-        ]
-        for rc in [1, 81]
-    ]
-    + [("{{.Config.Image}}", 0)],
-)
-def test_legacy_137_matching_identity_output_requires_query_success(field, rc):
+@pytest.mark.parametrize("consumer", ["pilot", "full-market", "historical"])
+def test_no_consumer_can_treat_exit_137_as_graceful(consumer):
     import re
 
     source = DEPLOY.read_text()
-    functions = "\n".join(
-        re.search(rf"{name}\(\) \{{\n.*?\n\}}", source, re.S).group()
-        for name in ["legacy_historical_shutdown", "require_retired_runtime"]
-    )
-    setup = r"""set -euo pipefail
-APP_ENVIRONMENT=staging; FETCHER_RUNTIME_PROFILE=bounded; AWS_ACCOUNT_ID=439622209937
-expected_registry=439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
+    function = re.search(r"require_retired_runtime\(\) \{\n.*?\n\}", source, re.S).group()
+    shell = r"""set -euo pipefail
 docker() {
   case "$3" in
     *Running*|*OOMKilled*) printf '%s\n' false ;;
     *ExitCode*) printf '%s\n' 137 ;;
-    *Error*|*historical-shutdown*) printf '\n' ;;
-    *Config.Image*) printf '%s\n' "$expected_registry/findb/staging/fetcher/twelve-data@sha256:2f64ab8c40e082e6601a00839b2345c35c504afcf1d453026d779ac151f46d03" ;;
-    *Path*) printf '%s\n' findb-fetch-historical-backfill ;;
-    *Args*) printf '%s\n' '["--provider","twelve_data","--run-forever"]' ;;
-    *Config.Cmd*) printf '%s\n' 'findb-fetch-historical-backfill --provider twelve_data --run-forever' ;;
-    *accepted*) printf '%s\n' true ;;
+    *Error*) printf '\n' ;;
     *) return 92 ;;
   esac
-  [ "$3" != "$failed_field" ] || return "$query_rc"
 }
 """
     result = subprocess.run(
         [
             "/bin/bash",
             "-c",
-            setup
-            + functions
-            + '\nif require_retired_runtime findb-fetcher-scheduler-historical; then [ "$query_rc" = 0 ]; else [ "$query_rc" != 0 ]; fi\n',
+            shell + function + '\nif require_retired_runtime "$1"; then exit 91; fi',
+            "test",
+            f"findb-{consumer}-twelve-data",
         ],
-        env={**os.environ, "failed_field": field, "query_rc": str(rc)},
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert ("legacy_historical_crash_recovery" in result.stderr) == (rc == 0)
+    assert "runtime_retirement_failed" in result.stderr

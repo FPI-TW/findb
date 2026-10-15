@@ -14,7 +14,7 @@ data "aws_iam_policy_document" "github_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.value.environment}"]
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
     }
 
   }
@@ -38,6 +38,11 @@ resource "aws_iam_role" "promotion" {
 
 data "aws_iam_policy_document" "deploy" {
   for_each = local.units
+  statement {
+    sid       = "ReadOwnDeploymentConfiguration"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${var.aws_account_id}:parameter/findb/production/${each.key}/deployment"]
+  }
   statement {
     sid       = "Describe"
     actions   = ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus", "ssm:DescribeInstanceInformation", "ssm:GetCommandInvocation"]

@@ -84,6 +84,29 @@ class FullMarketState:
                 "INSERT INTO full_pacing(account,next_at) SELECT account,MAX(blocked_until) FROM full_quota WHERE blocked_until>0 GROUP BY account ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)"
             )
 
+    def bind_profile(self, profile: str) -> None:
+        """Bind a checkpoint once; legacy full checkpoints retain all state verbatim."""
+        if profile not in {"pilot", "full_market"}:
+            raise FullMarketStateError("invalid execution profile")
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS execution_identity (id INTEGER PRIMARY KEY CHECK(id=1), profile TEXT NOT NULL)"
+            )
+            row = db.execute("SELECT profile FROM execution_identity WHERE id=1").fetchone()
+            if row is not None and row[0] != profile:
+                raise FullMarketStateError("checkpoint execution profile mismatch")
+            if row is None:
+                if profile == "pilot" and any(
+                    db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                    for table in ("full_work", "full_plan", "full_cursor")
+                ):
+                    raise FullMarketStateError("legacy full-market checkpoint cannot become pilot")
+                db.execute(
+                    "INSERT INTO execution_identity(id,profile) VALUES(1,?) ON CONFLICT DO NOTHING",
+                    (profile,),
+                )
+
     @contextmanager
     def connection(self) -> Any:
         db = sqlite3.connect(self.path, timeout=30)

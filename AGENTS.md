@@ -84,8 +84,8 @@ findb/
 | Instrument routing 維護  | `backend/scripts/cleanup_stale_instruments.py`                                                                                                        | 清理舊 ingest 路由錯誤殘留的 instrument 紀錄（asset_class / market 錯放、重複等）                                                                                                                        |
 | 文件                     | `docs/README.md`                                                                                                                                      | 唯一文件入口；只保存現行架構、契約、維運規則與未完成 backlog，歷史決策由 Git history 追溯                                                                                                                |
 | Nginx 設定樣板           | `infra/nginx/nginx.conf`、`infra/nginx/source-allowlist.conf`、`infra/nginx/cloudflare-real-ip.conf`、`infra/nginx/serve-key.conf`                    | 生產 nginx 主設定與三段由 deploy workflow 渲染的子設定（Source allowlist、Cloudflare real-IP、Serve API key 注入）                                                                                       |
-| Nginx render 腳本        | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | CI/CD 部署時依 GitHub Variables/Secrets 渲染對應 `*.conf`；本機未跑時為安全 fallback                                                                                                                     |
-| CI/CD 流程               | `.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml`            | FinDB 與 Fetcher 各自獨立驗證、建置與部署；production jobs 分別綁定自己的 GitHub Environment                                                                                                             |
+| Nginx render 腳本        | `backend/scripts/render_nginx_source_allowlist.py`、`backend/scripts/render_nginx_cloudflare_real_ip.py`、`backend/scripts/render_nginx_serve_key.py` | instance role 在 host 從 AWS 設定與 secrets 渲染 `*.conf`；本機為安全 fallback                                                                                                                     |
+| CI/CD 流程               | `.github/workflows/findb-ci.yml`、`.github/workflows/findb-cd.yml`、`.github/workflows/fetcher-ci.yml`、`.github/workflows/fetcher-cd.yml`            | 兩環境共用 AWS 設定與部署流程，main-ref OIDC；production 人工 promotion staging accepted digests                                                                                                             |
 
 ## 子目錄指南
 
@@ -105,7 +105,7 @@ findb/
 - Router handlers 保持薄層；business logic 放在 services。
 - Source API 是 write-path ingest；Serve API 是 read-only query path。
 - Pydantic v2 model 需要 ORM hydration 時使用 `from_attributes=True`。
-- 環境身份以 `APP_ENVIRONMENT=local|staging|production` 為唯一正式輸入，須匹配已驗證 runtime/deployment；immutable `deployment_target` JSON／CLI 契約維持。Legacy accepted replay 的等值 bridge 與衝突拒絕見 `docs/operations/deployment.md`。
+- 環境身份以 `APP_ENVIRONMENT=local|staging|production` 為唯一正式輸入，須匹配已驗證 runtime/deployment；immutable `deployment_target` JSON／CLI 契約維持。統一版 schema-v3 acceptance 與 rollback 下限見 `docs/operations/deployment.md`。
 - secrets/config 一律經由 `app.config.Settings` 與 env 載入；不可 hardcode。
 - Source provider names 正規化為穩定 lowercase，例如 `twelve_data`、`finlab`、`shioaji`。
 - Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。
@@ -130,7 +130,7 @@ findb/
 - Normalizer routing 明確集中在 `backend/app/services/ingestion.py` 的 `CONTRACT_NORMALIZER_MAP`；缺少或不支援 schema/version 時一律 fail closed。
 - Source API 只接受 versioned provider-neutral contracts；不提供 market-specific、provider-specific 或 `.../direct` compatibility routes。
 - Full market 在 local/staging/production 以 `FULL_MARKET_ENABLED=false` 預設停用；Owner start 只要求 published baseline 與完整 published calendar，凍結 ready feeds 與 immutable exchange-local 首次日期。所有環境的新抓取不要求 readiness/enrollment/expiry/capacity proof，仍遵守 flag、running control、API 認證、平台配額與資料驗證。Pilot/Full checkpoint 隔離，帳號 governor 保留用量與 cooldown，不設跨環境預算；舊 capacity history 不作新抓取 gate。Flag off 由 management/lifecycle stop/audit，GET 唯讀；prepared frozen deliveries 可完成。`expected = data + no_data + missing + blocked`，no_data 需 durable evidence；僅補首日後 gaps。操作見 `docs/operations/full_market.md`。
-- staging active provider/dataset scope 僅包含 `twelve_data/us_equity_eod`、`finlab/tw_equity_eod`、`shioaji/tw_equity_minute` 、`shioaji/tw_etf_minute` 與 `taifex/tw_futures_eod`；每個 provider 的 staging functional pilot 只取 1–2 商品與最新已完成交易日。新增 provider 必須同步註冊 pilot catalog、支援契約、startup fixture 與 Source → raw → canonical → Serve 驗收，才能通過 readiness／CI。
+- Pilot／Full market 共用 `backend/configs/execution_feeds.v1.json` 的七條 feeds 與單一 `findb-fetch-runtime` CLI。Pilot 在 daily plan 依 canonical 識別排序取前兩個商品，期貨保留入選 product／contract 的 sessions；成員凍結。Controls、first dates、plans、checkpoints、缺漏與告警依 `ExecutionProfile` 隔離，共用同環境 account governor。新增 feed 須同步 schema、fixtures 與 Source → raw → queue → canonical → Serve 驗收。
 - Instrument lookup data 可產生為`backend/app/static/data/instruments.json`；不再產生macro cache，generated cache不是source-of-truth data。
 - 生產環境 nginx 透過 `infra/nginx/serve-key.conf`（由 `backend/scripts/render_nginx_serve_key.py` 在 deploy workflow 渲染）以 exact-host Referer regex 比對，對 Dashboard `/dashboard/lookup` 觸發的 `/api/v1/serve/*` 請求自動注入 `X-API-Key`；其它來源仍 passthrough 使用者帶入的 header。
 - Source allowlist、Cloudflare real-IP、Serve key 注入三組 `*.conf` 都是 deploy time 渲染；本機開發不會跑 nginx，FastAPI 自身只負責 API key、rate limit、ingest 邏輯。

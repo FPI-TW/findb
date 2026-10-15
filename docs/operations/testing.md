@@ -131,3 +131,13 @@ Collector 先檢查 raw 8 MiB、compressed 2 MiB、最多 175 chunks 與 byte/co
 此期限遠大於 collection deadline，不清除仍在蒐集中的檔案。測試透過本地執行完整 generated
 shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮多 chunk roundtrip、checksum、
 錯誤與清理；不連 AWS，不增加 bucket、IAM 或跨 unit credentials。
+
+
+## 環境與 profile 一致性
+
+兩個 AWS 環境共用部署 schema、設定 loader、必要 gates 與健康驗收。
+`test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本與 profile 計畫隔離、canonical 覆寫後持久化證據及缺漏告警；
+`test_execution_profile_migration.py` 驗證升級保留與 rollback 下限。
+`test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
+Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
+AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。

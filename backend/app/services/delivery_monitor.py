@@ -12,11 +12,13 @@ from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution_profiles import ExecutionProfile, execution_profile
 from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
     DailyDeliveryPart,
     DailyDeliveryPlan,
     DatasetRegistry,
+    FullMarketDatasetState,
     IngestionRun,
     MissingDeliveryAlert,
 )
@@ -113,18 +115,30 @@ async def scan_missing_deliveries(
             )
             diagnostics.append(_bounded_diagnostic(dataset_key, "", "invalid_dataset_contract"))
             continue
-        if ((dataset_config or {}).get("full_market") or {}).get("enabled"):
-            for source in declaration.provider_scope():
-                created, closed = await _scan_full_market_feed(
-                    db,
-                    dataset=dataset,
-                    source=source,
-                    schema_id=declaration.schema_id,
-                    schema_version=declaration.current_schema_version,
-                    evaluated_at=evaluated_at,
+        profile_states = list(
+            await db.scalars(
+                select(FullMarketDatasetState).where(
+                    FullMarketDatasetState.dataset_key == dataset_key
                 )
-                refreshed += created
-                resolved += closed
+            )
+        )
+        if profile_states or ((dataset_config or {}).get("full_market") or {}).get("enabled"):
+            profiles: list[ExecutionProfile] = [
+                execution_profile(state.execution_profile) for state in profile_states
+            ] or ["full_market"]
+            for profile in profiles:
+                for source in declaration.provider_scope():
+                    created, closed = await _scan_full_market_feed(
+                        db,
+                        dataset=dataset,
+                        source=source,
+                        schema_id=declaration.schema_id,
+                        schema_version=declaration.current_schema_version,
+                        evaluated_at=evaluated_at,
+                        profile=profile,
+                    )
+                    refreshed += created
+                    resolved += closed
             await db.commit()
             continue
         if expectation is None or expectation.missing_delivery.action == "disabled":
@@ -273,9 +287,17 @@ async def _scan_full_market_feed(
     schema_id: str,
     schema_version: int,
     evaluated_at: datetime,
+    profile: ExecutionProfile = "full_market",
 ) -> tuple[int, int]:
     governance = (dataset.config or {}).get("full_market") or {}
-    start_value = governance.get("activation_date")
+    state = await db.get(
+        FullMarketDatasetState, {"dataset_key": dataset.dataset_key, "execution_profile": profile}
+    )
+    start_value = (
+        state.first_start_date.isoformat()
+        if state
+        else (governance.get("activation_date") if profile == "full_market" else None)
+    )
     if not start_value:
         return 0, 0
     start_date = date.fromisoformat(start_value)
@@ -302,6 +324,7 @@ async def _scan_full_market_feed(
                 select(DailyDeliveryPlan).where(
                     DailyDeliveryPlan.dataset_key == dataset.dataset_key,
                     DailyDeliveryPlan.provider == source,
+                    DailyDeliveryPlan.execution_profile == profile,
                     DailyDeliveryPlan.trade_date >= start_date,
                 )
             )
@@ -323,6 +346,7 @@ async def _scan_full_market_feed(
                 .where(
                     MissingDeliveryAlert.dataset_key == dataset.dataset_key,
                     MissingDeliveryAlert.source == source,
+                    MissingDeliveryAlert.execution_profile == profile,
                     MissingDeliveryAlert.schema_id == schema_id,
                     MissingDeliveryAlert.schema_version == schema_version,
                     MissingDeliveryAlert.expected_data_date == trade_date,
@@ -334,7 +358,8 @@ async def _scan_full_market_feed(
             resolved += len(resolution.scalars().all())
             continue
         details = {
-            "code": "FULL_MARKET_INCOMPLETE",
+            "code": "FULL_MARKET_INCOMPLETE" if profile == "full_market" else "PILOT_INCOMPLETE",
+            "execution_profile": profile,
             "plan_id": str(plan.plan_id) if plan else None,
             "expected": summary.expected if summary else None,
             "data": summary.data if summary else 0,
@@ -349,6 +374,7 @@ async def _scan_full_market_feed(
                 alert_id=uuid7(),
                 dataset_key=dataset.dataset_key,
                 source=source,
+                execution_profile=profile,
                 schema_id=schema_id,
                 schema_version=schema_version,
                 expected_data_date=trade_date,
@@ -391,6 +417,7 @@ async def _resolve_open_alerts_for_feed(
                     MissingDeliveryAlert.status == "open",
                     MissingDeliveryAlert.dataset_key == dataset_key,
                     MissingDeliveryAlert.source == source,
+                    MissingDeliveryAlert.execution_profile == "pilot",
                     MissingDeliveryAlert.schema_id == schema_id,
                     MissingDeliveryAlert.schema_version == schema_version,
                 )
@@ -428,6 +455,7 @@ async def _resolve_open_alerts_for_feed(
                     MissingDeliveryAlert.expected_data_date,
                 ),
                 IngestionRun.is_rerun.is_(False),
+                IngestionRun.delivery_part_id.is_(None),
                 *_terminal_success_condition(),
             )
         )
@@ -437,6 +465,7 @@ async def _resolve_open_alerts_for_feed(
             MissingDeliveryAlert.status == "open",
             MissingDeliveryAlert.dataset_key == dataset_key,
             MissingDeliveryAlert.source == source,
+            MissingDeliveryAlert.execution_profile == "pilot",
             MissingDeliveryAlert.schema_id == schema_id,
             MissingDeliveryAlert.schema_version == schema_version,
             delivered,
@@ -474,11 +503,13 @@ async def resolve_missing_delivery_for_run(
         or run.failed_records != 0
     ):
         return 0
+    profile = "pilot"
     if run.delivery_part_id is not None:
         part = await db.get(DailyDeliveryPart, run.delivery_part_id)
         plan = await db.get(DailyDeliveryPlan, part.plan_id) if part else None
         if plan is None:
             return 0
+        profile = plan.execution_profile
         summary = await reconcile_plan(db, plan)
         if summary.data + summary.no_data != summary.expected:
             return 0
@@ -487,13 +518,17 @@ async def resolve_missing_delivery_for_run(
         expectation = parse_delivery_expectation(dataset.config if dataset else None)
         delivery_mode = expectation.delivery_mode.value if expectation else "full_snapshot"
 
-    if delivery_mode == "sequenced_snapshot" and not await _sequenced_snapshot_complete(
-        db,
-        dataset_key=dataset_key,
-        source=source,
-        schema_id=schema_id,
-        schema_version=schema_version,
-        data_date=data_date,
+    if (
+        run.delivery_part_id is None
+        and delivery_mode == "sequenced_snapshot"
+        and not await _sequenced_snapshot_complete(
+            db,
+            dataset_key=dataset_key,
+            source=source,
+            schema_id=schema_id,
+            schema_version=schema_version,
+            data_date=data_date,
+        )
     ):
         return 0
 
@@ -503,6 +538,7 @@ async def resolve_missing_delivery_for_run(
             MissingDeliveryAlert.status == "open",
             MissingDeliveryAlert.dataset_key == dataset_key,
             MissingDeliveryAlert.source == source,
+            MissingDeliveryAlert.execution_profile == profile,
             MissingDeliveryAlert.schema_id == schema_id,
             MissingDeliveryAlert.schema_version == schema_version,
             MissingDeliveryAlert.expected_data_date == data_date,
@@ -521,8 +557,11 @@ async def list_missing_delivery_alerts(
     source: str | None,
     page: int,
     page_size: int,
+    profile: ExecutionProfile | None = None,
 ) -> tuple[list[MissingDeliveryAlert], int]:
     conditions = []
+    if profile is not None:
+        conditions.append(MissingDeliveryAlert.execution_profile == profile)
     if status:
         conditions.append(MissingDeliveryAlert.status == status)
     if dataset_key:

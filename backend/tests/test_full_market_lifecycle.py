@@ -267,7 +267,10 @@ async def test_acceptance_cannot_skip_an_actual_exchange_open_day(test_session):
     dataset, _, plan = await _activated_plan(test_session, count=1)
     from app.models.registry import FullMarketDatasetState
 
-    state = await test_session.get(FullMarketDatasetState, dataset.dataset_key)
+    state = await test_session.get(
+        FullMarketDatasetState,
+        {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
+    )
     assert state.first_start_date == DAY
     with pytest.raises(FullMarketError) as failure:
         await activate_feed(
@@ -333,14 +336,12 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
     keys = {spec.env_name: "first-" + spec.source_name for spec in FULL_MARKET_SOURCE_SPECS}
     keys[CALENDAR_HASH_ENV] = "calendar-key"
     hashes = {name: hashlib.sha256(key.encode()).hexdigest() for name, key in keys.items()}
-    await reconcile_fetcher_credentials_in_session(
-        test_session, hashes, runtime_profile="full-market"
-    )
+    await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="unified")
     keys = {name: "rotated-" + key for name, key in keys.items()}
     hashes = {name: hashlib.sha256(key.encode()).hexdigest() for name, key in keys.items()}
     get_settings().FULL_MARKET_ENABLED = False
     await reconcile_environment(test_session, actor="bounded-deployment")
-    await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="bounded")
+    await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="unified")
     credential = await test_session.scalar(
         select(SourceClient).where(
             SourceClient.name == "fetcher-" + provider.replace("_", "-"),

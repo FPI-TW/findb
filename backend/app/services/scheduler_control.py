@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminPrincipal
+from app.execution_profiles import scheduler_profile, unified_scheduler
 from app.models.registry import SchedulerControl
 from app.services.admin_audit import record_admin_audit
 from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
@@ -54,6 +55,7 @@ async def list_scheduler_controls(db: AsyncSession) -> list[SchedulerControl]:
     """Return all registered schedulers in stable key order."""
     result = await db.execute(
         select(SchedulerControl)
+        .where(SchedulerControl.retired_at.is_(None))
         .options(selectinload(SchedulerControl.scheduler_datasets))
         .order_by(SchedulerControl.scheduler_key)
     )
@@ -89,9 +91,9 @@ async def update_scheduler_desired_state(
     )
 
     datasets = None
-    if scheduler_key.startswith("full_market_"):
+    if unified_scheduler(scheduler_key):
         await lock_environment(db)
-    if desired_state == "running" and scheduler_key.startswith("full_market_"):
+    if desired_state == "running" and unified_scheduler(scheduler_key):
         datasets = await scheduler_start_datasets(db, scheduler_key, lock=True)
         await lock_calendars(db, datasets)
     result = await db.execute(
@@ -109,6 +111,9 @@ async def update_scheduler_desired_state(
             f"scheduler revision is {row.revision}, expected {expected_revision}"
         )
 
+    if desired_state == "running" and row.retired_at is not None:
+        raise SchedulerControlStartBlockedError(["scheduler_retired"])
+
     if row.desired_state == desired_state:
         return row
 
@@ -117,7 +122,13 @@ async def update_scheduler_desired_state(
         if blockers:
             raise SchedulerControlStartBlockedError(blockers)
         if datasets is not None:
-            await freeze_admission(db, row, await eligibility(db, row.provider, datasets))
+            await freeze_admission(
+                db,
+                row,
+                await eligibility(
+                    db, row.provider, datasets, profile=scheduler_profile(row.scheduler_key)
+                ),
+            )
 
     row.desired_state = desired_state
     row.revision += 1
@@ -191,7 +202,7 @@ def _check_source_scope(db: AsyncSession, row: SchedulerControl) -> None:
         allowed_datasets is None
         or (
             bool(set(normalized_datasets) & set(allowed_datasets))
-            if row.scheduler_key.startswith("full_market_")
+            if unified_scheduler(row.scheduler_key)
             else all(dataset_key in allowed_datasets for dataset_key in normalized_datasets)
         )
     )
@@ -245,6 +256,7 @@ def present_scheduler_control(
     heartbeat_age = max(0.0, (reference - heartbeat).total_seconds()) if heartbeat else None
     return {
         "scheduler_key": row.scheduler_key,
+        "execution_profile": scheduler_profile(row.scheduler_key),
         "provider": row.provider,
         "dataset_keys": scheduler_dataset_keys(row),
         "slot_id": row.slot_id,
@@ -271,12 +283,17 @@ async def present_admin_scheduler_control(
     from app.services.full_market_admission import admission_projection, eligibility
 
     projection = {}
-    if row.scheduler_key.startswith("full_market_"):
+    if unified_scheduler(row.scheduler_key):
         result = await eligibility(
-            db, row.provider, await scheduler_start_datasets(db, row.scheduler_key)
+            db,
+            row.provider,
+            await scheduler_start_datasets(db, row.scheduler_key),
+            profile=scheduler_profile(row.scheduler_key),
         )
         projection = {
-            **await admission_projection(db, row.provider),
+            **await admission_projection(
+                db, row.provider, profile=scheduler_profile(row.scheduler_key)
+            ),
             "feed_readiness": result["feeds"],
             "capacity": result["capacity"],
         }

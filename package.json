@@ -19,8 +19,8 @@
     "container:dashboard": "docker compose up -d --build dashboard",
     "build": "pnpm build:dashboard",
     "build:dashboard": "pnpm --filter dashboard build",
-    "contracts:export": "uv --directory backend run python scripts/export_ingress_contracts.py && uv --directory backend run python scripts/export_archive_contracts.py",
-    "contracts:check": "uv --directory backend run python scripts/export_ingress_contracts.py --check && uv --directory backend run python scripts/export_archive_contracts.py --check",
+    "contracts:export": "uv --directory backend run python scripts/export_ingress_contracts.py && uv --directory backend run python scripts/export_archive_contracts.py && uv --directory backend run python scripts/export_execution_feeds.py",
+    "contracts:check": "uv --directory backend run python scripts/export_ingress_contracts.py --check && uv --directory backend run python scripts/export_archive_contracts.py --check && uv --directory backend run python scripts/export_execution_feeds.py --check",
     "test": "pnpm test:contracts && pnpm test:backend && pnpm test:infra && pnpm test:fetcher && pnpm test:dashboard",
     "test:contracts": "pnpm contracts:check",
     "test:dashboard": "pnpm --filter dashboard test",
@@ -40,6 +40,6 @@
     "hook:pre-commit": "pnpm check",
     "hook:pre-push": "pnpm check",
     "test:infra": "uv --directory backend run pytest ../infra/tests -n 2 --dist worksteal --tb=short -q --durations=20 --durations-min=0.5",
-    "check:infra": "uv --directory backend run ruff check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py ../infra/deploy/check_fetcher_host.py ../infra/deploy/inspect_full_market_installation.py ../infra/env/sync_github_environment.py && uv --directory backend run ruff format --check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py ../infra/deploy/check_fetcher_host.py ../infra/deploy/inspect_full_market_installation.py ../infra/env/sync_github_environment.py"
+    "check:infra": "uv --directory backend run ruff check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py ../infra/deploy/check_rds_backup.py ../infra/deploy/check_fetcher_host.py ../infra/deploy/inspect_full_market_installation.py ../infra/env/aws_configuration.py && uv --directory backend run ruff format --check ../infra/tests ../infra/deploy/release_manifest.py ../infra/deploy/change_policy.py ../infra/deploy/check_rds_backup.py ../infra/deploy/check_fetcher_host.py ../infra/deploy/inspect_full_market_installation.py ../infra/env/aws_configuration.py"
   }
 }

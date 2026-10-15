@@ -1,54 +1,27 @@
 # FinDB Fetcher
 
-獨立的 FinDB Source API delivery client。Fetcher 只依賴 repository-level versioned
-contracts，不 import backend，也不持有 FinDB DB、RabbitMQ 或 Admin 權限。
+Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受保護 Source API 交付 versioned contracts。
+環境身份由 `APP_ENVIRONMENT=local|staging|production` 載入，須符合 manifest 的 deployment_target。
 
-環境身份統一由 `APP_ENVIRONMENT=local|staging|production` 載入；
-`FULL_MARKET_ENABLED` 控制該環境的 Full market opt-in。既有 config/manifest 的
-`deployment_target` 欄位維持原契約；舊 immutable accepted replay 的等值環境映射與
-明確 legacy receipt 檢查見[部署維運規則](../docs/operations/deployment.md)。
+## 共用七條 feeds
 
-## Staging active feeds
+| Provider | Datasets |
+| --- | --- |
+| Twelve Data | `us_equity_eod`、`hk_equity_eod` |
+| FinLab | `tw_equity_eod`、`tw_etf_eod` |
+| Shioaji | `tw_equity_minute`、`tw_etf_minute` |
+| TAIFEX | `tw_futures_eod` |
 
-staging 的四個 providers 以五個 provider/dataset 配對進行 functional pilot：
+唯一 recurring runtime 是 `findb-fetch-runtime --execution-profile pilot|full_market`。
+兩種 profile 使用同一 published universe、calendar、provider adapters、Raw R2、Source 與 retry/catchup 流程。
+Pilot 建立 daily plan 時按 canonical 商品識別排序取前兩項，期貨以 product／contract 取樣並保留所有 sessions。
+樣本建立後凍結；重試、重啟、補抓及 universe 發布不得改寫它。
 
-| Provider | Dataset | 範圍 |
-| --- | --- | --- |
-| `twelve_data` | `us_equity_eod` | `AAPL`、`MSFT` 單日完整日 K |
-| `finlab` | `tw_equity_eod` | `2330`、`2317` 單日完整日 K |
-| `shioaji` | `tw_equity_minute` | `2330` reviewed pilot |
-| `shioaji` | `tw_etf_minute` | `0050` 完整同日分鐘 K |
-| `taifex` | `tw_futures_eod` | `TX`、`MTX` 各一個 source-observed 近月契約，regular／after_hours |
-
-Canonical/Serve read model 仍可保留歷史或預留資料域，但不代表那些資料域目前有
-active provider feed。HK、TW ETF EOD 不為 provider coverage 擴張；環境 opt-in Full market
-須 Owner baseline publish 與完整 calendar，之後 Owner 在 Full market tab 手動啟動。
-
-目前提供：
-
-- Contract manifest、checksum 與 JSON Schema 驗證。
-- Canonical request 確定性序列化與維持 body/idempotency key 的 bounded retry。
-- 只重試 transport errors、429、502、503、504。
-- Twelve Data `/time_series` 日線 client 與 `market_eod.v1` adapter。
-- FinLab `tw_equity_eod` durable scheduler 與 Shioaji `tw_equity_minute`／
-  `tw_etf_minute` same-day scheduler。
-- 每個 provider 使用獨立 Source client key、container 與 durable SQLite state；raw artifact
-  先寫入 Fetcher-owned Cloudflare R2，delivery 攜帶 immutable ref 與 SHA-256。
-- 去識別化 provider fixture、mapping、mock Source API、readiness 與 scheduler preflight。
-
-Fetcher 只能透過 `POST /api/v1/source/ingest` 傳送 provider-neutral contract。任何
-retired route、provider-specific route 或不在上述表格的 dataset 都會 fail closed，不能
-以 fallback 方式恢復。
-
-### Staging execution boundary
-
-Staging 只驗證完整資料流與故障處理，不承載完整資料集。預設 data-producing profile
-由 `configs/staging_provider_pilots.v1.json` 綁定每個 provider 1–2 商品與
-最新已完成交易日，不補歷史缺口。Twelve 最多 2 requests／2 rows／單日；FinLab 一批 2 rows；
-Shioaji 各 dataset 一筆 sequence（sequence_count=1），保留完整同日分鐘 bars；TAIFEX 每日期
-最多 6 次單商品單日報表 requests（3 attempts）、每 response 8 MiB、4 canonical session rows。不得在 staging 執行完整歷史 backfill、完整 universe 導入或擴大
-symbol、日期、record caps；例外須依[staging data policy](../docs/operations/deployment.md#staging-data-policy)
-針對具名 run 另行核准。
+兩環境固定安裝八個 recurring consumers，以及三個獨立 historical consumers。
+`FULL_MARKET_ENABLED=false` 只禁止 full market 新抓取，不影響安裝、pilot 或 prepared delivery。
+部署只接受 stopped controls；Owner 操作啟停。Staging 常態開 pilot，上版可短暫開 full market；production 常態只開 full market。
+`pilot_<provider>_v1` 與 `full_market_<provider>_v1` 各自有 first dates、plans、checkpoint；同環境共用帳號 governor。
+舊 provider-specific pilot CLI 僅為既有診斷工具，已退出正式部署。
 
 ## 開發
 
@@ -87,115 +60,6 @@ ledger 時才使用範本的新路徑。本機 `.env` 僅供 local，staging／p
 docker build -f fetcher/Dockerfile -t findb-fetcher:local .
 ```
 
-## FinLab staging smoke
-
-FinLab 是隔離的 optional runtime；通用 Fetcher image 不安裝其 SDK。只為驗證 staging
-端 `FINLAB_API_TOKEN` 能讀取資料時，建置獨立 image：
-
-```bash
-docker build -f fetcher/Dockerfile.finlab -t findb-fetcher-finlab:local .
-docker run --rm --read-only \
-  --tmpfs /home/fetcher:uid=10001,gid=10001,mode=0700 \
-  --env FINLAB_API_TOKEN \
-  findb-fetcher-finlab:local \
-  findb-fetch-finlab-smoke --target-date 2026-07-29 --symbols 2330,2317
-```
-
-命令固定使用 `finlab==1.5.7` 與 `price:收盤價`，只接受已審核的 2330、2317（最多兩檔）
-及明確 ISO 日期；不寫 R2、不呼叫 Source API、不建立 scheduler state。遠端 smoke 只可
-在 `staging-fetcher` Environment 手動觸發，不能把 Source、R2 或其他 provider credential
-注入 smoke container。
-
-## FinLab scheduler
-
-本機 preflight 與常駐執行：
-
-```bash
-uv run --env-file .env findb-fetch-finlab-scheduler --check
-uv run --env-file .env findb-fetch-finlab-scheduler --run-forever
-```
-
-Preflight 驗證 `tw_equity_eod` feed、reviewed manifest、runtime config、contracts 與
-SQLite state；只有 owner 透過 Dashboard 將 DB desired state 設為 `running` 後才建立
-provider cycle。每輪先保存 deterministic SDK bundle 與 prepared Source request；重啟後
-重用相同 request，只有 Source `completed` 且 record count 一致才推進 checkpoint。
-
-## Shioaji staging smoke 與 scheduler
-
-`shioaji==1.7.1` 是 optional dependency。Smoke 只接受 staging allowlist 的單一 2330
-與明確日期（最近 31 天內），以 `simulation=True` 取得一次 Kbars；不 delivery、不寫 DB/R2、
-不啟用 scheduler。時間戳以 `Asia/Taipei` wall-clock right-labelled bar end 轉換。
-
-```bash
-uv run --env-file .env findb-fetch-shioaji-smoke --symbol 2330 --target-date 2026-07-29
-uv run --env-file .env findb-fetch-shioaji-scheduler --check
-uv run --env-file .env findb-fetch-shioaji-scheduler --run-forever
-```
-
-Shioaji scheduler 固定服務 `tw_equity_minute` 與 `tw_etf_minute`；使用獨立 Shioaji
-credentials、Source key、R2 binding、provider cache 與
-`/var/lib/findb-shioaji-fetcher/state.sqlite3`。同一 snapshot 的 sequences 必須完整成功
-才解除 missing alert；不跨日自動補抓。
-
-## Twelve Data 手動抓取
-
-本機開發將 API key 放在被 Git 忽略的 `fetcher/.env`。從 `fetcher/.env.example` 複製時，
-`FETCHER_CONTRACTS_DIR=../contracts` 適用於從 `fetcher/` 執行的命令；container 固定使用
-`/app/contracts`。
-
-```bash
-uv run --env-file .env findb-fetch-twelve-data \
-  --symbol AAPL \
-  --dataset-key us_equity_eod \
-  --start-date 2024-01-02 \
-  --end-date 2024-01-06
-```
-
-預設為 dry-run：呼叫 Twelve Data、轉換並驗證 contract，只輸出不含資料列的 bounded JSON，
-不送 Source API。明確指定 `--deliver` 才會 delivery；加上 `--wait` 使用同一 Source key
-輪詢 terminal state：
-
-```bash
-uv run --env-file .env findb-fetch-twelve-data \
-  --symbol AAPL \
-  --dataset-key us_equity_eod \
-  --start-date 2024-01-02 \
-  --end-date 2024-01-06 \
-  --deliver --wait --wait-timeout-seconds 3600
-```
-
-`--deliver` 會先完成 raw R2 persistence；raw upload 失敗時不呼叫 Source。CLI 不輸出 API
-key、完整 payload 或任意 Source response body。exit code 以 CLI `--help` 與程式碼為準。
-
-### Twelve Data reviewed universe
-
-保留的 legacy `configs/twelve_data_us_common_stocks.v1.json` 包含 AAPL、MSFT、NVDA；staging 使用上方新版兩商品 pilot。修改 symbols 或
-limits 必須經 code review，不得從 runtime 字串動態擴張。每個 symbol 保持獨立 request 與
-idempotency identity；單一 mapping/delivery 錯誤不污染其它 symbols。Universe 必須遵守
-每次 3 symbols、每 symbol 260 records、總計 780 records、366 天與 3 credits 的 reviewed
-limits（程式絕對上限更高但不是操作授權）。
-
-主要 mapping：`meta.symbol`→`source_symbol`、`meta.currency`→`currency`、
-`values[].datetime`→`trade_date`、`open/high/low/close/volume`→同名 canonical 欄位。
-去識別化 fixture 位於 `tests/fixtures/twelve_data/`。
-
-## Scheduler state 與 control boundary
-
-Fetcher-owned SQLite 不是 FinDB DB，也不包含 provider 或 Source credentials。SQLite 保存
-schedule date/symbol 狀態、retry/lease、Source attempt/run identity、prepared request 與
-terminal checkpoint；delivery retry 直接重用相同 body 與 idempotency key。DB scheduler
-control endpoint 是啟停唯一權威，失聯或 mapping 不一致時 fail closed。
-
-四個 staging scheduler container 使用 `--run-forever`，分別服務 Twelve Data、FinLab、Shioaji、TAIFEX；
-stopped 時保持 idle，不建立 provider cycle。state directory 應由 staging deployment 以
-UID/GID `10001:10001`、mode `0700` 的 durable volume 掛載。
-
-常駐CLI會將container runtime的`SIGTERM`及互動式`SIGINT`轉成shared stop event。Idle loop
-會立即以exit `0`結束；若signal落在final running preflight後，runtime不會跨入新的provider
-cycle；已開始的cycle仍會完成terminal report再結束。Deployment要求stable container在30秒
-grace period內exit `0`，exit `137`一律視為no-go並恢復原stable。
-TAIFEX pilot 在 signal 後保留 prepared state、取消 terminal polling，不推進 checkpoint；restart 使用同一 identity 重試。
-
 ## Provider raw storage（Cloudflare R2）
 
 Twelve Data 保存 exact HTTP bytes；FinLab 保存 deterministic SDK bundle；Shioaji 保存
@@ -214,12 +78,10 @@ Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管�
 | `SOURCE_API_URL` | 是 | FinDB Source API HTTPS origin |
 | `SOURCE_CLIENT_KEY` | 是 | 當前 provider 專用 DB-backed Source client key |
 | `FETCHER_CONTRACTS_DIR` | 否 | Contract manifest 目錄（container 預設 `/app/contracts`） |
-| `FETCHER_STATE_PATH` | 否 | Twelve Data durable SQLite state |
-| `FETCHER_FINLAB_STATE_PATH` | 否 | FinLab durable SQLite state |
-| `FETCHER_SHIOAJI_STATE_PATH` | 否 | Shioaji durable SQLite state |
+| `--state-path` | 部署是 | 各 provider／execution profile 的獨立 durable SQLite checkpoint 檔案 |
 | `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／Pilot／Full／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
 | `FINLAB_API_TOKEN` | FinLab 是 | FinLab headless SDK token |
-| `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji 是 | Staging Shioaji credentials |
+| `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji 是 | 該環境的 Shioaji credentials |
 | `SHIOAJI_SIMULATION` | Shioaji 是 | 預設 `true`；明確 `false` fail closed |
 | `TWELVE_DATA_API_KEY` | Twelve Data 是 | Twelve Data runtime secret |
 | `CLOUDFLARE_R2_ACCOUNT_ID` | delivery/scheduler 是 | Cloudflare account ID |
@@ -228,23 +90,17 @@ Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管�
 | `CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY` | delivery/scheduler 是 | Raw bucket R2 secret |
 
 每個 provider 使用自己的 Source key、credentials、container 與 state。Secrets 只從
-`staging-fetcher` Environment/instance role 載入，不進 log、contract、raw payload 或
+該環境的 AWS Secrets Manager，由 instance role 載入，不進 log、contract、raw payload 或
 Dashboard client bundle。
 
-## 全市場手動排程
+## 排程與持久化
 
-`findb-fetch-full-market` 支援 local/staging/production 對應的 `configs/full_market.<target>.v1.json`，
-一律初始 stopped，`FULL_MARKET_ENABLED=false` 預設。Owner published official baseline 與完整
-published calendar 通過後，手動啟動既有 scheduler，凍結 ready scope 與首次日期。
-Cycle 官方名單刷新成功或失敗後仍使用原 admitted scope；standalone maintenance refresh
-依 Source 回傳的 `authorized_dataset_keys` 執行，可在尚無 baseline／admission 時 bootstrap，
-但不可省略有效且非空的 provider／dataset scope 或 credential 期限驗證。
-所有環境的新抓取均移除 readiness／enrollment／expiry／capacity 前提。Source／provider API
-認證、running control、flag stop 與資料驗證保留。詳見 [Full market runbook](../docs/operations/full_market.md)。
+`configs/full_market.<target>.v1.json` 由 Backend 共用 feed catalog 產生，環境間只有 target 不同。
+首次啟動需 published baseline 與完整 published calendar；不要求 capacity readiness 證據。
+獨立 checkpoint 綁定 execution profile，拒絕把既有 full market SQLite 改標為 pilot。
+Daily plan API 未指定 profile 的舊 caller 仍表示 full market；本 runtime 一律明確帶入。
+canonical 更新的持久化寫入證據按 plan 保留，另一 profile 的寫入不會讓已完成計畫倒退。
 
-Pilot／Full checkpoint 分離。Current staging／production 部署的 bounded／Full／historical
-consumers 一律掛載環境內共享且可寫的 account state，包含 `FULL_MARKET_ENABLED=false`
-的首次 bounded 安裝；保留既有 ledger／credential pins，不要求 readiness 證據。
 已設定 account state 的 consumers 共用 durable governor，沿用既有
 account ID 或使用 credential fingerprint；不設跨環境分配、所有行情的日請求預算、deadline capacity proof
 或 enrolled response bounds。Shioaji login 另採本地保守 rolling 86400 秒最多 1000 次，非 UTC／provider reset epoch；
@@ -338,55 +194,10 @@ no-data。僅具日期、商品、session、URL/checksum、觀察時間及實質
 或 normalization failure 轉 manual，`--health` 保留 unresolved、late 及 manual-required，交由
 營運人員核實處置，不跳過後將整份 plan 宣稱完成。
 
-### Staging pilot 啟動與驗收
+## 部署與驗收
 
-部署先準備 `findb/staging/fetcher/api/source/taifex` 專用 secret；TAIFEX 不需 provider token。
-FinDB 以 `reconcile_fetcher_credentials.py --deployment-target staging --runtime-profile bounded`
-接收四把 Source keys 與 calendar Serve key 的五個 SHA-256 hashes；不可傳 plaintext 或開跨 unit secret 權限。
-`provision_registry.py --deployment-target staging` 啟用 `tw_futures_eod` bounded incremental policy
-（18:00、minimum rows=4），新增 stopped 的 `taifex_tw_futures_pilot_v1`，保持 full-market controls 停止。
-`seed_staging_pilot_calendar.py --deployment-target staging` 僅發布缺少的官方 TAIFEX 2026 日曆，
-保留 operator revision，不改 US／TW／HK。calendar 缺少或 credential 不可用即 fail closed。
-
-Owner 在 Dashboard 啟動以下 controls；container startup/readiness 允許 desired=stopped，部署不代為 start。
-
-| Provider | Control key | CLI（附 `--check` 或 `--run-forever`） |
-| --- | --- | --- |
-| Twelve Data | `twelve_data_us_common_stocks_daily_v1` | `findb-fetch-scheduler --schedule-file /app/configs/daily_scheduler.staging.v3.json --slot-id western_markets_window --dataset-key us_equity_eod` |
-| FinLab | `finlab_tw_equity_eod_v1` | `findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.staging.v3.json` |
-| Shioaji | `shioaji_tw_pilot_v1` | `findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_staging_pilot.v3.json` |
-| TAIFEX | `taifex_tw_futures_pilot_v1` | `findb-fetch-taifex-pilot --config /app/configs/taifex_tw_staging_pilot.v1.json` |
-
-Twelve state 改用 `/var/lib/findb-fetcher/staging-pilot-v2/state.sqlite3`；Shioaji 改用
-`/var/lib/findb-shioaji-fetcher/staging-pilot-v3/state.sqlite3`。舊 immutable manifest／state 保留作 rollback；
-不移入舊 pending NVDA／ETF prepared requests。TAIFEX 使用 `/var/lib/findb-taifex-fetcher/staging-pilot-v1/state.sqlite3`。
-只選 source-observed `YYYYMM` 近月，每個產品保留兩個 session；weekly、價差與 continuous alias 不進 pilot。
-兩份原始報表先寫 R2，raw manifest 綁定各自 checksum，再凍結 contract/prepared request；restart 重送同一 identity。
-耗盡 request／attempt budget 顯示 blocked；acquisition/Source 錯誤不算 no_data。
-
-新增 provider 必須擴充 validated catalog、supported runtime/schema、最小 Source scope、offline startup 與
-stopped→running fixture、實際 acquisition/durable replay 測試，並收集每個 feed 最新 eligible completed trading day
-五個 feed 的 Source 202、raw、terminal normalization、exact pilot canonical 與 Serve proof。
-`infra/acceptance/collect_staging_feed_evidence.py` 的 `pilot_functional_complete` 是此門檻；
-multi-date metrics 是額外資訊。Fixture 只證明實作行為，不證明 live credentials、供應商授權或資料流已通過。
-
-Staging functional target 由 backend unit-local published 官方日曆的完整 revision 與 UTC 觀測時刻
-推導；US 依台北 08:15 trigger／lag 1，TW EOD／minute 14:30，TAIFEX 18:00，並檢查官方收盤。
-US 09:00 是交付 deadline；minute 過 17:00 cutoff 仍須有同 target 的完成 proof。
-日曆缺漏、revision 不符及最新日期 missing／blocked 不可回退採用舊成功。
-Exporter 每 run 保留 accepted／duplicate 的所有 Source receipts，但 canonical coverage 只計一次，
-使 durable prepared retry／restart 的同一 run 重播仍可驗收。outbox 歷史 delivery generations 聚合保存，
-目前 generation 依 normalization job 的 delivery_id 核對，正常 lost delivery／expired lease recovery 不重複
-canonical proof。Serve 回應須以 source、source_fetched_at、OHLCV、minute 精確 bar 或 futures actual contract／session
-與 run-linked canonical sample 正規化比對，collector 重算 SHA-256 fingerprint 後才接受 run binding；
-同 key 的其他來源或內容不算成功。Fixture recovery／HTTP 測試仍不代表 live credentials 驗收。
-Fetcher 不讀 Backend DB 或 import Backend。
-
-Live evidence collector 在同 unit 的可信 wrapper 內壓縮 standalone probe JSON，stdout inline
-或拆成最多 16,000 字元的 base64 chunks，避免 SSM 24k stdout 截斷。大型資料暫存在 container
-`/tmp` 的唯一 nonce artifact（0600），每次收集有 8 MiB raw／2 MiB compressed／175 chunks 與
-180 秒上限，依序驗證完整 SHA-256 與 bounded 解壓後才接受原始 JSON。所有結果都 best-effort
-清理暫存檔；下次 probe 只移除超過 24 小時、同 owner 的專用 prefix 孤兒檔。
-Probe 的 standalone stdout JSON、UTC 真時鐘與 functional acceptance 語意維持原樣；
-傳輸不新增 S3、IAM、SDK 或跨 unit credentials。完整測試與清理規則見
-[`docs/operations/testing.md`](../docs/operations/testing.md)。
+AWS 設定、首次切換備份／drain、immutable acceptance 與 rollback 下限見
+[部署文件](../docs/operations/deployment.md)；Owner 操作與缺漏判定見
+[Full market runbook](../docs/operations/full_market.md)。
+兩環境使用相同部署健康 gate，native provider 抓取不是日常部署 gate。
+七條 feeds 的 fixtures 驗證與真實 provider／R2 驗收分開記錄，尚未解決的 native 問題保留 backlog。

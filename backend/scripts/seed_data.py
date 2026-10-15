@@ -516,30 +516,32 @@ async def seed_datasets(session: AsyncSession) -> None:
         ("shioaji", ["tw_equity_minute", "tw_etf_minute"], "taiwan_market_window", time(18)),
         ("taifex", ["tw_futures_eod"], "taiwan_market_window", time(18)),
     ):
-        key = f"full_market_{provider}_v1"
-        await session.execute(
-            insert(SchedulerControl)
-            .values(
-                scheduler_key=key,
-                provider=provider,
-                slot_id=slot,
-                scheduled_local_time=clock,
-                timezone="Asia/Taipei",
-                desired_state="stopped",
-                observed_state="stopped",
-                revision=1,
-            )
-            .on_conflict_do_nothing(index_elements=["scheduler_key"])
-        )
-        for dataset_key in datasets:
+        for profile in ("pilot", "full_market"):
+            key = f"{profile}_{provider}_v1"
             await session.execute(
-                insert(SchedulerDataset)
+                insert(SchedulerControl)
                 .values(
                     scheduler_key=key,
-                    dataset_key=dataset_key,
+                    provider=provider,
+                    execution_profile=profile,
+                    slot_id=slot,
+                    scheduled_local_time=clock,
+                    timezone="Asia/Taipei",
+                    desired_state="stopped",
+                    observed_state="stopped",
+                    revision=1,
                 )
-                .on_conflict_do_nothing()
+                .on_conflict_do_nothing(index_elements=["scheduler_key"])
             )
+            for dataset_key in datasets:
+                await session.execute(
+                    insert(SchedulerDataset)
+                    .values(
+                        scheduler_key=key,
+                        dataset_key=dataset_key,
+                    )
+                    .on_conflict_do_nothing()
+                )
     await session.commit()
     logger.info("Seeded %d datasets", len(DATASETS))
 

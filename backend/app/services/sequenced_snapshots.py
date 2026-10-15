@@ -58,6 +58,8 @@ async def list_sequenced_snapshot_groups(
     ]
     if delivery_part_id is not None:
         criteria.append(IngestionRun.delivery_part_id == delivery_part_id)
+    else:
+        criteria.append(IngestionRun.delivery_part_id.is_(None))
     if data_date is not None:
         criteria.append(IngestionRun.batch_data_date == data_date)
 

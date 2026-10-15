@@ -277,10 +277,13 @@ async def test_partial_full_market_aggregates_enabled_scope_and_keeps_bounded_de
     assert row.configuration_status == "ready"
     assert row.activation_state == "activated"
     assert row.active_dataset_keys == ("tw_equity_eod",)
-    assert row.status == "fresh"
-    assert row.feed_count == row.fresh_feed_count == 1
+    # An unrelated bounded run does not complete a full-market plan. The shared
+    # trigger is 18:00 Taipei; this evaluation is before the first trigger.
+    assert row.status == "not_due"
+    assert row.feed_count == 1
+    assert row.fresh_feed_count == 0
     assert row.pending_feeds[0].dataset_key == "tw_etf_eod"
-    assert row.last_successful_update_at == NOW
+    assert row.last_successful_update_at is None
     assert row.last_heartbeat_at is None
     assert row.heartbeat_age_seconds is None
 
@@ -379,6 +382,15 @@ async def test_deactivated_full_market_retains_original_activation_date(test_ses
     config = deepcopy(datasets["tw_equity_minute"].config)
     config["full_market"].update(activation_date="2026-07-01", mode="off")
     datasets["tw_equity_minute"].config = config
+    from app.models.registry import FullMarketDatasetState
+
+    test_session.add(
+        FullMarketDatasetState(
+            dataset_key="tw_equity_minute",
+            execution_profile="full_market",
+            first_start_date=date(2026, 7, 1),
+        )
+    )
     await test_session.flush()
     row = (await list_market_freshness(test_session, now=NOW))[0]
     assert row.activation_state == "deactivated"

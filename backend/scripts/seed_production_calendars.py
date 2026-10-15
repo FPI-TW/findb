@@ -488,7 +488,7 @@ async def seed_reviewed_calendars(
         )
     await db.commit()
     return {
-        "deployment_target": PRODUCTION_TARGET,
+        "deployment_target": os.getenv("APP_ENVIRONMENT", PRODUCTION_TARGET),
         "coverage": {
             "TW": [min(TW_CALENDAR_FILES), max(TW_CALENDAR_FILES)],
             "US": [min(US_CALENDAR_YEARS), max(US_CALENDAR_YEARS)],
@@ -505,9 +505,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--deployment-target",
-        choices=(PRODUCTION_TARGET,),
+        choices=("staging", "production"),
         required=True,
-        help="Exact deployment target; this seed is production-only",
+        help="Exact staging or production deployment target",
     )
     parser.add_argument(
         "--apply",
@@ -546,6 +546,9 @@ async def _main() -> int:
         )
         return 0
 
+    if os.getenv("APP_ENVIRONMENT") != args.deployment_target:
+        print("error: application environment mismatch", file=sys.stderr)
+        return 2
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         print("error: DATABASE_URL is required with --apply", file=sys.stderr)

@@ -143,6 +143,14 @@ class FullMarketAdmissionFeed(Base):
 
 class FullMarketDatasetState(Base):
     __tablename__ = "full_market_dataset_state"
+    execution_profile: Mapped[str] = mapped_column(
+        String(20), primary_key=True, default="full_market", server_default="full_market"
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "execution_profile IN ('pilot', 'full_market')", name="dataset_state_profile"
+        ),
+    )
     dataset_key: Mapped[str] = mapped_column(
         ForeignKey("dataset_registry.dataset_key"), primary_key=True
     )
@@ -230,7 +238,14 @@ class DailyDeliveryPlan(Base):
     __tablename__ = "daily_delivery_plan"
     __table_args__ = (
         UniqueConstraint(
-            "dataset_key", "provider", "trade_date", name="uq_daily_delivery_plan_scope_date"
+            "dataset_key",
+            "provider",
+            "trade_date",
+            "execution_profile",
+            name="uq_daily_delivery_plan_scope_date",
+        ),
+        CheckConstraint(
+            "execution_profile IN ('pilot', 'full_market')", name="delivery_plan_profile"
         ),
         Index("idx_daily_delivery_plan_deadline", "deadline_at", "dataset_key"),
     )
@@ -243,6 +258,9 @@ class DailyDeliveryPlan(Base):
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     release_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("universe_release.release_id"), nullable=False
+    )
+    execution_profile: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="full_market", server_default="full_market"
     )
     activation_cutoff: Mapped[date] = mapped_column(Date, nullable=False)
     deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -366,6 +384,10 @@ class SchedulerControl(Base):
 
     scheduler_key: Mapped[str] = mapped_column(String(100), primary_key=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    execution_profile: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pilot", server_default="pilot"
+    )
     # ``slot_id``, ``scheduled_local_time`` and ``timezone`` are the durable
     # scheduler definition.  Runtime code must provide a canonical slot ID.
     slot_id: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -1200,6 +1222,7 @@ class MissingDeliveryAlert(Base):
             "schema_id",
             "schema_version",
             "expected_data_date",
+            "execution_profile",
             name="uq_missing_delivery_identity_date",
         ),
         Index("idx_missing_delivery_status_detected", "status", "first_detected_at"),
@@ -1215,6 +1238,9 @@ class MissingDeliveryAlert(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     schema_id: Mapped[str] = mapped_column(String(50), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_profile: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pilot", server_default="pilot"
+    )
     expected_data_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="open")
     first_detected_at: Mapped[datetime] = mapped_column(
@@ -1472,4 +1498,19 @@ class AdminAuditEvent(Base):
     resource_type: Mapped[str] = mapped_column(String(30), nullable=False)
     resource_id: Mapped[str] = mapped_column(String(100), nullable=False)
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DeliveryMemberEvidence(Base):
+    """A member actually written to canonical by a terminal normalization run.
+
+    Independent of the mutable latest canonical run_id; minute completeness
+    still requires the original run's coherent sequence group.
+    """
+
+    __tablename__ = "delivery_member_evidence"
+    run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("ingestion_run.run_id", ondelete="RESTRICT"), primary_key=True
+    )
+    member_key: Mapped[str] = mapped_column(String(200), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

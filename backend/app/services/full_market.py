@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution_profiles import ExecutionProfile, execution_profile, scheduler_key
 from app.models.canonical import (
     CalendarRevisionDay,
     CalendarYearRevision,
@@ -25,6 +26,7 @@ from app.models.registry import (
     DailyDeliveryPart,
     DailyDeliveryPlan,
     DatasetRegistry,
+    DeliveryMemberEvidence,
     IngestionRun,
     UniverseMember,
     UniverseRelease,
@@ -250,6 +252,7 @@ async def list_universes(
     provider: str,
     allowed_datasets: list[str] | None,
     as_of: date | None = None,
+    profile: ExecutionProfile = "full_market",
 ) -> UniverseListResponse:
     await _scope(db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets)
     filters = [UniverseRelease.dataset_key == dataset_key, UniverseRelease.provider == provider]
@@ -267,7 +270,7 @@ async def list_universes(
     )
     from app.services.full_market_admission import admission_projection
 
-    projection = await admission_projection(db, provider, source=True)
+    projection = await admission_projection(db, provider, source=True, profile=profile)
     return UniverseListResponse(
         data=[_release_response(release) for release in releases],
         published_release_id=published,
@@ -442,7 +445,9 @@ async def create_plan(
     from app.services.full_market_admission import admission_projection
     from app.services.scheduler_start import scheduler_start_datasets
 
-    datasets = await scheduler_start_datasets(db, f"full_market_{body.provider}_v1", lock=True)
+    datasets = await scheduler_start_datasets(
+        db, scheduler_key(body.provider, body.execution_profile), lock=True
+    )
     dataset = await _scope(
         db,
         dataset_key=body.dataset_key,
@@ -457,11 +462,13 @@ async def create_plan(
         )
     await db.get(
         SchedulerControl,
-        f"full_market_{body.provider}_v1",
+        scheduler_key(body.provider, body.execution_profile),
         with_for_update=True,
         populate_existing=True,
     )
-    projection = await admission_projection(db, body.provider, source=True)
+    projection = await admission_projection(
+        db, body.provider, source=True, profile=body.execution_profile
+    )
     activation_value = projection["first_start_dates"].get(body.dataset_key)
     # Existing frozen plans can always be read and completed through their scoped endpoints.
     if (
@@ -480,6 +487,7 @@ async def create_plan(
                 DailyDeliveryPlan.dataset_key == body.dataset_key,
                 DailyDeliveryPlan.provider == body.provider,
                 DailyDeliveryPlan.trade_date == body.trade_date,
+                DailyDeliveryPlan.execution_profile == body.execution_profile,
             )
         )
     ).one_or_none()
@@ -522,15 +530,27 @@ async def create_plan(
             )
         ).all()
     )
+    if body.execution_profile == "pilot":
+
+        def identity(member: UniverseMember) -> tuple[str, str]:
+            return (member.product_code or member.symbol, member.contract_code or "")
+
+        selected = set(sorted({identity(member) for member in members})[:2])
+        members = [member for member in members if identity(member) in selected]
+    if not members:
+        raise FullMarketError("Published universe has no plan members", 409)
     plan = DailyDeliveryPlan(
         plan_id=uuid7(),
         dataset_key=body.dataset_key,
         provider=body.provider,
         trade_date=body.trade_date,
         release_id=release.release_id,
+        execution_profile=body.execution_profile,
         activation_cutoff=activation_date,
         deadline_at=_deadline(dataset, body.trade_date),
-        member_sha256=release.member_sha256,
+        member_sha256=release.member_sha256
+        if body.execution_profile == "full_market"
+        else _digest([member.member_key for member in members]),
         expected_count=len(members),
         created_at=utc_now(),
     )
@@ -601,6 +621,7 @@ async def reconcile_plan(
     )
     part_ids = {member.part_id for member in members}
     canonical_keys: set[str] = set()
+    complete_groups: set[tuple[UUID, str, str]] = set()
     if plan.dataset_key == "tw_futures_eod":
         futures_rows = (
             await db.execute(
@@ -627,7 +648,7 @@ async def reconcile_plan(
             f"{symbol}|{contract}|{session}" for symbol, contract, session, _ in futures_rows
         }
     elif plan.dataset_key in {"tw_equity_minute", "tw_etf_minute"}:
-        complete_groups: set[tuple[UUID, str, str]] = set()
+        complete_groups = set()
         for part_id in part_ids:
             groups = await list_sequenced_snapshot_groups(
                 db,
@@ -682,6 +703,25 @@ async def reconcile_plan(
             )
         ).all()
         canonical_keys = {symbol for symbol, _ in eod_rows}
+    evidence = await db.execute(
+        select(
+            DeliveryMemberEvidence.member_key,
+            IngestionRun.delivery_part_id,
+            IngestionRun.snapshot_id,
+            IngestionRun.daily_update_id,
+        )
+        .join(IngestionRun, IngestionRun.run_id == DeliveryMemberEvidence.run_id)
+        .where(
+            IngestionRun.delivery_part_id.in_(part_ids),
+            IngestionRun.status.in_(("completed", "completed_with_errors")),
+        )
+    )
+    for member_key, part_id, snapshot_id, daily_update_id in evidence:
+        if (
+            plan.dataset_key not in {"tw_equity_minute", "tw_etf_minute"}
+            or (part_id, snapshot_id, daily_update_id) in complete_groups
+        ):
+            canonical_keys.add(member_key)
     counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
     gaps: list[dict] = []
     for member in members:
@@ -705,6 +745,7 @@ async def reconcile_plan(
             )
     evaluated_at = now or utc_now()
     return DeliverySummaryResponse(
+        execution_profile=execution_profile(plan.execution_profile),
         expected=len(members),
         **counts,
         deadline_at=plan.deadline_at,
@@ -745,6 +786,7 @@ async def get_plan(
     summary = await reconcile_plan(db, plan)
     return DeliveryPlanResponse(
         plan_id=plan.plan_id,
+        execution_profile=execution_profile(plan.execution_profile),
         dataset_key=plan.dataset_key,
         provider=plan.provider,
         trade_date=plan.trade_date,

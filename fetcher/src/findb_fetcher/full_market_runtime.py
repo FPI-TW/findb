@@ -179,14 +179,17 @@ def _governed(method):
             consumer = (
                 "maintenance"
                 if consumer == "maintenance" or method.__name__ == "sync_universes"
-                else "full_market"
+                else self.execution_profile
             )
             plan = kwargs.get("plan") or (
                 args[1] if method.__name__ == "_acquire" and len(args) > 1 else None
             )
             return self.source.authorization(
                 "GET",
-                "full-market/authorization?consumer=" + consumer,
+                "full-market/authorization?consumer="
+                + consumer
+                + "&execution_profile="
+                + self.execution_profile,
                 required_dataset=plan["dataset_key"] if plan else None,
             )
 
@@ -208,9 +211,13 @@ class FullMarketRuntime:
         calendar: PublishedCalendarClient,
         raw_store: RawPayloadStore,
         readiness_file: Path | None = None,
+        execution_profile: str = "full_market",
         client: httpx.Client | None = None,
         can_acquire: Callable[[], bool] | None = None,
     ) -> None:
+        if execution_profile not in {"pilot", "full_market"}:
+            raise ValueError("Unsupported execution profile")
+        self.execution_profile = execution_profile
         self.provider, self.config, self.state = provider, config, state
         self.can_acquire = can_acquire or (lambda: True)
         self.source, self.delivery, self.calendar, self.raw_store = (
@@ -470,7 +477,9 @@ class FullMarketRuntime:
         self._ensure_proof()
         if dataset_keys is None:
             authorization = self.source.request(
-                "GET", "full-market/authorization?consumer=maintenance"
+                "GET",
+                "full-market/authorization?consumer=maintenance&execution_profile="
+                + self.execution_profile,
             )
             if authorization.get("acquisition_allowed") is not True:
                 raise ReadinessBlockedError("Source maintenance authorization denied")
@@ -656,7 +665,9 @@ class FullMarketRuntime:
     def cycle(self) -> dict[str, Any]:
         self.drain()
         self._ensure_proof()
-        authorization = self.source.request("GET", "full-market/authorization")
+        authorization = self.source.request(
+            "GET", "full-market/authorization?consumer=" + self.execution_profile
+        )
         if authorization.get("acquisition_allowed") is not True:
             return self.state.health(self.provider)
         self.feeds = [
@@ -754,11 +765,16 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("Source frozen plan lookup invalid")
         if not plans:
             return None
-        plan = plans[0]
+        return self._validate_plan_identity(plans[0], feed, day)
+
+    def _validate_plan_identity(
+        self, plan: dict[str, Any], feed: dict[str, Any], day: date
+    ) -> dict[str, Any]:
         if (
             plan["dataset_key"] != feed["dataset_key"]
             or plan["trade_date"] != day.isoformat()
             or plan["provider"] != self.provider
+            or plan.get("execution_profile") != self.execution_profile
         ):
             raise ReadinessBlockedError("Source frozen plan identity invalid")
         return plan
@@ -768,12 +784,13 @@ class FullMarketRuntime:
         if existing is not None:
             return existing
         try:
-            return self.source.plan(
+            plan = self.source.plan(
                 dataset=feed["dataset_key"],
                 provider=self.provider,
                 trade_date=day.isoformat(),
                 release_id=self._release_for_date(feed, day)["release_id"],
             )
+            return self._validate_plan_identity(plan, feed, day)
         except FullMarketProtocolError as exc:
             if exc.status_code == 409:
                 # Another scheduler may freeze a plan between the read and POST.

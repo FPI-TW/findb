@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import runpy
 import subprocess
 import sys
 from io import BytesIO
@@ -46,8 +45,6 @@ FETCHER_CI_WORKFLOW = WORKFLOWS_ROOT / "fetcher-ci.yml"
 FETCHER_CD_WORKFLOW = WORKFLOWS_ROOT / "fetcher-cd.yml"
 DEPLOY_WORKFLOW = FINDB_CD_WORKFLOW
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
-ENV_CONFIG_ROOT = REPO_ROOT / "infra" / "env"
-ENV_SYNC_SCRIPT = ENV_CONFIG_ROOT / "sync_github_environment.py"
 PLAN_JSON_GUARD = REPO_ROOT / "infra" / "tofu" / "plan_json_guard.py"
 SSM_COMMAND_MARKER_GATE = REPO_ROOT / "infra" / "deploy" / "ssm_command_marker_gate.sh"
 SSM_BASH_COMMAND = REPO_ROOT / "infra" / "deploy" / "ssm_bash_command.py"
@@ -82,18 +79,13 @@ UniqueKeyLoader.add_constructor(
 )
 
 
-def test_production_calendar_seed_runs_after_migration_only_for_production() -> None:
-    helper = (
-        REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh"
-    ).read_text()
+def test_both_targets_seed_calendars_after_migration():
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text()
     migration = helper.index("uv run alembic upgrade head")
-    production_gate = helper.index('if [ "$APP_ENVIRONMENT" = production ]; then', migration)
-    seed = helper.index("python /app/scripts/seed_production_calendars.py", production_gate)
-
-    assert migration < production_gate < seed
-    assert "--deployment-target production" in helper[seed : seed + 240]
+    seed = helper.index("python /app/scripts/seed_production_calendars.py", migration)
+    assert migration < seed
+    assert '--deployment-target "$APP_ENVIRONMENT"' in helper[seed : seed + 240]
     assert "--apply" in helper[seed : seed + 240]
-    assert "COPY configs ./configs" in (REPO_ROOT / "backend" / "Dockerfile").read_text()
 
 
 def test_migration_script_does_not_let_compose_consume_remaining_commands(
@@ -132,19 +124,23 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "production",
+            "FINDB_DEPLOY_MODE": "activate",
             "DOCKER_CALLS": str(docker_calls),
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "3553ed95cfbf",
+            "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.test",
         },
         timeout=10,
     )
 
     assert completed.returncode == 0, completed.stderr
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 5
+    assert len(calls) == 6
     assert "alembic upgrade head" in calls[0]
-    assert "reconcile_database_privileges.py" in calls[1]
-    assert "reconcile_deployment_credentials.py" in calls[2]
-    assert "provision_registry.py --deployment-target production" in calls[3]
-    assert "seed_production_calendars.py --deployment-target production --apply" in calls[4]
+    assert "--require-exact-alembic-revision" in calls[1]
+    assert "reconcile_database_privileges.py" in calls[2]
+    assert "reconcile_deployment_credentials.py" in calls[3]
+    assert "provision_registry.py --deployment-target production" in calls[4]
+    assert "seed_production_calendars.py --deployment-target production --apply" in calls[5]
 
 
 def test_staging_migration_requires_exact_revision_before_reconciliation_or_service_start(
@@ -237,6 +233,8 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "staging",
             "DOCKER_CALLS": str(docker_calls),
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "3553ed95cfbf",
+            "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.test",
         },
         timeout=10,
     )
@@ -825,7 +823,7 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c"
     )
     assert credential_step["with"] == {
-        "role-to-assume": "${{ vars.STAGING_INFRA_PLAN_ROLE_ARN }}",
+        "role-to-assume": "arn:aws:iam::439622209937:role/staging-infra-plan",
         "aws-region": "${{ env.AWS_REGION }}",
         "allowed-account-ids": "${{ env.AWS_ACCOUNT_ID }}",
         "role-session-name": "staging-infra-plan-${{ github.run_id }}",
@@ -1303,6 +1301,7 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         AWS_REGION="ap-southeast-1",
         AWS_ACCOUNT_ID="439622209937",
         APP_ENVIRONMENT="staging",
+        FETCHER_DEPLOY_MODE="candidate",
         ECR_REGISTRY="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
     )
 
@@ -1318,6 +1317,8 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
             "FINDB_IMAGE_REF": "evil.example/backend@sha256:" + "a" * 64,
             "DASHBOARD_IMAGE_REF": "evil.example/dashboard@sha256:" + "a" * 64,
             "FINDB_PUBLIC_HOST": "findb.example.test",
+            "FINDB_RELEASE_ROOT": "/opt/findb/releases/test",
+            "FINDB_DEPLOY_MODE": "candidate",
         },
     )
     assert invalid_findb.returncode != 0
@@ -1337,6 +1338,8 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
             "DASHBOARD_IMAGE_REF": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard@sha256:"
             + "b" * 64,
             "FINDB_PUBLIC_HOST": "findb.example.test",
+            "FINDB_RELEASE_ROOT": "/opt/findb/releases/test",
+            "FINDB_DEPLOY_MODE": "candidate",
         },
     )
     assert valid_findb.returncode != 0
@@ -1480,6 +1483,8 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
                 "FINDB_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/backend",
                 "DASHBOARD_IMAGE": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/dashboard",
                 "FINDB_PUBLIC_HOST": "findb.example.test",
+                "FINDB_RELEASE_ROOT": "/opt/findb/releases/test",
+                "FINDB_DEPLOY_MODE": "candidate",
             },
         )
         assert rejected_region.returncode != 0
@@ -1831,18 +1836,18 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
         "/run/findb-runtime-secrets/nginx/serve-key.conf:/etc/nginx/serve-key.conf:ro"
         in nginx_volumes
     )
-    assert not any("/home/ubuntu/etc/nginx/serve-key.conf:" in volume for volume in nginx_volumes)
+    assert not any("/etc/findb/nginx/serve-key.conf:" in volume for volume in nginx_volumes)
     for tls_file in ("server.crt", "server.key"):
         variable = (
             "FINDB_TLS_CERT_PATH" if tls_file == "server.crt" else "FINDB_TLS_PRIVATE_KEY_PATH"
         )
         assert any(
-            volume.startswith(f"${{{variable}:-/home/ubuntu/etc/nginx/ssl/{tls_file}}}:")
+            volume.startswith(f"${{{variable}:-/run/findb-runtime-secrets/nginx/{tls_file}}}:")
             for volume in nginx_volumes
         )
     for config in ("nginx.conf", "cloudflare-real-ip.conf", "source-allowlist.conf"):
         assert any(
-            f"${{FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}}/{config}:" in volume
+            f"${{FINDB_NGINX_CONFIG_DIR:-/etc/findb/nginx}}/{config}:" in volume
             for volume in nginx_volumes
         )
 
@@ -1856,11 +1861,11 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
         encoding="utf-8"
     )
     assert "render_nginx_runtime.sh" in findb
-    assert "/home/ubuntu/etc/nginx/serve-key.conf" not in findb
+    assert "/etc/findb/nginx/serve-key.conf" not in findb
     assert '"$AWS_ACCOUNT_ID" validate' in findb
     assert "candidate_nginx_runtime_validated" in findb
     assert "tls_file_missing_or_unsafe" in findb
-    assert 'nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/home/ubuntu/etc/nginx}"' in findb
+    assert 'nginx_config_dir="${FINDB_NGINX_CONFIG_DIR:-/etc/findb/nginx}"' in findb
     assert '[ "$nginx_config_dir" != /etc/findb/nginx ]' in findb
     assert "require_root_owned_nginx_directory /etc/findb" in findb
     assert "nginx_config_target_unsafe" in findb
@@ -1887,10 +1892,10 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     )
     assert (
         "/opt/findb/releases/[0-9a-f]{64}-[0-9]+-[0-9]+-findb/infra/deploy/runtime-secrets/findb"
-        in nginx_helper
+        not in nginx_helper
     )
-    assert '[ "$deployment_target" = staging ]' in nginx_helper
-    assert '[ "$catalog" = /opt/findb/runtime-secrets/findb.json ]' in nginx_helper
+    assert '[ "$deployment_target" = staging ]' not in nginx_helper
+    assert '[ "$catalog" = /opt/findb/runtime-secrets/findb.json ]' not in nginx_helper
     assert 'runtime_dir="${catalog%/findb.json}"' in nginx_helper
     assert 'renderer="$runtime_dir/render_serve_key.py"' in nginx_helper
     assert "renderer_metadata_invalid" in nginx_helper
@@ -1898,7 +1903,7 @@ def test_lookup_secret_is_rendered_only_to_tmpfs_and_compose_never_mounts_persis
     assert "/opt/findb/runtime-secrets/render_serve_key.py" not in nginx_helper
 
 
-def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> None:
+def test_nginx_runtime_catalog_path_gate_accepts_only_current_identity() -> None:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/render_nginx_runtime.sh"
     identity = f"{'a' * 64}-34025994515-1"
     current_catalog = f"/opt/findb/releases/{identity}/infra/deploy/runtime-secrets/findb.json"
@@ -1907,8 +1912,6 @@ def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> Non
     for target, catalog in (
         ("staging", current_catalog),
         ("production", current_catalog),
-        ("staging", legacy_catalog),
-        ("production", "/opt/findb/runtime-secrets/findb.json"),
     ):
         result = subprocess.run(
             [
@@ -1929,6 +1932,8 @@ def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> Non
         assert "catalog_path_invalid" not in result.stderr
 
     for target, catalog in (
+        ("production", "/opt/findb/runtime-secrets/findb.json"),
+        ("staging", legacy_catalog),
         ("production", legacy_catalog),
         (
             "staging",
@@ -1957,58 +1962,23 @@ def test_nginx_runtime_catalog_path_gate_accepts_v2_and_staging_v1_only() -> Non
         assert "catalog_path_invalid" in result.stderr
 
 
-def test_findb_deploy_helper_selects_explicit_release_or_legacy_runtime_paths() -> None:
-    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
-        encoding="utf-8"
-    )
+def test_findb_deploy_requires_an_immutable_release_root():
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text()
     setup = helper.split('catalog="$runtime_dir/findb.json"', 1)[0]
-    preserve_start = helper.index("preserve_env=")
-    preserve_end = helper.index("\n\nrun_runtime()", preserve_start)
-    preserve_setup = helper[preserve_start:preserve_end]
-    for environment, expected in (
-        (
-            {
-                "FINDB_RELEASE_ROOT": "/opt/findb/releases/demo",
-                "COMPOSE_PROJECT_NAME": "unexpected",
-            },
-            "/opt/findb/releases/demo/infra/deploy/runtime-secrets|/opt/findb/releases/demo/docker-compose.prod.yml|findb",
-        ),
-        (
-            {"COMPOSE_PROJECT_NAME": "unexpected"},
-            "/opt/findb/runtime-secrets|/opt/findb/docker-compose.prod.yml|unexpected",
-        ),
-    ):
+    for root in (None, "/opt/findb/releases/demo"):
+        env = dict(os.environ)
+        env.pop("FINDB_RELEASE_ROOT", None)
+        if root:
+            env["FINDB_RELEASE_ROOT"] = root
         result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'''{setup}
-{preserve_setup}
-case ",$preserve_env," in
-  *,COMPOSE_PROJECT_NAME,*)
-    effective_project="$(env -i "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" /bin/bash -c 'printf "%s" "${{COMPOSE_PROJECT_NAME-unset}}"')"
-    ;;
-  *) effective_project="$(env -i /bin/bash -c 'printf "%s" "${{COMPOSE_PROJECT_NAME-unset}}"')" ;;
-esac
-printf "%s|%s|%s|%s\\n" "$runtime_dir" "$compose_file" "${{COMPOSE_PROJECT_NAME-unset}}" "$effective_project"''',
-            ],
-            check=False,
+            ["bash", "-c", setup + '\nprintf "%s" "$compose_file"'],
+            env=env,
             capture_output=True,
             text=True,
-            env={**os.environ, **environment},
         )
-        assert result.returncode == 0
-        expected_effective = "findb" if "FINDB_RELEASE_ROOT" in environment else "unset"
-        assert result.stdout == f"{expected}|{expected_effective}\n"
-
-    assert "COMPOSE_PROJECT_NAME=findb" in setup
-    assert "export COMPOSE_PROJECT_NAME" in setup
-    assert "COMPOSE_PROJECT_NAME" not in preserve_setup.split("\n", 1)[0].split(",")
-    assert (
-        'preserve_env="${preserve_env},COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT"'
-        in preserve_setup
-    )
-    assert 'sudo --preserve-env="$preserve_env" "$runtime_command"' in helper
+        assert (result.returncode == 0) == bool(root)
+        if root:
+            assert result.stdout == root + "/docker-compose.prod.yml"
 
 
 def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_lookup_key() -> None:
@@ -2339,6 +2309,7 @@ esac
             "FAKE_DOCKER_LOG": str(docker_log),
             "FAKE_NGINX_STATE": str(state_file),
             "FAKE_AFTER_UP_SCRIPT": str(marker),
+            "FINDB_DEPLOY_MODE": "activate",
             "FINDB_PUBLIC_HOST": "findb.example.test",
             "IMAGE_TAG": "a" * 40,
         },
@@ -2382,66 +2353,31 @@ def _runtime_inventory_policy(source: str) -> str:
     return "\n" + source[start:end] + "\n"
 
 
-def test_aws_fetcher_release_bootstraps_missing_shioaji_or_full_market_state_offline() -> None:
-    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
-        encoding="utf-8"
-    )
-    bootstrap = helper.split(
-        "state_bootstrap=false\n",
-        1,
-    )[1].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
-
-    # A bounded stable may bootstrap only the reviewed versioned staging
-    # directory when its mounted state identity differs. Same-identity state
-    # loss still fails closed; full-market uses a separate state DB.
-    assert (
-        '[ "${FETCHER_RUNTIME_PROFILE:-bounded}" = bounded ] && [ "$versioned_cutover" != true ] && runtime_exists "$stable"'
-        in bootstrap
-    )
-    assert '[ "${APP_ENVIRONMENT:-}" = staging ]' in bootstrap
-    assert '[ "$state_dir" = /var/lib/findb-shioaji-fetcher/staging-pilot-v3 ]' in bootstrap
-    assert 'grep -Fxq "$state_dir" <<< "$stable_mounts"' in bootstrap
-    assert "reason=shioaji_state_missing_with_stable" in bootstrap
-    assert 'remove_recovery_runtime "$state_bootstrap_name"' in bootstrap
-    assert "docker rm -f" not in helper
+def test_unified_state_bootstrap_is_offline_and_preserves_existing_checkpoints():
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
+    bootstrap = helper.split('case "${FETCHER_CONSUMER_PROFILE:-}:$1" in', 1)[1].split(
+        '\ndocker run --rm \\\n  --name "$preflight_name"', 1
+    )[0]
+    assert "pilot:findb-fetch-runtime|full_market:findb-fetch-runtime" in bootstrap
+    assert 'for installed in "$stable" "$previous"' in bootstrap
+    assert "checkpoint_missing_with_runtime" in bootstrap
     assert "--initialize-state" in bootstrap
-    assert '--state-path "$state_path"' in bootstrap
     assert '"${runtime_env_args[@]}"' not in bootstrap
-    assert '--env "APP_ENVIRONMENT=$APP_ENVIRONMENT"' in bootstrap
-    assert "reason=shioaji_state_bootstrap" in bootstrap
 
 
-@pytest.mark.parametrize(
-    ("target", "profile", "versioned_directory", "stable_mount", "stable_present", "allowed"),
-    [
-        ("staging", "bounded", True, "/var/lib/findb-shioaji-fetcher", True, True),
-        (
-            "staging",
-            "bounded",
-            True,
-            "/var/lib/findb-shioaji-fetcher/staging-pilot-v3",
-            True,
-            False,
-        ),
-        ("staging", "bounded", True, "", False, True),
-        ("staging", "bounded", False, "/legacy/state", True, False),
-        ("production", "bounded", True, "/legacy/state", True, False),
-        ("staging", "full-market", True, "/legacy/state", True, True),
-    ],
-)
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("stable_present", [False, True])
 def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
     tmp_path: Path,
     target: str,
     profile: str,
-    versioned_directory: bool,
-    stable_mount: str,
     stable_present: bool,
-    allowed: bool,
 ) -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(
         encoding="utf-8"
     )
-    start = helper.index("state_bootstrap=false\n")
+    start = helper.index('case "${FETCHER_CONSUMER_PROFILE:-}:$1" in')
     bootstrap = helper[start:].split('\ndocker run --rm \\\n  --name "$preflight_name"', 1)[0]
     script = tmp_path / "bootstrap.sh"
     # Execute the actual guard and bootstrap command with local stand-ins. The
@@ -2450,11 +2386,12 @@ def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
         """set -euo pipefail
 provider=shioaji
 stable=stable
+previous=previous
 preflight_name=preflight
 image=reviewed-exact-digest
 cache_mount=(--mount type=bind,src=/reviewed/cache,dst=/home/fetcher)
 runtime_env_args=(--env SOURCE_SECRET=must-not-be-injected)
-set -- findb-fetch-shioaji-scheduler
+set -- findb-fetch-runtime --execution-profile "$FETCHER_CONSUMER_PROFILE"
 sudo() {
   if [ "$1" = stat ]; then printf '%s\\n' '10001:10001:600'; else "$@"; fi
 }
@@ -2482,18 +2419,16 @@ docker() {
     state_path = tmp_path / "state.sqlite3"
     command_log = tmp_path / "command.log"
     state_directory = "/var/lib/findb-shioaji-fetcher"
-    if versioned_directory:
-        state_directory += "/staging-pilot-v3"
     completed = subprocess.run(
         ["bash", str(script)],
         env={
             **os.environ,
             "APP_ENVIRONMENT": target,
-            "FETCHER_RUNTIME_PROFILE": profile,
+            "FETCHER_CONSUMER_PROFILE": profile,
             "state_dir": state_directory,
             "state_path": str(state_path),
             "stable_present": str(stable_present).lower(),
-            "stable_mount_fixture": stable_mount,
+            "stable_mount_fixture": state_directory,
             "bootstrap_log": str(command_log),
         },
         capture_output=True,
@@ -2501,7 +2436,7 @@ docker() {
         timeout=10,
     )
 
-    if allowed:
+    if not stable_present:
         assert completed.returncode == 0, completed.stderr
         assert state_path.exists()
         arguments = command_log.read_text(encoding="utf-8").splitlines()
@@ -2513,7 +2448,7 @@ docker() {
         assert "SOURCE_SECRET=must-not-be-injected" not in arguments
     else:
         assert completed.returncode != 0
-        assert "reason=shioaji_state_missing_with_stable" in completed.stderr
+        assert "reason=checkpoint_missing_with_runtime" in completed.stderr
         assert not state_path.exists()
         assert not command_log.exists()
 
@@ -2635,7 +2570,7 @@ def _run_twelve_fetcher_release_with_marker(
         FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
         FAKE_UNACCEPTED_NAMES="stable" if unaccepted_stable else "",
         FAKE_SIGNAL_SENT=str(tmp_path / "signal-sent"),
-        FETCHER_PROVIDER_RELEASE_MODE="transactional" if transactional_candidate else "legacy",
+        FETCHER_PROVIDER_RELEASE_MODE="transactional",
         FETCHER_DEPLOY_MODE="candidate" if transactional_candidate else "activate",
         FULL_MARKET_ENABLED="true" if full_market_enabled else "false",
         FETCHER_CONSUMER_PROFILE=consumer_profile,
@@ -2653,7 +2588,9 @@ def _run_twelve_fetcher_release_with_marker(
             "previous",
             "preflight",
             str(cache_dir),
-            "findb-fetch-full-market" if consumer_profile == "full_market" else "scheduler",
+            "findb-fetch-runtime",
+            "--execution-profile",
+            consumer_profile,
         ],
         check=False,
         capture_output=True,
@@ -2666,7 +2603,7 @@ def test_aws_fetcher_release_accepts_legacy_twelve_raw_marker_and_rejects_select
     tmp_path: Path,
 ) -> None:
     accepted = _run_twelve_fetcher_release_with_marker(
-        tmp_path / "accepted", marker_identity="twelve"
+        tmp_path / "accepted", marker_identity="pilot"
     )
 
     assert accepted.returncode == 0, accepted.stderr
@@ -2685,7 +2622,7 @@ def test_aws_fetcher_release_removes_residual_candidate_before_failed_preflight(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="twelve",
+        marker_identity="pilot",
         residual_candidate=True,
         preflight_fails=True,
     )
@@ -2703,7 +2640,7 @@ def test_aws_fetcher_release_restores_residual_previous_before_failed_preflight(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="twelve",
+        marker_identity="pilot",
         residual_previous=True,
         preflight_fails=True,
     )
@@ -2721,7 +2658,7 @@ def test_aws_fetcher_release_rejects_unaccepted_stable_after_hard_interruption(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="twelve",
+        marker_identity="pilot",
         unaccepted_stable=True,
         preflight_fails=True,
     )
@@ -2742,7 +2679,7 @@ def test_aws_fetcher_candidate_validates_created_container_without_starting_it(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="full-market" if consumer_profile == "full_market" else "twelve",
+        marker_identity="full-market" if consumer_profile == "full_market" else "pilot",
         transactional_candidate=True,
         full_market_enabled=full_market_enabled,
         consumer_profile=consumer_profile,
@@ -2778,7 +2715,7 @@ def test_fetcher_transaction_tracks_provider_before_interruption(
     )
     transaction = (
         _runtime_inventory_policy(helper)
-        + helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+        + helper.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
     )
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
@@ -2855,9 +2792,7 @@ def test_fetcher_activation_publishes_atomic_durable_pointer_before_provider_swi
     activation = helper.index('if [ "$FETCHER_DEPLOY_MODE" = activate ]; then')
     committed = helper.index("pointer_committed=1", activation)
     atomic_replace = helper.index("mv -Tf --", committed)
-    first_provider = helper.index(
-        "register_provider findb-fetcher-scheduler findb-fetcher-scheduler-previous"
-    )
+    first_provider = helper.index('register_provider "$stable" "${stable}-previous"')
 
     assert activation < committed < atomic_replace < first_provider
     assert "if [ -e /opt/fetcher/current ] && [ ! -L /opt/fetcher/current ]" in helper
@@ -2877,7 +2812,7 @@ def test_fetcher_candidate_cleanup_remains_recoverable_during_each_rollback_oper
     )
     transaction = (
         _runtime_inventory_policy(helper)
-        + helper.split("processed=()", 1)[1].split("retire_runtime() {", 1)[0]
+        + helper.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
     )
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
@@ -2946,8 +2881,8 @@ def test_aws_fetcher_release_recovers_on_errors_and_signals_before_deleting_prev
     assert 'remove_recovery_runtime "$stable"' in helper
     assert "docker rm -f" not in helper
     final_running_check = helper.rindex("stable_not_running")
-    previous_removal = helper.rindex('docker rm "$previous"')
-    assert final_running_check < previous_removal
+    assert final_running_check > helper.index('docker rename "$candidate" "$stable"')
+    assert 'docker rm "$previous"' not in helper
 
 
 def test_findb_bootstrap_recreates_tmpfs_key_before_docker_and_fails_closed() -> None:
@@ -2965,187 +2900,6 @@ def test_findb_bootstrap_recreates_tmpfs_key_before_docker_and_fails_closed() ->
     assert "systemd-analyze verify" in helper
     assert "systemctl enable findb-runtime-nginx.service" in helper
     assert "FINDB_LOOKUP_SERVE_API_KEY" not in helper
-
-
-def test_remote_env_examples_cover_the_sync_contract() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    service_configs = namespace["SERVICE_CONFIGS"]
-    deployment_targets = namespace["DEPLOYMENT_TARGETS"]
-
-    for target in deployment_targets:
-        for service, config in service_configs.items():
-            example = ENV_CONFIG_ROOT / target / service / "remote.env.example"
-            configured_names = {
-                match.group(1)
-                for line in example.read_text(encoding="utf-8").splitlines()
-                if (
-                    match := re.fullmatch(
-                        r"(?:# )?([A-Z][A-Z0-9_]*)=.*",
-                        line,
-                    )
-                )
-            }
-            documented_names = set(
-                (
-                    *config.variables_for(target),
-                    *config.secrets_for(target),
-                    *(config.optional_secrets if target == "staging" else ()),
-                )
-            )
-            assert configured_names == documented_names
-
-
-def test_aws_control_plane_variables_are_isolated_and_match_examples() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    phase1_names = set(namespace["STAGING_AWS_VARIABLES"])
-    expected_values = {
-        "findb": {
-            "AWS_REGION": "ap-southeast-1",
-            "AWS_ACCOUNT_ID": "439622209937",
-            "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/findb-staging-deploy",
-            "AWS_INSTANCE_PROFILE_NAME": "findb-staging-instance",
-            "AWS_SSM_LOG_GROUP": "/findb/staging/findb/ssm",
-            "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
-            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
-        },
-        "fetcher": {
-            "AWS_REGION": "ap-southeast-1",
-            "AWS_ACCOUNT_ID": "439622209937",
-            "AWS_DEPLOY_ROLE_ARN": "arn:aws:iam::439622209937:role/fetcher-staging-deploy",
-            "AWS_INSTANCE_PROFILE_NAME": "fetcher-staging-instance",
-            "AWS_SSM_LOG_GROUP": "/findb/staging/fetcher/ssm",
-            "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
-            "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
-        },
-    }
-
-    for service, config in namespace["SERVICE_CONFIGS"].items():
-        assert phase1_names <= set(config.variables_for("staging"))
-        assert phase1_names <= set(config.variables_for("production"))
-
-        staging_example = ENV_CONFIG_ROOT / "staging" / service / "remote.env.example"
-        staging_values = {
-            key: value
-            for key, value in (
-                line.split("=", 1)
-                for line in staging_example.read_text(encoding="utf-8").splitlines()
-                if line and not line.startswith("#") and "=" in line
-            )
-        }
-        assert {name: staging_values[name] for name in phase1_names} == expected_values[service]
-        if service == "findb":
-            assert staging_values["RDS_DB_INSTANCE_IDENTIFIER"] == (
-                "replace-with-staging-rds-instance-identifier"
-            )
-        else:
-            assert "RDS_DB_INSTANCE_IDENTIFIER" not in staging_values
-
-        production_example = ENV_CONFIG_ROOT / "production" / service / "remote.env.example"
-        production_text = production_example.read_text(encoding="utf-8")
-        assert all(f"{name}=" in production_text for name in phase1_names)
-        assert "PRODUCTION_DEPLOY_ENABLED=" not in production_text
-
-
-def test_fetcher_r2_sync_contract_is_raw_only() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    fetcher = namespace["SERVICE_CONFIGS"]["fetcher"]
-
-    variables = set(fetcher.variables)
-
-    assert "CLOUDFLARE_R2_RAW_BUCKET" in variables
-    assert "CLOUDFLARE_R2_CANONICAL_BUCKET" not in variables
-
-
-@pytest.mark.parametrize("target", ("staging", "production"))
-def test_fetcher_sync_forces_shioaji_simulation(target: str) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    validate = namespace["_validate_fetcher_simulation_contract"]
-
-    assert validate(target, {"SHIOAJI_SIMULATION": "true"}) is None
-    for invalid in ("false", "TRUE", "true ", "1"):
-        assert validate(target, {"SHIOAJI_SIMULATION": invalid}) == (
-            f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
-        )
-    assert validate(target, {}) == f"{target}-fetcher must set SHIOAJI_SIMULATION=true"
-
-
-@pytest.mark.parametrize("target", ("staging", "production"))
-def test_findb_sync_rejects_reused_canonical_credentials(target: str) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    validate = namespace["_validate_findb_canonical_contract"]
-
-    error = validate(
-        target,
-        {
-            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID": "same-key",
-            "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID": "same-key",
-        },
-    )
-
-    assert error == f"{target}-findb canonical publisher and reader access key IDs must differ"
-
-
-@pytest.mark.parametrize("target", ("staging", "production"))
-def test_fetcher_sync_rejects_canonical_bucket(target: str) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    validate = namespace["_validate_fetcher_bucket_contract"]
-
-    error = validate(target, {"CLOUDFLARE_R2_CANONICAL_BUCKET": "canonical-bucket"})
-
-    assert error == f"{target}-fetcher must not configure CLOUDFLARE_R2_CANONICAL_BUCKET"
-
-
-def test_sync_rejects_unallowlisted_r2_names_even_when_empty() -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    unexpected = namespace["_unexpected_r2_names"]
-
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": "present"}) == (
-        "CLOUDFLARE_R2_UNRELATED",
-    )
-    assert unexpected("findb", {"CLOUDFLARE_R2_RAW_BUCKET": "present"}) == (
-        "CLOUDFLARE_R2_RAW_BUCKET",
-    )
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_RAW_BUCKET": ""}) == ()
-    assert unexpected("fetcher", {"CLOUDFLARE_R2_UNRELATED": ""}) == ("CLOUDFLARE_R2_UNRELATED",)
-
-
-def test_remote_r2_name_audit_reads_names_without_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    calls: list[list[str]] = []
-
-    def fake_run(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        calls.append(arguments)
-        if arguments[-1].endswith("/variables?per_page=100"):
-            output = '{"variables":[{"name":"CLOUDFLARE_R2_RAW_BUCKET"}]}'
-        else:
-            output = '{"secrets":[{"name":"CLOUDFLARE_R2_UNRELATED"}]}'
-        return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
-
-    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
-
-    assert namespace["_unexpected_remote_r2_names"]("fetcher", "staging-fetcher") == (
-        "CLOUDFLARE_R2_UNRELATED",
-    )
-    assert len(calls) == 2
-    assert all("CLOUDFLARE_R2_" not in " ".join(call) for call in calls)
-
-
-def test_remote_env_examples_are_explicitly_isolated_by_target() -> None:
-    for target in ("staging", "production"):
-        for service in ("findb", "fetcher"):
-            example = ENV_CONFIG_ROOT / target / service / "remote.env.example"
-            first_line = example.read_text(encoding="utf-8").splitlines()[0]
-            assert first_line == f"# GitHub Environment: {target}-{service}"
-
-    staging_findb = (ENV_CONFIG_ROOT / "staging" / "findb" / "remote.env.example").read_text(
-        encoding="utf-8"
-    )
-    production_findb = (ENV_CONFIG_ROOT / "production" / "findb" / "remote.env.example").read_text(
-        encoding="utf-8"
-    )
-    assert "\nSERVE_REQUIRE_AUTH=false\n" in staging_findb
-    assert "\nSERVE_REQUIRE_AUTH=" not in production_findb
-    assert "PRODUCTION_DEPLOY_ENABLED=" not in production_findb
 
 
 def test_fetcher_ci_retries_transient_container_build_failures() -> None:
@@ -3167,10 +2921,9 @@ def test_retired_shared_credential_identifiers_are_absent_from_runtime_contracts
         PROD_COMPOSE,
         FINDB_CI_WORKFLOW,
         FINDB_CD_WORKFLOW,
-        REPO_ROOT / "infra/env/sync_github_environment.py",
+        REPO_ROOT / "infra/env/aws_configuration.py",
         REPO_ROOT / ".env.example",
-        REPO_ROOT / "infra/env/staging/findb/remote.env.example",
-        REPO_ROOT / "infra/env/production/findb/remote.env.example",
+        REPO_ROOT / "infra/deploy/runtime-secrets/findb.json",
     )
     content = "\n".join(path.read_text(encoding="utf-8") for path in paths)
     for identifier in retired:
@@ -3199,34 +2952,31 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
     assert "secrets: inherit" not in fetcher_cd
 
 
-def test_finlab_smoke_checks_out_marker_gate_before_sourcing_helper() -> None:
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    steps = workflow["jobs"]["finlab-acquisition-smoke"]["steps"]
-    smoke_step = _named_step(
-        workflow, "finlab-acquisition-smoke", "Run bounded FinLab acquisition smoke over SSM"
-    )
-
-    checkout_indices = [
-        index
-        for index, step in enumerate(steps)
-        if step.get("uses") == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-    ]
-    smoke_index = steps.index(smoke_step)
-
-    assert checkout_indices
-    assert min(checkout_indices) < smoke_index
-    assert "source infra/deploy/ssm_command_marker_gate.sh" in smoke_step["run"]
+def test_daily_deployment_does_not_gate_on_native_acquisition():
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/fetcher-cd.yml").read_text())
+    assert "finlab-acquisition-smoke" not in workflow["jobs"]
 
 
-def test_findb_candidate_exits_before_live_writer_or_compose_mutation() -> None:
+def test_findb_candidate_migrates_and_checks_internal_health_before_acceptance() -> None:
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"
     )
-    candidate_gate = helper.index('if [ "$deploy_mode" = candidate ]; then')
+    candidate_gate = helper.index(
+        'if [ "$deploy_mode" = candidate ]; then', helper.index("\nUP_SCRIPT\n")
+    )
     candidate_exit = helper.index("exit 0", candidate_gate)
-    writer_stop = helper.index("writer_services=(ingest dispatcher worker raw-cleanup)")
+    writer_stop = helper.index(
+        "writer_services=(nginx dashboard serve ingest dispatcher worker raw-cleanup)"
+    )
     compose_up = helper.index('docker compose -f "$compose_file" up -d --remove-orphans')
-    assert candidate_gate < candidate_exit < writer_stop < compose_up
+    assert (
+        writer_stop
+        < helper.index("alembic upgrade head")
+        < compose_up
+        < candidate_gate
+        < candidate_exit
+    )
+    assert "stop_fixed_candidate_containers" in helper[candidate_gate:candidate_exit]
     candidate_render = helper.index('nginx_config_dir="$release_root/rendered-nginx"')
     live_render_guard = helper.index('elif [ "$nginx_config_dir" != /etc/findb/nginx ]')
     assert candidate_render < live_render_guard < candidate_exit
@@ -3815,17 +3565,15 @@ def test_predeploy_unversioned_nonempty_database_fails_with_bootstrap_allowance(
     ) == ["database contains user relations without an Alembic revision"]
 
 
-def test_empty_database_bootstrap_flag_is_production_only() -> None:
-    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
-        encoding="utf-8"
-    )
-    migration_check = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
+def test_empty_database_bootstrap_requires_same_explicit_checks_in_both_targets():
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text()
+    script = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
         "\nMIGRATION_CHECK_SCRIPT", 1
     )[0]
-
-    assert 'if [ "$APP_ENVIRONMENT" = production ]; then' in migration_check
-    assert "bootstrap_arg=--allow-empty-database-bootstrap" in migration_check
-    assert 'if [ "$APP_ENVIRONMENT" = staging ]' not in migration_check
+    assert "--allow-empty-database-bootstrap" in script
+    assert "PREDEPLOY_EXPECTED_ALEMBIC_REVISION" in script
+    assert "PREDEPLOY_EXPECTED_RDS_ENDPOINT" in script
+    assert 'if [ "$APP_ENVIRONMENT"' not in script
 
 
 def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
@@ -3896,9 +3644,9 @@ def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
     assert " stop --timeout " not in commands
     assert "alembic upgrade" not in commands
     cleanup_arm = helper.index("release_services_may_have_started=1")
-    migration_end = helper.index("MIGRATION_SCRIPT\nfi", helper.index("MIGRATION_SCRIPT"))
+    migration_end = helper.index("\nMIGRATION_SCRIPT", helper.index("MIGRATION_SCRIPT"))
     candidate_up = helper.index("<<'UP_SCRIPT'", migration_end)
-    assert migration_end < cleanup_arm < candidate_up
+    assert cleanup_arm < migration_end < candidate_up
 
 
 def test_queue_health_requires_recent_worker_and_no_expired_leases() -> None:
@@ -4066,64 +3814,6 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
         ]
     else:
         assert values[-1] == "type=bind,src=/state,dst=/state"
-
-
-@pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("service", ["findb", "fetcher"])
-@pytest.mark.parametrize("flag", ["true", "false", None, "True", "0", ""])
-def test_env_sync_publishes_exact_full_market_flag_or_rejects_invalid_mock_only(
-    tmp_path,
-    monkeypatch,
-    target,
-    service,
-    flag,
-):
-    import sys
-
-    namespace = runpy.run_path(str(ENV_SYNC_SCRIPT))
-    globals_ = namespace["main"].__globals__
-    config = namespace["SERVICE_CONFIGS"][service]
-    assert "FULL_MARKET_ENABLED" in config.variables_for(target)
-    values = {
-        name: name + "-fixture"
-        for name in (*config.variables_for(target), *config.secrets_for(target))
-    }
-    values.update(SHIOAJI_SIMULATION="true", SERVE_REQUIRE_AUTH="false")
-    values.pop("FULL_MARKET_ENABLED")
-    if flag is not None:
-        values["FULL_MARKET_ENABLED"] = flag
-    source = tmp_path / target / service / ".env.remote"
-    source.parent.mkdir(parents=True)
-    source.write_text("\n".join(name + "=" + value for name, value in values.items()))
-    calls = []
-    monkeypatch.setitem(globals_, "ENV_ROOT", tmp_path)
-    monkeypatch.setitem(globals_, "_unexpected_remote_r2_names", lambda *args: ())
-    monkeypatch.setitem(globals_, "_ensure_environment", lambda *args: None)
-    monkeypatch.setitem(globals_, "_run", lambda arguments, **kwargs: calls.append(arguments))
-    monkeypatch.setattr(sys, "argv", ["sync", target, service, "--apply"])
-    result = namespace["main"]()
-    valid = flag in {"true", "false", None}
-    assert result == (0 if valid else 1)
-    if valid:
-        published = [
-            command
-            for command in calls
-            if command[:4] == ["gh", "variable", "set", "FULL_MARKET_ENABLED"]
-        ]
-        assert published == [
-            [
-                "gh",
-                "variable",
-                "set",
-                "FULL_MARKET_ENABLED",
-                "--env",
-                target + "-" + service,
-                "--body",
-                flag or "false",
-            ]
-        ]
-    else:
-        assert calls == []
 
 
 def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None:

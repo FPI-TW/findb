@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "deployment_target": "staging",
+  "unit": "findb",
+  "values": {
+    "FULL_MARKET_ENABLED": "false",
+    "AWS_PROMOTION_ROLE_ARN": "",
+    "STAGING_AWS_ACCOUNT_ID": "",
+    "STAGING_PROMOTION_READ_ROLE_ARN": "",
+    "STAGING_ECR_REGISTRY": "",
+    "STAGING_DEPLOY_BUNDLE_BUCKET": "",
+    "AWS_INSTANCE_PROFILE_NAME": "findb-staging-instance",
+    "AWS_SSM_LOG_GROUP": "/findb/staging/findb/ssm",
+    "AWS_DNS_CHECK_NAME": "findb-staging.tingfong.com",
+    "ECR_REGISTRY": "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
+    "DEPLOY_BUNDLE_BUCKET": "findb-staging-deployment-bundles-439622209937",
+    "DEPLOY_BUNDLE_KMS_KEY_ARN": "arn:aws:kms:ap-southeast-1:439622209937:key/00000000-0000-0000-0000-000000000000",
+    "RDS_DB_INSTANCE_IDENTIFIER": "findb-staging"
+  }
+}

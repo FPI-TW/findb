@@ -1,7 +1,9 @@
 """Shared registry governance validation for monitoring and scheduler control."""
 
+import json
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from types import MappingProxyType
 
 from app.models.registry import DatasetRegistry
@@ -90,3 +92,14 @@ def full_market_configuration(
     if not dataset.is_active:
         errors.append("dataset_inactive")
     return False, previous, errors, blockers
+
+
+def feed_schedule(dataset_key: str) -> tuple[str, str]:
+    """The same exchange-local trigger is used by both execution profiles."""
+    catalog = json.loads(
+        (Path(__file__).resolve().parents[2] / "configs" / "execution_feeds.v1.json").read_text()
+    )
+    for feed in catalog["feeds"]:
+        if feed["dataset_key"] == dataset_key:
+            return feed["source_timezone"], feed["scheduled_time"]
+    raise ValueError("Unknown acquisition feed")

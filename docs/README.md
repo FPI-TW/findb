@@ -19,7 +19,9 @@
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
 | 重跑staging query／ingest baseline或判斷何時進行效能優化 | [operations/performance.md](operations/performance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
-| 建立production foundation並執行首次promotion／rollback live acceptance | [dev/production-foundation-cutover-plan.md](dev/production-foundation-cutover-plan.md) |
+| 追蹤 production native 資料及 rollback 驗收 | [dev/production-foundation-cutover-plan.md](dev/production-foundation-cutover-plan.md) |
+
+| 追蹤 staging／production 統一部署與實際切換 | [dev/environment-runtime-unification.md](dev/environment-runtime-unification.md) |
 
 ## Source of truth
 

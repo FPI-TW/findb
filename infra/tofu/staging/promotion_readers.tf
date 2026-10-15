@@ -26,7 +26,7 @@ data "aws_iam_policy_document" "production_promotion_reader_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.value.environment}"]
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
     }
 
   }

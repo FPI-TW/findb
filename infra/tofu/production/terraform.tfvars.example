@@ -1,3 +1,4 @@
 aws_account_id          = "289112218471"
 aws_region              = "ap-southeast-1"
+host_ami_id              = "ami-0ba4172b23e57d5a8"
 operational_alert_email = "tyler.ho@fpitw.com"

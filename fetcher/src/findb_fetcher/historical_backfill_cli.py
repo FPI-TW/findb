@@ -25,7 +25,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--provider", required=True, choices=("twelve_data", "finlab", "shioaji"))
     parser.add_argument("--run-forever", action="store_true")
+    parser.add_argument(
+        "--check", action="store_true", help="Validate configuration without claiming work"
+    )
     args = parser.parse_args(argv)
+    if args.check:
+        FetcherConfig.from_env()
+        return 0
     with scheduler_stop_event() as stopper:
         runner = cast(
             HistoricalProviderRunner,

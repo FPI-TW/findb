@@ -219,10 +219,16 @@ Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/diges
 `GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
 deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
 
+`ExecutionProfile = pilot | full_market` 貫穿 admission、plans、freshness、缺漏與告警。
+Source／Admin plan 列表、dataset 篩選與監控端點接受 `execution_profile`；舊 plan API 未指定時為 `full_market`。
+新 runtime／Dashboard 一律明確傳入。兩 profile 的 first dates、凍結成員、完成與 no_data 證據隔離；
+Pilot 完成不得完成 Full market，canonical 最新 run 更新也不得使其他已完成計畫倒退。
+`consumer=pilot` 不受 FULL_MARKET_ENABLED 影響；maintenance 以 `execution_profile` 決定相同資格。
+
 Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/page_size` 即啟用分頁（缺省值 1／25，
 每頁上限 100）；回傳 `data` 及標準 `pagination`。依交易日、建立時間、plan ID 降冪穩定排序。
 只使用舊 `limit` 時保持原 `{data}` 回應與預設 20 筆；`limit` 與任一分頁參數混用回傳 422。
-`GET /admin/delivery-plans/datasets` 回傳 `{"data":["dataset_key", ...]}`，由全部計畫去重並排序，
+`GET /admin/delivery-plans/datasets` 回傳 `{"data":["dataset_key", ...]}`，由指定 profile 的全部計畫去重並排序，
 不受日期或最近筆數限制。以上端點須具 viewer 以上 Admin 權限，皆為唯讀，不改交付狀態。
 缺口總數使用 `missing + blocked`；`summary.gaps` 明細最多 1,000 筆。
 

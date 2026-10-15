@@ -195,7 +195,11 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
     authorizations = []
 
     def authorize(method, path):
-        assert method == "GET" and path == "full-market/authorization?consumer=maintenance"
+        assert (
+            method == "GET"
+            and path
+            == "full-market/authorization?consumer=maintenance&execution_profile=full_market"
+        )
         authorizations.append(path)
         return {
             "acquisition_allowed": True,
@@ -1092,6 +1096,7 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
     namespace = {
         "os": full_market_cli.os,
         "report": lambda: None,
+        "args": SimpleNamespace(execution_profile="full_market"),
         "control": SimpleNamespace(poll=poll),
         "source": SimpleNamespace(request=authorize),
     }

@@ -6,6 +6,15 @@ variable "aws_region" {
     error_message = "Production region mismatch."
   }
 }
+variable "host_ami_id" {
+  description = "Pinned AMI of the existing production hosts; change only with a reviewed host replacement and recovery plan."
+  type        = string
+  default     = "ami-0ba4172b23e57d5a8"
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]{17}$", var.host_ami_id))
+    error_message = "Production hosts require an explicit immutable AMI ID."
+  }
+}
 variable "aws_account_id" {
   type    = string
   default = "289112218471"
@@ -49,10 +58,4 @@ variable "cloudflare_ipv4_cidrs" {
 variable "cloudflare_ipv6_cidrs" {
   type    = list(string)
   default = ["2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32"]
-}
-
-variable "enable_full_market_runtime" {
-  description = "Declare the isolated TAIFEX Source credential metadata after full-market review; no provider secret."
-  type        = bool
-  default     = false
 }

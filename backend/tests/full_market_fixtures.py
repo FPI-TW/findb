@@ -57,7 +57,7 @@ def declaration(provider, client_id, datasets, *, environment="local", now=None)
     )
 
 
-async def historical_admission(db, dataset, release, day, calendar_id):
+async def historical_admission(db, dataset, release, day, calendar_id, *, profile="full_market"):
     settings = get_settings()
     settings.FULL_MARKET_ENABLED = True
     settings.APP_ENVIRONMENT = "local"
@@ -93,11 +93,12 @@ async def historical_admission(db, dataset, release, day, calendar_id):
         reported_at=datetime.now(timezone.utc),
     )
     db.add(enrollment)
-    key = f"full_market_{release.provider}_v1"
+    key = f"{profile}_{release.provider}_v1"
     control = await db.get(SchedulerControl, key)
     if control is None:
         control = SchedulerControl(
             scheduler_key=key,
+            execution_profile=profile,
             provider=release.provider,
             slot_id="taiwan_market_window",
             desired_state="running",
@@ -125,7 +126,11 @@ async def historical_admission(db, dataset, release, day, calendar_id):
             calendar_revision_id=calendar_id,
         )
     )
-    db.add(FullMarketDatasetState(dataset_key=dataset.dataset_key, first_start_date=day))
+    db.add(
+        FullMarketDatasetState(
+            dataset_key=dataset.dataset_key, execution_profile=profile, first_start_date=day
+        )
+    )
     dataset.is_active = True
     config = dict(dataset.config)
     config["full_market"] = {**config["full_market"], "activation_date": day.isoformat()}
