@@ -297,8 +297,9 @@ def write_env_file(
     run_root: Path = RUNTIME_SECRET_ROOT,
     runtime_root_owner: tuple[int, int] = (0, 0),
     remove_after_validation: bool = False,
+    allow_empty: bool = False,
 ) -> None:
-    if not values or any(
+    if (not values and not allow_empty) or any(
         ENVIRONMENT_KEY.fullmatch(key) is None or _safe_value(value, required=True) is None
         for key, value in values.items()
     ):
@@ -464,6 +465,8 @@ def main() -> int:
             values,
             owner=_parse_owner(arguments.owner),
             remove_after_validation=arguments.check_only,
+            # Only an explicitly secret-free consumer may produce an empty file.
+            allow_empty=catalog["consumers"][arguments.consumer]["secrets"] == [],
         )
         if arguments.check_only:
             print(
