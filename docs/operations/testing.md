@@ -245,3 +245,24 @@ US 兩項工作仍 pending，各保留四次嘗試，香港失敗紀錄維持。
 `c2fc293951db5804cbd1c66861fd0b96caf8a83ebc5bbdef589eec1052e20e90`。
 Backend 部署前唯讀基準 `2d4d896c-aceb-47f7-81f7-d5c36526d6dc` 保存八組資料指紋，
 包含新增 US 計畫，所有 controls 仍 stopped。
+
+US 日期邊界修正 PR #309 已合併為 `efbca9f2e3df`，Required CI `38824002467` 通過。
+完整 `pnpm check`／`pnpm test` 通過：Backend 2,201、migration 54、Infra 148 加 268 個子測試、
+Fetcher 1,406、Dashboard unit 192／browser 10／E2E 15。
+獨立 `gpt-6.1-sol` High 最終審查為 CLEAR，另執行 227 項相關測試與四個修改模組 mypy；
+審查前後程式與文件指紋一致。本次無 IaC 或環境變數變更。
+Fetcher CD `38824347083` 成功，staging 實際安裝版本為 `efbca9f2e3df`。
+部署後 `3171a2cf-3b96-4815-b8d3-47fee3b72b30` 確認 11 個容器均使用 accepted digests，
+16 份 SQLite 與 `staging-20261015T232242Z` 備份逐表比對通過，quota／cooldown 未倒退。
+Backend 未重新部署；`d3d466c8-b8d0-4446-aa63-d89e403bbccc` 確認八組資料指紋、首次日期、
+計畫與 controls 與部署前完全相同。`c8a12685-3f00-41bb-b4e6-99ec8f7698dd` 確認
+服務健康、ingest／serve HTTP 200 與 queue check 通過；既有 29 項 missing deliveries、
+1 項 retry exhausted 仍保留，DLQ／過期 lease／未發布 outbox 均為 0。
+
+修正部署後 Owner 短暫啟動 Twelve Data Pilot（revision 24），Dashboard 於台北 07:53
+顯示 provider fetched 與 normalization completed，兩條 feed 中一條完成。
+隨後 Owner 停止至 revision 25；`c5b64289-8b00-4067-b122-a50cba48bef4` 的純統計核對顯示
+Twelve Data 兩項 complete、兩項既有 manual，所有 profiles 的 active leases、prepared 與 armed
+均為 0。這些統計不足以代替完整 native 證據，通過數暫維持 4／6。
+Backend／R2 native 證據經 SSM 傳回本機的操作被自動審查要求明確授權；
+尚待 Owner 同意後核對 canonical／Serve、R2 bytes／hash 與 frozen checkpoint。
