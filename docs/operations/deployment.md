@@ -106,6 +106,8 @@ Fetcher 每個 candidate／activation 階段各集中拉取、驗證三個 exact
 最小 credentials，並在使用前核對本機 RepoDigest。只有成功 activation、退休舊 containers 後
 執行一次 image prune；清理失敗回報 warning，不影響已完成的 activation 身分。
 Offline check、controls stopped、checkpoint 與 rollback journal 驗證均保留。
+Loader 只允許 catalog 明確宣告 `secrets: []` 的 consumer 建立空 env 檔，仍套用 tmpfs、
+owner／mode、exclusive create 與清理規則；宣告 secrets 的 consumer 若結果為空仍拒絕。
 
 八個 recurring 與三個 historical runtimes 仍依序替換，原 container IDs／images／running state
 保留到共同健康觀察通過後才清理。Coordinator 對全部新 runtimes 進行六次檢查，間隔五秒，
@@ -126,9 +128,20 @@ Deadline、讀取失敗、terminal failure 或 runner 收到中止訊號都不�
 cancel-command，最多另等 120 秒確認 SSM 終態。取消或 SSM terminal status 不能保證底層程序已停止，
 仍須核對主機停止／復原證據；無法確認時明確回報 command ID，禁止直接重試部署。
 
-取消命令需要先套用兩環境 deploy role 的 IAM 變更。本次僅更新 IaC，未執行 apply。
+2026-10-16 已透過 OpenTofu 套用兩環境 deploy role 的取消命令權限：
+
+| 環境 | AWS account | 更新的 deploy roles | Apply 結果 | 套用後完整 refresh plan |
+| --- | --- | --- | --- | --- |
+| staging | `439622209937` | `findb-staging-deploy`、`fetcher-staging-deploy` | 0 新增、2 更新、0 刪除 | 無變更 |
+| production | `289112218471` | `findb-production-deploy`、`fetcher-production-deploy` | 0 新增、2 更新、0 刪除 | 無變更 |
+
+套用前逐項比對 saved plan，確認唯一差異為各 inline policy 新增 `CancelDeploymentCommand`
+statement，既有權限不變。套用後重新讀取四個角色的線上 inline policy，均與計畫一致；
+IAM Policy Simulator 對四個角色的 `ssm:CancelCommand` 驗證皆為 `ap-southeast-1` allowed、
+`us-east-1` implicitDeny，且沒有缺少的 context values。本次未實際取消 SSM 命令或執行應用部署。
+
 `ssm:CancelCommand` 沒有 resource-level IAM 支援，因此獨立 statement 使用 `Resource="*"`，
-並以 `aws:RequestedRegion` 限制區域；SendCommand 仍限制各 unit 的主機。
+並以 `aws:RequestedRegion` 限制為 `ap-southeast-1`；SendCommand 仍限制各 unit 的主機。
 參考 [AWS Systems Manager 授權表](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ssm.html)；
 [AWS CancelCommand API](https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_CancelCommand.html)
 亦明定取消不保證底層程序終止。
@@ -148,10 +161,24 @@ SSM gate 只從失敗 stdout 擷取此固定 reason、合法 profile 與 provide
 Daemon container 為 running 且 idle 不等同 scheduler control 仍允許抓取，不能以 Docker running 直接阻擋部署。
 舊 accepted images 沒有此 CLI 訊息，不會因更新 driver 而自動取得新版 diagnostic protocol。
 
+[Fetcher 38843577455](https://github.com/FPI-TW/findb/actions/runs/38843577455) 於台北時間
+2026-10-16 11:15:44 完成為 failure。CI、images publish、同 SHA FinDB CD 與 SSM preflight 通過，
+但 candidate command `731e4e0a-e3cb-4014-af0e-7e51c77b1213` 在約 12 秒後以 code 1 失敗：
+`runtime_secret_loader=failed unit=fetcher consumer=images reason=secret_schema_invalid`。
+原因是 `images` 已宣告不讀 secrets，但寫入層仍拒絕空集合；失敗發生在 image pull 與 runtime
+替換前，acceptance／activation 均未執行。2026-10-16 唯讀主機檢查確認 current pointer 仍指向
+`74855de5e426a9eaea668481446957058ee980ee3b8a579fd2ed49fbfae9365b-38836673928-2`，
+Pilot／Full checkpoint 檔案均存在；這不代表 provider 功能驗收。
+修正必須進入新的 immutable release bundle 才會生效，重跑原 SHA 的既有 bundle 不會取得修正。
+回歸測試涵蓋兩環境的 loader CLI、空檔安全寫入／check-only 清理、禁止讀 secrets，
+並確認宣告 secrets 的空結果與不安全值仍被拒絕。
+此修正已通過 585 項相關 Backend 部署測試、Infra 165 項測試（另含 268 個子測試）、
+`pnpm check` 與 loader 的 Ruff lint／format check；尚未執行含此修正的 AWS 部署。
+
 上方耗時表保留優化前樣本；固定 sleep 總額減少與可重疊建置時間只是預期改善，
 部署後仍須以同 runner 規格的多次成功 Actions 重新量測，不能宣稱已達成新的總耗時。
 
-本機驗證已通過 `pnpm check`、`pnpm test`、IaC format 與兩環境 `tofu validate`。
+部署耗時調整在修正空 env 問題前已通過 `pnpm check`、`pnpm test`、IaC format 與兩環境 `tofu validate`。
 完整測試包含 Backend 2,203、migration 54、Infra 165（另含 268 個子測試）、Fetcher 1,406，
 以及 Dashboard unit 192／browser 10／E2E 15。新增回歸涵蓋八種 profile／provider 診斷、敏感輸出隔離、
 deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，以及健康失敗還原原 container IDs 與 pointer。

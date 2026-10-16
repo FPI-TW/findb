@@ -539,6 +539,129 @@ def test_env_file_is_exclusive_0600_owned_and_tmpfs_gated(tmp_path: Path) -> Non
     assert "replacement" not in output.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("check_only", [False, True])
+def test_images_cli_writes_empty_env_without_fetching_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+    check_only: bool,
+) -> None:
+    loader = _loader()
+    run_root = tmp_path / "run"
+    output = run_root / "images" / "runtime.env"
+    owner = (os.getuid(), os.getgid())
+    write_env_file = loader.write_env_file
+
+    def write_output(path: Path, values: dict[str, str], **kwargs: object) -> None:
+        write_env_file(
+            path,
+            values,
+            **kwargs,
+            filesystem_type=lambda _: "tmpfs",
+            run_root=run_root,
+            runtime_root_owner=owner,
+        )
+
+    def forbidden_fetch(_: str) -> str:
+        pytest.fail("image preparation must not fetch secrets")
+
+    monkeypatch.setattr(loader, "write_env_file", write_output)
+    monkeypatch.setattr(loader, "_aws_fetcher", lambda _: forbidden_fetch)
+    monkeypatch.setattr(
+        loader.sys,
+        "argv",
+        [
+            str(LOADER_PATH),
+            "--catalog",
+            str(CATALOG_ROOT / "fetcher.json"),
+            "--consumer",
+            "images",
+            "--region",
+            "ap-southeast-1",
+            "--deployment-target",
+            target,
+            "--output",
+            str(output),
+            *(["--check-only"] if check_only else []),
+        ],
+    )
+
+    assert loader.main() == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "unit=fetcher consumer=images" in captured.out
+    if check_only:
+        assert "output=removed" in captured.out
+        assert not output.exists()
+    else:
+        assert output.read_bytes() == b""
+        metadata = output.stat()
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        assert (metadata.st_uid, metadata.st_gid) == owner
+
+
+def test_cli_rejects_empty_values_when_consumer_declares_a_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    loader = _loader()
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "unit": "fetcher",
+                "consumers": {
+                    "optional": {"secrets": [{"name": "api/optional", "optional_keys": ["TOKEN"]}]}
+                },
+            }
+        )
+    )
+    output = tmp_path / "run" / "optional" / "runtime.env"
+    monkeypatch.setattr(loader, "_aws_fetcher", lambda _: lambda _: "{}")
+    monkeypatch.setattr(
+        loader.sys,
+        "argv",
+        [
+            str(LOADER_PATH),
+            "--catalog",
+            str(catalog),
+            "--consumer",
+            "optional",
+            "--region",
+            "ap-southeast-1",
+            "--deployment-target",
+            "staging",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert loader.main() == 1
+    assert "reason=secret_schema_invalid" in capsys.readouterr().err
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("values", "reason"),
+    [
+        ({"TOKEN": ""}, "secret_required_value_empty"),
+        ({"TOKEN": "unsafe\nvalue"}, "secret_value_unsafe"),
+        ({"BAD-KEY": "value"}, "secret_schema_invalid"),
+    ],
+)
+def test_allow_empty_does_not_relax_value_validation(tmp_path: Path, values, reason) -> None:
+    loader = _loader()
+    with pytest.raises(loader.LoaderError, match=reason):
+        loader.write_env_file(
+            tmp_path / "run" / "images" / "runtime.env",
+            values,
+            owner=(os.getuid(), os.getgid()),
+            allow_empty=True,
+        )
+
+
 def test_env_file_rejects_final_symlink_without_changing_target(tmp_path: Path) -> None:
     loader = _loader()
     run_root = tmp_path / "run"
