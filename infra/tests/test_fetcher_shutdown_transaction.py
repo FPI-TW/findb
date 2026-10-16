@@ -25,7 +25,6 @@ PROVIDERS = tuple(
     )
     for profile in ("pilot", "full_market", "historical")
     for provider in ("twelve_data", "finlab", "shioaji", "taifex")
-    if profile != "historical" or provider != "taifex"
 )
 
 FAKE_COMMAND = r"""
@@ -424,7 +423,7 @@ def test_shared_activation_observation_keeps_all_originals_until_healthy():
     wrappers = [entry for entry in state["log"] if entry[0] == "sudo" and "--consumer" in entry]
     assert sum(entry[entry.index("--consumer") + 1] == "images" for entry in wrappers) == 1
     providers = [entry for entry in wrappers if entry[entry.index("--consumer") + 1] != "images"]
-    assert len(providers) == 11
+    assert len(providers) == 12
     assert all("--docker-login" not in entry for entry in providers)
     last_observation = max(i for i, entry in enumerate(state["log"]) if entry[0] == "sleep")
     first_retirement = next(

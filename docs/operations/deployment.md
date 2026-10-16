@@ -109,7 +109,7 @@ Offline check、controls stopped、checkpoint 與 rollback journal 驗證均保�
 Loader 只允許 catalog 明確宣告 `secrets: []` 的 consumer 建立空 env 檔，仍套用 tmpfs、
 owner／mode、exclusive create 與清理規則；宣告 secrets 的 consumer 若結果為空仍拒絕。
 
-八個 recurring 與三個 historical runtimes 仍依序替換，原 container IDs／images／running state
+八個 recurring 與四個 historical runtimes 仍依序替換，原 container IDs／images／running state
 保留到共同健康觀察通過後才清理。Coordinator 對全部新 runtimes 進行六次檢查，間隔五秒，
 每次比對 ID、image、running 與 restart count；觀察窗口至少 25 秒，替代逐個等待造成的 275 秒。
 任一檢查失敗則依原 journal 還原 containers 與 current pointer。這是程序存活檢查，
@@ -225,7 +225,7 @@ deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，
 Historical Twelve Data／FinLab 以 Backend request／item lease 為持久狀態；Shioaji 另以 request UUID 命名 SQLite。
 驗收應依實際 entrypoint 與 mount 判定使用中的檔案，不能把共用 helper 的未使用通用 state path 當成遺失 checkpoint。
 
-三個 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
+四個 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
 不再由 pilot 部署順便建立。所有 acquiring consumers 使用同一帳號 governor mount，保留 credential pins、
 quota debt、unknown liability、cooldown 與 prepared delivery。不同環境仍使用各自帳號與儲存。
 容器 UID/GID 為 10001，state directories `0700`、SQLite `0600`；provider credentials 不跨 consumer 注入。
@@ -344,3 +344,15 @@ raw cleanup 確認僅 idle sleep 並凍結後終止，exit 137；production inge
 外層 shell exit 143。這些不記為優雅停止；停止後零活動 DB sessions、raw／durable work 未變與完整備份確認後才切換。
 新版停止行為與備份檢查已修正。實際 production accepted-record rollback 演練與七條 feeds 的 native 資料驗收
 仍依 [未完成驗收](../dev/production-foundation-cutover-plan.md) 列管，不因本次部署通過而結案。
+
+## TAIFEX historical consumer 升級
+
+Migration `a42c89d3e610` 為 `historical_backfill_item` 新增 nullable JSONB `result_evidence`，
+不改既有資料；證據必須保留，rollback 採 forward fix，不能 drop column。先部署 Backend
+migration／API，再部署 Fetcher。兩環境新增第四個 historical consumer
+`findb-historical-taifex`，沿用 TAIFEX Source key／公開帳號 governor／Twelve Data image，
+掛載 `/var/lib/findb-taifex-fetcher/historical`；不增加 provider secret。
+Host preflight 依已驗證 immutable installed source 的 historical-taifex-v1 宣告決定必要 inventory：
+舊版 11 consumers 可進行升級；新版必須具備 12 consumers，缺少新 worker 即拒絕。
+Native 驗收應先以 staging 短區間及 production 一年邊界樣本驗證 raw、run／outbox、DQ、
+canonical／Serve，再於維護窗口啟用正式回補；本機自動測試不代表雲端 native 驗收已完成。

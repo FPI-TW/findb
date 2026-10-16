@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc
 
@@ -154,6 +155,7 @@ class HistoricalBackfillClaimResponse(BaseModel):
     market: str | None = None
     trade_date: date | None = None
     lease_token: UUID | None = None
+    lease_expires_at: datetime | None = None
 
 
 class HistoricalBackfillItemUpdateRequest(BaseModel):
@@ -162,6 +164,7 @@ class HistoricalBackfillItemUpdateRequest(BaseModel):
     run_id: UUID | None = None
     failure_code: str | None = Field(default=None, max_length=50)
     failure_message: str | None = Field(default=None, max_length=1000)
+    result_evidence: HistoricalResultEvidence | None = None
 
 
 class HistoricalAcquisitionRequest(BaseModel):

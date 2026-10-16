@@ -63,7 +63,10 @@ _ALLOWED_RUN_FAILURE_CODES = frozenset(
 class SourceAPIResponseError(RuntimeError):
     """The Source API rejected a request with a safe, bounded error."""
 
-    def __init__(self, status_code: int, code: str | None = None) -> None:
+    def __init__(
+        self, status_code: int, code: str | None = None, *, retry_after: float = 0
+    ) -> None:
+        self.retry_after = retry_after
         self.status_code = status_code
         self.code = code
         detail = f"Source API returned HTTP {status_code}"
@@ -369,6 +372,8 @@ class SourceAPIClient:
                 raise SourceAPIResponseError(
                     response.status_code,
                     _safe_error_code(body),
+                    retry_after=self._parse_retry_after(response.headers.get("Retry-After", ""))
+                    or 0,
                 )
             self._sleep_with_deadline(retry_delay, deadline=deadline, monotonic=monotonic)
 

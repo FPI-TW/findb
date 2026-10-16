@@ -418,6 +418,7 @@ async def claim_historical_backfill_item(
         market=item.request.market,
         trade_date=item.trade_date,
         lease_token=item.lease_token,
+        lease_expires_at=item.lease_expires_at,
     )
 
 
@@ -445,6 +446,9 @@ async def complete_historical_backfill_item(
             run_id=body.run_id,
             failure_code=body.failure_code,
             failure_message=body.failure_message,
+            result_evidence=body.result_evidence.model_dump(mode="json")
+            if body.result_evidence
+            else None,
         )
     except HistoricalBackfillConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

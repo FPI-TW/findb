@@ -16,6 +16,7 @@ from findb_fetcher.historical_backfill import (
 from findb_fetcher.historical_runtime import FinLabHistoricalRunner, TwelveDataHistoricalRunner
 from findb_fetcher.scheduler_control import scheduler_stop_event
 from findb_fetcher.shioaji_historical import ExecutableShioajiHistoricalRunner
+from findb_fetcher.taifex_historical import TaifexHistoricalRunner
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,7 +24,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run one provider's historical backfill control worker."
     )
-    parser.add_argument("--provider", required=True, choices=("twelve_data", "finlab", "shioaji"))
+    parser.add_argument(
+        "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
+    )
     parser.add_argument("--run-forever", action="store_true")
     parser.add_argument(
         "--check", action="store_true", help="Validate configuration without claiming work"
@@ -39,10 +42,16 @@ def main(argv: list[str] | None = None) -> int:
                 "twelve_data": TwelveDataHistoricalRunner.from_env,
                 "finlab": FinLabHistoricalRunner.from_env,
                 "shioaji": ExecutableShioajiHistoricalRunner.from_env,
+                "taifex": TaifexHistoricalRunner.from_env,
             }[args.provider](),
         )
         with HistoricalControlClient(FetcherConfig.from_env()) as control:
-            run_worker(control, runner, run_forever=args.run_forever, stop_event=stopper)
+            try:
+                run_worker(control, runner, run_forever=args.run_forever, stop_event=stopper)
+            finally:
+                close = getattr(runner, "close", None)
+                if callable(close):
+                    close()
     return 0
 
 

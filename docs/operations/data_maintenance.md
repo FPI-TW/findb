@@ -128,6 +128,57 @@ test-local、UTC-aware 固定 service clock，並由同一時鐘建立交易日�
 claim 成功後須確認實際 item 與非空 lease token，再驗證 terminal state。固定時鐘僅限選用的
 測試，不套用全域 autouse patch；日期邊界、provider 當地日期與過期案例仍須保留各自的時間設定。
 
+## TAIFEX futures EOD 回補
+
+`taifex / tw_futures_eod` 支援 TX、MTX、TMF、TE、TF 全部官方實際月／週／F 契約與
+regular／after_hours；production 最近 366 個 calendar days，local／staging 最近 31 天。
+日期邊界採 Asia/Taipei；日曆使用 TAIFEX published revision，缺少日期採 weekday default，
+建立時凍結 snapshot；historical 已知休市日固定 skipped_calendar，避免把無報表誤報 no-data。當日必須已過 snapshot 收盤且至少 17:00 才能 claim／新抓取。
+年度 ZIP、多年建庫、價差及 continuous 不在此路徑。
+
+日常 Pilot／Full runtime 持續依自己的 first dates 與 frozen plans 補抓缺漏；指定歷史區間
+使用既有 Admin／Dashboard「歷史回補」與 `findb-fetch-backfill-plan`，不建立或結清另一
+profile 的 daily plan。Historical 完成後，恢復的日常 runtime 仍自行交付／對帳。
+
+1. 停止 **TAIFEX** Pilot／Full controls，等待 observed stopped 並排空在途 normalization。
+   Backend 在 claim／每次新 acquisition authorization 重查 controls；不要求停止其他 providers。
+2. 使用下列 production CLI 預覽，檢查 scope、日期與 calendar source；預設不下載 provider。
+   正常下載預估為每有效日期五次，rows 為 `null`（未知），實際重試可能增加 calls。
+3. 加 `--deliver` 建立 request；可加 `--wait` 等待結果。歷史 consumer 獨立於 Full flag，
+   仍需有效 Source credential／dataset scope、lease 與 account governor。
+4. 驗證 raw manifest、Source run／outbox、DQ、canonical 與 Serve，才恢復 TAIFEX controls。
+
+```bash
+findb-fetch-backfill-plan --provider taifex --dataset-key tw_futures_eod \
+  --start-date 2026-10-01 --end-date 2026-10-02
+# 核對上述 dry-run 後，使用相同參數加 --deliver --wait。
+```
+
+CLI 與 runner 讀取共用 `full_market.<environment>.v1.json`；可用
+`FETCHER_FULL_MARKET_CONFIG` 指定同環境檔案，不依賴舊 bounded scheduler manifest。
+Staging／local 亦可直接使用 Admin preview／create 及
+`findb-fetch-historical-backfill --provider taifex --run-forever`。
+
+每日期按商品下載指定日 CSV，exact bytes 先存 R2 再解析；整日 manifest 凍結 item／request、
+trade date、fetched_at、五商品 raw ref／SHA-256 與完整契約／時段 observations。
+有官方觀測值的列以單一 `futures_eod.v1` backfill batch 經 Source → raw → outbox → worker →
+canonical；重新抓取沿用 source precedence／fetched_at upsert，可更新官方修正值。
+所有 OHLC／settlement／open interest 皆空且 volume 明確為零才是 no-data，保存官方列與
+報表 references，不建立零價格行情。空回應、缺商品、未知格式或未知成交量不得算 no-data。
+完成驗證要求 expected = data + no_data；有 data 時核對 run identity、raw manifest、成功筆數
+與 canonical keys，全日皆為已證明 no-data 時不建立空 Source run。
+完成證據另存 PostgreSQL historical item，不受 30 天 raw retention 影響；R2 到期後仍無法讀回
+原 CSV，證據摘要不取代原始檔。
+
+`findb-historical-taifex` 使用 `/var/lib/findb-taifex-fetcher/historical/state.sqlite3`，與日常
+checkpoint 隔離並共用 account governor。商品 bytes／references、manifest、prepared body、
+receipt 與重試狀態跨重啟／lease reclaim 保留；不得刪檔重置工作。Source key／origin／environment
+改變時 checkpoint fail closed，應在排空後另建 request／checkpoint，保留原檔供稽核。
+429、transport、5xx 與暫時 R2／Source 故障最多三次，預設等待 30／120 秒且遵守較晚的
+平台 cooldown；不足剩餘 lease 時保存狀態等待 15 分鐘 lease 到期重新 claim。
+格式、契約、大小限制、DQ 錯誤或重試耗盡會停止 request，保留已完成日期並取消後續日期；
+修復後另建 request key 重跑未完成區間。取消／失效 lease 禁止新抓取，舊 token 不得完成。
+
 ## Full-market universe maintenance
 
 Full-market 清單與既有 reviewed bounded manifests 分開。官方 US、HKEX、TWSE／TPEx 與 TAIFEX

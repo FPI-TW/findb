@@ -29,7 +29,9 @@ class _Parser(argparse.ArgumentParser):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="findb-fetch-backfill-plan")
-    parser.add_argument("--provider", required=True, choices=("twelve_data", "finlab", "shioaji"))
+    parser.add_argument(
+        "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
+    )
     parser.add_argument("--dataset-key", required=True)
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
     parser.add_argument("--end-date", required=True, type=date.fromisoformat)
@@ -51,7 +53,23 @@ def _default_schedule_file() -> Path:
     )
 
 
-def _scope(path: Path, provider: str, dataset_key: str) -> tuple[int, int]:
+def _scope(path: Path, provider: str, dataset_key: str) -> tuple[int, int | None]:
+    if provider == "taifex":
+        from findb_fetcher.config import app_environment
+        from findb_fetcher.full_market_cli import load_config
+
+        if app_environment() != "production":
+            raise BackfillCLIError("backfill planner requires production")
+        config_path = Path(
+            os.getenv("FETCHER_FULL_MARKET_CONFIG", "/app/configs/full_market.production.v1.json")
+        )
+        config = load_config(config_path)
+        if config["deployment_target"] != "production" or not any(
+            feed["provider"] == provider and feed["dataset_key"] == dataset_key
+            for feed in config["feeds"]
+        ):
+            raise BackfillCLIError("requested production EOD scope is not enabled")
+        return 5, None
     if provider == "shioaji":
         raise BackfillCLIError("Shioaji historical backfill is not supported")
     manifest = load_schedule_manifest(path)
@@ -149,7 +167,7 @@ def main(argv: Sequence[str] | None = None, *, client: httpx.Client | None = Non
                 "scope_valid": preview.get("scope_valid") is True,
                 "valid_trade_dates": valid_days,
                 "estimated_provider_calls": valid_days * calls_per_day,
-                "estimated_rows": valid_days * rows_per_day,
+                "estimated_rows": valid_days * rows_per_day if rows_per_day is not None else None,
                 "preview": preview,
             }
             if not args.deliver:

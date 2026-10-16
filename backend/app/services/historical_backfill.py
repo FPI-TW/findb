@@ -6,12 +6,15 @@ acquisition, then submits data through the normal raw-first Source ingest API.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from datetime import date, datetime, time, timedelta
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,6 +27,7 @@ from app.models.registry import (
     SchedulerControl,
     SchedulerDataset,
 )
+from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.services.effective_calendar import effective_days, execution_policy
 from app.utils import utc_now, uuid7
 
@@ -32,6 +36,7 @@ CAPABILITIES: dict[tuple[str, str], str] = {
     ("finlab", "tw_equity_eod"): "declared",
     ("shioaji", "tw_equity_minute"): "executable",
     ("shioaji", "tw_etf_minute"): "executable",
+    ("taifex", "tw_futures_eod"): "executable",
 }
 STAGING_MAX_BACKFILL_DAYS = 31
 PRODUCTION_MAX_BACKFILL_DAYS = 366
@@ -42,6 +47,7 @@ PROVIDER_TIMEZONES: dict[str, str] = {
     "twelve_data": "America/New_York",
     "finlab": "Asia/Taipei",
     "shioaji": "Asia/Taipei",
+    "taifex": "Asia/Taipei",
 }
 
 
@@ -60,6 +66,18 @@ def _supports_backfill(provider: str, dataset_key: str) -> bool:
     ):
         return False
     return (provider, dataset_key) in CAPABILITIES
+
+
+def _historical_policy(provider: str) -> dict:
+    policy = execution_policy(provider)
+    if provider == "taifex":
+        # Official daily reports do not exist for exchange-closed dates.
+        policy = {key: value for key, value in policy.items() if key != "sha256"}
+        policy["skip_non_trading_days"] = True
+        policy["sha256"] = hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    return policy
 
 
 class HistoricalBackfillError(ValueError):
@@ -96,6 +114,8 @@ def _session_closed(item: HistoricalBackfillItem, now: datetime) -> bool:
         close = time.fromisoformat(snapshot["regular_close"])
     except (KeyError, TypeError, ValueError) as exc:
         raise HistoricalBackfillError("historical calendar snapshot is invalid") from exc
+    if item.request.provider == "taifex":
+        close = max(close, time(17))
     return now.astimezone(zone) >= datetime.combine(item.trade_date, close, zone)
 
 
@@ -111,7 +131,9 @@ async def create_request(
     today: date | None = None,
 ) -> tuple[HistoricalBackfillRequest, bool]:
     provider = provider.lower()
-    today = today or utc_now().date()
+    today = today or (
+        _provider_current_date(provider, utc_now()) if provider == "taifex" else utc_now().date()
+    )
     max_days = _max_backfill_days()
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
         raise HistoricalBackfillError(
@@ -154,8 +176,10 @@ async def create_request(
     ).scalar_one_or_none()
     if scope is None:
         raise HistoricalBackfillError("provider is not active for dataset")
-    calendar = await effective_days(db, dataset.market, start_date, end_date)
-    policy = execution_policy(provider)
+    calendar = await effective_days(
+        db, "TAIFEX" if provider == "taifex" else dataset.market, start_date, end_date
+    )
+    policy = _historical_policy(provider)
     now = utc_now()
     row = HistoricalBackfillRequest(
         request_id=uuid7(),
@@ -261,7 +285,9 @@ async def preview_request(
 ) -> tuple[str | None, str | None, list[tuple[date, bool, str | None]]]:
     """Return a no-write operator preview; every selected day is explained."""
     provider = provider.lower()
-    today = today or utc_now().date()
+    today = today or (
+        _provider_current_date(provider, utc_now()) if provider == "taifex" else utc_now().date()
+    )
     dataset = await db.get(DatasetRegistry, dataset_key)
     market = dataset.market if dataset is not None else None
     scope_reason: str | None = None
@@ -291,13 +317,15 @@ async def preview_request(
     calendar_rows = (
         {
             date.fromisoformat(day["trade_date"]): day["is_open"]
-            for day in await effective_days(db, market, start_date, end_date)
+            for day in await effective_days(
+                db, "TAIFEX" if provider == "taifex" else market, start_date, end_date
+            )
         }
         if market is not None
         else {}
     )
     skip_non_trading = (
-        execution_policy(provider)["skip_non_trading_days"]
+        _historical_policy(provider)["skip_non_trading_days"]
         if provider in {"twelve_data", "finlab", "shioaji", "taifex"}
         else False
     )
@@ -348,7 +376,23 @@ async def claim_next_item(
 ) -> HistoricalBackfillItem | None:
     """Lease one date only when its request has no earlier unfinished item."""
     now = now or utc_now()
-    expiry_date = _provider_current_date(provider, now) - timedelta(days=_max_backfill_days())
+    if provider == "taifex":
+        if not await _taifex_maintenance_window(db):
+            return None
+        in_flight = list(
+            await db.scalars(
+                select(IngestionRun).where(
+                    IngestionRun.source == "taifex",
+                    IngestionRun.dataset_key == "tw_futures_eod",
+                    IngestionRun.status.in_(("queued", "pending", "processing", "retrying")),
+                )
+            )
+        )
+    else:
+        in_flight = []
+    expiry_date = _provider_current_date(provider, now) - timedelta(
+        days=_max_backfill_days() - (1 if provider == "taifex" else 0)
+    )
     expired = (
         (
             await db.execute(
@@ -421,6 +465,12 @@ async def claim_next_item(
     if allowed_datasets is not None:
         stmt = stmt.where(HistoricalBackfillRequest.dataset_key.in_(allowed_datasets))
     for item in (await db.execute(stmt)).scalars().unique():
+        if any(
+            (run.metadata_ or {}).get("delivery", {}).get("work_item_id")
+            != f"historical:{item.item_id}"
+            for run in in_flight
+        ):
+            continue
         if not _session_closed(item, now):
             continue
         prior = (
@@ -489,6 +539,7 @@ async def authorize_item(
         and item.lease_expires_at is not None
         and item.lease_expires_at > checked_at
         and _session_closed(item, checked_at)
+        and (provider != "taifex" or await _taifex_maintenance_window(db))
     )
     return (
         allowed,
@@ -509,6 +560,7 @@ async def complete_item(
     run_id: UUID | None,
     failure_code: str | None,
     failure_message: str | None,
+    result_evidence: dict | None = None,
 ) -> HistoricalBackfillItem:
     item = (
         await db.execute(
@@ -538,7 +590,10 @@ async def complete_item(
     ):
         raise HistoricalBackfillConflictError("backfill item is not leased")
     run: IngestionRun | None = None
-    if outcome == "completed":
+    if outcome == "completed" and provider == "taifex":
+        await _validate_taifex_completion(db, item, run_id, result_evidence, now)
+        item.result_evidence = result_evidence
+    elif outcome == "completed":
         if run_id is None:
             raise HistoricalBackfillValidationError("completed item requires a Source run")
         run = await db.get(IngestionRun, run_id, with_for_update=True)
@@ -580,3 +635,124 @@ def _valid_completed_run(run: IngestionRun | None, item: HistoricalBackfillItem)
         and run.total_records == run.success_records
         and run.failed_records == 0
     )
+
+
+async def _taifex_maintenance_window(db: AsyncSession) -> bool:
+    controls = (
+        await db.scalars(
+            select(SchedulerControl)
+            .where(SchedulerControl.provider == "taifex", SchedulerControl.retired_at.is_(None))
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    return bool(controls) and all(
+        control.desired_state == "stopped" and control.observed_state == "stopped"
+        for control in controls
+    )
+
+
+async def _validate_taifex_completion(
+    db: AsyncSession,
+    item: HistoricalBackfillItem,
+    run_id: UUID | None,
+    evidence: dict | None,
+    now: datetime,
+) -> None:
+    from app.models.canonical import FuturesContract, FuturesContractEOD, Instrument
+    from app.models.raw import RawMarketPayload
+
+    try:
+        proof = HistoricalResultEvidence.model_validate(evidence)
+    except ValidationError as exc:
+        raise HistoricalBackfillValidationError("TAIFEX completion evidence is invalid") from exc
+    if (
+        proof.item_id != item.item_id
+        or proof.request_id != item.request_id
+        or proof.trade_date != item.trade_date
+        or item.request.dataset_key != "tw_futures_eod"
+        or proof.fetched_at > now + timedelta(minutes=5)
+        or not _session_closed(item, proof.fetched_at)
+    ):
+        raise HistoricalBackfillValidationError("TAIFEX evidence scope or clock differs")
+    data_rows = [row for row in proof.rows if not row.no_trade]
+    if not data_rows:
+        if run_id is not None:
+            raise HistoricalBackfillValidationError(
+                "no-data-only completion must not include a run"
+            )
+        return
+    run = await db.get(IngestionRun, run_id, with_for_update=True) if run_id else None
+    if not _valid_completed_run(run, item):
+        raise HistoricalBackfillValidationError("Source run does not match completed backfill item")
+    assert run is not None
+    expected_work_item = f"historical:{item.item_id}"
+    if (
+        run.schema_id != "futures_eod"
+        or run.schema_version != 1
+        or run.delivery_mode != "backfill"
+        or run.coverage_start_date != item.trade_date
+        or run.coverage_end_date != item.trade_date
+        or run.total_records != len(data_rows)
+        or (run.metadata_ or {}).get("delivery", {}).get("work_item_id") != expected_work_item
+    ):
+        raise HistoricalBackfillValidationError("Source run is outside the historical item")
+    raw = await db.get(RawMarketPayload, run.raw_payload_id) if run.raw_payload_id else None
+    batch = raw.payload.get("batch", {}) if raw is not None else {}
+    if (
+        raw is None
+        or batch.get("source_raw_ref") != proof.manifest.ref
+        or batch.get("source_raw_sha256") != proof.manifest.sha256
+        or raw.fetched_at != proof.fetched_at
+        or raw.payload.get("data") != [row.model_dump(mode="json") for row in data_rows]
+    ):
+        raise HistoricalBackfillValidationError("Source raw manifest differs from completion proof")
+    canonical = (
+        await db.execute(
+            select(Instrument.symbol, FuturesContract.contract_code, FuturesContractEOD.session)
+            .join(FuturesContract, FuturesContract.instrument_id == Instrument.instrument_id)
+            .join(FuturesContractEOD, FuturesContractEOD.contract_id == FuturesContract.contract_id)
+            .where(
+                FuturesContractEOD.run_id == run.run_id,
+                FuturesContractEOD.trade_date == item.trade_date,
+            )
+        )
+    ).all()
+    expected = {(row.product_code, row.contract_code, row.session) for row in data_rows}
+    if set(canonical) != expected:
+        raise HistoricalBackfillValidationError("TAIFEX canonical member proof is incomplete")
+
+
+async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None:
+    """A leased historical item is the authority for this Source-only write path."""
+    try:
+        item_id = UUID(request.delivery.work_item_id.removeprefix("historical:"))
+    except (AttributeError, ValueError) as exc:
+        raise HistoricalBackfillValidationError("historical item identity is invalid") from exc
+    item = (
+        await db.scalars(
+            select(HistoricalBackfillItem)
+            .options(selectinload(HistoricalBackfillItem.request))
+            .where(HistoricalBackfillItem.item_id == item_id)
+        )
+    ).one_or_none()
+    now = utc_now()
+    if item is None or (
+        item.request.provider != "taifex"
+        or item.request.dataset_key != request.dataset_key
+        or item.request.status not in {"queued", "running"}
+        or item.status != "running"
+        or item.lease_expires_at is None
+        or item.lease_expires_at <= now
+        or request.source != "taifex"
+        or request.schema_id != "futures_eod"
+        or request.schema_version != 1
+        or request.payload.batch.delivery_mode != "backfill"
+        or request.payload.batch.data_date != item.trade_date
+        or request.payload.batch.coverage_start_date != item.trade_date
+        or request.payload.batch.coverage_end_date != item.trade_date
+        or request.delivery.target_data_date != item.trade_date
+        or any(row.trade_date != item.trade_date for row in request.payload.data)
+        or request.fetched_at > now + timedelta(minutes=5)
+        or not _session_closed(item, request.fetched_at)
+    ):
+        raise HistoricalBackfillValidationError("historical delivery is outside its leased scope")

@@ -63,7 +63,9 @@ from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGat
 from findb_fetcher.providers.taifex import (
     TaifexOperationalError,
     fetch_report,
+    is_no_trade,
     parse_report,
+    persist_dated_report,
     report_members,
 )
 from findb_fetcher.providers.twelve_data import (
@@ -923,9 +925,13 @@ class FullMarketRuntime:
                     )
                     if not product_raw:
                         raise DatedUniversePendingError("dated_report_unavailable")
-                    self._persist(product_raw, dataset, product)
                     try:
-                        parsed = parse_report(product_raw, target_date=day, historical=True)
+                        _, parsed = persist_dated_report(
+                            product_raw,
+                            target_date=day,
+                            product=product,
+                            persist=lambda raw: self._persist(raw, dataset, product),
+                        )
                     except (ValueError, UnicodeError):
                         raise DatedUniversePendingError("dated_report_unavailable") from None
                     if any(row["product_code"] != product for row in parsed):
@@ -1309,11 +1315,7 @@ class FullMarketRuntime:
             ]
             if len(selected) != 1:
                 raise ReadinessBlockedError("actual TAIFEX contract/session is missing")
-            has_observation = any(
-                selected[0][field] is not None
-                for field in ("open", "high", "low", "close", "settlement_price", "open_interest")
-            )
-            if not has_observation and selected[0]["volume"] == 0:
+            if is_no_trade(selected[0]):
                 from findb_fetcher.full_market_universe import TAIFEX_HISTORY_URL
 
                 evidence = {
@@ -1340,7 +1342,20 @@ class FullMarketRuntime:
                     evidence=evidence,
                 )
                 return []
-            if not has_observation and selected[0]["volume"] is None:
+            if (
+                not any(
+                    selected[0][field] is not None
+                    for field in (
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "settlement_price",
+                        "open_interest",
+                    )
+                )
+                and selected[0]["volume"] is None
+            ):
                 raise ReadinessBlockedError("TAIFEX quote has no source-provided observation")
             request = {
                 "dataset_key": dataset,

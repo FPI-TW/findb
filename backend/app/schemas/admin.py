@@ -45,6 +45,7 @@ class HistoricalBackfillItemResponse(BaseModel):
     trade_date: date
     status: HistoricalBackfillItemStatus
     calendar_snapshot: dict[str, Any] | None = None
+    result_evidence: dict[str, Any] | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     failure_code: str | None = None
