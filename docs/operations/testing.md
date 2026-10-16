@@ -155,7 +155,7 @@ FinLab Fetcher 為 `aad9978e-a510-4ea7-b702-accfbaecae04`，
 Shioaji Fetcher 為 `af29aac1-217c-421f-8d4e-37932b93adca`。
 七條 feed assembler 判定這四條通過，整體仍為 4／7。
 Owner 於台北時間 2026-10-16 將香港移出本次 native 驗收；本次目標改為其餘六條，
-目前為 4／6，待 TAIFEX 與美股通過後才接續 production。這是驗收範圍調整，
+美股後續驗收通過後目前為 5／6（證據見下文），待 TAIFEX 通過後才接續 production。這是驗收範圍調整，
 不代表香港成功；七條 feed 的部署／fixture 範圍、香港既有計畫與失敗紀錄維持。
 追加單次香港 HKEX 診斷 `c91545a9-1d55-4240-acd7-f524b138b477` 仍回傳 HTTP／provider code 400。
 診斷後由 Owner 停止 Twelve Data Pilot，`d5e9e9c1-844f-4d7f-9b4e-55842d976913` 確認
@@ -263,6 +263,21 @@ Backend 未重新部署；`d3d466c8-b8d0-4446-aa63-d89e403bbccc` 確認八組資
 顯示 provider fetched 與 normalization completed，兩條 feed 中一條完成。
 隨後 Owner 停止至 revision 25；`c5b64289-8b00-4067-b122-a50cba48bef4` 的純統計核對顯示
 Twelve Data 兩項 complete、兩項既有 manual，所有 profiles 的 active leases、prepared 與 armed
-均為 0。這些統計不足以代替完整 native 證據，通過數暫維持 4／6。
-Backend／R2 native 證據經 SSM 傳回本機的操作被自動審查要求明確授權；
-尚待 Owner 同意後核對 canonical／Serve、R2 bytes／hash 與 frozen checkpoint。
+均為 0。完整 native 驗收另外依下列 Backend／R2 證據判定，不以工作統計取代。
+
+Owner 明確授權將 staging native 證據經 SSM 傳回本機 `/private/tmp` 後，
+台北 2026-10-16 08:41 完成唯讀匯出與七條 feed assembler 核對；未啟動任何抓取。
+AWS MCP 當時回報工具不存在，改以 staging AWS SDK 呼叫既有 SSM transport／exporters；
+先核對帳號 `439622209937`，本機證據檔權限為 `0600`，不包含 credentials。
+Backend 命令為 `4a8cc257-9104-4999-aa06-df4231c8c276`，
+Twelve Data Fetcher 為 `2cf10532-9e3e-4cd4-8a83-fc53c36fdace`。
+美股 `us_equity_eod` 的原凍結計畫 `01a141cf-70f7-7ad5-a2f9-ecfa9002bd9e`
+為 `expected=2, data=2, no_data=0, missing=0, blocked=0`；兩項 checkpoint 工作均 complete。
+抽樣商品 A 的 run `01a141fb-fe7c-706e-bd7d-6705553f614d` 與 normalization job 均 completed，
+Source receipt、frozen plan／checkpoint 識別及 request hash 一致；R2 實讀 296 bytes 並驗證 hash，
+canonical projection 與 HTTP 200 Serve 回應完全一致。此證據為整個計畫完成加每條 feed 抽樣鏈路核對，
+不宣稱逐筆驗證全市場資料。
+同一輪再次核對 FinLab／Shioaji 四條通過；原七條 assembler 為 5／7、整體 `passed=false`，
+香港已排除本次目標，因此本次 native 範圍為 5／6。
+TAIFEX 舊計畫仍為 `native_plan_incomplete`，待台北 2026-10-16 17:00 新日期計畫；
+香港仍為 `nonzero_native_sample_missing`，不因排除而標成成功。Production 驗收尚未開始。
